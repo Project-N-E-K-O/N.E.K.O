@@ -3,6 +3,8 @@
 > **文档性质：approved proposal（P0–P4 的实施计划）。** P0、P1 随第一个 PR 落地，其余阶段各自另开 PR，落地后在对应小节补「落地说明」。代码和测试是权威；本页和代码对不上时以代码为准。
 >
 > 设计 / 需求方：wislap（插件 SDK 负责人）。设计 v2 的判定规则、粒度、调用链、插件侧视图、Origin、开放问题的结论都是既定方向，本页只把它们落到文件和函数，不重新讨论。
+>
+> **后续变更：** 3.1 的三档开关 `PLUGIN_CAPABILITY_POLICY` 已由插件权限总开关取代（`NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED`，见 `plugin/core/capability_policy.py`）：调用登记、判定和审计始终运行，开关只决定是否拒绝，审计端点不再返回 `mode: "off"`；旧变量设置时作为别名读取一个版本（`off`、`observe` 等于打开总开关，`enforce` 等于检查生效）。能力名改为权限 id，词表在 `plugin/sdk/shared/permissions/catalog.py`，`rights` 在一个版本内同时带新旧两种名字。
 
 ## 0. 一句话
 
@@ -37,7 +39,7 @@
 
 | 调用点 | 线上类型 | Origin.kind | Origin.ref |
 |---|---|---|---|
-| `/runs`：`RunManager._execute_run`（`plugin/runs/manager.py:620`）→ `trigger_service.trigger_plugin`（`plugin/runs/trigger_service.py:477`）→ `_execute_trigger`（同文件 391 行 `host.trigger`）。上游有 `POST /runs`、`/ws/admin run.create`、猫爪 `nekoclaw/host/plugin_runs.py`、`search_gateway`、插件安装后的试跑 | TRIGGER | `run` | `run_id` |
+| `/runs`：`RunManager._execute_run`（`plugin/runs/manager.py:620`）→ `trigger_service.trigger_plugin`（`plugin/runs/trigger_service.py:477`）→ `_execute_trigger`（同文件 391 行 `host.trigger`）。上游有 `POST /runs`、`/ws/admin run.create`、喵能力 `nekopower/host/plugin_runs.py`、`search_gateway`、插件安装后的试跑 | TRIGGER | `run` | `run_id` |
 | `llm_tool_callback`（`plugin/server/routes/llm_tools.py:96`，200 行 `host.trigger`） | TRIGGER | `chat_tool` | 主服务给的 `call_id` |
 | `reply_completed_callback`（`plugin/server/routes/llm_tools.py:62`，84 行） | TRIGGER | `chat_hook` | `host_reply.call_id` |
 | `call_surface_action`（`plugin/server/application/plugins/ui_query_service.py:1636`，1770 行） | TRIGGER | `ui_action` | 宿主生成的 `run_id` |
@@ -224,7 +226,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 | 宿主：`run_coroutine_threadsafe` 跨 loop（`_run_on_owner_loop`） | contextvar 带得过去（`Handle` 捕获了调用方上下文） | 带得过去 | 不依赖它，宿主内部显式传参 |
 | 插件：入口里 `asyncio.to_thread(同步函数)` 再嵌套调用 | 父 id 带得上 | 带得上 | 正常归属 |
 | 插件：同步 API 在工作线程里走 `asyncio.run`（`_send_request_and_wait`） | 带得上（`asyncio.run` 拷贝调用线程的上下文） | 带得上 | 正常归属 |
-| 插件：`loop.run_in_executor(None, ...)` | **带不上** | 父 id 为 `None` | 宿主按插件自发处理，打 `unattributed`，若有存活链再打 `possible_laundering`；SDK 文档建议用 `asyncio.to_thread` 或 `contextvars.copy_context().run` |
+| 插件：`loop.run_in_executor(None, ...)` | 在运行时提供的事件循环上带得上（运行时把默认 executor 换成了提交时复制上下文的版本）；插件自己新建事件循环或换掉默认 executor 后**不保证带上**（插件自己用 `contextvars.copy_context().run` 包住，或换上的 executor 自己复制上下文时仍带得上） | 带得上时同上；带不上时父 id 为 `None` | 带得上时正常归属；带不上时宿主按插件自发处理，打 `unattributed`，若有存活链再打 `possible_laundering`；SDK 文档建议用 `asyncio.to_thread` 或 `contextvars.copy_context().run` |
 | 插件：裸 `threading.Thread` | **带不上** | 父 id 为 `None` | 同上 |
 | 插件：入口结束后仍在跑的后台任务 | 带不上（scope 已关闭，现有测试 `test_rpc_peer.py::test_background_request_uses_its_own_budget_after_entry_scope_ends` 已钉住预算部分） | 父 id 为 `None` | 同上；视图也回到只含自己的链 |
 
@@ -338,7 +340,7 @@ P2 起如果 SDK 预检的拒绝原因要在界面显示、P3 的待确认通知
 | `reply_tail.subscribe` / `register` 走 HTTP 到主服务，`plugin_id` 由插件自报 | 宿主不经手 | P4 |
 | 插件经 HTTP 发 `POST /runs` 调别的插件（`mcp_adapter` 在用） | 宿主只看到一次 `run`，不知道是哪个插件发的；被调插件的链 = 自己 | P4（或给 `/runs` 加调用方令牌，另议） |
 | 插件进程内截屏、直连主服务改设置 | 宿主不经手 | P4 |
-| `run_in_executor`、裸线程、入口结束后的后台任务里发出的请求 | 父 id 带不上（5.1） | 按插件自发处理 + `possible_laundering` 标记；只记不拦（已拍板） |
+| 自建 executor 的 `run_in_executor`（以及插件自建事件循环或换掉默认 executor 后的 `run_in_executor(None, ...)`）、裸线程、入口结束后的后台任务里发出的请求 | 父 id 带不上或不保证带上（5.1） | 父 id 查到的记录属于别的调用方的链时，按那条链正常归属，不因这次使用新增 `possible_laundering`，但保留记录上已有的标记；带不上或查不到时按插件自发处理（打 `unattributed`）；查到的链只有该插件自己时也只归到它自己。后两种情况下，该插件正被别的插件调用（有存活链）时再标 `possible_laundering`（同 3.2「存活判断」）；只记不拦（已拍板） |
 
 ## 10. 已定事项（2026-11-18）
 

@@ -28,6 +28,7 @@ ENTRY_CONTRACT_FIELDS = (
     "quick_action_config",
     "output_schema",
     "strict_output",
+    "permissions",
 )
 
 # Contract fields added after the packaged metadata format was fixed. They
@@ -37,6 +38,7 @@ ENTRY_CONTRACT_FIELDS = (
 ENTRY_OPT_IN_CONTRACT_FIELDS = (
     "output_schema",
     "strict_output",
+    "permissions",
 )
 
 # Contract fields every hand-built entry projection (IPC registration,
@@ -123,6 +125,44 @@ def unhandled_entry_contract_fields(
     return carried
 
 
+# Deepest container nesting a schema may have when an entry is registered.
+# Copies, IPC pickling, JSON encoding and JSON Schema validators all recurse
+# per level, so an unbounded schema can blow the interpreter's recursion limit
+# far from where it was registered. Real schemas (including Pydantic's, which
+# share structure through $defs) stay well under a few dozen levels.
+MAX_SCHEMA_DEPTH = 128
+
+
+def schema_depth_exceeds(value: object, limit: int = MAX_SCHEMA_DEPTH) -> bool:
+    """Whether mappings/lists/tuples nest deeper than ``limit`` (iterative, never recurses).
+
+    The schema itself is level 1. A container reachable from itself counts as
+    too deep, since no wire format can carry it.
+    """
+    if not isinstance(value, (Mapping, list, tuple)):
+        return False
+    stack: list[tuple[object, int]] = [(value, 1)]
+    # Deepest level each container was reached at: shared sub-schemas are
+    # walked again only when reached deeper, so sharing cannot blow up the walk.
+    deepest: dict[int, int] = {id(value): 1}
+    while stack:
+        current, depth = stack.pop()
+        if depth > limit:
+            return True
+        children = current.values() if isinstance(current, Mapping) else current
+        for child in children:  # type: ignore[union-attr]
+            if isinstance(child, (Mapping, list, tuple)) and deepest.get(id(child), 0) < depth + 1:
+                deepest[id(child)] = depth + 1
+                stack.append((child, depth + 1))
+    return False
+
+
+def check_schema_depth(value: object, field: str) -> None:
+    """Raise ``ValueError`` when ``value`` nests deeper than ``MAX_SCHEMA_DEPTH``."""
+    if schema_depth_exceeds(value):
+        raise ValueError(f"{field} nests deeper than {MAX_SCHEMA_DEPTH} levels")
+
+
 def detached_copy(value: object) -> object:
     """A deep copy, so a projection or a registration never aliases the caller's containers.
 
@@ -137,6 +177,13 @@ def detached_copy(value: object) -> object:
 
 
 def _copy_containers(value: object, memo: dict[int, object]) -> object:
+    if isinstance(value, tuple):
+        # A tuple is immutable but may hold mutable levels; copy through it.
+        if id(value) in memo:
+            return memo[id(value)]
+        copied_tuple = tuple(_copy_containers(item, memo) for item in value)
+        memo[id(value)] = copied_tuple
+        return copied_tuple
     if not isinstance(value, (Mapping, list)):
         try:
             return copy.deepcopy(value)

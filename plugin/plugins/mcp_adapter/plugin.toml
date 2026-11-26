@@ -56,3 +56,13 @@ tool_timeout = 60
 auto_reconnect = true
 reconnect_interval = 5
 max_reconnect_attempts = 3
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.network:connect"]
+reason = { zh-CN = "连接你配置的 MCP 服务。", zh-TW = "連線到你設定的 MCP 服務。", en = "Connect to the MCP servers you configure.", ja = "設定した MCP サーバーに接続します。", ko = "설정한 MCP 서버에 연결합니다.", ru = "Подключаться к настроенным вами MCP-серверам.", es = "Conectarse a los servidores MCP que configures.", pt = "Conectar-se aos servidores MCP que você configurar." }
+
+[permissions.require."system.process:spawn"]
+reason = { zh-CN = "启动你配置的本地 MCP 服务程序。", zh-TW = "啟動你設定的本機 MCP 服務程式。", en = "Start the local MCP server programs you configure.", ja = "設定したローカルの MCP サーバープログラムを起動します。", ko = "설정한 로컬 MCP 서버 프로그램을 실행합니다.", ru = "Запускать настроенные вами локальные программы MCP-серверов.", es = "Iniciar los programas de servidor MCP locales que configures.", pt = "Iniciar os programas de servidor MCP locais que você configurar." }
+
+[permissions.require."system.env:read"]
+reason = { zh-CN = "读取运行配置，并把环境变量传给它启动的 MCP 服务。", zh-TW = "讀取執行設定，並把環境變數傳給它啟動的 MCP 服務。", en = "Read its runtime settings and pass environment variables on to the MCP servers it starts.", ja = "実行時の設定を読み取り、起動する MCP サーバーに環境変数を引き渡します。", ko = "실행 설정을 읽고, 실행하는 MCP 서버에 환경 변수를 전달합니다.", ru = "Читать настройки работы и передавать переменные окружения запускаемым MCP-серверам.", es = "Leer su configuración de ejecución y pasar las variables de entorno a los servidores MCP que inicia.", pt = "Ler as configurações de execução e repassar as variáveis de ambiente aos servidores MCP que inicia." }

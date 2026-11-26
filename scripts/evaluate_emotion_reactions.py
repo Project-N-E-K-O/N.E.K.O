@@ -144,7 +144,7 @@ async def run_variant(emotion, sample, model_config, prompt, budget):
 
     class ReadOnlyConfig:
         async def aget_model_api_config(self, tier):
-            if tier != "emotion":
+            if tier != "recognition":
                 raise ValueError("Unexpected model tier")
             return dict(model_config)
 
@@ -403,7 +403,7 @@ async def _evaluate(samples, model_config, baseline):
                           emotion.MESSAGE_REACTION_CONFIDENCE_THRESHOLD)
     report["model_setup"] = {"model": model_config["model"],
                              "provider_type": model_config.get("provider_type"),
-                             "temperature": 0.3, "timeout_seconds": 30}
+                             "timeout_seconds": 30}
     return report
 
 

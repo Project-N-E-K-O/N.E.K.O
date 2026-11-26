@@ -11,14 +11,14 @@ trigger: always_on
 - 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（3.11），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
+- **不要给模型调用设置 `temperature`（全仓库，CI 必拦）**：除了守卫里逐条写明的例外，任何代码都不设采样温度，让各家模型用自己的默认值。包括关键字参数 `temperature=`、请求体／`extra_body`／`generation_config` 里的 `"temperature"` 键、名为 `temperature` 的函数参数、`.temperature = ...` 赋值和配置类里的 `temperature` 字段；`create_chat_llm` / `ChatOpenAI` / `ChatAnthropic` 也已没有这个参数。理由：(1) o1/o3/gpt-5-thinking/Claude extended-thinking 拒收该字段；(2) 各处自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py` 扫全仓库（CI 见 `.github/workflows/analyze.yml`）。插件模型网关也一样：插件请求里带的 `temperature` 照常接受，但转发前丢掉并记一次 warning；模型槽不再有默认温度。例外只在脚本的 `EXEMPTIONS` 里逐条写理由，目前是：本身接收 temperature 的语音接口（GLM / Qwen 实时语音会话、Gemini Live、Gemini 语音识别），验证上述丢弃行为的插件网关测试，以及天气插件的气温字段。
 - **辅助 LLM 调用约定（memory/ + utils/）**：
-  - **不下发 `temperature`**：所有 `utils.llm_client.create_chat_llm` / `ChatOpenAI` 及其包装 helper 一律不传 `temperature=...`，默认 `None` 表示"不写进请求体"。理由：(1) 兼容 o1/o3/gpt-5-thinking/Claude extended-thinking；(2) 各 task 自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py`（CI 见 `.github/workflows/analyze.yml`）。
   - **每个 LLM 调用必须有 budget + timeout（硬性，全仓生效）**：
     - **输出**：每个 `create_chat_llm()` / `ChatOpenAI()` 构造都必须带 **token budget**（`max_completion_tokens=` 或 `max_tokens=`）**和** `timeout=`（或 `request_timeout=`）。没有 budget 输出会失控（成本 / 延迟 / 上下文爆炸），没有 timeout 上游卡死会拖垮整条 async 管线——两者在 `utils/llm_client.py` 都**没有安全默认值**。若 budget/timeout 改在 **调用时** per-call 设（`invoke/ainvoke/astream/..(**overrides)`、或裸 `_client.chat.completions.create()`、或 `asyncio.timeout()/wait_for()` 包裹），**或藏在 `**kwargs` splat 里**（lint 看不到 splat 内容），在构造行加 `# noqa: LLM_OUTPUT_BUDGET` 并注明理由。
     - **输入**：每条拼进 `messages` 的字符串都要先过 token budget（`truncate_to_tokens` / `truncate_head_tail_tokens` / `*_MAX_TOKENS` 常量，见 `docs/design/llm-prompt-budget.md`）。lint 用启发式检查"调用所在函数里有没有 budget 痕迹"，故意保守、会有误报；确实不该 cap 的（用户配置 / OS 窗口标题等"咎由自取"项，见 §6）用 `# noqa: LLM_INPUT_BUDGET` 并注明理由。
     - 守门：`scripts/check_llm_budget.py`（CI 见 `.github/workflows/analyze.yml`）。预算常量统一维护在 `config/__init__.py` §3.7，索引见 `docs/design/llm-prompt-budget.md`。
   - **模型从 tier 拿，不 hardcoded fallback**：每个 LLM 调用都通过 `config_manager.get_model_api_config(<tier>)` 拿 model/base_url/api_key 三件套。不要再写 `api_config.get('model', SETTING_PROPOSER_MODEL)` 这类 fallback——`SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 退环境。tier 未配好时让 API 直接拒绝，比静默回退到 qwen-max 更安全。
-  - **memory 子模块按职责选 tier**：fact extraction / signal detection / reflection synthesis / fact dedup / recall rerank 走 `summary`；recent.review + persona.correction + promotion merge 走 `correction`。不要为单点新增 hardcoded 模型名。
+  - **memory 子模块按职责选 tier**：记忆的活统一走 `memory`（设置页叫「记忆整理（大模型）」；2026-11 起原 `correction` 档并入它，同月代码名由 `summary` 改为 `memory`），需要深想的调用（recent.review、persona.correction、promotion merge 等）靠调用点开 thinking，不靠换档；用户在等的轻活（recall rerank 的聊天模型兜底、galgame 选项、窗口搜索关键词）走 `recognition`（设置页叫「识别模型（小模型）」，2026-11 前代码名是 `emotion`）。老名字 `summary` / `emotion` 只为兼容保留别名，新代码不要再用。不要为单点新增 hardcoded 模型名。
 
 ## 提交规范：高风险模块回归报告 + 大 PR 不拆分理由
 
@@ -138,19 +138,19 @@ wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_wo
 
 事件循环慢回调检测需要开启 asyncio debug 模式才会触发（设置 `NEKO_DEBUG_ASYNC=1`；`PYTHONASYNCIODEBUG=1` 或 `python -X dev` 也可）。启用后 `main_server.py` 会把 `loop.slow_callback_duration` 收紧到 50ms，超过的 sync 回调会打 `Executing ... took X seconds` warning。提 PR 前请在调试模式下扫一眼启动日志。
 
-## NekoClaw 术语：界面叫「使魔」，代码叫 task agent
+## NekoPower 术语：界面叫「使魔」，代码叫 task agent
 
-NekoClaw（猫爪，`nekoclaw/`）里同一样东西，界面和代码用不同的名字：
+NekoPower（喵能力，`nekopower/`）里同一样东西，界面和代码用不同的名字：
 
 | 界面叫法 | 代码里 | 说明 |
 |---|---|---|
 | 使魔 | task agent（`task_agent`、`TaskAgent*`、`TASK_AGENT_*`） | 替她办一件事的执行会话。存盘值（`route` / `source` / `channel`）是 `"task_agent"`，数据目录是 `task_agents/` |
-| — | agent runtime（`AgentRuntime`，`nekoclaw/runtime/`） | 运行 task agent 的那一层：内置运行时，或将来可选的 dsh |
+| — | agent runtime（`AgentRuntime`，`nekopower/runtime/`） | 运行 task agent 的那一层：内置运行时，或将来可选的 dsh |
 | — | harness（`AgentHarness`，子类 `SessionHarness`） | 移植自 dsh 的内部循环，在 agent runtime 里面 |
 
 - 「使魔」只出现在界面文案（八种语言）和她说给用户的话里，比如回执「可以交给使魔」、认用户说「告诉使魔」的词表。后端代码、注释、日志、协议和发给模型的提示词里不写 familiar，写 task agent。
 - 不用裸 `agent`：仓库里已有 agent 进程、agent 模型槽、旧的 `brain/`、`agent_task_id` 等，容易撞名。
-- 详见 `docs/design/nekoclaw-rewrite.md` 开头的术语对照和第 3 节。
+- 详见 `docs/design/nekopower-rewrite.md` 开头的术语对照和第 3 节。
 
 ## 经验文档索引（`.agent/skills/`）
 
@@ -171,7 +171,7 @@ NekoClaw（猫爪，`nekoclaw/`）里同一样东西，界面和代码用不同�
 | `memory-system` | 改 `memory/`、`app/memory_server/`、记忆类提示词、记忆落盘和同步、`/new_dialog` 开场链路 |
 | `proactive-chat` | 改主动搭话、防复读、用户禁令、截图授权、开屏问候、凝神，或动隐私模式和首启实验分支 |
 | `plugin-host-pitfalls` | 改插件宿主和插件框架（写插件本身看 `neko-plugin`） |
-| `nekoclaw` | 改 `nekoclaw/`、`app/agent_server/`、主对话的派发和查询工具、键鼠和浏览器工具 |
+| `nekopower` | 改 `nekopower/`、`app/agent_server/`、主对话的派发和查询工具、键鼠和浏览器工具 |
 | `catgirl-visit` | 改串门相关代码，或处理串门相关的评审意见 |
 | `i18n-pitfalls` | 改 `static/locales`、`config/prompts` 的多语言表、按语言分支的后端代码（前端硬编码中文的替换看 `i18n`） |
 | `feature-notes` | 改区域判定、遥测、版本问卷、角色配置、小游戏、小剧场、卡片锻造、屏幕分享等功能 |

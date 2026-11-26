@@ -17,6 +17,8 @@ See docker/README_Docker.md for the deployment contract itself.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -167,3 +169,133 @@ def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():
             f".dockerignore 排除了 {pattern}：运行时要读的指南与 readiness 文档"
             "会静默变成内置短桩"
         )
+
+
+def _dockerignore_excludes(rel_path: str, patterns: list[str]) -> bool:
+    """Evaluate Docker .dockerignore inclusion/exclusion rules for a relative path."""
+    import fnmatch
+    from pathlib import PurePosixPath
+
+    excluded = False
+    path_obj = PurePosixPath(rel_path)
+    for raw in patterns:
+        negated = raw.startswith("!")
+        pat = raw[1:] if negated else raw
+        pat = pat.strip().lstrip("/")
+        if not pat:
+            continue
+        matched = False
+        if "**" in pat:
+            # Support leading "**/" recursive patterns in .dockerignore.
+            sub_pat = pat.replace("**/", "")
+            matched = (
+                fnmatch.fnmatch(rel_path, pat)
+                or fnmatch.fnmatch(path_obj.name, sub_pat)
+                or any(fnmatch.fnmatch(str(p), pat) for p in [path_obj, *path_obj.parents] if str(p) != ".")
+            )
+        else:
+            matched = fnmatch.fnmatch(rel_path, pat)
+        if matched:
+            excluded = not negated
+    return excluded
+
+
+def test_dockerignore_excludes_dotenv_secrets_and_keeps_env_template():
+    """Root and nested .env files must stay out of the Docker build context while docker/env.template remains."""
+    patterns = [
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    for required in (".env", ".env.*", "*.env", "**/.env", "**/.env.*", "**/*.env"):
+        assert required in patterns, f".dockerignore is missing secret exclusion pattern: {required}"
+
+    for secret_path in (
+        ".env",
+        ".env.local",
+        "prod.env",
+        "docker/.env",
+        "docker/.env.prod",
+        "docker/secrets.env",
+    ):
+        assert _dockerignore_excludes(secret_path, patterns), f"Expected .dockerignore to exclude {secret_path}"
+
+    assert not _dockerignore_excludes("docker/env.template", patterns), (
+        "docker/env.template must stay in the Docker build context"
+    )
+
+
+def test_entrypoint_exports_shared_instance_id_before_starting_services():
+    """Ensure Docker three-process launches share one NEKO_INSTANCE_ID for internal CSRF tokens (#4019 P4/R04)."""
+    entrypoint_path = ROOT / "docker" / "entrypoint.sh"
+    script = entrypoint_path.read_text(encoding="utf-8")
+
+    assert "ensure_shared_instance_id" in script
+    assert "tr -d '-" not in script, "tr -d option argument must not begin with a hyphen"
+    start_block = script.split("start_services()", 1)[1].split("\n}\n", 1)[0]
+    ensure_pos = start_block.index("ensure_shared_instance_id")
+    for launch_marker in ("app.memory_server", "app.main_server", "app.agent_server"):
+        launch_pos = start_block.index(launch_marker)
+        assert ensure_pos < launch_pos, (
+            f"entrypoint must export NEKO_INSTANCE_ID before launching {launch_marker}"
+        )
+
+    # Never echo or log the shared instance ID value (it seeds AUTOSTART_CSRF_TOKEN).
+    for line in script.splitlines():
+        if "echo" in line:
+            assert "$NEKO_INSTANCE_ID" not in line and "${NEKO_INSTANCE_ID" not in line, (
+                f"entrypoint must not expand NEKO_INSTANCE_ID in logs: {line}"
+            )
+
+    bash_bin = shutil.which("bash")
+    if not bash_bin:
+        return
+
+    # Extract only ensure_shared_instance_id and run it in a clean env without BASH_ENV.
+    fn_start = script.index("ensure_shared_instance_id()")
+    fn_end = script.index("\n}\n", fn_start) + 3
+    fn_src = script[fn_start:fn_end]
+
+    import os
+    import sys
+
+    probe_env = {k: v for k, v in os.environ.items() if k != "BASH_ENV"}
+
+    probe_generated = subprocess.run(
+        [
+            bash_bin,
+            "-euo",
+            "pipefail",
+            "-c",
+            f'{fn_src}\nunset NEKO_INSTANCE_ID\nensure_shared_instance_id "$1"\n'
+            '"$1" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            "bash",
+            sys.executable,
+        ],
+        env=probe_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    generated_lines = probe_generated.stdout.strip().splitlines()
+    assert len(generated_lines) == 1
+    assert re.fullmatch(r"[0-9a-f]{32}", generated_lines[0]), generated_lines
+
+    probe_preserved = subprocess.run(
+        [
+            bash_bin,
+            "-euo",
+            "pipefail",
+            "-c",
+            f'{fn_src}\nexport NEKO_INSTANCE_ID="custom-shared-id"\n'
+            'ensure_shared_instance_id "$1"\n'
+            '"$1" -c "import os; print(os.environ[\'NEKO_INSTANCE_ID\'])"',
+            "bash",
+            sys.executable,
+        ],
+        env=probe_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe_preserved.stdout.strip() == "custom-shared-id"

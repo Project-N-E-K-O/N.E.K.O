@@ -1,0 +1,43 @@
+import bindingErrors from '../model-binding-errors/ko'
+import type { ModelApiMessages } from './en-US'
+
+const messages: ModelApiMessages = {
+  bindingErrors,
+  title: 'Plugin API', subtitle: '플러그인이 사용할 모델을 관리합니다.',
+  slots: '모델 슬롯', addSlot: '모델 슬롯 추가', editSlot: '모델 슬롯 편집',
+  bindingHint: '여기에서 슬롯을 만든 후 플러그인 설정에서 선언된 용도에 연결하세요.',
+  noSlots: '모델 슬롯이 없습니다. 슬롯을 추가하여 플러그인을 모델에 연결하세요.',
+  name: '슬롯 이름', protocol: 'API 프로토콜', model: '모델 ID', endpoint: 'API 기본 URL',
+  source: '자격 증명 소스', sourceManual: '수동 설정', sourceHost: '본체 API 따르기',
+  sourceHint: '따르기 슬롯은 호출 시 본체의 API 설정을 읽습니다. 본체에서 공급자나 키를 변경하면 자동으로 적용됩니다. 수동 슬롯은 자체 URL과 키를 저장합니다.',
+  hostApiLabel: '본체 API', hostApi: { agent_advanced: '본체 사역마 모델·고급', agent: '본체 사역마 모델·범용', agent_small: '본체 사역마 모델·소형' },
+  hostHint: { agent_advanced: '본체 API 설정 페이지의 ‘사역마 모델·고급’을 따릅니다(따로 설정하지 않으면 사역마 모델·범용과 같습니다). 가장 어려운 작업용이며, 도구 호출과 이미지 입력을 지원해야 합니다.', agent: '본체 API 설정 페이지의 ‘사역마 모델·범용’(사역마, 키보드·마우스 조작, 브라우저가 쓰는 모델)을 따릅니다. 도구 호출과 이미지 입력을 지원해야 합니다.', agent_small: '본체 API 설정 페이지의 ‘사역마 모델·소형’을 따릅니다(따로 설정하지 않으면 인식 모델과 같습니다). 양이 많고 간단한 작업에 알맞으며, 도구 호출을 지원해야 합니다.' },
+  hostManagedHint: 'URL과 자격 증명은 본체 API 설정을 따릅니다.',
+  hostManagedKey: '본체가 관리', hostNotConfigured: '본체 API가 설정되지 않았습니다',
+  hostUnsupported: '따르는 본체 모델이 HTTP 채팅 엔드포인트가 아니어서 플러그인에서 호출할 수 없습니다',
+  endpointHint: "공급자가 요구하는 API 접두 경로를 포함하세요. OpenAI 호환 API는 보통 https://api.example.com/v1처럼 끝에 /v1이 필요하며, 없으면 직접 추가하세요. /chat/completions 또는 /messages는 포함하지 마세요.",
+  key: 'API 키', keySet: '설정됨', keyEmpty: '없음',
+  keyPlaceholder: '키를 입력하세요. 인증이 필요 없으면 비워 두세요',
+  keyEditHint: "저장된 키는 마스킹됩니다. 그대로 두면 유지되고 새 키 입력으로 교체하며 비운 뒤 저장하면 삭제됩니다. 복사 시 마스킹된 텍스트만 복사됩니다.",
+  keyUpdateRequired: '주소 또는 프로토콜이 변경되었습니다. 새 키를 입력하거나 저장된 키 삭제를 선택하세요.',
+  capabilities: '모델 기능', capabilitiesHint: '모델이 지원하는 기능만 선택하세요. 플러그인 용도에 연결할 수 있는지 확인하는 데 사용됩니다.',
+  capability: { text: '텍스트', image_input: '이미지 입력', tool_calling: '함수 도구', streaming: '스트리밍' },
+  maxTokens: '기본 출력 토큰 한도',
+  timeout: '전체 시간 제한', seconds: '{count}초', timeoutHint: '1~300초. 대기 시간과 대체 호출을 포함합니다.',
+  fallback: '대체 슬롯', noFallback: '없음', fallbackHint: '해당되는 상위 API 오류 시 같은 시간 제한 내에서 한 번만 재시도합니다. 응답이 멈춰도 전환할 수 있도록 기본 모델은 시간 제한의 2/3까지만 사용합니다. 동일한 기능을 지원해야 합니다.',
+  usedBy: '사용 중', notBound: '연결된 플러그인 없음', deleteBlocked: '플러그인 연결과 다른 슬롯의 대체 참조를 먼저 해제하세요.',
+  deleteConfirm: '모델 슬롯 “{name}”을(를) 삭제할까요?', test: '연결 테스트',
+  unbind: '연결 해제', unbindConfirm: '{plugin} / {usage}의 모델 연결을 해제할까요? 이 용도에서 모델을 호출하려면 다시 연결해야 합니다.',
+  testHint: '저장된 슬롯으로 짧은 텍스트 요청을 보냅니다. 공급자 요금이 발생할 수 있습니다. 이미지, 도구, 스트리밍 기능은 테스트하지 않습니다.',
+  testSuccess: '텍스트 요청 성공 · {duration}', requiredFields: '슬롯 이름, 모델 ID, API 기본 URL을 입력하세요.',
+  usage: '최근 사용량', pluginFilter: '플러그인 ID로 필터링', allSlots: '모든 모델 슬롯',
+  requests: '요청', attempts: '상위 API 시도', knownTokens: '확인된 토큰 (부분 사용량 포함)',
+  partialUnknown: '부분 / 알 수 없는 사용량', usageHint: '최대 1,000개의 보관된 요청을 집계하며 최근 일치하는 요청 100개를 표시합니다. 누락된 사용량은 0이 아니라 알 수 없음입니다. 행을 펼치면 각 시도를 확인할 수 있습니다.',
+  noUsage: '해당하는 모델 요청이 없습니다.', noAttempt: '상위 API 시도가 시작되지 않았습니다.',
+  time: '시간', consumer: '플러그인 / 용도', slot: '모델 슬롯', result: '결과', duration: '소요 시간',
+  connectionTest: '연결 테스트', tokenCounts: '입력 {input} · 출력 {output} · 합계 {total}',
+  status: { success: '성공', error: '실패', timeout: '시간 초과', cancelled: '취소됨' },
+  usageStatus: { reported: '보고된 사용량', partial: '부분 사용량', unknown: '알 수 없는 사용량' },
+}
+
+export default messages

@@ -202,6 +202,24 @@ def _validate_rebuilt_plan(plan: Mapping[str, object], request: SourceSwitchRequ
         )
 
 
+def _drop_permissions(plugin_id: str) -> None:
+    """Fail-safe after an incomplete rollback: no grants for code that may
+    still be the Market version (dropped as a source change would). Never
+    raises."""
+    from plugin.server.application.plugins.permission_service import (
+        drop_grants_on_source_change,
+    )
+
+    try:
+        drop_grants_on_source_change(plugin_id)
+    except Exception as exc:
+        logger.error(
+            "override rollback could not clear permission grants plugin_id={} err_type={}",
+            plugin_id,
+            type(exc).__name__,
+        )
+
+
 async def _rollback_switch(
     *,
     request: SourceSwitchRequest,
@@ -322,6 +340,21 @@ async def switch_builtin_source(
     _validate_rebuilt_plan(rebuilt_plan, request)
 
     lock_snapshot = await read_lock_snapshot()
+    from plugin.server.application.plugins.permission_service import (
+        bind_permission_source,
+        snapshot_permissions,
+    )
+    from plugin.server.infrastructure.plugin_permissions import PluginSource
+
+    # The rebuilt plan has confirmed the builtin is the current source. A
+    # record without a source yet (e.g. one imported on first use while the
+    # source could not be resolved) is bound to it before anything changes,
+    # so the Market source that follows is a source change, not a first
+    # binding. When that cannot be saved the switch stops here, unchanged.
+    await asyncio.to_thread(bind_permission_source, request.plugin_id, PluginSource("builtin"))
+    # A rollback can put the builtin's grants back after a restart has
+    # reconciled them to the Market source. Never raises.
+    permissions_before = await asyncio.to_thread(snapshot_permissions, request.plugin_id)
     was_running = await is_running(request.plugin_id)
     plugin_promoted = False
     profile_promoted = False
@@ -403,6 +436,21 @@ async def switch_builtin_source(
             stop=stop,
             start=start,
         )
+        # After the rollback restart (which reconciles to the builtin source).
+        # Inspect disk, not intent: the builtin's grants go back only if the
+        # Market code is really gone; otherwise they must not stay with it.
+        if not plugin_promoted or not await asyncio.to_thread(
+            request.target_plugin_dir.exists
+        ):
+            # Unlike replace_plugin, the install source switches inside this
+            # transaction, so a concurrent first-use import may bind grants to
+            # the Market source even while the plugin is stopped: a missing
+            # snapshot always leaves the rollback incomplete.
+            if not await asyncio.to_thread(permissions_before.restore, request.plugin_id):
+                rollback_code = "override_rollback_incomplete"
+        else:
+            rollback_code = "override_rollback_incomplete"
+            await asyncio.to_thread(_drop_permissions, request.plugin_id)
         if isinstance(exc, asyncio.CancelledError):
             raise
         if not isinstance(exc, Exception):

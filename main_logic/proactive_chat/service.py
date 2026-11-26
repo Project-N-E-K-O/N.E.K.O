@@ -221,6 +221,40 @@ _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
 _PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
 
 
+def _proactive_model_config(
+    conversation_config: dict,
+    vision_config: dict | None,
+    vision_provider: str | None = None,
+):
+    """Model settings for one proactive turn, and the image choice behind them.
+
+    Screenshots go to the chat model, or to a retired, separately configured
+    vision model until the release removes it (``utils.legacy_vision``). A chat
+    model known to reject images gets no screenshot.
+    """
+    from utils.legacy_vision import chat_refuses_images, choose_image_model
+
+    image_choice = choose_image_model(conversation_config, vision_config, vision_provider)
+    image_config = image_choice.config
+    if not image_choice.using_legacy and chat_refuses_images(conversation_config):
+        # The chat model rejected a screenshot earlier: talk without one, as
+        # proactive chat did before when no vision model was usable.
+        image_config = {}
+    model_config = ProactiveModelConfig(
+        conversation_model=conversation_config.get("model"),
+        conversation_base_url=conversation_config.get("base_url"),
+        conversation_api_key=conversation_config.get("api_key"),
+        conversation_provider_type=conversation_config.get("provider_type"),
+        vision_model=image_config.get("model", ""),
+        vision_base_url=image_config.get("base_url", ""),
+        vision_api_key=image_config.get("api_key", ""),
+        vision_provider_type=image_config.get("provider_type"),
+        vision_is_custom=bool(image_config.get("is_custom")),
+        image_choice=image_choice,
+    )
+    return image_choice, model_config
+
+
 _PHASE1_FETCH_PER_SOURCE = (
     PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Fixed Phase1 fetch count per source.
 )
@@ -789,6 +823,10 @@ async def handle_proactive_chat(
                     enabled_modes=command.enabled_modes,
                     enabled_modes_provided=command.enabled_modes_provided,
                 ),
+                # The epoch this request started under, like the text path:
+                # a revocation or switch-off during the awaits above (e.g.
+                # the mini-game invite push) must already end its vision.
+                vision_consent_epoch=vision_consent_epoch,
             )
             if delivered:
                 # Chat counter for1h+10 chats cooldown: voice nudge counts as proactive delivery,
@@ -1787,7 +1825,7 @@ async def handle_proactive_chat(
 
         # ========== 4. Fetch LLM configuration ==========
         # Entire proactive pipeline (Phase1 selection /Phase2 generation /regen) uses conversation tier,
-        # not correction: without thinking, correction models struggle to consistently
+        # not the memory (summary) tier: without thinking, those models struggle to consistently
         # put source tag on first line and may output persona-constraint blocks. Conversation
         # main model follows format more reliably. Retain disable_thinking (vision+thinking times out).
         try:
@@ -1800,7 +1838,7 @@ async def handle_proactive_chat(
             conversation_model = conversation_config.get("model")
             conversation_api_key = conversation_config.get("api_key")
 
-            if not conversation_model or not conversation_api_key:
+            if not conversation_model or (not conversation_api_key and conversation_config.get('provider_type') != 'chatgpt'):
                 logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(
                     ProactiveChatResult(
@@ -1814,22 +1852,13 @@ async def handle_proactive_chat(
                     )
                 )
 
-            vision_config = await _config_manager.aget_model_api_config(
-                "vision", core_config=_fresh_core_config
+            image_choice, model_config = _proactive_model_config(
+                conversation_config,
+                await _config_manager.aget_model_api_config(
+                    "vision", core_config=_fresh_core_config
+                ),
+                _fresh_core_config.get("visionModelProvider"),
             )
-            model_config = ProactiveModelConfig(
-                conversation_model=conversation_model,
-                conversation_base_url=conversation_config.get("base_url"),
-                conversation_api_key=conversation_api_key,
-                conversation_provider_type=conversation_config.get("provider_type"),
-                vision_model=vision_config.get("model", ""),
-                vision_base_url=vision_config.get("base_url", ""),
-                vision_api_key=vision_config.get("api_key", ""),
-                vision_provider_type=vision_config.get("provider_type"),
-                vision_is_custom=bool(vision_config.get("is_custom")),
-            )
-            if not model_config.has_vision_model:
-                logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(

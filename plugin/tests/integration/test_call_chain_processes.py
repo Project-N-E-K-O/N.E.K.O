@@ -24,6 +24,8 @@ from plugin.server.messaging.request_router import PluginRouter
 
 pytestmark = pytest.mark.plugin_integration
 
+MEMORY = capability_gate.MEMORY_READ
+PUSH = capability_gate.MESSAGES_PUSH
 FIXTURE = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "plugin_test_call_chain_fixture.py"
 
 
@@ -39,9 +41,13 @@ class World:
         return [e for e in reversed(call_audit.entries()) if all(e.get(k) == v for k, v in match.items())]
 
 
-async def _world(monkeypatch, tmp_path, mode):
-    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", mode)
-    monkeypatch.setenv("NEKO_PLUGIN_CAPABILITY_POLICY", mode)  # the plugin processes read it too
+async def _world(monkeypatch, tmp_path, legacy_policy=None):
+    monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
+    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", legacy_policy)
+    if legacy_policy is None:
+        monkeypatch.delenv("NEKO_PLUGIN_CAPABILITY_POLICY", raising=False)
+    else:  # the plugin processes see it too
+        monkeypatch.setenv("NEKO_PLUGIN_CAPABILITY_POLICY", legacy_policy)
     grants: dict[str, set[str]] = {}
     monkeypatch.setattr(capability_gate, "registry", CallRegistry())
     monkeypatch.setattr(capability_gate, "_last_written", {})
@@ -87,7 +93,7 @@ async def _world(monkeypatch, tmp_path, mode):
 
 @pytest.fixture
 async def world(monkeypatch, tmp_path):
-    router, world = await _world(monkeypatch, tmp_path, "observe")
+    router, world = await _world(monkeypatch, tmp_path)
     try:
         yield world
     finally:
@@ -100,29 +106,29 @@ async def world(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("entry", ["chain", "routed_chain", "dynamic_chain"])
 async def test_every_entry_kind_sees_the_host_chain(world, entry):
-    world.grants["chain_a"] = {"memory.read"}
+    world.grants["chain_a"] = {MEMORY}
     view = await world.run("chain_a", entry, ref="run-7")
     assert view["callers"] == [] and view["hops"] == [["chain_a", "plugin_entry", entry]]
     assert view["origin"] == ["run", "run-7"]
-    assert view["rights_known"] is True and view["rights"] == ["memory.read"]
+    assert view["rights_known"] is True and view["rights"] == sorted([MEMORY, "memory.read"])
     assert len(capability_gate.registry) == 0  # removed once it ended
     (forward,) = world.entries(kind="forward")
     assert (forward["target"], forward["origin_kind"], forward["result"]) == ("chain_a", "run", "ok")
 
 
 async def test_cross_plugin_call_extends_the_chain(world):
-    world.grants.update({"chain_a": {"memory.read", "messages.push"}, "chain_b": {"memory.read"}})
+    world.grants.update({"chain_a": {MEMORY, PUSH}, "chain_b": {MEMORY}})
     view = (await world.run("chain_b", "call", {"target": "chain_a:chain"}, ref="run-9"))["value"]
     assert view["callers"] == ["chain_b"]
     assert view["hops"] == [["chain_b", "plugin_entry", "call"], ["chain_a", "plugin_entry", "chain"]]
-    assert view["origin"] == ["run", "run-9"] and view["rights"] == ["memory.read"]
+    assert view["origin"] == ["run", "run-9"] and view["rights"] == sorted([MEMORY, "memory.read"])
     to_a = world.entries(kind="forward", target="chain_a")[0]
     assert to_a["caller"] == "chain_b" and to_a["trace_id"] == view["trace_id"]
 
 
 async def test_laundering_is_recorded_as_would_deny_and_not_blocked(world):
     # A has memory.read, B does not; B calls A and A reads memory.
-    world.grants.update({"chain_a": {"memory.read"}})
+    world.grants.update({"chain_a": {MEMORY}})
     reply = await world.run("chain_b", "call", {"target": "chain_a:read_memory"})
     assert reply == {"ok": True, "value": "SENTINEL-RESULT"}
     (decision,) = world.entries(kind="decision")
@@ -135,14 +141,14 @@ async def test_self_not_approved_and_allowed_aggregation(world):
     await world.run("chain_a", "read_memory")
     (decision,) = world.entries(kind="decision")
     assert (decision["reason"], decision["chain"]) == ("self_not_approved", ["chain_a"])
-    world.grants["chain_a"] = {"memory.read"}
+    world.grants["chain_a"] = {MEMORY}
     await world.run("chain_a", "read_memory")
     (summary,) = world.entries(kind="allow_summary")
-    assert summary["counts"] == {"memory.read": 1}
+    assert summary["counts"] == {MEMORY: 1}
 
 
 async def test_message_push_is_judged_and_reaches_the_plane_unchanged(world):
-    world.grants["chain_a"] = {"messages.push"}
+    world.grants["chain_a"] = {PUSH}
     assert (await world.run("chain_b", "call", {"target": "chain_a:push"}))["value"] is True
     async with asyncio.timeout(3):
         while not world.forwarded:
@@ -155,7 +161,7 @@ async def test_message_push_is_judged_and_reaches_the_plane_unchanged(world):
 async def test_push_routed_after_the_result_keeps_its_chain(world, monkeypatch):
     # Results and pushes ride separate uplinks; hold the push until the call
     # has returned and its record was removed.
-    world.grants["chain_a"] = {"messages.push"}
+    world.grants["chain_a"] = {PUSH}
     release = asyncio.Event()
     route = PluginCommunicationResourceManager._route_message
 
@@ -186,7 +192,7 @@ async def test_unattributed_and_possible_laundering(world):
 
 
 async def test_forged_parent_and_ctx_neither_borrow_nor_drag_in(world):
-    world.grants.update({"chain_a": {"memory.read"}, "chain_b": {"memory.read"}})
+    world.grants.update({"chain_a": {MEMORY}, "chain_b": {MEMORY}})
     held = asyncio.create_task(world.run("chain_a", "hold"))
     async with asyncio.timeout(3):
         while len(capability_gate.registry) == 0:
@@ -223,25 +229,29 @@ async def test_audit_holds_no_arguments_results_bodies_or_error_text(world):
         assert sentinel not in written and sentinel not in ring
 
 
-async def test_off_registers_nothing_and_keeps_the_wire_unchanged(monkeypatch, tmp_path):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("called with the policy off")
-
+async def test_switch_on_still_registers_judges_and_records(monkeypatch, tmp_path):
+    # The deprecated variable set to "off" turns the master switch on: every
+    # use is still attributed, judged and recorded, and nothing is refused.
     router, world = await _world(monkeypatch, tmp_path, "off")
-    for name in ("begin_call", "end_call", "link_for_plugin_call", "granted_capabilities"):
-        monkeypatch.setattr(capability_gate, name, forbidden)
-    monkeypatch.setattr(capability_gate.registry, "lookup", forbidden)
-    monkeypatch.setattr(call_audit, "record", forbidden)
     try:
-        view = await world.run("chain_a", "chain")
-        assert view["rights_known"] is False and view["origin"][0] == "plugin_self"
-        assert (await world.run("chain_b", "call", {"target": "chain_a:read_memory"}))["ok"] is True
-        await world.run("chain_a", "push")
+        view = await world.run("chain_a", "chain", ref="run-3")
+        assert view["rights_known"] is True and view["origin"] == ["run", "run-3"]
+        reply = await world.run("chain_b", "call", {"target": "chain_a:read_memory"})
+        assert reply == {"ok": True, "value": "SENTINEL-RESULT"}
+        await world.run("chain_b", "call", {"target": "chain_a:push"})
         async with asyncio.timeout(3):
             while not world.forwarded:
                 await asyncio.sleep(0.01)
         assert "_rpc_parent_request_id" not in world.forwarded[0]
+        decisions = {d["operation"]: d for d in world.entries(kind="decision")}
+        assert set(decisions) == {"MEMORY_QUERY", "MESSAGE_PUSH"}
+        for decision in decisions.values():
+            assert decision["mode"] == "observe" and decision["verdict"] == "would_deny"
+            # The push carried its parent id, so it is attributed to the caller's chain.
+            assert decision["chain"] == ["chain_b", "chain_a"]
     finally:
         await router.stop()
         for host in world.hosts.values():
             await host.shutdown(timeout=1)
+        call_audit.close()
+        call_audit.reopen()

@@ -19,6 +19,8 @@ AI builders for soccer and badminton.
 Split out of the former monolithic ``main_routers/game_router.py``.
 """
 
+from urllib.parse import quote
+
 from ._shared import (
     _is_repeated_neko_invite,
     _log_game_debug_material,
@@ -30,6 +32,7 @@ from .badminton_scores import _normalize_badminton_mode
 from .balance import _SOCCER_EMOTION_INERTIA
 from .char_info import _get_character_info
 from .game_context import _normalize_text_items
+from config.prompts.prompts_soccer import get_soccer_opening_line_max_chars
 from main_logic.mini_game_sdk import (
     StructuredOutputAttemptsExhausted,
     StructuredOutputContentError,
@@ -104,6 +107,7 @@ def _normalize_soccer_pregame_context(
     value: Any,
     *,
     neko_invite_text: str = "",
+    prompt_locale: str | None = None,
     validation_issues: list[dict[str, Any]] | None = None,
 ) -> tuple[dict, bool]:
     """Normalize model output. Returns (context, had_invalid_fields)."""
@@ -193,8 +197,9 @@ def _normalize_soccer_pregame_context(
 
     if "openingLine" in value:
         opening_line = _normalize_short_text(value.get("openingLine"), max_chars=0)
-        if len(opening_line) > 15:
-            mark_invalid("openingLine", "too_long", actual_length=len(opening_line), maximum=15)
+        max_chars = get_soccer_opening_line_max_chars(opening_line, locale=prompt_locale)
+        if len(opening_line) > max_chars:
+            mark_invalid("openingLine", "too_long", actual_length=len(opening_line), maximum=max_chars)
             opening_line = ""
         if opening_line and _is_repeated_neko_invite(opening_line, neko_invite_text):
             opening_line = ""
@@ -427,7 +432,7 @@ async def _fetch_recent_history_for_pregame(
 
         client = get_internal_http_client()
         response = await client.get(
-            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{lanlan_name}",
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{quote(str(lanlan_name or ''), safe='')}",
             params={"language": language} if language else None,
             timeout=5.0,
         )
@@ -630,6 +635,7 @@ async def _build_soccer_pregame_context(
         context, _ = _normalize_soccer_pregame_context(
             raw_context,
             neko_invite_text=neko_invite_text,
+            prompt_locale=effective_prompt_locale,
             validation_issues=validation_issues,
         )
         return context, validation_issues

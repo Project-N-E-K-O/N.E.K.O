@@ -381,8 +381,8 @@ async def test_registration_transport_preserves_explicit_opt_in(monkeypatch, opt
 
     manager = SimpleNamespace(lanlan_name="Cat", tool_registry=ToolRegistry())
 
-    async def register_tool(definition, *, replace=False):
-        manager.tool_registry.register(definition)
+    async def register_tool(definition, *, replace=False, owner_check=None):
+        manager.tool_registry.register(definition, owner_check=owner_check)
         return True
 
     manager.register_tool_and_sync = register_tool

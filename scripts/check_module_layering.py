@@ -27,7 +27,7 @@ stays acyclic). The hierarchy:
     L2  knowledge, memory, main_logic, services
     L3  main_routers
     L4  plugin                                ← high-level extension surface
-    L5  nekoclaw                              ← top-of-stack agent orchestration
+    L5  nekopower                              ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
@@ -64,8 +64,10 @@ the same as a module-top one.
 
 A new top-level package fails the gate until it is placed in ``LAYERS``.
 Its files are listed with ``git ls-files`` so untracked local scratch
-directories never trip the check; without git (e.g. an exported source
-tree) the filesystem is walked instead.
+directories never trip the check. The filesystem is walked instead when the
+repository root is not the top of a git work tree (an exported source tree,
+one unpacked inside another checkout, a bare repository) or git is missing
+or fails.
 
 Suppression
 -----------
@@ -91,6 +93,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -112,7 +115,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
 # used by main_logic, main_routers and app. ``services/theater_workshop`` is
 # the source-only author host, separate from the theater runtime. ``launcher_core``
-# is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
+# is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
 # and sits at the top of the stack.
 
@@ -122,7 +125,7 @@ LAYERS: List[Tuple[int, Set[str]]] = [
     (2, {"knowledge", "memory", "main_logic", "services"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
-    (5, {"nekoclaw"}),
+    (5, {"nekopower"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
@@ -174,7 +177,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     # it to config and utils, so the child stays small and never touches
     # another subsystem's data.
     *(
-        ("nekoclaw/runtime/", package, "the agent runtime uses only config and utils")
+        ("nekopower/runtime/", package, "the agent runtime uses only config and utils")
         for package in (
             "steamworks",
             "knowledge",
@@ -187,10 +190,10 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     # The built-in tools (keyboard and mouse, browser) drive the desktop and
     # a browser and nothing of the application: like the runtime they stay
-    # with config and utils (plus the types of ``nekoclaw.host.capabilities``
+    # with config and utils (plus the types of ``nekopower.host.capabilities``
     # they are handed to the host in, which the layering allows).
     *(
-        ("nekoclaw/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
+        ("nekopower/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
         for package in (
             "steamworks",
             "knowledge",
@@ -201,18 +204,21 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "plugin",
         )
     ),
-    # The NekoClaw host (task brain, task agents, gateway) reaches plugins over
-    # HTTP and needs ``plugin.settings`` only. Its task preferences stay apart
-    # from every memory: neither reads or writes the other.
+    # The NekoPower host (task brain, task agents, gateway) reaches plugins over
+    # HTTP. Of the plugin package it reads ``plugin.settings`` and, for the
+    # model each preset's sessions are sent to, the slots of the model panel
+    # (``plugin.server.infrastructure.model_slot_resolver``, which needs no
+    # plugin server running). Its task preferences stay apart from every
+    # memory: neither reads or writes the other.
     *(
-        ("nekoclaw/host/", package, reason)
+        ("nekopower/host/", package, reason)
         for package, reason in (
             ("memory", "task preferences and persona memory never read or write each other"),
-            ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
-            ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),
-            ("main_routers", "the NekoClaw host reaches the main dialogue through its outbox only"),
-            ("services", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
-            ("steamworks", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("knowledge", "the NekoPower host keeps apart from the knowledge subsystem"),
+            ("main_logic", "the NekoPower host reaches the main dialogue through its outbox only"),
+            ("main_routers", "the NekoPower host reaches the main dialogue through its outbox only"),
+            ("services", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
+            ("steamworks", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
         )
     ),
 ]
@@ -223,10 +229,10 @@ def find_forbidden_edges(edges: List["EdgeRecord"]) -> List[Tuple["EdgeRecord", 
     found: list[tuple[EdgeRecord, str]] = []
     for edge in edges:
         path, _, _, _, dst, _ = edge
-        try:
-            rel = path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
+        rel_path = _relative_to_root(path, None)
+        if rel_path is None:
             continue
+        rel = rel_path.as_posix()
         for prefix, forbidden, reason in FORBIDDEN_EDGES:
             if dst == forbidden and rel.startswith(prefix):
                 found.append((edge, reason))
@@ -278,10 +284,10 @@ def package_of_file(path: Path) -> Optional[str]:
     """Return the top-level package owning ``path``, or ``None`` if outside
     the layering scope (and therefore not subject to the rules).
     """
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
+    rel_path = _relative_to_root(path, None)
+    if rel_path is None:
         return None
+    rel = rel_path.as_posix()
     # Top-level launcher.py is its own "package" so we can place it in L6.
     if rel == "launcher.py":
         return "launcher"
@@ -419,24 +425,38 @@ def _is_excluded_rel(rel: str) -> bool:
     return False
 
 
-def _is_excluded(path: Path) -> bool:
-    if set(path.parts) & EXCLUDE_DIRS:
-        return True
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        rel = path.as_posix()
+def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
+    for root in (REPO_ROOT, scan_root):
+        if root is None:
+            continue
+        try:
+            rel = path.relative_to(root)
+            if ".." not in rel.parts:
+                return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except ValueError:
+            pass
+        try:
+            rel = path.resolve().relative_to(root.resolve())
+            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except (ValueError, OSError, RuntimeError):
+            pass
+    return None
+
+
+def _is_excluded(path: Path, scan_root: Path | None = None) -> bool:
+    rel_path = _relative_to_root(path, scan_root)
+    rel = rel_path.as_posix() if rel_path is not None else path.as_posix()
     return _is_excluded_rel(rel)
 
 
 def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
     for p in paths:
         if p.is_file():
-            if p.suffix == ".py" and not _is_excluded(p):
+            if p.suffix == ".py" and not _is_excluded(p, scan_root=p):
                 yield p
         elif p.is_dir():
             for f in sorted(p.rglob("*.py")):
-                if not _is_excluded(f):
+                if not _is_excluded(f, scan_root=p):
                     yield f
 
 
@@ -458,42 +478,65 @@ def _parse_file(path: Path) -> ast.Module | None:
 # ---------------------------------------------------------------------------
 
 
+# Variables that point git at a repository other than the one ``cwd`` is in;
+# they are set inside git hooks, for example. Dropped for the calls below even
+# when they point at this repository: a checkout whose git directory is found
+# only through them is then walked as plain folders (untracked folders may be
+# reported; nothing is missed). The same list is in
+# scripts/check_no_temperature.py; change both together.
+GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_PREFIX",
+    }
+)
+
+
+def _git_env() -> Dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_VARS}
+
+
 def _tracked_python_files(root: Path) -> Optional[List[str]]:
     """Return the ``root``-relative POSIX paths of the .py files git tracks
     under ``root``, or ``None`` when git is missing or ``root`` is not the top
     of its own work tree.
     """
-    # An exported tree unpacked inside some other checkout would otherwise get
-    # that outer repository's (empty) listing and silently skip the check.
+    # Output is read as bytes: git prints paths as UTF-8, whatever the locale.
+    env = _git_env()
     try:
-        toplevel = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+        # Exactly "true" and an empty line at the top of a work tree, so the
+        # checkout's own path is never decoded or compared. A subfolder adds
+        # "../" (an exported tree unpacked inside some other checkout would
+        # otherwise get that outer repository's empty listing); a bare
+        # repository or a ``.git`` folder prints "false", where ls-files would
+        # still list an index that does not describe the files there.
+        top = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if toplevel.returncode != 0:
-        return None
-    top = toplevel.stdout.decode("utf-8", errors="surrogateescape").strip()
-    if not top or Path(top).resolve() != root.resolve():
-        return None
-    try:
+        if top.returncode != 0 or top.stdout.split() != [b"true"]:
+            return None
+        # No pathspec: GIT_LITERAL_PATHSPECS / GIT_GLOB_PATHSPECS would change
+        # what one matches. Python picks the .py files instead.
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.py"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=60,
-            check=False,
+            ["git", "ls-files", "-z"],
+            cwd=str(root), env=env, capture_output=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    output = result.stdout.decode("utf-8", errors="surrogateescape")
-    return [rel for rel in output.split("\0") if rel]
+    return [
+        raw.decode("utf-8", errors="surrogateescape")
+        for raw in result.stdout.split(b"\0")
+        if raw.endswith(b".py")
+    ]
 
 
 def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, str]]:
@@ -502,8 +545,8 @@ def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, s
 
     Dot-directories, ``UNLAYERED_TOP_LEVEL`` and anything ``EXCLUDE_DIRS``
     skips are ignored. Files come from ``git ls-files`` so untracked local
-    scratch directories cannot fail the gate; when git is unavailable the
-    filesystem is walked instead.
+    scratch directories cannot fail the gate; when ``_tracked_python_files``
+    cannot list them, the filesystem is walked instead.
     """
 
     def is_candidate(name: str) -> bool:
@@ -736,10 +779,10 @@ def _strongly_connected_components(
 
 
 def _format_path(path: Path) -> str:
-    try:
-        return path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        return str(path)
+    rel_path = _relative_to_root(path, None)
+    if rel_path is not None:
+        return rel_path.as_posix()
+    return str(path)
 
 
 def main(argv: list[str] | None = None) -> int:

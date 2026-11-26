@@ -44,7 +44,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
-from config.prompts.prompts_sys import get_context_summary_ready
+from config.prompts.prompts_sys import get_context_summary_ready, normalize_sys_prompt_locale
 from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.game_route_state import get_active_game_route_generation_identity
@@ -1479,7 +1479,7 @@ class LifecycleMixin:
             'vision', core_config=core_config_snapshot
         )).get('model', '')
         self._check_start_operation()
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, legacy_vision_model={_vision_model}, voice_id={self.voice_id}")
         logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - diag_start:.2f}秒)")
         return realtime_config, core_config_snapshot
 
@@ -1660,21 +1660,31 @@ class LifecycleMixin:
         *,
         conversation_config: dict,
         vision_config: dict,
+        vision_provider: str | None = None,
         tool_definitions: list,
         max_response_length: int,
         external_tts_enabled: bool,
     ) -> OmniOfflineClient:
-        """Build the shared Offline/VLM client used by starts and promotions."""
+        """Build the shared Offline/VLM client used by starts and promotions.
 
+        Images go to the chat model. ``vision_config`` reaches the client only
+        when it is a separate route (a retired vision slot the user filled in);
+        images then keep going there until the release removes the slot.
+        """
+        from utils.legacy_vision import choose_image_model
+
+        image_choice = choose_image_model(conversation_config, vision_config, vision_provider)
+        legacy_vision = image_choice.legacy or {}
         session = OmniOfflineClient(
             base_url=conversation_config['base_url'],
             api_key=conversation_config['api_key'],
             model=conversation_config['model'],
-            vision_model=vision_config['model'],
-            vision_base_url=vision_config['base_url'],
-            vision_api_key=vision_config['api_key'],
+            vision_model=legacy_vision.get('model', ''),
+            vision_base_url=legacy_vision.get('base_url', ''),
+            vision_api_key=legacy_vision.get('api_key', ''),
             provider_type=conversation_config.get('provider_type'),
-            vision_provider_type=vision_config.get('provider_type'),
+            vision_provider_type=legacy_vision.get('provider_type'),
+            image_choice=image_choice,
             on_text_delta=self.handle_text_data,
             on_input_transcript=self.handle_text_input_transcript,
             on_output_transcript=self.handle_output_transcript,
@@ -1699,6 +1709,8 @@ class LifecycleMixin:
         session.on_response_displaced = self._close_displaced_offline_turn
         session.on_idle = self._on_offline_session_idle
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # Open the TTS socket while the model is still producing its first text.
+        session.on_response_start = self.request_tts_preconnect
         # Match both realtime construction sites: bind the handle to this client itself, rather than
         # construction-time self.session. Before promotion, a handoff candidate is neither
         # self.session nor pending_session and _sync_tools_to_active_session
@@ -1740,6 +1752,7 @@ class LifecycleMixin:
         candidate = self._create_offline_vlm_client(
             conversation_config=conversation_config,
             vision_config=vision_config,
+            vision_provider=core_config.get('visionModelProvider'),
             tool_definitions=self.tool_registry.all(),
             max_response_length=self._get_text_guard_max_length(),
             external_tts_enabled=not core_config.get('DISABLE_TTS', False),
@@ -2295,7 +2308,7 @@ class LifecycleMixin:
         # loser A returns and releases its guard in finally; third contender C snapshots B,
         # then passes reflexive B==B CAS and overwrites B, creating another orphan.
         guard_max_length = self._get_text_guard_max_length()
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang = normalize_sys_prompt_locale(self.user_language)
         initial_prompt = await self._build_initial_prompt()
         self._check_start_operation()
         next_session_context_messages = self._snapshot_next_session_context_messages()
@@ -2391,6 +2404,7 @@ class LifecycleMixin:
             new_session = self._create_offline_vlm_client(
                 conversation_config=conversation_config,
                 vision_config=vision_config,
+                vision_provider=_fresh_core_config.get('visionModelProvider'),
                 tool_definitions=_initial_tool_defs,
                 max_response_length=guard_max_length,
                 external_tts_enabled=(
@@ -2732,6 +2746,7 @@ class LifecycleMixin:
                 self.pending_session = self._create_offline_vlm_client(
                     conversation_config=conversation_config,
                     vision_config=vision_config,
+                    vision_provider=_fresh_core_config.get('visionModelProvider'),
                     tool_definitions=_pending_tool_defs,
                     max_response_length=guard_max_length,
                     external_tts_enabled=(
@@ -3384,7 +3399,7 @@ class LifecycleMixin:
             )
             # If extra hints need injection, instruct the model to ignore the previous message and include all hints in the next response to the user.
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
-                _lang = normalize_language_code(self.user_language, format='short')
+                _lang = normalize_sys_prompt_locale(self.user_language)
                 from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
                 # Budget-aware selection (mirror of the text-mode drain): render
                 # only what fits, keep the rest for the next hot-swap rather than
@@ -3476,7 +3491,7 @@ class LifecycleMixin:
                 # without restoration code. Over-budget _deferred waits for next pass.
                 _prime_selected_extras = _selected
             else:
-                _lang = normalize_language_code(self.user_language, format='short')
+                _lang = normalize_sys_prompt_locale(self.user_language)
                 # Match main-session construction: hot swap also runs in text mode,
                 # as the self.input_mode == 'text' pending branch below shows.
                 final_prime_text += get_context_summary_ready(

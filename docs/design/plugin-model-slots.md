@@ -50,15 +50,123 @@ Existing plugins without declarations continue to work.
 
 ## Storage and management API
 
-The version-1 document contains `slots` keyed by host-generated stable IDs and
-`bindings` keyed by plugin ID, then usage ID. Each binding points to one slot ID.
-A slot contains `name`, `protocol` (`openai_chat` or `anthropic_messages`),
+The version-1 document contains `slots` keyed by host-generated stable IDs,
+`bindings` keyed by plugin ID, then usage ID, and a `seed_version` recording
+which default-slot seeding generation has been applied. Each binding points to one slot ID.
+A slot contains `name`, `source`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
-an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
-0–2 for OpenAI Chat), including on protocol changes. Defaults currently accept `temperature` and
-`max_output_tokens` (1–1,000,000, matching the request limit). These fields
+an optional `fallback_slot_id`. Defaults hold only `max_output_tokens`
+(1–1,000,000, matching the request limit). There is no default temperature: plugin
+model requests carry none (`scripts/check_no_temperature.py`).
+A `temperature` in a saved document or a save request from an older plugin
+manager is dropped with a warning instead of failing validation, and the next
+save removes it from the document. These fields
 configure subsequent execution; saving does not make a model request or prove
 provider capabilities.
+
+### Host-follow slots
+
+`source` is `manual` (the default, preserving existing documents) or
+`host_follow`. A host-follow slot sets `host_api` to a main-app model tier
+and stores no `base_url`, `model` or `api_key`; those belong to the main app's
+`core_config.json`. The followable tiers are the table `HOST_API_MODEL_TYPES`
+in `plugin/server/domain/model_config.py`. Plugins and task agents are one
+thing in the main app, so plugins draw only on the familiar tiers: today
+`agent_advanced` (the advanced familiar model, which is the general familiar
+model unless the user configures it separately), `agent` (the general
+familiar model that task agents, keyboard-and-mouse control and the browser
+use) and `agent_small` (the small familiar model, which is the main app's
+recognition (small) model unless the user configures it separately). A further tier is one more
+row there plus the `HostApi` literal, and on the panel side the
+`HostApiSource` type (`frontend/plugin-manager/src/types/model-api.ts`), the
+option in `ModelApi.vue` and the `hostApi` / `hostHint` strings in all eight
+languages (`frontend/plugin-manager/src/i18n/model-api/<locale>.ts`). The chat, memory and voice tiers stay the main app's
+own and are not followable. Each value is the `model_type` passed to
+`get_model_api_config`. At
+call time the gateway resolves the slot through `get_model_api_config` and
+materializes an executable snapshot, so main-app provider, key and custom-API
+changes apply to the next request without notification hooks. Anthropic
+providers resolve to the `anthropic_messages` protocol automatically.
+
+A host-follow OpenAI-protocol request is shaped the way the main app sends
+the same task agent model (`adapt_host_follow_request` in
+`plugin/server/infrastructure/host_model_slots.py`, mirroring
+`nekopower/dsh/forward.py:prepare_request`): the output budget moves to the
+field the endpoint honours (`config.providers.get_token_limit_field`, e.g.
+`max_tokens` for DeepSeek and GLM, value unchanged); the task agent
+`extra_body` (`get_agent_extra_body` + `rewrite_router_reasoning`, e.g.
+thinking off) is merged in without overriding any field the request already
+carries, and its tool fields (`tools`, `tool_choice`, ...; e.g. step-2-mini's
+built-in web_search) are never injected, so tool use stays the plugin's
+decision and the `tool_calling` capability check holds; and provider cache headers from `get_cache_kwargs` are added. The
+stream_options retry re-derives the same request. Manual slots and the
+Messages protocol are sent unadapted.
+
+An unconfigured main-app tier returns `host_api_not_configured` (409); a
+followed tier whose address is not HTTP(S) returns `host_api_unsupported`
+(409) rather than silently substituting another tier. A temperature in the
+followed tier's provider settings is never merged into the request. Slot views include a read-only `host_status` summary (configured
+flag, resolved model, protocol, free-tier flag, or an error code with an
+actionable message) that never contains credentials. Connection tests resolve
+host-follow slots the same way.
+
+A host-follow fallback slot stays unresolved until a fallback actually runs,
+so an unusable backup (for example an unconfigured tier) cannot reject a healthy
+primary. Fallback resolution errors are final and never cascade further.
+
+When an attempt resolves to the built-in free credentials (`free-access`), it
+consumes one unit of the shared free daily quota with source
+`plugin:<plugin_id>:<usage_id>` immediately before each upstream send —
+primary attempts, host-follow fallback attempts, internal stream re-sends and
+connection-test probes alike, each judged on the exact credential snapshot it
+will send, whatever the slot's source (a manual slot holding a copied free
+key is metered too). The reservation runs only after the request passed validation, so a
+locally rejected request (HTTP 400, no upstream send) consumes nothing. Exhaustion
+returns `agent_quota_exceeded` (429); because the attempt was rejected before
+any content reached the plugin, a configured fallback slot (for example the
+user's paid manual slot) still serves the call. This metering is independent
+of which Agent model the main app uses: a paid Agent model does not exempt
+free-tier plugin calls. Any other key, whether in a manual slot or a paid
+main-app API, is never metered.
+
+After a committed install, `notify_install_committed` binds still-unbound
+declared usages to the shared host-follow familiar slot (reused across
+plugins) on a background thread, never on the event
+loop. Only usages the user has never bound or unbound are auto-bound: a
+recorded binding version marks prior user intent, so an explicit unbind
+survives updates and reinstalls. Existing bindings are never overwritten;
+usages the shared slot cannot serve stay unbound for explicit user choice.
+Auto-bind failures only log a warning and never fail the install. Note that a
+freshly installed plugin can therefore call the main app's familiar model —
+including a paid user key, which is not metered — without further setup;
+unbinding a usage in the manager opts it out permanently.
+
+One default host-follow slot — "Familiar model" (`agent`, `text` +
+`streaming` + `tool_calling` + `image_input`) — is seeded so the panel is
+usable without
+manual setup. Seeding runs best-effort at plugin-server startup and lazily on
+the first slot list or install commit, under the store's write transaction;
+during a read-only maintenance window the list still serves the existing
+document and seeding retries later. Seed IDs are deterministic and the
+document records a `seed_version`, so seeding happens exactly once: a deleted
+default is never resurrected — including by a later install's auto-bind — and
+a tier the user already covers with their own host-follow slot is not
+duplicated.
+
+### In-process resolution
+
+Callers outside the plugin server (the NekoPower host in the agent process)
+use `plugin/server/infrastructure/model_slot_resolver.py`: it reads the same
+`plugin_models.json` and resolves host-follow slots with the gateway's code,
+so it works whether or not the plugin server runs, and it never writes.
+`list_model_slots()` returns every slot without endpoint or credential (name,
+source, followed tier, capabilities, and what it resolves to right now or an
+`error_code`). `resolve_model_slot(slot_id, require=...)` returns endpoint,
+model, protocol, capabilities, required client headers, whether the credential
+is the built-in free one, and the credential (kept out of `repr`). Failures
+raise `ModelSlotUnavailable` with `slot_not_found`, `model_config_unreadable`,
+`host_api_not_configured`, `host_api_unsupported` or `capability_missing`.
+Both read files synchronously; async callers use a worker thread.
 
 All endpoints are served by the plugin HTTP app under `/api/model-config` and
 use its existing management access policy.
@@ -153,7 +261,10 @@ subsequent tool round. Images are not downloaded, resized or converted to text.
 The accepted request fields are `model`, `messages`, `stream`, `stream_options`
 (`include_usage`), `tools`, `tool_choice`, `parallel_tool_calls`, `max_tokens`,
 `max_completion_tokens`, `temperature`, `top_p`, `stop`, `n` (only 1), and
-`response_format`. Explicit request values override slot defaults. An omitted
+`response_format`. A `temperature` is accepted whatever its value so plugins
+written for the earlier gateway keep working, then dropped before the request
+is sent; the gateway logs a warning once per plugin usage per process, and the
+provider default applies. Explicit request values override slot defaults. An omitted
 output budget defaults to 1024 tokens. Unknown fields, unsupported modalities,
 unmatched tool results and missing declared slot capabilities are rejected.
 
@@ -162,7 +273,7 @@ response/chunk extensions without claiming that they work across providers.
 The Anthropic adapter converts to native Messages and maps text, tool calls,
 finish reasons and usage back. Anthropic-specific reasoning and citations are
 not exposed. Message names, non-auto image detail, strict function schemas,
-non-text `response_format` and temperature above 1 have no supported mapping and
+and non-text `response_format` have no supported mapping and
 are explicitly rejected for that backend. OpenAI JSON output is passed through
 only when the selected upstream model supports it.
 

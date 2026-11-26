@@ -1530,6 +1530,7 @@
 
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail;
+        if (detail && detail.source === 'cat1-playground') return;
         // 只有真正发生位移（超过点击阈值）才清除贴边探身锚点：无移动的普通点击
         // 也会先经过 mousedown 的 drag-start，若在这里清掉，return 时锚点已为空，
         // 贴边探身态将无法恢复。drag-active 表示用户确实在拖 return-ball，
@@ -1559,7 +1560,9 @@
             });
         }
         I.scheduleIdleReturnBallDesktopBridge(
-            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+            detail.source === 'return-ball-drag-demotion' || detail.source === 'cat-sleep-wake-demotion'
+                ? detail.source
+                : 'visual-tier'
         );
     });
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {

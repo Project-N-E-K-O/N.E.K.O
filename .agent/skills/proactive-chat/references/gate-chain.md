@@ -4,6 +4,8 @@
 
 ## 入口闸（还没占位）
 
+路由层（`main_routers/system_router/proactive_chat_flow.py`）在进服务层之前还有两道兜底：本机会话非活动（熄屏、锁屏、睡眠，或刚从这些状态回来 60 秒内，见 `main_logic/activity/system_presence.py`，只在 Windows、请求来自本机时生效）→ `PASS_SYSTEM_INACTIVE`；小剧场演绎中 → `PASS_ROUTE_ACTIVE`。`PASS_SYSTEM_INACTIVE` 前端不计入退避和语音「连续无回复」。这道闸只有亲眼见过一次亮屏和未锁之后才会拦，任何出错都放行。它排在服务层所有入口闸（包括角色不存在的 404、告别静默的 `PASS_DISABLED`）之前，所以非活动期间这些请求统一返回 `PASS_SYSTEM_INACTIVE`；排查「为什么没说话」时先看它。前端收到它后，下一轮至少等 `max(基础间隔, 60 秒)` 再试。语音通话进行中的请求（前端在发送时按 `isRecording` 带 `voice_session_active: true`）只受锁屏和睡眠约束，不受熄屏和回来后 60 秒安静期约束：Windows 只按键鼠输入计时熄屏，纯语音聊天的人仍在麦克风前。
+
 | 顺序 | 闸 | 含义 | 结果 |
 |---|---|---|---|
 | 1 | `_decide_manager_entry_guard` | 角色不存在；或会话处于告别后的静默（`is_goodbye_silent`） | 404 / `PASS_DISABLED` |
@@ -83,6 +85,6 @@
 
 - 来源：读用户情绪的小模型调用顺带输出（`config/prompts/prompts_emotion.py`），0 到 1。语义是「这一轮多大程度上需要外部能力」：明确要求对外操作，或者需要外部、实时、超出已知范围的信息才能回答（只限这类疑问句，普通常识问题不算）。纯推理就能解的难题归 `complexity`，这里取低。改这段提示词要八种语言一起改，并且别把范围放宽到一般疑问句。
 - 读取：`main_logic/activity/master_emotion.py::gate_signal_for` 返回 `max(external_intent, complexity)`，并且只在这份读数确实来自本轮这句用户文本时才返回；读数过期、文本对不上、带附件的轮都返回 `None`。
-- 消费：`nekoclaw/host/decision.py::looks_like_a_task`。信号是 `None` 一律放行；只有信号已知且低于 `TURN_CHECK_INTENT_THRESHOLD`、用户的话里又没有命中任何插件关键词时，才省掉这次检查。
+- 消费：`nekopower/host/decision.py::looks_like_a_task`。信号是 `None` 一律放行；只有信号已知且低于 `TURN_CHECK_INTENT_THRESHOLD`、用户的话里又没有命中任何插件关键词时，才省掉这次检查。
 
 ⚠️ 这个信号只能用来省调用，不能变成会挡住请求的条件。任何读不到、对不上的情况都必须落到「放行」。

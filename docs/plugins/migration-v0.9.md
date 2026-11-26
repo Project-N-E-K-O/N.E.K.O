@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension has no compatibility shim. Remove `type = "extension"` and `[plugin.host]`, then either move the Router module into its former host and call `self.include_router(router)`, or turn it into a normal `NekoPluginBase` package. Replace imports from `plugin.sdk.extension` with the corresponding public symbols from `plugin.sdk.plugin`. `PluginRouter` remains supported only for organizing code inside a normal Plugin.
+Extension has no compatibility shim. Remove `type = "extension"` and `[plugin.host]`, then either move the Router module into its former host, list the router class in the host's `__routers__`, and call `self.include_router(router)`, or turn it into a normal `NekoPluginBase` package. Replace imports from `plugin.sdk.extension` with the corresponding public symbols from `plugin.sdk.plugin`. `PluginRouter` remains supported only for organizing code inside a normal Plugin.
 
 ## Result imports
 
@@ -84,14 +84,14 @@ The removed bus fast paths were acceleration branches such as BusList `fast_mode
 
 ## Memory
 
-The old SDK `MemoryClient` mixed two different concepts. The supported replacement is the host's recent user-context snapshot:
+The old SDK `MemoryClient` mixed two different concepts. Recent user context comes from the host's snapshot:
 
 ```python
 # Recent records from one bucket
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the old SDK/runtime `MemoryClient` facade (the `MemoryClient` now exported from `plugin.sdk.plugin` is a different, newer search client). `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool and returns the hits as rendered text (an empty string when nothing matches). For structured hits use `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`, which returns `Ok` / `Err`.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the old SDK/runtime `MemoryClient` facade (the `MemoryClient` now exported from `plugin.sdk.plugin` is a different, newer search client). `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool and returns the hits as rendered text (an empty string when nothing matches). For structured hits use `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`, which returns `Ok` / `Err`. `MemoryClient` also has `get_persona(target=...)`, which supports only `private` targets and returns `CAPABILITY_UNAVAILABLE` for others. The host judges the memory calls that reach it as use of the `plugin_sdk.main_agent.memory:read` permission (formerly `memory.read`). It writes `decision` audit records only for calls that the policy would deny or that it flags as a possible laundered call (repeats of the same result are written at most once a minute); other allowed calls are at most counted in an `allow_summary` record written when the entry call they belong to ends. The audit trail is therefore not a per-access log. Memory content is the user's private data: never log it.
 
 ## `push_message` v2
 

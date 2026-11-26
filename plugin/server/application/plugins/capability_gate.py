@@ -1,10 +1,16 @@
-"""The one host entry point for call-chain capability decisions (observe only).
+"""The one host entry point for call-chain permission decisions (observe only).
 
 Judged uses (the RPC operations in ``CAPABILITY_BY_OPERATION`` and the
 MESSAGE_PUSH route) all go through ``check``. It reads only the host's call
-registry and the consent store, never plugin-supplied ``_ctx`` or views. It
-never refuses a call, and a failure in here is logged by type and ignored, so
-the caller sees exactly what it saw before. See docs/design/plugin-call-chain.md.
+registry and the permission store (the same resolved states the plugin
+process is sent, see ``permission_service.resolved_states``), never
+plugin-supplied ``_ctx`` or views. It runs whatever the master switch says,
+and never refuses a call yet (``REFUSES_CALLS``); a failure in here is logged
+by type and ignored, so the caller sees exactly what it saw before.
+Permission ids come from ``plugin.sdk.shared.permissions``.
+
+``record_system_uses`` writes what a plugin process reports about its own
+``system.*`` uses (``plugin/core/system_audit.py``) to the same audit.
 """
 
 from __future__ import annotations
@@ -15,7 +21,12 @@ import re
 import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
-from plugin.core.capability_policy import Decision, current_mode, decide
+from plugin.core.capability_policy import Decision, current_mode, decide, is_enforced
+from plugin.sdk.shared.permissions import (
+    PERMISSIONS,
+    PLUGIN_PERMISSION_DENIED,
+    legacy_name,
+)
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import call_audit
 
@@ -23,14 +34,19 @@ logger = get_logger("server.plugins.capability_gate")
 
 registry = CallRegistry()
 
+# Looked up in the vocabulary, so an id that leaves it fails at import.
+MEMORY_READ = PERMISSIONS["plugin_sdk.main_agent.memory:read"].id
+CONVERSATIONS_READ = PERMISSIONS["plugin_sdk.main_agent.conversations:read"].id
+MESSAGES_PUSH = PERMISSIONS["plugin_sdk.main_agent.messages:push"].id
+
 # One row per judged control-RPC operation; all wrapped the same way.
 CAPABILITY_BY_OPERATION = {
-    "MEMORY_QUERY": "memory.read",
-    "MEMORY_SEARCH": "memory.read",
-    "MEMORY_PERSONA_GET": "memory.read",
-    "USER_CONTEXT_GET": "memory.read",
-    "CONVERSATION_REPLY_GET": "conversations.read",
-    "CONVERSATION_INTERACTION_GET": "conversations.read",
+    "MEMORY_QUERY": MEMORY_READ,
+    "MEMORY_SEARCH": MEMORY_READ,
+    "MEMORY_PERSONA_GET": MEMORY_READ,
+    "USER_CONTEXT_GET": MEMORY_READ,
+    "CONVERSATION_REPLY_GET": CONVERSATIONS_READ,
+    "CONVERSATION_INTERACTION_GET": CONVERSATIONS_READ,
 }
 
 # Codes the host and the standard executor produce; anything else is "ERROR".
@@ -39,37 +55,44 @@ _RESULT_CODES = frozenset({
     "CONNECTION_CLOSED", "TRANSPORT_ERROR", "TRANSPORT_TIMEOUT", "BUSY",
     "SERIALIZATION_FAILED", "PLUGIN_UNAVAILABLE", "PLUGIN_NOT_READY",
     "CALL_DEPTH_EXCEEDED", "REQUEST_FAILED", "INVALID_REQUEST", "UNKNOWN_OPERATION",
-    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION",
+    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION", PLUGIN_PERMISSION_DENIED,
 })
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
-# After a failed consent read, do not retry the file on the event loop for a while.
+# After a failed grant read, do not retry the store on the event loop for a
+# while; the last record read is used meanwhile.
 _CONSENT_RETRY_SECONDS = 5.0
 _consent_failed_at = -_CONSENT_RETRY_SECONDS
 
+# Whether the gate refuses the uses it judges denied. Observe only for now:
+# every audit record says ``enforcing: False``. ``mode`` keeps its meaning
+# (what the master switch says), so it is not proof that a call was refused.
+REFUSES_CALLS = False
+
+
+def _enforcing(refused: bool) -> bool:
+    """The audit ``enforcing`` field: whether a refusal was carried out."""
+    return REFUSES_CALLS and refused
+
 
 def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
-    """Approved capabilities from plugin_consents.json, and whether the read worked."""
-    global _consent_failed_at
-    if time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS:
-        return frozenset(), False
-    try:
-        from plugin.server.infrastructure.plugin_consent import consent_store
+    """Granted permission ids, and whether the grants could be read.
 
-        record = consent_store.read(plugin_id)
-    except Exception:  # the whole store is unreadable: back off for everyone
+    Only a ``granted`` state counts. When the read fails, the plugin's last
+    record read is used (none: nothing granted) and the second value is False.
+    """
+    global _consent_failed_at
+    from plugin.server.application.plugins.permission_service import resolved_states
+
+    backing_off = time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS
+    _, states, read_failed = resolved_states(plugin_id, read=not backing_off)
+    if read_failed and not backing_off:
+        # The store is unreadable for everyone: back off for everyone.
         _consent_failed_at = time.monotonic()
-        return frozenset(), False
-    try:
-        if record.get("decision") != "approved":
-            return frozenset(), True
-        # Missing means none, as in consent_policy.derive_consent; a wrong type is malformed.
-        approved = record.get("approved_capabilities") or []
-        if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
-            return frozenset(), False  # malformed record: unknown, for this plugin only
-        return frozenset(approved), True
-    except Exception:  # only this plugin's record is malformed
-        return frozenset(), False
+    granted = frozenset(
+        permission for permission, state in states.items() if state.status == "granted"
+    )
+    return granted, not read_failed
 
 
 def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink | None:
@@ -126,8 +149,15 @@ def chain_payload(record: CallRecord) -> dict:
         "depth": record.depth,
         "origin": {"kind": record.origin.kind, "ref": record.origin.ref},
         "hops": [list(hop) for hop in record.hops],
-        "rights": sorted(record.rights) if record.rights is not None else None,
+        "rights": _wire_rights(record.rights),
     }
+
+
+def _wire_rights(rights: frozenset[str] | None) -> list[str] | None:
+    """Permission ids plus, for one release, their earlier names."""
+    if rights is None:
+        return None
+    return sorted(rights | {name for name in map(legacy_name, rights) if name})
 
 
 def result_code(exc: BaseException | None) -> str:
@@ -158,7 +188,9 @@ def end_call(record: CallRecord | None, code: str, started: float) -> None:
         return
     try:
         uses = registry.remove(record)
-        base = {"mode": current_mode(), "trace_id": record.trace_id, "call_id": record.call_id,
+        # No use is refused while REFUSES_CALLS is False; once refusals are
+        # carried out, pass whether this call had one.
+        base = {"mode": current_mode(), "enforcing": _enforcing(False), "trace_id": record.trace_id, "call_id": record.call_id,
                 "parent_call_id": record.parent_call_id, "depth": record.depth, "target": record.target}
         call_audit.record({
             "kind": "forward", **base, "caller": record.caller, "event_type": _identifier(record.event_type),
@@ -173,9 +205,7 @@ def end_call(record: CallRecord | None, code: str, started: float) -> None:
 
 
 def check(plugin_id: str, parent_request_id: object, capability: str, operation: str) -> Decision | None:
-    """Judge one use and audit it. Never raises; returns None when off or on failure."""
-    if current_mode() == "off":
-        return None
+    """Judge one use and audit it. Never raises; returns None on failure."""
     try:
         record = registry.lookup(plugin_id, parent_request_id)
         flags = set()
@@ -200,7 +230,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
         if decision.allowed and "possible_laundering" not in flags:
             if record is not None:
                 registry.note_use(record, capability)
-            return decision
+            # An allowance based on the last record read (store unreadable)
+            # is also audited below, so it can be told apart.
+            if "consent_unavailable" not in flags:
+                return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))
         now = time.monotonic()
@@ -209,7 +242,9 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
                 _last_written.clear()
             _last_written[key] = now
             call_audit.record({
-                "kind": "decision", "mode": current_mode(), "plugin": plugin_id, "operation": operation,
+                "kind": "decision", "mode": current_mode(),
+                "enforcing": _enforcing(not decision.allowed and is_enforced(capability)),
+                "plugin": plugin_id, "operation": operation,
                 "capability": capability, "chain": list(chain), "verdict": verdict,
                 "reason": decision.reason, "blocked_by": list(decision.blocked_by), "flags": sorted(flags),
                 "trace_id": record.trace_id if record else None, "call_id": record.call_id if record else None,
@@ -231,3 +266,116 @@ def capability_checked(capability: str, handler):
 
     checked.__capability__ = capability
     return checked
+
+
+# What a plugin process may report about its own system.* uses. The report is
+# the plugin's own word (its process could also stay silent, and it can write
+# files anyway): it is bounded and reduced to fixed vocabularies before it
+# reaches the audit file, but the privacy reduction of a path target is the
+# SDK's (system_audit.redact_path) and is not redone here.
+SYSTEM_USE_PERMISSIONS = frozenset({
+    PERMISSIONS["system.network:connect"].id,
+    PERMISSIONS["system.process:spawn"].id,
+    PERMISSIONS["system.fs:read"].id,
+    PERMISSIONS["system.fs:write"].id,
+})
+_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
+_SYSTEM_USE_BATCH_LIMIT = 100
+_SYSTEM_USE_PER_MINUTE = 600
+_SYSTEM_USE_WINDOW = 60.0
+_SYSTEM_USE_REASONS = frozenset({"denied", "undecided"})
+# plugin_id -> [window start, entries written, lost not yet reported, loss reported in this window]
+_system_use_budget: dict[str, list] = {}
+# Printable text without line breaks or quotes that could fake a log line.
+_TARGET = re.compile(r"[^\x00-\x1f\x7f\"\\]{1,200}")
+
+
+def _system_use_target(value: object) -> str:
+    return value if isinstance(value, str) and _TARGET.fullmatch(value) else "<invalid>"
+
+
+def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
+    """The audit entry for one reported use, or None when it is malformed."""
+    if not isinstance(item, dict):
+        return None
+    permission = item.get("permission")
+    # isinstance first: an unhashable value must not reach the set lookups.
+    if not isinstance(permission, str) or permission not in SYSTEM_USE_PERMISSIONS:
+        return None
+    would_deny = item.get("verdict") == "would_deny"
+    reason = item.get("reason")
+    flags = item.get("flags")
+    flags = {flag for flag in flags if isinstance(flag, str) and flag in _SYSTEM_USE_FLAGS} if isinstance(flags, list) else set()
+    return {
+        "kind": "system_use", "mode": mode,
+        # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).
+        "enforcing": would_deny and item.get("enforcing") is True,
+        "plugin": plugin_id, "capability": permission,
+        "operation": _identifier(item.get("event")),
+        "target": _system_use_target(item.get("target")),
+        "verdict": "would_deny" if would_deny else "allow",
+        "reason": reason if would_deny and isinstance(reason, str) and reason in _SYSTEM_USE_REASONS else None,
+        "flags": sorted(flags) + ["plugin_reported"],
+    }
+
+
+def flush_system_use_loss(plugin_id: str) -> None:
+    """Report what is still counted as lost for ``plugin_id`` (its connection
+    is closing, so no later batch would carry it). Never raises."""
+    try:
+        state = _system_use_budget.pop(plugin_id, None)
+        if state is not None and state[2]:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": state[2]})
+    except Exception as exc:
+        logger.warning("system use loss flush failed: error_type={}", type(exc).__name__)
+
+
+def record_system_uses(plugin_id: str, message: object) -> int:
+    """Audit one ``SYSTEM_AUDIT`` batch from ``plugin_id``'s process.
+
+    Returns how many entries were written. Never raises. Malformed items are
+    skipped one by one. Per plugin and minute at most ``_SYSTEM_USE_PER_MINUTE``
+    uses are written; the rest, items past ``_SYSTEM_USE_BATCH_LIMIT`` and what
+    the process itself could not send are counted, and reported in at most one
+    ``system_use_lost`` entry a minute.
+    """
+    now = time.monotonic()
+    state = _system_use_budget.get(plugin_id)
+    if state is None or now - state[0] >= _SYSTEM_USE_WINDOW:
+        state = [now, 0, state[2] if state is not None else 0, False]
+    written = 0
+    try:
+        if not isinstance(message, dict):
+            return 0
+        items = message.get("items")
+        items = items if isinstance(items, list) else []
+        lost = message.get("dropped")
+        if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0:
+            state[2] += lost
+        state[2] += max(0, len(items) - _SYSTEM_USE_BATCH_LIMIT)
+        mode = current_mode()
+        for item in items[:_SYSTEM_USE_BATCH_LIMIT]:
+            try:
+                entry = _system_use_entry(plugin_id, item, mode)
+            except Exception:
+                entry = None  # a malformed item is skipped, the rest still count
+            if entry is None:
+                continue
+            if state[1] >= _SYSTEM_USE_PER_MINUTE:
+                state[2] += 1
+                continue
+            state[1] += 1
+            call_audit.record(entry)
+            written += 1
+        if state[2] and not state[3]:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": state[2]})
+            state[2], state[3] = 0, True
+        return written
+    except Exception as exc:
+        logger.warning("system use audit failed: error_type={}", type(exc).__name__)
+        return written
+    finally:
+        # Saved whatever happened above, so a failing batch still uses budget.
+        if plugin_id not in _system_use_budget and len(_system_use_budget) > 1024:
+            _system_use_budget.clear()
+        _system_use_budget[plugin_id] = state

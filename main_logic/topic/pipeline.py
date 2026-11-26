@@ -83,10 +83,15 @@ def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
 
 
 def _clean_timestamp(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return time.time()
+    try:
+        ts = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return time.time()
+    if not math.isfinite(ts):
+        return time.time()
+    return ts
 
 
 def _record_weight(record: Mapping[str, Any]) -> float:
@@ -98,15 +103,36 @@ def _record_weight(record: Mapping[str, Any]) -> float:
     """
     try:
         weight = float(record.get("weight", 1.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 1.0
-    if math.isnan(weight):
+    if not math.isfinite(weight):
         return 1.0
     return max(0.0, min(1.0, weight))
 
 
 def _local_day(value: float) -> date:
     return datetime.fromtimestamp(value).date()
+
+
+def _parse_valid_used_at(value: Any) -> float | None:
+    """Validate and parse a persisted used_at timestamp, returning None if invalid or non-finite."""
+    if isinstance(value, bool):
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(ts) or ts <= 0:
+        return None
+    try:
+        _local_day(ts)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return ts
+
+
+def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
+    return _parse_valid_used_at(record.get("used_at"))
 
 
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -860,6 +886,33 @@ class TopicHookPool:
             name=f"topic_trigger_{name}",
         )
 
+    async def _check_trigger_usage_gates(
+        self,
+        name: str,
+        current_material: dict[str, Any],
+        lang: str,
+    ) -> bool:
+        if self._daily_quota_reached(name):
+            logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
+            self._reschedule_trigger_retry(name, current_material, lang)
+            return False
+        if self._topic_was_recently_used(name, current_material):
+            current_material["status"] = "skipped"
+            self._materials[name] = []
+            await self._discard_delivered_signals_async(name, current_material)
+            logger.info("[%s] topic material trigger skipped: already used", name)
+            return False
+        trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
+        if trigger_gap_seconds > 0:
+            self._reschedule_trigger_after_delay(
+                name,
+                current_material,
+                lang,
+                trigger_gap_seconds,
+            )
+            return False
+        return True
+
     async def _run_trigger_when_available(
         self,
         name: str,
@@ -877,24 +930,7 @@ class TopicHookPool:
                 return
             if current_material.get("status") != "pending":
                 return
-            if self._daily_quota_reached(name):
-                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
-                self._reschedule_trigger_retry(name, current_material, lang)
-                return
-            if self._topic_was_recently_used(name, current_material):
-                current_material["status"] = "skipped"
-                self._materials[name] = []
-                await self._discard_delivered_signals_async(name, current_material)
-                logger.info("[%s] topic material trigger skipped: already used", name)
-                return
-            trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
-            if trigger_gap_seconds > 0:
-                self._reschedule_trigger_after_delay(
-                    name,
-                    current_material,
-                    lang,
-                    trigger_gap_seconds,
-                )
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
                 return
             # "Search first, then chat": once the delivery bridge looks open,
             # prepare a deeper online lead off the user hot path. A later gate
@@ -904,6 +940,13 @@ class TopicHookPool:
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
+            current_after = self._materials.get(name) or []
+            if not current_after or current_after[0] is not current_material:
+                return
+            if current_material.get("status") != "pending":
+                return
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
+                return
             if not self._delivery_available_now(name):
                 logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
@@ -1037,8 +1080,18 @@ class TopicHookPool:
             records = []
             today_records = []
             for record in self._used_topics.get(name, []):
-                used_at = float(record.get("used_at") or 0.0)
-                used_day = _local_day(used_at)
+                used_at = _coerce_used_at(record)
+                if used_at is None:
+                    continue
+                try:
+                    used_day = _local_day(used_at)
+                except (OSError, OverflowError, ValueError):
+                    continue
+                if used_at > current_time:
+                    # Keep records within the retention horizon across clock rollbacks.
+                    if used_at - current_time < _USED_TOPIC_RECENT_SECONDS:
+                        records.append(record)
+                    continue
                 if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
                     records.append(record)
                 if used_day == current_day:
@@ -1055,11 +1108,15 @@ class TopicHookPool:
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         with self._used_topics_lock:
-            return [
-                record
-                for record in self._used_topics.get(name, [])
-                if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
-            ]
+            recent = []
+            for record in self._used_topics.get(name, []):
+                used_at = _coerce_used_at(record)
+                if used_at is None:
+                    continue
+                elapsed = current_time - used_at
+                if 0.0 <= elapsed < _USED_TOPIC_RECENT_SECONDS:
+                    recent.append(record)
+            return recent
 
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
@@ -1074,7 +1131,13 @@ class TopicHookPool:
         records = self._recent_used_topics(name, now=now)
         if not records:
             return 0.0
-        latest_used_at = max(float(record.get("used_at") or 0.0) for record in records)
+        valid_timestamps = [
+            ts for ts in (_coerce_used_at(record) for record in records)
+            if ts is not None
+        ]
+        if not valid_timestamps:
+            return 0.0
+        latest_used_at = max(valid_timestamps)
         current_time = float(now if now is not None else time.time())
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
@@ -1238,9 +1301,8 @@ class TopicHookPool:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                try:
-                    used_at = float(entry.get("used_at"))
-                except (TypeError, ValueError):
+                used_at = _parse_valid_used_at(entry.get("used_at"))
+                if used_at is None:
                     continue
                 loaded.append(
                     {
@@ -1270,7 +1332,10 @@ class TopicHookPool:
         with self._used_topics_lock:
             names = list(self._used_topics)
         for name in names:
-            self._prune_used_topics(name)
+            try:
+                self._prune_used_topics(name)
+            except Exception as exc:
+                logger.warning("topic used_topics prune on load failed for %s: %s", name, exc, exc_info=True)
 
     def _persist_used_topics(self) -> None:
         path = self._used_topics_path

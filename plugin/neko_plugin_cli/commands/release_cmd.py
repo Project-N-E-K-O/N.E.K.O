@@ -19,10 +19,10 @@ from .. import core
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
-from ..repo_state import committed_file_sizes, git_output, worktree_dirty_paths
+from ..repo_state import committed_file_sizes, git_output, ignored_untracked_paths, worktree_dirty_paths
 from ..templates import agent_kit
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
-from .validate_cmd import collect_advisory_issues, validate_plugin_dir
+from .validate_cmd import SYMLINK_ERROR, collect_advisory_issues, validate_plugin_dir
 
 
 Issue = tuple[str, str]
@@ -73,6 +73,9 @@ def handle_check(args: argparse.Namespace) -> int:
         defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
+        # Plain check only: the release build packages the working tree,
+        # ignored paths included, and copy2 follows a link into it.
+        ignored_paths = _link_scan_ignored_paths(plugin_dir, defaults)
         issues = validate_plugin_dir(
             plugin_dir,
             strict=args.strict,
@@ -80,7 +83,15 @@ def handle_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
+            ignored_paths=ignored_paths or (),
         )
+        # Only when it matters: some link was reported as an error.
+        if ignored_paths is None and any(
+            message.startswith(SYMLINK_ERROR) for _, message in issues
+        ):
+            issues.append(
+                ("warning", "could not read gitignored paths from git, so links inside them are reported as errors")
+            )
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
         issues.extend(_diagnose_agent_kit(plugin_dir))
         # Advisory only: printed, never counted toward the exit code. Release
@@ -189,8 +200,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
     print(f"  payload_hash_verified={inspect_result.payload_hash_verified}")
     print(f"  tests={test_result}")
     for severity, message in issues:
-        if severity == "warning":
-            print(f"  [WARNING] {message}")
+        if severity in ("warning", "info"):
+            print(f"  [{severity.upper()}] {message}")
     return 0
 
 
@@ -218,11 +229,37 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
     return None if root == defaults.repo_root.resolve() else root
 
 
+def _link_scan_ignored_paths(plugin_dir: Path, defaults: CliDefaults) -> list[str] | None:
+    """What git ignores in the plugin's own repository, for plain check's link scan.
+
+    Empty without such a repository (including the built-in root, where
+    Market CI mounts a fresh checkout); None when git cannot list them. In
+    both cases everything is scanned.
+    """
+    if _repository_root(plugin_dir, defaults) is None:
+        return []
+    return ignored_untracked_paths(plugin_dir)
+
+
 def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:
     """Local git readiness; with ``release`` an uncommitted tree is an error."""
+    # Checked before git itself: nothing here needs git, so do not ask for it.
+    if _is_builtin_source_plugin_dir(plugin_dir, defaults):
+        # _repository_root skips this root (CI mounts, first-party plugins)
+        # even when the plugin carries its own .git (as init leaves it), so
+        # say what is skipped instead of claiming there is no repository.
+        return [
+            (
+                "warning",
+                _tri(
+                    "git checks are skipped for plugins in the built-in plugins root (plugin/plugins)",
+                    "内置插件目录（plugin/plugins）下的插件不做 Git 检查",
+                    "組み込みプラグインディレクトリ（plugin/plugins）配下のプラグインでは Git チェックを省略します",
+                ),
+            )
+        ]
     if shutil.which("git") is None:
         return [("warning", "git executable not found")]
-
     repository_root = _repository_root(plugin_dir, defaults)
     if repository_root is None:
         return [("warning", "plugin source directory does not have its own git repository")]
@@ -640,14 +677,22 @@ def _print_issues(
             fix = _suggest_fix(message, plugin_id=plugin_id, plugin_dir=plugin_dir)
             if fix:
                 print(f"    fix: {fix}", file=stream)
+                # On its own line, so the fix line stays one command to copy.
+                if plugin_dir is not None and _PLUGIN_DIR_PLACEHOLDER in fix:
+                    print(f"    plugin directory: {plugin_dir}", file=stream)
 
 
 _WINDOWS_SHELL = os.name == "nt"
 # Expanded inside double quotes by cmd (%VAR%, !VAR! with delayed expansion)
-# or PowerShell ($name, ` escapes).
-_WINDOWS_EXPANDING_CHARS = "%!$`"
+# or PowerShell ($name, ` escapes), or ending the quoted argument in PowerShell,
+# which treats typographic double quotes (U+201C, U+201D, U+201E) like ".
+_WINDOWS_EXPANDING_CHARS = "%!$`\u201c\u201d\u201e"
 # Shown instead of a path no quoting keeps literal; the user fills it in.
 _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
+# Likewise for the values of printed git commands; quoted so that pasting one
+# unreplaced passes a literal word rather than a < redirection.
+_BRANCH_PLACEHOLDER = '"<branch>"'
+_REMOTE_PLACEHOLDER = '"<repository-url>"'
 
 
 def _shell_quote(value: str) -> str | None:
@@ -655,12 +700,83 @@ def _shell_quote(value: str) -> str | None:
 
     None when no quoting keeps it literal for every Windows shell (see
     _WINDOWS_EXPANDING_CHARS), which could point the command at another
-    directory.
+    directory. A trailing backslash counts too: programs parse ``\\"`` at the
+    end of ``"C:\\repo\\"`` as a literal quote and receive ``C:\\repo"``. So does
+    a control character: cmd ends the command at a line break.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
+    if (
+        value.endswith("\\")
+        or any(char in value for char in _WINDOWS_EXPANDING_CHARS)
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        return None
+    return f'"{value}"'
+
+
+def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
+    """The plugin directory as one argument of a suggested command.
+
+    Falls back to ``label`` when the directory is unknown. For setup-repo a
+    path also beats the bare id, which resolves only under the plugins root.
+    """
+    if plugin_dir is None:
+        return label
+    target = _shell_quote(str(plugin_dir))
+    return _PLUGIN_DIR_PLACEHOLDER if target is None else target
+
+
+# Nothing a supported shell expands or splits: shlex's safe set without %
+# and "," (a PowerShell array), and no leading @ (PowerShell splatting) or
+# = (zsh expansion).
+_SHELL_PLAIN = re.compile(r"[\w+:./-][\w@+=:./-]*")
+
+
+def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
+    """The ``git push`` refspec for exactly these branches.
+
+    A branch name may start with +, which git reads as "force" at the start of
+    a refspec (``git push origin +main`` force-pushes main), and no quoting
+    hides it from git. Such a side is spelled out as refs/heads/<name>.
+    """
+
+    def side(name: str) -> str:
+        return f"refs/heads/{name}" if name.startswith("+") else name
+
+    return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+
+
+def _shell_argument(value: str, placeholder: str) -> str:
+    """``value`` as one argument of a printed command, or ``placeholder``.
+
+    Plain values (``main``, a GitHub URL) stay bare. The placeholder (already
+    quoted) stands in when no Windows quoting keeps ``value`` literal; see
+    _shell_quote. A path never holds ``"``, but a branch name may, and inside
+    double quotes it would end the quoting in cmd.
+    """
+    if _SHELL_PLAIN.fullmatch(value):
+        return value
+    if _WINDOWS_SHELL and '"' in value:
+        return placeholder
+    quoted = _shell_quote(value)
+    if quoted == value:
+        # shlex leaves a leading = bare, which zsh expands to a command path;
+        # the value holds only shlex-safe characters, so no ' to escape.
+        quoted = f"'{value}'"
+    return placeholder if quoted is None else quoted
+
+
+def _placeholder_path(plugin_dir: Path) -> str | None:
+    """The path to fill in when _plugin_dir_argument printed the placeholder."""
+    return str(plugin_dir) if _shell_quote(str(plugin_dir)) is None else None
+
+
+def _placeholder_note(plugin_dir: Path | None) -> str:
+    """Names the directory after a command that shows the placeholder, else ''."""
+    fill_in = _placeholder_path(plugin_dir) if plugin_dir is not None else None
+    return f" (plugin directory: {fill_in})" if fill_in else ""
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
@@ -678,7 +794,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".github/workflows/release.yml",
             ".gitignore",
         }:
-            return f"neko-plugin setup-repo {label} --github-actions"
+            return f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --github-actions"
     if message.startswith("recommended market repository name is "):
         return "the Market accepts any public GitHub repository name; n.e.k.o_plugin_<plugin_id> is the convention"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
@@ -699,9 +815,11 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message == "plugin source directory does not have its own git repository":
         if plugin_dir is None:
             return "run git init inside the plugin directory"
-        return f"cd {plugin_dir} && git init"
+        # git -C avoids cd (cmd needs /d across drives) and && (missing in
+        # Windows PowerShell 5).
+        return f"git -C {_plugin_dir_argument(plugin_dir, '')} init"
     if message == "git remote 'origin' is not configured":
-        return "git remote add origin <repo-url>"
+        return f"git remote add origin {_REMOTE_PLACEHOLDER}"
     if message.startswith(_WORKTREE_NOT_COMMITTED):
         return _tri(
             "commit these files or add them to .gitignore; CI checks the pushed commit, not the working tree",
@@ -709,13 +827,9 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             "これらのファイルをコミットするか .gitignore に追加してください。CI は作業ツリーではなくプッシュ済みのコミットを検査します",
         )
     if message.startswith(_AGENT_KIT_OUTDATED):
-        # setup-repo resolves a bare id only under the plugins root; a path
-        # works for every plugin. --no-* keeps the other support files.
-        target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
-        if target is None:
-            target = _PLUGIN_DIR_PLACEHOLDER
+        # --no-* keeps the other support files.
         refresh = (
-            f"neko-plugin setup-repo {target} --overwrite "
+            f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"
         )
         return _tri(

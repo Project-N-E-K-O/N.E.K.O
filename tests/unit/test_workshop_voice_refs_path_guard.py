@@ -205,10 +205,8 @@ async def test_remove_from_item_folder_still_works(export_root):
     [(_upload, '_replace_voice_reference'), (_remove, '_remove_voice_reference')],
     ids=['upload', 'remove'],
 )
-async def test_unexpected_error_does_not_echo_server_paths(
-    export_root, tmp_path, monkeypatch, call, worker
-):
-    """An OSError message carries server paths; the 500 body must not."""
+async def test_unexpected_error_shows_reason(export_root, monkeypatch, call, worker):
+    """Unexpected I/O failures return 500 with the underlying reason so the user can act on it."""
     item = export_root / 'item_aaa'
 
     def _boom(*_args, **_kwargs):
@@ -220,4 +218,4 @@ async def test_unexpected_error_does_not_echo_server_paths(
 
     assert status == 500, body
     assert body['success'] is False
-    assert str(tmp_path) not in body['error']
+    assert 'Permission denied' in body['error']

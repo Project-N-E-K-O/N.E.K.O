@@ -4,7 +4,14 @@ import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import PluginAuthoring from './PluginAuthoring.vue'
-import { authoringMessages } from '@/i18n/authoring'
+import authoringEnUs from '@/i18n/authoring/en-US'
+import authoringZhCn from '@/i18n/authoring/zh-CN'
+import authoringZhTw from '@/i18n/authoring/zh-TW'
+import authoringJa from '@/i18n/authoring/ja'
+import authoringKo from '@/i18n/authoring/ko'
+import authoringRu from '@/i18n/authoring/ru'
+import authoringEs from '@/i18n/authoring/es'
+import authoringPt from '@/i18n/authoring/pt'
 import type {
   AuthoringProject,
   CreatedPluginProject,
@@ -13,6 +20,8 @@ import type {
   Toolchain,
 } from '@/api/pluginProjects'
 import { RELEASE_WORKFLOW_PATH } from '@/api/pluginProjects'
+
+const authoringMessages = { 'en-US': authoringEnUs, 'zh-CN': authoringZhCn, 'zh-TW': authoringZhTw, ja: authoringJa, ko: authoringKo, ru: authoringRu, es: authoringEs, pt: authoringPt }
 
 const api = vi.hoisted(() => ({
   listPluginProjects: vi.fn(),

@@ -115,11 +115,11 @@
         return container?.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model';
     }
 
-    function getBody(button) {
+    function getBody(button, synchronize = true) {
         const playground = button && button.__nekoIdleCat1PlaygroundDropState;
         const body = playground && playground.active && !playground.released
             && playground.bodies && playground.bodies.get('cat') || null;
-        if (body && typeof _syncNekoIdleCat1PlaygroundCatVisibleInsets === 'function') {
+        if (synchronize && body && typeof _syncNekoIdleCat1PlaygroundCatVisibleInsets === 'function') {
             _syncNekoIdleCat1PlaygroundCatVisibleInsets(body, button);
         }
         return body;
@@ -409,7 +409,7 @@
 
     function paused(state) {
         const dragging = state.container.getAttribute('data-dragging');
-        const body = getBody(state.button);
+        const body = getBody(state.button, false);
         return state.pointerHeld || dragging === 'pending' || dragging === 'true' || !!(body && body.dragging);
     }
 
@@ -923,6 +923,7 @@
     function handleManualMove(event) {
         const detail = event && event.detail;
         if (!detail || !detail.container) return;
+        if (detail.source === 'cat1-playground') return;
         const { container, reason } = detail;
         let drag = dragMotions.get(container);
         if (reason === 'return-ball-drag-start') {
@@ -1030,6 +1031,80 @@
         return { left: probe.x, top: probe.y, distance: Math.hypot(probe.x - size.x, probe.y - size.y) };
     }
 
+    function playgroundOwner(container) {
+        const button = current && current.container === container ? current.button
+            : [...document.querySelectorAll('.neko-idle-return-btn')]
+                .find(item => _getNekoIdleReturnContainerFromButton(item) === container);
+        const playground = button && button.__nekoIdleCat1PlaygroundDropState;
+        return playground && playground.active
+            ? { button, playground, body: getBody(button, false) }
+            : null;
+    }
+
+    function constrainPlaygroundTarget(container, target, owner) {
+        const { button, playground, body } = owner;
+        if (!target || !body || playground.released || body.dragging || playground.pointerBodyId === 'cat' ||
+            !body.grounded || Math.abs(body.vx) > CONTACT_EPSILON || Math.abs(body.vy) > CONTACT_EPSILON ||
+            !isCat(button, container) || isReturning(button) || !canWalk(button)) return null;
+        const desiredLeft = Number(target.left);
+        if (!Number.isFinite(desiredLeft)) return null;
+        const size = { width: Number(body.width), height: Number(body.height) };
+        const hull = body.visibleInsetRatios || insets;
+        if (!(size.width > 0) || !(size.height > 0)) return null;
+        const state = current && current.button === button ? current : null;
+        const origin = screenOrigin();
+        if (state && (state.origin.x !== origin.x || state.origin.y !== origin.y)) return null;
+        const workLeft = typeof _getNekoIdleCat1PlaygroundViewportLeftPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportLeftPx() : 0;
+        const workRight = typeof _getNekoIdleCat1PlaygroundViewportRightPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportRightPx() : window.innerWidth;
+        const workTop = typeof _getNekoIdleCat1PlaygroundViewportTopPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportTopPx() : 0;
+        const workBottom = typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportBottomPx() : window.innerHeight;
+        const bounds = state ? state.bounds : boundsFor({
+            x: origin.x + workLeft, y: origin.y + workTop,
+            width: workRight - workLeft, height: workBottom - workTop
+        }, size, body, origin);
+        if (!bounds) return null;
+        const scene = latest ? sceneFor(latest) : [];
+        const borders = buildBorders(scene, state ? state.windowKey : null);
+        const leftOffset = size.width * hull.left;
+        const rightOffset = size.width * (1 - hull.right);
+        const foot = body.y + size.height * (1 - hull.bottom);
+        const intervals = [];
+        if (Math.abs(body.y - bounds.bottom) <= CONTACT_EPSILON) {
+            intervals.push([bounds.left, bounds.right]);
+        }
+        for (const edge of borders) {
+            if (edge.axis !== 'y' || Math.abs(foot - edge.line) > CONTACT_EPSILON) continue;
+            const left = Math.max(bounds.left, edge.start - rightOffset + CONTACT_EPSILON);
+            const right = Math.min(bounds.right, edge.end - leftOffset - CONTACT_EPSILON);
+            if (left <= right) intervals.push([left, right]);
+        }
+        intervals.sort((a, b) => a[0] - b[0]);
+        const connected = [];
+        for (const interval of intervals) {
+            const previous = connected[connected.length - 1];
+            if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+            else connected.push([...interval]);
+        }
+        const support = connected.find(([left, right]) =>
+            body.x >= left - CONTACT_EPSILON && body.x <= right + CONTACT_EPSILON);
+        if (!support) return null;
+        const probe = {
+            button, size, hull, bounds, borders,
+            x: Math.max(support[0], Math.min(support[1], desiredLeft)),
+            y: body.y, vx: 0, vy: 0, grounded: true, deformationActive: false
+        };
+        // Zero elapsed time makes this a swept geometric query: no impulse,
+        // collision presentation, owner adoption or simulation clock changes.
+        collideBorders(probe, { x: body.x, y: body.y }, 0);
+        if (Math.abs(probe.y - body.y) > CONTACT_EPSILON ||
+            probe.x < support[0] - CONTACT_EPSILON || probe.x > support[1] + CONTACT_EPSILON) return null;
+        return { ...target, left: probe.x, top: body.y, distance: Math.abs(probe.x - body.x) };
+    }
+
     function applyPosition(container, left, top) {
         const state = current;
         if (!state) {
@@ -1051,6 +1126,8 @@
     }
 
     function constrainTarget(container, target) {
+        const owner = playgroundOwner(container);
+        if (owner) return constrainPlaygroundTarget(container, target, owner);
         const state = current;
         if (!state && target) {
             const position = constrainObstaclePosition(container, target.left, target.top);
@@ -1238,8 +1315,17 @@
 
     function releaseBody(button, body, options = {}) {
         if (!playgroundActive || body !== getBody(button)) return false;
+        let releaseBounds = current && current.bounds;
+        if (current && current.button === button && body.visibleInsetRatios &&
+            body.visibleInsetRatios !== current.hull) {
+            // Releasing a stationary press may anchor a newly loaded art hull.
+            // Test that same hull before syncBody updates the owner; advancing
+            // physics here would clamp a genuinely outside release back inside.
+            const owner = current.scene.find(item => item.key === current.windowKey);
+            releaseBounds = owner && boundsFor(owner.rect, rect(current.container.getBoundingClientRect()), body);
+        }
         if (current && current.button === button
-            && (!current.windowKey || !contains(current.bounds, body))) {
+            && (!current.windowKey || !contains(releaseBounds, body))) {
             // The body was free during the gesture. Drop the old owner before
             // evaluating the final release point, otherwise collide() snaps
             // an out-of-window release back into the stale box.

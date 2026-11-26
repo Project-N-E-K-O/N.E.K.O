@@ -867,11 +867,11 @@ margin-top: 8px;
 background: #ffffff;
 }
 
-/* 自定义API配置按钮样式 - 与高级选项按钮一致 */
+/* 用渐变和圆角绘制胶囊，避免背景图片随长标题拉伸变形；与 API 管理簿入口保持一致。 */
 #custom-api-toggle-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
-    border: none !important;
+    border: 3px solid #d8f6ff !important;
     border-radius: 999px !important;
     height: auto;
     min-height: 54px;
@@ -916,26 +916,27 @@ background: #ffffff;
     flex: 1;
     font-size: var(--button-text-size);
     background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    /* 每行重复完整渐变，避免换行后首行文字变淡。 */
+    background-size: 100% 1.2em;
+    background-repeat: repeat-y;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
     color: transparent;
     font-weight: bold;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
     line-height: 1.2;
 }
 
 #custom-api-toggle-btn:hover:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-background-color: transparent;
 opacity: 0.9;
 transform: translateY(-1px);
 box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
 #custom-api-toggle-btn:active:not(:disabled) {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
 transform: translateY(1px) scale(0.98) !important;
 box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
 opacity: 0.95 !important;
@@ -943,7 +944,7 @@ opacity: 0.95 !important;
 
 /* Rotated state for collapsible buttons */
 #custom-api-toggle-btn.rotated .dropdown-icon,
-#key-book-toggle-btn.rotated .dropdown-icon {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn).rotated .dropdown-icon {
     transform: translateY(-50%) rotate(180deg);
 }
 
@@ -1184,54 +1185,54 @@ padding-left: 4px;
     }
 
     .custom-api-container
-        > .model-config-container:has(> #vision-model-content, > #correction-model-content, > #omni-model-content, > #tts-model-content, > #image-model-content)
+        > .model-config-container:has(> #memory-model-content, > #decision-model-content, > #tts-model-content, > #agent-model-content, > #game-model-content)
         > .model-content.expanded {
         margin-left: calc(-100% - 18px);
     }
 
-    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#vision-model-content:is(.expanded, .is-collapsing))
-        :is(#conversation-model-content, #vision-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#summary-model-content:is(.expanded, .is-collapsing)):has(#correction-model-content:is(.expanded, .is-collapsing))
-        :is(#summary-model-content, #correction-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#emotion-model-content:is(.expanded, .is-collapsing)):has(#omni-model-content:is(.expanded, .is-collapsing))
-        :is(#emotion-model-content, #omni-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#agent-model-content:is(.expanded, .is-collapsing)):has(#tts-model-content:is(.expanded, .is-collapsing))
-        :is(#agent-model-content, #tts-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#game-model-content:is(.expanded, .is-collapsing)):has(#image-model-content:is(.expanded, .is-collapsing))
-        :is(#game-model-content, #image-model-content):is(.expanded, .is-collapsing) {
+    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#memory-model-content:is(.expanded, .is-collapsing))
+        :is(#conversation-model-content, #memory-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#recognition-model-content:is(.expanded, .is-collapsing)):has(#decision-model-content:is(.expanded, .is-collapsing))
+        :is(#recognition-model-content, #decision-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#omni-model-content:is(.expanded, .is-collapsing)):has(#tts-model-content:is(.expanded, .is-collapsing))
+        :is(#omni-model-content, #tts-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#agent-advanced-model-content:is(.expanded, .is-collapsing)):has(#agent-model-content:is(.expanded, .is-collapsing))
+        :is(#agent-advanced-model-content, #agent-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#agent-small-model-content:is(.expanded, .is-collapsing)):has(#game-model-content:is(.expanded, .is-collapsing))
+        :is(#agent-small-model-content, #game-model-content):is(.expanded, .is-collapsing) {
         width: 100%;
         margin-left: 0;
     }
 
     .custom-api-container:has(#conversation-model-content.expanded)
-        > .model-config-container:has(> #vision-model-content)
+        > .model-config-container:has(> #memory-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#vision-model-content.expanded)
+    .custom-api-container:has(#memory-model-content.expanded)
         > .model-config-container:has(> #conversation-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#summary-model-content.expanded)
-        > .model-config-container:has(> #correction-model-content)
+    .custom-api-container:has(#recognition-model-content.expanded)
+        > .model-config-container:has(> #decision-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#correction-model-content.expanded)
-        > .model-config-container:has(> #summary-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#emotion-model-content.expanded)
-        > .model-config-container:has(> #omni-model-content)
+    .custom-api-container:has(#decision-model-content.expanded)
+        > .model-config-container:has(> #recognition-model-content)
         > .model-header[aria-expanded="false"],
     .custom-api-container:has(#omni-model-content.expanded)
-        > .model-config-container:has(> #emotion-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#agent-model-content.expanded)
         > .model-config-container:has(> #tts-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#game-model-content.expanded)
-        > .model-config-container:has(> #image-model-content)
+    .custom-api-container:has(#tts-model-content.expanded)
+        > .model-config-container:has(> #omni-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#image-model-content.expanded)
+    .custom-api-container:has(#agent-advanced-model-content.expanded)
+        > .model-config-container:has(> #agent-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-model-content.expanded)
+        > .model-config-container:has(> #agent-advanced-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-small-model-content.expanded)
         > .model-config-container:has(> #game-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#tts-model-content.expanded)
-        > .model-config-container:has(> #agent-model-content)
+    .custom-api-container:has(#game-model-content.expanded)
+        > .model-config-container:has(> #agent-small-model-content)
         > .model-header[aria-expanded="false"] {
         opacity: 0.62;
         filter: saturate(0.55);
@@ -1725,10 +1726,10 @@ input:checked + .slider:before {
     margin-top: 0;
 }
 
-#key-book-toggle-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) {
+    background: linear-gradient(to right, #40d3f9, #17a7ff) !important;
     background-color: transparent !important;
-    border: none !important;
+    border: 3px solid #d8f6ff !important;
     border-radius: 999px !important;
     height: auto;
     min-height: 54px;
@@ -1750,7 +1751,7 @@ input:checked + .slider:before {
     box-sizing: border-box;
 }
 
-#key-book-toggle-btn .dropdown-icon {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) .dropdown-icon {
     display: block !important;
     position: absolute;
     left: 12px;
@@ -1765,7 +1766,7 @@ input:checked + .slider:before {
     transition: transform 0.2s;
 }
 
-#key-book-toggle-btn span {
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn) span {
     position: relative;
     z-index: 20;
     margin: 0 !important;
@@ -1773,26 +1774,27 @@ input:checked + .slider:before {
     flex: 1;
     font-size: var(--button-text-size);
     background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    /* 与行高一致，让多行标题保持相同的文字亮度。 */
+    background-size: 100% 1.2em;
+    background-repeat: repeat-y;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
     color: transparent;
     font-weight: bold;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
     line-height: 1.2;
 }
 
-#key-book-toggle-btn:hover:not(:disabled) {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-    background-color: transparent;
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn):hover:not(:disabled) {
     opacity: 0.9;
     transform: translateY(-1px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-#key-book-toggle-btn:active:not(:disabled) {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-    background-color: transparent !important;
+:is(#key-book-toggle-btn, #subscriptions-toggle-btn):active:not(:disabled) {
     transform: translateY(1px) scale(0.98) !important;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
     opacity: 0.95 !important;
@@ -2185,3 +2187,40 @@ font-size: 0.8em;
         box-shadow: 0 0 6px rgba(64, 197, 241, 0.5);
     }
 }
+
+#subscriptions-settings { margin-top: 0; }
+#subscriptions-options { padding: 16px; background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 12px; }
+.chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+#subscriptions-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }
+#subscriptions-options button:disabled { opacity: .5; cursor: default; }
+#chatgpt-status { overflow-wrap: anywhere; }
+
+/* Subscriptions & plans: one card per subscription. */
+#subscription-cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+#subscription-cards.is-busy { cursor: progress; }
+.subscription-card { padding: 12px 16px; background: #fff; border: 1px solid #d0e8ff; border-radius: 10px; }
+.subscription-card.is-on { border-color: #40c5f1; box-shadow: 0 0 0 1px rgba(64, 197, 241, 0.25); }
+.subscription-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.subscription-name { font-weight: 600; color: var(--text-blue, #1f5f8b); }
+.subscription-badge { font-size: 0.75em; padding: 1px 8px; border-radius: 999px; background: #fff4e0; color: #9a5b00; border: 1px solid #f3d19e; }
+.subscription-switch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.9em; }
+.subscription-tiers { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.subscription-tiers-title { margin: 0; font-size: 0.85em; color: #666; }
+.subscription-tier-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.subscription-tier-label { display: inline-flex; align-items: center; gap: 6px; min-width: 12em; cursor: pointer; }
+.subscription-model, .subscription-region { max-width: 260px; }
+.subscription-tier-note { font-size: 0.8em; color: #888; }
+.field-row.subscription-key-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
+.subscription-key-input { flex: 1 1 240px; min-width: 0; max-width: 420px; }
+.subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.subscription-state { margin: 6px 0; font-size: 0.85em; color: #666; }
+.subscription-message { margin: 4px 0; font-size: 0.85em; overflow-wrap: anywhere; }
+.subscription-message[data-kind="error"],
+.subscription-state[data-kind="error"] { color: #c0392b; }
+.subscription-message[data-kind="ok"] { color: #2e7d32; }
+.subscription-summary { margin: 4px 0 8px; padding: 8px 12px; font-size: 0.85em; color: var(--text-blue-sub, #2a6f97); background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 8px; }
+.subscription-tag { margin-left: 8px; font-size: 0.75em; padding: 1px 8px; border-radius: 999px; background: #e3f6fd; color: #1f6f8b; border: 1px solid #b3e5fc; white-space: nowrap; }
+.subscription-feature-note { gap: 8px; align-items: center; }
+.subscription-feature-note em { font-weight: normal; color: #1f6f8b; font-size: 0.85em; }
+/* A feature a subscription took: its own settings stay editable but are not in use. */
+.subscription-taken .connectivity-light { opacity: 0.35; }

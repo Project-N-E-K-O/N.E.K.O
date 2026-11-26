@@ -26,6 +26,7 @@ hard-coding their own.
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -120,6 +121,17 @@ EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 # Documentation: https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
 EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
+# Kimi K3 always thinks; docs ask for top-level reasoning_effort (low / high / max, default
+# max) and no thinking field, yet the live API still honours thinking.disabled (observed
+# 2026-11-22: 0 reasoning tokens, 12-14 completion tokens vs 34-36 at reasoning_effort=low).
+# Owner chose the cheaper, undocumented off form; recheck if Kimi starts rejecting it.
+# Focused cognition must not send thinking.enabled alone (that runs at max), so it pairs
+# with the documented low effort like the other providers. Distinct object from
+# EXTRA_BODY_CLAUDE because _THINKING_ENABLE_FORM pairs by id().
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_K3 = {"thinking": {"type": "disabled"}}
+EXTRA_BODY_KIMI_K3_THINKING = {"reasoning_effort": "low"}
+
 # Unified agent-call switch: whether to load extra_body.
 # Enabled by default; with MODELS_EXTRA_BODY_MAP, disables thinking by default.
 AGENT_USE_EXTRA_BODY = True
@@ -149,6 +161,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     "qwen3.8-flash": EXTRA_BODY_OPENAI,
+    # Subscriptions & plans (Bailian Token Plan): same DashScope dialect as the family;
+    # not yet tested with a real plan key.
+    "qwen3.8-max": EXTRA_BODY_OPENAI,
+    "qwen4-max": EXTRA_BODY_OPENAI,
     # Non-realtime omni models (realtime has -realtime suffix and WebSocket, bypassing this table):
     # same protocol as ordinary text models with additional audio/video input and text-only output; thinking defaults on,
     # and enable_thinking=False works (observed 2026-10-07).
@@ -161,22 +177,47 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     "glm-5.2": EXTRA_BODY_CLAUDE,
+    # GLM Coding Plan defaults; family dialect, not yet tested with a real plan key.
+    "glm-5.3": EXTRA_BODY_CLAUDE,
+    "glm-5.4": EXTRA_BODY_CLAUDE,
+    # glm-5.3-flash always thinks: thinking.type=disabled returns 400 code 1210
+    # ("始终思考，不支持关闭思考；请使用 low、high 或 max", observed 2026-11-22).
+    # reasoning_effort=low is the floor, for ordinary and focused turns alike.
+    "glm-5.3-flash": EXTRA_BODY_STEP_LOW,
     # Kimi family.
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
-    "kimi-k3": EXTRA_BODY_CLAUDE,
+    "kimi-k3": EXTRA_BODY_KIMI_K3,
+    # K3.1 Pro cannot turn thinking off (Kimi docs); low effort is the floor. Listed for
+    # the plan gateways that offer it (OpenCode Go, Ollama Cloud); not yet tested there.
+    "kimi-k3.1-pro": EXTRA_BODY_KIMI_K3_THINKING,
     # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
     "MiniMax-M3": EXTRA_BODY_CLAUDE,
+    # MiniMax M Plan default; same dialect as M3, not yet tested with a real plan key.
+    "MiniMax-M3.1-Flash": EXTRA_BODY_CLAUDE,
+    # MiMo V2.6 (V2.5 was retired 2026-10-21). MiMo documents a `thinking` request
+    # field; the thinking.type form is assumed, not yet tested with a real key.
+    "mimo-v2.6-pro": EXTRA_BODY_CLAUDE,
+    "mimo-v2.6-flash": EXTRA_BODY_CLAUDE,
+    "mimo-v2.6-pro-ultraspeed": EXTRA_BODY_CLAUDE,
     "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
     # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
+    # V4.1 Flash reads images; enable_thinking=False reaches 0 reasoning tokens (2026-11-22).
+    "deepseek-ai/DeepSeek-V4.1-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
+    # Former silicon recognition preset; hybrid thinking defaults on, so the regular
+    # form must send enable_thinking=False. Kept for configs that still name it.
+    "Qwen/Qwen3.5-35B-A3B": EXTRA_BODY_OPENAI,
+    # The silicon recognition preset since 2026-11-23, Qwen/Qwen3-VL-30B-A3B-Instruct, is
+    # deliberately NOT listed: it never thinks (0 reasoning tokens) and SiliconFlow rejects
+    # enable_thinking for it with 400 code 20015 "does not support parameter".
     # Official DeepSeek (api.deepseek.com): V4 defaults thinking on, using thinking.type dialect,
     # matching GLM/Kimi/Doubao, so reuse EXTRA_BODY_CLAUDE. Reseller gateways use different
     # model keys (SiliconFlow deepseek-ai/…, OpenRouter deepseek/…) and their own dialects,
@@ -188,6 +229,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
+    # The V4.1 Flash id that plan gateways (Bailian Token Plan, Ark and Qianfan plans,
+    # Ollama Cloud) list; same dialect as the official endpoint, not yet tested there.
+    "deepseek-v4.1-flash": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # reasoning_effort lacks none; thinking cannot disable, so ordinary and focused modes both use low.
@@ -212,6 +256,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-lite-260428": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260428": EXTRA_BODY_CLAUDE,
+    # Ark Coding Plan ids; Ark's thinking.type dialect, not yet tested with a real plan key.
+    "doubao-seed-2.1-pro": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2.1-lite": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2.0-mini": EXTRA_BODY_CLAUDE,
     # Gemini family.
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
@@ -278,6 +326,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_GEMINI_3_MINIMAL): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
     id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
+    id(EXTRA_BODY_KIMI_K3): EXTRA_BODY_KIMI_K3_THINKING,
 }
 
 # model → focused-cognition extra_body, derived from MODELS_EXTRA_BODY_MAP with one shared model list
@@ -299,7 +348,8 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
     provider's own dialect (see ``_THINKING_ENABLE_FORM`` and the paired
     ``EXTRA_BODY_*_THINKING`` constants):
       - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
-      - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
+      - thinking.type: disabled -> enabled              (GLM / Kimi K2 / Doubao / Claude / free)
+      - thinking.disabled -> reasoning_effort: low      (Kimi K3; enabled alone runs at max)
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none|minimal -> low           (OpenRouter; minimal
@@ -477,12 +527,31 @@ _ATLASCLOUD_REASONING = RouterReasoningConfig(
     },
     efforts=ATLASCLOUD_REASONING_EFFORT,
 )
+# Subscription plan gateways that list upstream models under their own ids. They pass
+# the vendor's thinking knob through (assumed; not yet tested with real plan keys), so
+# only the ids are mapped onto registry entries; the body is sent unchanged.
+_TENCENT_TOKEN_PLAN_REASONING = RouterReasoningConfig(
+    strip_prefixes=("",),
+    model_aliases={
+        "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash",
+        "deepseek-v4-pro-0813": "deepseek-v4-pro",
+        "minimax-m3": "MiniMax-M3",
+    },
+)
+_LOWERCASE_MINIMAX_REASONING = RouterReasoningConfig(
+    strip_prefixes=("",),
+    model_aliases={"minimax-m3": "MiniMax-M3"},
+)
+
 ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
     "router.requesty.ai": _REQUESTY_REASONING,
     "router.eu.requesty.ai": _REQUESTY_REASONING,
     "api.opper.ai": _OPPER_REASONING,
     "api.orcarouter.ai": _ORCAROUTER_REASONING,
     "api.atlascloud.ai": _ATLASCLOUD_REASONING,
+    "tokenhub.tencentmaas.com": _TENCENT_TOKEN_PLAN_REASONING,
+    "ollama.com": _LOWERCASE_MINIMAX_REASONING,
+    "opencode.ai": _LOWERCASE_MINIMAX_REASONING,
 }
 
 
@@ -574,6 +643,11 @@ def rewrite_router_reasoning(
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
 EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
+# Kimi (api.moonshot.cn): K3 always thinks and defaults to reasoning_effort=max, so native
+# thinking on memory calls runs at max. The documented low effort bounds it; kimi-k2.6
+# accepts the field without error (observed 2026-11-22).
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_MEMORY_THINKING = {"reasoning_effort": "low"}
 
 
 def memory_thinking_extra_body(base_url: str | None, output_cap: int) -> dict | None:
@@ -822,6 +896,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
+        memory_thinking_extra_body=EXTRA_BODY_KIMI_MEMORY_THINKING,
     ),
     "grok": CacheProviderConfig(
         provider_id="grok",
@@ -842,6 +917,20 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    # OpenCode Go asks every request of a session to carry the same x-opencode-session
+    # header. The value is made once per process, so when the main and agent servers
+    # run as separate processes each sends its own; whether OpenCode wants one value
+    # across processes is on the PR's list of checks with a real subscription.
+    "opencode_go": CacheProviderConfig(
+        provider_id="opencode_go",
+        name="OpenCode Go",
+        base_url="https://opencode.ai/inference/go/openai/v1",
+        base_url_pattern="opencode.ai/inference/go",
+        cache_mode="upstream",
+        requires_header=True,
+        header_name="x-opencode-session",
+        header_value=f"ses_{uuid.uuid4().hex}",
     ),
 }
 

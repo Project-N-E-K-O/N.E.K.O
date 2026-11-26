@@ -21,6 +21,7 @@ import plugin.server.application.plugins.installation_transactions.uninstall as 
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import runtime_overrides as runtime_overrides_module
 from plugin.sdk.plugin.decorators import plugin_entry
+from plugin.sdk.shared.permissions import PERMISSIONS
 
 
 class _FakeProcessHost:
@@ -36,6 +37,20 @@ class _FakeProcessHost:
         self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
         self.started = False
         self.stopped = False
+        self.initial_permissions: dict | None = None
+        self.manifest_entry_ids: list[str] | None = None
+        self.permission_pushes: list[dict] = []
+
+    def set_initial_permissions(self, snapshot: dict) -> None:
+        assert not self.started, "the launch snapshot must be set before the process starts"
+        self.initial_permissions = snapshot
+
+    def set_manifest_entry_ids(self, entry_ids: list[str]) -> None:
+        assert not self.started, "the manifest entry ids must be set before the process starts"
+        self.manifest_entry_ids = list(entry_ids)
+
+    async def push_permissions(self, snapshot: dict) -> None:
+        self.permission_pushes.append(snapshot)
 
     async def start(self, startup_timeout: float | None = None) -> None:
         self.startup_timeout = startup_timeout
@@ -544,10 +559,13 @@ async def test_start_plugin_refreshes_registry_before_loading(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        created_hosts: list[_FakeProcessHost] = []
+
         def host_factory(**kwargs):
             source_modes.append(kwargs.pop("source_only", False))
             capability_threads["create_plugin_host"] = threading.current_thread()
-            return _FakeProcessHost(**kwargs)
+            created_hosts.append(_FakeProcessHost(**kwargs))
+            return created_hosts[-1]
         scan = _metadata_scan_for(_FakeAdapterPlugin)
         def metadata_scan(**kwargs):
             capability_threads["scan_plugin_metadata_isolated"] = threading.current_thread()
@@ -556,16 +574,58 @@ async def test_start_plugin_refreshes_registry_before_loading(
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", metadata_scan)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
+        # Permission source is reconciled after the registry refresh; a broken
+        # permission store must not stop the plugin from starting.
+        from plugin.server.application.plugins import permission_service
+        from plugin.server.domain.errors import ServerDomainError as _DomainError
+
+        reconciled: list[tuple[str, int]] = []
+        real_reconcile = module.reconcile_permission_source
+
+        def _reconcile(plugin_id: str) -> None:
+            reconciled.append((plugin_id, len(refresh_calls)))
+            real_reconcile(plugin_id)
+
+        def _broken_store(*_args: object, **_kwargs: object) -> None:
+            raise _DomainError("PLUGIN_PERMISSIONS_CORRUPT", "damaged", 500)
+
+        monkeypatch.setattr(module, "reconcile_permission_source", _reconcile)
+        monkeypatch.setattr(permission_service.permission_store, "sync_source", _broken_store)
+
         service = module.PluginLifecycleService()
         response = await service.start_plugin("refresh_adapter")
 
         assert response["success"] is True
+        assert reconciled == [("refresh_adapter", 1)]
+        # Launched with a permission snapshot, then sent the current one once
+        # registered (a newer revision).
+        (host,) = created_hosts
+        assert host.initial_permissions is not None
+        assert set(host.initial_permissions["states"]) == set(PERMISSIONS)
+        (pushed,) = host.permission_pushes
+        assert pushed["revision"] > host.initial_permissions["revision"]
         assert refresh_calls == ["refresh_adapter"]
         assert source_modes == [project]
         assert set(capability_threads) == {
             "create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"
         }
         assert all(thread is not loop_thread for thread in capability_threads.values())
+
+        # With the push service running the post-registration push is queued
+        # on it instead of awaited under the operation lock.
+        from plugin.server.application.plugins import permission_push as push_module
+
+        queued: list[str] = []
+        monkeypatch.setattr(
+            push_module.permission_push_service, "push_soon", lambda plugin_id: queued.append(plugin_id) or True
+        )
+        created_hosts.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        response = await service.start_plugin("refresh_adapter")
+        assert response["success"] is True
+        (host,) = created_hosts
+        assert queued == ["refresh_adapter"] and host.permission_pushes == []
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -1245,6 +1305,75 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
         assert response["success"] is True
         assert seen["requirements"] == ["demo-lib>=2"]
         assert seen["search_paths"] == [vendor_dir]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_hands_the_effective_manifest_entry_ids_to_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "manifest_entries" / "plugin.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'manifest_entries'",
+                "name = 'Manifest Entries'",
+                "entry = 'tests.fake:Plugin'",
+                "[[plugin.entries]]",
+                "id = 'from_manifest'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _effective(*_args, **kwargs):
+        # A configuration overlay replacing the manifest's entries table.
+        effective = copy.deepcopy(kwargs["base_config"])
+        effective["plugin"]["entries"] = [{"id": "from_overlay"}]
+        return {"effective_config": effective, "warnings": []}
+
+    created: list[_FakeProcessHost] = []
+
+    def _host_factory(*args, **kwargs):
+        kwargs.pop("source_only", None)
+        host = _FakeProcessHost(*args, **kwargs)
+        created.append(host)
+        return host
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+    monkeypatch.setattr(module, "resolve_plugin_config_from_path", _effective)
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "create_plugin_host", _host_factory)
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(type("Plugin", (), {})))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        response = await module.PluginLifecycleService().start_plugin("manifest_entries", refresh_registry=False)
+
+        assert response["success"] is True
+        assert [host.manifest_entry_ids for host in created] == [["from_overlay"]]
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

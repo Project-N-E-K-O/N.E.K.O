@@ -250,9 +250,17 @@ def test_character_language_selects_laughter_without_changing_legacy_baseline(tm
 
 def test_links_reject_unrelated_hosts_and_keep_page():
     assert parse_video_url("https://www.bilibili.com/video/BV1GJ411x7h7?p=2") == ("BV1GJ411x7h7", 1)
-    for url in ("https://evil.test/video/BV1GJ411x7h7", "http://127.0.0.1/video/BV1GJ411x7h7", "https://www.bilibili.com/video/BV1GJ411x7h7?p=0"):
+    assert parse_video_url("https://www.bilibili.com/video/BV1GJ411x7h7?p=") == ("BV1GJ411x7h7", 0)
+    for url in ("https://evil.test/video/BV1GJ411x7h7", "http://127.0.0.1/video/BV1GJ411x7h7"):
         with pytest.raises(ValueError):
             parse_video_url(url)
+
+
+@pytest.mark.parametrize("raw_p", ["0", "-2", "abc", "2.5"])
+def test_parse_video_url_rejects_invalid_page_with_localized_error(raw_p):
+    """Non-integer or out-of-range ?p= must raise the localized page error."""
+    with pytest.raises(ValueError, match="分 P 序号无效"):
+        parse_video_url(f"https://www.bilibili.com/video/BV1GJ411x7h7?p={raw_p}")
 
 
 def test_rejects_spoilers_nan_weak_evidence_and_dense_cues():
@@ -363,3 +371,115 @@ async def test_subtitle_budget_preserves_late_windows_and_skips_invalid_tracks()
     assert result[-1]['content'] == 'ending dialogue'
     assert sum(len(row['content']) for row in result if row['from'] == 0) <= 600
     client.get.assert_awaited_once()
+
+
+def test_vision_request_stats_counts_structure_only():
+    from main_logic.watch_together.engine import vision_request_stats
+    image = 'data:image/jpeg;base64,' + 'A' * 1000
+    blocks = [{'type': 'text', 'text': '弹幕'}, {'type': 'image_url', 'image_url': {'url': image}},
+              {'type': 'text', 'text': 'abc'}, {'type': 'image_url', 'image_url': {'url': image}},
+              {'type': 'image_url', 'image_url': {}}]
+    blocks.append({'type': 'image_url', 'image_url': {'url': 'https://i0.hdslb.com/cover.jpg@640w.jpg'}})
+    stats = vision_request_stats('sys', blocks)
+    # Remote links are counted as images but their URL length is not image size.
+    assert stats == {'images': 4, 'remote_images': 1, 'image_bytes': 2 * len(image), 'text_chars': 3 + 2 + 3,
+                     'request_bytes': 3 + 6 + 3 + 2 * len(image)}
+    assert all(isinstance(value, int) for value in stats.values())
+
+
+@pytest.mark.asyncio
+async def test_each_window_records_request_size_before_the_vision_call(tmp_path, monkeypatch, capsys):
+    import json
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
+    seen = []
+    async def llm(blocks, job):
+        # The size must already describe this request if the call fails.
+        seen.append((dict(instance.last_vision_request), blocks))
+        return {'events': []}
+    monkeypatch.setattr(instance, 'llm', llm)
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert [stats['window_start'] for stats, _ in seen] == [0, 30]
+    for stats, blocks in seen:
+        assert stats == {'window_start': stats['window_start'],
+                         **engine.vision_request_stats(instance.director_prompt, blocks)}
+    printed = [json.loads(line.split(': ', 1)[1]) for line in capsys.readouterr().out.splitlines()
+               if line.startswith('Watch vision request: ')]
+    assert printed == [stats for stats, _ in seen]
+    # Failures after the vision loop must not be blamed on its last request.
+    assert instance.last_vision_request is None
+
+
+@pytest.mark.asyncio
+async def test_vision_config_records_only_endpoint_host_and_model(tmp_path):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: {
+        'api_key': 'sk-secret', 'model': 'vision-1', 'base_url': 'https://u:p@api.example.test/v1?key=x'})
+    await instance.vision_config()
+    assert instance.vision_endpoint == {'host': 'api.example.test', 'model': 'vision-1'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configured_url', [None, 123, 'http://[broken'])
+async def test_vision_config_tolerates_unusual_base_url(tmp_path, configured_url):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    cfg = {'api_key': 'k', 'model': 'vision-1', 'base_url': configured_url}
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: cfg)
+    assert await instance.vision_config() is cfg
+    assert instance.vision_endpoint == {'host': None, 'model': 'vision-1'}
+
+
+@pytest.mark.parametrize('configured,expected', [
+    ('https://u:p@api.example.test/v1?key=x', 'api.example.test'),
+    ('http://127.0.0.1:11434/v1', '127.0.0.1:11434'),
+    ('api.example.test:8443/v1', 'api.example.test:8443'),
+    ('http://[::1]:8000/v1', '[::1]:8000'),
+    ('http://host:notaport/v1', None),
+    ('', None),
+    (None, None),
+])
+def test_endpoint_host_keeps_port_and_tolerates_missing_scheme(configured, expected):
+    from main_logic.watch_together.engine import endpoint_host
+    assert endpoint_host(configured) == expected
+
+
+@pytest.mark.asyncio
+async def test_failure_while_assembling_a_window_does_not_report_the_previous_request(tmp_path, monkeypatch):
+    from pathlib import Path
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
+    frames = []
+    async def run_async(kind, *args):
+        if kind == 'frames':
+            frames_dir = args[1]
+            for at in (0.0, 35.0):
+                frame = Path(frames_dir) / f'{int(at)}.jpg'
+                frame.write_bytes(b'jpeg')
+                frames.append(frame)
+            return [(0.0, frames[0]), (35.0, frames[1])]
+        return []
+    monkeypatch.setattr(engine.media, 'run_async', run_async)
+    async def llm(blocks, job):
+        # Window 1's frame vanishes before it is read.
+        frames[1].unlink()
+        return {'events': []}
+    monkeypatch.setattr(instance, 'llm', llm)
+    with pytest.raises(FileNotFoundError):
+        await instance.prepare({'id': 'job'}, 'BV1GJ411x7h7', 'cat')
+    assert instance.last_vision_request is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key,expected', [('raw-key', ('raw-key',)), ('', ()), (None, ())])
+async def test_vision_config_keeps_the_key_only_for_redaction(tmp_path, key, expected):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: {
+        'api_key': key, 'is_custom': True, 'model': 'vision-1', 'base_url': 'http://localhost:8000'})
+    await instance.vision_config()
+    assert instance.diagnostic_secrets == expected
+    assert key is None or not key or key not in str(instance.vision_endpoint)

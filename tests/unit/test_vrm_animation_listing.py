@@ -7,6 +7,8 @@ from unittest.mock import Mock
 from fastapi.responses import JSONResponse
 import pytest
 
+from utils.url_utils import is_utf8_text
+
 pytestmark = pytest.mark.unit_fast
 
 
@@ -27,7 +29,8 @@ def test_animation_endpoint_excludes_only_bundled_movement(tmp_path):
     config = SimpleNamespace(project_root=tmp_path, vrm_animation_dir=user_dir,
                              ensure_vrm_directory=lambda: None)
     namespace = {"get_config_manager": lambda: config, "JSONResponse": JSONResponse,
-                 "logger": Mock(), "VRM_STATIC_ANIMATION_PATH": "/static/vrm/animation"}
+                 "logger": Mock(), "VRM_STATIC_ANIMATION_PATH": "/static/vrm/animation",
+                 "is_utf8_text": is_utf8_text}
     exec(compile(ast.Module(body=[endpoint], type_ignores=[]), str(source_path), "exec"), namespace)
     response = namespace["get_vrm_animations"]()
     assert response.status_code == 200

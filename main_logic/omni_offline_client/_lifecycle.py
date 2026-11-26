@@ -40,6 +40,8 @@ from utils.slop_filter import resolve_dialog_slop_lang
 
 from ._media import _FRAME_SOURCE_PROACTIVE
 from ._shared import (
+    _chat_route_config,
+    _note_legacy_vision,
     AIMessage,
     Any,
     Awaitable,
@@ -728,6 +730,17 @@ class _LifecycleMixin:
                     _notice_error,
                 )
 
+        if images and not (getattr(self, "vision_model", "") or ""):
+            from utils.legacy_vision import chat_refuses_images
+            if chat_refuses_images(_chat_route_config(self)):
+                # The chat model already rejected images this run: deliver
+                # the callback's text instead of a request that fails again.
+                logger.info(
+                    "prompt_ephemeral: not sending %d image(s), the chat model cannot read images",
+                    len(images),
+                )
+                images = []
+
         if images:
             # Images permanently switch to vision models by existing design (above). Vision also handles
             # later text-only turns, and Focus no longer disables thinking for vision.
@@ -821,6 +834,10 @@ class _LifecycleMixin:
                     _budget_notice if _budget_notice.get("user_visible") else None
                 )
             if _budget_images:
+                # Images are really going out: only now is a retired vision
+                # route (switched to above) used.
+                if self.vision_model:
+                    _note_legacy_vision(self, "offline proactive media")
                 _ephemeral_content: list = []
                 for img_b64 in _budget_images:
                     _ephemeral_content.append({
@@ -920,6 +937,7 @@ class _LifecycleMixin:
         # own pulse, never for a newer user stream_text that interleaved and
         # re-pulsed under a fresher seq (Codex P2).
         _reasoning_owner_seq = self._begin_reasoning_stream()
+        self._notify_response_start()
         _completion_kind = (
             "agent_callback"
             if completion_mode != "response" and getattr(self, "on_proactive_done", None)
@@ -1181,6 +1199,17 @@ class _LifecycleMixin:
                     break
         except Exception as e:
             observation_failed = True
+            if not (getattr(self, "vision_model", "") or ""):
+                from utils.legacy_vision import is_image_unsupported_error, mark_chat_image_refused
+                if is_image_unsupported_error(e):
+                    # Shared with the other image paths: later callbacks and
+                    # turns send text only to this chat model.
+                    mark_chat_image_refused(_chat_route_config(self), "offline proactive media")
+                    # Images already in history would ride along with later
+                    # text turns and be rejected again.
+                    _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
+                    if _drop_pixels is not None:
+                        _drop_pixels()
             if _is_api_key_rejected_error(e):
                 logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                 if self.on_status_message:

@@ -15,6 +15,7 @@ from main_logic import tts_client
 from main_logic.core import LLMSessionManager
 from main_logic.core import tts_runtime as tts_runtime_module
 from main_logic.tts_client import _infra as tts_infra_module
+from main_logic.tts_client._http_pool import TTS_HTTP_KEEPALIVE_EXPIRY_SECONDS
 from main_logic.tts_client.workers import openai as openai_worker_module
 from main_logic.tts_client.workers import vllm_omni as vllm_worker_module
 from main_routers.characters_router import voice_preview as voice_preview_module
@@ -1385,7 +1386,31 @@ def _install_fake_openai(monkeypatch, chunks, headers=None, openai_base_url_env=
         "DefaultAsyncHttpxClient",
         _FakeDefaultAsyncHttpxClient,
     )
+
+    def _mark_retry_installed(http_client):
+        http_client.stale_retry_installed = True
+        return http_client
+
+    monkeypatch.setattr(
+        openai_worker_module,
+        "install_stale_connection_retry",
+        _mark_retry_installed,
+    )
     return clients
+
+
+def _sdk_kwargs(fake_client):
+    """SDK constructor kwargs minus the worker's own HTTP client, checked here."""
+    kwargs = dict(fake_client.client_kwargs)
+    http_client = kwargs.pop("http_client")
+    # Idle connections outlive the gap between two replies' sentences.
+    limits = http_client.client_kwargs["limits"]
+    assert limits.keepalive_expiry == TTS_HTTP_KEEPALIVE_EXPIRY_SECONDS
+    # The SDK's own pool size is kept.
+    assert (limits.max_connections, limits.max_keepalive_connections) == (1000, 100)
+    # A request on a connection the server already dropped is retried once.
+    assert getattr(http_client, "stale_retry_installed", False)
+    return kwargs
 
 
 def _run_worker_once(
@@ -1491,7 +1516,7 @@ def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
     thread.join(timeout=5)
 
     assert audio.tolist() == [1, -2, 3]
-    assert clients[0].client_kwargs == {
+    assert _sdk_kwargs(clients[0]) == {
         "api_key": "sk-test",
         "base_url": "https://api.siliconflow.cn/v1",
     }
@@ -1523,7 +1548,7 @@ def test_custom_worker_omits_authorization_for_blank_api_key(
     thread.join(timeout=5)
 
     assert not thread.is_alive()
-    assert clients[0].client_kwargs == {
+    assert _sdk_kwargs(clients[0]) == {
         "api_key": "",
         "base_url": "http://127.0.0.1:8000/v1",
     }
@@ -1668,7 +1693,7 @@ def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):
     request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
     thread.join(timeout=5)
 
-    assert clients[0].client_kwargs == {"api_key": "sk-test"}
+    assert _sdk_kwargs(clients[0]) == {"api_key": "sk-test"}
     assert clients[0].create_calls == [{
         "model": "gpt-4o-mini-tts",
         "voice": "character-voice",

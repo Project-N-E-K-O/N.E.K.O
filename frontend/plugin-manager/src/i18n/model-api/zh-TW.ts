@@ -1,0 +1,43 @@
+import bindingErrors from '../model-binding-errors/zh-TW'
+import type { ModelApiMessages } from './en-US'
+
+const messages: ModelApiMessages = {
+  bindingErrors,
+  title: 'Plugin API', subtitle: '管理供外掛使用的模型。',
+  slots: '模型槽位', addSlot: '新增模型槽位', editSlot: '編輯模型槽位',
+  bindingHint: '先在這裡建立槽位，再到外掛設定中為宣告的模型用途選擇槽位。',
+  noSlots: '尚無模型槽位。新增一個，讓外掛連接到模型。',
+  name: '槽位名稱', protocol: 'API 協定', model: '模型 ID', endpoint: 'API 基礎位址',
+  source: '憑證來源', sourceManual: '手動設定', sourceHost: '跟隨本體 API',
+  sourceHint: '跟隨槽位在呼叫時讀取本體 API 設定，本體更換供應商或金鑰後自動生效；手動槽位自行儲存位址和金鑰。',
+  hostApiLabel: '本體 API', hostApi: { agent_advanced: '本體使魔模型·高級', agent: '本體使魔模型·通用', agent_small: '本體使魔模型·小型' },
+  hostHint: { agent_advanced: '跟隨本體 API 設定頁裡的「使魔模型·高級」（沒單獨設定時就是使魔模型·通用）。留給最難的工作；應能呼叫工具、能看圖。', agent: '跟隨本體 API 設定頁裡的「使魔模型·通用」，也就是使魔、鍵鼠操作和瀏覽器用的那個模型；應能呼叫工具、能看圖。', agent_small: '跟隨本體 API 設定頁裡的「使魔模型·小型」（沒單獨設定時就是識別模型）。適合量大、簡單的工作；也應能呼叫工具。' },
+  hostManagedHint: '位址與憑證跟隨本體 API 設定。',
+  hostManagedKey: '由本體管理', hostNotConfigured: '本體 API 未設定',
+  hostUnsupported: '本體這一檔的位址不是 HTTP 對話介面，外掛呼叫不了',
+  endpointHint: "請填寫包含供應商所需 API 前綴的基礎位址。OpenAI 相容介面通常需要以 /v1 結尾，例如 https://api.example.com/v1；若缺少，請手動補齊。不要包含 /chat/completions 或 /messages。",
+  key: 'API 金鑰', keySet: '已設定', keyEmpty: '未設定',
+  keyPlaceholder: '輸入金鑰；不需驗證的位址可留空',
+  keyEditHint: "已儲存金鑰僅顯示遮罩文字。不修改則保留，輸入完整新金鑰可替換，清空後儲存可刪除；複製僅取得遮罩文字。",
+  keyUpdateRequired: '位址或協定已改變。請填寫完整新金鑰，或清空金鑰欄位。',
+  capabilities: '模型能力', capabilitiesHint: '僅勾選模型實際支援的能力，用於檢查能否綁定外掛用途。',
+  capability: { text: '文字', image_input: '圖片輸入', tool_calling: '函式工具', streaming: '串流輸出' },
+  maxTokens: '預設輸出 Token 上限',
+  timeout: '總逾時', seconds: '{count} 秒', timeoutHint: '1–300 秒，包含排隊和備援呼叫。',
+  fallback: '備援槽位', noFallback: '不使用備援', fallbackHint: '符合條件的上游錯誤最多使用一次備援，共用總逾時；主模型最多佔用其中 2/3，卡住時仍有時間切換。需滿足相同能力要求。',
+  usedBy: '使用者', notBound: '尚無外掛綁定', deleteBlocked: '請先解除外掛綁定和其他槽位的備援引用。',
+  deleteConfirm: '刪除模型槽位「{name}」？', test: '測試連線',
+  unbind: '解除綁定', unbindConfirm: '解除 {plugin} / {usage} 的模型綁定？該用途需要重新綁定後才能呼叫模型。',
+  testHint: '連線測試使用已儲存的槽位發送一條短文字請求，可能產生供應商費用；不會驗證圖片、工具或串流能力。',
+  testSuccess: '文字請求成功 · {duration}', requiredFields: '請填寫槽位名稱、模型 ID 和 API 基礎位址。',
+  usage: '近期用量', pluginFilter: '依外掛 ID 篩選', allSlots: '全部模型槽位',
+  requests: '呼叫請求', attempts: '上游嘗試', knownTokens: '已知 Token（含部分用量）',
+  partialUnknown: '部分 / 未知用量', usageHint: '彙總基於最多 1,000 條保留記錄，表格顯示最近 100 條符合條件的請求。未回傳用量不代表零消耗。展開記錄可查看每次上游嘗試。',
+  noUsage: '目前篩選下尚無模型請求。', noAttempt: '未發起上游嘗試。',
+  time: '時間', consumer: '外掛 / 用途', slot: '模型槽位', result: '結果', duration: '耗時',
+  connectionTest: '連線測試', tokenCounts: '輸入 {input} · 輸出 {output} · 總計 {total}',
+  status: { success: '成功', error: '失敗', timeout: '逾時', cancelled: '已取消' },
+  usageStatus: { reported: '已報告用量', partial: '部分用量', unknown: '未知用量' },
+}
+
+export default messages

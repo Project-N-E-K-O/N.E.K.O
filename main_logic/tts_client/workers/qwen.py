@@ -14,26 +14,34 @@
 
 """Qwen realtime TTS worker."""
 
+import asyncio
+import base64
+from collections import deque
+import json
 import numpy as np
+import queue as queue_module
+import re
 import soxr
 import time
-import json
-import base64
 import websockets
-import asyncio
-import re
 
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from utils.config_manager import get_config_manager
 from utils.dashscope_region import dashscope_ws_url_from_base
 
 from .._infra import (
     AudioDoneEmitter,
+    TTS_PRECONNECT_SENTINEL,
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
     classify_server_close,
     make_audio_jitter_buffer,
     _enqueue_error,
+)
+from .._preconnect import (
+    FINISHED_ROUND_QUIET_SECONDS,
+    SpareSocket,
+    ws_may_hold_connection,
 )
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -42,11 +50,18 @@ logger = get_module_logger(__name__, "Main")
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+_QWEN_MAX_RECONNECT_ATTEMPTS = 3
 # Qwen TTS-family model IDs (qwen3-tts-flash-realtime, qwen3-tts-instruct-…,
 # and future qwen3.x-tts-… generations). TTS_MODEL may instead contain an omnimodal name copied by default from
 # REALTIME_MODEL, or another provider's model when this worker is a fallback (tts-1,
 # cosyvoice-v3-plus); none can be sent to DashScope's realtime TTS endpoint.
 _QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
+# close_timeout for every Qwen socket. DashScope answers a close frame only
+# after a fixed ~2.04s, whether the socket was idle, finished or mid-audio, so
+# waiting for that answer only delays the next connect, which waits for the
+# previous socket's close (one connection at a time). The close frame still
+# goes out; websockets drops the TCP connection once this passes.
+_QWEN_CLOSE_TIMEOUT_SECONDS = 0.3
 
 
 def _resolve_qwen_realtime_tts_url() -> str:
@@ -87,7 +102,26 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     async def async_worker():
         """Async TTS worker main loop"""
         tts_url = _resolve_qwen_realtime_tts_url()
+        try:
+            tts_host = urlparse(tts_url).hostname or tts_url
+        except ValueError:
+            # Log label only; a malformed URL fails at connect as before.
+            tts_host = tts_url
         ws = None
+        # Socket opened ahead of the next speech on core's preconnect request,
+        # bound to no speech until a connect adopts it; created once the
+        # headers are known.
+        spare = None
+        # Loop time of the last audio chunk, for _round_socket_finished.
+        last_audio_at = None
+        # The socket on which a done event arrived after this round's commit:
+        # the only evidence _round_socket_finished accepts. Tied to the socket
+        # object, so evidence from an earlier connection of the same speech
+        # never counts for the next one.
+        round_done_ws = None
+        # A socket that got text after its commit: its done events, earlier or
+        # later, no longer show the round is over (see the append path).
+        revoked_ws = None
         current_speech_id = None
         receive_task = None
         session_ready = asyncio.Event()
@@ -103,8 +137,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         qwen_audio_jitter = make_audio_jitter_buffer(response_queue, legacy_env_prefix="NEKO_QWEN_TTS")
         # Upstream done closes this turn's audio stream. Both receive tasks share one emitter,
         # and bound_speech_id captures this turn's sid at task creation: sid switching advances
-        # current_speech_id before awaiting old-connection closure, so an old receive task observing a late
-        # done would otherwise misattribute the preceding turn's completion to the new turn.
+        # current_speech_id, then cancels and awaits the old receive task (the old socket closes
+        # in the background), so an old receive task observing a late done would otherwise
+        # misattribute the preceding turn's completion to the new turn.
         # Also require buffer_committed: only after this turn's buffer is committed can done
         # indicate whole-turn completion; sentence-level upstream done would otherwise emit prematurely.
         audio_done = AudioDoneEmitter(response_queue)
@@ -117,6 +152,93 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         # Sender and receiver can each observe the same close frame; the first marks this turn rejected,
         # while the later observation only classifies it, making core count one rejection as one failure, symmetric with _step_protocol.
         rejected_speech_id = None
+        deferred_requests = deque()
+        pending = None  # Retain the current segment locally during disconnected retries to preserve order, without returning it to the shared queue
+        reconnect_attempts = 0
+        last_flush_error = None
+
+        # server_commit can synthesize before the terminal commit. Replay a
+        # lost socket's text only while no audio from it reached this worker.
+        appended_text = []
+        audio_started = False
+        idle_closed = False
+
+        def _fail_incomplete_speech(sid, error):
+            nonlocal rejected_speech_id, pending_text_buffer, pending, reconnect_attempts, idle_closed
+            rejected_speech_id = str(sid)
+            response_queue.put(("__tts_sentence_failed__", str(sid), ""))
+            _enqueue_error(response_queue, json.dumps({"code": "TTS_CONNECTION_FAILED", "msg": str(error)}))
+            audio_done.emit(str(sid))
+            pending_text_buffer = ""
+            pending = None
+            appended_text.clear()
+            idle_closed = False
+            reconnect_attempts = 0
+
+        async def _record_transient_retry_or_exhaust(
+            sid_value,
+            *,
+            pending_item,
+            err: Exception,
+        ) -> None:
+            """Advance the bounded reconnect counter, or retire the speech round."""
+            nonlocal pending, reconnect_attempts
+            if (
+                deferred_requests
+                and deferred_requests[0][0] in {TTS_SHUTDOWN_SENTINEL, "__interrupt__"}
+            ) or _defer_queued_work_until_control():
+                return
+            reconnect_attempts += 1
+            if reconnect_attempts >= _QWEN_MAX_RECONNECT_ATTEMPTS:
+                _fail_incomplete_speech(sid_value, err)
+                return
+            pending = pending_item
+            response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+            delay = min(2.0, 0.5 * (2 ** (reconnect_attempts - 1)))
+            await asyncio.sleep(delay)
+            _defer_queued_work_until_control()
+
+        async def _invalidate_current_socket(reason: str) -> None:
+            """Retire the active socket while preserving speech identity and buffered text."""
+            nonlocal ws, receive_task, session_configured, buffer_committed
+            if receive_task and not receive_task.done():
+                qwen_audio_jitter.flush()
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+                receive_task = None
+            if ws:
+                # Background close, tracked: the reconnect waits for it.
+                logger.debug("%s WebSocket 关闭中（后台）", reason)
+                spare.close_tracked(ws, label=reason)
+            ws = None
+            session_ready.clear()
+            session_configured = False
+            buffer_committed = False
+
+        def _defer_queued_work_until_control() -> bool:
+            """Move any queued shutdown or interrupt ahead of pending recovery work."""
+            control_request = None
+            while True:
+                try:
+                    queued_request = request_queue.get_nowait()
+                except queue_module.Empty:
+                    break
+                except (AttributeError, NotImplementedError):
+                    break
+                if queued_request[0] in {
+                    TTS_SHUTDOWN_SENTINEL,
+                    "__interrupt__",
+                }:
+                    control_request = queued_request
+                    break
+                deferred_requests.append(queued_request)
+            if control_request is None:
+                return False
+            deferred_requests.appendleft(control_request)
+            return True
 
         def _report_server_rejection(exc, bound_speech_id) -> bool:
             """Forward a server refusal close as an error pinned to its own round.
@@ -144,6 +266,65 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             _enqueue_error(response_queue, payload)
             return True
 
+        def _round_socket_finished() -> bool:
+            """Whether nothing is still expected on the socket ``ws`` holds.
+
+            True for the warmup socket (bound to no speech; the first speech
+            replaces it anyway) and for a round whose commit went out, that
+            got a done event on this very socket after that commit, and that
+            has been quiet for FINISHED_ROUND_QUIET_SECONDS. Sentence-level
+            done events before the commit do not count, and neither does
+            anything from an earlier connection of the same speech (audio_done
+            is deduplicated per speech id, so it cannot tell connections apart).
+            """
+            if current_speech_id is None:
+                return True
+            if not buffer_committed or round_done_ws is None or round_done_ws is not ws:
+                return False
+            if last_audio_at is None:
+                return True
+            return asyncio.get_running_loop().time() - last_audio_at >= FINISHED_ROUND_QUIET_SECONDS
+
+        async def _retire_finished_socket() -> None:
+            """Close a finished round's socket so a spare can replace it.
+
+            The next speech would close it anyway before connecting; doing it
+            when the next reply starts lets the spare open without a second
+            connection. Closed in the background (tracked by the spare, so the
+            next connect still waits for it).
+            """
+            nonlocal ws, receive_task, session_configured, idle_closed
+            old_ws = ws
+            # Cleared before the cancel: the receive tasks close ``ws``
+            # themselves while it still points at their socket.
+            ws = None
+            session_ready.clear()
+            session_configured = False
+            if receive_task and not receive_task.done():
+                # Released as the next speech used to before replacing it.
+                qwen_audio_jitter.flush()
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    # Expected: this task was cancelled just above.
+                    pass
+                except Exception as e:
+                    logger.debug("Qwen TTS retired receive task cleanup failed: %s", e)
+            receive_task = None
+            if current_speech_id is not None:
+                # Same as the server closing an idle socket after the round:
+                # a late chunk of this speech reconnects instead of failing it.
+                idle_closed = True
+            spare.close_tracked(old_ws)
+
+        async def _connect_spare_socket():
+            # _QWEN_CLOSE_TIMEOUT_SECONDS: the next connect waits for a
+            # retired spare's close.
+            return await websockets.connect(
+                tts_url, additional_headers=headers, close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
+            )
+
         def build_config_message(lang_hint=None):
             """Build the session.update message; lang_hint='ja' specifies Japanese, anything else uses server-side Auto."""
             session = {
@@ -168,19 +349,22 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             - Below threshold and not force: returns False.
             - Already sent or after executing: returns True.
             """
-            nonlocal session_configured, pending_text_buffer
+            nonlocal session_configured, pending_text_buffer, last_flush_error
             if session_configured:
                 return True
             if not ws:
                 return False
             if not force and len(pending_text_buffer) < TTS_LANG_DETECT_MIN_CHARS:
                 return False
+            last_flush_error = None
             lang_hint = detect_tts_language_hint(pending_text_buffer)
             try:
                 await ws.send(json.dumps(build_config_message(lang_hint)))
             except Exception as e:
                 logger.error(f"发送延迟 session.update 失败: {e}")
+                last_flush_error = e
                 _report_server_rejection(e, current_speech_id)
+                await _invalidate_current_socket("发送延迟 session.update 失败后的")
                 return False
             session_configured = True
             try:
@@ -194,12 +378,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": pending_text_buffer,
                     }))
+                    if not audio_started:
+                        appended_text.append(pending_text_buffer)
                     _record_tts_telemetry("qwen", len(pending_text_buffer))
                 except Exception as e:
-                    # Failed append usually means disconnection; callers must not send commit afterward.
-                    # Return False so sid=None/text paths continue and trigger reconnection.
+                    # Failed append usually means disconnection; roll back session_configured
+                    # and retain pending_text_buffer so reconnection can replay it cleanly.
                     logger.error(f"发送缓冲文本失败: {e}")
+                    last_flush_error = e
+                    session_configured = False
                     _report_server_rejection(e, current_speech_id)
+                    await _invalidate_current_socket("发送缓冲文本失败后的")
                     return False
             pending_text_buffer = ""
             return True
@@ -207,9 +396,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         try:
             # Connect WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
+            # Transport only: session.update carries the language hint, so
+            # it waits for the first text either way.
+            spare = SpareSocket(
+                connect=_connect_spare_socket,
+                defer_control=_defer_queued_work_until_control,
+            )
 
-            ws = await websockets.connect(tts_url, additional_headers=headers)
-            
+            ws = await websockets.connect(
+                tts_url, additional_headers=headers, close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
+            )
+
             # Await and handle initial messages
             async def wait_for_session_ready():
                 """Wait for session-creation confirmation"""
@@ -295,10 +492,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         qwen_audio_jitter.flush()
                     # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
                     if ws:
-                        try:
-                            await ws.close()
-                        except Exception:
-                            pass
+                        # Closed in the background, tracked so the next
+                        # connect still waits for it: the first speech or an
+                        # interrupt awaiting this task is not held up.
+                        spare.close_tracked(ws)
                         ws = None
                     session_ready.clear()
 
@@ -308,10 +505,19 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             loop = asyncio.get_running_loop()
             pending = None  # Retain the current segment locally during disconnected retries to preserve order, without returning it to the shared queue
             while True:
-                # Process retained disconnected segments before taking new requests
-                if pending:
+                text_staged_for_reconnect = False
+                finish_requested = False
+                # Control requests (__interrupt__ / shutdown) must preempt pending retries.
+                if deferred_requests and deferred_requests[0][0] in {
+                    TTS_SHUTDOWN_SENTINEL,
+                    "__interrupt__",
+                }:
+                    sid, tts_text = deferred_requests.popleft()
+                elif pending is not None:
                     sid, tts_text = pending
                     pending = None
+                elif deferred_requests:
+                    sid, tts_text = deferred_requests.popleft()
                 else:
                     try:
                         sid, tts_text = await loop.run_in_executor(None, request_queue.get)
@@ -320,6 +526,16 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
+
+                if sid == TTS_PRECONNECT_SENTINEL:
+                    # A reply's LLM request just started; have its socket ready
+                    # before the first text. A finished round's socket (kept
+                    # until the next speech) is retired first so the spare is
+                    # never a second connection.
+                    if ws_may_hold_connection(ws) and _round_socket_finished():
+                        await _retire_finished_socket()
+                    spare.start(lambda: ws_may_hold_connection(ws), after_cleanup=True)
+                    continue
 
                 if sid == "__interrupt__":
                     # Interrupt: close immediately without commit or server acknowledgment
@@ -337,10 +553,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 logger.debug(f"Qwen TTS interrupted receive task cleanup failed: {e}")
                             receive_task = None
                         if ws:
-                            try:
-                                await ws.close()
-                            except Exception as e:
-                                logger.debug(f"Qwen TTS interrupted websocket close failed: {e}")
+                            # Off the interrupt path; the next connect waits
+                            # for this close (spare.await_cleanup).
+                            spare.close_tracked(ws)
                             ws = None
                     finally:
                         session_ready.clear()
@@ -348,51 +563,76 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         buffer_committed = False
                         session_configured = False
                         pending_text_buffer = ""
+                        pending = None
+                        deferred_requests.clear()
+                        reconnect_attempts = 0
+                        rejected_speech_id = None
+                        audio_started = False
+                        idle_closed = False
+                        appended_text.clear()
+                        last_flush_error = None
                         qwen_audio_jitter.reset()
                         qwen_audio_jitter.end_interrupt()
                         audio_done.reset()
                         audio_done.end_interrupt()
                     continue
 
+                if rejected_speech_id is not None and (
+                    (sid is not None and str(sid) == rejected_speech_id)
+                    or (sid is None and str(current_speech_id or "") == rejected_speech_id)
+                ):
+                    if sid is None:
+                        audio_done.emit(rejected_speech_id)
+                    continue
+
                 if sid is None:
                     # Normal nonblocking finish: commit the buffer without awaiting acknowledgment or closing the connection
                     # Audio continues from receive_task into response_queue;
                     # the next speech_id switch or __interrupt__ closes the connection
-                    if ws and current_speech_id is not None:
-                        # If this turn has fewer than MIN_CHARS and session.update was not sent, force it once
-                        if not session_configured:
-                            if not await _flush_deferred_config(force=True):
-                                # Failed flush (session.update/append send failure) means a dead connection;
-                                # skip commit and await reconnection on the next speech_id
-                                continue
-                        # For short sentences, session.updated may arrive after _flush's 2s wait;
-                        # send commit without depending on session_ready, since the server processes append + commit in order
-                        # after session.updated is ready. Missing commit silently loses short sentences.
-                        if not buffer_committed:
-                            try:
-                                await ws.send(json.dumps({
-                                    "type": "input_text_buffer.commit",
-                                    "event_id": f"event_{int(time.time() * 1000)}_commit"
-                                }))
-                                buffer_committed = True
-                            except Exception as e:
-                                logger.warning(f"提交缓冲区失败: {e}")
-                                _report_server_rejection(e, current_speech_id)
-                    continue
-                
-                # New speech ID: reconnect, matching speech_synthesis_worker logic
-                # Close the old connection directly, interrupting old speech
-                if current_speech_id != sid:
-                    current_speech_id = sid
+                    if current_speech_id is None or buffer_committed:
+                        continue
+                    if not pending_text_buffer.strip() and not appended_text and not audio_started:
+                        continue
+                    finish_requested = True
+                    sid = current_speech_id
+
+                # New speech ID or broken current socket: reconnect, preserving same-speech buffered text.
+                is_new_speech = current_speech_id != sid
+                if is_new_speech or not ws:
+                    if is_new_speech:
+                        current_speech_id = sid
+                        pending_text_buffer = ""
+                        reconnect_attempts = 0
+                        audio_started = False
+                        idle_closed = False
+                        appended_text.clear()
+                        last_flush_error = None
+                    elif audio_started:
+                        if not idle_closed:
+                            _fail_incomplete_speech(sid, "Connection lost after partial audio delivery")
+                            continue
+                        idle_closed = False
+                        if finish_requested and not pending_text_buffer.strip() and not appended_text:
+                            qwen_audio_jitter.flush()
+                            buffer_committed = True
+                            audio_done.emit(str(sid))
+                            continue
+                        audio_started = False
+                        appended_text.clear()
+                    else:
+                        idle_closed = False
+                        pending_text_buffer = "".join(appended_text) + pending_text_buffer
+                        appended_text.clear()
                     buffer_committed = False
                     session_configured = False
-                    pending_text_buffer = ""
                     response_done.clear()
-                    if ws:
-                        try:
-                            await ws.close()
-                        except:  # noqa: E722
-                            pass
+                    if (
+                        not finish_requested
+                        and tts_text
+                        and tts_text.strip()
+                    ):
+                        pending_text_buffer += tts_text
+                        text_staged_for_reconnect = True
                     if receive_task and not receive_task.done():
                         qwen_audio_jitter.flush()
                         receive_task.cancel()
@@ -400,23 +640,68 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await receive_task
                         except asyncio.CancelledError:
                             pass
-                    # Reset streaming state only after the old receive task fully stops: await ws.close() yields,
-                    # letting old receive_task write late audio.delta; early reset would contaminate the next turn
-                    resampler.clear()  # Reset resampler state; new-turn audio must not continue the previous turn
-                    qwen_audio_jitter.reset()
-                    audio_done.reset()  # Reset audio_done deduplication for the new turn.
+                        receive_task = None
+                    if ws:
+                        # Closed in the background; the connect below waits
+                        # for it (spare.await_cleanup), and that wait yields
+                        # to a queued interrupt or shutdown.
+                        spare.close_tracked(ws)
+                        ws = None
+                    session_ready.clear()
+                    # Reset streaming state only after the old receive task fully stops; a task that
+                    # is still running could write late audio.delta and contaminate the next turn.
+                    if is_new_speech:
+                        resampler.clear()
+                        qwen_audio_jitter.reset()
+                        audio_done.reset()
 
-                    # Open a connection, deferring session.update with language hints until initial text arrives
+                    # Open a connection (adopting the preconnected one when there
+                    # is one), deferring session.update with language hints until
+                    # initial text arrives
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        connect_started = time.perf_counter()
+                        try:
+                            adopted = await spare.take()
+                        except asyncio.TimeoutError:
+                            adopted = None
+                        if adopted is not None:
+                            ws = adopted[0]
+                        else:
+                            if not await spare.await_cleanup():
+                                # A queued interrupt/shutdown owns this boundary.
+                                continue
+                            # _QWEN_CLOSE_TIMEOUT_SECONDS: this socket's close is tracked
+                            # too, and the next connect waits for it.
+                            ws = await websockets.connect(
+                                tts_url,
+                                additional_headers=headers,
+                                close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
+                            )
+                        logger.info(
+                            "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
+                            current_speech_id,
+                            tts_host,
+                            adopted is not None,
+                            int((time.perf_counter() - connect_started) * 1000),
+                        )
                         session_ready.clear()
 
+                        if _defer_queued_work_until_control():
+                            # An interrupt/shutdown queued while connecting (or
+                            # while waiting on the spare) owns this boundary:
+                            # nothing goes out on this socket. Closed in the
+                            # background, tracked so the next connect waits.
+                            spare.close_tracked(ws)
+                            ws = None
+                            continue
+
                         # Start a new receive task that also observes session.updated
-                        async def receive_messages(bound_speech_id):
-                            nonlocal ws
+                        async def receive_messages(bound_speech_id, bound_ws):
+                            nonlocal ws, audio_started, idle_closed, last_audio_at, round_done_ws
+                            nonlocal revoked_ws
                             cancelled = False
                             try:
-                                async for message in ws:
+                                async for message in bound_ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
 
@@ -427,11 +712,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         err_msg = event.get("error", {}).get("message", "")
                                         if "request timeout" in err_msg or "session_expired" in err_msg:
                                             logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                            if ws is bound_ws:
+                                                idle_closed = True
                                             break
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "response.audio.delta":
                                         try:
                                             audio_bytes = base64.b64decode(event.get("delta", ""))
+                                            if audio_bytes:
+                                                audio_started = True
+                                                appended_text.clear()
+                                                last_audio_at = asyncio.get_running_loop().time()
                                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                                             # Use streaming resampling from 24000Hz to 48000Hz
                                             qwen_audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
@@ -444,8 +735,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
+                                        if buffer_committed and ws is bound_ws and bound_ws is not revoked_ws:
+                                            round_done_ws = bound_ws
                             except websockets.exceptions.ConnectionClosed as exc:
-                                _report_server_rejection(exc, bound_speech_id)
+                                if _report_server_rejection(exc, bound_speech_id) and buffer_committed:
+                                    qwen_audio_jitter.flush()
+                                    audio_done.emit(bound_speech_id)
                             except asyncio.CancelledError:
                                 cancelled = True
                                 raise
@@ -455,50 +750,113 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 if not cancelled:
                                     qwen_audio_jitter.flush()
                                 # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
-                                if ws:
-                                    try:
-                                        await ws.close()
-                                    except Exception:
-                                        pass
+                                if ws is bound_ws:
                                     ws = None
-                                session_ready.clear()
-                        
-                        receive_task = asyncio.create_task(receive_messages(current_speech_id))
+                                    session_ready.clear()
+                                    # Tracked in the same step that drops ``ws``:
+                                    # a preconnect or connect meanwhile must see
+                                    # this socket as still closing.
+                                    spare.close_tracked(bound_ws)
+
+                        receive_task = asyncio.create_task(receive_messages(current_speech_id, ws))
 
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        ws = None
+                        if _report_server_rejection(e, sid):
+                            pending = None
+                            pending_text_buffer = ""
+                            audio_done.emit(str(sid))
+                            continue
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
-                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
-                        await asyncio.sleep(1.0)
+                        await _record_transient_retry_or_exhaust(
+                            sid,
+                            pending_item=(
+                                (None, None)
+                                if finish_requested
+                                else (sid, "" if text_staged_for_reconnect else tts_text)
+                            ),
+                            err=e,
+                        )
                         continue
 
-                # Validate text
-                if not tts_text or not tts_text.strip():
+                if finish_requested:
+                    flushed = await _flush_deferred_config(force=True)
+                    if flushed and ws and not buffer_committed:
+                        try:
+                            await ws.send(json.dumps({
+                                "type": "input_text_buffer.commit",
+                                "event_id": f"event_{int(time.time() * 1000)}_commit"
+                            }))
+                            buffer_committed = True
+                            if rejected_speech_id == str(sid):
+                                # A close can arrive while the commit send yields.
+                                qwen_audio_jitter.flush()
+                                audio_done.emit(str(sid))
+                            reconnect_attempts = 0
+                        except Exception as e:
+                            logger.warning(f"提交缓冲区失败: {e}")
+                            rejected_now = _report_server_rejection(e, current_speech_id)
+                            await _invalidate_current_socket("提交缓冲区失败后的")
+                            if rejected_now:
+                                pending_text_buffer = ""
+                                audio_done.emit(str(current_speech_id))
+                            else:
+                                await _record_transient_retry_or_exhaust(
+                                    current_speech_id,
+                                    pending_item=(None, None),
+                                    err=e,
+                                )
+                    elif not flushed:
+                        if (
+                            rejected_speech_id is not None
+                            and str(current_speech_id) == rejected_speech_id
+                        ):
+                            pending_text_buffer = ""
+                            audio_done.emit(rejected_speech_id)
+                        elif pending_text_buffer.strip() or appended_text:
+                            await _record_transient_retry_or_exhaust(
+                                current_speech_id,
+                                pending_item=(None, None),
+                                err=last_flush_error or RuntimeError("deferred config flush failed"),
+                            )
+                    continue
+
+                # Validate text (allow staged reconnect buffers even when tts_text is "")
+                if (not tts_text or not tts_text.strip()) and not pending_text_buffer.strip():
                     continue
 
                 if not ws:
-                    # Idle timeout disconnected the connection; retain the segment and reset speech_id to trigger reconnection
-                    # Flush residual jitter-buffer PCM before disconnecting: reconnect takes the speech_id-switch path and reset(),
-                    # which otherwise discards this turn's below-threshold trailing audio; speech_id still matches here, preserving continuity
+                    # Idle timeout disconnected the connection; retain the segment without clearing current_speech_id.
                     qwen_audio_jitter.flush()
-                    current_speech_id = None
-                    pending = (sid, tts_text)
+                    pending = (sid, "" if text_staged_for_reconnect else tts_text)
                     continue
 
                 # Before session.update, buffer MIN_CHARS for language detection
                 if not session_configured:
-                    pending_text_buffer += tts_text
+                    if not text_staged_for_reconnect and tts_text:
+                        pending_text_buffer += tts_text
                     ready = await _flush_deferred_config(force=False)
                     if not ready:
+                        if not ws and not (
+                            rejected_speech_id is not None
+                            and str(sid) == rejected_speech_id
+                        ):
+                            await _record_transient_retry_or_exhaust(
+                                sid,
+                                pending_item=(sid, ""),
+                                err=last_flush_error or RuntimeError("deferred config flush failed"),
+                            )
                         continue
+                    reconnect_attempts = 0
                     # _flush_deferred_config already sent pending_text_buffer with append
                     continue
 
                 if not session_ready.is_set():
                     # session.update sent but session unready due to timeout/disconnection; trigger reconnect
-                    current_speech_id = None
-                    pending = (sid, tts_text)
+                    await _invalidate_current_socket("等待 session_ready 失败后的")
+                    pending = (sid, "" if text_staged_for_reconnect else tts_text)
                     continue
 
                 # Append text without immediate commit; wait for the response-completion termination signal
@@ -508,18 +866,32 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": tts_text
                     }))
+                    if not audio_started:
+                        appended_text.append(tts_text)
+                    # Text sent after the round's done (a late chunk on the same
+                    # socket) is synthesized too: that done no longer shows the
+                    # socket is finished, and no new commit follows to earn it
+                    # back, so this socket is closed the usual way, by the next
+                    # speech.
+                    round_done_ws = None
+                    if buffer_committed:
+                        # The round's own done may still be on its way; it
+                        # must not count either.
+                        revoked_ws = ws
                     _record_tts_telemetry("qwen", len(tts_text))
+                    reconnect_attempts = 0
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
-                    # Report before clearing ws/current_speech_id below: this is the actual branch taken by
+                    # Report before invalidating below: this is the actual branch taken by
                     # the observed 1007 in incident logs, when the sender saw closure first.
-                    _report_server_rejection(e, sid)
-                    # Connection closed; mark invalid for the next reconnect
-                    ws = None
-                    current_speech_id = None  # Clear ID to force reconnection next time
-                    session_ready.clear()
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
+                    rejected_now = _report_server_rejection(e, sid)
+                    await _invalidate_current_socket("发送TTS文本失败后的")
+                    if not rejected_now:
+                        await _record_transient_retry_or_exhaust(
+                            sid,
+                            pending_item=(sid, tts_text),
+                            err=e,
+                        )
         
         except Exception as e:
             logger.error(f"Qwen实时TTS Worker错误: {type(e).__name__}: {e!r}", exc_info=True)
@@ -527,7 +899,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
-            # Clean up resources
+            # Clean up resources. Drop the spare (and any preconnect waiting on
+            # a close) first, so nothing new opens during exit. Then the
+            # receive task: cancelling it may hand its socket to the spare's
+            # tracked close, which the drain at the end waits for.
+            if spare is not None:
+                spare.discard()
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -540,10 +917,20 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     await ws.close()
                 except Exception:
                     pass
-    
+            if spare is not None:
+                try:
+                    spare.discard()
+                    await spare.drain(2.5)
+                except Exception as e:
+                    logger.debug("关闭预建 TTS socket 失败: %s", e)
+
     # Run the asynchronous worker
     try:
         asyncio.run(async_worker())
     except Exception as e:
         logger.error(f"Qwen实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
+
+
+# Recognizes TTS_PRECONNECT_SENTINEL (see .._preconnect.SpareSocket).
+qwen_realtime_tts_worker.supports_preconnect = True

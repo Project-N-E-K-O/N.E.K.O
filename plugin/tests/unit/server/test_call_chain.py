@@ -16,14 +16,16 @@ from plugin.core.capability_policy import decide
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.core.rpc import RpcDispatcher, owns_deadline
 from plugin.sdk.shared.core.call_chain_view import call_chain_scope, current_call_chain
-from plugin.server.application.plugins import call_audit, capability_gate
+from plugin.server.application.plugins import call_audit, capability_gate, permission_service
 from plugin.server.messaging.handlers import registry as handler_registry
 from plugin.server.routes.plugin_audit import router as audit_router
 
 pytestmark = pytest.mark.plugin_unit
 
 _REAL_GRANTED = capability_gate.granted_capabilities
-GRANTS = {"a": frozenset({"memory.read"}), "b": frozenset()}
+MEMORY = capability_gate.MEMORY_READ
+PUSH = capability_gate.MESSAGES_PUSH
+GRANTS = {"a": frozenset({MEMORY}), "b": frozenset()}
 
 
 def granted(plugin_id):
@@ -32,7 +34,8 @@ def granted(plugin_id):
 
 @pytest.fixture
 def gate(monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "observe")
+    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
+    monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(capability_gate, "registry", CallRegistry())
     monkeypatch.setattr(capability_gate, "_last_written", {})
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (granted(p), True))
@@ -40,6 +43,8 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
     monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
     monkeypatch.setattr(capability_gate, "_consent_failed_at", -60.0)
+    # A record cached by an earlier test must not answer a failed read here.
+    monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()
@@ -49,12 +54,12 @@ def gate(monkeypatch, tmp_path):
 
 
 def test_decide():
-    assert decide("memory.read", ("a",), granted).allowed
+    assert decide(MEMORY, ("a",), granted).allowed
     # A -> B -> A: the first A is a caller even though A also uses it.
-    assert decide("memory.read", ("b", "a", "b"), granted).reason == "caller_chain"
-    laundering = decide("memory.read", ("b", "a"), granted)
+    assert decide(MEMORY, ("b", "a", "b"), granted).reason == "caller_chain"
+    laundering = decide(MEMORY, ("b", "a"), granted)
     assert (laundering.blocked_by, laundering.reason) == (("b",), "caller_chain")
-    assert decide("memory.read", ("b",), granted).reason == "self_not_approved"
+    assert decide(MEMORY, ("b",), granted).reason == "self_not_approved"
     assert decide("screen.capture", ("b",), granted).judged is False
 
 
@@ -101,7 +106,7 @@ def test_every_judged_operation_uses_the_same_wrapper_and_nothing_else():
     async def marked(ctx, request):
         return "ok"
 
-    assert getattr(capability_gate.capability_checked("memory.read", marked), "__rpc_owns_deadline__", False)
+    assert getattr(capability_gate.capability_checked(MEMORY, marked), "__rpc_owns_deadline__", False)
 
 
 @pytest.mark.parametrize("broken", ["lookup", "consent"])
@@ -112,15 +117,15 @@ async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken)
     if broken == "lookup":
         monkeypatch.setattr(capability_gate.registry, "lookup", boom)
     else:
-        from plugin.server.infrastructure import plugin_consent
+        from plugin.server.application.plugins import permission_service
 
         monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-        monkeypatch.setattr(plugin_consent.consent_store, "read", boom)
+        monkeypatch.setattr(permission_service.permission_store, "view", boom)
 
     async def inner(ctx, request):
         return "ok"
 
-    dispatcher = RpcDispatcher({"MEMORY_SEARCH": capability_gate.capability_checked("memory.read", inner)})
+    dispatcher = RpcDispatcher({"MEMORY_SEARCH": capability_gate.capability_checked(MEMORY, inner)})
     reply = await dispatcher.dispatch({"type": "MEMORY_SEARCH", "from_plugin": "a", "request_id": "q"})
     assert (reply["result"], reply["error"]) == ("ok", None)
     if broken == "consent":  # the check ran and recorded the failed read
@@ -131,10 +136,15 @@ async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken)
         assert (link.caller, link.origin.kind) == ("b", "plugin_self")
 
 
-async def test_off_calls_nothing(gate, monkeypatch):
-    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
-    monkeypatch.setattr(capability_gate.registry, "lookup", lambda *a: pytest.fail("looked up while off"))
-    assert capability_gate.check("a", "r", "memory.read", "MEMORY_SEARCH") is None
+@pytest.mark.parametrize("switch", [("host", None), ("env", "off"), ("env", "observe")])
+async def test_switch_on_still_judges_and_records(gate, monkeypatch, switch):
+    source, legacy = switch
+    monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", source == "host")
+    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", legacy)
+    decision = capability_gate.check("b", "r", MEMORY, "MEMORY_SEARCH")
+    assert decision.judged and not decision.allowed
+    (entry,) = [e for e in call_audit.entries() if e["kind"] == "decision"]
+    assert (entry["verdict"], entry["mode"]) == ("would_deny", "observe")
 
 
 async def test_link_crosses_the_loop_hop_as_an_argument(gate):
@@ -287,18 +297,18 @@ async def test_audit_route_is_local_only(gate, client, base, headers, status):
         response = await http.get("/plugin-audit/call-chain", headers=headers)
     assert response.status_code == status
     if status == 200:
-        assert response.json()["mode"] == "observe"
+        assert response.json()["mode"] == "enforce"
 
 
 @pytest.mark.parametrize("ending", ["ok", "CANCELLED"])
 def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch, ending):
     # A push rides its own uplink and may be routed after the call's reply.
-    monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: ({"a": frozenset({"messages.push"})}.get(p, frozenset()), True))
+    monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: ({"a": frozenset({PUSH})}.get(p, frozenset()), True))
     root = capability_gate.begin_call("b", "r1", "plugin_entry", "call", CallLink(Origin("run")))
     child = capability_gate.begin_call("a", "r2", "plugin_entry", "push", capability_gate.link_for_plugin_call("b", "r1"))
     capability_gate.end_call(child, ending, 0)  # returned, or the caller cancelled it
-    capability_gate.check("a", "r2", "messages.push", "MESSAGE_PUSH")
-    capability_gate.check("a", "r2", "memory.read", "MEMORY_SEARCH")  # control RPCs alike
+    capability_gate.check("a", "r2", PUSH, "MESSAGE_PUSH")
+    capability_gate.check("a", "r2", MEMORY, "MEMORY_SEARCH")  # control RPCs alike
     capability_gate.end_call(root, "ok", 0)
     decisions = [e for e in call_audit.entries() if e["kind"] == "decision"]
     assert sorted((d["operation"], tuple(d["chain"]), d["verdict"], d["reason"]) for d in decisions) == [
@@ -316,59 +326,52 @@ def test_decisions_are_not_evicted_by_forward_entries(gate):
 
 
 def test_failed_consent_reads_are_not_retried_on_every_use(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
+    from plugin.server.application.plugins import permission_service
 
     reads = []
 
-    def broken(plugin_id):
+    def broken(plugin_id, _source):
         reads.append(plugin_id)
         raise OSError("unreadable")
 
     monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", broken)
+    monkeypatch.setattr(permission_service.permission_store, "view", broken)
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
     assert reads == ["a"]
 
 
-async def test_internal_push_field_is_never_forwarded(monkeypatch):
-    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
-    forwarded = []
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_internal_push_field_is_never_forwarded(monkeypatch, disabled):
+    monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", disabled)
+    forwarded, checked = [], []
 
     async def forward(self, msg):
         forwarded.append(msg)
 
     monkeypatch.setattr(PluginCommunicationResourceManager, "_forward_message", forward)
+    monkeypatch.setattr(capability_gate, "check", lambda *args: checked.append(args))
     manager = PluginCommunicationResourceManager(plugin_id="a", transport=object())  # type: ignore[arg-type]
     await manager._route_message({"type": "MESSAGE_PUSH", "_rpc_parent_request_id": "r1", "parts": []})
     assert "_rpc_parent_request_id" not in forwarded[0]
+    # Judged whatever the switch says, under the permission id.
+    assert checked == [("a", "r1", PUSH, "MESSAGE_PUSH")]
 
 
-def test_a_malformed_record_only_affects_its_own_plugin(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
-
-    records = {"bad": {"decision": "approved", "approved_capabilities": 7},
-               "good": {"decision": "approved", "approved_capabilities": ["memory.read"]}}
-    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: records[plugin_id])
-    assert capability_gate.granted_capabilities("bad") == (frozenset(), False)
-    assert capability_gate.granted_capabilities("good") == (frozenset({"memory.read"}), True)
-
-
-async def test_audit_route_returns_nothing_when_off(gate, monkeypatch):
+async def test_audit_route_keeps_entries_and_names_the_switch_source(gate, monkeypatch):
     call_audit.record({"kind": "forward"})
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
+    monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", True)
     app = FastAPI()
     app.include_router(audit_router)
     transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
         body = (await http.get("/plugin-audit/call-chain")).json()
-    assert body["mode"] == "off" and body["entries"] == []
+    assert body["mode"] == "observe" and len(body["entries"]) == 1
+    assert body["checks_disabled_sources"] == ["host_config", "legacy_env"]
 
 
-def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
-
+def test_audit_keeps_only_identifier_shaped_event_names(gate):
     record = capability_gate.begin_call("a", "r1", "plugin_entry", "user said: hello there", None)
     capability_gate.end_call(record, "ok", 0)
     (forward,) = call_audit.entries()
@@ -379,12 +382,6 @@ def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, m
     depth_error = RuntimeError()
     depth_error.code = "CALL_DEPTH_EXCEEDED"
     assert capability_gate.result_code(depth_error) == "CALL_DEPTH_EXCEEDED"
-    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read",
-                        lambda plugin_id: {"decision": "approved", "approved_capabilities": {"memory.read": False}})
-    assert capability_gate.granted_capabilities("a") == (frozenset(), False)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: {"decision": "approved"})
-    assert capability_gate.granted_capabilities("a") == (frozenset(), True)  # missing = none, as derive_consent
 
 
 async def test_audit_route_returns_every_retained_entry(gate, monkeypatch):

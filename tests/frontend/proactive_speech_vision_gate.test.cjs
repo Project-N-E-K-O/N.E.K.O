@@ -88,7 +88,7 @@ function loadProactive({ privacyAllowsVision, appScreen = {} }) {
     vm.runInContext(proactiveSource, window, { filename: 'app-proactive.js' });
     const frames = () => sent.filter((message) => message.action === 'stream_data').length;
     const heartbeat = () => [...intervals.values()].find((timer) => timer.ms === S.proactiveVisionInterval * 1000);
-    return { window, S, settings, frames, heartbeat };
+    return { window, S, settings, frames, heartbeat, sent };
 }
 
 test('heartbeat runs and sends frames while the gate allows it', async () => {
@@ -1050,4 +1050,132 @@ test('a click-acquired stream asks for a fresh frame even while a capture is in 
         assert.equal(pending.length, sent ? 1 : 2,
             sent ? 'the frame in flight went out: no second frame' : 'nothing went out: a fresh frame is captured right after');
     }
+});
+
+// ── in-flight proactive rounds: proactive_vision_invalidate (#3800) ─────────
+
+const invalidations = (h) => h.sent.filter((message) => message.action === 'proactive_vision_invalidate').length;
+
+for (const key of ['proactiveChatEnabled', 'proactiveVisionChatEnabled']) {
+    test(`turning ${key} off tells the backend once to end in-flight vision`, () => {
+        const { h } = runningCall();
+        h.window.syncProactiveVisionDuringSpeech(); // allowed: nothing to end
+        assert.equal(invalidations(h), 0);
+
+        h.S[key] = false;
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(invalidations(h), 1);
+
+        h.window.syncProactiveVisionDuringSpeech(); // any later settings save
+        assert.equal(invalidations(h), 1, 'only on the allowed -> not allowed change');
+
+        h.S[key] = true;
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(invalidations(h), 1, 'turning it back on sends nothing');
+    });
+}
+
+test('a switch closed in another window also ends in-flight vision, outside a call too', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false; // text mode: a text round may carry a screenshot
+    h.window.syncProactiveVisionDuringSpeech();
+    h.settings.proactiveVisionChatEnabled = false; // saved elsewhere
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 1);
+});
+
+test('the invalidation is not sent while the socket is not open', () => {
+    const { h } = runningCall();
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.socket.readyState = 3;
+    h.S.proactiveChatEnabled = false;
+    assert.doesNotThrow(() => h.window.syncProactiveVisionDuringSpeech());
+    assert.equal(invalidations(h), 0);
+});
+
+test('a text-chat screenshot taken before a switch went off does not ride its request', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    const api = h.window.appProactive;
+    const capture = () => ({
+        screenshot_data: 'data:image/jpeg;base64,AAAA',
+        window_title: 'Editor',
+        enabled_modes: ['vision', 'window', 'news'],
+    });
+
+    let seq = api.currentProactiveVisionRevocationSeq();
+    let body = capture();
+    assert.equal(api.discardVisionRevokedSince(body, seq), false, 'switches on: the screenshot stays');
+
+    // Off, then on again before the request is sent.
+    seq = api.currentProactiveVisionRevocationSeq();
+    body = capture();
+    h.S.proactiveVisionChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.proactiveVisionChatEnabled = true;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(api.discardVisionRevokedSince(body, seq), true);
+    assert.equal(body.screenshot_data, undefined);
+    assert.equal(body.window_title, undefined);
+    assert.deepEqual([...body.enabled_modes], ['news']);
+
+    // Off in another window, this window not synced yet.
+    seq = api.currentProactiveVisionRevocationSeq();
+    body = capture();
+    h.settings.proactiveChatEnabled = false;
+    assert.equal(api.discardVisionRevokedSince(body, seq), true);
+});
+
+test('the first sync of a page does not end another window\'s rounds', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.proactiveChatEnabled = false; // e.g. settings not loaded yet
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 0);
+});
+
+// Settings load does not run syncProactiveVisionDuringSpeech; a window that
+// started using the screen must still report the first switch-off.
+test('the first switch-off after the heartbeat started without any sync still ends in-flight vision', () => {
+    const { h } = runningCall(); // heartbeat started, no settings sync yet
+    h.S.proactiveVisionChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 1);
+});
+
+test('a proactive round that asks for vision records that vision is in use', () => {
+    const proactive = read('static/app/app-proactive.js');
+    assert.match(proactive, /voiceModes\.push\('vision'\);\s*noteProactiveVisionInUse\(\);/);
+    assert.match(proactive, /availableModes\.push\('window'\);\s*noteProactiveVisionInUse\(\);/);
+});
+
+test('app-settings gives the switch reconcile a baseline once settings load settles', () => {
+    const settingsSource = read('static/app/app-settings.js');
+    // Merged or failed GET: the finally of the load chain.
+    assert.match(settingsSource, /\}\)\.finally\(\(\) => \{[\s\S]*?startPeriodicSync\(\);[\s\S]*?syncSpeechVisionWithSwitches\(\);\s*\}\);/);
+    // The GET never started.
+    assert.match(settingsSource, /服务器设置同步启动失败[\s\S]*?startPeriodicSync\(\);\s*syncSpeechVisionWithSwitches\(\);/);
+});
+
+test('after the load baseline, the first switch-off sends one invalidation', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false;
+    h.window.syncProactiveVisionDuringSpeech(); // load-settled baseline, no round started
+    h.S.proactiveChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech(); // the user's first save
+    assert.equal(invalidations(h), 1);
+});
+
+test('turning privacy mode on leaves the epoch to the consent message', () => {
+    const { h } = runningCall();
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.proactiveVisionEnabled = false; // privacy mode on in this window
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 0);
+
+    const other = runningCall();
+    other.h.window.syncProactiveVisionDuringSpeech();
+    other.h.settings.proactiveVisionEnabled = false; // privacy mode on elsewhere
+    other.h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(other.h), 0);
 });

@@ -51,7 +51,10 @@ found exactly that.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -61,6 +64,22 @@ from plugin.core import host
 _HAS_FORK = hasattr(os, "fork") and hasattr(os, "register_at_fork")
 _FD_DIRS = tuple(directory for directory in ("/proc/self/fd", "/dev/fd") if os.path.isdir(directory))
 _HAS_FD_DIR = bool(_FD_DIRS)
+
+
+@pytest.fixture
+def unix_socket_path() -> Iterator[Path | None]:
+    """Allocate a short AF_UNIX socket path under /tmp so macOS $TMPDIR never exceeds 104 bytes."""
+    if not hasattr(socket, "AF_UNIX"):
+        yield None
+        return
+    base_dir = "/tmp" if os.path.isdir("/tmp") else None
+    sock_dir = Path(tempfile.mkdtemp(prefix="neko-sock-", dir=base_dir))
+    sock_path = sock_dir / "manager.sock"
+    assert len(str(sock_path).encode()) < 104, f"AF_UNIX path too long: {sock_path}"
+    try:
+        yield sock_path
+    finally:
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def _is_closed(fd: int) -> bool:
@@ -87,7 +106,7 @@ def _detach_and_close(sock: socket.socket) -> None:
 @pytest.mark.plugin_unit
 def test_it_keeps_host_http_sockets_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    unix_socket_path: Path | None,
 ) -> None:
     """Decision layer, closing nothing so it also runs on Windows.
 
@@ -131,9 +150,9 @@ def test_it_keeps_host_http_sockets_and_nothing_else(
     # Early versions based the entire test on it, making supposedly Windows-compatible CI coverage
     # fail immediately with AttributeError.
     manager: socket.socket | None = None
-    if hasattr(socket, "AF_UNIX"):
+    if unix_socket_path is not None:
         manager = socket.socket(socket.AF_UNIX)
-        manager.bind(str(tmp_path / "manager.sock"))
+        manager.bind(str(unix_socket_path))
 
     pipe_read, pipe_write = os.pipe()
 
@@ -193,7 +212,7 @@ def test_it_keeps_host_http_sockets_and_nothing_else(
 )
 def test_the_hook_closes_exactly_the_host_http_sockets(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    unix_socket_path: Path | None,
 ) -> None:
     """Side-effect layer: actually close the selected fds without touching others.
 
@@ -221,8 +240,9 @@ def test_the_hook_closes_exactly_the_host_http_sockets(
     zmq_like.bind(("127.0.0.1", 0))
     zmq_like.listen(1)
 
+    assert unix_socket_path is not None
     manager = socket.socket(socket.AF_UNIX)  # Always available on POSIX; retain Manager proxy sockets.
-    manager.bind(str(tmp_path / "manager.sock"))
+    manager.bind(str(unix_socket_path))
 
     pipe_read, pipe_write = os.pipe()
 

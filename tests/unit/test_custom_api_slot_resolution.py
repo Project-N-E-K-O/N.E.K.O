@@ -170,16 +170,16 @@ class TestNamedProviderSlotKey:
     def test_legacy_slot_key_survives_when_key_book_empty(self, config_manager):
         """Key-book-less legacy configs keep using the stored slot key."""
         _write_core_config(config_manager, _base_config(
-            summaryModelProvider='openai',
-            summaryModelId='gpt-5-mini',
-            summaryModelUrl='https://api.openai.com/v1',
-            summaryModelApiKey='sk-legacy-slot',
+            memoryModelProvider='openai',
+            memoryModelId='gpt-5-mini',
+            memoryModelUrl='https://api.openai.com/v1',
+            memoryModelApiKey='sk-legacy-slot',
             # No openai entry in the registry.
         ))
         cfg = config_manager.get_core_config()
-        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-legacy-slot', (
+        assert cfg['MEMORY_MODEL_API_KEY'] == 'sk-legacy-slot', (
             "管理簿为空时必须保住槽位存量 Key，实际="
-            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
+            f"{cfg['MEMORY_MODEL_API_KEY']!r}"
         )
 
     @pytest.mark.unit
@@ -213,16 +213,16 @@ class TestNamedProviderSlotKey:
             'assistApi': 'qwen',
             'coreApiKey': 'sk-core-key',
             'enableCustomApi': True,
-            'summaryModelProvider': 'qwen',
-            'summaryModelId': 'qwen3.7-plus',
-            'summaryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-            'summaryModelApiKey': 'sk-slot-specific',
+            'memoryModelProvider': 'qwen',
+            'memoryModelId': 'qwen3.7-plus',
+            'memoryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'memoryModelApiKey': 'sk-slot-specific',
             # No qwen entry in the registry: ASSIST_API_KEY_QWEN can only be derived by _fb().
         })
         cfg = config_manager.get_core_config()
-        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-slot-specific', (
+        assert cfg['MEMORY_MODEL_API_KEY'] == 'sk-slot-specific', (
             "派生的核心 Key 不该压过槽位存量 Key，实际="
-            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
+            f"{cfg['MEMORY_MODEL_API_KEY']!r}"
         )
 
     @pytest.mark.unit
@@ -233,16 +233,16 @@ class TestNamedProviderSlotKey:
             'assistApi': 'qwen',
             'coreApiKey': 'sk-core-key',
             'enableCustomApi': True,
-            'summaryModelProvider': 'qwen',
-            'summaryModelId': 'qwen3.7-plus',
-            'summaryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-            'summaryModelApiKey': 'sk-stale-slot',
+            'memoryModelProvider': 'qwen',
+            'memoryModelId': 'qwen3.7-plus',
+            'memoryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'memoryModelApiKey': 'sk-stale-slot',
             'assistApiKeyQwen': 'sk-book-current',
         })
         cfg = config_manager.get_core_config()
-        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-book-current', (
+        assert cfg['MEMORY_MODEL_API_KEY'] == 'sk-book-current', (
             "管理簿里真存的那条必须优先，实际="
-            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
+            f"{cfg['MEMORY_MODEL_API_KEY']!r}"
         )
 
     @pytest.mark.unit
@@ -326,30 +326,30 @@ class TestNamedProviderSlotKey:
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
-            correctionModelProvider='custom',
-            correctionModelId='my-model',
-            correctionModelUrl='http://localhost:11434/v1',
-            correctionModelApiKey='sk-typed-by-user',
+            memoryModelProvider='custom',
+            memoryModelId='my-model',
+            memoryModelUrl='http://localhost:11434/v1',
+            memoryModelApiKey='sk-typed-by-user',
         ))
         cfg = config_manager.get_core_config()
-        assert cfg['CORRECTION_MODEL_API_KEY'] == 'sk-typed-by-user', (
+        assert cfg['MEMORY_MODEL_API_KEY'] == 'sk-typed-by-user', (
             "custom 槽的 Key 必须用用户手填值，实际="
-            f"{cfg['CORRECTION_MODEL_API_KEY']!r}"
+            f"{cfg['MEMORY_MODEL_API_KEY']!r}"
         )
 
     @pytest.mark.unit
     def test_custom_provider_allows_empty_key(self, config_manager):
         """A keyless local endpoint stays keyless (no key-book borrowing)."""
         _write_core_config(config_manager, _base_config(
-            correctionModelProvider='custom',
-            correctionModelId='llama3',
-            correctionModelUrl='http://localhost:11434/v1',
-            correctionModelApiKey='',
+            memoryModelProvider='custom',
+            memoryModelId='llama3',
+            memoryModelUrl='http://localhost:11434/v1',
+            memoryModelApiKey='',
         ))
         cfg = config_manager.get_core_config()
-        assert cfg['CORRECTION_MODEL_API_KEY'] == '', (
+        assert cfg['MEMORY_MODEL_API_KEY'] == '', (
             "本地无鉴权端点不应被塞进任何 Key，实际="
-            f"{cfg['CORRECTION_MODEL_API_KEY']!r}"
+            f"{cfg['MEMORY_MODEL_API_KEY']!r}"
         )
 
 
@@ -559,12 +559,12 @@ class TestFallbackProtocolIsSameOrigin:
         """Turning custom API off drops the residual anthropic protocol."""
         _write_core_config(config_manager, _base_config(
             enableCustomApi=False,
-            summaryModelProvider='claude',
-            summaryModelId='claude-sonnet-4',
-            summaryModelUrl='https://api.anthropic.com/v1',
+            memoryModelProvider='claude',
+            memoryModelId='claude-sonnet-4',
+            memoryModelUrl='https://api.anthropic.com/v1',
         ))
         cfg = config_manager.get_core_config()
-        summary = config_manager.get_model_api_config('summary')
+        summary = config_manager.get_model_api_config('memory')
         assert summary['provider_type'] == 'openai_compatible', (
             "关掉自定义 API 后地址已回落 assist，协议必须同源回落，"
             f"实际={summary['provider_type']!r}"
@@ -578,11 +578,11 @@ class TestFallbackProtocolIsSameOrigin:
     def test_incomplete_custom_slot_does_not_keep_anthropic(self, config_manager):
         """An incomplete anthropic slot falls back protocol-and-address together."""
         _write_core_config(config_manager, _base_config(
-            emotionModelProvider='claude',
-            emotionModelId='claude-sonnet-4',
-            emotionModelUrl='',
+            recognitionModelProvider='claude',
+            recognitionModelId='claude-sonnet-4',
+            recognitionModelUrl='',
         ))
-        emotion = config_manager.get_model_api_config('emotion')
+        emotion = config_manager.get_model_api_config('recognition')
         assert emotion['provider_type'] == 'openai_compatible', (
             "URL 不完整时该槽已回落 assist，协议不能停在 anthropic，"
             f"实际={emotion['provider_type']!r}"
@@ -693,12 +693,12 @@ class TestFallbackProtocolIsSameOrigin:
     def test_complete_anthropic_slot_still_speaks_anthropic(self, config_manager):
         """A genuinely complete anthropic slot keeps its protocol."""
         _write_core_config(config_manager, _base_config(
-            emotionModelProvider='claude',
-            emotionModelId='claude-sonnet-4',
-            emotionModelUrl='https://api.anthropic.com/v1',
+            recognitionModelProvider='claude',
+            recognitionModelId='claude-sonnet-4',
+            recognitionModelUrl='https://api.anthropic.com/v1',
             assistApiKeyClaude='sk-ant-book',
         ))
-        emotion = config_manager.get_model_api_config('emotion')
+        emotion = config_manager.get_model_api_config('recognition')
         assert emotion['provider_type'] == 'anthropic', (
             "配置完整时必须真的走 Anthropic 协议，"
             f"实际={emotion['provider_type']!r}"

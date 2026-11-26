@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_merge import strip_reserved_sections
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_config_path
 from plugin.server.infrastructure.config_profiles import (
     get_profile_config,
@@ -157,6 +158,9 @@ def upsert_profile_config(
             status_code=400,
             detail="Profile config must not define top-level 'plugin' section.",
         )
+    # Reserved tables are read from plugin.toml only and are ignored in a
+    # profile; drop them so a save does not keep dead settings around.
+    config = strip_reserved_sections(config)
     if not profile_name:
         raise HTTPException(status_code=400, detail="profile_name is required")
 

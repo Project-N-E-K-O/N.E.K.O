@@ -35,6 +35,8 @@ vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) =>
       params ? `${key} ${JSON.stringify(params)}` : key,
+    // Every key exists except the labels of a permission id this build does not know.
+    te: (key: string) => !key.includes('system_example_future'),
   }),
 }))
 const apps: Array<ReturnType<typeof createApp>> = []
@@ -211,6 +213,148 @@ describe('PluginPermissions', () => {
     expect(root.textContent).toContain('pluginConsent.decision.approved')
     expect(buttons(root, 'pluginConsent.revoke')).toHaveLength(1)
     expect(buttons(root, 'pluginConsent.approve')).toHaveLength(0)
+  })
+
+  describe('what the analysis found', () => {
+    const clearRecord = {
+      state: 'clear' as const,
+      unconfirmed: [],
+    }
+    function analysis(extras: Partial<PluginConsent['analysis']> = {}): PluginConsent['analysis'] {
+      return {
+        status: 'completed',
+        capabilities: [],
+        evidence: [],
+        warnings: [],
+        files_analyzed: 2,
+        permissions: {},
+        blind_spots: [],
+        ...extras,
+      }
+    }
+
+    it('lists used permissions instead of reporting nothing found', async () => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          permissions: {
+            'system.network:connect': {
+              declared: null,
+              findings: [{ file: 'main.py', line: 7 }],
+            },
+            'plugin_sdk.models:invoke': { declared: 'required', findings: [] },
+          },
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(root.textContent).not.toContain('pluginConsent.noneFound')
+      expect(root.textContent).toContain('pluginConsent.findings.usedBanner {"n":2}')
+      const listed = root.querySelector('[data-testid="used-permissions"]')!
+      expect(listed.textContent).toContain('pluginConsent.capabilities.system_network_connect.title')
+      expect(listed.textContent).toContain('pluginConsent.findings.detected')
+      expect(listed.textContent).toContain('pluginConsent.capabilities.plugin_sdk_models_invoke.title')
+      expect(listed.textContent).toContain('pluginConsent.findings.declared')
+      expect(root.querySelector('[data-testid="blind-spots"]')).toBeNull()
+    })
+
+    it('shows the origin of a permission listed under its earlier capability name', async () => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          capabilities: ['memory.read'],
+          permissions: {
+            'plugin_sdk.main_agent.memory:read': {
+              declared: 'require',
+              findings: [{ file: 'main.py', line: 900 }],
+            },
+          },
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(root.querySelector('[data-testid="used-permissions"]')).toBeNull()
+      const origin = root.querySelector('[data-testid="capability-origin"]')!
+      expect(origin.textContent).toContain('pluginConsent.findings.declared')
+      const toggle = root.querySelector<HTMLButtonElement>('.capability__toggle')!
+      expect(toggle.textContent).toContain('pluginConsent.evidenceToggle {"n":1}')
+      toggle.click()
+      await flush()
+      expect(root.querySelector('.evidence code')?.textContent).toBe('main.py:900')
+    })
+
+    it.each([
+      ['with permissions found', true],
+      ['without anything found', false],
+    ])('a partial analysis %s says the data use is unknown only when nothing is listed', async (_, found) => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          status: 'partial',
+          warnings: [{ code: 'budget_exceeded' }],
+          permissions: found
+            ? { 'system.network:connect': { declared: null, findings: [{ file: 'main.py', line: 2 }] } }
+            : {},
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(Boolean(root.querySelector('[data-testid="used-permissions"]'))).toBe(found)
+      expect(Boolean(root.querySelector('[data-testid="analysis-unknown"]'))).toBe(!found)
+    })
+
+    it('counts blind spots instead of reporting nothing found', async () => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          blind_spots: [
+            { type: 'dynamic_import', file: 'main.py', line: 4 },
+            { type: 'not_analyzed', file: 'vendor/big.py', line: null },
+            { type: 'not_analyzed', file: null, line: null },
+          ],
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(root.textContent).not.toContain('pluginConsent.noneFound')
+      expect(root.querySelector('.consent-banner')?.getAttribute('data-tone')).toBe('warning')
+      expect(root.textContent).toContain('pluginConsent.findings.blindSpotsTitle {"n":3}')
+      const spots = root.querySelector('[data-testid="blind-spots"]')!
+      expect(spots.querySelector('code')).toBeNull()
+      const toggle = buttonsContaining(spots as HTMLElement, 'pluginConsent.evidenceToggle')[0]!
+      toggle.click()
+      await flush()
+      expect([...spots.querySelectorAll('code')].map((node) => node.textContent)).toEqual([
+        'main.py:4',
+        'vendor/big.py',
+      ])
+      expect(spots.textContent).toContain('pluginConsent.findings.unlocated')
+      expect(spots.textContent).not.toContain('not_analyzed')
+    })
+
+    it('reports nothing found only without permissions and blind spots', async () => {
+      seed({ ...clearRecord, analysis: analysis() })
+      const root = mount()
+      await flush()
+      expect(root.textContent).toContain('pluginConsent.noneFound')
+      expect(root.querySelector('.consent-banner')?.getAttribute('data-tone')).toBe('success')
+      expect(root.querySelector('[data-testid="used-permissions"]')).toBeNull()
+      expect(root.querySelector('[data-testid="blind-spots"]')).toBeNull()
+    })
+
+    it('shows an unlabelled permission id as it is', async () => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          permissions: { 'system.example:future': { declared: 'optional', findings: [] } },
+        }),
+      })
+      const root = mount()
+      await flush()
+      const listed = root.querySelector('[data-testid="used-permissions"]')!
+      expect(listed.querySelector('strong')?.textContent).toBe('system.example:future')
+      expect(listed.textContent).not.toContain('system_example_future')
+    })
   })
 
   it('analyzing shows the analyzing banner without actions', async () => {

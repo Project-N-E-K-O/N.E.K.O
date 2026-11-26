@@ -1721,3 +1721,45 @@ def test_icebreaker_electron_messages_wait_for_async_chat_identity():
     assert "queueIcebreakerBridgeMessageUntilIdentity(data);" in interpage
     assert "'neko:config-injected',\n        schedulePendingIcebreakerIdentityFlush" in interpage
     assert "window.pageConfigReady.then(schedulePendingIcebreakerIdentityFlush)" in interpage
+
+
+def test_icebreaker_treats_stale_session_skip_as_inactive_across_endpoints():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
+        "function recordChoiceToPool(meta)",
+        1,
+    )[0]
+    assert "data.skipped === 'stale_session'" in context_block
+    assert "makeIcebreakerApiError('stale_session', data)" in context_block
+    assert "if (isIcebreakerRouteInactiveError(error))" in context_block
+
+    choice_pool_block = runtime.split("function recordChoiceToPool(meta)", 1)[1].split(
+        "function getIcebreakerMessageText(message)",
+        1,
+    )[0]
+    assert "data.skipped === 'stale_session'" in choice_pool_block
+    assert "makeIcebreakerApiError('stale_session', data)" in choice_pool_block
+    assert "if (isIcebreakerRouteInactiveError(error))" in choice_pool_block
+
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey, signal)", 1)[1].split(
+        "function waitForTtsRequest",
+        1,
+    )[0]
+    assert "data.skipped === 'stale_session'" in speak_block
+    assert "return false;" in speak_block
+    assert "deactivateInactiveIcebreakerSession" not in speak_block
+
+    start_block = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+    assert "deactivateInactiveIcebreakerSession(createdSession);" in start_block
+    assert "deactivateInactiveIcebreakerSession(activeSession)" not in start_block
+
+    handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(
+        "function applyFreeTextInterpretation",
+        1,
+    )[0]
+    assert "if (isIcebreakerRouteInactiveError(error))" in handle_choice_block
+    assert "deactivateInactiveIcebreakerSession(session);" in handle_choice_block

@@ -1,10 +1,30 @@
-# Third-party notices for the bundled MMD libraries and visit vendor SDKs
+# Third-party notices for bundled frontend libraries
 
-These notices cover the two three-mmd bundles below, the babylon-mmd code
-embedded in the core bundle, and the two real-time SDKs that the visit
-transport page loads (`trtc.js`, `livekit-client.umd.js`). This is not an inventory of every library in
-`static/libs`. These components retain their upstream licenses; the project's
-root Apache-2.0 license does not replace them.
+These notices cover bundled libraries used by the expression editor, MMD
+renderer, and visit transport. Each component is distributed under its
+upstream license.
+
+## Esoteric Software Spine Runtimes
+
+- File: `spine/spine-webgl-4.3.13.min.js`
+- Package: `@esotericsoftware/spine-webgl@4.3.13` (official IIFE; includes
+  matching `spine-core`)
+- Source: <https://github.com/EsotericSoftware/spine-runtimes>
+- SHA-256: `FE05B399895CB4F5ACAF00CA91724CBB5F6DBA7972B53D4C7D5D9131FDE5B018`
+- License: [SPINE-RUNTIMES-LICENSE-4.3.13.txt](spine/SPINE-RUNTIMES-LICENSE-4.3.13.txt)
+- Bundle-specific provenance and loading policy:
+  [spine/NOTICE.md](spine/NOTICE.md)
+
+`spine_runtime_loader.js` loads the bundle on demand to preview and render Spine animations.
+
+## fflate
+
+- File: `fflate.umd.js`
+- Package: `fflate@0.8.2`
+- Source: <https://github.com/101arrowz/fflate>
+- License: [FFLATE-LICENSE.txt](licenses/FFLATE-LICENSE.txt)
+
+The editor uses the bundle to read ZIP assets in memory and to write ZIP exports.
 
 ## @moeru/three-mmd
 
@@ -108,6 +128,19 @@ original upstream release or its pre-import patch history.
   `loglevel`, `machina`, `sdp-transform`, `tslib`, `typed-emitter`,
   `webrtc-adapter`) under their own permissive licenses.
 - Loaded the same way as `trtc.js`, only for `transport: 'livekit'`.
+
+## dompurify
+
+- File: `purify.js`
+- Source: <https://github.com/cure53/DOMPurify>
+- Version: `3.4.17`, pinned in parity with `frontend/plugin-manager/package-lock.json`.
+  The file is byte-for-byte `package/dist/purify.js` of the npm release.
+- Release: <https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz>
+- SHA-256: `a7b6dc750251c79c95592d6abf8908bcecb51319b0b5c4194b82222566ed29b9`
+- Local changes: none.
+- License: Dual-licensed under Apache-2.0 OR MPL-2.0; redistributed here under
+  Apache-2.0, whose full text is in
+  [DOMPURIFY.LICENSE](licenses/DOMPURIFY.LICENSE).
 
 ## Distribution and updates
 

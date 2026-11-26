@@ -55,6 +55,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyDeepseek': 'ASSIST_API_KEY_DEEPSEEK',
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyDoubaoTts': 'ASSIST_API_KEY_DOUBAO_TTS',
+        'assistApiKeyQwenTokenPlan': 'ASSIST_API_KEY_QWEN_TOKEN_PLAN',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
         'assistApiKeyMinimaxIntl': 'ASSIST_API_KEY_MINIMAX_INTL',
         'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
@@ -294,7 +295,6 @@ class TestRequestyResolution:
         for task, model in {
             'conversation': 'google/gemini-2.5-flash',
             'summary': 'google/gemini-2.5-flash',
-            'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
             'agent': 'google/gemini-3.8-flash',
@@ -374,7 +374,7 @@ class TestOpperResolution:
             core_key if core_provider != 'free' else ''
         )
         assert cfg['AGENT_MODEL_API_KEY'] == opper_key
-        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+        for task in ('conversation', 'summary', 'emotion', 'vision', 'agent'):
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == opper_key, task
             assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
@@ -439,6 +439,8 @@ _ASSIST_ONLY_PROVIDERS = sorted(
     set(_PROVIDER_CATALOG['assist_api_providers'])
     - set(_PROVIDER_CATALOG['core_api_providers'])
     - {'vllm_omni'}
+    - {key for key, profile in _PROVIDER_CATALOG['assist_api_providers'].items()
+       if profile.get('auth_type') == 'oauth'}
 )
 
 
@@ -468,7 +470,6 @@ class TestAtlasCloudResolution:
         for task, model in {
             'conversation': 'google/gemini-3.1-flash-lite',
             'summary': 'deepseek-ai/deepseek-v4-flash',
-            'correction': 'deepseek-ai/deepseek-v4-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-3.1-flash-lite',
             'agent': 'google/gemini-3-flash-preview',
@@ -612,11 +613,11 @@ class TestCustomApiToggle:
         """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
-            ('summary', 'SUMMARY_MODEL'),
+            ('summary', 'MEMORY_MODEL'),
             ('gameMain', 'GAME_MAIN_MODEL'),
             ('gameSummary', 'GAME_SUMMARY_MODEL'),
-            ('correction', 'CORRECTION_MODEL'),
-            ('emotion', 'EMOTION_MODEL'),
+            ('emotion', 'RECOGNITION_MODEL'),
+            ('decision', 'DECISION_MODEL'),
             ('vision', 'VISION_MODEL'),
             ('agent', 'AGENT_MODEL'),
             ('omni', 'REALTIME_MODEL'),
@@ -661,12 +662,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'https://conversation.custom.test/v1',
             'conversationModelId': 'conversation-custom-model',
             'conversationModelApiKey': 'sk-conversation-custom',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'https://summary.custom.test/v1',
-            'summaryModelId': 'summary-custom-model',
-            'summaryModelApiKey': 'sk-summary-custom',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'https://summary.custom.test/v1',
+            'memoryModelId': 'summary-custom-model',
+            'memoryModelApiKey': 'sk-summary-custom',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         game_main = config_manager.get_model_api_config('game_main')
@@ -734,12 +735,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'http://localhost:8080/v1',
             'conversationModelId': 'local-conversation-model',
             'conversationModelApiKey': '',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'http://localhost:8081/v1',
-            'summaryModelId': 'local-summary-model',
-            'summaryModelApiKey': '',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'http://localhost:8081/v1',
+            'memoryModelId': 'local-summary-model',
+            'memoryModelApiKey': '',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         cfg = config_manager.get_core_config()
@@ -773,7 +774,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == core_config['CONVERSATION_MODEL']
         assert game_main['base_url'] == core_config['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-gemini'
-        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['model'] == core_config['MEMORY_MODEL']
         assert game_summary['base_url'] == core_config['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-gemini'
 
@@ -799,7 +800,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
         assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-core-openai'
-        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['model'] == openai_profile['MEMORY_MODEL']
         assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-core-openai'
 
@@ -1092,11 +1093,12 @@ class TestProviderExclusion:
 
     @pytest.mark.unit
     def test_api_key_registry_covers_all_assist_providers(self):
-        """api_key_registry should have an entry for every non-free assist provider."""
+        """API-key providers have registry entries; OAuth providers store tokens separately."""
         from utils.api_config_loader import get_config
         data = get_config()
 
-        assist_keys = set(data.get('assist_api_providers', {}).keys()) - {'free'}
+        assist_keys = {key for key, profile in data.get('assist_api_providers', {}).items()
+                       if key != 'free' and profile.get('auth_type') != 'oauth'}
         registry_keys = set(data.get('api_key_registry', {}).keys())
 
         missing = assist_keys - registry_keys
@@ -1186,7 +1188,7 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_custom_off_returns_assist_fallback(self, config_manager):
-        """enableCustomApi=false → get_model_api_config('summary') returns assist profile."""
+        """enableCustomApi=false → get_model_api_config('memory') returns assist profile."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -1194,7 +1196,7 @@ class TestGetModelApiConfig:
             'assistApiKeyQwen': 'sk-qwen-test',
             'enableCustomApi': False,
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is False
         assert result['api_key'] == 'sk-qwen-test'
@@ -1208,11 +1210,11 @@ class TestGetModelApiConfig:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
-            'summaryModelUrl': 'https://custom-summary.test/v1',
-            'summaryModelId': 'custom-summary-v2',
-            'summaryModelApiKey': 'sk-custom-summary',
+            'memoryModelUrl': 'https://custom-summary.test/v1',
+            'memoryModelId': 'custom-summary-v2',
+            'memoryModelApiKey': 'sk-custom-summary',
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is True
         assert result['model'] == 'custom-summary-v2'
@@ -1517,6 +1519,38 @@ class TestVoiceCloneKeyResolution:
         })
         key = config_manager.get_tts_api_key('doubao_tts')
         assert key == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_qwen_token_plan_key_prefers_selected_slot_then_keybook(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-bailian',
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-slot',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-slot'
+
+    @pytest.mark.unit
+    def test_qwen_token_plan_key_ignores_foreign_slot_and_never_borrows_qwen_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-bailian',
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+            'assistApiKeyQwenTokenPlan': '',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') is None
+        _write_core_config(config_manager, {
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-book'
 
     @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
@@ -2157,7 +2191,19 @@ class TestGptsovitsEnabledSaveMigration:
 
     class _FakeRequest:
         def __init__(self, payload):
+            from types import SimpleNamespace
+            from starlette.datastructures import Headers
+            from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
             self._payload = payload
+            self.method = 'POST'
+            self.base_url = 'http://testserver/'
+            self.url = SimpleNamespace(path='/api/config/core_api')
+            self.headers = Headers({
+                'content-type': 'application/json',
+                'origin': 'http://testserver',
+                'x-csrf-token': AUTOSTART_CSRF_TOKEN,
+            })
 
         async def json(self):
             return self._payload
@@ -2296,6 +2342,215 @@ class TestGptsovitsEnabledSaveMigration:
 
         saved = config_manager.load_json_config('core_config.json', {})
         assert saved.get('ttsModelApiKey') == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_update_core_config_qwen_token_plan_mirrors_keybook_and_drops_foreign_key(
+        self, config_manager, monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            'ttsModelApiKey': 'sk-openai-should-not-leak',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'qwen_token_plan',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == ''
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'qwen_token_plan',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-book',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyQwenTokenPlan') == 'sk-sp-book'
+        assert saved.get('ttsModelApiKey') == 'sk-sp-book'
+        # The Doubao Key Book entry is not touched by the Token Plan choice.
+        assert saved.get('assistApiKeyDoubaoTts', '') == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('previous_provider, book_field', [
+        ('qwen_token_plan', 'assistApiKeyQwenTokenPlan'),
+        ('doubao_tts', 'assistApiKeyDoubaoTts'),
+        # Stored ids are matched case-insensitively, like the snapshot builder does.
+        ('QWEN_TOKEN_PLAN', 'assistApiKeyQwenTokenPlan'),
+        (' Doubao_TTS ', 'assistApiKeyDoubaoTts'),
+    ])
+    @pytest.mark.parametrize('submitted_key', ['omitted', 'masked'])
+    def test_update_core_config_leaving_keybook_tts_provider_drops_mirrored_key(
+        self, config_manager, monkeypatch, previous_provider, book_field, submitted_key,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': previous_provider,
+            'ttsModelApiKey': 'sk-sp-mirrored',
+            book_field: 'sk-sp-mirrored',
+        })
+        update = {
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'ttsModelUrl': 'https://attacker.example/v1',
+            'ttsModelId': 'tts-1',
+        }
+        if submitted_key == 'masked':
+            update['ttsModelApiKey'] = config_router.CORE_CONFIG_SECRET_SENTINEL
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest(update)))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == ''
+        # The Key Book entry itself is kept for when the provider is chosen again.
+        assert saved.get(book_field) == 'sk-sp-mirrored'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('target_provider', ['deepseek', 'custom', 'qwen_token_plan'])
+    @pytest.mark.parametrize('submitted_key', ['omitted', 'masked', 'new'])
+    def test_update_core_config_leaving_legacy_doubao_moves_slot_only_key_to_key_book(
+        self, config_manager, monkeypatch, target_provider, submitted_key,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'legacy-doubao-only-copy',
+        })
+        update = {
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': target_provider,
+            # The settings page submits the masked Key Book value it displayed.
+            'assistApiKeyDoubaoTts': config_router.CORE_CONFIG_SECRET_SENTINEL,
+        }
+        if submitted_key == 'masked':
+            update['ttsModelApiKey'] = config_router.CORE_CONFIG_SECRET_SENTINEL
+        elif submitted_key == 'new':
+            update['ttsModelApiKey'] = 'sk-new-endpoint-key'
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest(update)))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyDoubaoTts') == 'legacy-doubao-only-copy'
+        assert saved.get('ttsModelApiKey') != 'legacy-doubao-only-copy'
+
+    @pytest.mark.unit
+    def test_update_core_config_leaving_doubao_respects_explicit_key_book_clear(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'legacy-doubao-only-copy',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'assistApiKeyDoubaoTts': '',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyDoubaoTts', '') == ''
+        assert saved.get('ttsModelApiKey') == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('book_value, expected_slot', [
+        ('sk-sp-rotated', 'sk-sp-rotated'),
+        ('', ''),
+    ])
+    def test_update_core_config_partial_key_book_update_syncs_stored_provider_slot(
+        self, config_manager, monkeypatch, book_value, expected_slot,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-old',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-old',
+        })
+        # No ttsModelProvider in the request: the stored provider applies.
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwenTokenPlan': book_value,
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelProvider') == 'qwen_token_plan'
+        assert saved.get('ttsModelApiKey') == expected_slot
+        assert config_manager.get_tts_api_key('qwen_token_plan') == (expected_slot or None)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider_value', ['qwen_token_plan', ' qwen_token_plan '])
+    def test_token_plan_slot_is_not_tts_custom_credentials_for_cosyvoice(self, config_manager, provider_value):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': '',
+            'enableCustomApi': True,
+            'ttsModelProvider': provider_value,
+            'ttsModelUrl': 'https://token-plan.cn-beijing.maas.aliyuncs.com',
+            'ttsModelId': 'qwen-audio-3.0-tts-plus',
+            'ttsModelApiKey': 'sk-sp-token-plan',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-token-plan',
+        })
+        tts_custom = config_manager.get_model_api_config('tts_custom')
+        assert 'token-plan' not in str(tts_custom.get('base_url') or '')
+        assert tts_custom.get('api_key') != 'sk-sp-token-plan'
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+        assert runtime.get('api_key') != 'sk-sp-token-plan'
+        assert 'token-plan' not in str(runtime.get('base_url') or '')
+        assert config_manager.get_tts_api_key('cosyvoice') != 'sk-sp-token-plan'
+        # The Token Plan worker still gets its own key.
+        assert config_manager.get_tts_api_key('qwen_token_plan') == 'sk-sp-token-plan'
+
+    @pytest.mark.unit
+    def test_update_core_config_leaving_keybook_tts_provider_keeps_explicit_new_key(
+        self, config_manager, monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen_token_plan',
+            'ttsModelApiKey': 'sk-sp-mirrored',
+            'assistApiKeyQwenTokenPlan': 'sk-sp-mirrored',
+        })
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'custom',
+            'ttsModelUrl': 'https://custom.example/v1',
+            'ttsModelId': 'tts-1',
+            'ttsModelApiKey': 'sk-custom-new',
+        })))
+        assert resp.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == 'sk-custom-new'
 
     @pytest.mark.unit
     def test_update_core_config_doubao_tts_clears_stale_shared_tts_key_without_speech_key(
@@ -2523,11 +2778,11 @@ class TestGptsovitsEnabledSaveMigration:
             'assistApi': 'kimi_code',
             'assistApiKeyKimiCode': 'sk-kimi-code-test',
             'enableCustomApi': True,
-            'conversationModelProvider': 'follow_summary',
-            'summaryModelProvider': 'follow_conversation',
+            'conversationModelProvider': 'follow_memory',
+            'memoryModelProvider': 'follow_conversation',
         })
 
-        summary_config = config_manager.get_model_api_config('summary')
+        summary_config = config_manager.get_model_api_config('memory')
         conversation_config = config_manager.get_model_api_config('conversation')
 
         assert summary_config['provider_type'] == 'anthropic'
@@ -2550,6 +2805,80 @@ class TestGptsovitsEnabledSaveMigration:
         assert realtime_config['api_key'] == 'sk-core-qwen'
         assert 'dashscope' in realtime_config['base_url']
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize('raw_flag', ['false', '0', 'no', 'off'])
+    def test_string_false_enable_custom_api_normalizes_to_false(self, config_manager, raw_flag):
+        base_payload = {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+            'memoryModelUrl': 'https://custom.invalid/v1',
+            'memoryModelId': 'custom-summary',
+            'imageModelProvider': 'custom',
+            'imageModelUrl': 'https://custom.invalid/v1',
+            'imageModelId': 'custom-img',
+            'imageModelApiKey': 'sk-img',
+        }
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': True})
+        assert config_manager.get_model_api_config('image')['enabled'] is True
+
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': raw_flag})
+
+        cfg = config_manager.get_core_config()
+        assert cfg['ENABLE_CUSTOM_API'] is False
+        assert cfg['MEMORY_MODEL_URL'] != 'https://custom.invalid/v1'
+
+        summary_cfg = config_manager.get_model_api_config('memory')
+        assert summary_cfg['is_custom'] is False
+        assert summary_cfg['model'] != 'custom-summary'
+
+        image_cfg = config_manager.get_model_api_config('image')
+        assert image_cfg['enabled'] is False
+
+        direct_summary = config_manager.get_model_api_config(
+            'memory',
+            _core_config={
+                **cfg,
+                'ENABLE_CUSTOM_API': raw_flag,
+                'MEMORY_MODEL': 'custom-summary',
+                'MEMORY_MODEL_URL': 'https://custom.invalid/v1',
+            },
+        )
+        assert direct_summary['is_custom'] is False
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@pytest.mark.unit
+def test_chatgpt_slot_uses_oauth_without_borrowing_core_key(config_manager):
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen', 'coreApiKey': 'sk-audio-only', 'assistApi': 'qwen',
+        'enableCustomApi': True, 'conversationModelProvider': 'chatgpt',
+        'conversationModelUrl': 'https://api.openai.com/v1',
+        'conversationModelId': 'account-selected-model', 'conversationModelApiKey': '',
+    })
+    resolved = config_manager.get_model_api_config('conversation')
+    assert resolved['provider_type'] == 'chatgpt'
+    assert resolved['api_key'] == ''
+    assert resolved['model'] == 'account-selected-model'
+    assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-audio-only'
+    from utils.api_config_loader import get_assist_api_providers_for_frontend
+    assert 'chatgpt' not in {p['key'] for p in get_assist_api_providers_for_frontend()}
+
+
+@pytest.mark.parametrize('provider_type,expected_ready', [
+    ('chatgpt', True), ('openai_compatible', False),
+])
+def test_agent_readiness_accepts_oauth_without_api_key(
+    config_manager, monkeypatch, provider_type, expected_ready,
+):
+    monkeypatch.setattr(config_manager, 'get_model_api_config', lambda _: {
+        'model': 'account-selected-model', 'base_url': 'https://api.openai.com/v1',
+        'api_key': '', 'provider_type': provider_type,
+    })
+    ready, reasons = config_manager.is_agent_api_ready()
+    assert ready is expected_ready
+    assert bool(reasons) is not expected_ready

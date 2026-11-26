@@ -7,7 +7,7 @@ from pathlib import Path
 from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.logging_config import get_logger, info_once
-from plugin.server.infrastructure.config_merge import deep_merge
+from plugin.server.infrastructure.config_merge import RESERVED_TOP_LEVEL_SECTIONS, deep_merge
 
 logger = get_logger("server.infrastructure.config_profiles")
 
@@ -278,7 +278,7 @@ def apply_user_config_profiles(
 
     merged = dict(base_config)
     for key, value in overlay.items():
-        if key == "plugin":
+        if key == "plugin" or key in RESERVED_TOP_LEVEL_SECTIONS:
             continue
         if isinstance(value, Mapping):
             value_mapping = _to_string_key_mapping(value)

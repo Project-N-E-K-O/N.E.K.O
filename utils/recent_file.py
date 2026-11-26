@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -46,6 +47,8 @@ from typing import Any, Iterator
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from utils.file_utils import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RECENT_IDEMPOTENCY_META_KEY",
@@ -740,10 +743,8 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
     ``atomic_write_json`` creates the parent directory itself, so callers do not
     need a separate ``makedirs`` step.
 
-    A raised exception means the target was NOT replaced: ``_replace_with_busy_retry``
-    is the last statement in ``atomic_write_text`` and everything after it only
-    cleans up the temp file. Callers rely on that to retry a failed batch without
-    any deduplication.
+    Callers replay their batch on a write failure. Once the history file is
+    replaced, report publication to callers even if directory sync failed.
 
     Every rewrite of a recent file goes through here, so this is also where
     keyed entries leaving the file are recorded: before the replace, the keys
@@ -765,7 +766,12 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
         text = json.dumps(payload, indent=2, ensure_ascii=False)
         receipts[key] = {"token": token, "before": _recent_text_hash_unlocked(path),
                          "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
-        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
+        write_recent_sidecar_unlocked(
+            path,
+            _write_receipts_filename(path),
+            receipts,
+            strict_dir_sync=True,
+        )
     retire_removed_keyed_entries(path, None, payload)
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:
@@ -785,15 +791,26 @@ def recent_sidecar_path(path: Any, filename: str) -> str:
     return os.path.join(os.path.dirname(os.fspath(path)), filename)
 
 
-def write_recent_sidecar_unlocked(path: Any, filename: str, payload: Any) -> None:
+def write_recent_sidecar_unlocked(
+    path: Any,
+    filename: str,
+    payload: Any,
+    *,
+    strict_dir_sync: bool = False,
+) -> None:
     """Atomically replace a recent.json sidecar. The caller MUST already hold the lock.
 
     Sidecars (such as theater retraction tombstones) are serialized with the
     recent.json critical section so a check-then-write against the history file
     sees a consistent sidecar. They do not bump the recent content version.
     """
+    extra = {"strict_dir_sync": True} if strict_dir_sync else {}
     atomic_write_json(
-        recent_sidecar_path(path, filename), payload, indent=2, ensure_ascii=False,
+        recent_sidecar_path(path, filename),
+        payload,
+        indent=2,
+        ensure_ascii=False,
+        **extra,
     )
 
 

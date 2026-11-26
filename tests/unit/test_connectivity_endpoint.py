@@ -325,7 +325,7 @@ class TestSchemaValidation:
                 "mimo": {
                     "name": "MiMo",
                     "openrouter_url": "https://api.xiaomimimo.com/v1",
-                    "conversation_model": "mimo-v2.5",
+                    "conversation_model": "mimo-v2.6-flash",
                 }
             }
         }
@@ -344,7 +344,7 @@ class TestSchemaValidation:
 
         assert result["success"] is True
         assert result["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
-        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.5")]
+        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.6-flash")]
 
     async def test_builtin_non_mimo_assist_rejects_token_plan_url_override(self):
         """MiMo Token Plan override must not affect other built-in assist APIs."""
@@ -381,7 +381,7 @@ class TestSchemaValidation:
                 "mimo": {
                     "name": "MiMo",
                     "openrouter_url": "https://api.xiaomimimo.com/v1",
-                    "conversation_model": "mimo-v2.5",
+                    "conversation_model": "mimo-v2.6-flash",
                 }
             }
         }
@@ -729,6 +729,54 @@ class TestSchemaValidation:
         assert core_cfg["resolvedProviderUrls"] == {
             "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
         }
+
+    @pytest.mark.parametrize("raw_flag", ["false", "0", "no", "off", False])
+    def test_save_auto_resolve_treats_string_false_enable_custom_api_as_disabled(self, raw_flag):
+        """Save-time target collection must match runtime _as_bool normalization for enableCustomApi."""
+        from main_routers.config_router.connectivity import _build_save_connectivity_targets
+
+        fake_config = {
+            "core_api_providers": {
+                "qwen": {
+                    "name": "阿里",
+                    "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+                },
+            },
+            "assist_api_providers": {
+                "qwen": {
+                    "name": "阿里",
+                    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                },
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                },
+            },
+            "api_key_registry": {
+                "qwen": {"config_field": "assistApiKeyQwen"},
+                "qwen_intl": {"config_field": "assistApiKeyQwenIntl"},
+            },
+        }
+        base_cfg = {
+            "coreApi": "qwen",
+            "coreApiKey": "sk-core",
+            "assistApi": "qwen",
+            "assistApiKeyQwen": "sk-qwen",
+            "assistApiKeyQwenIntl": "sk-qwen-intl",
+            "memoryModelProvider": "qwen_intl",
+            "enableCustomApi": raw_flag,
+        }
+
+        targets_off = _build_save_connectivity_targets(base_cfg, fake_config)
+        assert "assist:qwen_intl" not in targets_off
+
+        targets_on = _build_save_connectivity_targets({**base_cfg, "enableCustomApi": True}, fake_config)
+        assert "assist:qwen_intl" in targets_on
 
 
 # ===========================================================================

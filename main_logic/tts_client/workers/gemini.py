@@ -26,6 +26,7 @@ from utils.tts.providers.gemini import (
     normalize_gemini_tts_voice,
 )
 
+from .._http_pool import make_tts_http_client
 from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -45,17 +46,19 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             voice_id,
         )
 
+    api_key = str(audio_api_key or "").strip()
+    headers = {"x-goog-api-key": api_key} if api_key else {}
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
+        f"models/{GEMINI_TTS_MODEL}:generateContent"
     )
     TTS_TIMEOUT = 12
     MAX_RETRIES = 3
 
     async def setup(response_queue):
-        client = httpx.AsyncClient(
+        client = make_tts_http_client(
             timeout=httpx.Timeout(TTS_TIMEOUT + 2, connect=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            headers=headers,
         )
 
         # Warm up TLS connections.
@@ -63,12 +66,16 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}",
-                params={"key": audio_api_key},
                 timeout=10,
             )
             logger.info("Gemini TTS TLS 预热完成")
         except Exception as e:
-            logger.warning(f"Gemini TTS TLS 预热失败（不影响后续使用）: {e}")
+            err_summary = (
+                f"HTTP {e.response.status_code}"
+                if isinstance(e, httpx.HTTPStatusError)
+                else type(e).__name__
+            )
+            logger.warning(f"Gemini TTS TLS 预热失败（不影响后续使用）: {err_summary}")
 
         async def synthesize(text: str, speech_id: str) -> None:
             payload = build_gemini_tts_payload(text, voice_id)
@@ -88,12 +95,17 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     break
                 except Exception as e:
                     dt = time.time() - t0
+                    err_summary = (
+                        f"HTTP {e.response.status_code}"
+                        if isinstance(e, httpx.HTTPStatusError)
+                        else type(e).__name__
+                    )
                     logger.warning(
                         f"Gemini TTS attempt {attempt}/{MAX_RETRIES} "
-                        f"失败 ({dt:.1f}s): {e}"
+                        f"失败 ({dt:.1f}s): {err_summary}"
                     )
                     if attempt == MAX_RETRIES:
-                        raise
+                        raise RuntimeError(f"Gemini TTS {err_summary}") from None
 
             if audio_data:
                 _record_tts_telemetry("gemini", len(text))

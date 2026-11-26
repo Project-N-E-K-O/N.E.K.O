@@ -224,6 +224,7 @@ class UserDirectivesManager:
     def __init__(self) -> None:
         self._config_manager = get_config_manager()
         self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._cache_stat: Dict[str, Optional[tuple[int, int]]] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         # Process-local flags for characters with newly persisted directives not yet injected into live sessions.
@@ -251,14 +252,33 @@ class UserDirectivesManager:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
 
+    @staticmethod
+    def _stat_path(path: str) -> Optional[tuple[int, int]]:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def invalidate_cache(self, name: str) -> None:
+        """Drop cached directives for ``name`` so the next read reloads from disk."""
+        if not name:
+            return
+        with self._get_lock(name):
+            self._cache.pop(name, None)
+            self._cache_stat.pop(name, None)
+
     # -- Load/save under caller-held locks --
 
     def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
-        if name in self._cache:
+        path = self._file_path(name)
+        disk_stat = self._stat_path(path)
+        if name in self._cache and (
+            name not in self._cache_stat or self._cache_stat[name] == disk_stat
+        ):
             return self._cache[name]
         directives: List[Dict[str, Any]] = []
-        path = self._file_path(name)
-        if os.path.exists(path):
+        if disk_stat is not None:
             try:
                 import json
                 with open(path, encoding="utf-8") as f:
@@ -276,9 +296,10 @@ class UserDirectivesManager:
                 )
                 directives = []
         self._cache[name] = directives
+        self._cache_stat[name] = disk_stat
         return directives
 
-    def _save_unlocked(self, name: str) -> None:
+    def _save_unlocked(self, name: str, *, raise_on_error: bool = False) -> None:
         # Deliberately retain synchronous persistence on the event-loop thread:
         #
         # async _process_stream_data_internal calls
@@ -307,8 +328,11 @@ class UserDirectivesManager:
         }
         try:
             atomic_write_json(path, payload, indent=2, ensure_ascii=False)  # noqa: ASYNC_BLOCK — Synchronous fan-out contract, documented above.
+            self._cache_stat[name] = self._stat_path(path)
         except Exception as exc:
             logger.warning("[UserDirectives] save failed for %s: %s", name, exc)
+            if raise_on_error:
+                raise
 
     # ── public API ────────────────────────────────────────────
 
@@ -321,6 +345,7 @@ class UserDirectivesManager:
         term: str,
         source: str = "regex",
         now: Optional[float] = None,
+        raise_on_error: bool = False,
     ) -> Dict[str, Any]:
         """Register a directive; an existing ``(kind, term.casefold())`` hit refreshes it.
 
@@ -343,6 +368,8 @@ class UserDirectivesManager:
         key = (kind, term.casefold())
         with self._get_lock(name):
             entries = self._load_unlocked(name)
+            prev = [dict(e) for e in entries] if raise_on_error else None
+            target: Optional[Dict[str, Any]] = None
             for e in entries:
                 if (e["kind"], e["term"].casefold()) == key:
                     hits = int(e.get("hit_count", 1)) + 1
@@ -352,29 +379,29 @@ class UserDirectivesManager:
                     # not wait for another future hit.
                     e["expire_at"] = ts + _effective_ttl(hits)
                     e["hit_count"] = hits
-                    # Keep first-hit locale as the more diagnostic signal.
-                    # Rotate refreshed entries too; legacy files predate caps and may contain
-                    # hundreds of entries. Users only repeating old directives never reach
-                    # insertion branches, so without rotation here files never shrink,
-                    # and each record still fully reads/writes them synchronously
-                    # on every user-message chain.
-                    self._rotate_unlocked(name, now=ts)
-                    self._save_unlocked(name)
-                    return self._report_if_kept(name, e)
-            new_entry = {
-                "term": term,
-                "kind": kind,
-                "locale": locale,
-                "created_at": ts,
-                "last_seen_at": ts,
-                "expire_at": ts + _effective_ttl(1),
-                "hit_count": 1,
-                "source": source,
-            }
-            entries.append(new_entry)
+                    target = e
+                    break
+            if target is None:
+                target = {
+                    "term": term,
+                    "kind": kind,
+                    "locale": locale or "zh",
+                    "created_at": ts,
+                    "last_seen_at": ts,
+                    "expire_at": ts + _effective_ttl(1),
+                    "hit_count": 1,
+                    "source": source,
+                }
+                entries.append(target)
+            # Rotate both refreshed and newly inserted entries to enforce storage cap.
             self._rotate_unlocked(name, now=ts)
-            self._save_unlocked(name)
-            return self._report_if_kept(name, new_entry)
+            try:
+                self._save_unlocked(name, raise_on_error=raise_on_error)
+            except Exception:
+                if prev is not None:
+                    self._cache[name] = prev
+                raise
+            return self._report_if_kept(name, target)
 
     def _report_if_kept(
         self, name: str, entry: Dict[str, Any],
@@ -565,6 +592,67 @@ class UserDirectivesManager:
         # next-turn injections that waste take semantics.
         with self._pending_guard:
             self._pending_injection.discard(name)
+
+    def remove(self, name: str, term: str, *, raise_on_error: bool = False) -> bool:
+        """Remove a specific ban-topic directive by case-insensitive term match."""
+        if not name or not isinstance(term, str) or not term.strip():
+            return False
+        target = term.strip().casefold()
+        with self._get_lock(name):
+            entries = self._load_unlocked(name)
+            kept = [e for e in entries if str(e.get("term") or "").casefold() != target]
+            if len(kept) == len(entries):
+                return False
+            prev = list(entries)
+            self._cache[name] = kept
+            try:
+                self._save_unlocked(name, raise_on_error=raise_on_error)
+            except Exception:
+                self._cache[name] = prev
+                raise
+            return True
+
+    async def aget_active(
+        self,
+        name: str,
+        *,
+        now: Optional[float] = None,
+        limit: int = USER_DIRECTIVE_MAX_ACTIVE,
+    ) -> List[Dict[str, Any]]:
+        import asyncio
+        return await asyncio.to_thread(self.get_active, name, now=now, limit=limit)
+
+    async def arecord(
+        self,
+        name: str,
+        *,
+        locale: str,
+        kind: str,
+        term: str,
+        source: str = "manual",
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        import asyncio
+
+        def _record_and_mark() -> Dict[str, Any]:
+            result = self.record(
+                name,
+                locale=locale,
+                kind=kind,
+                term=term,
+                source=source,
+                now=now,
+                raise_on_error=True,
+            )
+            if result:
+                self.mark_pending_injection(name)
+            return result
+
+        return await asyncio.to_thread(_record_and_mark)
+
+    async def aremove(self, name: str, term: str) -> bool:
+        import asyncio
+        return await asyncio.to_thread(self.remove, name, term, raise_on_error=True)
 
 
 # -- Process singleton and registration --

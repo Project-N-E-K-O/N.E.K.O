@@ -357,6 +357,7 @@ class StreamingMixin:
             if (
                 getattr(self, "_pending_input_flush_active", False)
                 or getattr(self, "_pending_input_flush_scheduled", None) is not None
+                or getattr(self, "_deferred_pending_input_flush_count", 0) > 0
             ):
                 # Replay owns ordering until its current batch finishes. Queue
                 # live input behind it instead of racing the same offline
@@ -1011,6 +1012,35 @@ class StreamingMixin:
                                 chat_input_source=_original_source,
                             )
 
+                        def _release_deferred_pending_flush(*, schedule_async: bool) -> None:
+                            nonlocal defer_pending_flush
+                            if not defer_pending_flush:
+                                return
+                            defer_pending_flush = False
+                            self._deferred_pending_input_flush_count = max(
+                                0,
+                                getattr(self, "_deferred_pending_input_flush_count", 1) - 1,
+                            )
+                            if (
+                                schedule_async
+                                and self._deferred_pending_input_flush_count == 0
+                                and self.is_active
+                                and isinstance(self.session, OmniOfflineClient)
+                                and self.pending_input_data
+                                and getattr(self, "_pending_input_flush_scheduled", None) is None
+                            ):
+                                scheduler = getattr(self, "_schedule_session_input_flush", None)
+                                if (
+                                    callable(scheduler)
+                                    and hasattr(self, "_bg_tasks")
+                                    and hasattr(self, "_connection_records")
+                                ):
+                                    reservation = object()
+                                    self._pending_input_flush_scheduled = reservation
+                                    scheduler(reservation)
+                                else:
+                                    self._fire_task(self._flush_pending_input_data())
+
                         stream_text_kwargs = {
                             "system_prefix": _agent_cb_ctx or None,
                             "thinking_on": _focus_thinking,
@@ -1018,6 +1048,10 @@ class StreamingMixin:
                             "response_done_callback": response_done_callback,
                             "reply_owner": reply_turn,
                         }
+                        if defer_pending_flush:
+                            stream_text_kwargs["on_generation_started"] = (
+                                lambda: _release_deferred_pending_flush(schedule_async=True)
+                            )
                         def _mark_cb_turn_committed() -> None:
                             nonlocal _cb_turn_committed
                             _cb_turn_committed = True
@@ -1309,6 +1343,7 @@ class StreamingMixin:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
         finally:
             if defer_pending_flush:
+                defer_pending_flush = False
                 self._deferred_pending_input_flush_count = max(
                     0,
                     getattr(self, "_deferred_pending_input_flush_count", 1) - 1,

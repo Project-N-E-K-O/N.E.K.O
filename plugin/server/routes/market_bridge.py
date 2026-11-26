@@ -37,7 +37,7 @@ from utils.deployment import has_forwarding_metadata
 from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
-    notify_install_committed,
+    notify_install_committed_async,
 )
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
@@ -74,6 +74,9 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_entry_permission_source,
+)
 from plugin.server.application.plugins.installation_transactions import (
     ReplacePluginError,
     ReplacePluginResult,
@@ -329,13 +332,20 @@ def _consume_one_time_code(code: str) -> bool:
     return False
 
 
+def _is_task_running(task_id: str, task: Mapping[str, Any]) -> bool:
+    worker = _task_workers.get(task_id)
+    if worker is not None and callable(getattr(worker, "done", None)):
+        return not worker.done()
+    return task.get("completed_at") is None
+
+
 def _cleanup_tasks() -> None:
     now = time.time()
     expired = [
         task_id
         for task_id, task in _tasks.items()
-        if task.get("completed_at") is not None
-        and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+        if not _is_task_running(task_id, task)
+        and now - float(task.get("completed_at") or task.get("created_at") or 0) > _TASK_TTL_SECONDS
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
@@ -344,9 +354,13 @@ def _cleanup_tasks() -> None:
     if len(_tasks) <= _TASK_MAX_ENTRIES:
         return
     overflow = len(_tasks) - _TASK_MAX_ENTRIES
+    terminal = [
+        item for item in _tasks.items()
+        if not _is_task_running(item[0], item[1])
+    ]
     ordered = sorted(
-        _tasks.items(),
-        key=lambda item: float(item[1].get("created_at") or 0),
+        terminal,
+        key=lambda item: (float(item[1].get("completed_at") or item[1].get("created_at") or 0), item[0]),
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
@@ -4583,7 +4597,7 @@ async def _replace_market_plugin_transaction(
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
     manual_snapshot_sha256: str = "",
-    rollback_install_source: Callable[[], Awaitable[None]] | None = None,
+    rollback_install_source: Callable[[], Awaitable[bool]] | None = None,
 ) -> ReplacePluginResult:
     """Revalidate and replace under the shared plugin filesystem lock."""
     reload_install_source = getattr(manager, "load", None)
@@ -4640,22 +4654,35 @@ async def _replace_market_plugin_transaction(
 
     else:
         validate_manual_backup = None
+    # Before anything changes: a grant record without a source yet is bound
+    # to the source of the entry validated above (not looked up again), so
+    # the Market source recorded for the new package is a source change
+    # rather than a first binding. A failed save, or an incomplete entry with
+    # a source-less grant, stops the replacement here, unchanged.
     try:
-        result = await replace_plugin(
-            layout=layout,
-            install_new=install_new,
-            additional_targets=additional_targets,
-            preserve_targets=preserve_targets,
-            validate_backup=validate_manual_backup,
-            validate_channel_specific=validate_channel_specific,
-            on_rollback_start=on_rollback_start,
+        await asyncio.to_thread(
+            bind_entry_permission_source, active_entry.plugin_id, active_entry
         )
-        notify_install_committed(result.install_result)
-        return result
-    except ReplacePluginError:
-        if rollback_install_source is not None:
-            await rollback_install_source()
-        raise
+    except ServerDomainError as exc:
+        raise _TaskError(
+            code=exc.code.lower(),
+            message=exc.message,
+            http_status=exc.status_code,
+        ) from exc
+    result = await replace_plugin(
+        layout=layout,
+        install_new=install_new,
+        additional_targets=additional_targets,
+        preserve_targets=preserve_targets,
+        validate_backup=validate_manual_backup,
+        validate_channel_specific=validate_channel_specific,
+        on_rollback_start=on_rollback_start,
+        # On rollback the previous entry goes back before the old plugin
+        # restarts, so it starts under its own source.
+        restore_source_before_restart=rollback_install_source,
+    )
+    await notify_install_committed_async(result.install_result)
+    return result
 
 
 def _find_active_user_entry(manager: Any, plugin_ref: str) -> LockEntry | None:
@@ -4862,11 +4889,11 @@ async def _do_upgrade(
                 _analyze_after_commit=False,
             )
 
-        async def rollback_install_source() -> None:
+        async def rollback_install_source() -> bool:
             nonlocal source_restored
             restore_source = getattr(mgr, "restore_entry_for_rollback", None)
             if not source_write_attempted or not callable(restore_source):
-                return
+                return source_restored
             try:
                 await asyncio.to_thread(restore_source, entry)
             except Exception as restore_exc:
@@ -4876,6 +4903,7 @@ async def _do_upgrade(
                     installed_plugin_id,
                     restore_exc,
                 )
+            return source_restored
 
         async def validate_channel_specific() -> None:
             if continues_builtin_override:
@@ -4962,6 +4990,13 @@ async def _do_upgrade(
                     else f"升级失败且回滚未完整完成: {cause_message}"
                 ),
             ) from exc
+        except Exception:
+            # Anything else is raised before the transaction changes a file
+            # (plan changed, grants could not be bound, replacement
+            # pre-checks), or by the post-commit notification, which runs no
+            # rollback either: there is no rollback to report.
+            task["rollback"] = None
+            raise
 
         result = _with_market_operation_status(
             replacement.install_result,

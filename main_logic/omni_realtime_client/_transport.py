@@ -34,12 +34,12 @@ from ._shared import (
     asyncio,
     base64,
     calculate_text_similarity,
-    canonical_realtime_dialect,
     get_stepfun_tts_default_voice,
     json,
     logger,
     np,
     parse_arguments_json,
+    resolve_realtime_dialect,
     time,
     uuid,
     websockets,
@@ -661,7 +661,8 @@ class _TransportMixin:
             self._has_server_vad = False
         self._modalities = ["text", "audio"] if native_audio else ["text"]
 
-        if 'glm' in self._model_lower:
+        dialect = self._resolved_realtime_dialect()
+        if dialect == "glm":
             # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
             # Best-effort — provider may reject; if so we degrade to local-suppression-only.
             glm_session = {
@@ -685,7 +686,7 @@ class _TransportMixin:
             if self.has_tools() and 'audio' in self._modalities:
                 glm_session["tools"] = self._tools_for_openai_realtime()
             await self.update_session(glm_session)
-        elif "qwen" in self._model_lower:
+        elif dialect == "qwen":
             qwen_session: Dict[str, Any] = {
                 "instructions": instructions,
                 "modalities": self._modalities ,
@@ -715,7 +716,7 @@ class _TransportMixin:
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
             await self.update_session(qwen_session)
-        elif "gpt" in self._model_lower:
+        elif dialect == "gpt":
             gpt_session = {
                 "type": "realtime",
                 "model": self.model,
@@ -746,7 +747,7 @@ class _TransportMixin:
                 gpt_session["tools"] = self._tools_for_openai_realtime()
                 gpt_session["tool_choice"] = "auto"
             await self.update_session(gpt_session)
-        elif "step" in self._model_lower:
+        elif dialect == "step":
             default_voice = get_stepfun_tts_default_voice('step')
             step_session = {
                 "instructions": instructions,
@@ -763,7 +764,7 @@ class _TransportMixin:
                 step_tools.extend(self._tools_for_step())
             step_session["tools"] = step_tools
             await self.update_session(step_session)
-        elif "free" in self._model_lower:
+        elif dialect == "free":
             # NOTE: lanlan.tech (China free) backs onto StepFun and
             # supports the StepFun custom-function protocol — the
             # server-side tool stripping the user mentioned will be
@@ -805,7 +806,7 @@ class _TransportMixin:
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools
             await self.update_session(free_session)
-        elif "grok" in self._model_lower:
+        elif dialect == "grok":
             # xAI Grok Voice: flat OpenAI Realtime 1.0 schema.
             # Built-in voices from GET /v1/tts/voices: eve/ara/leo/rex/sal, default eve.
             # Tools use OpenAI-compatible functions through response.function_call_arguments.done.
@@ -1050,15 +1051,54 @@ class _TransportMixin:
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
                 if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+                    # An item shrink drops the oldest parts before it gives
+                    # up; keep the part list to undo that if it fails.
+                    _item = event.get("item")
+                    parts_before_shrink = (
+                        list(_item["content"])
+                        if isinstance(_item, dict)
+                        and isinstance(_item.get("content"), list)
+                        else None
+                    )
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
+                    if payload is None and pre_send is not None:
+                        # The hook may now remove what did not fit (it runs
+                        # after the worker-thread yield); give up only if the
+                        # rest is still too large. Put back what the failed
+                        # shrink removed first, so the hook decides on it.
+                        if parts_before_shrink is not None:
+                            _item["content"] = parts_before_shrink
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:
+                            payload = rechecked
+                            # The shrink already warned it dropped the item.
+                            logger.info(
+                                "oversized %s: shrink failed; sending after "
+                                "the pre-send hook (%d bytes)",
+                                event.get("type", ""),
+                                len(rechecked),
+                            )
                     if payload is None:
                         if raise_on_oversize:
                             raise RealtimeImagePayloadTooLargeError(
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return False
+                    if pre_send is not None:
+                        # The recompression above yields to a worker thread,
+                        # so the caller's conditions may have changed again
+                        # (e.g. screen consent revoked). Re-run the hook; the
+                        # item shrink edits ``event`` in place, so serializing
+                        # it again keeps the smaller images. Only reserialize
+                        # when the hook actually changed something.
+                        shrunk_snapshot = json.dumps(event)
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if rechecked != shrunk_snapshot:
+                            payload = rechecked
                 # Two distinct presend checks both run: send_guard verifies current connection
                 # ownership; raw-vision fencing verifies the frame still fits current routing
                 # mode. Semaphore waits and oversized-image recompression yield, allowing either
@@ -1139,11 +1179,20 @@ class _TransportMixin:
 
                 raise
 
+    def _resolved_realtime_dialect(self) -> str:
+        cached = getattr(self, "_realtime_dialect", None)
+        if cached is not None:
+            return cached
+        return resolve_realtime_dialect(
+            getattr(self, "_api_type", ""),
+            getattr(self, "model", None) or getattr(self, "_model_lower", ""),
+            base_url=getattr(self, "base_url", None),
+            livestream_mode=bool(getattr(self, "_livestream_mode", False)),
+        )
+
     def _is_glm_realtime(self) -> bool:
         """True when this socket speaks the GLM Realtime session dialect."""
-        if canonical_realtime_dialect(getattr(self, "_api_type", "")) == "glm":
-            return True
-        return "glm" in str(getattr(self, "_model_lower", "") or "")
+        return self._resolved_realtime_dialect() == "glm"
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -1265,11 +1314,7 @@ class _TransportMixin:
         # Observe ownership on every frame, not only on frames the local onset
         # gate accepts: server VAD may commit an utterance the gate never heard.
         self._note_input_route_identity_frame(ingress_route_identity)
-        raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
-        raw_loud = False
-        if len(raw_samples) > 0:
-            local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
-            raw_loud = local_rms > self._client_vad_threshold
+        raw_loud = self.note_pcm16_ingress_activity(audio_chunk)
         if raw_loud:
             # Publish user engagement before waiting on the shared admission
             # boundary. A proactive callback holding that lock must see speech
@@ -1277,7 +1322,6 @@ class _TransportMixin:
             # all VAD state transitions and provider writes remain serialized
             # below.
             self._last_local_loud_time = audio_timeline_at
-            self._user_recent_activity_time = time.time()
             handoff_input_sequence = self._note_voice_handoff_input_open()
 
         # Detect input sample rate based on chunk size
@@ -1406,7 +1450,7 @@ class _TransportMixin:
         *,
         update_turn_state: bool = True,
     ) -> str:
-        """Use VISION_MODEL to analyze an image and return its description.
+        """Describe an image with the chat model (legacy vision config as fallback).
 
         Callback-owned images pass ``update_turn_state=False`` because their
         description is delivered in the callback's exact arbiter ticket. They
@@ -1440,7 +1484,7 @@ class _TransportMixin:
                 logger.info("✅ Image analysis complete.")
                 return description
             else:
-                logger.warning("VISION_MODEL not configured or analysis failed")
+                logger.warning("Image description unavailable (chat model not configured or analysis failed)")
                 if update_turn_state:
                     self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_recognized_this_turn = False
@@ -2148,17 +2192,18 @@ class _TransportMixin:
                 )
 
             if self._audio_in_buffer or bypass_rate_limit:
-                if "qwen" in self._model_lower:
+                dialect = self._resolved_realtime_dialect()
+                if dialect == "qwen":
                     append_event = {
                         "type": "input_image_buffer.append" ,
                         "image": image_b64
                     }
-                elif "glm" in self._model_lower:
+                elif dialect == "glm":
                     append_event = {
                         "type": "input_audio_buffer.append_video_frame",
                         "video_frame": image_b64
                     }
-                elif "gpt" in self._model_lower:
+                elif dialect == "gpt":
                     append_event = {
                         "type": "conversation.item.create",
                         "item": {
@@ -3892,7 +3937,7 @@ class _TransportMixin:
                 if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
-                            if "glm" not in self._model_lower:
+                            if self._resolved_realtime_dialect() != "glm":
                                 self._ai_recent_activity_time = time.time()
                                 await self._observed_text_callback(self.on_text_delta, event["delta"], self._is_first_text_chunk)
                                 if await retire_if_replaced():

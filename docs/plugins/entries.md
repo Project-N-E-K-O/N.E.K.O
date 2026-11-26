@@ -1,8 +1,8 @@
 # Entries & Parameters
 
-An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoClaw). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
+An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoPower). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
 
-Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it.
+Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it. See [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 
 The Agent filters plugins first and looks at entry metadata afterwards. The fine selection must return an exact `plugin_id` and `entry_id`; an unknown or missing ID is not asked about again and no entry is called directly: the task goes to a task agent, or is reported as not doable when none is available. See [How the Agent calls an entry](#how-the-agent-calls-an-entry) for when entries are called, by whom, and what happens to their results.
 
@@ -86,7 +86,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="Search", description="Search for content")
 async def search(self, params: SearchParams):
-    self.logger.info("Searching: {} (max {})", params.query, params.max_results)
+    self.logger.info("Searching (max %d)", params.max_results)  # do not log the raw query
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -124,7 +124,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## Controlling what the AI sees
+## Controlling what the AI sees {#controlling-what-the-ai-sees}
 
 Declare `llm_result_fields` to say which fields of the result the AI reads. A return value often contains large raw data (like a full search results list) while the AI only needs a summary:
 
@@ -193,7 +193,7 @@ An explicit `output_schema` wins over the annotation. An entry with neither has 
 
 **Return the model, not a serialized dict.** The check builds the model from the returned data, with the model's input rules. Data that the model has already serialized may not read back: `finish(data=model)` emits field names (a field with an alias is then reported missing), and `@field_serializer`, `exclude=True` or differing validation and serialization aliases change the shape too. For such models, return the model instance itself, or turn `strict_output` off.
 
-The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. `register_dynamic_entry()` and a router's `add_entry()` accept an explicit `output_schema` too (published only); the runtime check comes from a Pydantic return annotation on `@plugin_entry`. `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin validate` warns). The task agent's capability gateway does not publish it.
+The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. `register_dynamic_entry()` and a router's `add_entry()` accept an explicit `output_schema` too (published only); the runtime check comes from a Pydantic return annotation on `@plugin_entry`. `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin check` warns). The task agent's capability gateway does not publish it.
 
 ---
 
@@ -244,7 +244,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("Registered {} dynamic entries", len(commands))
+    self.logger.info("Registered %d dynamic entries", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):
@@ -262,7 +262,7 @@ Use `self.unregister_dynamic_entry(entry_id)` to remove them.
 
 ## How the Agent calls an entry
 
-The Agent (NekoClaw) looks for an entry only when the main dialogue model hands a task over: the model called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically. [Agent System](/architecture/agent-system) describes the whole path; how plugins are filtered is described in [plugin.toml](./plugin-toml). Entries whose ID starts with `__llm_tool__` (the ones `@llm_tool` creates) never take part; only the main dialogue model calls them.
+The Agent (NekoPower) looks for an entry only when the main dialogue model hands a task over: the model called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically. [Agent System](/architecture/agent-system) describes the whole path; how plugins are filtered is described in [plugin.toml](./plugin-toml). Entries whose ID starts with `__llm_tool__` (the ones `@llm_tool` creates) never take part; only the main dialogue model calls them.
 
 ### Which entries the Agent can see
 

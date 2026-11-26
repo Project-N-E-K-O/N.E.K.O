@@ -1712,7 +1712,7 @@ async def _stress_preflight(
         getattr(config_manager, "aget_model_api_config", None)
         or getattr(config_manager, "get_model_api_config", None)
     )
-    for slot in ("conversation", "summary"):
+    for slot in ("conversation", "memory"):
         try:
             value = getter(slot) if getter is not None else None
             config = await value if inspect.isawaitable(value) else value

@@ -52,7 +52,8 @@ vi.mock('@/stores/pluginConsentState', () => ({
 
 vi.mock('@/api/plugins', () => ({ deletePlugin: vi.fn() }))
 vi.mock('@/api/pluginCli', () => ({ buildPluginCli: vi.fn() }))
-vi.mock('@/utils/openExternal', () => ({
+vi.mock('@/utils/openExternal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/openExternal')>()),
   openExternalUrl: mocks.openExternalUrl,
 }))
 
@@ -130,5 +131,95 @@ describe('plugin list UI action navigation contract', () => {
       'messages.pluginDeletedBuiltinRestartFailed',
     )
     expect(ElMessage.success).not.toHaveBeenCalledWith('messages.pluginDeleted')
+  })
+
+  it('warns when deletion could not clear the permission grants', async () => {
+    vi.mocked(deletePlugin).mockResolvedValue({
+      success: true,
+      plugin_id: 'generic-plugin',
+      plugin_dir: '/plugins/generic-plugin',
+      deleted_from_disk: true,
+      restored_builtin: false,
+      restored_builtin_started: false,
+      restored_builtin_restart_error: null,
+      permission_warning: {
+        code: 'PLUGIN_PERMISSIONS_CORRUPT',
+        message: 'Permission records could not be read',
+      },
+      message: 'Plugin deleted successfully',
+    })
+    const plugin = makePlugin({ id: 'open_detail', kind: 'builtin' })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'delete')
+
+    await executeAction(action!, plugin)
+
+    expect(ElMessage.warning).toHaveBeenCalledWith(
+      'messages.pluginDeletedPermissionsNotCleared',
+    )
+    expect(ElMessage.success).not.toHaveBeenCalledWith('messages.pluginDeleted')
+  })
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    '//evil.example/phish',
+    'https://evil.example/phish',
+  ])('blocks unsafe same_tab target %s', async (dangerousTarget) => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const plugin = makePlugin({
+      id: 'open_ui',
+      kind: 'ui',
+      label: 'Unsafe UI',
+      target: dangerousTarget,
+      open_in: 'same_tab',
+    })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'open_ui')
+
+    await executeAction(action!, plugin)
+
+    expect(open).not.toHaveBeenCalled()
+    expect(mocks.openExternalUrl).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
+  })
+
+  it.each([
+    '//evil.example/phish',
+    'https://evil.example/phish',
+    'javascript:alert(1)',
+  ])('blocks unsafe route target %s', async (dangerousRoute) => {
+    const plugin = makePlugin({
+      id: 'open_ui',
+      kind: 'route',
+      label: 'Unsafe Route',
+      target: dangerousRoute,
+    })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'open_ui')
+
+    await executeAction(action!, plugin)
+
+    expect(mocks.routerPush).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
+  })
+
+  it('allows same-origin absolute URL for same_tab', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const sameOriginUrl = `${window.location.origin}/plugin/generic/ui/`
+    const plugin = makePlugin({
+      id: 'open_ui',
+      kind: 'url',
+      target: sameOriginUrl,
+      open_in: 'same_tab',
+    })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'open_ui')
+
+    await executeAction(action!, plugin)
+
+    expect(open).toHaveBeenCalledWith(sameOriginUrl, '_self')
   })
 })

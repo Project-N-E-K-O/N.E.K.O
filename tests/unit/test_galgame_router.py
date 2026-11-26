@@ -35,7 +35,7 @@ class FakeConfigManager:
 
     def get_model_api_config(self, model_type):
         self.calls.append(model_type)
-        if model_type == "summary":
+        if model_type == "recognition":
             return self._summary_config
         raise AssertionError(f"Unexpected model type: {model_type}")
 
@@ -121,7 +121,7 @@ async def test_galgame_uses_summary_model_without_temperature(monkeypatch):
     assert captured["base_url"] == "http://127.0.0.1:11434/v1"
     assert captured["api_key"] == ""
     assert captured["kwargs"] == _expected_llm_kwargs()
-    assert config_manager.calls == ["summary"]
+    assert config_manager.calls == ["recognition"]
     assert "刚才那件事你怎么看？" in captured["messages"][1].content
 
 
@@ -553,8 +553,8 @@ async def test_galgame_options_skipped_when_session_takeover_active(monkeypatch)
     assert data["fallback"] is True
     assert data["reason"] == "session_takeover"
     assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
-    # The guard must short-circuit before resolving summary model config; do not read that tier's config.
-    assert "summary" not in config_manager.calls
+    # The guard must short-circuit before resolving the model config; do not read that tier's config.
+    assert "recognition" not in config_manager.calls
 
 
 @pytest.mark.unit
@@ -611,3 +611,32 @@ async def test_galgame_options_generated_when_session_not_taken_over(monkeypatch
     assert data["success"] is True
     assert "fallback" not in data
     assert _option_texts(data) == ["认真听。", "陪着你。", "幻想一下。"]
+
+
+# Word each locale uses for "the character's verbal tics" in its
+# "player's own words" sentence.
+_LOCALE_TIC_EXAMPLE = {
+    'zh': '口癖', 'zh-TW': '口頭禪', 'en': 'verbal tics', 'ja': '口癖',
+    'ko': '말버릇', 'ru': 'словечки', 'es': 'muletillas', 'pt': 'bordões',
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", sorted(_LOCALE_TIC_EXAMPLE))
+def test_galgame_option_prompt_pins_player_voice_in_every_locale(lang):
+    """Options are sent as the player's own message, so every locale must say
+    so and rule out the character's verbal tics; small models otherwise leak
+    the neko's trailing "meow" into the player's lines."""
+    from config.prompts.prompts_galgame import (
+        GALGAME_OPTION_GENERATION_PROMPT,
+        get_galgame_option_generation_prompt,
+    )
+
+    assert lang in GALGAME_OPTION_GENERATION_PROMPT
+    prompt = get_galgame_option_generation_prompt(
+        lang, lanlan_name='NEKO_X', master_name='PLAYER_Y',
+    )
+    assert _LOCALE_TIC_EXAMPLE[lang] in prompt
+    # The voice sentence names the player as speaker and the character as
+    # addressee, on top of the intro and the "last line" sentences.
+    assert prompt.count('PLAYER_Y') >= 5

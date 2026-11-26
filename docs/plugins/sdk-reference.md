@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
 | `self.storage_dir` | `Path` | User storage root assigned to this plugin |
 | `self.runtime_config_path` | `Path` | External runtime configuration file |
-| `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
+| `self.metadata` | `dict` | Always `{}` in the plugin process today (`plugin.toml` data is not passed in). Read configuration with `await self.config.dump()` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
 | `self.system_info` | `SystemInfo` | Host system metadata |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` provides logging and configuration without extra setup:
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -98,6 +98,13 @@ and use `self.i18n.t(...)`:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` does not follow the user's language: without `locale=` it
+looks up the plugin's `default_locale`, then its base language (for example `fr` for `fr-CA`), then `en`, then falls back to the
+`default` argument or the key. For user-facing strings that the host
+registers (plugin and entry names, descriptions, schema labels, UI action
+labels), use `tr("key", default="...")`, which the host resolves for each
+user's locale.
 
 ### Methods
 
@@ -175,13 +182,18 @@ This is an agreement between plugins, not a security boundary: plugins are not s
 Register an entry point at runtime (not via decorator).
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="A dynamically registered greeting",
 )
 ```
+
+The handler must be an `async def` function: registration accepts any callable, but calling an entry whose handler is not a coroutine function fails with `Entry must be 'async def'`.
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -207,7 +219,7 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 
 Mount a `PluginRouter` to organize a large or feature-split normal plugin.
 
-Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`, and this mount path does not automatically invoke `on_mount` / `on_unmount`.
+Also list every router class in the plugin class attribute `__routers__`: the host's static entry scan only reads that list (see [PluginRouter](./router)). Do not combine a router class listed there with `prefix`: the listed ID would not be callable (see [Prefixed Routers](./router#prefixed-routers)). Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`. `on_mount` / `on_unmount` are never called by the host; do not override them.
 
 #### Hosted/static UI and list actions
 
@@ -215,7 +227,7 @@ Hosted TSX uses the exported `ui` namespace plus manifest surfaces; see [Hosted 
 
 #### LLM tool methods
 
-`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. See [LLM Tool Calling](./tool-calling).
+`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. The sync calls are fire-and-forget; `await register_llm_tool_async(...)` and `await unregister_llm_tool_async(name)` return what `main_server` actually answered (`ok`, per-role results, `error`) and keep the plugin's local registration in step with it. See [LLM Tool Calling](./tool-calling).
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -342,14 +354,16 @@ chain.callers        # plugin ids that led here, root first; () when the host ca
 chain.origin.kind    # "run", "chat_tool", "chat_hook", "ui_action", "plugin_self" or "system"
 chain.origin.ref     # an id such as the run id; never message text
 chain.hops           # each step as (plugin_id, event_type, event_id)
-chain.rights         # capabilities every plugin on the chain has been approved for
+chain.rights         # permissions every plugin on the chain has been approved for
 chain.rights_known   # False when the host did not say (see below)
-chain.allows("memory.read")
+chain.allows("plugin_sdk.main_agent.memory:read")
 ```
 
-- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned) or when the host has the policy off, it is a chain holding only your plugin, with `rights_known=False`.
+- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned), it is a chain holding only your plugin, with `rights_known=False`.
+- `rights` holds permission ids such as `plugin_sdk.main_agent.memory:read`. For one release it also holds the earlier names (`memory.read`, `conversations.read`, `messages.push`), and `allows()` accepts either form.
 - `allows()` is advisory. It answers `False` whenever the rights are unknown, so "not allowed" and "do not know" both read `False`; check `rights_known` to tell them apart. The host decides every use on its own: a `False` here does not mean the host will refuse, and a `True` is a snapshot taken when the call was delivered.
-- Work you hand to `loop.run_in_executor` or a bare `threading.Thread` loses the invocation context, so the host sees those requests as your plugin acting on its own. `asyncio.to_thread` keeps it; for a thread of your own, run the work under `contextvars.copy_context().run(...)`.
+- Work you hand to a bare `threading.Thread`, a thread pool of your own, or `loop.run_in_executor` with an executor of your own loses the invocation context, so the host sees those requests as your plugin acting on its own. `asyncio.to_thread` keeps it; for a thread of your own, run the work under `contextvars.copy_context().run(...)`.
+- `loop.run_in_executor(None, ...)` keeps it too, but only on the event loop the plugin runtime runs your code on: the runtime sets that loop's default executor to one that copies the context. On an event loop you create yourself, or after you replace the default executor, it loses the context. `neko-plugin check` cannot tell which loop a `run_in_executor(None, ...)` call runs on, so it does not list that call as a blind spot; it lists `asyncio.new_event_loop`, `asyncio.Runner` and `set_default_executor` instead. Other ways of getting a loop of your own, such as calling `asyncio.run` from your code, are not listed.
 - This is separate from the older in-process helpers in `plugin.sdk.shared.runtime.call_chain`, which only track calls inside one plugin process.
 
 The host records cross-plugin calls and capability use for audit (identifiers and capability names only, never arguments, results or message text). Design: [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md).
@@ -358,7 +372,7 @@ The host records cross-plugin calls and capability use for audit (identifiers an
 
 ## PluginStore (Persistent Storage)
 
-Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself).
+Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself). It is disabled unless `plugin.toml` has `[plugin.store]` with `enabled = true`; while disabled, `set()` stores nothing and `get()` returns the default.
 
 All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
 
@@ -391,7 +405,7 @@ The `ctx` object is injected by the host at construction time.
 | `ctx.config_path` | `Path` | Path to `plugin.toml` |
 | `ctx.logger` | `Logger` | Logger instance |
 | `ctx.bus` | `SdkBusContext` | Read/watch facade over host state |
-| `ctx.metadata` | `dict` | Plugin metadata |
+| `ctx.metadata` | `dict` | The `ctx` passed to `__init__` has no `metadata` attribute (reading it raises `AttributeError`); the wrapped `self.ctx.metadata` returns `{}`. Use `await self.config.dump()` for configuration |
 
 ### Bus and memory
 

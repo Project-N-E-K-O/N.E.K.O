@@ -233,9 +233,17 @@ function createDragEndHarness({ transferredAnchor = '' } = {}) {
     const observations = [];
     const cancellations = [];
     const scheduledButtons = [];
+    const documentListeners = new Map();
     const context = createBaseEdgeContext(fixture);
     Object.assign(context, {
         document: {
+            addEventListener(type, callback) {
+                if (!documentListeners.has(type)) documentListeners.set(type, []);
+                documentListeners.get(type).push(callback);
+            },
+            dispatchEvent(event) {
+                for (const callback of documentListeners.get(event.type) || []) callback(event);
+            },
             querySelectorAll() {
                 return [];
             }
@@ -487,6 +495,9 @@ function createMovementHarness({ transferredAnchor = 'left' } = {}) {
             return false;
         },
         // Resources are present so the movement entries reach the anchor checks under test.
+        _isNekoIdleCat1PlaygroundDropActive() {
+            return false;
+        },
         _isNekoCatActionResourceAvailable() {
             return true;
         },

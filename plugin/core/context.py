@@ -68,11 +68,8 @@ _CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 
 def _attach_parent_request_id(payload: Dict[str, Any]) -> None:
     """Let the host attribute this push to the invocation that made it."""
-    from plugin.core.capability_policy import policy_enabled
     from plugin.core.rpc import current_request_id
 
-    if not policy_enabled():
-        return
     parent = current_request_id()
     if parent is not None:
         payload["_rpc_parent_request_id"] = parent
@@ -298,6 +295,7 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
+    _permissions: Optional[Any] = field(default=None, init=False, repr=False)
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -322,6 +320,18 @@ class PluginContext:
             images = PluginImages(self)
             self._images = images
         return images
+
+    @property
+    def permissions(self) -> Any:
+        """This plugin's permission states as the host last sent them (``get`` / ``on_change``)."""
+        with self._runtime_lock:
+            permissions = self._permissions
+            if permissions is None:
+                from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+                permissions = PluginPermissions(self.logger)
+                self._permissions = permissions
+            return permissions
 
     @property
     def models(self) -> Any:

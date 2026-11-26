@@ -277,23 +277,31 @@ def initialize_steamworks(*, quiet: bool = False):
 def ensure_steamworks_initialized():
     """Retry Steamworks initialization after Steam is opened post-startup."""
     global steamworks
+    from utils.steam_state import (
+        get_steamworks_generation,
+        publish_if_generation_unchanged,
+    )
+
     if steamworks is not None:
         return steamworks
 
+    generation = get_steamworks_generation()
     logger.debug("尝试重新初始化 Steamworks...")
-    steamworks = initialize_steamworks(quiet=True)
-    try:
-        from main_routers.shared_state import set_steamworks
+    handle = initialize_steamworks(quiet=True)
 
-        set_steamworks(steamworks)
-    except Exception as exc:
-        logger.debug(
-            "Steamworks shared-state update failed during retry: %s", exc, exc_info=True
-        )
+    def _publish() -> None:
+        global steamworks
+        steamworks = handle
 
-    if steamworks is not None:
+    # A shutdown/reset during init bumps the generation. Dropping the result
+    # then keeps it out of this module global; otherwise the next retry would
+    # return it from the check above and ensure_steamworks() would install it.
+    # ensure_steamworks() applies the same guard to the shared cache.
+    if not publish_if_generation_unchanged(generation, _publish):
+        return None
+    if handle is not None:
         get_default_steam_info()
-    return steamworks
+    return handle
 
 
 def get_default_steam_info():
@@ -384,10 +392,11 @@ async def _request_memory_server_shutdown() -> None:
     """Request memory_server shutdown after main_server has finished its own cleanup."""
     try:
         from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
 
         shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-        async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
-            response = await client.post(shutdown_url)
+        client = get_internal_http_client()
+        response = await client.post(shutdown_url, timeout=1.0)
         if response.status_code == 200:
             logger.info("已向memory_server发送关闭信号")
         else:
@@ -639,22 +648,47 @@ def _avatar_tool_multipart_preflight(scope):
     return _validate_local_mutation_request(request)
 
 
+def _emote_template_multipart_preflight(scope):
+    if scope.get("path", "").rstrip("/") == "/api/emote-maker/export/file":
+        from main_routers.emote_template_router import _reject_unscoped_export
+
+        return _reject_unscoped_export(Request(scope))
+    return None
+
+
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
 # External memory import preview/commit upload the archive as base64 inside JSON: those two
 # exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
 # other route stays at 16 MiB.
+from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
+from main_routers.workshop_router.preview_cards import (  # noqa: E402
+    WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+)
+
+_non_multipart_body_limits = {
+    "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+}
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
-    json_path_limits={
-        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-    },
+    json_path_limits=_non_multipart_body_limits,
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
+    multipart_path_limits={
+        "/api/steam/workshop/upload-preview-image": WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+    },
+)
+app.add_middleware(
+    InboundBodySizeLimitMiddleware,
+    json_path_limits=_non_multipart_body_limits,
+    multipart_path_prefix="/api/emote-maker",
+    multipart_methods=("POST",),
+    max_multipart_body_bytes=EMOTE_MAX_MULTIPART_BODY_BYTES,
+    multipart_preflight=_emote_template_multipart_preflight,
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
@@ -1155,16 +1189,14 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
-            # Start heavyweight lazy-module background warmup after runtime init, preimporting genai/mcp,
-            # translatepy, and router dependencies before first use. Avoid early on_startup
-            # placement, which competes for GIL with critical runtime initialization.
+            # Start heavyweight lazy-module background warmup after runtime init, preimporting the
+            # SDKs the current config can reach (genai/mcp, router dependencies) before
+            # first use. Avoid early on_startup placement, which competes for GIL with critical
+            # runtime initialization.
             try:
-                from utils.module_warmup import (
-                    MAIN_SERVER_WARMUP,
-                    start_background_warmup,
-                )
+                from utils.module_warmup import start_main_server_warmup
 
-                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+                start_main_server_warmup()
             except Exception as _warmup_exc:
                 logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
 
@@ -1290,6 +1322,7 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        _register_legacy_vision_notice(role_state)
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1817,3 +1850,24 @@ from .process_utils import (  # noqa: F401
     find_preview_image_in_folder,
     get_folder_size,
 )
+
+
+def _register_legacy_vision_notice(role_state) -> None:
+    """Show the legacy-vision deprecation notice on every connected character page."""
+    from utils.legacy_vision import register_notice_sink
+
+    async def _broadcast(message: str) -> bool:
+        delivered = False
+        for rs in list(role_state.values()):
+            manager = getattr(rs, "session_manager", None)
+            send_status = getattr(manager, "send_status", None)
+            if send_status is None:
+                continue
+            try:
+                # send_status reports whether the page's socket took it.
+                delivered = bool(await send_status(message)) or delivered
+            except Exception as exc:  # noqa: BLE001 - one closed page must not block the rest
+                logger.debug("legacy vision notice not delivered: %s", exc)
+        return delivered
+
+    register_notice_sink(_broadcast)

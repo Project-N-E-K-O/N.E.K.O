@@ -1284,6 +1284,202 @@ test('locked edge validation cannot reclassify an oversize model to the opposite
     );
 });
 
+function attachRotatingHeadAnchors(manager, model) {
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+}
+
+test('feet past the bottom edge keep a side peek while the head is above the corner zone', async () => {
+    const cases = [
+        { side: 'left', x: 0, scaleX: 1 },
+        { side: 'right', x: 1000, scaleX: -1 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        // 头在 y=510（工作区 64%），脚在 y=1000，已经越过 800 的底边。
+        const model = createRotatingModel({ x: item.x, y: 400, scaleX: item.scaleX });
+        attachRotatingHeadAnchors(manager, model);
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.side, `${item.side} lower drop should stay a side peek`);
+        assert.equal(contact.verticalEdge, '');
+        assert.equal(contact.allowBottomOverflow, true);
+
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+        assert.equal(model.y, 400, `${item.side} settle must not push the model back above the bottom edge`);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        assert.equal(settled.edge, item.side);
+
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        assert.equal(manager._live2DPeekState.edge, item.side);
+        assertClose(manager._live2DPeekState.headAnchorRatio, 510 / 800, `${item.side} head ratio`);
+        assertClose(manager.getHeadScreenAnchor().y, 510, `${item.side} head stays at the drop height`, 0.001);
+    }
+});
+
+test('feet past the bottom edge become a bottom corner once the head enters the corner zone', () => {
+    const cases = [
+        { edge: 'bottom-left', x: 0, scaleX: 1 },
+        { edge: 'bottom-right', x: 1000, scaleX: -1 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        // 头在 y=650（工作区 81%），刚进入底部 20% 的角落区。
+        const model = createRotatingModel({ x: item.x, y: 540, scaleX: item.scaleX });
+        attachRotatingHeadAnchors(manager, model);
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.edge);
+        assert.equal(contact.allowBottomOverflow, false);
+    }
+});
+
+function attachScaledAnchors(manager, model, { height, headY, waistY, reliable }) {
+    const head = () => model.transformPoint(150, headY);
+    manager.getHeadScreenAnchor = head;
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = head();
+        return { reliableHeadRect: reliable, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, waistY);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    return head;
+}
+
+test('without a reliable head, a lower drop whose waist is past the bottom falls back to a bottom corner', async () => {
+    // 工作区 1000x800。松手时头 y=630，腰分别在 y=1070 / 970，都已越过底边。
+    // 侧边落位会按腰部兜底保住腰的高度，头会被带到 y=850 / 800；退回下角后头留在角上。
+    const sizes = [
+        { height: 1200, headY: 288, waistY: 728, y: 342 },
+        { height: 900, headY: 216, waistY: 556, y: 414 }
+    ];
+    const sides = [
+        { side: 'left', x: 0, scaleX: 1 },
+        { side: 'right', x: 1000, scaleX: -1 }
+    ];
+
+    for (const size of sides.flatMap((side) => sizes.map((item) => ({ ...item, ...side })))) {
+        const label = `${size.side} ${size.height}px`;
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: size.x, y: size.y, scaleX: size.scaleX, height: size.height });
+        const head = attachScaledAnchors(manager, model, { ...size, reliable: false });
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, `bottom-${size.side}`, `${label} falls back to the bottom corner`);
+        assert.equal(contact.allowBottomOverflow, false);
+
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        const finalHead = head();
+        assert.ok(finalHead.y > 0 && finalHead.y < 800, `${label} head stays inside the work area, y=${finalHead.y}`);
+        assert.ok(finalHead.x > 0 && finalHead.x < 1000, `${label} head stays inside the work area, x=${finalHead.x}`);
+    }
+});
+
+test('without a reliable head, a lower drop whose waist is still on screen keeps the side peek', () => {
+    // 头 y=510、腰 y=730、脚越过底边：腰部兜底落位后头仍在屏幕内，保留侧边。
+    for (const item of [{ side: 'left', x: 0, scaleX: 1 }, { side: 'right', x: 1000, scaleX: -1 }]) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 366, scaleX: item.scaleX, height: 600 });
+        attachScaledAnchors(manager, model, { headY: 144, waistY: 364, reliable: false });
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.side);
+        assert.equal(contact.allowBottomOverflow, true);
+    }
+});
+
+test('without a reliable head or any waist rect, a lower side drop still clamps the head into the work area', async () => {
+    // getBodyScreenRectInfo 找不到任何身体来源时返回 null，不能被当成 (0, 0) 的腰部去兜底。
+    for (const item of [{ side: 'left', x: 0, scaleX: 1 }, { side: 'right', x: 1000, scaleX: -1 }]) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 342, scaleX: item.scaleX, height: 1200 });
+        const head = attachScaledAnchors(manager, model, { headY: 288, waistY: 728, reliable: false });
+        manager.getBodyScreenRectInfo = () => null;
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.side);
+
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        const finalHead = head();
+        assert.ok(finalHead.y > 0 && finalHead.y < 800, `${item.side} head stays inside the work area, y=${finalHead.y}`);
+    }
+});
+
+test('a reliable head keeps the side peek even when the waist is past the bottom', async () => {
+    for (const item of [{ side: 'left', x: 0, scaleX: 1 }, { side: 'right', x: 1000, scaleX: -1 }]) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 342, scaleX: item.scaleX, height: 1200 });
+        const head = attachScaledAnchors(manager, model, { headY: 288, waistY: 728, reliable: true });
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.side, `${item.side} reliable head stays a side peek`);
+        assert.equal(contact.allowBottomOverflow, true);
+
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        assertClose(head().y, 630, `${item.side} head stays at the drop height`, 0.001);
+    }
+});
+
+test('bottom corner zone scales with the model so small models need the same drop depth', () => {
+    // 工作区高 800。下角区取「工作区底部 20%（160px）」和「身高 26%」中较小的一个，
+    // 头在身高 24% 处时约等于一半身子越过底边，和模型大小无关。
+    for (const height of [150, 200, 300, 400]) {
+        const headLocalY = height * 0.24;
+        const classify = (feetY) => {
+            const harness = createHarness();
+            const manager = new harness.Live2DManager();
+            const model = createRotatingModel({ x: 0, y: feetY - height, height });
+            const head = () => model.transformPoint(150, headLocalY);
+            manager.getHeadScreenAnchor = head;
+            manager.getHeadDetectionGeometryInfo = () => {
+                const anchor = head();
+                return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+            };
+            return harness.getLive2DPeekEdgeContact(manager, model);
+        };
+
+        const feetOnBottom = classify(800);
+        assert.equal(feetOnBottom.edge, 'left', `${height}px model with feet on the bottom edge stays a side peek`);
+        assert.equal(feetOnBottom.allowBottomOverflow, true);
+
+        assert.equal(classify(800 + height * 0.45).edge, 'left', `${height}px model 45% past the bottom stays a side peek`);
+        const halfPast = classify(800 + height * 0.52);
+        assert.equal(halfPast.edge, 'bottom-left', `${height}px model about half past the bottom becomes a corner`);
+        assert.equal(halfPast.allowBottomOverflow, false);
+    }
+});
+
 test('restoring any dynamic side-peek transform keeps the grabbed model-local point under the pointer', () => {
     const harness = createHarness();
     for (const degrees of [55, 41.5, 28, -55, -41.5, -28]) {
@@ -1693,7 +1889,8 @@ test('very small models stay flush with the contacted screen edge', async () => 
         { edge: 'left', x: 0, y: 360, scaleX: 1 },
         { edge: 'right', x: 1000, y: 360, scaleX: -1 },
         { edge: 'top-left', x: 0, y: 0, scaleX: 1 },
-        { edge: 'bottom-right', x: 1000, y: 784, scaleX: -1 }
+        // 下角阈值跟着模型身高走：小模型也要大约一半身子出了底边才算下角。
+        { edge: 'bottom-right', x: 1000, y: 796, scaleX: -1 }
     ];
 
     for (const item of cases) {
@@ -1783,8 +1980,8 @@ test('corner peeks keep the head at the corner and the body outside the matching
     const cases = [
         { edge: 'top-left', x: 0, y: 0, scaleX: 1, rotation: 135 },
         { edge: 'top-right', x: 1000, y: 0, scaleX: -1, rotation: -135 },
-        { edge: 'bottom-left', x: 0, y: 200, scaleX: 1, rotation: 45, inwardX: -1 },
-        { edge: 'bottom-right', x: 1000, y: 200, scaleX: -1, rotation: -45, inwardX: 1 }
+        { edge: 'bottom-left', x: 0, y: 560, scaleX: 1, rotation: 45, inwardX: -1 },
+        { edge: 'bottom-right', x: 1000, y: 560, scaleX: -1, rotation: -45, inwardX: 1 }
     ];
 
     for (const item of cases) {
@@ -1857,7 +2054,7 @@ test('semantic corner anchor restores the model to the same corner', async () =>
 test('corner peeks fall back to model transforms when no head anchor is available', async () => {
     const cases = [
         { edge: 'top-left', y: 0, headYRange: [36, 64], bodyOutside: (bodyY) => bodyY < 0 },
-        { edge: 'bottom-left', y: 200, headYRange: [736, 764], bodyOutside: (bodyY) => bodyY > 800 }
+        { edge: 'bottom-left', y: 560, headYRange: [736, 764], bodyOutside: (bodyY) => bodyY > 800 }
     ];
 
     for (const item of cases) {
@@ -1885,7 +2082,7 @@ test('corner peeks fall back to model transforms when no head anchor is availabl
 test('side-only reliable detection metadata does not change corner bounds fallback', async () => {
     const cases = [
         { edge: 'top-left', y: 0, rotation: 135, headYRange: [36, 64] },
-        { edge: 'bottom-left', y: 200, rotation: 45, headYRange: [736, 764] }
+        { edge: 'bottom-left', y: 560, rotation: 45, headYRange: [736, 764] }
     ];
 
     for (const item of cases) {
@@ -1997,10 +2194,12 @@ test('Windows bottom corners trigger at the current display work-area bottom', a
             }
         });
         const manager = new harness.Live2DManager();
-        const model = createRotatingModel({ x: item.x, y: 792, scaleX: item.scaleX });
+        // 矮模型拖到大约一半身子越过任务栏上沿（工作区底边 1392），头离这条边
+        // 72px，在按身高算的下角区（300 * 0.26 = 78px）以内；按屏幕底边 1440 算则不在。
+        const model = createRotatingModel({ x: item.x, y: 1210, height: 300, scaleX: item.scaleX });
         manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
         manager.getBodyScreenRectInfo = () => {
-            const waist = model.transformPoint(150, 330);
+            const waist = model.transformPoint(150, 180);
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 

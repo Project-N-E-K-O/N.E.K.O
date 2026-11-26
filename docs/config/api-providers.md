@@ -6,8 +6,8 @@ Do not depend on a provider count or model-ID snapshot in documentation. Both ch
 
 ## Core and assist profiles
 
-- **Core** drives the primary conversation/realtime path. Loader fields are `core_url` or `core_urls`, `core_model`, and `core_api_key`.
-- **Assist** supports role-specific text/vision work. Loader fields include `openrouter_url(s)`, optional token-plan URLs, conversation/summary/correction/emotion/vision/agent models, credential placeholders, and `provider_type`.
+- **Core** (shown in the settings page as *Voice Model Provider*) drives the primary conversation/realtime path. Loader fields are `core_url` or `core_urls`, `core_model`, and `core_api_key`.
+- **Assist** (shown in the settings page as *General Model Provider*) supports role-specific text/vision work. Loader fields include `openrouter_url(s)`, optional token-plan URLs, conversation/summary/correction/emotion/vision/agent models, credential placeholders, and `provider_type`.
 
 Not every provider implements every role.
 
@@ -30,3 +30,7 @@ The JSON also contains keybook/provider metadata, an API-key registry, default-m
 - Run provider/config tests and the documentation build.
 
 See [API provider field reference](/api_providers_fields) for the schema contract. For user-facing differences between the bundled free path, bring-your-own keys, and local components, see [Cost and providers](/guide/cost-and-providers).
+
+ChatGPT subscription sign-in uses a separate OAuth credential store and an account-specific model picker. See [ChatGPT subscription provider](/config/chatgpt).
+
+Subscriptions and plans (ChatGPT, MiMo Token Plan and others) take over text features from a panel of their own, without rewriting providers or tier settings. See [Subscriptions & plans](/config/subscriptions).

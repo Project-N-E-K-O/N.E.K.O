@@ -13,6 +13,42 @@ function normalizeJukeboxBundledVrmIdleUrl(url) {
   return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
 }
 
+/**
+ * Escape a local jukebox path for the request. Song and action entries keep
+ * raw file names (uploads keep the original name, e.g. 'songs/Song #1.mp3'),
+ * so '#', '?' and '%' must be escaped or the browser reads them as URL syntax
+ * and both the HEAD preflight and playback request a truncated path.
+ * Same rule as MMDCore.toRequestUrl / VRMAnimation.toRequestUrl (#3914): valid %XX
+ * runs are decoded once first, so an already-escaped path is returned
+ * unchanged (and those helpers leave this output unchanged too).
+ * A value ending in a known extension is a file name throughout ('a?.mp3'
+ * escapes the '?'); otherwise a '?' or '#' right after the last extension
+ * starts a query / fragment and is kept as URL syntax ('x.vrma?v=1').
+ * Only the jukebox audio / action extensions are known; a suffix after any
+ * other extension is escaped into the name.
+ * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.mp3')
+ * is read as that escape; such names did not load before this either.
+ */
+function encodeJukeboxLocalPath(localPath) {
+  const value = String(localPath || '');
+  const extension = '\\.(?:mp3|wav|ogg|flac|vmd|bvh|fbx|vrma\\.gz|vrma)';
+  let path = value;
+  let suffix = '';
+  if (!new RegExp(extension + '$', 'i').test(value)) {
+    const match = value.match(new RegExp('^(.*' + extension + ')([?#].*)$', 'is'));
+    if (match) {
+      path = match[1];
+      suffix = match[2];
+    }
+  }
+  return path.split('/').map(segment => encodeURIComponent(
+    segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try { return decodeURIComponent(encoded); }
+      catch (_) { return encoded; }
+    })
+  )).join('/') + suffix;
+}
+
 Object.assign(window.Jukebox, {
   startConfigPolling: function() {
     Jukebox.stopConfigPolling();
@@ -1236,17 +1272,23 @@ Object.assign(window.Jukebox, {
     }
   },
 
+  // Returns the request URL that both the HEAD preflight and playback use.
+  // The model loaders may still map it (e.g. a bundled .vrma to .vrma.gz).
   resolveJukeboxFileUrl: function(filePath) {
     const rawPath = String(filePath || '').trim();
     if (!rawPath) return '';
     if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    const jukeboxFilePrefix = '/api/jukebox/file' + '/';
     if (/^\/?static\/jukebox\//.test(rawPath)) {
-      return '/api/jukebox/file/' + rawPath.replace(/^\/?static\/jukebox\//, '');
+      return jukeboxFilePrefix
+        + encodeJukeboxLocalPath(rawPath.replace(/^\/?static\/jukebox\//, ''));
     }
-    if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
-      return rawPath;
+    if (rawPath.startsWith(jukeboxFilePrefix) || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+      return encodeJukeboxLocalPath(rawPath);
     }
-    return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
+    // Other API endpoints are already URLs; leave them alone.
+    if (rawPath.startsWith('/api/')) return rawPath;
+    return jukeboxFilePrefix + encodeJukeboxLocalPath(rawPath.replace(/^\/+/, ''));
   },
 
   renderList: function() {
@@ -1722,12 +1764,18 @@ Object.assign(window.Jukebox, {
 
     const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
 
+    const rawName = String(song.name || '');
+    const rawArtist = String(song.artist || '');
+    // APlayer renders the active header with innerHTML (`title.innerHTML = t.name`),
+    // so keep the stored track fields HTML-escaped and restore raw textContent on
+    // the playlist DOM nodes after APlayer's `$escape` pass to avoid `&amp;` display.
     player.list.add([{
-      name: song.name,
-      artist: song.artist,
+      name: Jukebox.escapeHtml(rawName),
+      artist: Jukebox.escapeHtml(rawArtist),
       url: audioUrl,
       cover: ''
     }]);
+    Jukebox.syncAPlayerListText(player, [{ name: rawName, artist: rawArtist }]);
 
     player.options.loop = 'none';
 
@@ -2984,14 +3032,32 @@ Object.assign(window.Jukebox, {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   },
 
+  syncAPlayerListText: function(player, tracks) {
+    const container = player && player.container;
+    if (!container || typeof container.querySelectorAll !== 'function' || !Array.isArray(tracks)) return;
+    const rows = container.querySelectorAll('.aplayer-list li');
+    for (let i = 0; i < rows.length && i < tracks.length; i += 1) {
+      const row = rows[i];
+      const track = tracks[i] || {};
+      const titleEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-title') : null;
+      const authorEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-author') : null;
+      if (titleEl) titleEl.textContent = track.name === null || track.name === undefined ? '' : String(track.name);
+      if (authorEl) authorEl.textContent = track.artist === null || track.artist === undefined ? '' : String(track.artist);
+    }
+  },
+
   escapeHtml: function(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (text === null || text === undefined) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   },
 
   escapeAttr: function(text) {
-    return Jukebox.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return Jukebox.escapeHtml(text);
   },
 
   escapeJsAttr: function(text) {

@@ -121,17 +121,30 @@ class _Gate(NamedTuple):
 
 
 def _push_blockers(state: RepoState) -> list[str]:
+    from plugin.neko_plugin_cli.commands.release_cmd import (
+        _BRANCH_PLACEHOLDER,
+        _push_refspec,
+        _shell_argument,
+    )
+
     branch = state.branch
     if state.head is None:
         return ["the repository has no commits yet"]
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
+    # The messages name the branch; the command quotes it like the CLI's, and
+    # behind a placeholder a branch starting with + is named as its refspec.
+    refspec = _push_refspec(branch or "")
+    argument = _shell_argument(refspec, _BRANCH_PLACEHOLDER)
+    set_upstream = f"git push -u origin {argument}"
+    if argument == _BRANCH_PLACEHOLDER and refspec != branch:
+        set_upstream += f" (branch: {refspec})"
     if state.upstream is None:
-        return [f"branch {branch} has no upstream; run git push -u origin {branch}"]
+        return [f"branch {branch} has no upstream; run {set_upstream}"]
     if not state.upstream.startswith("origin/"):
         return [
             f"branch {branch} tracks {state.upstream}, which is not on origin; "
-            f"run git push -u origin {branch}"
+            f"run {set_upstream}"
         ]
     if state.head_pushed is not True:
         return [f"HEAD is not pushed to {state.upstream}; run git push"]
@@ -149,13 +162,15 @@ def _release_blockers(local: LocalStatus) -> list[str]:
             "the git working tree has uncommitted changes: " + ", ".join(state.dirty_paths)
         )
     reasons.extend(_push_blockers(state))
+    from plugin.neko_plugin_cli.commands.release_cmd import _placeholder_note, _plugin_dir_argument
     from plugin.neko_plugin_cli.repo_action_migration import ActionFileStatus
 
     workflow = local.actions.get(_RELEASE_WORKFLOW)
     if workflow != ActionFileStatus.CURRENT:
         reasons.append(
             f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            f"run neko-plugin setup-repo {local.source_dir} --upgrade-github-actions"
+            f"run neko-plugin setup-repo {_plugin_dir_argument(local.source_dir, '')} "
+            f"--upgrade-github-actions{_placeholder_note(local.source_dir)}"
         )
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(

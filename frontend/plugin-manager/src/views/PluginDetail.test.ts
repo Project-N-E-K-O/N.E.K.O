@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, ref } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import PluginDetail from './PluginDetail.vue'
 import type { PluginUiSurface } from '@/types/api'
@@ -20,7 +20,11 @@ const apiMocks = vi.hoisted(() => ({
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
-  route: { params: { id: 'study_companion' }, query: {} as Record<string, string> },
+  route: {
+    name: 'PluginDetail' as string,
+    params: { id: 'study_companion' } as Record<string, string>,
+    query: {} as Record<string, string>,
+  },
 }))
 const hostedFrameMocks = vi.hoisted(() => ({ refreshContext: vi.fn() }))
 const configEditorMocks = vi.hoisted(() => ({ mounts: 0 }))
@@ -222,6 +226,73 @@ describe('PluginDetail surface selection', () => {
     process.off('unhandledRejection', unhandled)
     warn.mockRestore()
     mounted.unmount()
+  })
+
+  it('sends no detail request when the route id is cleared on leave', async () => {
+    const originalRoute = routerMocks.route
+    const route = reactive({ name: 'PluginDetail', params: { id: 'study_companion' } as Record<string, string>, query: {} })
+    routerMocks.route = route as typeof routerMocks.route
+    try {
+      const mounted = await mountDetail([surface({ id: 'main' })])
+      apiMocks.getPlugin.mockClear()
+      apiMocks.getPlugins.mockClear()
+      apiMocks.getPluginStatus.mockClear()
+      apiMocks.getPluginUiSurfaceInfo.mockClear()
+
+      route.params = {}
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPlugins).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginStatus).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+
+      // A locale change while the id is empty must not reach the API either.
+      localeRef.value = 'zh-CN'
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+      mounted.unmount()
+    } finally {
+      routerMocks.route = originalRoute
+    }
+  })
+
+  it.each([
+    ['Logs', '_server'],
+    ['AdapterUI', 'demo_adapter'],
+  ])('sends no detail request when leaving for the sibling %s route', async (name, id) => {
+    const originalRoute = routerMocks.route
+    const route = reactive({ name: 'PluginDetail', params: { id: 'study_companion' } as Record<string, string>, query: {} })
+    routerMocks.route = route as typeof routerMocks.route
+    try {
+      const mounted = await mountDetail([surface({ id: 'main' })])
+      apiMocks.getPlugin.mockClear()
+      apiMocks.getPlugins.mockClear()
+      apiMocks.getPluginStatus.mockClear()
+      apiMocks.getPluginUiSurfaceInfo.mockClear()
+
+      // Vue Router swaps the whole location; this view is still mounted.
+      Object.assign(route, { name, params: { id } })
+      for (let index = 0; index < 10; index += 1) {
+        await Promise.resolve()
+        await nextTick()
+      }
+
+      expect(apiMocks.getPlugin).not.toHaveBeenCalled()
+      expect(apiMocks.getPlugins).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginStatus).not.toHaveBeenCalled()
+      expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+      mounted.unmount()
+    } finally {
+      routerMocks.route = originalRoute
+    }
   })
 
   it('keeps the detail card and its drafts mounted when only the locale changes', async () => {

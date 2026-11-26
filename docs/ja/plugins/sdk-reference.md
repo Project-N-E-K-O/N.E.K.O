@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | `self.plugin_dir` の互換エイリアス |
 | `self.storage_dir` | `Path` | このプラグインに割り当てられたユーザーストレージルート |
 | `self.runtime_config_path` | `Path` | 外部ランタイム設定ファイルのパス |
-| `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
+| `self.metadata` | `dict` | 現在、プラグインプロセスでは常に `{}`（`plugin.toml` の内容は渡されません）。設定は `await self.config.dump()` で読みます |
 | `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
 | `self.system_info` | `SystemInfo` | ホストシステムのメタデータ |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` は、追加設定なしでログと実行時設定を提供します：
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -93,6 +93,8 @@ async with unwrap(await self.db.session()) as session:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` はユーザーの言語に従いません。`locale=` を渡さない場合、プラグインの `default_locale`、その基本言語（例：`fr-CA` なら `fr`）、`en` の順に探し、最後に `default` 引数またはキー名を返します。ホストが登録するユーザー向け文字列（プラグインやエントリーの名前、説明、スキーマのラベル、UI アクションのラベル）には `tr("key", default="...")` を使ってください。こちらはホストがユーザーごとの言語で解決します。
 
 ### メソッド
 
@@ -170,13 +172,18 @@ cities = self.shared_path_of("weather", "cities.json")
 実行時にエントリーポイントを登録します（デコレーター経由ではなく）。
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="動的に登録された挨拶",
 )
 ```
+
+handler は `async def` 関数である必要があります。登録時は呼び出し可能かどうかしか確認しませんが、handler がコルーチン関数でないエントリーを呼び出すと `Entry must be 'async def'` で失敗します。
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -202,7 +209,7 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
 
-関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできず、この mount path は `on_mount` / `on_unmount` を自動実行しません。
+各 router クラスはプラグインのクラス属性 `__routers__` にも列挙してください。ホストの静的エントリースキャンはこのリストだけを読みます（[PluginRouter](./router) を参照）。ここに列挙した router クラスに `prefix` を組み合わせないでください。一覧の ID が呼び出せなくなります（[prefix 付き Router](./router#prefixed-routers) を参照）。関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできません。`on_mount` / `on_unmount` はホストから呼ばれないため、オーバーライドしないでください。
 
 #### Hosted/static UI と list action
 
@@ -210,7 +217,7 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 #### LLM tool method
 
-`register_llm_tool(...)`、`unregister_llm_tool(name)`、`list_llm_tools()` は `@llm_tool` の imperative API です。conversation-time tool を登録し、user-plugin Agent entry とは別です。[LLM Tool Calling](./tool-calling) を参照してください。
+`register_llm_tool(...)`、`unregister_llm_tool(name)`、`list_llm_tools()` は `@llm_tool` の imperative API です。conversation-time tool を登録し、user-plugin Agent entry とは別です。同期版は送りっぱなしです。`await register_llm_tool_async(...)` と `await unregister_llm_tool_async(name)` は `main_server` の実際の応答（`ok`、role ごとの結果、`error`）を返し、プラグイン側の登録をそれに合わせます。[LLM Tool Calling](./tool-calling) を参照してください。
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -337,14 +344,16 @@ chain.callers        # ここまで呼び出してきたプラグイン ID（根
 chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self"、"system" のいずれか
 chain.origin.ref     # run ID などの識別子。メッセージ本文は含みません
 chain.hops           # 各ステップの (plugin_id, event_type, event_id)
-chain.rights         # チェーン上のすべてのプラグインがユーザーに承認されている能力
+chain.rights         # チェーン上のすべてのプラグインがユーザーに承認されている権限
 chain.rights_known   # ホストが示さなかった場合は False（後述）
-chain.allows("memory.read")
+chain.allows("plugin_sdk.main_agent.memory:read")
 ```
 
-- `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）や、ホスト側でポリシーがオフのときは、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
+- `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）では、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
+- `rights` には `plugin_sdk.main_agent.memory:read` のような権限 ID が入ります。1 バージョンの間は旧名（`memory.read`、`conversations.read`、`messages.push`）も併せて入り、`allows()` はどちらの形式も受け付けます。
 - `allows()` は参考情報です。権限が不明なときは常に `False` を返すため、「持っていない」と「わからない」はどちらも `False` になります。区別するには `rights_known` を見てください。各利用の可否はホストが判定します。ここで `False` でもホストが拒否するとは限らず、`True` も呼び出しが配送された時点のスナップショットです。
-- `loop.run_in_executor` や素の `threading.Thread` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
+- 素の `threading.Thread`、独自のスレッドプール、独自の executor を渡した `loop.run_in_executor` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
+- `loop.run_in_executor(None, ...)` も保持しますが、プラグインランタイムがコードを実行するイベントループ上に限ります。ランタイムがそのループのデフォルト executor をコンテキストをコピーするものに置き換えているためです。自分で作成したイベントループ上や、デフォルト executor を置き換えた後ではコンテキストを失います。`neko-plugin check` は `run_in_executor(None, ...)` がどのイベントループ上で動くかを区別できないため、この呼び出しはスキャンで見通せない箇所として表示せず、代わりに `asyncio.new_event_loop`、`asyncio.Runner`、`set_default_executor` を表示します。それ以外の方法で独自のループを用意する場合（コード内で `asyncio.run` を呼ぶなど）は表示されません。
 - 旧来の `plugin.sdk.shared.runtime.call_chain`（1 つのプラグインプロセス内の呼び出しだけを追跡）とは別物です。
 
 ホストはプラグイン間呼び出しと能力の利用を監査用に記録します（識別子と能力名のみで、引数・戻り値・メッセージ本文は記録しません）。設計：[`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
@@ -353,7 +362,7 @@ chain.allows("memory.read")
 
 ## PluginStore（永続ストレージ）
 
-`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。
+`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。`plugin.toml` の `[plugin.store]` で `enabled = true` にしない限り無効で、無効の間は `set()` は何も保存せず、`get()` はデフォルト値を返します。
 
 `PluginStore` のすべてのメソッドは `Result` を返すため、`unwrap_or(...)` で展開してください。
 
@@ -386,7 +395,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` へのパス |
 | `ctx.logger` | `Logger` | ロガーインスタンス |
 | `ctx.bus` | `SdkBusContext` | host state の read/watch facade |
-| `ctx.metadata` | `dict` | プラグインメタデータ |
+| `ctx.metadata` | `dict` | `__init__` に渡される元の `ctx` には `metadata` 属性がありません（読むと `AttributeError`）。ラップ後の `self.ctx.metadata` は `{}` を返します。設定は `await self.config.dump()` で読みます |
 
 ### Bus と Memory
 

@@ -46,6 +46,21 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('marks message bubbles and the export preview for the character-vision capture mask (#3474)', () => {
+    // The compact history panel itself is transparent and overlaps the avatar,
+    // so only the visible content is marked, not the panel box.
+    const list = renderPanel({ previewOpen: false });
+    const anchor = list.container.querySelector('.compact-export-history-anchor');
+    expect(anchor).not.toHaveAttribute('data-neko-capture-mask');
+    const bubbles = list.container.querySelectorAll('.compact-export-history-bubble');
+    expect(bubbles.length).toBeGreaterThan(0);
+    bubbles.forEach((bubble) => expect(bubble).toHaveAttribute('data-neko-capture-mask', 'history'));
+    list.unmount();
+
+    const preview = renderPanel({ previewOpen: true });
+    expect(preview.container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-neko-capture-mask', 'history');
+  });
+
   it('keeps visit peer messages visually distinct from both the user and the local assistant', () => {
     const visitPeerMessage = parseChatMessage({
       id: 'visit-peer-message',

@@ -89,6 +89,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.suppressDragReleaseClick = false;
     I.resizeState = null;
     I.minimized = false;
+    I.idleCatPlaygroundActive = false;
     I.idleCatPlaygroundYarnSkinActive = false;
     I.savedShellSize = null;
     I.savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
@@ -101,9 +102,13 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.idleDockSavedPosition = null;
     I.idleDockTriggeredMinimize = false;
     I.idleDockMinimizeObserver = null;
+    // Set when the cat wakes up on its own while the chat is idle-docked: the
+    // chat stays minimized, but reopens once the user actually brings her back.
+    I.idleDockParkedRestore = null;
     I.electronIdleDockActive = false;
     I.electronIdleDockTriggeredCollapse = false;
     I.electronIdleDockSavedBounds = null;
+    I.electronIdleDockParkedRestoreBounds = null;
     I.electronIdleDockLastScreenRect = null;
     I.electronIdleDockEntering = false;
     I.electronIdleDockRetryTimer = 0;
@@ -147,6 +152,14 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
+        // 语音消息：宿主给出发送回调和目标角色后，聊天窗才显示麦克风按钮
+        onComposerAudioMessage: null,
+        audioMessageTarget: '',
+        // 聊天窗报告的录音/试听/发送中状态（迷你窗折叠后控件卸载，DOM 里看不到）
+        audioMessageActive: false,
+        audioMessagePhase: 'idle',
+        // 因草稿还在而推迟的收起；草稿一结束立即生效
+        deferredAudioMessageTarget: null,
         onTheaterSubmit: null,
         onTheaterSuggestedInputSelect: null,
         onTheaterEnd: null,

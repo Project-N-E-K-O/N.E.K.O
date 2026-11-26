@@ -152,6 +152,24 @@
         return true;
     }
 
+    // Switch rule for the trigger gate (canTriggerProactively). Unlike
+    // isSwitchOnNow it ignores a stale "false" another window copied along in
+    // an unrelated save: the listener rejects that copy, so no later event
+    // would correct it, and a failed trigger check stops scheduling until the
+    // next save. Only this window's value or another window's explicit
+    // write (with its write token, appSettings.sharedSwitchRevokedElsewhere)
+    // turns it off. Without appSettings, falls back to isSwitchOnNow.
+    function isTriggerSwitchOnNow(key) {
+        if (!S[key]) return false;
+        var settingsApi = window.appSettings;
+        if (settingsApi && typeof settingsApi.sharedSwitchRevokedElsewhere === 'function') {
+            try {
+                return !settingsApi.sharedSwitchRevokedElsewhere(key);
+            } catch (_) { }
+        }
+        return isSwitchOnNow(key);
+    }
+
     // Screen consent alone, shared by text-chat vision and stream acquisition;
     // the speech gate above may add conditions on top of it. Both this
     // window's value and the latest saved setting must allow it, so a
@@ -171,8 +189,11 @@
         return canProactiveVisionRunDuringSpeech();
     }
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    mod.isVisionConsentHeldNow = isVisionConsentHeldNow;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
+    // Also bumped when Proactive Chat or its Screen Share option takes vision
+    // from allowed to not allowed (syncProactiveVisionDuringSpeech).
     // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
     // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
     var proactiveVisionRevocationSeq = 0;
@@ -191,7 +212,9 @@
         if (!requestBody.screenshot_data && !requestBody.window_title
             && modes.indexOf('vision') === -1 && modes.indexOf('window') === -1) return false;
         // 另一窗口的撤权先落 localStorage，本窗口的同步事件可能还没到，序号未变。
-        if (seqAtCapture === proactiveVisionRevocationSeq && isProactiveVisionEnabledNow()) return false;
+        // holdsProactiveVisionStream also reads the Proactive Chat and Screen
+        // Share switches, so one turned off elsewhere counts too.
+        if (seqAtCapture === proactiveVisionRevocationSeq && holdsProactiveVisionStream()) return false;
         delete requestBody.screenshot_data;
         delete requestBody.screenshot_allow_desktop_fallback;
         delete requestBody.avatar_position;
@@ -521,8 +544,130 @@
         // 短合并可能留下一个比新截止时间更早的定时器。这里只补到窗口结束再判定，
         // 不走 scheduleProactiveChat：那条路径在输入框仍聚焦时会再给一整段最小延迟。
         console.log(label);
+        _noteProactiveTimerDue(remaining);
         S.proactiveChatTimer = setTimeout(retry, remaining);
         return true;
+    }
+
+    // ======================== system sleep / inactive session ========================
+    //
+    // While the machine sleeps every timer is frozen; on wake the overdue
+    // proactive tick fires immediately, i.e. right when the user comes back
+    // (#3552). The tick compares its actual firing time with the time it was
+    // armed for: being late by more than one base interval (and never less
+    // than SYSTEM_SLEEP_LATE_FLOOR_MS, so CPU load or hidden-tab throttling
+    // cannot trigger it) means the machine slept. That tick is dropped and the
+    // schedule restarts with at least SYSTEM_RETURN_QUIET_MS of quiet.
+    //
+    // The backend additionally answers PASS_SYSTEM_INACTIVE while the local
+    // display is off, the session is locked or just came back (Windows only,
+    // requests from this machine only). Such a pass is not an attempt: it does
+    // not raise the text backoff level nor the voice no-response counter.
+    var PROACTIVE_REASON_PASS_SYSTEM_INACTIVE = 'PASS_SYSTEM_INACTIVE';
+    var SYSTEM_SLEEP_LATE_FLOOR_MS = 120 * 1000;
+    // Mirrors SYSTEM_RETURN_QUIET_SECONDS in main_logic/activity/system_presence.py.
+    var SYSTEM_RETURN_QUIET_MS = 60 * 1000;
+    // After a PASS_SYSTEM_INACTIVE the next tick waits at least this long (or one
+    // base interval if longer). The backoff level is left alone so the user is
+    // not pushed to hour-long intervals on return, but a screen that stays off
+    // all night is no longer polled (screenshot + window title + POST) at the
+    // fastest interval.
+    var SYSTEM_INACTIVE_RECHECK_MS = 60 * 1000;
+    var _proactiveTimerDueAt = 0;
+    var _systemQuietUntil = 0;
+
+    function _noteProactiveTimerDue(delay) {
+        _proactiveTimerDueAt = Date.now() + Math.max(0, Number(delay) || 0);
+    }
+
+    // Timers may fire a few ms before Date.now() reaches the deadline; treat
+    // that as "quiet over" instead of waiting another full interval.
+    var SYSTEM_QUIET_SLACK_MS = 50;
+
+    function _getSystemQuietDelay() {
+        var remaining = Math.max(0, _systemQuietUntil - Date.now());
+        // The deadline is wall-clock based: if the clock is set back after wake
+        // (e.g. a time sync), don't let the quiet window stretch with it. No
+        // quiet window is ever longer than one base interval or the 60s floors.
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        var cap = Math.max(baseMs, SYSTEM_RETURN_QUIET_MS, SYSTEM_INACTIVE_RECHECK_MS);
+        if (remaining > cap) {
+            // Rebase the stored deadline too, otherwise every later tick would
+            // see a future deadline again and keep waiting.
+            _systemQuietUntil = Date.now() + cap;
+            remaining = cap;
+        }
+        return remaining;
+    }
+
+    function _systemQuietPending() {
+        return _getSystemQuietDelay() > SYSTEM_QUIET_SLACK_MS;
+    }
+
+    // Called first thing in a firing tick. Returns true when the tick is a
+    // catch-up after system sleep and must be dropped.
+    function _proactiveTickMissedBySleep() {
+        // On wake the tick may fire before the heartbeat does; check the wall
+        // clock here too so a short-late tick still gets the quiet window.
+        _checkWallClockJump();
+        if (!_proactiveTimerDueAt) return false;
+        var lateBy = Date.now() - _proactiveTimerDueAt;
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        if (lateBy <= Math.max(baseMs, SYSTEM_SLEEP_LATE_FLOOR_MS)) return false;
+        var wakeQuietUntil = Date.now() + SYSTEM_RETURN_QUIET_MS;
+        if (!(_systemQuietUntil >= wakeQuietUntil)) _systemQuietUntil = wakeQuietUntil;
+        console.log('[ProactiveChat] Timer fired ' + Math.round(lateBy / 1000) + 's late (system sleep); dropping this tick and staying quiet for ' + Math.round(_getSystemQuietDelay() / 1000) + 's');
+        return true;
+    }
+    mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
+    // Test hook: remaining quiet / recheck wait in ms.
+    mod._getSystemQuietDelay = function () { return _getSystemQuietDelay(); };
+
+    // Every window also watches its own wall clock: a sampler (and the leader
+    // heartbeat, when BroadcastChannel exists) runs every few seconds, so a gap
+    // above SYSTEM_SLEEP_LATE_FLOOR_MS between two checks means the machine slept. Without this a follower that takes over
+    // right after wake (the leader's heartbeat expired during sleep) would
+    // schedule a fresh tick with no quiet window. Each window detects the
+    // jump itself, so no cross-window state is needed. Only active while the
+    // sampler keeps the stamp fresh (independent of BroadcastChannel, so a
+    // single window without the channel is covered too); otherwise a long idle
+    // gap would look like sleep. Known harmless false positive: a browser tab frozen by the
+    // page lifecycle (or a debugger pause) for over the floor gets 60s of quiet.
+    var _lastWallClockCheckAt = 0;
+    var WALL_CLOCK_SAMPLE_MS = 15 * 1000;
+    var _wallClockSamplerTimer = null;
+
+    function _checkWallClockJump() {
+        if (!_wallClockSamplerTimer) return;
+        var now = Date.now();
+        var last = _lastWallClockCheckAt;
+        _lastWallClockCheckAt = now;
+        if (!last || now - last <= SYSTEM_SLEEP_LATE_FLOOR_MS) return;
+        var quietUntil = now + SYSTEM_RETURN_QUIET_MS;
+        if (!(_systemQuietUntil >= quietUntil)) _systemQuietUntil = quietUntil;
+        console.log('[ProactiveChat] Wall clock jumped ' + Math.round((now - last) / 1000) + 's (system sleep); staying quiet for ' + Math.round(_getSystemQuietDelay() / 1000) + 's');
+    }
+
+    function _isSystemInactivePass(result) {
+        return !!(result && result.action === 'pass'
+            && result.reason_code === PROACTIVE_REASON_PASS_SYSTEM_INACTIVE);
+    }
+
+    // Send boundary check: the tick passed its sleep/quiet checks, but the
+    // machine may have slept during an await before fetch (mutation headers,
+    // screenshot). Drop the send; the caller treats it like an input cancel
+    // (not an attempt) and rescheduling honours the quiet deadline.
+    function _systemQuietBlocksSend() {
+        _checkWallClockJump();
+        return _systemQuietPending();
+    }
+
+    // Push the earliest next tick out by the recheck interval; scheduling and
+    // the tick callbacks already honour _systemQuietUntil.
+    function _deferAfterSystemInactivePass() {
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        var until = Date.now() + Math.max(baseMs, SYSTEM_INACTIVE_RECHECK_MS);
+        if (!(_systemQuietUntil >= until)) _systemQuietUntil = until;
     }
 
     document.addEventListener('focusin', function (event) {
@@ -653,9 +798,22 @@
     }
 
     // 启动：先 announce 一下，再周期性 heartbeat
+    // Wall-clock sampler for sleep detection; does not depend on BroadcastChannel.
+    if (PROACTIVE_SELF_RANK !== 99) {
+        _wallClockSamplerTimer = setInterval(_checkWallClockJump, WALL_CLOCK_SAMPLE_MS);
+        window.addEventListener('beforeunload', function () {
+            if (_wallClockSamplerTimer) {
+                clearInterval(_wallClockSamplerTimer);
+                _wallClockSamplerTimer = null;
+            }
+        });
+    }
+
     if (_proactiveLeaderChannel) {
         _proactiveBroadcast('announce');
         _proactiveLeaderHeartbeatTimer = setInterval(function () {
+            // Before any takeover below: a woken follower must inherit the quiet window.
+            _checkWallClockJump();
             _proactiveBroadcast('heartbeat');
             // 心跳节奏顺手扫一下过期 peer，防止 leader 被关掉后 follower 不知情
             if (_purgeStaleProactivePeers()) {
@@ -702,6 +860,28 @@
 
     function buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType) {
         return window.appScreen.buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType);
+    }
+
+    async function buildMaskedStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType, maskOptions) {
+        if (typeof window.appScreen.buildMaskedStreamDataMessage !== 'function') {
+            // 遮罩入口缺失（部分加载 / 测试桩）：按「拿不到区域」处理，等同改动前。
+            return buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType);
+        }
+        return window.appScreen.buildMaskedStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType, maskOptions);
+    }
+
+    // ======================== self-UI mask (app-capture-mask.js, #3474) ========================
+    // 模块缺失（加载顺序 / 旧测试桩）时按「拿不到区域」处理：原样返回，等同改动前。
+    function beginSelfUiMaskSession(hint) {
+        var mask = window.appCaptureMask;
+        if (!mask || typeof mask.beginMaskSession !== 'function') return null;
+        try { return mask.beginMaskSession(hint); } catch (e) { return null; }
+    }
+
+    async function maskSelfUiInFrame(dataUrl, ctx, session) {
+        var mask = window.appCaptureMask;
+        if (!mask || typeof mask.maskFrameForModel !== 'function') return dataUrl;
+        return mask.maskFrameForModel(dataUrl, ctx, session);
     }
 
     // ======================== syncProactiveFlags (no-op) ========================
@@ -834,8 +1014,9 @@
             return false;
         }
 
-        // 必须开启主动搭话
-        if (!S.proactiveChatEnabled) {
+        // 必须开启主动搭话。Another window may have turned it off before its
+        // storage event reached this one (see isTriggerSwitchOnNow).
+        if (!isTriggerSwitchOnNow('proactiveChatEnabled')) {
             return false;
         }
 
@@ -852,7 +1033,10 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
-            return isProactiveVisionEnabledNow();
+            // Screen consent and the Screen Share option, each turned off by
+            // this window or explicitly by another one (isTriggerSwitchOnNow).
+            return isTriggerSwitchOnNow('proactiveVisionEnabled')
+                && isTriggerSwitchOnNow('proactiveVisionChatEnabled');
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -872,6 +1056,7 @@
      * 主动搭话定时触发功能
      */
     function scheduleProactiveChat() {
+        _checkWallClockJump();
         // 清除现有定时器
         if (S.proactiveChatTimer) {
             clearTimeout(S.proactiveChatTimer);
@@ -932,12 +1117,24 @@
                 return;
             }
             var delay = S.proactiveChatInterval * 1000;
+            var voiceQuietDelay = _getSystemQuietDelay();
+            if (voiceQuietDelay > 0) {
+                delay = Math.max(delay, voiceQuietDelay);
+            }
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
+            _noteProactiveTimerDue(delay);
             S.proactiveChatTimer = setTimeout(async function retryProactiveVoiceTick() {
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
+                // Catch-up after system sleep, or an on-time tick that lands inside
+                // the wake quiet window (set later by the heartbeat): not an
+                // attempt, not counted; rescheduling honours the quiet deadline.
+                if (_proactiveTickMissedBySleep() || _systemQuietPending()) {
+                    scheduleProactiveChat();
+                    return;
+                }
                 // 设计说明（by 用户意图）：
                 // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
                 // 才能接下一句，节奏太死板。改为"继续按固定间隔轮询"：
@@ -1089,18 +1286,33 @@
             delay = Math.max(delay, inputSlowdownDelay);
         }
 
+        // Quiet window after system sleep is also orthogonal to fixed/tier mode.
+        var systemQuietDelay = _getSystemQuietDelay();
+        if (systemQuietDelay > 0) {
+            delay = Math.max(delay, systemQuietDelay);
+        }
+
         if (fixedMode) {
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（屏幕专注态固定间隔，base=' + baseInterval + 's，level 已重置，后端注入抖动，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         } else {
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         }
 
+        _noteProactiveTimerDue(delay);
         S.proactiveChatTimer = setTimeout(async function retryProactiveTextTick() {
             // setTimeout firing does not clear our stored handle.
             S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
+                return;
+            }
+
+            // Catch-up after system sleep, or an on-time tick that lands inside the
+            // wake quiet window (set later by the heartbeat): drop it without
+            // touching the backoff level; rescheduling honours the quiet deadline.
+            if (_proactiveTickMissedBySleep() || _systemQuietPending()) {
+                scheduleProactiveChat();
                 return;
             }
 
@@ -1251,6 +1463,7 @@
                 var voiceModes = [];
                 if (canProactiveVisionRunDuringSpeech()) {
                     voiceModes.push('vision');
+                    noteProactiveVisionInUse();
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
                 // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
@@ -1275,7 +1488,7 @@
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
                     // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
-                    if (_inputSlowdownStillBlocksSend()) {
+                    if (_inputSlowdownStillBlocksSend() || _systemQuietBlocksSend()) {
                         return null;
                     }
                     // A switch may have gone off while the headers were
@@ -1285,6 +1498,12 @@
                         && !canProactiveVisionRunDuringSpeech()) {
                         voiceProactivePayload.enabled_modes = [];
                     }
+                    // Tell the backend a voice call is actually running right now
+                    // (read at send time, after the header await). Such requests
+                    // are not gated by display-off: Windows blanks the screen
+                    // after N minutes without keyboard/mouse input even while the
+                    // user is talking. Lock and suspend still gate them.
+                    voiceProactivePayload.voice_session_active = !!S.isRecording;
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1294,7 +1513,7 @@
 
                 var resp = await _sendVoiceProactive();
                 if (!resp) {
-                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                     return false;
                 }
 
@@ -1312,7 +1531,7 @@
                     } catch (_) { /* fall through to 403 handling below */ }
                 }
                 if (!resp) {
-                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                     return false;
                 }
 
@@ -1339,6 +1558,13 @@
                 }
                 requestSent = true;
                 var result = await resp.json();
+                if (_isSystemInactivePass(result)) {
+                    // Local session asleep / locked / display off: not an attempt.
+                    console.log('[ProactiveChat] 语音模式：系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 attempt');
+                    S._voiceProactiveLastResult = 'pass';
+                    _deferAfterSystemInactivePass();
+                    return false;
+                }
                 if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
                     (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
                         window.nekoRecommendations.offer(item, result.turn_id);
@@ -1356,6 +1582,7 @@
             if (holdsProactiveVisionStream()) {
                 availableModes.push('vision');
                 availableModes.push('window');
+                noteProactiveVisionInUse();
             }
 
             // 新闻搭话：使用微博热议、贴吧与小黑盒首页内容
@@ -1533,8 +1760,12 @@
                         // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
                         // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
                         var captureType = screenshotResult.captureType || null;
-                        var avatarPos = typeof window.getAvatarScreenPosition === 'function'
-                            ? window.getAvatarScreenPosition(captureType) : null;
+                        // 位置在拿到原图后、遮罩之前算好随图返回（见 captureProactiveChatScreenshotWithSource），
+                        // 遮罩和其它并行任务都会拖后这里的时间点。
+                        var avatarPos = screenshotResult.avatarPositionPinned === true
+                            ? (screenshotResult.avatarPosition || null)
+                            : (typeof window.getAvatarScreenPosition === 'function'
+                                ? window.getAvatarScreenPosition(captureType) : null);
                         if (avatarPos) {
                             requestBody.avatar_position = avatarPos;
                         }
@@ -1616,7 +1847,7 @@
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
                 // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
-                if (_inputSlowdownStillBlocksSend()) {
+                if (_inputSlowdownStillBlocksSend() || _systemQuietBlocksSend()) {
                     return null;
                 }
                 // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
@@ -1634,7 +1865,7 @@
             var response = await _sendProactive();
             if (!response) {
                 restoreScreenCooldownAfterInputCancel();
-                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                 return false;
             }
 
@@ -1653,7 +1884,7 @@
             }
             if (!response) {
                 restoreScreenCooldownAfterInputCancel();
-                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                 return false;
             }
 
@@ -1693,6 +1924,16 @@
             // Codex P2 review: PR #1327。
             if (typeof result.next_schedule_fixed_mode === 'boolean') {
                 S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
+            }
+
+            // Local session asleep / locked / display off: the server did not
+            // run the round, so (like 409) do not consume a backoff attempt,
+            // and hand back the screenshot cooldown this round reserved.
+            if (_isSystemInactivePass(result)) {
+                restoreScreenCooldownAfterInputCancel();
+                _deferAfterSystemInactivePass();
+                console.log('[ProactiveChat] 系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 backoff attempt');
+                return false;
             }
 
             if (result.success) {
@@ -2053,6 +2294,9 @@
                 return;
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+            // 这一帧属于当前这条连接的会话：采集和遮罩期间 connectWebSocket() 可能换掉 S.socket
+            // （例如切换角色），帧不能发到新连接上。
+            var captureSocket = S.socket;
             // A revocation during this capture voids the frame, even if
             // consent is granted again before it would be sent.
             // Only an actual "not allowed now" stops the heartbeat: after a
@@ -2080,6 +2324,12 @@
             // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
             // 「本会话配置抓什么」，不是「这一帧抓到了什么」。
             var captureType = null;
+            // 遮罩（#3474）要知道这一帧来自哪个源、哪条路径，同 captureType 一样在取到画面时钉住。
+            var captureSourceId = null;
+            var captureVia = null;
+            var captureStream = null;
+            // 截图前那次取区域在每次抓帧前取（见 retargetScopeMaskSession）。
+            var maskScope = { maskSession: null };
 
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
             var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
@@ -2087,10 +2337,15 @@
                 // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
                 // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
                 var streamSourceId = S.selectedScreenSourceId;
+                var streamMaskSourceId = streamCaptureSourceId(stream);
+                retargetScopeMaskSession(maskScope, streamMaskSourceId, 'stream', stream);
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
                     captureType = window.detectScreenshotCaptureType(stream, streamSourceId);
+                    captureSourceId = streamMaskSourceId;
+                    captureVia = 'stream';
+                    captureStream = stream;
                 } else if (S.screenCaptureStream === stream) {
                     // 空帧（黑帧或空壳流），废弃缓存流
                     console.warn('[ProactiveVision] 缓存流提取帧失败，废弃该流');
@@ -2117,6 +2372,7 @@
                     // S.selectedScreenSourceId 变掉，事后再读就会拿新源去解释旧帧
                     // （窗口换成屏幕 → 给一张没有 Avatar 的窗口图叠字）。
                     var nativeSourceId = S.selectedScreenSourceId;
+                    retargetScopeMaskSession(maskScope, nativeSourceId);
                     try {
                         var direct = await window.captureDesktopSourceWithTimeout(
                             desktopProvider,
@@ -2131,6 +2387,8 @@
                             if (nativeDataUrl) {
                                 dataUrl = nativeDataUrl;
                                 captureType = window.detectScreenshotCaptureType(null, nativeSourceId);
+                                captureSourceId = nativeSourceId;
+                                captureVia = 'native';
                             } else {
                                 console.warn('[ProactiveVision] 原生帧转 JPEG 失败，尝试后端兜底');
                             }
@@ -2167,6 +2425,9 @@
 
             // 后端 pyautogui 兜底
             if (!dataUrl) {
+                // 后端整屏图的遮罩区域按 'backend' 口径重取（#3474）：前面按选中源取的那次
+                // 对不上这个目标。
+                retargetScopeMaskSession(maskScope, null, 'backend');
                 var backendResult = await fetchBackendScreenshot();
                 dataUrl = backendResult.dataUrl;
                 if (dataUrl) {
@@ -2174,6 +2435,8 @@
                     // 定成 'screen'，否则会被残留的 window:* 源判成不叠加。
                     // 多屏下由 getAvatarScreenPosition 的闸门兜底返回 null。
                     captureType = 'screen';
+                    captureSourceId = null;
+                    captureVia = 'backend';
                 }
                 // macOS 403 权限提示
                 if (backendResult.status === 403 && !S.screenRecordingPermissionHintShown) {
@@ -2183,6 +2446,19 @@
                     }
                     console.warn('[ProactiveVision] 后端截图返回 403，请在"系统设置 → 隐私与安全性 → 屏幕录制"中授权 N.E.K.O');
                 }
+            }
+
+            // 屏幕帧先遮住聊天记录 / 选项区再构造消息（#3474），遮好才发。
+            // 与持续屏幕分享共用同一个构造函数，避免两条链路的 avatar_position 口径分叉。
+            // 第 3 参传 null：来源已由 captureType 显式给出，不需要再按 sourceId 推断。
+            // 遮罩是异步的，所以放在下面这组发送前复查之前，复查覆盖它。
+            var visionMessage = null;
+            if (dataUrl) {
+                var visionInputType = (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen';
+                visionMessage = await buildMaskedStreamDataMessage(
+                    dataUrl, visionInputType, null, captureType,
+                    { sourceId: captureSourceId, via: captureVia, session: maskScope.maskSession, stream: captureStream }
+                );
             }
 
             // 教程可能在本次异步采集途中开始：stop 停得掉 interval、停不掉
@@ -2207,13 +2483,15 @@
                 console.warn('[ProactiveVision] 记忆窗口身份已变化，丢弃过期语音视觉帧');
                 return;
             }
-            if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                var visionInputType = (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen';
-                // 与持续屏幕分享共用同一个构造函数，避免两条链路的 avatar_position 口径分叉。
-                // 第 3 参传 null：来源已由 captureType 显式给出，不需要再按 sourceId 推断。
-                S.socket.send(JSON.stringify(
-                    buildStreamDataMessage(dataUrl, visionInputType, null, captureType)
-                ));
+            if (visionMessage && S.socket !== captureSocket) {
+                console.log(S.socket
+                    ? '[ProactiveVision] 采集期间连接已更换，丢弃这一帧'
+                    : '[ProactiveVision] 采集期间连接已关闭，丢弃这一帧');
+                return;
+            }
+            // 上面已确认 S.socket 仍是采集时那条连接。
+            if (visionMessage && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify(visionMessage));
                 frameSent = true;
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
             }
@@ -2263,6 +2541,7 @@
         if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
+        noteProactiveVisionInUse();
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
@@ -2297,16 +2576,40 @@
     }
     mod.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
 
+    // Tell the backend that proactive vision just went from allowed to not
+    // allowed, so a proactive round already in flight (a voice nudge looking
+    // at the screen, a text round carrying a screenshot) stops using it. The
+    // switches only gate new requests here; privacy mode has its own
+    // consent message, which also clears frame caches -- this one does not.
+    function invalidateProactiveVisionRounds() {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({ action: 'proactive_vision_invalidate' }));
+        } catch (error) {
+            console.warn('[ProactiveVision] in-flight vision invalidation failed:', error);
+        }
+    }
+
     // Bring the speech heartbeat in line with the switches after any of them
     // changed (this window's save or another window's saved settings). Off:
     // stop the heartbeat and, on the allowed -> not allowed change, release
-    // the screen stream so the capture indicator goes out. On: start it when
-    // in a call. Settings are saved often, so this must be idempotent.
+    // the screen stream so the capture indicator goes out and end in-flight
+    // rounds' screen access on the backend. On: start it when in a call.
+    // Settings are saved often, so this must be idempotent.
     var _speechVisionAllowedLast = null;
     // Bumped whenever a sync finds speech vision not allowed (a switch or
     // privacy mode went off), so a frame captured before an off -> on toggle
     // is dropped even though the gate is open again when it completes.
     var _speechVisionOffSeq = 0;
+    // Settings load does not run the sync above, so a window can start
+    // proactive rounds with vision while _speechVisionAllowedLast is still
+    // null. Record "allowed" wherever this window actually starts using the
+    // screen (a round asking for vision, the speech heartbeat), so the first
+    // switch-off after that still sends the invalidation. Only ever records
+    // true: a "not allowed" read during early startup proves nothing.
+    function noteProactiveVisionInUse() {
+        _speechVisionAllowedLast = true;
+    }
     function syncProactiveVisionDuringSpeech() {
         var allowed = canProactiveVisionRunDuringSpeech();
         var wasAllowed = _speechVisionAllowedLast;
@@ -2315,7 +2618,20 @@
             _speechVisionOffSeq += 1;
             stopProactiveVisionDuringSpeech();
             if (wasAllowed !== false) {
+                // A text-chat screenshot taken before this must not ride its
+                // request even if the switches come back on before it is sent
+                // (discardVisionRevokedSince).
+                proactiveVisionRevocationSeq += 1;
                 releaseProactiveVisionStream();
+            }
+            // Only on a real change seen by this window. Not on its first sync
+            // (wasAllowed null), which may run before its settings loaded and
+            // would end another window's legitimate round; every open window
+            // sees the change through the cross-window sync and sends this.
+            // Only when a switch did it: a privacy-mode revocation already
+            // sends proactive_vision_consent, which moves the same epoch.
+            if (wasAllowed === true && isVisionConsentHeldNow()) {
+                invalidateProactiveVisionRounds();
             }
             return;
         }
@@ -2451,8 +2767,12 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
+    // Screen consent from both sides (isVisionConsentHeldNow): the latest
+    // saved setting, so another window's revocation counts before its storage
+    // event arrives, and this window's own value, so a revocation here counts
+    // even if its local save failed or a stale window copied "allowed" back.
     function isProactiveScreenshotBlocked() {
-        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+        return isHomeTutorialFeatureSuppressed() || !isVisionConsentHeldNow();
     }
 
     function declinedProactiveScreenshot() {
@@ -2460,7 +2780,38 @@
         return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
     }
 
-    async function captureProactiveChatScreenshotWithSourceInternal() {
+    // 截图前那次取区域（#3474）：在钉住源 ID 之后、紧挨着抓帧之前取，按实际要截的源。
+    // 截图前后两次取交集，所以这次取得越贴近抓帧越准；取早了，中途移动或新出现的
+    // 区域会让交集变小。每次抓帧尝试都重取，结果记在 captureScope 上由外层使用。
+    // 单张截图和语音心跳共用。via 'backend'：后端整屏兜底图，按 backend 口径取（sourceId 恒为 null）。
+    function retargetScopeMaskSession(captureScope, sourceId, via, stream) {
+        if (!captureScope) return;
+        captureScope.maskSession = beginSelfUiMaskSession({
+            sourceId: sourceId || null,
+            via: via === 'backend' ? 'backend' : 'stream',
+            // The stream this attempt captures: a superseded getDisplayMedia
+            // stream is not queried (see appCaptureMask.requestDisplayMedia).
+            stream: stream || null
+        });
+    }
+
+    // The source a stream actually captures (#3474 mask queries only), or
+    // null when it was not recorded (e.g. a getDisplayMedia stream). Never the
+    // selection cache: it may name a different source (a stale selection that
+    // fell back to the first screen is cleared, and only the stream knows),
+    // and the shell then answers for the wrong frame or, on Linux with several
+    // displays, refuses. With null the shell uses its own record of what
+    // getDisplayMedia handed this window. captureType (Avatar annotation)
+    // still uses the pinned selected source; in the fallback case the two may
+    // differ (captureType conservatively becomes null), which is intended.
+    function streamCaptureSourceId(stream) {
+        var screenMod = window.appScreen;
+        var id = screenMod && typeof screenMod.getStreamCaptureSourceId === 'function'
+            ? screenMod.getStreamCaptureSourceId(stream) : null;
+        return id || null;
+    }
+
+    async function captureProactiveChatScreenshotWithSourceInternal(captureScope) {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2481,6 +2832,9 @@
                 || rememberedWindowCapture.isCurrent();
         }
 
+        // 外层在遮罩（异步）完成后还要再确认一次记忆窗口没换（#3474）。
+        captureScope.rememberedCaptureStillCurrent = rememberedCaptureStillCurrent;
+
         function discardSupersededRememberedFrame(path) {
             if (rememberedCaptureStillCurrent()) return false;
             console.warn('[主动搭话截图] ' + path + ' 完成时记忆窗口已变化，丢弃旧帧');
@@ -2494,6 +2848,8 @@
                 var cachedSourceId = S.selectedScreenSourceId;
                 var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                    var cachedMaskSourceId = streamCaptureSourceId(cachedStream);
+                    retargetScopeMaskSession(captureScope, cachedMaskSourceId, 'stream', cachedStream);
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
@@ -2505,6 +2861,8 @@
                         return {
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
+                            sourceId: cachedMaskSourceId,
+                            stream: cachedStream,
                             allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
                         };
@@ -2520,6 +2878,7 @@
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             // 捕获前钉住源 ID：下面是异步的，事后再读会拿新源解释旧帧。
             var nativeSourceId = S.selectedScreenSourceId;
+            retargetScopeMaskSession(captureScope, nativeSourceId);
             try {
                 var direct = await window.captureDesktopSourceWithTimeout(
                     desktopProvider,
@@ -2534,6 +2893,7 @@
                     return {
                         dataUrl: direct.dataUrl,
                         via: 'native',
+                        sourceId: nativeSourceId,
                         allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('native', null, nativeSourceId)
                     };
@@ -2556,6 +2916,8 @@
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
+            var streamMaskSourceId = streamCaptureSourceId(stream);
+            retargetScopeMaskSession(captureScope, streamMaskSourceId, 'stream', stream);
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
@@ -2565,6 +2927,8 @@
                 return {
                     dataUrl: frame.dataUrl,
                     via: 'stream',
+                    sourceId: streamMaskSourceId,
+                    stream: stream,
                     allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
                 };
@@ -2585,6 +2949,8 @@
             }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
+                var retryMaskSourceId = streamCaptureSourceId(stream);
+                retargetScopeMaskSession(captureScope, retryMaskSourceId, 'stream', stream);
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
@@ -2593,6 +2959,8 @@
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',
+                        sourceId: retryMaskSourceId,
+                        stream: stream,
                         allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
                     };
@@ -2622,12 +2990,15 @@
 
         // 策略2: 后端 pyautogui 兜底
         if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
+        // 后端整屏图的遮罩区域按 'backend' 口径取（#3474），见外层 captureProactiveChatScreenshotWithSource。
+        retargetScopeMaskSession(captureScope, null, 'backend');
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
             return {
                 dataUrl: backendResult.dataUrl,
                 via: 'backend',
+                sourceId: null,
                 captureType: resolveCaptureTypeFor('backend', null, null)
             };
         }
@@ -2639,7 +3010,42 @@
         if (isProactiveScreenshotBlocked()) {
             return declinedProactiveScreenshot();
         }
-        var shot = await captureProactiveChatScreenshotWithSourceInternal();
+        // 聊天记录 / 选项区的位置：抓帧前（内层每次抓帧前取，记在 captureScope 上）
+        // 和遮罩时各取一次，取交集，只遮两次都覆盖到的部分（#3474，拿不准时少遮）。
+        var captureScope = { maskSession: null };
+        var shot = await captureProactiveChatScreenshotWithSourceInternal(captureScope);
+        // 遮罩必须在返回（即发送）之前完成：调用方拿到的就是要发的那张图。
+        if (shot && shot.dataUrl) {
+            // Avatar 位置在拿到原图后、遮罩之前算好，随图返回：遮罩是异步的，调用方事后再读会和图对不上。
+            // 调用方见到 avatarPositionPinned 就直接用 avatarPosition（null 表示这张图不标注）。
+            shot.avatarPosition = typeof window.getAvatarScreenPosition === 'function'
+                ? (window.getAvatarScreenPosition(shot.captureType || null) || null) : null;
+            shot.avatarPositionPinned = true;
+            // 截这张图之前按实际目标取的那次区域。
+            var maskSession = captureScope.maskSession;
+            var maskedDataUrl = await maskSelfUiInFrame(shot.dataUrl, {
+                captureType: shot.captureType || null,
+                sourceId: shot.sourceId || null,
+                via: shot.via,
+                // 浏览器标签页共享时用来判断截的是不是本页（#3474）。
+                stream: shot.stream || null,
+                // 按这张图抓取时的质量重编码：后端整屏图是 JPEG 80，前端流截图是 0.85。
+                // 桌面壳直接截图（via 'native'）通常是 PNG，遮完仍按 PNG 无损输出，质量参数不起作用；
+                // 壳给的是 JPEG 时质量未知，按前端单张截图同一档 0.85。
+                jpegQuality: shot.via === 'backend' ? 0.8 : 0.85
+            }, maskSession);
+            if (!maskedDataUrl) {
+                shot = { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };
+            } else {
+                shot.dataUrl = maskedDataUrl;
+            }
+            // 遮罩期间记忆窗口换了：这张图属于旧窗口，和内层的同类检查一样明确拒绝。
+            if (typeof captureScope.rememberedCaptureStillCurrent === 'function'
+                && !captureScope.rememberedCaptureStillCurrent()) {
+                console.warn('[主动搭话截图] 遮罩完成时记忆窗口已变化，丢弃旧帧');
+                return declinedProactiveScreenshot();
+            }
+        }
         // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步
         // 成功路径都经过这里，避免教程/隐私在抓帧期间开启后返回屏幕内容。
         if (isProactiveScreenshotBlocked()) {

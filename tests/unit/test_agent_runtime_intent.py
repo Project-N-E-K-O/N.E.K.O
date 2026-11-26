@@ -3,10 +3,7 @@
 
 Scope:
 1. ``app.agent_runtime_intent``: roundtrip / schema / cache isolation
-2. ``app.agent_server.model_probe``: classification of a failed probe of the
-   agent model into permanent vs transient reasons (the probe itself is
-   covered in ``test_agent_model_probe.py``), and the reason codes for input
-   that cannot be sent (``nekoclaw.builtin.desktop``)
+2. The reason codes for input that cannot be sent (``nekopower.builtin.desktop``)
 3. Master-switch semantics: ``set_agent_enabled(False)`` no longer wipes
    sub flags (issue: cycling the master gate used to forget user intent
    for every sub feature)
@@ -14,8 +11,10 @@ Scope:
    anymore (plugins don't depend on the agent LLM)
 5. Intent writes: ``_persist_intent=True`` hooks fire on explicit toggles;
    ``_persist_intent=False`` (restore replay) does not re-write intent
-6. Restore: ``_maybe_restore_agent_intent`` once-flag + escape hatch +
-   permanent error short-circuit
+6. Restore: ``_maybe_restore_agent_intent`` once-flag + escape hatch; the
+   keyboard-and-mouse and browser switches come back without the agent
+   model being asked anything, and a switch that cannot come on keeps the
+   user's intent
 7. User-plugin readiness: transient registry failures preserve the ON intent;
    only confirmed empty registries auto-disable the sub-switch
 """
@@ -27,7 +26,7 @@ import builtins
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -143,49 +142,17 @@ def test_intent_coerces_malformed_payload(
 
 
 # ---------------------------------------------------------------------------
-# 2. Reason codes: a failed probe of the agent model, input that cannot be sent
+# 2. Reason codes: input that cannot be sent
 # ---------------------------------------------------------------------------
 
 
-def test_classify_connectivity_exception_buckets():
-    from app.agent_server.model_probe import classify_connectivity_exception
-
-    # Permanent reasons
-    assert classify_connectivity_exception(Exception("Invalid API key: 401")) == "AGENT_API_KEY_INVALID"
-    assert classify_connectivity_exception(Exception("403 Forbidden")) == "AGENT_API_KEY_INVALID"
-    assert classify_connectivity_exception(Exception("authentication failed")) == "AGENT_API_KEY_INVALID"
-    assert classify_connectivity_exception(Exception("Rate limit exceeded (429)")) == "AGENT_QUOTA_EXCEEDED"
-    assert classify_connectivity_exception(Exception("insufficient_quota: please add billing")) == "AGENT_QUOTA_EXCEEDED"
-    assert classify_connectivity_exception(Exception("nxdomain: no such host")) == "AGENT_DNS_NXDOMAIN"
-    assert classify_connectivity_exception(Exception("getaddrinfo failed")) == "AGENT_DNS_NXDOMAIN"
-
-    # Transient (default bucket)
-    assert classify_connectivity_exception(Exception("connection refused")) == "AGENT_LLM_UNREACHABLE"
-    assert classify_connectivity_exception(Exception("Read timeout")) == "AGENT_LLM_UNREACHABLE"
-    assert classify_connectivity_exception(Exception("500 internal server error")) == "AGENT_LLM_UNREACHABLE"
-    assert classify_connectivity_exception(None) == "AGENT_LLM_UNREACHABLE"
-
-
-def test_permanent_connectivity_reasons_set():
-    """Restore path uses this frozenset to decide whether to bail early.
-    Lock the membership so an accidental rename in model_probe.py is caught."""
-    from app.agent_server.model_probe import PERMANENT_CONNECTIVITY_REASONS
-
-    assert "AGENT_API_KEY_INVALID" in PERMANENT_CONNECTIVITY_REASONS
-    assert "AGENT_QUOTA_EXCEEDED" in PERMANENT_CONNECTIVITY_REASONS
-    assert "AGENT_DNS_NXDOMAIN" in PERMANENT_CONNECTIVITY_REASONS
-    assert "AGENT_ENDPOINT_NOT_CONFIGURED" in PERMANENT_CONNECTIVITY_REASONS
-    # Transient must NOT be in the permanent set:
-    assert "AGENT_LLM_UNREACHABLE" not in PERMANENT_CONNECTIVITY_REASONS
-
-
 # The reason the keyboard-and-mouse switch is refused with when input cannot
-# be sent comes from ``nekoclaw.builtin.desktop``: pyautogui is imported on
+# be sent comes from ``nekopower.builtin.desktop``: pyautogui is imported on
 # first use and a failed import is classified.
 
 
 def _pyautogui_failed_to_import(monkeypatch: pytest.MonkeyPatch, error: Exception):
-    from nekoclaw.builtin import desktop
+    from nekopower.builtin import desktop
 
     monkeypatch.setattr(desktop, "_pyautogui", None)
     monkeypatch.setattr(desktop, "_import_error", error)
@@ -251,7 +218,7 @@ def test_input_that_cannot_be_sent_is_reported_with_its_reason(monkeypatch: pyte
 
 
 def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
-    from nekoclaw.builtin.desktop import COORDINATE_MAX, ScaledInput
+    from nekopower.builtin.desktop import COORDINATE_MAX, ScaledInput
 
     class FakeBackend:
         def __init__(self):
@@ -284,7 +251,7 @@ def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
 
 
 class _Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``: says whether input can be sent."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``: says whether input can be sent."""
 
     def __init__(self) -> None:
         self.input_ready: tuple[bool, str] = (True, "")
@@ -298,10 +265,10 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> _Desktop:
     """Whether the keyboard and mouse can be used is the probe of the agent
     model plus input that can be sent. The second half would import
     pyautogui; this answers in its place."""
-    from app.agent_server import nekoclaw_builtins
+    from app.agent_server import nekopower_builtins
 
     fake = _Desktop()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", fake)
     return fake
 
 
@@ -322,7 +289,6 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch, desktop: _Desktop):
         k: dict(v) for k, v in srv.Modules.capability_cache.items()
     }
     backup_notification = srv.Modules.notification
-    backup_model_probe = srv.Modules.model_probe
     srv.Modules.notification = None
 
     async def _noop_async(*args, **kwargs):
@@ -350,9 +316,14 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch, desktop: _Desktop):
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _plugin_lifecycle_started_ok)
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _user_plugin_registry_ready)
     monkeypatch.setattr(srv, "admin_control", _noop_admin)
-    monkeypatch.setattr(srv, "_try_refresh_model_probe", lambda force=False: False)
-    monkeypatch.setattr(srv, "_fire_agent_llm_connectivity_check", _noop_async)
     monkeypatch.setattr(srv, "_bump_state_revision", lambda: 0)
+    # The agent model is set up and a browser is found, unless a test says
+    # otherwise: whether the tools can be used asks the configuration through
+    # the package, and looks for a browser on this computer.
+    ready_gate = {"ready": True, "reasons": [], "is_free_version": False}
+    monkeypatch.setattr("app.agent_server._check_agent_api_gate", lambda: dict(ready_gate))
+    monkeypatch.setattr("app.agent_server.capabilities._browser_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(srv, "_browser_dependency_status", lambda: (True, ""))
 
     yield srv
 
@@ -363,7 +334,6 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch, desktop: _Desktop):
     srv.Modules.browser_use_lifecycle_seq = backup_browser_use_lifecycle_seq
     srv.Modules.capability_cache = backup_capability
     srv.Modules.notification = backup_notification
-    srv.Modules.model_probe = backup_model_probe
 
 
 @pytest.mark.asyncio
@@ -482,6 +452,38 @@ async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
     assert srv.Modules.analyzer_enabled is True
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
     assert stops == []
+
+
+@pytest.mark.asyncio
+async def test_the_switch_brings_the_plugins_on_with_it_and_leaves_the_device_switches_alone(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """One switch for all of it: switched on, the plugins are on, whatever was kept of their own switch.
+
+    The keyboard and mouse and the browser stay as they were: they say what
+    a task agent may touch on this computer, and are switched on by hand.
+    What is kept for the plugins says "on" from then: the user switched
+    them on with it, whatever they had kept of the plugins' own switch.
+    """
+    srv = agent_state_isolation
+    from app.agent_runtime_intent import get_intent, set_intent
+
+    # Switched off by its own switch some time ago.
+    set_intent("user_plugin_enabled", False)
+    assert srv.Modules.agent_flags.get("user_plugin_enabled") is not True
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True})
+    await _await_new_agent_tasks(srv, before)
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert srv.Modules.agent_flags.get("computer_use_enabled") is not True
+    assert srv.Modules.agent_flags.get("browser_use_enabled") is not True
+    # Kept for the plugins as well: a restore brings them on, and an older "off" of theirs is over.
+    assert get_intent("analyzer_enabled") is True and get_intent("user_plugin_enabled") is True
 
 
 @pytest.mark.asyncio
@@ -946,7 +948,7 @@ async def test_set_agent_enabled_writes_intent(
 
     srv = agent_state_isolation
 
-    # Stub out the LLM-side _try_refresh / probe so gate-pass branch is quiet.
+    # The gate passes, so the master switch works out whether the tools can be used.
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         await srv.agent_command({
             "command": "set_agent_enabled",
@@ -989,42 +991,15 @@ async def test_persist_intent_false_does_not_write(
 
 
 @pytest.mark.asyncio
-async def test_capability_rejected_does_not_persist_true_intent(
-    agent_state_isolation, isolated_intent_store: Path
-):
-    """If user requests cf=True but capability auto-rejects (in-memory
-    flag stays False), intent must NOT be written True — otherwise restore
-    would keep retrying a feature the user can never enable."""
-    from app import agent_runtime_intent as ari
-
-    srv = agent_state_isolation
-    srv.Modules.analyzer_enabled = True
-    # Force the model probe to be missing → handler will set flag=False
-    srv.Modules.model_probe = None
-
-    with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
-        await srv.set_agent_flags({"computer_use_enabled": True})
-
-    assert srv.Modules.agent_flags["computer_use_enabled"] is False
-    assert json.loads(srv.Modules.notification)["code"] == "AGENT_CU_MODULE_NOT_LOADED"
-    # Intent not written because actual flag is False
-    assert ari.get_intent("computer_use_enabled") is None
-
-
-@pytest.mark.asyncio
 async def test_input_that_cannot_be_sent_rejects_the_switch_and_persists_no_intent(
     agent_state_isolation, isolated_intent_store: Path, desktop
 ):
-    """The agent model answers, yet the keyboard and mouse cannot be driven
+    """The agent model is set up, yet the keyboard and mouse cannot be driven
     here: the switch stays off, says why, and no True intent is written."""
     from app import agent_runtime_intent as ari
 
     srv = agent_state_isolation
     srv.Modules.analyzer_enabled = True
-    probe = MagicMock()
-    probe.init_ok = True
-    probe.is_available = MagicMock(return_value={"ready": True, "reasons": [], "model": "m"})
-    srv.Modules.model_probe = probe
     desktop.input_ready = (False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
 
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
@@ -1108,104 +1083,145 @@ async def test_restore_escape_hatch_via_env(
 
     await srv_mod._maybe_restore_agent_intent()
     assert called["n"] == 0
+    assert srv_mod._intent_restore_finished is True
 
 
 @pytest.mark.asyncio
-async def test_restore_llm_dependent_all_retries_fail_clears_intent(
+async def test_restore_finished_flag_only_after_replay_completes(
     agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """When probe fails three times with transient error, intent should
-    flip to False so the user gets a clear AGENT_AUTO_DISABLED notification
-    and next restart doesn't keep banging on the same dead endpoint."""
+    """``intent_restore_finished`` (served by GET /agent/flags) must stay False
+    while the replay is still running and turn True once it ends, including
+    when the replay raises."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    seen_during_replay = {}
+
+    async def _fake_do_restore():
+        seen_during_replay["finished"] = srv_mod._intent_restore_finished
+        flags = await srv_mod.get_agent_flags()
+        seen_during_replay["served"] = flags["intent_restore_finished"]
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+    await srv_mod._maybe_restore_agent_intent()
+    assert seen_during_replay == {"finished": False, "served": False}
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_waits_for_background_replay_tasks(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The keyboard-and-mouse / browser and user-plugin replays run as background tasks that can
+    still write flags after ``_do_restore_agent_intent`` returns; the flag must
+    stay False until they end (even when one of them raises)."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    release = asyncio.Event()
+
+    async def _slow_replay_write():
+        await release.wait()
+        raise RuntimeError("replay failed")
+
+    async def _fake_do_restore():
+        srv_mod._intent_restore_background_tasks.append(asyncio.create_task(_slow_replay_write()))
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    await srv_mod._maybe_restore_agent_intent()
+    await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
+
+
+@pytest.fixture
+def model_clients(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Every chat client built for a model, recorded instead of built: a restore asks the agent model nothing."""
+    built: list[dict] = []
+
+    def record(**options):
+        built.append(options)
+        return SimpleNamespace()
+
+    async def record_async(**options):
+        return record(**options)
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", record)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", record_async)
+    return built
+
+
+@pytest.mark.asyncio
+async def test_restore_puts_the_switches_back_without_asking_the_model_and_keeps_intent(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch, model_clients
+):
+    """The switches the user left on come back through the same path a manual
+    toggle takes; the agent model is sent nothing first, and the intent file
+    is not written (``_persist_intent`` False)."""
     from app import agent_runtime_intent as ari
     from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
     ari.set_intent("browser_use_enabled", True)
-
-    # Mock the model probe on Modules; check_connectivity always fails.
-    fake_probe = MagicMock()
-    fake_probe.check_connectivity = MagicMock(return_value=(False, "AGENT_LLM_UNREACHABLE"))
-    srv_mod.Modules.model_probe = fake_probe
-
-    # Shrink the retry window so the test is fast (3 attempts × 0.01s spacing).
-    monkeypatch.setattr(srv_mod, "_RESTORE_PING_INTERVAL_S", 0.01)
-
-    intent = {"computer_use_enabled": True, "browser_use_enabled": True}
-    await srv_mod._restore_llm_dependent_flags(intent)
-
-    # All three attempts ran
-    assert fake_probe.check_connectivity.call_count == srv_mod._RESTORE_PING_MAX_ATTEMPTS
-    # Intent cleared to False on both flags
-    assert ari.get_intent("computer_use_enabled") is False
-    assert ari.get_intent("browser_use_enabled") is False
-    # The user is told which switch went off and why.
-    assert json.loads(srv_mod.Modules.notification) == {
-        "code": "AGENT_AUTO_DISABLED_BROWSER",
-        "details": {"reason_code": "AGENT_LLM_UNREACHABLE"},
-    }
-
-
-@pytest.mark.asyncio
-async def test_restore_llm_dependent_permanent_error_short_circuits(
-    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Permanent reason (e.g. API key invalid) must bail after the first
-    attempt — don't waste 15s retrying when we know the API is dead."""
-    from app import agent_runtime_intent as ari
-    from app.agent_server import api_routes as srv_mod
-
-    ari.set_intent("computer_use_enabled", True)
-
-    fake_probe = MagicMock()
-    fake_probe.check_connectivity = MagicMock(return_value=(False, "AGENT_API_KEY_INVALID"))
-    srv_mod.Modules.model_probe = fake_probe
-
-    monkeypatch.setattr(srv_mod, "_RESTORE_PING_INTERVAL_S", 0.01)
-
-    intent = {"computer_use_enabled": True}
-    await srv_mod._restore_llm_dependent_flags(intent)
-
-    # Only ONE attempt — permanent reason short-circuits.
-    assert fake_probe.check_connectivity.call_count == 1
-    assert ari.get_intent("computer_use_enabled") is False
-
-
-@pytest.mark.asyncio
-async def test_restore_llm_dependent_success_keeps_intent(
-    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """When probe succeeds, intent should be preserved (NOT touched —
-    set_agent_flags with _persist_intent=False is called, which won't
-    write intent)."""
-    from app import agent_runtime_intent as ari
-    from app.agent_server import api_routes as srv_mod
-
-    ari.set_intent("computer_use_enabled", True)
     # Not a Wayland session: that one asks for the screen to be shared again
     # instead of switching the flag back on (covered below).
     monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-
-    fake_probe = MagicMock()
-    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_probe.init_ok = True
-    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
-    srv_mod.Modules.model_probe = fake_probe
-
-    # Master gate ON so set_agent_flags doesn't bail
     srv_mod.Modules.analyzer_enabled = True
-    srv_mod.Modules.agent_flags["computer_use_enabled"] = False
+    srv_mod.Modules.agent_flags.update(computer_use_enabled=False, browser_use_enabled=False)
+    # Whatever the restore writes of the intent is seen here: it is to write none.
+    written: list = []
+    monkeypatch.setattr(ari, "set_intent", lambda *args, **kwargs: written.append(args))
 
     with patch.object(srv_mod, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
-        intent = {"computer_use_enabled": True}
-        await srv_mod._restore_llm_dependent_flags(intent)
+        await srv_mod._restore_tool_flags({"computer_use_enabled": True, "browser_use_enabled": True})
 
-    # The switch is back on, through the same path a manual toggle takes.
     assert srv_mod.Modules.agent_flags["computer_use_enabled"] is True
+    assert srv_mod.Modules.agent_flags["browser_use_enabled"] is True
     assert srv_mod.Modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
-    # Intent preserved
+    assert srv_mod.Modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert ari.get_intent("computer_use_enabled") is True
+    assert ari.get_intent("browser_use_enabled") is True
+    assert written == []
+    assert model_clients == []
+
+
+@pytest.mark.asyncio
+async def test_a_switch_that_cannot_come_back_at_start_says_why_and_keeps_the_intent(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch, model_clients
+):
+    """No browser on this computer now: the browser switch stays off for this
+    run and says why, and the user's choice is kept for a later start. (A
+    failed probe used to clear it for good.)"""
+    from app import agent_runtime_intent as ari
+    from app.agent_server import api_routes as srv_mod
+
+    ari.set_intent("browser_use_enabled", True)
+    monkeypatch.setattr("app.agent_server.capabilities._browser_dependency_status", lambda: (False, "AGENT_BROWSER_NOT_FOUND"))
+    srv_mod.Modules.analyzer_enabled = True
+    written: list = []
+    monkeypatch.setattr(ari, "set_intent", lambda *args, **kwargs: written.append(args))
+
+    with patch.object(srv_mod, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
+        await srv_mod._restore_tool_flags({"browser_use_enabled": True})
+
+    assert srv_mod.Modules.agent_flags["browser_use_enabled"] is False
+    assert json.loads(srv_mod.Modules.notification) == {
+        "code": "AGENT_BU_UNAVAILABLE",
+        "details": {"reason_code": "AGENT_BROWSER_NOT_FOUND"},
+    }
+    assert ari.get_intent("browser_use_enabled") is True
+    assert written == []
+    assert model_clients == []
 
 
 @pytest.mark.asyncio
@@ -1218,13 +1234,9 @@ async def test_wayland_restore_requires_fresh_screen_authorization(
     monkeypatch.setattr(srv_mod.sys, "platform", "linux")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     ari.set_intent("computer_use_enabled", True)
-    fake_probe = MagicMock()
-    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
-    srv_mod.Modules.model_probe = fake_probe
     srv_mod.Modules.analyzer_enabled = True
 
-    await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
+    await srv_mod._restore_tool_flags({"computer_use_enabled": True})
 
     assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
     assert srv_mod.Modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
@@ -1240,15 +1252,11 @@ async def test_wayland_restore_keeps_unavailable_computer_use_disabled(
 
     monkeypatch.setattr(srv_mod.sys, "platform", "linux")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-    fake_probe = MagicMock()
-    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
-    srv_mod.Modules.model_probe = fake_probe
     srv_mod.Modules.analyzer_enabled = True
-    # The model answers; it is input that cannot be sent on this display.
+    # The model is set up; it is input that cannot be sent on this display.
     desktop.input_ready = (False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
 
-    await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
+    await srv_mod._restore_tool_flags({"computer_use_enabled": True})
 
     assert srv_mod.Modules.capability_cache["computer_use"] == {
         "ready": False,
@@ -1256,26 +1264,6 @@ async def test_wayland_restore_keeps_unavailable_computer_use_disabled(
     }
     assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
     assert srv_mod.Modules.notification is None
-
-
-@pytest.mark.asyncio
-async def test_restore_llm_dependent_module_not_loaded_is_permanent(
-    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """If the model probe is None (not loaded), restore should
-    immediately clear intent — not retry, since the module won't appear."""
-    from app import agent_runtime_intent as ari
-    from app.agent_server import api_routes as srv_mod
-
-    ari.set_intent("computer_use_enabled", True)
-    ari.set_intent("browser_use_enabled", True)
-    srv_mod.Modules.model_probe = None
-
-    intent = {"computer_use_enabled": True, "browser_use_enabled": True}
-    await srv_mod._restore_llm_dependent_flags(intent)
-
-    assert ari.get_intent("computer_use_enabled") is False
-    assert ari.get_intent("browser_use_enabled") is False
 
 
 @pytest.mark.asyncio
@@ -1316,7 +1304,7 @@ async def test_restore_skipped_when_master_intent_off(
 
     monkeypatch.setattr(srv_mod, "agent_command", _fake_agent_command)
     monkeypatch.setattr(srv_mod, "set_agent_flags", _fake_set_flags)
-    monkeypatch.setattr(srv_mod, "_restore_llm_dependent_flags", _fake_llm_dependent)
+    monkeypatch.setattr(srv_mod, "_restore_tool_flags", _fake_llm_dependent)
     monkeypatch.setattr(srv_mod, "_restore_user_plugin", _fake_user_plugin)
 
     await srv_mod._do_restore_agent_intent()
@@ -1386,3 +1374,52 @@ async def test_restore_proceeds_when_master_intent_on(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert user_plugin_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kept", "plugins_on"), [(False, False), (None, True), (True, True)])
+async def test_a_restore_at_start_leaves_plugins_the_user_switched_off_as_they_are(
+    agent_state_isolation, isolated_intent_store: Path, kept, plugins_on
+):
+    """Replaying the switch at start is not the user switching it on.
+
+    Plugins the user switched off by their own switch stay off; where
+    nothing was kept of that switch, they come on with the one for all.
+    """
+    srv = agent_state_isolation
+    import app.agent_runtime_intent as ari
+
+    ari.set_intent("analyzer_enabled", True)
+    if kept is not None:
+        ari.set_intent("user_plugin_enabled", kept)
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+    # Whatever it started (nothing, where the plugins stay off).
+    await asyncio.gather(*(set(srv.Modules._persistent_tasks) - before))
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert bool(srv.Modules.agent_flags.get("user_plugin_enabled")) is plugins_on
+    # What was kept is as it was.
+    assert ari.get_intent("user_plugin_enabled") is kept
+
+
+@pytest.mark.asyncio
+async def test_get_agent_flags_serves_saved_intent(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """GET /agent/flags serves the saved switch intents so the page can tell a
+    switch the user turned off (intent False) from one the backend put off after
+    a failed start (intent unchanged)."""
+    from app import agent_runtime_intent as ari
+    from app.agent_server import api_routes as srv_mod
+
+    assert (await srv_mod.get_agent_flags())["intent"] == {}
+    ari.set_intent("analyzer_enabled", True)
+    ari.set_intent("user_plugin_enabled", False)
+    served = (await srv_mod.get_agent_flags())["intent"]
+    assert served == {"analyzer_enabled": True, "user_plugin_enabled": False}
+    served["user_plugin_enabled"] = True
+    assert ari.get_intent("user_plugin_enabled") is False, "served intent must be a copy"

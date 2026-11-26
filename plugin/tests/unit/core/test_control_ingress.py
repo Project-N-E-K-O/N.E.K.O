@@ -9,6 +9,12 @@ import pytest
 from plugin.core import control_ingress as ingress_module
 from plugin.logging_config import get_logger
 
+# How long a step that only has to happen (the owner thread starting its loop,
+# the parked callback being let go) may take. Busy Windows runners have taken
+# over two seconds to start a loop in another thread; the passing path returns
+# as soon as the step happens, so this only bounds a real hang.
+PROGRESS_TIMEOUT = 30
+
 
 async def test_expired_admission_does_not_consume_capacity():
     queue = asyncio.Queue(maxsize=1)
@@ -138,7 +144,7 @@ async def test_handoff_abandoned_before_owner_execution_never_enqueues(abandon):
 
         def park():
             blocked.set()
-            release.wait(2)
+            release.wait(PROGRESS_TIMEOUT)
 
         loop.call_soon(park)
         ready.set()
@@ -149,8 +155,8 @@ async def test_handoff_abandoned_before_owner_execution_never_enqueues(abandon):
         target=lambda: asyncio.run(owner()), name="candidate-handoff-owner"
     )
     thread.start()
-    assert await asyncio.to_thread(ready.wait, 2)
-    assert await asyncio.to_thread(blocked.wait, 2)
+    assert await asyncio.to_thread(ready.wait, PROGRESS_TIMEOUT)
+    assert await asyncio.to_thread(blocked.wait, PROGRESS_TIMEOUT)
     alive = [True]
     task = asyncio.create_task(
         holder["ingress"].enqueue(
@@ -170,7 +176,7 @@ async def test_handoff_abandoned_before_owner_execution_never_enqueues(abandon):
         release.set()
         if abandon in {"disconnect", "close"}:
             with pytest.raises(RpcClosedError):
-                await asyncio.wait_for(task, 1)
+                await asyncio.wait_for(task, PROGRESS_TIMEOUT)
 
         async def barrier():
             await asyncio.sleep(0)
@@ -182,7 +188,7 @@ async def test_handoff_abandoned_before_owner_execution_never_enqueues(abandon):
     finally:
         release.set()
         holder["loop"].call_soon_threadsafe(holder["stop"].set)
-        await asyncio.to_thread(thread.join, 3)
+        await asyncio.to_thread(thread.join, PROGRESS_TIMEOUT)
         assert not thread.is_alive()
 
 
@@ -241,7 +247,7 @@ async def test_expired_foreign_handoff_never_reaches_the_queue():
 
         def park():
             blocked.set()
-            assert release.wait(3)
+            assert release.wait(PROGRESS_TIMEOUT)
 
         loop.call_soon(park)
         ready.set()
@@ -259,8 +265,8 @@ async def test_expired_foreign_handoff_never_reaches_the_queue():
     thread = threading.Thread(target=serve, name="review-expired-handoff")
     thread.start()
     try:
-        assert await asyncio.to_thread(ready.wait, 2)
-        assert await asyncio.to_thread(blocked.wait, 2)
+        assert await asyncio.to_thread(ready.wait, PROGRESS_TIMEOUT)
+        assert await asyncio.to_thread(blocked.wait, PROGRESS_TIMEOUT)
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(
                 holder["ingress"].enqueue(
@@ -286,5 +292,5 @@ async def test_expired_foreign_handoff_never_reaches_the_queue():
         release.set()
         if "loop" in holder:
             holder["loop"].call_soon_threadsafe(holder["stop"].set)
-        await asyncio.to_thread(thread.join, 3)
+        await asyncio.to_thread(thread.join, PROGRESS_TIMEOUT)
         assert not thread.is_alive() and (not errors)

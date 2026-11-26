@@ -231,3 +231,61 @@ async def test_publish_rejects_existing_workshop_item_with_wrong_owner(
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["error"] == "Workshop 更新目标校验失败"
     assert payload["workshop_item_id"] == "123456"
+
+
+@pytest.mark.asyncio
+async def test_query_ugc_details_batch_handles_empty_dict_from_failed_get_query_ugc_result(monkeypatch):
+    """Skip `{}` returned by `SteamWorkshop.GetQueryUGCResult` on failure while keeping valid items."""
+    from steamworks.interfaces.workshop import SteamWorkshop
+    from steamworks.structs import SteamUGCDetails_t, SteamUGCQueryCompleted_t
+
+    class _FakeSteam:
+        def __init__(self):
+            self._callback = None
+
+        def loaded(self) -> bool:
+            return True
+
+        def Workshop_GetNumSubscribedItems(self) -> int:
+            return 0
+
+        def Workshop_CreateQueryUGCDetailsRequest(self, _ids, _count) -> int:
+            return 99
+
+        def Workshop_SetQueryCompletedCallback(self, callback) -> None:
+            self._callback = callback
+
+        def Workshop_SendQueryUGCRequest(self, _handle: int) -> None:
+            return None
+
+        def run_callbacks(self) -> None:
+            if self._callback is not None:
+                cb = self._callback
+                self._callback = None
+                cb(
+                    SteamUGCQueryCompleted_t(
+                        handle=99,
+                        result=1,
+                        numResultsReturned=2,
+                        totalMatchingResults=2,
+                        cachedData=False,
+                    )
+                )
+
+        def Workshop_GetQueryUGCResult(self, _handle: int, index: int, details_ptr) -> bool:
+            if index == 0:
+                details_ptr._obj.publishedFileId = 111
+                return False
+            details_ptr._obj.publishedFileId = 222
+            details_ptr._obj.title = b"Valid Card"
+            return True
+
+    fake_steam = _FakeSteam()
+    fake_steam.Workshop = SteamWorkshop(fake_steam)
+    monkeypatch.setattr(wr_ugc, "_get_ugc_preview_url", lambda _handle, _index: "")
+
+    results = await wr_ugc._query_ugc_details_batch(fake_steam, [111, 222], max_retries=1)
+
+    assert list(results.keys()) == [222]
+    assert isinstance(results[222], SteamUGCDetails_t)
+    assert results[222].title == b"Valid Card"

@@ -66,7 +66,7 @@ def _end(reason="end_turn", **usage):
 def test_request_preserves_interleaved_images_and_system_prefix():
     request = _request(
         max_completion_tokens=300,
-        temperature=0.3,
+        top_p=0.9,
         stop="END",
         messages=[
             {"role": "system", "content": "Be concise"},
@@ -96,6 +96,8 @@ def test_request_preserves_interleaved_images_and_system_prefix():
     assert request == original
     assert result["model"] == "claude-configured"
     assert result["max_tokens"] == 300
+    assert result["top_p"] == 0.9
+    assert "temperature" not in result
     assert result["stop_sequences"] == ["END"]
     assert result["system"] == [
         {"type": "text", "text": "Be concise"},
@@ -206,7 +208,6 @@ def test_tool_choice_mapping(choice, expected):
     "overrides,param",
     [
         ({"response_format": {"type": "json_object"}}, "response_format"),
-        ({"temperature": 1.5}, "temperature"),
         ({"n": 2}, "n"),
         ({"thinking": {"type": "enabled"}}, "thinking"),
         (
@@ -505,7 +506,7 @@ def test_stream_error_is_sanitized():
 
 
 @pytest.mark.parametrize("content", [None, "Explanation"])
-def test_assistant_history_refusal_is_preserved_as_text(content):
+def test_chatant_history_refusal_is_preserved_as_text(content):
     result = prepare_request(
         _request(
             messages=[
@@ -568,3 +569,20 @@ def test_malformed_stop_reasons_are_safe_errors(bad_value):
     with pytest.raises(ModelGatewayError) as exc:
         converter.feed(_end(bad_value)[0])
     assert exc.value.status_code == 502
+
+
+def test_plugin_temperature_never_reaches_an_anthropic_request():
+    # prepare_chat_request drops it (whatever the value, even above Anthropic's
+    # former limit of 1) before the request is converted for Anthropic.
+    from plugin.server.domain.model_config import ModelSlot
+    from plugin.server.model_gateway.request import prepare_chat_request
+
+    slot = ModelSlot(
+        name="Claude", protocol="anthropic_messages", base_url="https://api.anthropic.com",
+        model="claude-configured", api_key="secret",
+    )
+    for value in (0.5, 1.5):
+        gateway_request = prepare_chat_request(
+            slot, {"model": "analysis", "messages": [{"role": "user", "content": "Hi"}], "temperature": value}
+        )
+        assert "temperature" not in prepare_request(gateway_request)

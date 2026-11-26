@@ -24,34 +24,13 @@ import pytest
 capabilities = importlib.import_module("app.agent_server.capabilities")
 api_routes = importlib.import_module("app.agent_server.api_routes")
 api_runtime = importlib.import_module("app.agent_server.api_runtime")
-nekoclaw_builtins = importlib.import_module("app.agent_server.nekoclaw_builtins")
+nekopower_builtins = importlib.import_module("app.agent_server.nekopower_builtins")
 
 
 pytestmark = pytest.mark.unit
 
 GATE_READY = {"ready": True, "reasons": [], "is_free_version": False}
 GATE_NOT_CONFIGURED = {"ready": False, "reasons": ["AGENT_ENDPOINT_NOT_CONFIGURED"], "is_free_version": False}
-
-
-class Probe:
-    """Stands in for ``AgentModelProbe``: answers the probe as told."""
-
-    def __init__(self, *, init_ok: bool = True, last_error: str | None = None, result: Any = (True, "")) -> None:
-        self.init_ok = init_ok
-        self.last_error = last_error
-        self.result = result
-        self.probes = 0
-
-    def check_connectivity(self, **_options: Any) -> Any:
-        self.probes += 1
-        if isinstance(self.result, BaseException):
-            raise self.result
-        # As the real probe does: what it found stays written on it, whatever
-        # the caller then makes of the answer.
-        passed = bool(self.result[0] if isinstance(self.result, tuple) else self.result)
-        self.init_ok = passed
-        self.last_error = None if passed else "the model did not answer"
-        return self.result
 
 
 class Browser:
@@ -90,6 +69,28 @@ class Search:
         return self.found
 
 
+class _EveryTask(set):
+    """The process's set of background tasks, remembering every task ever added.
+
+    A task takes itself off the set when it is over; ``ever`` still has it,
+    so that how it ended can be looked at however early it ended.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ever: set[asyncio.Task] = set()
+
+    def add(self, item: Any) -> None:
+        self.ever.add(item)
+        super().add(item)
+
+    def __eq__(self, other: object) -> bool:
+        # Compared as the tasks it holds now; ``ever`` is only looked at by ``_background_done``.
+        return set.__eq__(self, other)
+
+    __hash__ = None  # type: ignore[assignment]  # a set, so not hashable
+
+
 @pytest.fixture
 def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The process's switches and caches, put back as they were after the test."""
@@ -104,20 +105,18 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
         state,
         "capability_cache",
         {
-            "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-            "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+            "computer_use": {"ready": False, "reason": ""},
+            "browser_use": {"ready": False, "reason": ""},
             "user_plugin": {"ready": True, "reason": ""},
         },
     )
     monkeypatch.setattr(state, "notification", None)
-    monkeypatch.setattr(state, "model_probe", Probe())
     monkeypatch.setattr(state, "browser_use_lifecycle_seq", state.browser_use_lifecycle_seq)
     monkeypatch.setattr(state, "state_revision", state.state_revision)
-    # A lock of this test's own event loop.
-    monkeypatch.setattr(capabilities, "_llm_check_lock", asyncio.Lock())
-    monkeypatch.setattr(nekoclaw_builtins, "_in_use", {})
+    monkeypatch.setattr(state, "_background_tasks", _EveryTask())
+    monkeypatch.setattr(nekopower_builtins, "_in_use", {})
     # A shutdown sets it for good, on the provider every test of this process shares.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_shut_down", False)
+    monkeypatch.setattr(nekopower_builtins.provider, "_shut_down", False)
 
     async def ignore_status_update(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -125,17 +124,25 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     # Sending the status would also take the notification the test wants to read.
     monkeypatch.setattr(api_routes, "_emit_agent_status_update", ignore_status_update)
     monkeypatch.setattr(capabilities, "_emit_agent_status_update", ignore_status_update)
-    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: dict(GATE_READY))
+    _gate(monkeypatch, GATE_READY)
     return state
+
+
+def _gate(monkeypatch: pytest.MonkeyPatch, gate: dict[str, Any]) -> None:
+    """What the configuration check says, wherever it is asked."""
+    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: dict(gate))
+    monkeypatch.setattr(api_runtime, "_check_agent_api_gate", lambda: dict(gate))
+    # Whether the tools can be used asks it through the package.
+    monkeypatch.setattr("app.agent_server._check_agent_api_gate", lambda: dict(gate))
 
 
 @pytest.fixture
 def search(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Search:
     fake = Search()
-    monkeypatch.setattr("nekoclaw.builtin.browser.launcher.find_browsers", fake)
+    monkeypatch.setattr("nekopower.builtin.browser.launcher.find_browsers", fake)
     # No browser is named in the settings unless the test names one.
-    fake.settings_root = tmp_path / "settings" / "nekoclaw"
-    monkeypatch.setattr("nekoclaw.builtin.browser.settings._root", lambda: fake.settings_root)
+    fake.settings_root = tmp_path / "settings" / "nekopower"
+    monkeypatch.setattr("nekopower.builtin.browser.settings._root", lambda: fake.settings_root)
     monkeypatch.setattr(capabilities, "_browser_search", None)
     return fake
 
@@ -143,22 +150,32 @@ def search(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Search:
 @pytest.fixture
 def browser(monkeypatch: pytest.MonkeyPatch) -> Browser:
     fake = Browser()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "close_browser", fake.close)
+    monkeypatch.setattr(nekopower_builtins.provider, "close_browser", fake.close)
     # No browser tools are built by anything here; a test can tell if they were.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_browser", None)
+    monkeypatch.setattr(nekopower_builtins.provider, "_browser", None)
     return fake
 
 
 @pytest.fixture
 def checks(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """The connectivity checks the routes start in the background, recorded instead of run."""
-    started: list[dict[str, Any]] = []
+    """Every chat client built for a model, recorded instead of built.
 
-    async def record(**options: Any) -> None:
-        started.append(options)
+    Nothing the switches, the availability routes or a saved configuration
+    do asks the agent model anything: a client being built is what sending
+    it a request would start with.
+    """
+    built: list[dict[str, Any]] = []
 
-    monkeypatch.setattr(api_routes, "_fire_agent_llm_connectivity_check", record)
-    return started
+    def record(**options: Any) -> Any:
+        built.append(options)
+        return SimpleNamespace()
+
+    async def record_async(**options: Any) -> Any:
+        return record(**options)
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", record)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", record_async)
+    return built
 
 
 @pytest.fixture
@@ -194,10 +211,30 @@ def test_no_browser_on_this_computer_is_said_with_its_own_reason(search):
     assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_NOT_FOUND")
 
 
-def test_a_search_that_fails_counts_as_no_browser(search):
+def test_a_search_that_fails_is_not_usable_and_says_the_search_failed(search):
     search.found = OSError("the registry cannot be read")
 
-    assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_NOT_FOUND")
+    # Not usable all the same; but not said as "there is no browser".
+    assert capabilities._browser_dependency_status() == (False, "AGENT_BROWSER_CHECK_FAILED")
+
+
+def test_a_search_that_started_before_the_settings_changed_keeps_nothing(search, monkeypatch):
+    found = list(search.found)
+
+    def settings_saved_meanwhile(*_args: Any, **_kwargs: Any) -> Any:
+        search.searches += 1
+        if search.searches == 1:
+            # The browser settings are saved while this search is under way.
+            capabilities._forget_browser_search()
+        return found
+
+    monkeypatch.setattr("nekopower.builtin.browser.launcher.find_browsers", settings_saved_meanwhile)
+
+    # Answered all the same, but not kept: the next one looks afresh.
+    assert capabilities._browser_dependency_status() == (True, "")
+    assert capabilities._browser_search is None
+    assert capabilities._browser_dependency_status() == (True, "")
+    assert search.searches == 2 and capabilities._browser_search is not None
 
 
 def test_the_answer_of_the_browser_search_is_kept_for_a_moment(search, monkeypatch):
@@ -289,32 +326,9 @@ async def test_availability_without_a_browser_names_the_missing_browser(modules,
 
     status = await api_routes.browser_use_availability()
 
-    assert status == {"enabled": True, "ready": False, "reasons": ["AGENT_BROWSER_NOT_FOUND"], "provider": "nekoclaw"}
+    assert status == {"enabled": True, "ready": False, "reasons": ["AGENT_BROWSER_NOT_FOUND"], "provider": "nekopower"}
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
     # The model is not what is missing: it is not probed for this.
-    assert checks == []
-
-
-async def test_availability_with_a_model_that_did_not_answer_says_so_and_probes_it_again(
-    modules, search, browser, checks
-):
-    modules.model_probe = Probe(init_ok=False, last_error="Read timeout")
-
-    status = await api_routes.browser_use_availability()
-    await asyncio.sleep(0)
-
-    assert status == {"enabled": True, "ready": False, "reasons": ["Read timeout"], "provider": "nekoclaw"}
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
-    assert checks == [{}]
-
-
-async def test_availability_without_a_probe_is_not_ready(modules, search, browser, checks):
-    modules.model_probe = None
-
-    status = await api_routes.browser_use_availability()
-    await asyncio.sleep(0)
-
-    assert (status["ready"], status["reasons"]) == (False, ["Agent LLM not connected"])
     assert checks == []
 
 
@@ -324,10 +338,10 @@ async def test_availability_is_ready_with_a_browser_and_a_model_that_answers_and
     status = await api_routes.browser_use_availability()
     await asyncio.sleep(0)
 
-    assert status == {"enabled": True, "ready": True, "reasons": [], "provider": "nekoclaw"}
+    assert status == {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower"}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     # Asked on every poll of the settings page: nothing is built, started or probed.
-    assert nekoclaw_builtins.provider._browser is None
+    assert nekopower_builtins.provider._browser is None
     assert checks == [] and browser.closes == 0
 
 
@@ -361,23 +375,8 @@ async def test_enabling_with_a_browser_and_a_model_that_answers_starts_no_browse
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert modules.notification is None
     # The browser is started by the first browser tool call, not by the switch.
-    assert nekoclaw_builtins.provider._browser is None
+    assert nekopower_builtins.provider._browser is None
     assert checks == [] and scheduled == [] and browser.closes == 0
-
-
-async def test_enabling_before_the_model_has_answered_switches_on_and_probes_it(
-    modules, search, browser, checks, scheduled
-):
-    modules.model_probe = Probe(init_ok=False)
-
-    result = await api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
-    await asyncio.sleep(0)
-
-    assert result["agent_flags"]["browser_use_enabled"] is True
-    assert _notification(modules) == {"code": "AGENT_BU_ENABLED_CHECKING"}
-    # Not ready until the probe has passed.
-    assert modules.capability_cache["browser_use"]["ready"] is False
-    assert checks == [{}]
 
 
 async def test_enabling_with_the_agent_model_not_configured_is_refused(
@@ -437,14 +436,23 @@ async def test_closing_settles_the_capability_from_the_browser_search_or_the_rea
     await capabilities._close_browser()
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
 
-    await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE")
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    await capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED")
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
     # Closed for another reason than the switch (everything was stopped, the
     # settings changed): what the switch shows is left alone.
     await capabilities._close_browser(update_capability=False)
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
     assert browser.closes == 3
+
+
+async def test_closing_with_the_agent_model_not_set_up_says_that_rather_than_the_browser(modules, search, browser, monkeypatch):
+    _gate(monkeypatch, GATE_NOT_CONFIGURED)
+
+    await capabilities._close_browser()
+
+    # A browser is found, and still the tools cannot be used: the model is what is missing.
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
 
 async def test_closing_without_a_browser_on_this_computer_says_that(modules, search, browser):
@@ -458,10 +466,10 @@ async def test_closing_without_a_browser_on_this_computer_says_that(modules, sea
 async def test_a_close_that_fails_still_settles_the_capability(modules, search, browser):
     browser.fails = True
 
-    await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE")
+    await capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED")
 
     assert browser.closes == 1
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
 
 async def test_a_close_of_an_older_switch_setting_leaves_the_capability_alone(modules, search, browser):
@@ -522,7 +530,7 @@ async def test_a_late_close_does_not_overwrite_a_newer_enable(modules, search, b
 async def test_a_cancelled_close_settles_nothing_and_the_browser_can_be_closed_again(modules, search, browser):
     modules.capability_cache["browser_use"] = {"ready": True, "reason": ""}
     browser.hold = asyncio.Event()
-    closing = asyncio.ensure_future(capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE"))
+    closing = asyncio.ensure_future(capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED"))
     await asyncio.wait_for(browser.close_started.wait(), 2.0)
 
     closing.cancel()
@@ -532,14 +540,62 @@ async def test_a_cancelled_close_settles_nothing_and_the_browser_can_be_closed_a
     # Whoever cancelled it (stopping everything, shutting down) closes again.
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     browser.hold.set()
-    await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE")
+    await capabilities._close_browser(capability_reason="AGENT_ENDPOINT_NOT_CONFIGURED")
     assert browser.closes == 2
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
 
 # ---------------------------------------------------------------------------
-# The probe of the agent model decides for both groups of tools
+# Whether the tools can be used: the configuration and this computer, no model
 # ---------------------------------------------------------------------------
+
+
+async def _background_done(modules: Any, timeout: float = 10.0) -> None:
+    """Let what a request left to the background run to its end; one that fails or hangs fails the test."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    # A task that is over takes itself off ``_background_tasks``; the set the
+    # ``modules`` fixture puts in its place remembers every task ever added,
+    # so one that ended before this was called is looked at as well.
+    def every() -> set[asyncio.Task]:
+        return set(getattr(modules._background_tasks, "ever", modules._background_tasks))
+
+    seen: set[asyncio.Task] = every()
+    while True:
+        await asyncio.sleep(0)
+        seen |= every()
+        pending = [task for task in seen if not task.done()]
+        if not pending:
+            break
+        left = deadline - loop.time()
+        _done, still = await asyncio.wait(pending, timeout=max(left, 0.0))
+        if still and loop.time() >= deadline:
+            for task in still:
+                task.cancel()
+            await asyncio.gather(*still, return_exceptions=True)
+            pytest.fail(f"{len(still)} background task(s) did not finish within {timeout}s")
+    for task in seen:
+        if not task.cancelled() and task.exception() is not None:
+            raise task.exception()
+
+
+@pytest.mark.parametrize("ended_before_the_wait", [False, True])
+async def test_a_background_task_that_fails_fails_the_wait_for_it(modules, ended_before_the_wait):
+    async def breaks() -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("the status could not be sent")
+
+    task = capabilities._shared._create_tracked_task(breaks())
+    if ended_before_the_wait:
+        # Over, and off the set, before anything waits for it.
+        await asyncio.wait({task})
+        await asyncio.sleep(0)
+        assert task not in modules._background_tasks
+
+    with pytest.raises(RuntimeError, match="the status could not be sent"):
+        await _background_done(modules)
+    # It took itself off the set when it ended, and was looked at all the same.
+    assert modules._background_tasks == set()
 
 
 def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str] | None = None) -> list[int]:
@@ -547,152 +603,566 @@ def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str
 
     def availability() -> dict[str, Any]:
         asked.append(1)
-        return {"enabled": True, "ready": ready, "reasons": list(reasons or []), "provider": "nekoclaw", "model": "m"}
+        return {"enabled": True, "ready": ready, "reasons": list(reasons or []), "provider": "nekopower", "model": "m"}
 
     monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", availability)
     return asked
 
 
-async def test_a_passed_probe_makes_each_group_as_ready_as_its_own_means(modules, search, browser, monkeypatch):
+async def test_both_groups_are_ready_when_the_model_is_set_up_and_their_means_are_there(
+    modules, search, browser, checks, monkeypatch
+):
     asked = _keyboard(monkeypatch, ready=True)
 
-    await capabilities._fire_agent_llm_connectivity_check()
+    await capabilities._refresh_tool_capabilities()
 
-    assert modules.model_probe.probes == 1
+    assert asked == [1]
     assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
-    assert asked == [1] and search.searches == 1
-    assert nekoclaw_builtins.provider._browser is None
+    # Nothing was sent to the model to find that out.
+    assert checks == []
 
 
-async def test_a_passed_probe_does_not_make_the_browser_ready_without_a_browser(modules, search, browser, monkeypatch):
+async def test_a_keyboard_check_that_breaks_still_lets_the_browser_be_said(modules, search, browser, checks, monkeypatch):
+    def broken() -> dict[str, Any]:
+        raise RuntimeError("the display driver went away")
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", broken)
+    modules.capability_cache["computer_use"] = {"ready": True, "reason": ""}
+
+    await capabilities._refresh_tool_capabilities()
+
+    # Not usable, and why is said with a code that has its words.
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_INPUT_CHECK_FAILED"}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_browser_search_that_breaks_says_so(modules, search, browser, checks, monkeypatch):
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(capabilities, "_browser_dependency_status", lambda: (_ for _ in ()).throw(RuntimeError("the disk went away")))
+
+    await capabilities._refresh_tool_capabilities()
+
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_CHECK_FAILED"}
+
+
+async def test_a_keyboard_switched_off_while_an_earlier_request_waited_for_its_check_stays_off(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower", "model": "m"}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    monkeypatch.setattr(modules, "computer_use_switch_seq", modules.computer_use_switch_seq)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not switching_on.done()
+        # Switched off meanwhile.
+        await api_routes.set_agent_flags({"computer_use_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    assert modules.agent_flags["computer_use_enabled"] is False
+    assert modules.notification is None
+
+
+async def test_a_refresh_that_started_earlier_and_finishes_later_writes_nothing_over_the_later_one(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    first_asked = threading.Event()
+    release_first = threading.Event()
+    calls: list[int] = []
+
+    def keyboard() -> dict[str, Any]:
+        calls.append(1)
+        if len(calls) == 1:
+            # The configuration as it was before it was saved: no key yet.
+            first_asked.set()
+            release_first.wait(5.0)
+            return {"enabled": True, "ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]}
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", keyboard)
+    earlier = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(first_asked.wait, 5.0), 6.0)
+        # The key was saved meanwhile: a later refresh finds the tools usable.
+        await capabilities._refresh_tool_capabilities()
+        assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    finally:
+        release_first.set()
+    await asyncio.wait_for(earlier, 5.0)
+
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_browser_check_that_started_earlier_and_finishes_later_writes_nothing_over_the_later_one(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    first_asked = threading.Event()
+    release_first = threading.Event()
+    calls: list[int] = []
+
+    def browser_check() -> tuple[bool, str]:
+        calls.append(1)
+        if len(calls) == 1:
+            # Before a browser was named in the settings: none found.
+            first_asked.set()
+            release_first.wait(5.0)
+            return False, "AGENT_BROWSER_NOT_FOUND"
+        return True, ""
+
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(capabilities, "_browser_availability", browser_check)
+    earlier = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(first_asked.wait, 5.0), 6.0)
+        await capabilities._refresh_tool_capabilities()
+        assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+    finally:
+        release_first.set()
+    await asyncio.wait_for(earlier, 5.0)
+
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_browser_switched_off_while_an_earlier_request_looked_for_a_browser_stays_off(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_search() -> tuple[bool, str]:
+        release.wait(5.0)
+        return True, ""
+
+    monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not switching_on.done()
+        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    assert modules.agent_flags["browser_use_enabled"] is False
+    # The earlier request, overtaken, wrote nothing: neither the switch nor a notice.
+    assert modules.notification is None
+
+
+async def test_an_older_check_that_ends_first_does_not_keep_a_later_refresh_from_writing(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    older_asked = threading.Event()
+    release_older = threading.Event()
+    newer_asked = threading.Event()
+    release_newer = threading.Event()
+    calls: list[int] = []
+
+    def keyboard() -> dict[str, Any]:
+        calls.append(1)
+        if len(calls) == 1:
+            # An availability route, from the configuration before it was saved.
+            older_asked.set()
+            release_older.wait(5.0)
+            return {"enabled": True, "ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]}
+        # The refresh that saving the configuration started.
+        newer_asked.set()
+        release_newer.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", keyboard)
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", keyboard)
+
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    older = asyncio.ensure_future(api_routes.computer_use_availability())
+    newer: Any = None
+    try:
+        await asyncio.wait_for(asyncio.to_thread(older_asked.wait, 5.0), 6.0)
+        newer = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+        await asyncio.wait_for(asyncio.to_thread(newer_asked.wait, 5.0), 6.0)
+        # The older one ends first and writes what it found...
+        release_older.set()
+        await asyncio.wait_for(older, 5.0)
+        assert modules.capability_cache["computer_use"]["reason"] == "AGENT_KEY_NOT_CONFIGURED"
+    finally:
+        release_older.set()
+        release_newer.set()
+    # ...and the later refresh still writes what the new configuration says.
+    await asyncio.wait_for(newer, 5.0)
+
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+
+
+async def test_what_is_written_while_a_refresh_checks_is_not_written_over(modules, search, browser, checks, monkeypatch):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    refreshing = asyncio.ensure_future(capabilities._refresh_tool_capabilities())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # Meanwhile a route finds input cannot be sent any more.
+        capabilities._set_capability("computer_use", False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
+    finally:
+        release.set()
+    await asyncio.wait_for(refreshing, 5.0)
+
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"}
+
+
+@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
+async def test_a_switch_on_that_waited_goes_by_a_newer_check_the_saved_configuration_started(
+    modules, search, browser, checks, monkeypatch, scheduled, group
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+    flag, capability = (
+        ("computer_use_enabled", "computer_use") if group == "keyboard_mouse" else ("browser_use_enabled", "browser_use")
+    )
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    def slow_search() -> tuple[bool, str]:
+        asked.set()
+        release.wait(5.0)
+        return True, ""
+
+    if group == "keyboard_mouse":
+        monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    else:
+        monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
+    switching_on = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The key is taken out of the configuration meanwhile: the refresh
+        # that saving starts says the tools cannot be used.
+        _gate(monkeypatch, {"ready": False, "reasons": ["Agent API Key 未配置或不可用"], "is_free_version": False})
+        monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", lambda: {"ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]})
+        await capabilities._refresh_tool_capabilities()
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The earlier answer ("ready") is older than the refresh's: the switch stays off and says why.
+    assert modules.agent_flags[flag] is False
+    assert modules.capability_cache[capability] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
+    code = "AGENT_CU_UNAVAILABLE" if group == "keyboard_mouse" else "AGENT_BU_UNAVAILABLE"
+    assert json.loads(modules.notification) == {"code": code, "details": {"reason_code": "AGENT_KEY_NOT_CONFIGURED"}}
+
+
+async def test_an_older_availability_check_switches_nothing_off_over_a_newer_enable(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def stale_check() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": False, "reasons": ["AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]}
+
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", stale_check)
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    older = asyncio.ensure_future(api_routes.computer_use_availability())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # Switched on meanwhile, from a check that started later and found input works.
+        modules.agent_flags["computer_use_enabled"] = True
+        api_routes._set_capability("computer_use", True, "")
+    finally:
+        release.set()
+    status = await asyncio.wait_for(older, 5.0)
+
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    # What it answers is the newer word too.
+    assert (status["ready"], status["reasons"]) == (True, [])
+
+
+@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
+async def test_a_switch_on_waiting_for_its_check_is_not_held_back_by_the_master_switch_coming_on(
+    modules, search, browser, checks, monkeypatch, scheduled, group
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+    flag, capability = (
+        ("computer_use_enabled", "computer_use") if group == "keyboard_mouse" else ("browser_use_enabled", "browser_use")
+    )
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    def slow_search() -> tuple[bool, str]:
+        asked.set()
+        release.wait(5.0)
+        return True, ""
+
+    if group == "keyboard_mouse":
+        monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    else:
+        monkeypatch.setattr(api_routes, "_browser_availability", slow_search)
+    # The background refresh the master switch starts is kept from running here.
+    monkeypatch.setattr(api_routes, "_create_tracked_task", lambda coro: coro.close())
+    modules.analyzer_enabled = False
+    switching_on = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The master switch comes on meanwhile: "not checked yet" for both.
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+        assert modules.capability_cache[capability] == {"ready": False, "reason": ""}
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # Its own check answered "usable": that stands, and the switch is on.
+    assert modules.agent_flags[flag] is True
+    assert modules.capability_cache[capability] == {"ready": True, "reason": ""}
+    # Nothing says it could not be switched on (the plugins coming on with the master switch say their own).
+    assert (_notification(modules) or {}).get("code") not in ("AGENT_CU_UNAVAILABLE", "AGENT_BU_UNAVAILABLE")
+
+
+async def test_an_older_switch_on_goes_by_the_newer_real_answer_not_a_stand_in_written_since(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        # What this older check found: not usable.
+        return {"enabled": True, "ready": False, "reasons": ["AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # A check that started later answers "usable"...
+        capabilities._set_capability("computer_use", True, "")
+        # ...and then a stand-in is written over it ("not checked yet").
+        capabilities._set_capability("computer_use", False, "", provisional=True)
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The older answer is refused, and the newer real one decides, not the stand-in.
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+
+
+async def test_the_model_no_longer_set_up_during_an_availability_check_switches_nothing_off(
+    modules, search, browser, checks, monkeypatch
+):
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(
+        api_routes,
+        "_keyboard_mouse_availability",
+        lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_KEY_NOT_CONFIGURED"]},
+    )
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    modules.agent_flags["computer_use_enabled"] = True
+
+    status = await api_routes.computer_use_availability()
+
+    # Said unusable, and why; but a configuration that changed puts no switch off.
+    assert status["ready"] is False
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
+    assert modules.agent_flags["computer_use_enabled"] is True
+    assert modules.notification is None
+
+
+async def test_input_that_cannot_be_sent_puts_the_keyboard_off_even_with_the_model_not_set_up(
+    modules, search, browser, checks, monkeypatch
+):
+    async def no_pictures_asked() -> dict[str, Any]:
+        return {"sees": True}
+
+    monkeypatch.setattr(
+        api_routes,
+        "_keyboard_mouse_availability",
+        lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_MODEL_NOT_CONFIGURED", "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"]},
+    )
+    monkeypatch.setattr(api_routes, "_model_images_status", no_pictures_asked)
+    modules.agent_flags["computer_use_enabled"] = True
+
+    await api_routes.computer_use_availability()
+
+    # Input cannot be sent: that is lost whatever the configuration says.
+    assert modules.agent_flags["computer_use_enabled"] is False
+    assert _notification(modules)["code"] == "AGENT_CU_CAPABILITY_LOST"
+
+
+async def test_the_master_switch_turned_on_again_while_on_leaves_the_tools_as_they_are(
+    modules, search, browser, checks, monkeypatch
+):
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    ready = {"ready": True, "reason": ""}
+    modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
+    modules.analyzer_enabled = True
+    try:
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+        # A task at work keeps its tools while they are worked out again.
+        assert modules.capability_cache["computer_use"] == ready
+        assert modules.capability_cache["browser_use"] == ready
+    finally:
+        release.set()
+    await _background_done(modules)
+
+
+async def test_a_step_of_the_master_switch_that_fails_still_has_the_tools_worked_out(
+    modules, search, browser, checks, monkeypatch
+):
+    async def plugins_break(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the plugin lifecycle broke")
+
+    _keyboard(monkeypatch, ready=True)
+    monkeypatch.setattr(api_routes, "set_agent_flags", plugins_break)
+    modules.analyzer_enabled = False
+
+    with pytest.raises(RuntimeError):
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": True})
+    await _background_done(modules)
+
+    # Not left "not ready" for want of the check: it was started before the step that failed.
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_switching_both_on_while_the_model_setup_goes_away_leaves_the_browser_off(
+    modules, search, browser, checks, monkeypatch, scheduled
+):
+    import threading
+
+    asked = threading.Event()
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        asked.set()
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", slow_keyboard)
+    switching_on = asyncio.ensure_future(
+        api_routes.set_agent_flags({"computer_use_enabled": True, "browser_use_enabled": True, "_persist_intent": False})
+    )
+    try:
+        await asyncio.wait_for(asyncio.to_thread(asked.wait, 5.0), 6.0)
+        # The key is taken out of the configuration while the keyboard is checked.
+        _gate(monkeypatch, {"ready": False, "reasons": ["Agent API Key 未配置或不可用"], "is_free_version": False})
+    finally:
+        release.set()
+    await asyncio.wait_for(switching_on, 5.0)
+
+    # The browser is checked after that, and with the model: it does not come on.
+    assert modules.agent_flags["browser_use_enabled"] is False
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"}
+
+
+async def test_without_a_browser_only_the_browser_tools_are_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=True)
     search.found = []
 
-    await capabilities._fire_agent_llm_connectivity_check()
+    await capabilities._refresh_tool_capabilities()
 
     assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
 
 
-async def test_a_passed_probe_does_not_make_the_keyboard_ready_when_input_cannot_be_sent(
-    modules, search, browser, monkeypatch
-):
+async def test_input_that_cannot_be_sent_leaves_only_the_keyboard_not_ready(modules, search, browser, checks, monkeypatch):
     _keyboard(monkeypatch, ready=False, reasons=["AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"])
 
-    await capabilities._fire_agent_llm_connectivity_check()
+    await capabilities._refresh_tool_capabilities()
 
-    assert modules.capability_cache["computer_use"] == {
-        "ready": False,
-        "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE",
-    }
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
 
 
-async def test_a_failed_probe_switches_both_off_says_why_and_closes_the_browser(modules, search, browser, monkeypatch):
-    asked = _keyboard(monkeypatch, ready=True)
-    modules.model_probe = Probe(result=(False, "AGENT_API_KEY_INVALID"))
-    modules.agent_flags.update(computer_use_enabled=True, browser_use_enabled=True)
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    assert modules.agent_flags["computer_use_enabled"] is False
-    assert modules.agent_flags["browser_use_enabled"] is False
-    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_API_KEY_INVALID"}
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_API_KEY_INVALID"}
-    assert _notification(modules) == {
-        "code": "AGENT_AUTO_DISABLED_BROWSER",
-        "details": {"reason_code": "AGENT_API_KEY_INVALID"},
-    }
-    assert browser.closes == 1
-    # Neither group's own means is looked at once the model does not answer.
-    assert asked == [] and search.searches == 0
-
-
-async def test_a_failed_probe_with_only_the_keyboard_on_closes_no_browser(modules, search, browser, monkeypatch):
-    _keyboard(monkeypatch, ready=True)
-    modules.model_probe = Probe(result=(False, "AGENT_LLM_UNREACHABLE"))
-    modules.agent_flags["computer_use_enabled"] = True
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    assert modules.agent_flags["computer_use_enabled"] is False
-    assert _notification(modules) == {
-        "code": "AGENT_AUTO_DISABLED_COMPUTER",
-        "details": {"reason_code": "AGENT_LLM_UNREACHABLE"},
-    }
-    assert browser.closes == 0
-
-
-@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
-@pytest.mark.parametrize("result", [(False, "AGENT_LLM_UNREACHABLE"), RuntimeError("the probe itself broke")])
-async def test_a_failed_probe_while_a_task_is_using_the_tools_switches_nothing_off(
-    modules, search, browser, monkeypatch, group, result
+@pytest.mark.parametrize(
+    ("missing", "code"),
+    [
+        # The wordings of ``ConfigManager.is_agent_api_ready``.
+        ("Agent 模型未配置", "AGENT_MODEL_NOT_CONFIGURED"),
+        ("Agent API URL 未配置", "AGENT_URL_NOT_CONFIGURED"),
+        ("Agent API Key 未配置或不可用", "AGENT_KEY_NOT_CONFIGURED"),
+        # The check itself failed: the model counts as not set up.
+        ("Agent API check failed: disk gone", "AGENT_CONFIG_CHECK_FAILED"),
+    ],
+)
+async def test_a_model_not_set_up_leaves_neither_group_ready_and_says_what_is_missing(
+    modules, search, browser, checks, monkeypatch, missing, code
 ):
-    _keyboard(monkeypatch, ready=True)
-    modules.model_probe = Probe(result=result)
-    modules.agent_flags.update(computer_use_enabled=True, browser_use_enabled=True)
-    ready = {"ready": True, "reason": ""}
-    modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
-    # A commission occupies one of the groups: the model is demonstrably
-    # answering it, so the probe lost a race.
-    nekoclaw_builtins._in_use[group] = "c1"
-    assert nekoclaw_builtins.group_in_use(group) is True
+    from app.agent_server import nekopower_builtins as builtins
 
-    await capabilities._fire_agent_llm_connectivity_check()
+    _gate(monkeypatch, {"ready": False, "reasons": [missing], "is_free_version": False})
+    monkeypatch.setattr(builtins.provider, "_desktop", SimpleNamespace(available=lambda: (True, "")))
 
-    assert modules.model_probe.probes == 1
-    assert modules.agent_flags["computer_use_enabled"] is True
-    assert modules.agent_flags["browser_use_enabled"] is True
-    assert modules.capability_cache["computer_use"] == ready
-    assert modules.capability_cache["browser_use"] == ready
-    assert modules.notification is None
-    assert browser.closes == 0
+    await capabilities._refresh_tool_capabilities()
 
-
-async def test_a_probe_that_breaks_with_nothing_under_way_switches_both_off(modules, search, browser, monkeypatch):
-    _keyboard(monkeypatch, ready=True)
-    modules.model_probe = Probe(result=RuntimeError("the probe itself broke"))
-    modules.agent_flags.update(computer_use_enabled=True, browser_use_enabled=True)
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    assert modules.agent_flags["computer_use_enabled"] is False
-    assert modules.agent_flags["browser_use_enabled"] is False
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
-    assert _notification(modules) == {"code": "AGENT_LLM_CHECK_ERROR"}
-    assert browser.closes == 1
-
-
-async def test_without_a_probe_neither_group_is_ready(modules, search, browser):
-    modules.model_probe = None
-
-    await capabilities._fire_agent_llm_connectivity_check()
-
-    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_CU_MODULE_NOT_LOADED"}
-    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_CU_MODULE_NOT_LOADED"}
-
-
-async def test_a_check_asked_for_while_one_is_under_way_is_dropped_unless_it_is_queued(
-    modules, search, browser, monkeypatch
-):
-    _keyboard(monkeypatch, ready=True)
-    await capabilities._llm_check_lock.acquire()
-    try:
-        # A toggle that asks again while a probe is in flight adds nothing.
-        await asyncio.wait_for(capabilities._fire_agent_llm_connectivity_check(), 2.0)
-        assert modules.model_probe.probes == 0
-
-        # A change that has to show (the master switch went on) waits its turn.
-        queued = asyncio.ensure_future(capabilities._fire_agent_llm_connectivity_check(queue=True))
-        await asyncio.sleep(0)
-        assert not queued.done() and modules.model_probe.probes == 0
-    finally:
-        capabilities._llm_check_lock.release()
-    await asyncio.wait_for(queued, 2.0)
-
-    assert modules.model_probe.probes == 1
-    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": code}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": code}
+    # Nobody looks for a browser for a model that is not there.
+    assert search.searches == 0 and checks == []
 
 
 # ---------------------------------------------------------------------------
@@ -700,68 +1170,104 @@ async def test_a_check_asked_for_while_one_is_under_way_is_dropped_unless_it_is_
 # ---------------------------------------------------------------------------
 
 
-async def test_switching_the_master_switch_on_marks_both_pending_and_queues_a_probe(
+async def test_switching_the_master_switch_on_says_at_once_whether_the_tools_can_be_used(
     modules, search, browser, checks, monkeypatch
 ):
-    refreshed: list[bool] = []
-    monkeypatch.setattr(api_routes, "_try_refresh_model_probe", lambda force=False: refreshed.append(force) or True)
-    ready = {"ready": True, "reason": ""}
-    modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
+    _keyboard(monkeypatch, ready=True)
+    search.found = []
     modules.analyzer_enabled = False
 
     result = await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
-    await asyncio.sleep(0)
+    await _background_done(modules)
 
     assert result["success"] is True and modules.analyzer_enabled is True
-    # The probe is rebuilt from the configuration as it is now, and until it
-    # has answered neither group counts as ready.
-    assert refreshed == [True]
-    pending = {"ready": False, "reason": "AGENT_PRECHECK_PENDING"}
-    assert modules.capability_cache["computer_use"] == pending
-    assert modules.capability_cache["browser_use"] == pending
-    assert checks == [{"queue": True}]
+    # Worked out right after, from what is filled in and what is on this computer.
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
+    # The agent model was asked nothing.
+    assert checks == []
 
 
-async def test_switching_the_master_switch_on_without_a_configured_model_probes_nothing(
+async def test_switching_the_master_switch_on_waits_for_nothing_so_a_later_request_is_not_overtaken(
     modules, search, browser, checks, monkeypatch
 ):
-    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: dict(GATE_NOT_CONFIGURED))
+    import threading
+
+    release = threading.Event()
+
+    def slow_keyboard() -> dict[str, Any]:
+        # Importing pyautogui the first time can take a while.
+        release.wait(5.0)
+        return {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower", "model": "m"}
+
+    async def started_ok(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", slow_keyboard)
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_started", started_ok)
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_stopped", started_ok)
+    monkeypatch.setattr(modules, "user_plugin_lifecycle_seq", modules.user_plugin_lifecycle_seq)
+    modules.analyzer_enabled = False
+    try:
+        # The answer does not wait for the tools to be worked out.
+        await asyncio.wait_for(
+            api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False}), 2.0
+        )
+        assert modules.agent_flags["user_plugin_enabled"] is True
+        # Until the check is done the tools show nothing kept from before.
+        assert modules.capability_cache["computer_use"] == {"ready": False, "reason": ""}
+        assert modules.capability_cache["browser_use"] == {"ready": False, "reason": ""}
+        # The plugins are switched off while that is still under way: it stays off.
+        await api_routes.set_agent_flags({"user_plugin_enabled": False, "_persist_intent": False})
+    finally:
+        release.set()
+    await _background_done(modules)
+
+    assert modules.agent_flags["user_plugin_enabled"] is False
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+
+
+async def test_switching_the_master_switch_on_without_a_configured_model_says_so(modules, search, browser, checks, monkeypatch):
+    _gate(monkeypatch, GATE_NOT_CONFIGURED)
     modules.analyzer_enabled = False
 
     await api_routes.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
-    await asyncio.sleep(0)
+    await _background_done(modules)
 
     not_configured = {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
     assert modules.capability_cache["computer_use"] == not_configured
     assert modules.capability_cache["browser_use"] == not_configured
+    assert checks == [] and search.searches == 0
+
+
+async def test_a_saved_configuration_says_anew_whether_the_tools_can_be_used(modules, search, browser, checks, monkeypatch):
+    _keyboard(monkeypatch, ready=True)
+    modules.capability_cache.update(
+        computer_use={"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"},
+        browser_use={"ready": False, "reason": "AGENT_KEY_NOT_CONFIGURED"},
+    )
+
+    result = await api_routes.notify_config_changed()
+    # Worked out in the background: the main server does not wait for it.
+    await _background_done(modules)
+
+    assert result["success"] is True
+    # The key was filled in: the tools can be used, and the model was asked nothing.
+    assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert checks == []
 
 
-@pytest.mark.parametrize(
-    ("master", "flags", "probed"),
-    [
-        (True, {"browser_use_enabled": True}, True),
-        (True, {"computer_use_enabled": True}, True),
-        # Nobody is using the model: saving a setting must not probe it.
-        (True, {"user_plugin_enabled": True}, False),
-        # The flags keep the user's choice while the master switch is off.
-        (False, {"browser_use_enabled": True, "computer_use_enabled": True}, False),
-    ],
-)
-async def test_a_saved_configuration_rebuilds_the_probe_and_probes_only_when_the_tools_are_on(
-    modules, checks, monkeypatch, master, flags, probed
+async def test_a_configuration_saved_while_the_master_switch_is_off_changes_nothing(
+    modules, search, browser, checks, monkeypatch
 ):
-    refreshed: list[bool] = []
-    monkeypatch.setattr(api_routes, "_try_refresh_model_probe", lambda force=False: refreshed.append(force) or True)
-    modules.analyzer_enabled = master
-    modules.agent_flags.update(flags)
+    asked = _keyboard(monkeypatch, ready=True)
+    modules.analyzer_enabled = False
+    before = {name: dict(state) for name, state in modules.capability_cache.items()}
 
-    result = await api_routes.notify_config_changed()
-    await asyncio.sleep(0)
+    await api_routes.notify_config_changed()
 
-    assert result["success"] is True
-    assert refreshed == [True]
-    assert checks == ([{}] if probed else [])
+    assert modules.capability_cache == before and asked == [] and search.searches == 0 and checks == []
 
 
 # ---------------------------------------------------------------------------
@@ -817,10 +1323,9 @@ def process(modules, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(api_runtime, "_start_embedded_user_plugin_server", record("plugin server"))
     monkeypatch.setattr(api_runtime, "_stop_embedded_user_plugin_server", record("plugin server stopped"))
     monkeypatch.setattr(api_runtime, "_ensure_plugin_lifecycle_stopped", record("plugins stopped"))
-    monkeypatch.setattr(api_runtime, "_fire_agent_llm_connectivity_check", record("probe"))
     monkeypatch.setattr(api_runtime, "_emit_agent_status_update", record("status"))
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", record("host"))
-    monkeypatch.setattr(api_runtime, "mount_nekoclaw_host", lambda change_token=None: calls.append("mount"))
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", record("host"))
+    monkeypatch.setattr(api_runtime, "mount_nekopower_host", lambda change_token=None: calls.append("mount"))
     monkeypatch.setattr(api_runtime, "AgentServerEventBridge", Bridge)
     monkeypatch.setattr(
         api_runtime,
@@ -830,34 +1335,29 @@ def process(modules, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-async def test_startup_builds_the_probe_and_neither_looks_for_nor_starts_a_browser(
-    modules, process, search, browser, monkeypatch
+async def test_startup_asks_the_model_nothing_and_neither_looks_for_nor_starts_a_browser(
+    modules, process, search, browser, checks, monkeypatch
 ):
-    built: list[Any] = []
-
-    class StartupProbe(Probe):
-        def __init__(self) -> None:
-            super().__init__(init_ok=False)
-            built.append(self)
-
-    monkeypatch.setattr("app.agent_server.model_probe.AgentModelProbe", StartupProbe)
-    modules.model_probe = None
     ready = {"ready": True, "reason": ""}
     modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
 
     await api_runtime.startup()
     await asyncio.gather(*modules._persistent_tasks)
+    # Whatever startup set going in the background has had its turn too.
+    for _ in range(5):
+        await asyncio.sleep(0)
 
-    assert built == [modules.model_probe]
-    # Not ready until the probe, which runs in the background, has answered.
-    pending = {"ready": False, "reason": "AGENT_PRECHECK_PENDING"}
-    assert modules.capability_cache["computer_use"] == pending
-    assert modules.capability_cache["browser_use"] == pending
-    assert process.count("probe") == 1 and "mount" in process
+    # No model client is built at start, so no request goes to the model.
+    assert checks == []
+    # Not ready, with no reason: the master switch works that out when it comes on.
+    not_worked_out = {"ready": False, "reason": ""}
+    assert modules.capability_cache["computer_use"] == not_worked_out
+    assert modules.capability_cache["browser_use"] == not_worked_out
+    assert "mount" in process
     # Startup stays free of file checks and processes: the browser is the
     # business of the first browser tool call.
     assert search.searches == 0
-    assert nekoclaw_builtins.provider._browser is None and browser.closes == 0
+    assert nekopower_builtins.provider._browser is None and browser.closes == 0
 
 
 async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_host_has_stopped(
@@ -873,9 +1373,9 @@ async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_ho
     async def close() -> None:
         order.append("browser closed")
 
-    monkeypatch.setattr(nekoclaw_builtins.provider, "close_browser", close)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", Desktop())
-    modules.capability_cache["browser_use"] = {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
+    monkeypatch.setattr(nekopower_builtins.provider, "close_browser", close)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", Desktop())
+    modules.capability_cache["browser_use"] = {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
 
     await api_runtime.shutdown()
 
@@ -892,19 +1392,19 @@ async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_ho
 async def test_from_the_start_of_a_shutdown_no_call_of_the_built_in_tools_is_carried_out(
     modules, process, search, browser, monkeypatch
 ):
-    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER
+    from nekopower.host.capabilities import BUILTIN_GROUP_BROWSER
 
     seen: list[Any] = []
-    real_host_shutdown = api_runtime.shutdown_nekoclaw_host
+    real_host_shutdown = api_runtime.shutdown_nekopower_host
 
     async def host_shutdown() -> None:
         # The first step of the shutdown: a task agent whose runtime is not stopped yet calls a tool now.
-        seen.append(nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER))
+        seen.append(nekopower_builtins.provider._ready(BUILTIN_GROUP_BROWSER))
         await real_host_shutdown()
 
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_shutdown)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_state", lambda group: (True, ""))
-    assert nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER) == (True, "")
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", host_shutdown)
+    monkeypatch.setattr(nekopower_builtins.provider, "_state", lambda group: (True, ""))
+    assert nekopower_builtins.provider._ready(BUILTIN_GROUP_BROWSER) == (True, "")
 
     await api_runtime.shutdown()
 
@@ -969,7 +1469,7 @@ async def test_a_switch_set_anew_while_the_search_runs_keeps_its_word(modules, s
 
 def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_application(monkeypatch):
     import config
-    from nekoclaw.host import mount
+    from nekopower.host import mount
 
     monkeypatch.setattr(mount, "peek_host", lambda: None)
     services = {
@@ -980,14 +1480,14 @@ def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_a
         config.TOOL_SERVER_PORT,
         config.USER_PLUGIN_SERVER_PORT,
     }
-    assert nekoclaw_builtins._own_ports() == services
+    assert nekopower_builtins._own_ports() == services
     # The capability gateway picks its port when it starts to listen.
     monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=51234)))
-    assert nekoclaw_builtins._own_ports() == services | {51234}
+    assert nekopower_builtins._own_ports() == services | {51234}
     monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=None)))
-    assert nekoclaw_builtins._own_ports() == services
+    assert nekopower_builtins._own_ports() == services
     # They are what the provider of this process hands to the browser it starts.
-    assert nekoclaw_builtins.provider._own_ports is nekoclaw_builtins._own_ports
+    assert nekopower_builtins.provider._own_ports is nekopower_builtins._own_ports
 
 
 async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
@@ -995,11 +1495,11 @@ async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
 ):
     import threading
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     killed_in: list[threading.Thread] = []
     monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_SHUTDOWN_SECONDS", 0.05)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
     # The browser is asked to close and takes its time: longer than the process has left.
     browser.hold = asyncio.Event()
 
@@ -1015,8 +1515,8 @@ async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
 
 async def test_shutdown_does_not_kill_a_browser_that_closes_in_time(modules, process, search, browser, monkeypatch):
     killed: list[int] = []
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
-    import config.nekoclaw_settings as settings
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed.append(1))
+    import config.nekopower_settings as settings
 
     assert settings.BROWSER_CLOSE_AT_SHUTDOWN_SECONDS == 4.0
     # Within what the launcher gives the process (8 seconds), with time left to kill in.
@@ -1043,11 +1543,11 @@ async def test_shutdown_kills_the_browser_though_an_earlier_step_takes_all_the_t
     async def host_that_will_not_stop() -> None:
         await stuck.wait()
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     monkeypatch.setattr(settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 0.05)
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_that_will_not_stop)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", host_that_will_not_stop)
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
 
     shutting_down = asyncio.ensure_future(api_runtime.shutdown())
     try:
@@ -1074,97 +1574,9 @@ def test_the_last_resort_of_a_shutdown_does_not_fail_when_the_browser_cannot_be_
     def cannot() -> None:
         raise OSError("access denied")
 
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", cannot)
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", cannot)
     # On a thread of its own, where nothing would hear of it.
     api_runtime._kill_browser_at_last()
-
-
-# ---------------------------------------------------------------------------
-# A probe that lost a race takes nothing from the task under way, whoever reads it
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("group", ["keyboard_mouse", "browser"])
-async def test_asking_for_availability_after_a_probe_lost_a_race_takes_nothing_from_the_task_under_way(
-    modules, search, browser, checks, monkeypatch, group
-):
-    modules.model_probe = Probe(result=(False, "AGENT_LLM_RATE_LIMITED"))
-    modules.agent_flags.update(computer_use_enabled=True, browser_use_enabled=True)
-    ready = {"ready": True, "reason": ""}
-    modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
-    nekoclaw_builtins._in_use[group] = "c1"
-    await capabilities._fire_agent_llm_connectivity_check()
-    # The check let it pass, but what the probe found stays written on the probe.
-    assert modules.model_probe.init_ok is False
-
-    def keyboard() -> dict[str, Any]:
-        return {"enabled": True, "ready": False, "reasons": ["the model did not answer"], "provider": "nekoclaw", "model": "m"}
-
-    async def images() -> dict[str, Any]:
-        return {"sees": True}
-
-    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", keyboard)
-    monkeypatch.setattr(api_routes, "_model_images_status", images)
-
-    keyboard_status = await api_routes.computer_use_availability()
-    browser_status = await api_routes.browser_use_availability()
-    await asyncio.sleep(0)
-
-    # What was found is answered as it is, and the model is asked again ...
-    assert keyboard_status["ready"] is False and browser_status["ready"] is False
-    assert len(checks) == 2
-    # ... but the task that is being answered by that very model keeps its tools.
-    assert modules.agent_flags["computer_use_enabled"] is True
-    assert modules.agent_flags["browser_use_enabled"] is True
-    assert modules.capability_cache["computer_use"] == ready
-    assert modules.capability_cache["browser_use"] == ready
-    assert modules.notification is None
-
-    # With the task over, the same answers are taken at their word.
-    nekoclaw_builtins._in_use.clear()
-    await api_routes.computer_use_availability()
-    await api_routes.browser_use_availability()
-    assert modules.agent_flags["computer_use_enabled"] is False
-    lost = {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
-    assert modules.capability_cache["computer_use"] == lost
-    assert modules.capability_cache["browser_use"] == lost
-    assert _notification(modules)["code"] == "AGENT_CU_CAPABILITY_LOST"
-
-
-async def test_a_model_that_answers_is_not_excused_by_a_task_under_way(modules, search, browser, checks, monkeypatch):
-    # The keyboard cannot be used for a reason of its own (no input can be sent), not because of the model.
-    modules.model_probe = Probe(init_ok=True)
-    modules.agent_flags.update(computer_use_enabled=True)
-    modules.capability_cache["computer_use"] = {"ready": True, "reason": ""}
-    nekoclaw_builtins._in_use["browser"] = "c1"
-
-    def keyboard() -> dict[str, Any]:
-        return {"enabled": True, "ready": False, "reasons": ["AGENT_CU_INPUT_UNAVAILABLE"], "provider": "nekoclaw", "model": "m"}
-
-    async def images() -> dict[str, Any]:
-        return {"sees": True}
-
-    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", keyboard)
-    monkeypatch.setattr(api_routes, "_model_images_status", images)
-
-    await api_routes.computer_use_availability()
-
-    assert modules.agent_flags["computer_use_enabled"] is False
-    assert modules.capability_cache["computer_use"] == {"ready": False, "reason": "AGENT_CU_INPUT_UNAVAILABLE"}
-
-
-def test_a_probe_has_lost_a_race_only_when_it_failed_and_a_task_is_using_the_tools(modules):
-    modules.model_probe = Probe(init_ok=False)
-    assert capabilities._probe_lost_a_race() is False
-    nekoclaw_builtins._in_use["keyboard_mouse"] = "c1"
-    assert capabilities._probe_lost_a_race() is True
-    nekoclaw_builtins._in_use.clear()
-    nekoclaw_builtins._in_use["browser"] = "c2"
-    assert capabilities._probe_lost_a_race() is True
-    modules.model_probe = Probe(init_ok=True)
-    assert capabilities._probe_lost_a_race() is False
-    modules.model_probe = None
-    assert capabilities._probe_lost_a_race() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1588,7 @@ async def _save_browser_settings(
     monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], *, gate: dict[str, Any] = GATE_READY
 ) -> list[str]:
     told: list[str] = []
-    monkeypatch.setattr(api_runtime, "_check_agent_api_gate", lambda: dict(gate))
+    _gate(monkeypatch, gate)
 
     async def close_browser(**options: Any) -> None:
         return None
@@ -1199,7 +1611,6 @@ async def test_naming_a_browser_in_the_settings_makes_the_browser_tools_usable_a
     portable.parent.mkdir()
     portable.write_bytes(b"")
     search.found = []
-    modules.model_probe = Probe(init_ok=True)
     modules.capability_cache["browser_use"] = {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
     revision = modules.state_revision
 
@@ -1215,24 +1626,6 @@ async def test_naming_a_browser_in_the_settings_makes_the_browser_tools_usable_a
     assert told == ["status"]
 
 
-@pytest.mark.parametrize("probe", [None, Probe(init_ok=False, last_error="Read timeout")], ids=["no probe", "no answer yet"])
-async def test_saving_the_browser_settings_does_not_speak_for_a_model_that_has_not_answered(
-    modules, search, tmp_path, monkeypatch, probe
-):
-    portable = tmp_path / "portable" / "chrome.exe"
-    portable.parent.mkdir()
-    portable.write_bytes(b"")
-    search.found = []
-    modules.model_probe = probe
-    pending = {"ready": False, "reason": "AGENT_PRECHECK_PENDING"}
-    modules.capability_cache["browser_use"] = dict(pending)
-
-    told = await _save_browser_settings(monkeypatch, {"executable": str(portable)})
-
-    # A browser alone does not make the tools usable: the check that follows the model's answer says.
-    assert modules.capability_cache["browser_use"] == pending and told == []
-
-
 # ---------------------------------------------------------------------------
 # Shutdown: a browser that answered in time but could not be closed
 # ---------------------------------------------------------------------------
@@ -1242,9 +1635,9 @@ async def test_shutdown_kills_a_browser_that_was_asked_in_time_and_could_not_be_
     modules, process, search, browser, monkeypatch
 ):
     killed: list[int] = []
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed.append(1))
     # Closing it failed: the session keeps it to be closed the next time, and there is none.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "browser_unclosed", lambda: True)
+    monkeypatch.setattr(nekopower_builtins.provider, "browser_unclosed", lambda: True)
 
     await asyncio.wait_for(api_runtime.shutdown(), 10.0)
 
@@ -1252,21 +1645,20 @@ async def test_shutdown_kills_a_browser_that_was_asked_in_time_and_could_not_be_
     assert process[-1] == "status"
 
 
-async def test_saving_the_browser_settings_does_not_speak_for_a_model_that_is_no_longer_configured(
+async def test_saving_the_browser_settings_without_a_configured_model_says_that_rather_than_the_browser(
     modules, search, tmp_path, monkeypatch
 ):
     portable = tmp_path / "portable" / "chrome.exe"
     portable.parent.mkdir()
     portable.write_bytes(b"")
     search.found = []
-    # The address of the model was taken away; the probe of the one before still says it answered.
-    modules.model_probe = Probe(init_ok=True)
-    not_configured = {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
-    modules.capability_cache["browser_use"] = dict(not_configured)
+    modules.capability_cache["browser_use"] = {"ready": True, "reason": ""}
 
     told = await _save_browser_settings(monkeypatch, {"executable": str(portable)}, gate=GATE_NOT_CONFIGURED)
 
-    assert modules.capability_cache["browser_use"] == not_configured and told == []
+    # A browser was named, and still the tools cannot be used: the model is what is missing.
+    assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
+    assert told == ["status"]
 
 
 async def test_saving_the_browser_settings_reads_the_configuration_off_the_event_loop(modules, search, tmp_path, monkeypatch):
@@ -1285,10 +1677,10 @@ async def test_saving_the_browser_settings_reads_the_configuration_off_the_event
         return None
 
     monkeypatch.setattr(api_runtime, "_check_agent_api_gate", gate)
+    monkeypatch.setattr("app.agent_server._check_agent_api_gate", gate)
     monkeypatch.setattr(api_runtime, "_close_browser", close_browser)
     monkeypatch.setattr(api_runtime, "_emit_agent_status_update", status_update)
     monkeypatch.setattr(capabilities._shared.Modules, "_background_tasks", set())
-    modules.model_probe = Probe(init_ok=True)
 
     await api_runtime.set_browser_settings({"headless": True})
     await asyncio.gather(*list(capabilities._shared.Modules._background_tasks))

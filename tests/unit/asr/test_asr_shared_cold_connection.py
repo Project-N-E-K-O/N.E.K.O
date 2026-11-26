@@ -11,6 +11,7 @@ from tests.support.asr_fakes import (
     _install_ready_lifecycle,
     _selection,
 )
+from tests.support.task_sets import wait_task_set_empty
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
 
@@ -129,9 +130,7 @@ async def test_late_success_after_cancel_is_closed_and_cannot_be_adopted(monkeyp
     assert component._asr_connect_cleanup_tasks
     release.set()
     # The tracked late completion must schedule its own close after connecting.
-    while component._asr_connect_cleanup_tasks:
-        await asyncio.gather(*tuple(component._asr_connect_cleanup_tasks),
-                             return_exceptions=True)
+    await wait_task_set_empty(component._asr_connect_cleanup_tasks, return_exceptions=True)
     assert candidate.close.await_count == 2
     assert component._asr_session is None
 

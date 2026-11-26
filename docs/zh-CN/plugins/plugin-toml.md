@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-支持的检查与发布流程要求这四个字段**必填**。旧的源码发现路径仍可能加载部分清单不完整、目录名与 ID 不一致的插件，但这不代表它们是有效的发布包。`id` 必须符合 `^[A-Za-z0-9_-]+$` 且全局唯一。打包和生产安装要求声明 ID、归档目录、执行目标目录与 entry 包路径保持一致，也不会创建带数字后缀的可执行副本。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
+支持的检查与发布流程要求这四个字段**必填**。旧的源码发现路径仍可能加载部分清单不完整、目录名与 ID 不一致的插件，但这不代表它们是有效的发布包。`id` 必须全局唯一。宿主能加载符合 `^[A-Za-z0-9_-]+$` 的任何 `id`，但 `neko-plugin init` 和发布检查（`neko-plugin check -r`）要求 Market ID：以小写字母开头，之后只能是 `a-z`、`0-9` 和 `_`（`^[a-z][a-z0-9_]*$`）；`check -r` 还要求最多 100 个字符。打算发布的插件请使用这个更严格的形式。打包和生产安装要求声明 ID、归档目录、执行目标目录与 entry 包路径保持一致，也不会创建带数字后缀的可执行副本。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
 
 普通插件的 `type = "plugin"` 可省略，因为它是默认值。只有 Adapter 包才使用 `type = "adapter"`。已删除的 `extension` 类型和 `[plugin.host]` 表会被拒绝。
 
@@ -84,10 +84,10 @@ short_description = "Note management with AI-powered organization."
 keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
 ```
 
-宿主完成加载后，Agent（猫爪，NekoClaw）按这些字段筛选插件：
+宿主完成加载后，Agent（喵能力，NekoPower）按这些字段筛选插件：
 
 - `description` — 完整描述，同时用于插件元数据和精选。
-- `short_description` — 粗筛读的短描述，最多读 150 token。**请写上。** 缺失且 `description` 超过这 150 token 时，宿主会在后台让小模型按 `description` 写一份，存在数据目录的 `nekoclaw/plugin_short_descriptions.json`：写成功的话每个插件、每版描述一次模型请求。写出来超过 150 token 的截到 150 保存；请求失败的不保存，10 分钟后再试，每试一次又是一次请求；同一版 `description` 一天最多试 3 次（重启也算在内），改了 `description` 重新计。保存之前改用 `description` 的开头部分。
+- `short_description` — 粗筛读的短描述，最多读 150 token。**请写上。** 缺失且 `description` 超过这 150 token 时，宿主会在后台让小模型按 `description` 写一份，存在数据目录的 `nekopower/plugin_short_descriptions.json`：写成功的话每个插件、每版描述一次模型请求。写出来超过 150 token 的截到 150 保存；请求失败的不保存，10 分钟后再试，每试一次又是一次请求；同一版 `description` 一天最多试 3 次（重启也算在内），改了 `description` 重新计。保存之前改用 `description` 的开头部分。
 - `keywords` — 正则表达式模式。命中的插件会进入粗筛的候选集，并在精选时标为关键词命中；它不会跳过精选，也不保证执行。
 
 筛选分两级。全部可选插件及其可见入口的描述合计超过 3000 token 时先粗筛，取三者的并集：关键词命中的插件、BM25 文本匹配的前 10 名（匹配插件的 ID、名称、描述，以及入口的 ID 和描述）、小模型按短描述挑出的插件。然后由精选选出 `plugin_id` 和运行时 `entry_id`，并填好参数。不超过 3000 token 时跳过粗筛，全部可选插件直接进入精选。
@@ -199,6 +199,30 @@ enabled = true
 
 ---
 
+### `[plugin.database]` — SQLite 数据库
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # 插件数据目录里的文件名（默认 plugin.db）
+```
+
+启用后，`self.db` 使用插件数据目录里的 SQLite 数据库文件：写 SQL 用 `async with unwrap(await self.db.session()) as session:`（`session()` 返回 `Result`），存键值数据用 `self.db.kv`。默认关闭。
+
+---
+
+### `[plugin_state]` — 保存和恢复实例属性
+
+```toml
+[plugin_state]
+backend = "file"        # 状态存在哪里
+persist_mode = "auto"   # 什么时候保存
+```
+
+运行时会保存插件类 `__freezable__` 列表里列出的实例属性，插件下次启动时恢复；恢复成功后清除已保存的状态。`backend` 是总开关：`"file"` 存在插件数据目录的文件里，只有它能在插件进程重启后保留；`"memory"` 只在插件进程存活期间保留。不写 `backend`（或不写这一段）就什么都不保存，和写 `"off"`（或空字符串）一样；写成 `file` / `memory` / `off` 以外的值（例如 `sqlite`）插件会启动失败。这里看的是生效配置，即清单与运行时副本（插件用户数据目录下的 `config/plugin.toml`，首次使用时从 `config.example.toml` 复制，没有这个文件才复制清单）和当前 profile 合并后的结果，所以运行时副本里也有 `backend` 时，只从清单里删掉它并不能关闭保存。要关闭保存，就把 `backend = "off"` 写在生效的那一层：运行时副本和当前 profile 会覆盖清单。`persist_mode` 决定哪些入口调用后保存：`"auto"` 在每次入口调用正常返回后保存（返回 `Err` 也算正常返回；抛异常或严格输出校验失败时不保存；只算经运行时分发的调用，插件内部直接调用入口方法（例如在定时器里调用）不会保存），`"manual"` 只在用 `@plugin_entry(persist=True)` 声明的入口调用后保存，`"off"` 时入口调用后不保存；入口上的 `persist=True` / `persist=False` 优先于 `"auto"` / `"manual"`。取值按这个顺序确定：先取类属性 `__persist_mode__`（默认 `"off"`），`[plugin_state].persist_mode` 是 `auto` / `manual` / `off` 之一时覆盖它（其他取值运行时会忽略；`neko-plugin check` 会把 `always` / `disabled` 报成 error，并提示改成 `auto` / `off`）。结果为 `"off"` 时（包括显式写 `persist_mode = "off"`），旧配置 `[plugin_checkpoint] freeze_mode` 为 `"auto"` 或 `"manual"` 时仍会覆盖它。另外，不论 `persist_mode` 是什么，冻结插件时都会保存一次状态。
+
+---
+
 ### `[plugin.shared]` — 读取别的插件的共享文件
 
 ```toml
@@ -249,6 +273,73 @@ permissions = ["state:read"]
 
 ---
 
+### `[permissions]` — 插件需要用户给的权限
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "查询天气服务", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { zh-CN = "按你常住的城市给出天气", en = "Use your home city for the forecast" } }
+"plugin_sdk.models:invoke" = { reason = "把天气写成一句提醒" }
+```
+
+> **当前状态：** 目前声明只用于 `neko-plugin check` / `check -r` 和代码做比对。安装时确认 `require` 权限、首次使用时询问 `ask` 权限，会在后续版本启用，现在还没有生效。
+
+- `require`：没有它插件就不能工作，将来用户会在安装时确认同意。
+- `ask`：将来插件第一次真正用到时再问用户。
+- 每一项都要写 `reason`。用户会在这项权限旁边看到它，请写给用户看。可以是一个字符串，也可以是“语言代码 = 文字”的表；没写的语言会回退到你写了的某一种。
+- `ask` 项如果在用户没在使用时也要用，可以加 `background = true`，同时写 `background_reason`。
+- `hosts`（只用于 `system.network:connect`）只展示给用户参考。
+
+`require` 还是 `ask`：
+
+- `require` 权限也包括后台使用，所以 `require` 项不写 `background`。
+- 插件在不是用户触发时也会用到的 `ask` 项（定时器、启动时、监听或事件回调、后台线程等），必须写 `background = true` 和 `background_reason`。
+- 从环境变量读配置、启动会继承插件环境变量的程序，一律算 `system.env:read`，归 `require`。
+- `system.network:listen` 一律归 `require`。
+
+权限 id：
+
+| id | 含义 |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | 读记忆 |
+| `plugin_sdk.main_agent.conversations:read` | 读对话 |
+| `plugin_sdk.main_agent.messages:push` | 向 N.E.K.O 推送消息、卡片或给回复附加内容 |
+| `plugin_sdk.models:invoke` | 调用 AI 模型 |
+| `system.network:connect` | 联网 |
+| `system.network:listen` | 在本机开放网络端口，让别的程序连进来 |
+| `system.fs:read` / `system.fs:write` | 读 / 写插件自己数据目录以外的文件 |
+| `system.process:spawn` | 启动其他程序 |
+| `system.env:read` | 读环境变量 |
+
+`neko-plugin check` 和 `check -r` 会把声明和对插件 Python 代码的扫描结果做比对：
+
+- 代码明确用到、但没有声明的权限是 error，`check -r`（也就是市场 CI）过不了。补上声明并写 reason 即可。目前完全没有 `[permissions]` 表的插件先给 warning，以后的版本会改成 error。
+- 扫描不能确定的可能用法（接收者解析不出来、只有 import、文件路径可能是插件自己的数据）是 warning。
+- 声明了但扫描没发现用到的，是 warning；动态用法扫不到是正常的。
+- 扫描看不透的代码（动态 import、名字是算出来的 `getattr`、`eval`/`exec`、`ctypes`、线程、`vendor/`、非 Python 文件）以 info 列出。“没发现”不代表证明了插件无害。
+
+这个顶层表和 `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` 里的 `permissions` 列表是两回事。
+
+#### 组件收窄
+
+组件可以在装饰器上写 `permissions=[...]`，表示自己只用到表里声明的一部分。支持的装饰器：`@plugin_entry`、`@llm_tool`、入口 hook（`@hook`、`@before_entry`、`@after_entry`、`@around_entry`、`@replace_entry`）、`@on_event`、`@custom_event`、`@timer_interval`，以及对应的 `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` 写法。`register_llm_tool`、`register_dynamic_entry` 和 `PluginRouter.add_entry` 也接受同名参数。
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- 默认不写：组件继承声明的全部权限。收窄只用来告诉用户「关掉某个权限后哪些功能用不了」，不会限制组件实际能做什么。
+- 插件注册组件时，每个收窄都必须是 `[permissions.require]` + `[permissions.ask]` 的子集。写了其他权限的组件不会被注册（入口不可调用、事件处理不会订阅），插件日志里会写明是哪个组件、为什么。发布前 `neko-plugin check` 会报同样的问题。
+- 入口 hook 的权限会并入它的 `target` 匹配到的每个入口。hook 写了未声明的权限，这些入口会被关闭。
+  - 注意：没写 `permissions=` 的 hook 等于需要声明的全部权限，它匹配到的入口也就跟着继承全部。只要有一个这样的 hook 挂在 `target="*"` 上，所有入口的收窄都会失效；入口做了收窄时，请给 hook 也写上 `permissions=`。
+- `PluginRouter` 可以用类属性 `permissions = [...]`（或 `PluginRouter(permissions=[...])`）给它的全部入口收窄；入口自己或 `add_entry(..., permissions=...)` 写了的，以自己的为准。对已挂上的 router 调 `add_entry` 时写了未声明的权限，会返回 `Err(PermissionDeniedError)`。
+- `@neko_plugin`、`@lifecycle`、`@message` 等非组件装饰器不接受 `permissions=`。
+
+---
+
 ### `[plugin_runtime]` 之后的自定义段 — 你的业务配置
 
 ```toml
@@ -265,7 +356,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-你可以定义任意多个自定义段，想叫什么名字都行。
+你可以定义任意多个自定义段，名字随意，但 `permissions` 除外：顶层的 `[permissions]` 表保留给权限声明（见上文）。已经用 `[permissions]` 存放自己业务配置的插件需要给这一段改名，否则 `neko-plugin check` 会把它当作无效的权限声明报错。
 
 ---
 
@@ -289,7 +380,7 @@ plugin/plugins/smart_notes/
 ```text
 <用户数据根目录>/plugins/smart_notes/
 ├── config/
-│   └── plugin.toml          ← 这个用户实际使用的配置
+│   └── plugin.toml          ← 这个用户的运行时配置副本
 ├── data/                    ← 运行时数据，self.data_path() 指向这里
 └── cache/                   ← 运行时缓存，self.cache_path() 指向这里
 

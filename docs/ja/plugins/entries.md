@@ -1,8 +1,8 @@
 # エントリーとパラメーター
 
-entry point は、ロード済み plugin が Plugin Manager、他 plugin、Agent（ネコクロー、NekoClaw）に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
+entry point は、ロード済み plugin が Plugin Manager、他 plugin、Agent（にゃんパワー、NekoPower）に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
 
-`plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録され、会話中にメインの対話モデルが呼びます。一方 Agent は、用件を任された後に plugin の runtime entry を選びます。
+`plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録され、会話中にメインの対話モデルが呼びます。一方 Agent は、用件を任された後に plugin の runtime entry を選びます。[`@plugin_entry` と `@llm_tool` の選び方](/ja/plugins/tool-calling#choosing-an-entry-type)を参照してください。
 
 Agent はまず plugin を絞り込み、その後で entry metadata を評価します。精選は実在する `plugin_id` と `entry_id` を正確に返す必要があります。ID が欠けている、または存在しない場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。entry がいつ、誰に呼ばれ、結果がどう扱われるかは、後述の「Agent が entry を呼ぶとき」を参照してください。
 
@@ -87,7 +87,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="Search", description="Search for content")
 async def search(self, params: SearchParams):
-    self.logger.info("Searching: {} (max {})", params.query, params.max_results)
+    self.logger.info("Searching (max %d)", params.max_results)  # 生の検索語はログに残さない
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -126,7 +126,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## AI に見せる戻り値を制御する
+## AI に見せる戻り値を制御する {#controlling-what-the-ai-sees}
 
 `llm_result_fields` で、AI が結果のどのフィールドを読むかを宣言します。戻り値には検索結果の生データのような大きな値が入りがちですが、AI に必要なのは要約だけ、という場合に使います。
 
@@ -195,7 +195,7 @@ async def search(self, query: str):
 
 **シリアライズした dict ではなく、モデルそのものを返してください。** 検査は返したデータからモデルの入力ルールでモデルを構築します。すでにシリアライズされたデータは元に戻せないことがあります。`finish(data=model)` はフィールド名を出力するため（エイリアスのあるフィールドは欠落と報告されます）、また `@field_serializer`、`exclude=True`、検証用とシリアライズ用で異なるエイリアスも形を変えます。そのようなモデルはインスタンスをそのまま返すか、`strict_output` を使わないでください。
 
-プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。`register_dynamic_entry()` と Router の `add_entry()` でも明示的な `output_schema` を宣言できます（公開のみ）。実行時の検査は `@plugin_entry` の Pydantic 戻り値型注釈からだけ行われます。`[[plugin.entries]]` テーブルに書いた `output_schema`/`strict_output` は無視されます（`neko-plugin validate` が警告します）。タスク Agent の capability gateway はこれを公開しません。
+プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。`register_dynamic_entry()` と Router の `add_entry()` でも明示的な `output_schema` を宣言できます（公開のみ）。実行時の検査は `@plugin_entry` の Pydantic 戻り値型注釈からだけ行われます。`[[plugin.entries]]` テーブルに書いた `output_schema`/`strict_output` は無視されます（`neko-plugin check` が警告します）。タスク Agent の capability gateway はこれを公開しません。
 
 ---
 
@@ -246,7 +246,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("Registered {} dynamic entries", len(commands))
+    self.logger.info("Registered %d dynamic entries", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):
@@ -264,7 +264,7 @@ def _make_handler(self, cmd_info):
 
 ## Agent が entry を呼ぶとき
 
-Agent（ネコクロー、NekoClaw）が entry を探すのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はありません。全体の流れは[エージェントシステム](/ja/architecture/agent-system)、plugin の絞り込み方は [plugin.toml](./plugin-toml) を参照してください。ID が `__llm_tool__` で始まる entry（`@llm_tool` が作るもの）はこの選択に加わらず、メインの対話モデルだけが呼びます。
+Agent（にゃんパワー、NekoPower）が entry を探すのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はありません。全体の流れは[エージェントシステム](/ja/architecture/agent-system)、plugin の絞り込み方は [plugin.toml](./plugin-toml) を参照してください。ID が `__llm_tool__` で始まる entry（`@llm_tool` が作るもの）はこの選択に加わらず、メインの対話モデルだけが呼びます。
 
 ### Agent に見える entry
 

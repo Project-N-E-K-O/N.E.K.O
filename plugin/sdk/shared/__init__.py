@@ -17,6 +17,7 @@ __all__ = [
     "i18n",
     "logging",
     "models",
+    "permissions",
     "runtime",
     "runtime_common",
     "storage",

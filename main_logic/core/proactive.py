@@ -143,6 +143,21 @@ class ProactiveMixin:
                         exc_info=True,
                     )
 
+    def invalidate_proactive_vision_rounds(self) -> None:
+        """End the screen access of proactive rounds already in flight.
+
+        The frontend sends this when Proactive Chat or its Screen Share option
+        turns proactive vision off while privacy mode still allows it. Those
+        switches only gate new requests in the browser; a round that already
+        started (a voice nudge with vision, a text round with a screenshot)
+        compares this epoch on every visual step and drops its screen once it
+        moved. Unlike a consent revocation, consent stays granted and no frame
+        cache is cleared: the switches do not govern manual screen sharing.
+        """
+        self._proactive_vision_revocation_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+        )
+
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
 
@@ -211,7 +226,7 @@ class ProactiveMixin:
             # Malformed flags payload — keep the current flags.
             pass
         # The two task tools follow the switches: they are offered to the
-        # model only while NekoClaw is on, so a session without it does not
+        # model only while NekoPower is on, so a session without it does not
         # pay for their definitions. Only an actual change touches the live
         # session's tool list.
         try:
@@ -229,6 +244,7 @@ class ProactiveMixin:
         *,
         language: str | None = None,
         allow_vision: bool = True,
+        vision_consent_epoch: int | None = None,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -243,13 +259,21 @@ class ProactiveMixin:
         source; the cached frame then stays out of this turn. Live consent is
         re-checked inside ``prompt_ephemeral`` on every visual step.
 
+        ``vision_consent_epoch`` is the revocation epoch the proactive request
+        started under (the HTTP entry); a revocation or a switch-off since then
+        already counts. None: start from the current epoch.
+
         Returns True if the text turn was sent, False if skipped.
         """
         # Same rule as the text path's consent checker: a revocation during
         # this nudge, including while it waits for the lock below, ends its
         # vision for good, even if consent is granted again before the frame
         # would be sent.
-        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
+        vision_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0)
+            if vision_consent_epoch is None
+            else vision_consent_epoch
+        )
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
@@ -502,6 +526,14 @@ class ProactiveMixin:
                 for timestamp in activity_times
             )
 
+        def _user_engaged_recently() -> bool:
+            now = time.time()
+            timestamp = self.last_user_engagement_time
+            return (
+                timestamp is not None
+                and now - float(timestamp) < min_idle_secs
+            )
+
         def _round_owned() -> bool:
             return ProactiveMixin._proactive_round_owned(self, round_id)
 
@@ -533,9 +565,13 @@ class ProactiveMixin:
         except Exception:
             # ws state introspection failed — fall through to the remaining gates.
             pass
+        auto_started_session = False
+        auto_start_activity_baseline = None
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+                auto_started_session = True
+                auto_start_activity_baseline = self.last_user_activity_time
             except asyncio.CancelledError as exc:
                 if not self._consume_start_retirement_cancellation(exc):
                     raise
@@ -566,7 +602,14 @@ class ProactiveMixin:
                 return False
             # UI-only engagement does not rotate the proactive SID, so repeat
             # the shared idle check after session startup and lock waiting.
-            if _user_active_recently():
+            if auto_started_session:
+                user_active_before_claim = _user_engaged_recently() or (
+                    self.last_user_activity_time != auto_start_activity_baseline
+                    and _user_active_recently()
+                )
+            else:
+                user_active_before_claim = _user_active_recently()
+            if user_active_before_claim:
                 logger.info(
                     "[%s] prepare_proactive_delivery: user active before claim",
                     self.lanlan_name,
@@ -1205,6 +1248,7 @@ class ProactiveMixin:
                     if not cb.get(DELIVERY_RETRACTED_KEY)
                 ]
                 if not voice_snapshot:
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 # NOTE: the callback instruction is built AFTER the media-stream
                 # gate + retraction re-filter below (right before inject), so it
@@ -1398,6 +1442,7 @@ class ProactiveMixin:
                     voice_snapshot
                 )
                 if not voice_snapshot:
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 # Callback delivery bypasses prompt_ephemeral(), so it owns the
                 # same external-TTS turn boundary. Rotate before persisting any

@@ -453,6 +453,10 @@
           : null,
       }));
       this._disposed = false;
+      this._cachedCsrfToken = '';
+      this._csrfTokenStale = false;
+      this._csrfFetchPromise = null;
+      this._csrfRefreshSeq = 0;
       this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
@@ -468,6 +472,7 @@
         1024,
       );
       this._pendingRequests = new Map();
+      this._pendingCsrfOperations = new Set();
       this._visionOperations = new Set();
       this._rawRequests = new Set();
       this._pendingStorageLockLimit = boundedPositiveInteger(
@@ -548,6 +553,7 @@
         enableTimeoutId: null,
         enableTimeoutResolve: null,
         mutationHeaders: null,
+        rejectionWarned: false,
         contextProvider: null,
         enableTimeoutMs: DEFAULT_LOG_ENABLE_TIMEOUT_MS,
         aggregateLimit: DEFAULT_LOG_AGGREGATE_LIMIT,
@@ -1277,8 +1283,20 @@
       const preserveOperations = options.preserveOperations instanceof Set
         ? options.preserveOperations
         : new Set(options.preserveOperations || []);
+      let hasPreservedCsrfWaiter = false;
+      for (const entry of this._pendingCsrfOperations) {
+        if (preserveOperations.has(entry.operation)) {
+          hasPreservedCsrfWaiter = true;
+          continue;
+        }
+        entry.cancel(normalizedReason);
+      }
       for (const entry of this._pendingRequests.values()) {
         if (preserveOperations.has(entry.operation)) continue;
+        if (entry.operation === 'page_config' && hasPreservedCsrfWaiter) continue;
+        if (entry.operation === 'page_config') {
+          this._csrfFetchPromise = null;
+        }
         entry.cancelReason = normalizedReason;
         try { entry.controller.abort(); } catch (_) { /* already aborted */ }
         entry.rejectCancellation?.(this._hostError(normalizedReason, 'Host request cancelled', { operation: entry.operation }));
@@ -1411,6 +1429,16 @@
     }
 
     _postWithCsrf(path, payload, options = {}) {
+      let deadlineMs = null;
+      if (Number.isFinite(options?.deadlineMs)) {
+        deadlineMs = options.deadlineMs;
+      } else {
+        const rawTimeoutMs = Number(options?.timeoutMs);
+        const budgetMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs !== 0
+          ? Math.max(1, rawTimeoutMs)
+          : DEFAULT_REQUEST_TIMEOUT_MS;
+        deadlineMs = Date.now() + budgetMs;
+      }
       return this.withCsrfRetry((headers) => {
         const body = jsonBody(payload, headers);
         // Include host identity and the actual token on every CSRF attempt.
@@ -1419,11 +1447,28 @@
             operation: options.operation,
           });
         }
+        let timeoutMs = options.timeoutMs;
+        if (deadlineMs != null) {
+          const remainingMs = deadlineMs - Date.now();
+          if (remainingMs <= 0) {
+            throw this._hostError('timeout', `${this.displayName} host request timed out`, {
+              operation: options.operation,
+            });
+          }
+          timeoutMs = remainingMs;
+        }
         return this._post(path, body, {
           ...options,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(options.keepalive ? { keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES } : {}),
           headers: { ...headers, ...(options.headers || {}) },
           credentials: options.credentials || 'same-origin',
         });
+      }, {
+        signal: options.signal,
+        operation: options.operation,
+        trackCancellation: true,
+        deadlineMs,
       });
     }
 
@@ -1658,7 +1703,7 @@
 
     requestDialogue(payload, options = {}) {
       this._requireGrantedCapability('dialogue', 'dialogue');
-      return this._post(this._gameEndpoint('chat'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('chat'), this._trustedRuntimePayload(payload), {
         timeoutMs: 60000,
         operation: 'dialogue',
         ...options,
@@ -1669,7 +1714,7 @@
       this._requireGrantedCapability('runtime', 'route_start');
       const trustedPayload = this._trustedRuntimePayload(payload);
       const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
-      const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
+      const response = await this._postWithCsrf(this._gameEndpoint('route/start'), trustedPayload, {
         timeoutMs: 60000,
         operation: 'route_start',
         ...options,
@@ -1708,7 +1753,7 @@
     async heartbeat(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_heartbeat');
       const trustedPayload = this._trustedRuntimePayload(payload);
-      const response = await this._post(this._gameEndpoint('route/heartbeat'), trustedPayload, {
+      const response = await this._postWithCsrf(this._gameEndpoint('route/heartbeat'), trustedPayload, {
         timeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
         operation: 'route_heartbeat',
         ...options,
@@ -1727,7 +1772,7 @@
         sessionId: String(trustedPayload.session_id || ''),
         routeInstanceId: String(trustedPayload.sdk_route_instance_id || ''),
       });
-      const response = await this._post(
+      const response = await this._postWithCsrf(
         this._gameEndpoint('route/drain'),
         trustedPayload,
         {
@@ -2066,7 +2111,7 @@
 
     submitVoiceTranscript(payload, options = {}) {
       this._requireGrantedCapability('voice-input', 'voice_transcript');
-      return this._post(this._gameEndpoint('route/voice-transcript'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('route/voice-transcript'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'voice_transcript',
         ...options,
@@ -2075,7 +2120,15 @@
 
     sendRealtimeContext(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'realtime_context');
-      return this._post(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
+      if (options.headers && csrfTokenFromHeaders(options.headers)) {
+        return this._post(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
+          timeoutMs: 15000,
+          operation: 'realtime_context',
+          ...options,
+          credentials: 'same-origin',
+        });
+      }
+      return this._postWithCsrf(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'realtime_context',
         ...options,
@@ -2085,7 +2138,7 @@
 
     mirrorAssistant(payload, options = {}) {
       this._requireGrantedCapability('dialogue', 'mirror_assistant');
-      return this._post(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'mirror_assistant',
         ...options,
@@ -2094,7 +2147,7 @@
 
     speak(payload, options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_speak');
-      return this._post(this._gameEndpoint('speak'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('speak'), this._trustedRuntimePayload(payload), {
         timeoutMs: 60000,
         operation: 'speak',
         ...options,
@@ -2108,7 +2161,7 @@
 
     mirrorSpeechOutput(payload, options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_mirror');
-      return this._post(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'speech_mirror',
         ...options,
@@ -2135,53 +2188,258 @@
       });
     }
 
-    getMutationHeaders() {
-      const headers = { 'Content-Type': 'application/json' };
-      const loadFromPageConfig = () => {
+    getMutationHeaders(options = {}) {
+      const forceRefresh = options?.forceRefresh === true;
+      if (forceRefresh) {
+        this._csrfRefreshSeq += 1;
+        this._csrfTokenStale = true;
+        this._csrfFetchPromise = null;
+      }
+      const requestSeq = this._csrfRefreshSeq;
+      const resolveSuperseded = () => {
+        if (this._cachedCsrfToken && !this._csrfTokenStale) {
+          return Promise.resolve({
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': this._cachedCsrfToken,
+          });
+        }
+        if (this._csrfFetchPromise) {
+          return this._csrfFetchPromise.then((cached) => ({ ...cached }));
+        }
+        return this.getMutationHeaders({ forceRefresh: false });
+      };
+      const loadFromPageConfig = (useCached = !forceRefresh) => {
+        if (useCached && this._cachedCsrfToken && !this._csrfTokenStale) {
+          return Promise.resolve({
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': this._cachedCsrfToken,
+          });
+        }
+        if (!forceRefresh && this._csrfFetchPromise) {
+          return this._csrfFetchPromise.then((cached) => ({ ...cached }));
+        }
         const lanlanName = this._window.lanlan_config?.lanlan_name || '';
-        return this.getPageConfig(lanlanName)
-          .then((response) => response.ok ? response.json() : null)
+        const pending = this.getPageConfig(lanlanName)
+          .then((response) => (response.ok ? response.json() : null))
           .then((config) => {
+            if (requestSeq !== this._csrfRefreshSeq) {
+              return resolveSuperseded();
+            }
+            const headers = { 'Content-Type': 'application/json' };
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
+              this._cachedCsrfToken = config.autostart_csrf_token;
+              this._csrfTokenStale = false;
             }
             return headers;
           })
-          .catch(() => headers);
+          .catch(() => (
+            requestSeq !== this._csrfRefreshSeq
+              ? resolveSuperseded()
+              : { 'Content-Type': 'application/json' }
+          ))
+          .then((headers) => {
+            if (this._csrfFetchPromise === pending) {
+              this._csrfFetchPromise = null;
+            }
+            return headers;
+          });
+        this._csrfFetchPromise = pending;
+        return pending.then((cached) => ({ ...cached }));
       };
       const security = this._window.nekoLocalMutationSecurity;
       if (security && typeof security.getMutationHeaders === 'function') {
         return Promise.resolve(security.getMutationHeaders())
           .then((mutationHeaders) => {
-            Object.assign(headers, mutationHeaders || {});
-            return csrfTokenFromHeaders(headers) ? headers : loadFromPageConfig();
+            if (requestSeq !== this._csrfRefreshSeq) {
+              return resolveSuperseded();
+            }
+            const headers = { 'Content-Type': 'application/json', ...(mutationHeaders || {}) };
+            const resolvedToken = csrfTokenFromHeaders(headers);
+            if (resolvedToken) {
+              this._cachedCsrfToken = resolvedToken;
+              this._csrfTokenStale = false;
+              return headers;
+            }
+            return loadFromPageConfig(false);
           })
-          .catch(loadFromPageConfig);
+          .catch(() => (
+            requestSeq !== this._csrfRefreshSeq
+              ? resolveSuperseded()
+              : loadFromPageConfig(false)
+          ));
       }
-      return loadFromPageConfig();
+      return loadFromPageConfig(!forceRefresh);
     }
 
     refreshMutationHeaders() {
       const security = this._window.nekoLocalMutationSecurity;
       if (security && typeof security.refreshToken === 'function') {
         return Promise.resolve(security.refreshToken())
-          .then(() => this.getMutationHeaders())
-          .catch(() => this.getMutationHeaders());
+          .then(() => this.getMutationHeaders({ forceRefresh: true }))
+          .catch(() => this.getMutationHeaders({ forceRefresh: true }));
       }
-      return this.getMutationHeaders();
+      return this.getMutationHeaders({ forceRefresh: true });
     }
 
-    async withCsrfRetry(requestWithHeaders) {
-      let response = await requestWithHeaders(await this.getMutationHeaders());
-      if (response.status !== 403) return response;
-      const errorPayload = await response.clone().json().catch(() => ({}));
-      if (errorPayload?.error_code !== 'csrf_validation_failed') return response;
-      response = await requestWithHeaders(await this.refreshMutationHeaders());
-      return response;
+    _createCsrfOperationTracker(operation = 'request') {
+      const entry = {
+        operation: String(operation || 'request'),
+        cancelReason: '',
+        waiters: new Set(),
+        cancel: (reason = 'cancelled') => {
+          if (!entry.cancelReason) {
+            entry.cancelReason = reason === 'disposed' ? 'disposed' : 'cancelled';
+          }
+          for (const notify of entry.waiters) {
+            notify(entry.cancelReason);
+          }
+          entry.waiters.clear();
+        },
+      };
+      this._pendingCsrfOperations.add(entry);
+      return entry;
+    }
+
+    _awaitWithAbortSignal(promise, signal, operation = 'request', csrfOpEntry = null, deadlineMs = null) {
+      if (csrfOpEntry?.cancelReason) {
+        return Promise.reject(
+          this._hostError(csrfOpEntry.cancelReason, `${this.displayName} host request was cancelled`, { operation }),
+        );
+      }
+      if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+        return Promise.reject(
+          this._hostError('timeout', `${this.displayName} host request timed out`, { operation }),
+        );
+      }
+      if (!signal && !csrfOpEntry && deadlineMs == null) return promise;
+      if (signal?.aborted) {
+        return Promise.reject(
+          this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }),
+        );
+      }
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let timeoutId = null;
+        let onAbort;
+        let onHostCancel;
+        const cleanup = () => {
+          if (timeoutId != null) {
+            this._window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          signal?.removeEventListener('abort', onAbort);
+          csrfOpEntry?.waiters.delete(onHostCancel);
+        };
+        const finishResolve = (value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(value);
+        };
+        const finishReject = (err) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        };
+        onAbort = () => {
+          finishReject(this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }));
+        };
+        onHostCancel = (reason) => {
+          finishReject(this._hostError(reason || 'cancelled', `${this.displayName} host request was cancelled`, { operation }));
+        };
+        if (deadlineMs != null) {
+          const remainingMs = Math.max(1, deadlineMs - Date.now());
+          timeoutId = this._window.setTimeout(() => {
+            finishReject(this._hostError('timeout', `${this.displayName} host request timed out`, { operation }));
+          }, remainingMs);
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        csrfOpEntry?.waiters.add(onHostCancel);
+        Promise.resolve(promise).then(finishResolve, finishReject);
+      });
+    }
+
+    async withCsrfRetry(requestWithHeaders, options = {}) {
+      const signal = options?.signal;
+      const operation = String(options?.operation || 'request');
+      const trackCancellation = options?.trackCancellation === true;
+      const deadlineMs = Number.isFinite(options?.deadlineMs) ? options.deadlineMs : null;
+      if (this._disposed) {
+        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, { operation });
+      }
+      const csrfOpEntry = this._createCsrfOperationTracker(operation);
+      try {
+        const initialHeaders = await this._awaitWithAbortSignal(
+          this.getMutationHeaders(),
+          signal,
+          operation,
+          csrfOpEntry,
+          deadlineMs,
+        );
+        if (csrfOpEntry.cancelReason || signal?.aborted) {
+          throw this._hostError(
+            csrfOpEntry.cancelReason || 'cancelled',
+            `${this.displayName} host request was cancelled`,
+            { operation },
+          );
+        }
+        if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+          throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
+        }
+        let response = await requestWithHeaders(initialHeaders);
+        if (csrfOpEntry.cancelReason || signal?.aborted) {
+          throw this._hostError(
+            csrfOpEntry.cancelReason || 'cancelled',
+            `${this.displayName} host request was cancelled`,
+            { operation },
+          );
+        }
+        if (response.status !== 403) return response;
+        const errorPayload = await response.clone().json().catch(() => ({}));
+        if (csrfOpEntry.cancelReason || signal?.aborted) {
+          throw this._hostError(
+            csrfOpEntry.cancelReason || 'cancelled',
+            `${this.displayName} host request was cancelled`,
+            { operation },
+          );
+        }
+        if (errorPayload?.error_code !== 'csrf_validation_failed') return response;
+        if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+          throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
+        }
+        if (signal || trackCancellation || deadlineMs != null) {
+          const refreshedHeaders = await this._awaitWithAbortSignal(
+            this.refreshMutationHeaders(),
+            signal,
+            operation,
+            csrfOpEntry,
+            deadlineMs,
+          );
+          if (csrfOpEntry.cancelReason || signal?.aborted) {
+            throw this._hostError(
+              csrfOpEntry.cancelReason || 'cancelled',
+              `${this.displayName} host request was cancelled`,
+              { operation },
+            );
+          }
+          if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+            throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
+          }
+          response = await requestWithHeaders(refreshedHeaders);
+        } else {
+          response = await requestWithHeaders(await this.refreshMutationHeaders());
+        }
+        return response;
+      } finally {
+        this._pendingCsrfOperations.delete(csrfOpEntry);
+        csrfOpEntry.waiters.clear();
+      }
     }
 
     sendRealtimeContextWithCsrf(payload) {
-      return this.withCsrfRetry((headers) => this.sendRealtimeContext(payload, { headers }));
+      return this.sendRealtimeContext(payload);
     }
 
     startSpeechPlaybackBridge(options = {}) {
@@ -2793,7 +3051,34 @@
           keepalive: true,
           signal: controller.signal,
         }))
-        .then((response) => item.resolve(response))
+        .then(async (response) => {
+          if (!response || response.ok === false) {
+            return { ok: false, status: response?.status, reason: 'http_error' };
+          }
+          if (typeof response.json === 'function') {
+            try {
+              const target = typeof response.clone === 'function' ? response.clone() : response;
+              const data = await target.json();
+              if (data && data.ok === false) {
+                return { ok: false, status: response.status, reason: data.reason || 'backend_rejected', data };
+              }
+            } catch (_) {
+              // Non-JSON 2xx response still counts as delivered transport response.
+            }
+          }
+          return response;
+        })
+        .then((result) => {
+          if (result && result.ok === false && !this._logger.rejectionWarned) {
+            this._logger.rejectionWarned = true;
+            this._logger.originalWarn?.call(
+              this._console,
+              `[${this.displayName}] [SessionLog] 联合调试日志被后端拒绝`,
+              result,
+            );
+          }
+          item.resolve(result);
+        })
         .catch((error) => item.resolve({ ok: false, reason: 'request_failed', error }))
         .finally(() => {
           this._window.clearTimeout(timeoutId);
@@ -3311,6 +3596,7 @@
       logger.enableInFlight = false;
       logger.enablePromise = null;
       logger.mutationHeaders = null;
+      logger.rejectionWarned = false;
       this._cancelLoggerEnableTimeout();
     }
 
@@ -3325,24 +3611,10 @@
 
     enableLoggerAfterRouteStart() {
       const logger = this._logger;
-      const generation = logger.enableGeneration;
-      if (this._hasLoggerSendCredentials()) {
-        const security = this._window.nekoLocalMutationSecurity;
-        if (!logger.mutationHeaders && security && typeof security.peekCachedToken === 'function') {
-          try {
-            const token = security.peekCachedToken();
-            if (token) {
-              logger.mutationHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
-            }
-          } catch (_) { /* continue with asynchronous credential lookup */ }
-        }
-        if (csrfTokenFromHeaders(logger.mutationHeaders || {})) {
-          logger.enabled = true;
-          return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
-        }
-      }
+      if (logger.enabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
       if (logger.enableInFlight && logger.enablePromise) return logger.enablePromise;
       logger.enableInFlight = true;
+      const generation = logger.enableGeneration;
       return this._startLoggerEnablePromise(
         this.getMutationHeaders().then((headers) => {
           if (logger.enableGeneration !== generation) return { ok: false, reason: 'stale_enable_result' };
@@ -3351,7 +3623,8 @@
             return { ok: false, reason: 'missing_csrf_token' };
           }
           logger.mutationHeaders = debugLogMutationHeaders;
-          return { ok: true, enableReason: 'route_start_send_gate' };
+          return this._enableLogWithHeaders('route_start', debugLogMutationHeaders)
+            .then((result) => ({ ...(result || {}), enableReason: 'route_start_send_gate' }));
         }),
         generation,
       );
@@ -3613,7 +3886,15 @@
           operation: 'route_end',
         });
       }
-      let body = JSON.stringify(this._trustedRuntimePayload(parsedPayload));
+      const cachedCsrfToken = (
+        typeof this._window.nekoLocalMutationSecurity?.peekCachedToken === 'function'
+          ? this._window.nekoLocalMutationSecurity.peekCachedToken()
+          : ''
+      ) || this._cachedCsrfToken || '';
+      let fallbackPayloadObj = this._trustedRuntimePayload(parsedPayload);
+      let body = JSON.stringify(
+        cachedCsrfToken ? { ...fallbackPayloadObj, _csrf_token: cachedCsrfToken } : fallbackPayloadObj
+      );
       void this.flushLogger({ final: true });
       if (options.signal?.aborted) {
         throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, {
@@ -3621,7 +3902,7 @@
         });
       }
       const sendEndBeacon = () => {
-        if (!options.useBeacon || !this._navigator.sendBeacon) return false;
+        if (!options.useBeacon || !this._navigator.sendBeacon || !cachedCsrfToken) return false;
         try {
           return this._navigator.sendBeacon(
             this._gameEndpoint('end'),
@@ -3659,7 +3940,10 @@
           essential.reason = essential.reason.slice(0, ROUTE_END_ESSENTIAL_REASON_CHARS);
         }
         const shed = () => {
-          body = JSON.stringify(this._trustedRuntimePayload(essential));
+          fallbackPayloadObj = this._trustedRuntimePayload(essential);
+          body = JSON.stringify(
+            cachedCsrfToken ? { ...fallbackPayloadObj, _csrf_token: cachedCsrfToken } : fallbackPayloadObj
+          );
           return utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES;
         };
         if (!shed()) {
@@ -3682,30 +3966,78 @@
       // postgame entirely until server-side expiry. Dropping keepalive costs
       // nothing on the awaited path and is strictly better than certain failure
       // on the unload path.
-      const response = await this._post(this._gameEndpoint('end'), body, {
-        // Page-exit keeps keepalive unconditionally: the body was already shed
-        // above if it was oversized, and without keepalive an unloading document
-        // cancels the request outright. The awaited path drops keepalive instead,
-        // where the caller is still there to see the result and an oversized body
-        // would otherwise reject before leaving the page.
-        // Page exit keeps keepalive only once the body actually fits: the shed
-        // above guarantees that, and a keepalive request over the shared 64 KiB
-        // quota fails before it leaves the page -- the exact loss keepalive is
-        // there to prevent. The awaited path drops keepalive instead, where the
-        // caller is still around to see the result.
-        keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
-        operation: 'route_end',
-        // Honour a caller-supplied deadline, the way every other networked
-        // method here does via `...options`. This one enumerates explicitly on
-        // purpose (so `operation`/`keepalive`/`headers` cannot be overridden),
-        // which silently dropped the `timeoutMs` the SDK does forward and the
-        // .d.ts does advertise. Clamped rather than passed through: end carries
-        // keepalive and is deliberately preserved across dispose, so a game must
-        // not be able to stretch it to minutes. Any invalid value degrades to
-        // exactly today's 8000.
-        timeoutMs: boundedPositiveInteger(options.timeoutMs, 8000, 30000),
-        signal: options.signal,
-      });
+      const endTimeoutMs = boundedPositiveInteger(options.timeoutMs, 8000, 30000);
+      const endDeadlineMs = Date.now() + endTimeoutMs;
+      let response;
+      if (options.useBeacon) {
+        // Dispatch the unload fallback synchronously before any `await` so an
+        // immediate `dispose({ preservePendingOperations: ['route_end'] })`
+        // preserves this in-flight request instead of rejecting it.
+        const initialHeaders = cachedCsrfToken ? { 'X-CSRF-Token': cachedCsrfToken } : {};
+        const endRequestPromise = this._post(this._gameEndpoint('end'), body, {
+          headers: initialHeaders,
+          credentials: 'same-origin',
+          keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
+          operation: 'route_end',
+          timeoutMs: endTimeoutMs,
+          signal: options.signal,
+        });
+        response = await endRequestPromise;
+        if (!this._disposed && !options.signal?.aborted && response.status === 403) {
+          const errPayload = await response.clone().json().catch(() => ({}));
+          if (errPayload?.error_code === 'csrf_validation_failed') {
+            if (endDeadlineMs - Date.now() <= 0) {
+              throw this._hostError('timeout', `${this.displayName} host request timed out after ${endTimeoutMs}ms`, {
+                operation: 'route_end',
+              });
+            }
+            const csrfOpEntry = this._createCsrfOperationTracker('route_end');
+            let refreshedHeaders;
+            try {
+              refreshedHeaders = await this._awaitWithAbortSignal(
+                this.refreshMutationHeaders(),
+                options.signal,
+                'route_end',
+                csrfOpEntry,
+                endDeadlineMs,
+              );
+            } finally {
+              this._pendingCsrfOperations.delete(csrfOpEntry);
+              csrfOpEntry.waiters.clear();
+            }
+            const refreshedToken = csrfTokenFromHeaders(refreshedHeaders);
+            const retryBody = JSON.stringify(
+              refreshedToken
+                ? { ...fallbackPayloadObj, _csrf_token: refreshedToken }
+                : fallbackPayloadObj
+            );
+            if (!this._disposed && !csrfOpEntry.cancelReason && !options.signal?.aborted) {
+              const retryTimeoutMs = endDeadlineMs - Date.now();
+              if (retryTimeoutMs <= 0) {
+                throw this._hostError('timeout', `${this.displayName} host request timed out after ${endTimeoutMs}ms`, {
+                  operation: 'route_end',
+                });
+              }
+              response = await this._post(this._gameEndpoint('end'), retryBody, {
+                headers: refreshedHeaders,
+                credentials: 'same-origin',
+                keepalive: utf8ByteLength(retryBody) <= KEEPALIVE_BODY_BYTES,
+                operation: 'route_end',
+                timeoutMs: retryTimeoutMs,
+                signal: options.signal,
+              });
+            }
+          }
+        }
+      } else {
+        response = await this._postWithCsrf(this._gameEndpoint('end'), fallbackPayloadObj, {
+          keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
+          operation: 'route_end',
+          timeoutMs: endTimeoutMs,
+          deadlineMs: endDeadlineMs,
+          signal: options.signal,
+        });
+      }
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
       const projected = this._projectRouteEndResponse(data);
       if (response.ok) {

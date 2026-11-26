@@ -63,13 +63,23 @@ def test_prefix_claim_rejects_forged_end_cursor(field):
 
 @pytest.mark.asyncio
 async def test_default_gate_can_confirm_delivery_beyond_record_capacity():
-    gate = _gate(_ScoreBackend(), held_bytes=2_000)
+    # This covers record eviction, not scoring deadlines. With the default 1 s
+    # deadline, one stalled scoring round out of 130 on a loaded runner turned
+    # into an UNAVAILABLE gap (the gate's correct fail-closed result), so no
+    # audio was enqueued and the ENQUEUED compare-and-set below failed. Push
+    # the deadline far out; the pytest-timeout limit still catches a hang.
+    gate = _gate(_ScoreBackend(), held_bytes=2_000, deadline=60.0)
     stream = PrewireStreamKey("session", 1)
     gate.append_pcm(stream, start_sample=0, pcm16=b"\x01\x00" * (4 * 130 + 4))
     try:
         for number in range(130):
             submission = gate.submit_interval(_spec(number + 1, start=number * 4))
             plan = await gate.resolve(submission)
+            record = gate.get_interval_record(submission.identity)
+            assert plan.ledger_plan.releases, (
+                f"round {number} released no audio: "
+                f"{record.decision.value} ({record.decision_reason})"
+            )
             gate.claim(plan)
             gate.advance_delivery(
                 submission.identity,

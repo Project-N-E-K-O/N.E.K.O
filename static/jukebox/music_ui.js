@@ -98,6 +98,30 @@
         musicBar.classList.add(`is-${state}`);
     };
 
+    const escapeAPlayerHtml = (text) => {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+
+    const syncAPlayerListText = (player, tracks) => {
+        const container = player && player.container;
+        if (!container || typeof container.querySelectorAll !== 'function' || !Array.isArray(tracks)) return;
+        const rows = container.querySelectorAll('.aplayer-list li');
+        for (let i = 0; i < rows.length && i < tracks.length; i += 1) {
+            const row = rows[i];
+            const track = tracks[i] || {};
+            const titleEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-title') : null;
+            const authorEl = typeof row.querySelector === 'function' ? row.querySelector('.aplayer-list-author') : null;
+            if (titleEl) titleEl.textContent = track.name === null || track.name === undefined ? '' : String(track.name);
+            if (authorEl) authorEl.textContent = track.artist === null || track.artist === undefined ? '' : String(track.artist);
+        }
+    };
+
     // --- CSS 注入（独立于 APlayer 库加载，follower 镜像 bar 也需要） ---
     const injectCSS = (path) => new Promise((res) => {
         if (!path) return res();
@@ -2853,7 +2877,12 @@
                     isCurrentRequest: () => currentToken === latestMusicRequestToken && !getMusicPlaybackCancellationReason(playbackOptions),
                     mutex: true, volume: MUSIC_CONFIG.defaultVolume,
                     listFolded: true, order: 'normal',
-                    audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: displayCoverUrl }]
+                    audio: [{
+                        name: escapeAPlayerHtml(trackInfo.name || ''),
+                        artist: escapeAPlayerHtml(trackInfo.artist || ''),
+                        url: trackInfo.url,
+                        cover: displayCoverUrl
+                    }]
                 };
 
                 let aplayerInstance = null;
@@ -2874,6 +2903,7 @@
                 if (!aplayerInstance) throw new Error("APlayer init failed");
 
                 localPlayer = aplayerInstance;
+                syncAPlayerListText(localPlayer, [{ name: trackInfo.name || '', artist: trackInfo.artist || '' }]);
                 localPlayer._latestToken = currentToken;
                 localPlayer._musicPlaybackReportContext = playbackReportContext;
                 window.aplayer = localPlayer;
@@ -3296,8 +3326,14 @@
                 localPlayer._loadError = false;
                 if (localPlayer.list) {
                     localPlayer.list.clear();
-                    localPlayer.list.add([{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: displayCoverUrl }]);
+                    localPlayer.list.add([{
+                        name: escapeAPlayerHtml(trackInfo.name || ''),
+                        artist: escapeAPlayerHtml(trackInfo.artist || ''),
+                        url: trackInfo.url,
+                        cover: displayCoverUrl
+                    }]);
                     localPlayer.list.switch(0);
+                    syncAPlayerListText(localPlayer, [{ name: trackInfo.name || '', artist: trackInfo.artist || '' }]);
                 }
                 updatePlayBtnState(false);
                 setMusicBarVisualState(musicBar, 'loading');

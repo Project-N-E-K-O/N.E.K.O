@@ -18,9 +18,13 @@ def _establish_free_config(page: Page):
     """POST a clean free-service configuration directly as the baseline."""
     result = page.evaluate(
         """async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const r = await fetch('/api/config/core_api', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({
                     coreApiKey: 'free-access', coreApi: 'free',
                     assistApi: 'free', enableCustomApi: false,
@@ -33,7 +37,7 @@ def _establish_free_config(page: Page):
 
 
 def _open_free_settings(page: Page, server: str):
-    page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     page.goto(f"{server}/api_key")
     expect(page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     _establish_free_config(page)
@@ -110,8 +114,13 @@ def test_backend_ignores_empty_core_api_on_save(mock_page: Page, running_server:
 
     result = mock_page.evaluate(
         """async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const saveResp = await fetch('/api/config/core_api', {
-                method:'POST', headers:{'Content-Type':'application/json'},
+                method:'POST',
+                headers:{
+                    'Content-Type':'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({coreApiKey:'', coreApi:'   ', assistApi:'   ', enableCustomApi:true})
             });
             const saveJson = await saveResp.json();
@@ -136,8 +145,13 @@ def test_backend_preserves_free_provider_before_key_validation(
 
     result = mock_page.evaluate(
         """async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const saveResp = await fetch('/api/config/core_api', {
-                method:'POST', headers:{'Content-Type':'application/json'},
+                method:'POST',
+                headers:{
+                    'Content-Type':'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({coreApiKey:'', coreApi:'   ', assistApi:'   ', enableCustomApi:false})
             });
             const saveJson = await saveResp.json();
@@ -161,8 +175,13 @@ def test_backend_requires_key_when_switching_free_core_to_qwen(
 
     result = mock_page.evaluate(
         """async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const saveResp = await fetch('/api/config/core_api', {
-                method:'POST', headers:{'Content-Type':'application/json'},
+                method:'POST',
+                headers:{
+                    'Content-Type':'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({coreApiKey:'', coreApi:'qwen', enableCustomApi:false})
             });
             const saveJson = await saveResp.json();

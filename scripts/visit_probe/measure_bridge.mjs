@@ -36,6 +36,8 @@ const out = await evaluate(`(async () => {
   window.__probeCheckEach = ${process.argv[4] === 'check' ? 'true' : 'false'};
   bridge.onStateChange({ type: 'visit_state_change', action: 'pending', side: 'guest', visit_id: VID });
   let result;
+  let trackObserverActive = true;
+  let rv = null;
   // 任何一步失败都要收掉探针 iframe 与取帧状态，否则会留在 Pet 页上影响下一次测量
   try {
   const frame = bridge._state.frame;
@@ -62,6 +64,28 @@ const out = await evaluate(`(async () => {
     return ok;
   };
   const track = ctl.packer.ensureTrack();
+  let trackFrames = 0;
+  rv = cw.document.createElement('video');
+  const hasRvfc = typeof rv.requestVideoFrameCallback === 'function';
+  rv.muted = true;
+  rv.playsInline = true;
+  rv.autoplay = true;
+  rv.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+  rv.srcObject = new cw.MediaStream([track]);
+  cw.document.body.appendChild(rv);
+  if (hasRvfc) {
+    const onRvfc = (_now, meta) => {
+      if (!trackObserverActive) return;
+      if (meta && typeof meta.presentedFrames === 'number') {
+        trackFrames = meta.presentedFrames;
+      } else {
+        trackFrames += 1;
+      }
+      rv.requestVideoFrameCallback(onRvfc);
+    };
+    rv.requestVideoFrameCallback(onRvfc);
+  }
+  rv.play().catch(() => {});
   release();
   await sleep(300);
   const t0 = performance.now();
@@ -76,7 +100,7 @@ const out = await evaluate(`(async () => {
       let s = 0; for (let k = 0; k < img.length; k += 16) s += img[k];
       checked++; if (s === 0) blank++;
     }
-    samples.push([Math.round(performance.now() - t0), ctl.packer.requestFrames, +ctl.packer.packMsTotal.toFixed(2), track.frames]);
+    samples.push([Math.round(performance.now() - t0), ctl.packer.requestFrames, +ctl.packer.packMsTotal.toFixed(2), hasRvfc ? trackFrames : null]);
     await sleep(1000);
   }
   const st = bridge._state;
@@ -84,6 +108,10 @@ const out = await evaluate(`(async () => {
     hiddenSent: st.hiddenSent, trackState: track.readyState, samples, blank, checked,
     iframeStyle: frame.style.cssText, liveActive: window.live2dManager && window.live2dManager._visitCaptureActive };
   } finally {
+    trackObserverActive = false;
+    if (rv) {
+      try { rv.pause(); rv.srcObject = null; rv.remove(); } catch (_) {}
+    }
     try {
       bridge.onStateChange({ type: 'visit_state_change', action: 'ended', side: 'guest', visit_id: VID });
     } catch (err) {
@@ -99,7 +127,12 @@ const s = out.samples;
 const perSecond = s.slice(1).map((x, i) => x[1] - s[i][1]);
 const total = s[s.length - 1][1] - s[0][1];
 const elapsed = (s[s.length - 1][0] - s[0][0]) / 1000;
+const trackSummary = (s.length >= 2 && s[0][3] !== null && elapsed > 0) ? {
+  trackFirstSecond: s[1][3] - s[0][3],
+  trackPerSecond: s.slice(1).map((x, i) => x[3] - s[i][3]),
+  trackAvgFps: +((s[s.length - 1][3] - s[0][3]) / elapsed).toFixed(2),
+} : {};
 out.summary = { label, firstSecond: s[1][1] - s[0][1], perSecond, avgFps: +(total / elapsed).toFixed(2),
-  packMsAvg: +((s[s.length - 1][2] - s[0][2]) / Math.max(1, total)).toFixed(3) };
+  packMsAvg: +((s[s.length - 1][2] - s[0][2]) / Math.max(1, total)).toFixed(3), ...trackSummary };
 console.log(JSON.stringify(out, null, 1));
 ws.close();

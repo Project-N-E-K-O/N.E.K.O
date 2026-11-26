@@ -141,20 +141,26 @@ describe('hosted ui runtime', () => {
     expect(postMessage).not.toHaveBeenCalled()
   })
 
-  it('uses the document timeout error contract when the host does not respond', async () => {
+  it('uses the document timeout error contract and sends cancel when the host does not respond', async () => {
     vi.useFakeTimers()
+    const messages: any[] = []
     Object.defineProperty(window, 'parent', {
-      value: { postMessage: vi.fn() },
+      value: { postMessage: (message: any) => messages.push(message) },
       configurable: true,
     })
     const promise = ui.api.parseDocument(
       new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
       { timeoutMs: 100 },
     )
+    const requestId = messages[0]?.requestId
     const rejection = expect(promise).rejects.toMatchObject({ code: 'document_parse_timeout' })
 
     await vi.advanceTimersByTimeAsync(100)
     await rejection
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
     vi.useRealTimers()
   })
 

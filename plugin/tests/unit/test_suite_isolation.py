@@ -62,3 +62,14 @@ def test_the_storage_root_env_guard_wraps_every_test(request):
     for name in ("pytest_runtest_setup", "pytest_runtest_teardown", "pytest_sessionstart"):
         functions = [impl.function for impl in getattr(hook, name).get_hookimpls()]
         assert getattr(storage_root_env_guard, name) in functions, name
+
+
+def test_plugin_pytest_ini_does_not_hardcode_relative_basetemp():
+    import configparser
+    from pathlib import Path
+
+    ini_path = Path(__file__).resolve().parents[1] / "pytest.ini"
+    parser = configparser.ConfigParser()
+    parser.read(ini_path, encoding="utf-8")
+    addopts = parser.get("pytest", "addopts", fallback="")
+    assert "--basetemp" not in addopts

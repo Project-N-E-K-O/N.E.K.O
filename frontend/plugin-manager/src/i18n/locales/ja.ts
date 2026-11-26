@@ -1,18 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { marketFeedbackMessages } from '../market-feedback'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/ja'
+import modelApiMessages from '../model-api/ja'
+import modelBindingsMessages from '../model-bindings/ja'
+import marketFeedbackMessages from '../market-feedback/ja'
+import authoringMessages from '../authoring/ja'
+import powerMessages from '../power/ja'
 
 /**
  * 日本語言語パック
  */
 export default {
-  pluginConsent: pluginConsentMessages['ja'],
-  authoring: authoringMessages['ja'],
-  marketFeedback: marketFeedbackMessages['ja'],
-  modelApi: modelApiMessages['ja'],
-  modelBindings: modelBindingsMessages['ja'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "言語を選択",
     surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
@@ -26,6 +28,7 @@ export default {
 
     loading: '読み込み中...',
     refresh: '更新',
+    retry: '再試行',
     search: '検索',
     filter: 'フィルター',
     reset: 'リセット',
@@ -738,7 +741,9 @@ export default {
       exitFocus: 'フォーカス終了',
       exitFocusHint: 'フォーカスモードを終了（Esc）',
       controlError: 'プラグイン UI コントロールエラー',
-      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
+      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。',
+      parseDocumentConfirm: 'プラグイン「{plugin}」にドキュメント「{file}」の解析を許可しますか？',
+      unsafeTargetBlocked: '安全でない遷移先のためブロックしました'
     }
   },
   package: {
@@ -824,6 +829,22 @@ export default {
       verify: '検証',
       install: 'インストール',
       analyze: '解析'
+    },
+    messages: {
+      selectPluginToBuild: '先にビルドするプラグインを選択してください。',
+      bundleRequiresTwoPlugins: 'バンドルには少なくとも 2 つのプラグインを選択する必要があります。',
+      bundleBuildFailedWithError: 'バンドルのビルドに失敗しました：{error}',
+      bundleBuildCompleted: 'バンドルのビルドが完了しました。',
+      bundleBuildPartialFailed: 'バンドルのビルドで {count} 件失敗しました。',
+      buildFailedWithError: 'ビルドに失敗しました：{error}',
+      buildCompletedWithFailures: 'ビルド完了：成功 {built} 件、失敗 {failed} 件。',
+      buildCompleted: 'ビルド完了：成功 {built} 件。',
+      inspectCompleted: 'パッケージの検査が完了しました。',
+      verifyPassed: 'パッケージの検証に合格しました。',
+      verifyFailed: 'パッケージの検証に失敗しました。',
+      selectAtLeastOnePlugin: '少なくとも 1 つのプラグインを選択してください。',
+      analyzeCompleted: '解析が完了しました。',
+      analyzeFailedWithError: '解析に失敗しました：{error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -1041,6 +1062,8 @@ export default {
     pluginBuilt: 'プラグインをパッケージ化しました: {packageName}',
     pluginDeleted: 'プラグインを削除しました',
     pluginDeletedBuiltinRestartFailed: 'プラグイン {plugin} は削除されましたが、復元した内蔵版を起動できませんでした：{error}',
+    pluginDeletedPermissionsNotCleared: 'プラグイン {plugin} は削除されましたが、権限記録ファイルが破損しているか新しいバージョンのものであるため、残っている可能性のある許可を消去できませんでした。ファイルが再び読み取れるようになると、それらの許可が有効なままになる可能性があります。',
+    pluginsDeletedPermissionsNotCleared: 'プラグイン {plugins} は削除されましたが、権限記録ファイルが破損しているか新しいバージョンのものであるため、残っている可能性のある許可を消去できませんでした。ファイルが再び読み取れるようになると、それらの許可が有効なままになる可能性があります。',
     startFailed: '起動に失敗しました',
     autoStartEnabled: '自動起動を有効にしました',
     autoStartDisabled: '自動起動を無効にしました',
@@ -1102,7 +1125,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O プラグイン管理'
+    titleSuffix: 'N.E.K.O にゃんパワー'
   },
   tutorial: {
     yuiGuide: {

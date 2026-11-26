@@ -164,6 +164,25 @@ export async function stubCorePluginManagerApis(page: Page) {
     route.fulfill({ json: { csrf_token: 'e2e-csrf-token' } })
   )
   await page.route('**/health', (route) => route.fulfill({ json: { status: 'ok' } }))
+  // What the home page reads of the task agents: all of it switched off, nobody at work.
+  await page.route('**/console/switches', (route) =>
+    route.fulfill({
+      json: {
+        success: true,
+        switches: { enabled: false, flags: {}, gate: { ready: true }, capabilities: {}, model_images: { sees: true } },
+      },
+    })
+  )
+  await page.route('**/console/board*', (route) =>
+    route.fulfill({ json: { success: true, revision: 'e2e', projects: [], loose: [] } })
+  )
+  // What happened among them: nothing yet.
+  await page.route('**/console/timeline*', (route) =>
+    route.fulfill({ json: { success: true, entries: [], next: 'e0.m0', more: false, latest: 'e0.m0' } })
+  )
+  await page.route('**/console/timeline/start', (route) =>
+    route.fulfill({ json: { success: true, after: '', latest: 'e0.m0' } })
+  )
   await page.route('**/plugins?*', (route) => route.fulfill({ json: { plugins: [], message: '' } }))
   await page.route('**/plugin/status', (route) => route.fulfill({ json: { plugins: {} } }))
   await page.route('**/server/info', (route) =>

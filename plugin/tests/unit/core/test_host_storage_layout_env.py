@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,18 @@ class _FakeProcess:
 
     def start(self) -> None:
         self.started = True
+
+
+def _patch_host_thread(monkeypatch: pytest.MonkeyPatch, thread_cls: type) -> None:
+    """Replace ``threading.Thread`` as seen by the host module only.
+
+    Patching the attribute on the real ``threading`` module would also catch
+    the threads asyncio itself starts (e.g. when ``asyncio.run`` shuts down
+    the loop's default executor).
+    """
+    patched = SimpleNamespace(**vars(threading))
+    patched.Thread = thread_cls
+    monkeypatch.setattr(host_module, "threading", patched)
 
 
 @pytest.mark.plugin_unit
@@ -324,7 +337,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
-    monkeypatch.setattr(host_module.threading, "Thread", _ImmediateThread)
+    _patch_host_thread(monkeypatch, _ImmediateThread)
     if resolve_failure:
         from plugin.server.infrastructure import config_resolver
 
@@ -720,7 +733,7 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
-    monkeypatch.setattr(host_module.threading, "Thread", _RecordingThread)
+    _patch_host_thread(monkeypatch, _RecordingThread)
 
     host_module._plugin_process_runner(
         plugin_id="demo",

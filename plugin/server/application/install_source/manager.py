@@ -226,7 +226,7 @@ def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def _normalise_path_for_compare(p: Path) -> tuple[str, Path]:
+def _normalise_path_for_compare(p: Path, *, already_resolved: bool = False) -> tuple[str, Path]:
     """Normalise a path for cross-platform prefix comparison.
 
     Returns ``(comparable_str, original_resolved_path)`` — the str form is
@@ -238,7 +238,9 @@ def _normalise_path_for_compare(p: Path) -> tuple[str, Path]:
     so callers can still pull ``.parts`` from it for the final directory name.
     """
 
-    resolved = p.resolve(strict=False)
+    # already_resolved: the caller resolved ``p`` itself and needs this very
+    # location, not wherever its links point by now.
+    resolved = p if already_resolved else p.resolve(strict=False)
     text = str(resolved)
     # Unicode: macOS APFS/HFS+ uses NFD internally; Windows and Linux see
     # whatever the user typed. Normalising to NFC picks a canonical form
@@ -257,6 +259,7 @@ def classify_plugin_path(
     *,
     builtin_root: Path,
     user_root: Path,
+    already_resolved: bool = False,
 ) -> tuple[RootId, str]:
     """Reverse-map a plugin directory path to ``(root_id, directory_name)``.
 
@@ -272,9 +275,12 @@ def classify_plugin_path(
     On no-match, raises :class:`InstallSourceError` with code
     ``"PATH_OUTSIDE_ROOTS"``. Callers typically bubble this up as an
     ``install_source_warning`` rather than fatal failure.
+
+    ``already_resolved``: ``p`` is an absolute path the caller resolved
+    itself; it is classified as given (the roots are still resolved).
     """
 
-    p_key, p_resolved = _normalise_path_for_compare(p)
+    p_key, p_resolved = _normalise_path_for_compare(p, already_resolved=already_resolved)
     b_key, b_resolved = _normalise_path_for_compare(builtin_root)
     u_key, u_resolved = _normalise_path_for_compare(user_root)
     sep = os.sep
@@ -1455,6 +1461,21 @@ class InstallSourceManager:
     # Write-path helpers (tasks 2.4 / 2.5)
     # ------------------------------------------------------------------
 
+    def _publish(self, new_lock: LockFile) -> None:
+        """Persist ``new_lock``, then make it current.
+
+        Callers hold ``self._lock``. ``new_lock`` is written first, so
+        readers never see an entry that was not written to disk, and a
+        failed write leaves the current snapshot as it was. A degraded
+        manager writes nothing (see ``save``) and still publishes.
+        """
+
+        if self._read_only:
+            logger.debug("InstallSourceManager: save skipped (degraded)")
+        else:
+            _atomic_write(self.lock_path, _serialize_lock(new_lock))
+        self._current = new_lock
+
     @staticmethod
     def _find_entry(
         lock: LockFile, root_id: RootId, directory_name: str
@@ -1650,8 +1671,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._current = new_lock
-            self.save()
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market (design §8.2 / task 2.5)
@@ -1829,8 +1849,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._current = new_lock
-            self.save()
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market_install / record_market_upgrade (design §3.2)
@@ -2127,11 +2146,16 @@ class InstallSourceManager:
         Market upgrade writes the replacement entry before lifecycle restart.
         If that restart fails, filesystem rollback must restore this lock row
         as part of the same transaction. Replacing only the matching primary
-        key preserves unrelated install-source updates.
+        key preserves unrelated install-source updates. When the current
+        row already equals ``entry`` nothing is written.
         """
 
         with self._lock:
             old_lock = self._current
+            if self._find_entry(old_lock, entry.root_id, entry.directory_name) == entry:
+                # Never changed (e.g. the replacement's own write failed):
+                # nothing to write back.
+                return
             now = self._now_iso()
             try:
                 self._current = self._replace_entry(old_lock, entry, updated_at=now)
@@ -2175,19 +2199,24 @@ class InstallSourceManager:
         directory_path: Path,
         *,
         include_removed: bool = False,
+        snapshot: LockFile | None = None,
+        path_resolved: bool = False,
     ) -> LockEntry | None:
         """Return the install-source entry identified by its full path key.
 
         ``directory_name`` is only unique within a plugin root, so callers
         which must reason about ownership should use this method instead of
-        matching entry names themselves.
+        matching entry names themselves. ``snapshot`` (from :meth:`snapshot`)
+        reads that snapshot instead of the current one. ``path_resolved``:
+        ``directory_path`` is already resolved and is classified as given.
         """
         root_id, directory_name = classify_plugin_path(
             directory_path,
             builtin_root=self.builtin_root,
             user_root=self.user_root,
+            already_resolved=path_resolved,
         )
-        entry = self._find_entry(self._current, root_id, directory_name)
+        entry = self._find_entry(self._current if snapshot is None else snapshot, root_id, directory_name)
         if entry is None or (entry.removed and not include_removed):
             return None
         return entry
@@ -2339,8 +2368,7 @@ class InstallSourceManager:
                 updated_at=now,
             )
             new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
-            self._current = new_lock
-            self.save()
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Read path: list_entries / to_api_view (task 2.6 / design §11.3 / §12.3)
@@ -2350,16 +2378,17 @@ class InstallSourceManager:
         self,
         *,
         include_removed: bool = False,
+        snapshot: LockFile | None = None,
     ) -> list[LockEntry]:
         """Return a snapshot of entries, optionally including soft-deleted ones.
 
         Reads ``self._current`` without the lock: writers publish new
         :class:`LockFile` snapshots via a single attribute assignment, so
         each reader sees either the pre-publish or post-publish state in
-        full — never a torn intermediate.
+        full — never a torn intermediate. ``snapshot`` reads that one instead.
         """
 
-        snapshot = self._current
+        snapshot = self._current if snapshot is None else snapshot
         if include_removed:
             return list(snapshot.entries)
         return [e for e in snapshot.entries if not e.removed]

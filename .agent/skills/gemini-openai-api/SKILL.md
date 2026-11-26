@@ -1,6 +1,6 @@
 ---
 name: gemini-openai-api
-description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 辅助 API 配置（summary/correction/emotion/vision），(2) extra_body 格式用于控制 thinking，(3) 响应格式处理（markdown 代码块）。当需要将 Gemini 作为辅助模型接入、配置 thinking 参数、或处理 Gemini API 返回格式时使用。"
+description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 辅助 API 配置（summary/emotion/vision），(2) extra_body 格式用于控制 thinking，(3) 响应格式处理（markdown 代码块）。当需要将 Gemini 作为辅助模型接入、配置 thinking 参数、或处理 Gemini API 返回格式时使用。"
 ---
 
 # Gemini OpenAI 兼容 API 接入
@@ -8,12 +8,13 @@ description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 
 Gemini 提供 OpenAI 兼容端点，可作为辅助 API 使用。
 
 > [!IMPORTANT]
-> **memory/ + utils/ 下不要传 `temperature`**。项目级约定：所有走
-> `utils.llm_client.create_chat_llm` / `ChatOpenAI` 的调用一律不下发
-> `temperature` 字段（默认 `None` = 不写进请求体）。守门见
-> `scripts/check_no_temperature.py`。`extra_body`（控制 thinking）/
-> `max_completion_tokens` / `timeout` / `max_retries` 这类参数继续按需配置，但
-> 不要为了"调风格"再加 `temperature=...`。
+> **全仓库都不设 `temperature`（豁免除外）**。项目级约定：模型调用不下发
+> `temperature` 字段（包括 `generation_config` / `extra_body` 里的），由模型用
+> 自己的默认值；`create_chat_llm` / `ChatOpenAI` 也没有这个参数。守门见
+> `scripts/check_no_temperature.py`（CI 必拦）。例外：Gemini Live 的
+> `generation_config` 和 Gemini 语音识别本身接收 temperature，已在守卫的
+> `EXEMPTIONS` 里写明理由。`extra_body`（控制 thinking）/
+> `max_completion_tokens` / `timeout` / `max_retries` 这类参数继续按需配置。
 
 ## Base URL
 
@@ -25,7 +26,7 @@ https://generativelanguage.googleapis.com/v1beta/openai/
 
 | 用途                          | 推荐模型                   |
 |-------------------------------|---------------------------|
-| Correction / Agent          | `gemini-3.8-flash`        |
+| Agent                       | `gemini-3.8-flash`        |
 | Emotion Analysis              | `gemini-2.5-flash`        |
 
 ## 控制 Thinking
@@ -99,9 +100,8 @@ if result_text.startswith("```"):
   "name": "Gemini（Google）",
   "description": "Google AI 辅助模型，国内无法使用",
   "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-  "summary_model": "gemini-3.8-flash",
-  "correction_model": "gemini-3.8-flash",
-  "emotion_model": "gemini-2.5-flash",
+  "memory_model": "gemini-3.1-flash-lite",
+  "recognition_model": "gemini-2.5-flash",
   "vision_model": "gemini-3.8-flash"
 }
 ```

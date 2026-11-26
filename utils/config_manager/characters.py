@@ -19,6 +19,7 @@ characters.json load/save (with mtime cache and reserved-field migration)
 and the aggregated character data snapshot used by the runtime.
 """
 import asyncio
+import errno
 import json
 import os
 import time
@@ -140,7 +141,13 @@ class CharactersMixin:
         snapshot["猫娘"][selected] = profile
         return snapshot
 
-    def load_characters(self, character_json_path=None, *, require_authoritative=False):
+    def load_characters(
+        self,
+        character_json_path=None,
+        *,
+        require_authoritative=False,
+        allow_missing_default=True,
+    ):
         """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
         # Migration results are written back to the file they came from, except
         # when the default lookup fell back to a project/seed copy (the runtime
@@ -195,11 +202,17 @@ class CharactersMixin:
                 except OSError:
                     current_mtime = None
                 if cache_dirty and current_mtime is None and not (
-                    source_missing and cache_mtime is None
+                    allow_missing_default and source_missing and cache_mtime is None
                 ):
                     # An unreadable source cannot supersede an unpersisted identity.
                     # Only a never-persisted default may retry creating a missing file.
                     if require_authoritative:
+                        if source_missing and not allow_missing_default:
+                            raise FileNotFoundError(
+                                errno.ENOENT,
+                                os.strerror(errno.ENOENT),
+                                character_json_path,
+                            )
                         raise ValueError("character_config_not_authoritative")
                     return deepcopy(cache)
                 if current_mtime == cache_mtime and (
@@ -391,6 +404,13 @@ class CharactersMixin:
                 self._characters_dirty = False
                 self._clear_characters_persist_backoff_locked()
 
+        # A new voice or a switch of current character may now reach the CosyVoice
+        # worker; import dashscope in the background before its first sentence.
+        # Never raises or blocks, and is a no-op outside main_server or once
+        # every gated SDK is loaded.
+        from utils.module_warmup import request_config_rewarm
+        request_config_rewarm("characters", only={"cosyvoice_clone"})
+
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""
         return await asyncio.to_thread(
@@ -464,6 +484,9 @@ class CharactersMixin:
         character_data = self.load_characters()
         defaults = self.get_default_characters()
 
+        raw_catgirls = character_data.get('猫娘')
+        has_valid_catgirls = isinstance(raw_catgirls, dict) and bool(raw_catgirls)
+
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
@@ -472,7 +495,14 @@ class CharactersMixin:
         )
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
-        raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
+        effective_catgirls = character_data.get('猫娘')
+        if not isinstance(effective_catgirls, dict):
+            logger.warning("角色配置 '猫娘' 字段非 dict，将回退到默认角色列表。")
+            raw_character_data = deepcopy(defaults['猫娘'])
+        elif not effective_catgirls:
+            raw_character_data = deepcopy(defaults['猫娘'])
+        else:
+            raw_character_data = effective_catgirls
         catgirl_names = list(raw_character_data.keys())
 
         current_catgirl = character_data.get('当前猫娘', '')
@@ -489,15 +519,16 @@ class CharactersMixin:
                 character_data['当前猫娘'] = her_name
                 # Rare path (corrupt configuration / deleted neko only): persist synchronously so the fix survives restart.
                 # save_characters refreshes the cache internally; no manual synchronization is needed here.
-                try:
-                    self.save_characters(character_data)
-                except Exception as persist_err:
-                    logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
-                    with self._characters_cache_lock:
-                        if self._characters_cache is not None:
-                            self._characters_cache['当前猫娘'] = her_name
-                        self._characters_dirty = True
-                        self._note_characters_persist_failure_locked()
+                if has_valid_catgirls:
+                    try:
+                        self.save_characters(character_data)
+                    except Exception as persist_err:
+                        logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
+                        with self._characters_cache_lock:
+                            if self._characters_cache is not None:
+                                self._characters_cache['当前猫娘'] = her_name
+                            self._characters_dirty = True
+                            self._note_characters_persist_failure_locked()
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         effective_character_data = {
@@ -565,7 +596,18 @@ class CharactersMixin:
             return None
         return normalize_language_code(str(language), format="full")
 
-    async def aload_characters(self, character_json_path=None):
+    async def aload_characters(
+        self,
+        character_json_path=None,
+        *,
+        require_authoritative=False,
+        allow_missing_default=True,
+    ):
         """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
         with N nekos the copy can take several ms — offload to avoid blocking the event loop."""
-        return await asyncio.to_thread(self.load_characters, character_json_path)
+        return await asyncio.to_thread(
+            self.load_characters,
+            character_json_path,
+            require_authoritative=require_authoritative,
+            allow_missing_default=allow_missing_default,
+        )

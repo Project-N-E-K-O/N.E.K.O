@@ -3,7 +3,7 @@
 The runtime-tools API lets a local plugin or companion process register HTTP callbacks as model-callable tools. The main server exposes it at `/api/tools`; registrations are applied to the current per-character session managers and synchronized to active model sessions before mutation calls return.
 
 > [!IMPORTANT]
-> This is a local integration contract, not a remote administration API. Every endpoint accepts loopback clients only. Callback URLs are also restricted to `localhost`, `127.0.0.0/8`, `::1`, or an IPv4-mapped loopback address over HTTP or HTTPS. Other callers receive HTTP `403`; non-loopback callback URLs fail validation with HTTP `422`.
+> This is a local integration contract, not a remote administration API. Every endpoint accepts loopback clients only. Callback URLs are also restricted to `localhost`, `127.0.0.0/8`, `::1`, or an IPv4-mapped loopback address over HTTP or HTTPS. Other callers receive HTTP `403`; non-loopback callback URLs fail validation with HTTP `422`. When `NEKO_BEHIND_PROXY` or `NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, loopback callers must also present valid instance credentials (such as `Authorization: Bearer <instance_key>` or a paired browser session cookie); otherwise requests fail with HTTP `401`.
 
 Registrations are runtime state. They are not persisted across a server restart and a global registration applies only to the character session managers that exist when the request is handled.
 

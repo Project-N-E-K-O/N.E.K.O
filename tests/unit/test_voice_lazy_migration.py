@@ -117,6 +117,23 @@ def test_schema_rejects_malformed_voice_object():
     # Also detect an incorrect provider type.
     bad = validate_reserved_schema({"voice_id": {"source": "clone", "provider": 1, "ref": "x"}})
     assert [e for e in bad if "voice_id.provider" in e]
+    # Reject non-dict config field while allowing dict or None.
+    bad_cfg = validate_reserved_schema(
+        {"voice_id": {"source": "clone", "provider": "x", "ref": "y", "config": "oops"}}
+    )
+    assert [e for e in bad_cfg if "voice_id.config" in e]
+    assert not [
+        e for e in validate_reserved_schema(
+            {"voice_id": {"source": "clone", "provider": "x", "ref": "y", "config": None}}
+        )
+        if "voice_id" in e
+    ]
+    assert not [
+        e for e in validate_reserved_schema(
+            {"voice_id": {"source": "clone", "provider": "x", "ref": "y", "config": {"k": 1}}}
+        )
+        if "voice_id" in e
+    ]
 
 
 def test_storage_guard_keeps_legacy_string_when_roundtrip_would_change_key(monkeypatch):
