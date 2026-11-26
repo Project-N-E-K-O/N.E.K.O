@@ -1673,16 +1673,22 @@ class DesktopChatSyncRuntime:
                     # commit holds the writer lock through the snapshot and status
                     # write, so capture cannot replace owed work between these reads.
                     self.writer.require_epoch(epoch)
-                    local_after = self.long_term_memory.adapter.read_local(grant, epoch)
-                    upload_pending = bool(local_after and local_after['pending'])
-                    pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
-                               or self.long_term_memory.adapter.incoming_path(uid).is_file()
-                               or self.long_term_memory.adapter.owed_path(uid).is_file())
+                    try:
+                        local_after = self.long_term_memory.adapter.read_local(grant, epoch)
+                        upload_pending = bool(local_after and local_after['pending'])
+                        pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
+                                   or self.long_term_memory.adapter.incoming_path(uid).is_file()
+                                   or self.long_term_memory.adapter.owed_path(uid).is_file())
+                    except OSError as read_error:
+                        # A failed read must not quarantine the writer gate.
+                        return read_error
                     self.scheduler.success(domain.key(), 'long_term', pending=pending)
                     if result['hasMore'] or upload_pending:
                         self.scheduler.request_check(domain.key(), 'long_term')
 
-                await commit(record_long_term_status)
+                read_error = await commit(record_long_term_status)
+                if read_error is not None:
+                    raise read_error
                 return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}
             except (ValueError, OSError, sqlite3.Error) as error:
                 await asyncio.to_thread(self.scheduler.failure, domain.key(), 'long_term', binding['generation'], presence, error)

@@ -1989,6 +1989,61 @@ async def test_long_term_status_cannot_interleave_with_a_snapshot_capture(tmp_pa
         await runtime.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['outbox', 'incoming', 'owed'])
+async def test_long_term_status_read_failure_keeps_the_writer_and_other_channels_available(tmp_path, monkeypatch, source):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    read_local, incoming_path, owed_path = adapter.read_local, adapter.incoming_path, adapter.owed_path
+    fail = [True]
+    reads = [0]
+
+    class UnreadablePath:
+        def is_file(self):
+            raise PermissionError('synthetic private memory path')
+
+    def inspect_local(*args):
+        reads[0] += 1
+        if source == 'outbox' and fail[0] and reads[0] > 1:
+            raise PermissionError('synthetic private memory path')
+        return read_local(*args)
+
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime.long_term_memory, 'sync', AsyncMock(return_value={'changed': False, 'hasMore': False}))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        binding = runtime.state.binding(UID)
+        grant = {**binding, 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=None)
+        saved = adapter.local_path(grant).read_bytes()
+        monkeypatch.setattr(adapter, 'read_local', inspect_local)
+        monkeypatch.setattr(adapter, 'incoming_path', lambda uid: UnreadablePath() if source == 'incoming' and fail[0] else incoming_path(uid))
+        monkeypatch.setattr(adapter, 'owed_path', lambda uid: UnreadablePath() if source == 'owed' and fail[0] else owed_path(uid))
+        presence = await runtime.session_presence_provider()
+        with pytest.raises(PermissionError, match='synthetic private memory path'):
+            await runtime._long_term_memory_pass(UID, presence=presence)
+        runtime.writer.check()
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term'] == {
+            'status': 'error', 'lastSuccessAt': None, 'lastError': 'chat_sync_unavailable',
+        }
+        assert adapter.local_path(grant).read_bytes() == saved
+        assert runtime.scheduler.claim(DOMAIN.key(), 'pull', binding['generation'], presence)
+        runtime.scheduler.success(DOMAIN.key(), 'pull')
+        assert runtime.scheduler.channel_status(DOMAIN.key())['pull']['status'] == 'success'
+        fail[0] = False
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+        assert adapter.local_path(grant).read_bytes() == saved
+    finally:
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()
