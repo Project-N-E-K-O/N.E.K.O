@@ -34,7 +34,10 @@ function createContext(THREE) {
     const window = { THREE, ...createEventTarget(), document,
         NekoModelTouchGestures: { installThree: () => ({ dispose() {} }) } };
     document.defaultView = window;
-    const context = vm.createContext({ window, document, console, THREE,
+    const storage = new Map();
+    const localStorage = { getItem: key => (storage.has(key) ? storage.get(key) : null),
+        setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) };
+    const context = vm.createContext({ window, document, console, THREE, localStorage,
         performance: { now: () => 0 }, requestAnimationFrame: () => 0, cancelAnimationFrame() {},
         setTimeout, clearTimeout });
     return { context, window, document };
@@ -185,6 +188,54 @@ test('三维模型双指捏合：宿主接管时只缩放不挪位置，未接�
     assert.ok(free.scale.x > 1);
     assert.notDeepEqual(free.position.toArray(), [0.5, 0, 0], '未接管：按捏合中心挪');
 });
+
+// 走 VRM、MMD 自己的 initDragAndZoom 和真实的 installThree，确认两边都把接管判断接到了捏合上。
+for (const kind of ['vrm', 'mmd']) {
+    test(`${kind.toUpperCase()} 双指捏合（真实触摸控制器）：宿主接管时只缩放，未接管时按捏合中心挪`, async () => {
+        const THREE = await loadThree();
+        const { context, window, document } = createContext(THREE);
+        vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar/avatar-touch-gestures.js'), 'utf8'), context);
+        if (kind === 'vrm') {
+            for (const file of ['vrm-orientation.js', 'vrm-interaction.js']) {
+                vm.runInContext(fs.readFileSync(path.join(root, 'static/vrm', file), 'utf8'), context);
+            }
+        } else {
+            vm.runInContext(fs.readFileSync(path.join(root, 'static/mmd/mmd-interaction.js'), 'utf8'), context);
+        }
+        const Interaction = kind === 'vrm' ? window.VRMInteraction : vm.runInContext('MMDInteraction', context);
+        function pinch(hostActive) {
+            window.__nekoNiriPetPhysicalCrop = hostCrop(hostActive);
+            const { renderer, canvas } = createRenderer(THREE, { width: 800, height: 600 });
+            canvas.ownerDocument = document;
+            canvas.setPointerCapture = () => {};
+            canvas.releasePointerCapture = () => {};
+            const camera = new THREE.PerspectiveCamera(30, 800 / 600, 0.1, 100);
+            camera.position.z = 5;
+            const model = new THREE.Object3D();
+            model.position.set(0.5, 0, 0);
+            const manager = { camera, renderer, _isModelReadyForInteraction: true, isLocked: false,
+                currentModel: kind === 'vrm' ? { scene: model, vrm: {} } : { mesh: model },
+                setModelScaleScalar: scale => model.scale.setScalar(scale) };
+            const interaction = new Interaction(manager);
+            interaction.checkLocked = () => false;
+            interaction._hitTestModel = () => true;
+            interaction.initDragAndZoom();
+            const touch = (pointerId, clientX, clientY) => ({ pointerId, pointerType: 'touch', clientX, clientY,
+                preventDefault() {}, stopPropagation() {} });
+            canvas.emit('pointerdown', touch(1, 300, 300));
+            canvas.emit('pointerdown', touch(2, 500, 300));
+            document.emit('pointermove', touch(2, 600, 300));
+            interaction._touchGestures.dispose();
+            return model;
+        }
+        const owned = pinch(true);
+        assert.ok(owned.scale.x > 1, '照常缩放');
+        assert.deepEqual(owned.position.toArray(), [0.5, 0, 0], '宿主接管：位置不动');
+        const free = pinch(false);
+        assert.ok(free.scale.x > 1);
+        assert.notDeepEqual(free.position.toArray(), [0.5, 0, 0], '未接管：按捏合中心挪');
+    });
+}
 
 test('VRM resize：尺寸和像素比都没变时不重设画布，变了照常重设', async () => {
     const THREE = await loadThree();
