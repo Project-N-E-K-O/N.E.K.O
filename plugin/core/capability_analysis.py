@@ -369,20 +369,41 @@ def _untrusted(name: str, bindings) -> bool:
 # Bindings key set when the plugin may change the family constants
 # themselves (socket.AF_UNIX = 2); no family is trusted then.
 _FAMILIES_WRITTEN = _UNTRUSTED + "*families"
-# A write to a family attribute anywhere in the plugin: assignment or
-# augmented assignment to .AF_UNIX / .AddressFamily, del, or setattr with
-# that literal name. Read on the raw text, so a match inside a string or a
-# comment only makes the scan stricter.
-_FAMILY_WRITE = re.compile(
-    r"\.\s*(?:AF_UNIX|AddressFamily)\s*(?:\*\*|//|<<|>>|[-+*/%&|^@])?=(?!=)"
-    r"|\bdel\b[^\n]*\.\s*(?:AF_UNIX|AddressFamily)\b"
-    r"|\bsetattr\s*\([^,]*,\s*[rbuRBU]*['\"](?:AF_UNIX|AddressFamily)['\"]"
-)
+_FAMILY_NAMES = ("AF_UNIX", "AddressFamily")
 
 
-def _families_written(sources) -> bool:
-    """The plugin's own code may rebind a socket family constant."""
-    return any(_FAMILY_WRITE.search(source) for _relative, source in sources)
+def _families_written(sources, walker) -> bool:
+    """The plugin's own code may rebind a socket family constant: a store or
+    del of .AF_UNIX / .AddressFamily (plain, annotated, augmented, unpacked,
+    loop / with target), or setattr / delattr with that literal name.
+
+    Only files that mention the names are parsed for this (again, before
+    the main pass); one walk per file, honouring the stop event.
+    """
+    for relative, source in sources:
+        if not any(name in source for name in _FAMILY_NAMES):
+            continue
+        try:
+            tree = ast.parse(source, filename=relative)
+        except (SyntaxError, ValueError, RecursionError):
+            continue  # reported by the main pass
+        for node in ast.walk(tree):
+            walker.poll()
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in _FAMILY_NAMES
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                return True
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in ("setattr", "delattr")
+                and len(node.args) >= 2
+                and _literal_string(node.args[1]) in _FAMILY_NAMES
+            ):
+                return True
+    return False
 
 
 def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bool:
@@ -1722,6 +1743,12 @@ def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
     if isinstance(local, ast.Constant) and local.value is None:
         return ()
     remote = _call_argument(node, 2, "remote_addr")
+    if remote is None and (
+        any(item.arg is None for item in node.keywords)
+        or any(isinstance(item, ast.Starred) for item in node.args[2:])
+    ):
+        # **options / *rest may carry remote_addr.
+        return (named,)
     if remote is not None and not (isinstance(remote, ast.Constant) and remote.value is None):
         # A client with a fixed source address (local_addr=("0.0.0.0", 0),
         # remote_addr=peer) binds too, but need not be listening: possible.
@@ -2161,7 +2188,10 @@ def analyze_capabilities(
     collector = _PermissionCollector()
     count = 0
     # The socket module is shared by every file of the plugin.
-    families_trusted = not _families_written(sources.files)
+    try:
+        families_trusted = not _families_written(sources.files, walker)
+    except _AnalysisBudgetExceeded:
+        families_trusted = False
     try:
         for relative, source in sources.files:
             walker.check()

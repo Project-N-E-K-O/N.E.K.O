@@ -2802,6 +2802,10 @@ _UNIX_SERVER = "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind(('', 80
         "setattr(socket, 'AF_UNIX', 2)\n",
         "del socket.AF_UNIX\n",
         "socket.AddressFamily = object\n",
+        "socket.AF_UNIX: int = socket.AF_INET\n",
+        "socket.AF_UNIX, other = socket.AF_INET, 0\n",
+        "for socket.AF_UNIX in (socket.AF_INET,):\n    pass\n",
+        "delattr(socket, 'AF_UNIX')\n",
     ],
 )
 def test_a_rewritten_family_constant_is_not_trusted(tmp_path, write):
@@ -2819,3 +2823,28 @@ def test_a_family_constant_rewritten_in_another_file_is_not_trusted(tmp_path):
 def test_comparing_with_the_family_constant_is_not_a_write(tmp_path):
     report = _scan(tmp_path, _UNIX_SERVER + "if s.family == socket.AF_UNIX:\n    pass\n")
     assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+
+def test_the_family_write_check_is_linear(tmp_path):
+    # Many unterminated "setattr(" in one file: no backtracking scan.
+    import time
+
+    source = _UNIX_SERVER + "# " + "setattr(" * 100000 + "\n"
+    started = time.monotonic()
+    report = _scan(tmp_path, source)
+    assert time.monotonic() - started < 10
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), **options)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, ('', 1), *rest)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), remote_addr=None, **options)", "resolved_call"),
+    ],
+)
+def test_datagram_endpoints_whose_remote_address_may_be_unpacked(tmp_path, call, basis):
+    source = f"import asyncio\nasync def f(options, rest):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
