@@ -379,12 +379,14 @@ _DYNAMIC_WRITERS = frozenset({
     "setattr", "delattr", "__setattr__", "__delattr__",
     "exec", "eval", "compile", "vars", "globals", "locals", "__dict__", "__builtins__",
     "__getattribute__", "attrgetter", "methodcaller",
+    # Any use other than a call with a str-constant name (g = getattr).
+    "getattr", "getattr_static",
     # Another module object behind "import socket".
     "modules", "meta_path", "path_hooks",
 })
 # Writers whose name argument, when a str constant, is read statically.
 _NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
-_NAME_READERS = frozenset({"getattr"})
+_NAME_READERS = frozenset({"getattr", "getattr_static"})
 
 
 def _constant_attribute_name(call: ast.Call, name: str) -> str | None:
@@ -423,6 +425,40 @@ def _receiver_root(node) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _super_initialisers(tree, walker) -> set[int]:
+    """Ids of super().__init__ attributes inside a function named __init__."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        walker.poll()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
+            for child in ast.walk(node):
+                walker.poll()
+                if isinstance(child, ast.Attribute) and child.attr == "__init__" and _super_call(child.value):
+                    found.add(id(child))
+    return found
+
+
+def _binds_super(node) -> bool:
+    """A binding of the name super (the exemption assumes the builtin)."""
+    if isinstance(node, ast.Name):
+        return node.id == "super" and not isinstance(node.ctx, ast.Load)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == "super"
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.split(".")[0]) == "super"
+    if isinstance(node, ast.arg):
+        return node.arg == "super"
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+        return node.name == "super"
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == "super"
+    if isinstance(node, ast.ExceptHandler):
+        return node.name == "super"
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return "super" in node.names
+    return False
+
+
 def _super_call(node) -> bool:
     # Only the zero-argument form: super(cls, obj) may name another instance.
     return (
@@ -443,9 +479,10 @@ def _families_written(sources, walker, written=None) -> bool:
     that name (.update(AF_UNIX=...)). A write whose name cannot be read
     statically counts too: any use of a name in _DYNAMIC_WRITERS (exec,
     vars, __dict__ ...; setattr and the like only when the attribute name
-    is not a str constant), a getattr whose name is not a str constant, and
-    any .__init__ other than super().__init__ (a socket re-initialised in
-    place, also from another file).
+    is not a str constant; getattr too, so g = getattr counts), and any
+    .__init__ other than a zero-argument super().__init__ directly inside a
+    function named __init__ (a socket re-initialised in place, also from
+    another file); any binding of the name super counts as well.
     The AF_UNIX downgrade thus assumes a plugin without such dynamic code;
     otherwise it gets the same result as without the AF_UNIX rule.
 
@@ -475,6 +512,9 @@ def _families_written(sources, walker, written=None) -> bool:
             continue  # reported by the main pass
         # ast.walk visits a call before its callee.
         static_callees: set[int] = set()
+        # super().__init__() directly in an __init__ is not a re-initialisation,
+        # as long as no file binds the name super (super = lambda: main.s).
+        super_initialisers = _super_initialisers(tree, walker)
         # Names bound to the socket module or its members in this file, and
         # the root names whose attributes are written; compared at the end.
         socket_names = {"socket"}
@@ -482,6 +522,8 @@ def _families_written(sources, walker, written=None) -> bool:
         aliases: list[tuple[str, str]] = []
         for node in ast.walk(tree):
             walker.poll()
+            if _binds_super(node):
+                return True
             if isinstance(node, ast.Import):
                 socket_names.update(item.asname or item.name for item in node.names if item.name == "socket")
             elif isinstance(node, ast.ImportFrom):
@@ -497,7 +539,7 @@ def _families_written(sources, walker, written=None) -> bool:
                     if constant is not None:
                         static_callees.add(id(callee))
                         if name in _NAMED_WRITERS:
-                            if constant in _CONSTRUCTOR_NAMES:
+                            if constant in _CONSTRUCTOR_NAMES or constant == "super":
                                 return True
                             root = _receiver_root(node.args[0]) if node.args else None
                             if root:
@@ -510,9 +552,11 @@ def _families_written(sources, walker, written=None) -> bool:
                 name = node.id if isinstance(node, ast.Name) else node.attr
                 if name in _DYNAMIC_WRITERS and id(node) not in static_callees:
                     return True
-                if name == "__init__" and isinstance(node, ast.Attribute) and not _super_call(node.value):
+                if name == "__init__" and isinstance(node, ast.Attribute) and id(node) not in super_initialisers:
                     # A socket re-initialised in place (main.s.__init__(AF_INET)
-                    # from another file); super().__init__() is not one.
+                    # from another file).
+                    return True
+                if name == "super" and isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
                     return True
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
                     if node.attr in _FAMILY_NAMES or node.attr in _CONSTRUCTOR_NAMES:

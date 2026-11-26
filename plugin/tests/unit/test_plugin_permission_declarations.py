@@ -2911,6 +2911,10 @@ def test_a_family_name_used_as_data_disables_the_downgrade(tmp_path, main_prefix
         ("w = setattr\n", None),
         ("for key in socket.__dict__:\n    pass\n", None),
         ("globals()['AF_' + 'UNIX'] = 2\n", None),
+        ("import builtins\ng = getattr\ng(builtins, 'set' + 'attr')(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import builtins, functools\nfunctools.reduce(getattr, ['x'], builtins)\n", None),
+        ("import builtins, inspect\ninspect.getattr_static(builtins, 'set' + 'attr')\n", None),
+        ("", "import socket\nimport main\ng = getattr\ng(main.s, '__in' + 'it__')(socket.AF_INET)\n"),
         ("import sys\nsys.modules['sock' + 'et'] = object()\n", None),
         # In another file.
         ("", "import socket\nx = 'F_UNIX'\nsetattr(socket, 'A' + x, 2)\n"),
@@ -3057,3 +3061,20 @@ def test_a_socket_module_patched_in_another_file_disables_the_downgrade(tmp_path
 def test_writing_other_attributes_keeps_the_downgrade(tmp_path):
     report = _scan(tmp_path, _UNIX_SERVER + "class C:\n    def go(self):\n        self.sock = None\n")
     assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "import socket\nimport main\nsuper = lambda: main.s\nsuper().__init__(socket.AF_INET)\n",
+        # Spelled super but outside an __init__.
+        "import socket\nclass C:\n    def go(self):\n        super().__init__(socket.AF_INET)\n",
+        "import socket\nimport main\ndef super():\n    return main.s\nclass C:\n    def __init__(self):\n"
+        "        super().__init__(socket.AF_INET)\n",
+        "import builtins\nimport main\nbuiltins.super = lambda: main.s\n",
+        "import socket\nfrom main import s as super\n",
+    ],
+)
+def test_super_init_is_exempt_only_as_the_builtin_in_an_init(tmp_path, other):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
