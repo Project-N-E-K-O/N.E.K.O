@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "상황이 맞으면 함께 이야기를 연기하자고 초대해요",
             "agentMaster": "냥파워",
             "showTaskHud": "플로팅 창 표시",
-            "taskHudHiddenByPowerSave": "리소스 절약 모드에서는 캐릭터 창이 모델 주변만 남아서 플로팅 창이 표시되지 않습니다",
+            "taskHudHiddenByPowerSave": "리소스 절약 모드에서는 플로팅 창을 표시하지 않습니다",
             "keyboardControl": "키보드/마우스 제어",
             "userPlugin": "사용자 플러그인",
             "pluginConfigPage": "설정 페이지",

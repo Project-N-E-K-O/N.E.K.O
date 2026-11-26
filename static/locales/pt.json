@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "Convidar você para encenar uma história juntos quando for uma boa hora",
             "agentMaster": "NekoPower",
             "showTaskHud": "Mostrar janela flutuante",
-            "taskHudHiddenByPowerSave": "No modo de economia de recursos, a janela da personagem só cobre a área ao redor do modelo, então a janela flutuante não aparece",
+            "taskHudHiddenByPowerSave": "No modo de economia de recursos a janela flutuante não é exibida",
             "keyboardControl": "Controle de teclado/mouse",
             "userPlugin": "Plug-in do usuário",
             "pluginConfigPage": "Configuração",

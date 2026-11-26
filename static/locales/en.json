@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "Invite you to act out a story together when conditions are right",
             "agentMaster": "NekoPower",
             "showTaskHud": "Show floating window",
-            "taskHudHiddenByPowerSave": "In Power Saving Mode the character window only covers the area around the model, so the floating window can’t be shown",
+            "taskHudHiddenByPowerSave": "The floating window is hidden in Power Saving Mode",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
             "pluginConfigPage": "Config",

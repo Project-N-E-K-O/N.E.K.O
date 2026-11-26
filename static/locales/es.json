@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "Invitarte a interpretar una historia juntos cuando sea buen momento",
             "agentMaster": "NekoPower",
             "showTaskHud": "Mostrar ventana flotante",
-            "taskHudHiddenByPowerSave": "En el modo de ahorro de recursos, la ventana del personaje solo cubre la zona alrededor del modelo, así que la ventana flotante no se puede mostrar",
+            "taskHudHiddenByPowerSave": "En el modo de ahorro de recursos no se muestra la ventana flotante",
             "keyboardControl": "Control de teclado/ratón",
             "userPlugin": "Complemento de usuario",
             "pluginConfigPage": "configuración",

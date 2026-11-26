@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "符合条件时邀请你一起演绎剧本",
             "agentMaster": "喵能力",
             "showTaskHud": "显示悬浮窗",
-            "taskHudHiddenByPowerSave": "省算力模式下桌宠窗口只保留模型附近，悬浮窗显示不出来",
+            "taskHudHiddenByPowerSave": "省算力模式下不显示悬浮窗",
             "keyboardControl": "键鼠控制",
             "userPlugin": "用户插件",
             "pluginConfigPage": "配置页",

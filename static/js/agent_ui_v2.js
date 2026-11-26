@@ -38,22 +38,18 @@
             'mmd-agent-taskhud-crop-note', 'pngtuber-agent-taskhud-crop-note'
         ),
     });
-    // 桌面版的省算力模式（N.E.K.O.-PC，Windows/macOS）正在把桌宠窗口裁到模型附近：这时任务
-    // 悬浮窗显示不出来，「显示悬浮窗」下面要说一句。裁剪期间才有 __nekoNiriPetPhysicalCrop；
-    // __nekoLive2DPeekHostStage 只在 Windows/macOS 的壳里有，用来和 Linux 上常开的物理裁剪分开。
-    const isPetPowerSaveCropActive = () => {
-        try {
-            const crop = window.__nekoNiriPetPhysicalCrop;
-            if (!crop || !window.__nekoLive2DPeekHostStage) return false;
-            return typeof crop.isActive === 'function' ? crop.isActive() === true : true;
-        } catch (_) {
-            return false;
-        }
-    };
+    // 桌面版的省算力模式正把桌宠窗口裁到模型附近时，任务悬浮窗不显示（common-ui-hud.js 的
+    // isPetPowerSaveCropActive），「显示悬浮窗」下面说一句。面板 render 时刷新，裁剪状态变了也刷新。
+    const isPetPowerSaveCropActive = () => !!(
+        window.AgentHUD
+        && typeof window.AgentHUD.isPetPowerSaveCropActive === 'function'
+        && window.AgentHUD.isPetPowerSaveCropActive()
+    );
     const syncTaskHudCropNote = () => {
         const hidden = !isPetPowerSaveCropActive();
         el().taskHudCropNote.forEach(note => { if (note) note.hidden = hidden; });
     };
+    window.addEventListener('neko:niri-pet-physical-crop-state-applied', syncTaskHudCropNote);
     const sync = (cbs) => {
         if (!cbs) return;
         (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {

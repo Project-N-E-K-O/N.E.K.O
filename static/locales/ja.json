@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "タイミングが合えば、一緒に物語を演じようと誘います",
             "agentMaster": "にゃんパワー",
             "showTaskHud": "フローティングウィンドウを表示",
-            "taskHudHiddenByPowerSave": "省リソースモードではキャラクターのウィンドウがモデルの周りだけになるため、フローティングウィンドウは表示されません",
+            "taskHudHiddenByPowerSave": "省リソースモードではフローティングウィンドウを表示しません",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
             "pluginConfigPage": "設定ページ",

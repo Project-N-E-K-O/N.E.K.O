@@ -3,8 +3,9 @@
 // 喵能力面板的两句提示：
 // - 只开了总开关、键鼠/浏览器/插件一项都没开时，喵能力其实没开着（agent 进程的 nekopower_on），
 //   状态栏说要再开一项（agent_ui_v2.js 的 render）。
-// - 桌面版的省算力模式正把桌宠窗口裁到模型附近时，任务悬浮窗显示不出来，「显示悬浮窗」下面说一句
-//   （common-ui-hud.js 建出这行、平时藏着；agent_ui_v2.js 的 render 在裁剪期间打开它）。
+// - 桌面版的省算力模式正把桌宠窗口裁到模型附近时，任务悬浮窗不显示（common-ui-hud.js 的
+//   showAgentTaskHUD 不让它出来，裁剪开始时藏起、结束时照常判断），「显示悬浮窗」下面说一句
+//   （common-ui-hud.js 建出这行、平时藏着；agent_ui_v2.js 在裁剪期间打开它）。
 // 在 vm 里跑 common-ui-hud.js 和 agent_ui_v2.js 的真实源码。
 
 const assert = require('node:assert/strict');
@@ -49,6 +50,14 @@ function load({ crop = null, peekHostStage = false } = {}) {
     const note = new FakeElement('div', NOTE_ID);
     note.hidden = true;
     elements.set(NOTE_ID, note);
+    // The task HUD, already made and hidden, as the page has it once it was shown before.
+    const hud = new FakeElement('div', 'agent-task-hud');
+    hud.style.display = 'none';
+    hud.style.opacity = '0';
+    hud.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200 });
+    elements.set('agent-task-hud', hud);
+    const listeners = new Map();
+    const toggled = [];
     const document = {
         baseURI: 'http://127.0.0.1:48911/',
         body: null,
@@ -61,12 +70,16 @@ function load({ crop = null, peekHostStage = false } = {}) {
         innerWidth: 1600,
         innerHeight: 900,
         location: { href: 'http://127.0.0.1:48911/', origin: 'http://127.0.0.1:48911' },
-        addEventListener() {},
+        addEventListener(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
         removeEventListener() {},
         dispatchEvent() { return true; },
         localStorage: { getItem: () => null, setItem() {} },
         // The key comes back as the text: what is shown is told by which key it is.
-        t: (key) => key
+        t: (key) => key,
+        checkAndToggleTaskHUD() { toggled.push('check'); }
     };
     if (crop) window.__nekoNiriPetPhysicalCrop = crop;
     if (peekHostStage) window.__nekoLive2DPeekHostStage = { version: 1, prepare() { return false; } };
@@ -88,7 +101,13 @@ function load({ crop = null, peekHostStage = false } = {}) {
         task_hud_visible: true,
         ...snapshot
     });
-    return { window, document, elements, note, show, status: () => elements.get('live2d-agent-status').textContent };
+    // The shell applied a crop state: every listener on the page hears it.
+    const cropApplied = () => (listeners.get('neko:niri-pet-physical-crop-state-applied') || [])
+        .forEach((listener) => listener({ type: 'neko:niri-pet-physical-crop-state-applied', detail: {} }));
+    return {
+        window, document, elements, note, hud, toggled, show, cropApplied,
+        status: () => elements.get('live2d-agent-status').textContent
+    };
 }
 
 const flags = (on = []) => ({
@@ -128,6 +147,8 @@ test('the note stays hidden with no crop, a crop not in force, or the Linux crop
     const cases = [
         { name: 'no crop', options: { peekHostStage: true } },
         { name: 'crop not in force', options: { crop: { isActive: () => false }, peekHostStage: true } },
+        // Read as avatar-popup-common.js reads it: with no isActive it is not taken as cropping.
+        { name: 'crop object without isActive', options: { crop: {}, peekHostStage: true } },
         // Niri / Hyprland crop the window too, but that is not the power-saving mode.
         { name: 'Linux physical crop', options: { crop: { isActive: () => true } } }
     ];
@@ -172,4 +193,51 @@ test('the popup puts the note right under the floating-window switch, hidden, in
     assert.equal(note.hidden, true);
     assert.equal(note.getAttribute('data-i18n'), 'settings.toggles.taskHudHiddenByPowerSave');
     assert.equal(note.textContent, 'settings.toggles.taskHudHiddenByPowerSave');
+});
+
+// ---- 省算力裁剪期间不显示任务悬浮窗（owner 2026-11-26 定）----
+
+test('the task HUD is shown as before when nothing is cropped', () => {
+    const h = load({ peekHostStage: true });
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.display, 'flex');
+    assert.equal(h.hud.style.opacity, '1');
+});
+
+test('the task HUD is not shown while the power-saving crop is on, whatever asks for it', () => {
+    const h = load({ crop: { isActive: () => true }, peekHostStage: true });
+    h.hud.style.display = 'flex';
+    h.hud.style.opacity = '1';
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.opacity, '0', 'faded out instead of shown');
+    h.window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
+    assert.equal(h.hud.style.opacity, '0', 'plugin content does not bring it back either');
+});
+
+test('the Linux physical crop does not hide the task HUD', () => {
+    const h = load({ crop: { isActive: () => true } });
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.opacity, '1');
+});
+
+test('the HUD goes as the crop starts, and is weighed again as it ends', () => {
+    let active = false;
+    const h = load({ crop: { isActive: () => active }, peekHostStage: true });
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.opacity, '1');
+
+    active = true;
+    h.cropApplied();
+    assert.equal(h.hud.style.opacity, '0');
+    assert.equal(h.note.hidden, false, 'the note under the switch follows the crop too');
+    // The shell applies a crop state over and over while cropping: nothing more is done.
+    h.cropApplied();
+    assert.deepEqual(h.toggled, []);
+
+    active = false;
+    h.cropApplied();
+    assert.deepEqual(h.toggled, ['check'], 'the usual rules decide whether it comes back');
+    assert.equal(h.note.hidden, true);
+    h.cropApplied();
+    assert.deepEqual(h.toggled, ['check'], 'and only once, not with every state applied');
 });

@@ -4346,7 +4346,7 @@
             "proactiveTheaterInviteChatTooltip": "Приглашать вас вместе разыграть историю в подходящий момент",
             "agentMaster": "NekoPower",
             "showTaskHud": "Показать плавающее окно",
-            "taskHudHiddenByPowerSave": "В режиме экономии ресурсов окно персонажа охватывает только область вокруг модели, поэтому плавающее окно не отображается",
+            "taskHudHiddenByPowerSave": "В режиме экономии ресурсов плавающее окно не показывается",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
             "pluginConfigPage": "Настройки",
