@@ -2709,6 +2709,41 @@ async def test_a_task_agent_that_cannot_be_stopped_does_not_keep_the_others_goin
     del host.task_agents._sessions[parent.id]
 
 
+async def test_a_stopped_task_agent_is_closed_again_though_the_ledger_cannot_be_written(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    stopped_child = await _filed(host, "part one", parent_id=parent.id)
+    await host.ledger.transition(stopped_child.id, "cancelled", reason="test")
+    working_child = await _filed(host, "part two", parent_id=parent.id)
+    await host.ledger.transition(working_child.id, "working", reason="test")
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    transition = host.task_agents._ledger.transition
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id in (stopped_child.id, working_child.id):
+            raise RuntimeError("the ledger is locked")
+        return await transition(commission_id, status, **kwargs)
+
+    tried: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents._ledger, "transition", locked)
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    with pytest.raises(RuntimeError, match="the ledger is locked"):
+        await host.task_agents.abort(parent.id)
+
+    # The one stopped already is closed again, nothing being written for it; the one whose stop
+    # could not be written is not closed (it is on record as at work), and the failure is raised.
+    assert tried[1:] == [stopped_child.id]
+    assert (await host.ledger.get(working_child.id)).status == "working"
+
+
 async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(

@@ -6607,8 +6607,11 @@ class TaskAgentManager(TreeWork):
         failed: Exception | None = None
         for child in await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES):
             try:
-                # (Refused, writing nothing, for one that was stopped already.)
-                await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                if child.status != "cancelled":
+                    # Not closed unless its stop is written: closing is for a stopped one.
+                    await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                # One stopped already is closed again with nothing written: a
+                # ledger that cannot be written to does not keep it open.
                 await self.abort(child.id)
             except Exception as exc:  # noqa: BLE001 - raised once the rest is ended
                 logger.warning("stopping commission %s with its parent failed", child.id, exc_info=True)
