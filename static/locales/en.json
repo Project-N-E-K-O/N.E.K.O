@@ -8783,6 +8783,27 @@
                 "failedNotice": "Delete failed: {{error}}",
                 "failed": "Delete failed"
             },
+            "trash": {
+                "deleted": "Moved “{{name}}” to the trash.",
+                "undoDelete": "Undo deletion",
+                "title": "Trash",
+                "count": "{{count}} of {{limit}} entries · {{size}}",
+                "view": "View",
+                "empty": "Empty",
+                "scheduleUses": "used by {{count}} schedule periods",
+                "restore": "Restore",
+                "close": "Close",
+                "hint": "Deleted themes stay here (the most recent {{limit}}) until restored or removed. Restoring only takes back schedule periods that are still free.",
+                "emptyList": "The trash is empty.",
+                "restoring": "Restoring…",
+                "restored": "Restored “{{name}}”.",
+                "restoredWithSchedule": "Restored “{{name}}” and {{count}} schedule periods.",
+                "restoreFailed": "Could not restore the theme: {{error}}",
+                "confirmEmpty": "Permanently delete {{count}} trash entries? They cannot be restored.",
+                "emptying": "Emptying the trash…",
+                "emptied": "Trash emptied",
+                "emptyFailed": "Could not empty the trash: {{error}}"
+            },
             "file": {
                 "readFailed": "Failed to read the file",
                 "readFailedNotice": "Failed to read the file: {{error}}"

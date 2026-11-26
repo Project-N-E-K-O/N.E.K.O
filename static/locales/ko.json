@@ -8783,6 +8783,27 @@
                 "failedNotice": "삭제 실패: {{error}}",
                 "failed": "삭제 실패"
             },
+            "trash": {
+                "deleted": "‘{{name}}’ 테마를 휴지통으로 이동했습니다.",
+                "undoDelete": "삭제 취소",
+                "title": "휴지통",
+                "count": "{{count}}/{{limit}}개 · {{size}}",
+                "view": "보기",
+                "empty": "비우기",
+                "scheduleUses": "예약 시간대 {{count}}개에서 사용",
+                "restore": "복원",
+                "close": "닫기",
+                "hint": "삭제한 테마는 복원하거나 영구 삭제할 때까지 여기에 보관됩니다(최근 {{limit}}개까지). 복원할 때는 아직 비어 있는 예약 시간대만 다시 지정합니다.",
+                "emptyList": "휴지통이 비어 있습니다",
+                "restoring": "복원 중…",
+                "restored": "‘{{name}}’ 테마를 복원했습니다.",
+                "restoredWithSchedule": "‘{{name}}’ 테마와 예약 시간대 {{count}}개를 복원했습니다.",
+                "restoreFailed": "테마를 복원할 수 없습니다: {{error}}",
+                "confirmEmpty": "휴지통의 항목 {{count}}개를 영구 삭제할까요? 복원할 수 없습니다.",
+                "emptying": "휴지통을 비우는 중…",
+                "emptied": "휴지통을 비웠습니다",
+                "emptyFailed": "휴지통을 비울 수 없습니다: {{error}}"
+            },
             "file": {
                 "readFailed": "파일을 읽지 못했습니다",
                 "readFailedNotice": "파일을 읽지 못했습니다: {{error}}"

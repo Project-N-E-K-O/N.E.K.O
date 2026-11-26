@@ -778,6 +778,25 @@ body.is-loading::after {
 .notice-close::before { content: "\00d7"; font-size: 15px; line-height: 1; }
 .notice-close:hover { opacity: 1; background: rgba(0, 0, 0, 0.06); }
 
+/* Optional action next to the notice text (e.g. "Undo deletion"). Inherits the notice colour. */
+.notice-action {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.notice-action[hidden] { display: none; }
+.notice-action:hover { background: rgba(0, 0, 0, 0.06); }
+.notice-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* ============================================================ 7. Cards / preview */
 .card {
   border: 1px solid var(--border-soft);
@@ -1829,6 +1848,84 @@ kbd {
 .health-list li .hk { color: var(--text-faint); flex: none; }
 .health-list li.is-bad .hv { color: var(--danger); }
 .health-list li.is-warn .hv { color: #a06a10; }
+
+/* Per-row buttons in the status card (e.g. the trash row's "View" / "Empty"). */
+.health-list li .hk-action {
+  flex: none;
+  align-self: flex-start;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-sub);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.health-list li .hk-action:hover { border-color: var(--text-faint); color: var(--text); }
+.health-list li .hk-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Trash dialog: deleted library entries waiting to be restored. */
+.trash-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 26, 34, 0.42);
+}
+
+.trash-panel {
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(560px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(15, 26, 34, 0.28);
+}
+
+.trash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.trash-head h3 { margin: 0; font-size: 16px; }
+.trash-hint { margin: 0; font-size: 12px; color: var(--text-sub); }
+.trash-list { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.trash-main { min-width: 0; flex: 1 1 auto; }
+.trash-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-meta { font-size: 11px; color: var(--text-sub); }
+.trash-empty { font-size: 12px; color: var(--text-sub); }
+
+.trash-modal .trash-action {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-sub);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trash-modal .trash-action:hover:not(:disabled) { border-color: var(--text-faint); color: var(--text); }
+.trash-modal .trash-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.trash-modal .trash-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .health-actions {
   display: flex;

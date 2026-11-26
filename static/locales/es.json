@@ -8783,6 +8783,27 @@
                 "failedNotice": "No se pudo eliminar: {{error}}",
                 "failed": "No se pudo eliminar"
             },
+            "trash": {
+                "deleted": "Se movió «{{name}}» a la papelera.",
+                "undoDelete": "Deshacer eliminación",
+                "title": "Papelera",
+                "count": "{{count}} de {{limit}} elementos · {{size}}",
+                "view": "Ver",
+                "empty": "Vaciar",
+                "scheduleUses": "usado en {{count}} franjas horarias",
+                "restore": "Restaurar",
+                "close": "Cerrar",
+                "hint": "Los temas eliminados permanecen aquí (los {{limit}} más recientes) hasta que los restaures o los borres definitivamente. Al restaurar, solo se recuperan las franjas horarias que siguen libres.",
+                "emptyList": "La papelera está vacía",
+                "restoring": "Restaurando…",
+                "restored": "Se restauró «{{name}}».",
+                "restoredWithSchedule": "Se restauró «{{name}}» y {{count}} franjas horarias.",
+                "restoreFailed": "No se pudo restaurar el tema: {{error}}",
+                "confirmEmpty": "¿Eliminar definitivamente {{count}} elementos de la papelera? No podrás recuperarlos.",
+                "emptying": "Vaciando la papelera…",
+                "emptied": "Papelera vaciada",
+                "emptyFailed": "No se pudo vaciar la papelera: {{error}}"
+            },
             "file": {
                 "readFailed": "No se pudo leer el archivo",
                 "readFailedNotice": "No se pudo leer el archivo: {{error}}"

@@ -52,6 +52,7 @@ from ._sdk_compat import (
 
 from . import assets as _assets
 from . import materials as _materials
+from . import trash as _trash
 from .i18n import msg as _msg
 
 # ---------------------------------------------------------------------------- paths
@@ -595,6 +596,10 @@ IMAGE_MAX_BYTES = 4 * 1024 * 1024
 ARCHIVE_MAX_ENTRIES = 300
 ARCHIVE_MAX_UNCOMPRESSED = 24 * 1024 * 1024
 LIBRARY_MAX_ITEMS = 200
+#: Deleted library entries kept in ``<data_dir>/trash`` for undo / restore; older ones are pruned on delete.
+TRASH_LIMIT = 30
+#: Recycle bin directory name under the data dir. Kept outside ``themes/`` so library globs never see it.
+TRASH_DIR_NAME = "trash"
 # Each theme has one JSON, and light/dark mode may each reference one background image; plus the manifest and readme.
 LIBRARY_ARCHIVE_MAX_ENTRIES = LIBRARY_MAX_ITEMS * 3 + 2
 #: box-shadow may stack multiple comma-separated layers (common in neon/glow themes: two halos in different colors).
@@ -2000,6 +2005,8 @@ class ThemeStudioService(NekoPluginBase):
                 {"id": "save_theme", "entry_id": "save_theme"},
                 {"id": "apply_saved_theme", "entry_id": "apply_saved_theme"},
                 {"id": "delete_theme", "entry_id": "delete_theme"},
+                {"id": "restore_theme", "entry_id": "restore_theme"},
+                {"id": "clear_trash", "entry_id": "clear_trash"},
                 {"id": "update_theme_meta", "entry_id": "update_theme_meta"},
                 {"id": "import_theme_archive", "entry_id": "import_theme_archive"},
                 {"id": "export_theme_archive", "entry_id": "export_theme_archive"},
@@ -2083,6 +2090,11 @@ class ThemeStudioService(NekoPluginBase):
                 "enabled": bool(raw_diag.get("enabled")),
                 "errors": _clean_list(raw_diag.get("errors"), 200, 5),
             }
+        try:
+            trash = self._trash_stats()
+        except OSError as exc:
+            self._log("warning", f"Could not read the theme trash: {exc}")
+            trash = {"count": 0, "files": 0, "bytes": 0, "limit": TRASH_LIMIT, "items": []}
         return Ok(
             {
                 "data_dir": str(self.data_dir),
@@ -2090,6 +2102,7 @@ class ThemeStudioService(NekoPluginBase):
                 "theme_name": _clip_name(palette.get("name"), DEFAULT_THEME_NAME),
                 "theme_enabled": bool(palette.get("enabled")),
                 "theme_updated_at": str(palette.get("updated_at") or ""),
+                "trash": trash,
                 "light_vars": len(palette.get("vars") or {}),
                 "dark_vars": len(palette.get("dark_vars") or {}),
                 "library_count": library_count,
@@ -2855,6 +2868,13 @@ class ThemeStudioService(NekoPluginBase):
     def _library_dir(self) -> Path:
         return self.data_dir / LIBRARY_DIR_NAME
 
+    def _trash_dir(self) -> Path:
+        return self.data_dir / TRASH_DIR_NAME
+
+    def _trash_stats(self) -> dict[str, Any]:
+        with _WRITE_LOCK:
+            return _trash.stats(self._trash_dir(), TRASH_LIMIT)
+
     def _backgrounds_dir(self) -> Path:
         return self.data_dir / BACKGROUND_DIR_NAME
 
@@ -3368,8 +3388,9 @@ class ThemeStudioService(NekoPluginBase):
                 self._log("warning", f"背景图回收已跳过：theme.json 暂时不可读（{exc}）")
                 return []
         # Likewise abort if library/preset entries cannot be read: they may reference images too.
+        # Trashed entries count as references: restoring one must bring its background back.
         unreadable = False
-        for directory in (self._library_dir(), self._presets_dir()):
+        for directory in (self._library_dir(), self._presets_dir(), self._trash_dir()):
             if not directory.is_dir():
                 continue
             for item in directory.glob("*.json"):
@@ -3685,9 +3706,16 @@ class ThemeStudioService(NekoPluginBase):
             label = _clip_name(name, DEFAULT_THEME_NAME)
             slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "theme"
             base = f"{slug[:32]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # An id still in the trash can be restored and may still be referenced by the
+            # schedule, so a new entry must not reuse it.
+            try:
+                reserved = {theme for _, theme, _, _ in _trash.batches(self._trash_dir())}
+            except OSError as exc:
+                self._log("warning", f"Could not list the theme trash: {exc}")
+                reserved = set()
             theme_id = base
             counter = 2
-            while (directory / f"{theme_id}.json").exists():
+            while theme_id in reserved or (directory / f"{theme_id}.json").exists():
                 theme_id = f"{base}-{counter}"
                 counter += 1
             record = {
@@ -4610,30 +4638,186 @@ class ThemeStudioService(NekoPluginBase):
         },
     )
     async def delete_theme(self, theme_id: Any = "", id: Any = "", **_):
-        theme_id = theme_id or id
+        # Decide/locate by **the id in the request**: the file name is the library's primary key (_library_items uses
+        # it too); the record's "id" field is just file content and, if hand-edited, points at another theme.
+        requested = str(theme_id or id or "").strip()
+        if not RE_THEME_ID.fullmatch(requested):
+            return Err(SdkError(_msg("library.delete.invalidId", theme_id=repr(requested))))
         try:
-            record = self._load_library_item(theme_id)
-            # Decide/locate by **the id in the request**: the file name is the library's primary key (_library_items uses
-            # it too); the record's "id" field is just file content and, if hand-edited, points at another theme.
-            requested = str(theme_id or "").strip()
-            if not RE_THEME_ID.match(requested):
-                raise SdkError(
-                    _msg("library.delete.invalidId", theme_id=repr(requested))
-                )
-            if self._preset_path(requested).is_file():
-                raise SdkError(_msg("library.delete.builtin"))
-            directory = self._library_dir().resolve()
-            path = (directory / f"{requested}.json").resolve()
-            if path.parent != directory:
-                raise SdkError(_msg("library.delete.outsideDir"))
-            if not path.is_file():
-                raise SdkError(_msg("library.entry.notFound", theme_id=requested))
-            path.unlink(missing_ok=True)
+            with _WRITE_LOCK:
+                if self._preset_path(requested).is_file():
+                    raise SdkError(_msg("library.delete.builtin"))
+                directory = self._library_dir()
+                trash = self._trash_dir()
+                path = directory / f"{requested}.json"
+                if path.is_symlink() or directory.is_symlink() or trash.is_symlink():
+                    raise SdkError(_msg("library.delete.outsideDir"))
+                if not path.is_file():
+                    raise SdkError(_msg("library.entry.notFound", theme_id=requested))
+                # The body is only read for its display name: a damaged entry can still be deleted.
+                record = _trash.read_record(path)
+                # The schedule is only read to remember which zones used this
+                # theme (for restore); this path never writes it, so a corrupt or
+                # locked schedule.json must not block the delete.
+                try:
+                    schedule = self._read_schedule(drop_missing=False, strict=True)
+                    refs = {
+                        key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
+                        for key in ("zones", "weekend_zones")
+                    }
+                except (OSError, ValueError) as exc:
+                    self._log("warning", f"Schedule unreadable, deleting without zone refs: {exc}")
+                    refs = {"zones": {}, "weekend_zones": {}}
+                trash.mkdir(parents=True, exist_ok=True)
+                now = datetime.now()
+                # The stamp orders the bin (newest first, pruning drops the oldest). The clock can be
+                # coarse (about 15 ms on some Windows builds), so keep it strictly after the newest batch.
+                existing = _trash.batches(trash)
+                latest = existing[0][0] if existing else ""
+                stamp = now.strftime("%Y%m%d-%H%M%S-%f")
+                if stamp <= latest:
+                    fmt = "%Y%m%d-%H%M%S-%f" if latest.count("-") == 2 else "%Y%m%d-%H%M%S"
+                    try:
+                        later = datetime.strptime(latest, fmt) + timedelta(microseconds=1)
+                        stamp = later.strftime("%Y%m%d-%H%M%S-%f")
+                    except ValueError:
+                        pass  # A hand-made name that is not a real date; ordering is best effort.
+                base = requested + "__" + stamp
+                body = trash / (base + ".json")
+                sidecar = trash / (base + ".meta.json")
+                if body.exists() or sidecar.exists():
+                    raise FileExistsError(base)
+                # Sidecar first: if the move then fails, it is removed again and the entry stays in the library.
+                _write_json_atomic(sidecar, {
+                    "id": requested, "name": _clip_name(record.get("name"), requested),
+                    "deleted_at": now.isoformat(), "schedule": refs,
+                })
+                try:
+                    path.replace(body)
+                except OSError:
+                    sidecar.unlink(missing_ok=True)
+                    raise
+                for _, _, old_body, old_sidecar in _trash.batches(trash)[TRASH_LIMIT:]:
+                    try:
+                        _trash.remove_batch(old_body, old_sidecar)
+                    except OSError as exc:
+                        self._log("warning", f"Could not prune theme trash: {exc}")
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("library.delete.failed", error=exc)))
-        return Ok({"deleted": True, "theme_id": str(theme_id)})
+        return Ok({"deleted": True, "theme_id": requested, "undo": True})
+
+    @plugin_entry(
+        id="restore_theme",
+        name=tr("entries.restore_theme.name", default="恢复已删除的主题"),
+        description=tr(
+            "entries.restore_theme.description",
+            default="从回收站恢复仓库主题，并把仍然空着的排程时段重新指向它。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "theme_id": {"type": "string", "maxLength": 64},
+                "id": {"type": "string", "maxLength": 64},
+            },
+        },
+    )
+    async def restore_theme(self, theme_id: Any = "", id: Any = "", **_):
+        requested = str(theme_id or id or "").strip()
+        if not RE_THEME_ID.fullmatch(requested):
+            return Err(SdkError(_msg("library.entry.invalidId")))
+        restored_zones: list[str] = []
+        try:
+            with _WRITE_LOCK:
+                directory = self._library_dir()
+                trash = self._trash_dir()
+                target = directory / f"{requested}.json"
+                if directory.is_symlink() or target.is_symlink() or trash.is_symlink():
+                    raise SdkError(_msg("library.trash.outsideDir"))
+                if target.exists() or self._preset_path(requested).exists():
+                    raise SdkError(_msg("library.trash.exists"))
+                match = next(
+                    (
+                        (body, sidecar)
+                        for _, theme, body, sidecar in _trash.batches(trash)
+                        if theme == requested and not body.is_symlink() and body.is_file()
+                    ),
+                    None,
+                )
+                if match is None:
+                    raise SdkError(_msg("library.trash.missing"))
+                directory.mkdir(parents=True, exist_ok=True)
+                if len(list(directory.glob("*.json"))) >= LIBRARY_MAX_ITEMS:
+                    raise SdkError(_msg("library.full", limit=LIBRARY_MAX_ITEMS))
+                body, sidecar = match
+                meta = _trash.read_record(sidecar)
+                refs = meta.get("schedule")
+                schedule = previous = None
+                if isinstance(refs, dict) and any(refs.values()):
+                    # Read-modify-write: strict, so an unreadable schedule fails the restore
+                    # (retryable) instead of being overwritten with defaults.
+                    schedule = self._read_schedule(drop_missing=False, strict=True)
+                    previous = {
+                        **schedule,
+                        "zones": dict(schedule["zones"]),
+                        "weekend_zones": dict(schedule["weekend_zones"]),
+                    }
+                    for key in ("zones", "weekend_zones"):
+                        bucket = refs.get(key)
+                        if not isinstance(bucket, dict):
+                            continue
+                        for zone in SCHEDULE_ZONES:
+                            # Only refill zones that are still free; a zone the user re-assigned meanwhile is kept.
+                            if bucket.get(zone) == requested and not schedule[key].get(zone):
+                                schedule[key][zone] = requested
+                                restored_zones.append(f"{key}.{zone}")
+                # Restored references are ignored until the library body reappears.
+                # If the process exits between the two writes, the user can retry this same restore.
+                if restored_zones:
+                    self._save_schedule_unlocked(schedule)
+                try:
+                    body.replace(target)
+                except OSError:
+                    if restored_zones:
+                        self._save_schedule_unlocked(previous)
+                    raise
+                # A leftover sidecar is harmless (it is pruned / cleared with its batch); the body is already back.
+                try:
+                    sidecar.unlink(missing_ok=True)
+                except OSError as exc:
+                    self._log("warning", f"Could not remove restored theme metadata: {exc}")
+        except SdkError as exc:
+            return Err(exc)
+        except (ValueError, OSError) as exc:
+            return Err(SdkError(_msg("library.trash.failed", error=exc)))
+        name = meta.get("name")
+        return Ok(
+            {
+                "restored": True,
+                "theme_id": requested,
+                "name": name if isinstance(name, str) and name else requested,
+                "schedule_restored": restored_zones,
+            }
+        )
+
+    @plugin_entry(
+        id="clear_trash",
+        name=tr("entries.clear_trash.name", default="清空回收站"),
+        description=tr("entries.clear_trash.description", default="永久清除回收站中的主题。"),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def clear_trash(self, **_):
+        removed = total = 0
+        try:
+            with _WRITE_LOCK:
+                for _, _, body, sidecar in _trash.batches(self._trash_dir()):
+                    count, size = _trash.remove_batch(body, sidecar)
+                    removed += count
+                    total += size
+        except OSError as exc:
+            return Err(SdkError(_msg("library.trash.failed", error=exc)))
+        return Ok({"removed": removed, "bytes": total, "count": 0})
 
     @plugin_entry(
         id="update_theme_meta",

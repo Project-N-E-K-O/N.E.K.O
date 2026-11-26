@@ -8783,6 +8783,27 @@
                 "failedNotice": "刪除失敗：{{error}}",
                 "failed": "刪除失敗"
             },
+            "trash": {
+                "deleted": "已將「{{name}}」移至資源回收筒。",
+                "undoDelete": "復原刪除",
+                "title": "資源回收筒",
+                "count": "{{count}} / {{limit}} 項 · {{size}}",
+                "view": "查看",
+                "empty": "清空",
+                "scheduleUses": "曾用於 {{count}} 個自動換主題時段",
+                "restore": "還原",
+                "close": "關閉",
+                "hint": "刪除的主題會先放在這裡，最多保留最近 {{limit}} 套，可還原或永久刪除。還原時只會重新佔用仍然空著的時段。",
+                "emptyList": "資源回收筒是空的",
+                "restoring": "正在還原…",
+                "restored": "已還原「{{name}}」。",
+                "restoredWithSchedule": "已還原「{{name}}」與 {{count}} 個自動換主題時段。",
+                "restoreFailed": "無法還原主題：{{error}}",
+                "confirmEmpty": "永久刪除資源回收筒中的 {{count}} 項？刪除後無法還原。",
+                "emptying": "正在清空資源回收筒…",
+                "emptied": "資源回收筒已清空",
+                "emptyFailed": "無法清空資源回收筒：{{error}}"
+            },
             "file": {
                 "readFailed": "讀取檔案失敗",
                 "readFailedNotice": "讀取檔案失敗：{{error}}"

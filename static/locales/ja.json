@@ -8783,6 +8783,27 @@
                 "failedNotice": "削除に失敗しました：{{error}}",
                 "failed": "削除に失敗しました"
             },
+            "trash": {
+                "deleted": "「{{name}}」をごみ箱に移動しました。",
+                "undoDelete": "削除を取り消す",
+                "title": "ごみ箱",
+                "count": "{{count}} / {{limit}} 件 · {{size}}",
+                "view": "表示",
+                "empty": "空にする",
+                "scheduleUses": "スケジュールの時間帯 {{count}} 件で使用",
+                "restore": "復元",
+                "close": "閉じる",
+                "hint": "削除したテーマは、復元または完全に削除するまでここに保管されます（最新 {{limit}} 件まで）。復元時は、まだ空いているスケジュールの時間帯にだけ戻します。",
+                "emptyList": "ごみ箱は空です",
+                "restoring": "復元中…",
+                "restored": "「{{name}}」を復元しました。",
+                "restoredWithSchedule": "「{{name}}」とスケジュールの時間帯 {{count}} 件を復元しました。",
+                "restoreFailed": "テーマを復元できませんでした：{{error}}",
+                "confirmEmpty": "ごみ箱内の {{count}} 件を完全に削除しますか？ この操作は取り消せません。",
+                "emptying": "ごみ箱を空にしています…",
+                "emptied": "ごみ箱を空にしました",
+                "emptyFailed": "ごみ箱を空にできませんでした：{{error}}"
+            },
             "file": {
                 "readFailed": "ファイルの読み込みに失敗しました",
                 "readFailedNotice": "ファイルの読み込みに失敗しました：{{error}}"

@@ -8783,6 +8783,27 @@
                 "failedNotice": "删除失败：{{error}}",
                 "failed": "删除失败"
             },
+            "trash": {
+                "deleted": "已将「{{name}}」移入回收站。",
+                "undoDelete": "撤销删除",
+                "title": "回收站",
+                "count": "{{count}} / {{limit}} 项 · {{size}}",
+                "view": "查看",
+                "empty": "清空",
+                "scheduleUses": "曾用于 {{count}} 个自动换主题时段",
+                "restore": "恢复",
+                "close": "关闭",
+                "hint": "删除的主题会先放在这里，最多保留最近 {{limit}} 套，可恢复或永久删除。恢复时只会重新占用仍然空着的时段。",
+                "emptyList": "回收站是空的",
+                "restoring": "正在恢复…",
+                "restored": "已恢复「{{name}}」。",
+                "restoredWithSchedule": "已恢复「{{name}}」和 {{count}} 个自动换主题时段。",
+                "restoreFailed": "无法恢复主题：{{error}}",
+                "confirmEmpty": "永久删除回收站中的 {{count}} 项？删除后无法恢复。",
+                "emptying": "正在清空回收站…",
+                "emptied": "回收站已清空",
+                "emptyFailed": "无法清空回收站：{{error}}"
+            },
             "file": {
                 "readFailed": "读取文件失败",
                 "readFailedNotice": "读取文件失败：{{error}}"

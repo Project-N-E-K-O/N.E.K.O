@@ -1916,8 +1916,19 @@ function setStatus(text, kind) {
   node.dataset.kind = kind || 'idle';
 }
 
-/** kind: 'ok' | 'warn' | 'error' — left accent bar and colours. Empty text hides the notice. */
-function showNotice(kind, text) {
+/**
+ * kind: 'ok' | 'warn' | 'error' — left accent bar and colours. Empty text hides the notice.
+ * action (optional): { label, onClick } — a button next to the text (e.g. "Undo deletion");
+ * any later notice without an action hides it again.
+ */
+function showNotice(kind, text, action) {
+  var button = $('notice-action');
+  if (button) {
+    var hasAction = !!(text && action && typeof action.onClick === 'function');
+    button.hidden = !hasAction;
+    button.textContent = hasAction ? String(action.label || '') : '';
+    button.onclick = hasAction ? function () { hideNotice(); action.onClick(); } : null;
+  }
   var node = $('notice');
   if (!node) return;
   if (!text) {
@@ -5453,8 +5464,17 @@ async function deleteLibraryItem(item, button) {
     // The backend silently drops slots that point to missing themes; the UI's
     // "now ... will switch to" must follow.
     if (scheduleState.loaded) await refreshSchedule();
-    showToast(tsT('library.delete.done', '已删除'), 'ok');
+    // The entry went to the trash, not away: offer the undo right here, and the status
+    // card's trash row lists it later.
+    var deleted = tsT('library.trash.deleted', '已将「{{name}}」移入回收站。', { name: String(item.name || item.id) });
+    var themeId = item.id;
+    showNotice('ok', deleted, {
+      label: tsT('library.trash.undoDelete', '撤销删除'),
+      onClick: function () { restoreTrashTheme(themeId); }
+    });
+    showToast(deleted, 'ok');
     setStatus(tsT('library.delete.doneStatus', '已删除仓库条目'), 'ok');
+    refreshHealth({});
   } catch (error) {
     // The button was disabled above; it must be restored on failure, otherwise the card
     // stays greyed out forever and clicks do nothing (the list signature excludes the
@@ -6558,6 +6578,22 @@ function renderHealth(info) {
   items.push(healthItem(tsT('health.key.backgrounds', '背景图'),
     tsT('health.backgroundCount', '{{count}} 张', { count: Number(info.background_count) || 0 }), 'ok'));
 
+  var trash = info.trash && typeof info.trash === 'object' ? info.trash : null;
+  var trashCount = trash ? Number(trash.count) || 0 : 0;
+  if (trashCount > 0) {
+    var trashItem = healthItem(tsT('library.trash.title', '回收站'),
+      tsT('library.trash.count', '{{count}} / {{limit}} 项 · {{size}}', {
+        count: trashCount,
+        limit: Number(trash.limit) || 30,
+        size: formatTrashSize(Number(trash.bytes) || 0)
+      }), 'ok');
+    trashItem.actions = [
+      { label: tsT('library.trash.view', '查看'), onClick: openTrashModal },
+      { label: tsT('library.trash.empty', '清空'), onClick: clearTrash }
+    ];
+    items.push(trashItem);
+  }
+
   var loaderVersion = String(info.loader_version || '');
   if (loaderVersion) {
     items.push(healthItem(tsT('health.key.loader', '加载器资源'), 'v' + loaderVersion
@@ -6617,6 +6653,13 @@ function renderHealth(info) {
     var li = el('li', { class: items[i].level === 'ok' ? '' : 'is-' + items[i].level });
     li.appendChild(el('span', { class: 'hk', text: tsT('health.keyLabel', '{{key}}：', { key: items[i].key }) }));
     li.appendChild(el('span', { class: 'hv', text: items[i].value }));
+    var acts = Array.isArray(items[i].actions) ? items[i].actions : [];
+    for (var a = 0; a < acts.length; a += 1) {
+      if (!acts[a] || typeof acts[a].onClick !== 'function') continue;
+      var actBtn = el('button', { class: 'hk-action', type: 'button', text: String(acts[a].label || '') });
+      actBtn.addEventListener('click', acts[a].onClick);
+      li.appendChild(actBtn);
+    }
     listNode.appendChild(li);
   }
 
@@ -6649,6 +6692,156 @@ function refreshHealth(options) {
       if (opts.toast) showToast(tsT('sync.loadFailedStatus', '读取失败'), 'error');
       return null;
     });
+}
+
+/* --------------------------------------------------------------------------
+ * 10f. Theme trash
+ *
+ * Deleting a library entry moves it to <data_dir>/trash (see delete_theme); the
+ * last TRASH_LIMIT deletions stay restorable. studio_status reports them in
+ * `trash`; the status card shows a row with "View" / "Empty" when it is not empty.
+ * -------------------------------------------------------------------------- */
+
+var trashModalEl = null;
+
+function formatTrashSize(bytes) {
+  if (bytes >= 1024 * 1024) return (Math.round(bytes / 1024 / 102.4) / 10) + ' MB';
+  if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+  return bytes + ' B';
+}
+
+function trashItemsFromStatus() {
+  var status = state.status || {};
+  var trash = status.trash && typeof status.trash === 'object' ? status.trash : {};
+  var items = Array.isArray(trash.items) ? trash.items : [];
+  return items.filter(function (item) { return item && item.theme_id; });
+}
+
+/** "2026-11-26T10:41:21.123456" -> "2026-11-26 10:41:21" (local time as the backend wrote it). */
+function formatTrashTime(value) {
+  var text = String(value || '');
+  if (!text) return '—';
+  return text.replace('T', ' ').replace(/\.[0-9]+/, '').replace(/([+-][0-9]{2}:[0-9]{2}|Z)$/, '');
+}
+
+function renderTrashList() {
+  if (!trashModalEl) return;
+  var listNode = trashModalEl.querySelector('.trash-list');
+  var emptyNode = trashModalEl.querySelector('.trash-empty');
+  while (listNode.firstChild) listNode.removeChild(listNode.firstChild);
+  var items = trashItemsFromStatus();
+  emptyNode.hidden = items.length > 0;
+  items.forEach(function (item) {
+    var zones = Number(item.schedule_zones) || 0;
+    var meta = formatTrashTime(item.deleted_at)
+      + (zones > 0 ? ' · ' + tsT('library.trash.scheduleUses', '曾用于 {{count}} 个自动换主题时段', { count: zones }) : '');
+    var restore = el('button', {
+      class: 'trash-action',
+      type: 'button',
+      text: tsT('library.trash.restore', '恢复')
+    });
+    // A batch whose body is gone (interrupted move) is listed but cannot be restored.
+    restore.disabled = item.restorable === false;
+    restore.addEventListener('click', function () { restoreTrashTheme(item.theme_id, restore); });
+    listNode.appendChild(el('div', { class: 'trash-row', 'data-theme-id': String(item.theme_id) }, [
+      el('div', { class: 'trash-main' }, [
+        el('div', { class: 'trash-name', text: String(item.name || item.theme_id) }),
+        el('div', { class: 'trash-meta', text: meta })
+      ]),
+      restore
+    ]));
+  });
+}
+
+function closeTrashModal() {
+  if (!trashModalEl) return;
+  trashModalEl.remove();
+  trashModalEl = null;
+  var button = document.querySelector('#health-list .hk-action');
+  if (button) button.focus();
+}
+
+function openTrashModal() {
+  if (trashModalEl) return;
+  var title = tsT('library.trash.title', '回收站');
+  var closeBtn = el('button', { class: 'trash-action', type: 'button', text: tsT('library.trash.close', '关闭') });
+  var panel = el('div', { class: 'trash-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [
+    el('div', { class: 'trash-head' }, [el('h3', { text: title }), closeBtn]),
+    el('p', {
+      class: 'trash-hint',
+      text: tsT('library.trash.hint', '删除的主题会先放在这里，最多保留最近 {{limit}} 套，可恢复或永久删除。恢复时只会重新占用仍然空着的时段。',
+        { limit: Number(((state.status || {}).trash || {}).limit) || 30 })
+    }),
+    el('div', { class: 'trash-list' }),
+    el('div', { class: 'trash-empty', text: tsT('library.trash.emptyList', '回收站是空的') })
+  ]);
+  trashModalEl = el('div', { class: 'trash-modal', id: 'trash-modal' }, [panel]);
+  document.body.appendChild(trashModalEl);
+  trashModalEl.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') { event.preventDefault(); closeTrashModal(); }
+    else if (event.key === 'Tab') trapModalFocus(event, panel);
+  });
+  trashModalEl.addEventListener('mousedown', function (event) {
+    if (event.target === trashModalEl) closeTrashModal();
+  });
+  closeBtn.addEventListener('click', closeTrashModal);
+  renderTrashList();
+  closeBtn.focus();
+}
+
+/** Restore one trashed entry (from the trash dialog or the "Undo deletion" notice). */
+async function restoreTrashTheme(themeId, button) {
+  if (state.busy) return;
+  if (button) button.disabled = true;
+  setBusy(true, tsT('library.trash.restoring', '正在恢复…'));
+  try {
+    var res = await callPlugin('restore_theme', { id: themeId }) || {};
+    var zones = Array.isArray(res.schedule_restored) ? res.schedule_restored.length : 0;
+    var name = String(res.name || themeId);
+    var message = zones > 0
+      ? tsT('library.trash.restoredWithSchedule', '已恢复「{{name}}」和 {{count}} 个自动换主题时段。', { name: name, count: zones })
+      : tsT('library.trash.restored', '已恢复「{{name}}」。', { name: name });
+    showToast(message, 'ok');
+    setStatus(message, 'ok');
+    await refreshLibrary();
+    if (scheduleState.loaded) await refreshSchedule();
+    await refreshHealth({});
+    if (trashModalEl) {
+      if (trashItemsFromStatus().length) renderTrashList();
+      else closeTrashModal();
+    }
+  } catch (error) {
+    if (button) button.disabled = false;
+    var failed = tsT('library.trash.restoreFailed', '无法恢复主题：{{error}}', { error: pluginErrorMessage(error) });
+    showToast(failed, 'error');
+    setStatus(failed, 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+/** Permanently delete everything in the trash (after a confirm). */
+async function clearTrash() {
+  if (state.busy) return;
+  var count = trashItemsFromStatus().length;
+  if (!window.confirm(tsT('library.trash.confirmEmpty', '永久删除回收站中的 {{count}} 项？删除后无法恢复。', { count: count }))) {
+    return;
+  }
+  setBusy(true, tsT('library.trash.emptying', '正在清空回收站…'));
+  try {
+    await callPlugin('clear_trash', {});
+    var done = tsT('library.trash.emptied', '回收站已清空');
+    showToast(done, 'ok');
+    setStatus(done, 'ok');
+    closeTrashModal();
+    await refreshHealth({});
+  } catch (error) {
+    var failed = tsT('library.trash.emptyFailed', '无法清空回收站：{{error}}', { error: pluginErrorMessage(error) });
+    showToast(failed, 'error');
+    setStatus(failed, 'error');
+  } finally {
+    setBusy(false);
+  }
 }
 
 /**
@@ -6722,9 +6915,12 @@ function closeModal() {
   }
 }
 
-/** While the modal is open, keep Tab inside it so focus does not reach the row editors behind. */
-function trapModalFocus(event) {
-  var panel = $('modal-panel') || $('modal');
+/**
+ * While a modal is open, keep Tab inside it so focus does not reach the row editors behind.
+ * dialog (optional): the dialog element to trap in; defaults to the shared #modal.
+ */
+function trapModalFocus(event, dialog) {
+  var panel = dialog || $('modal-panel') || $('modal');
   if (!panel) return;
   var nodes = panel.querySelectorAll('button, textarea, input, [tabindex]:not([tabindex="-1"])');
   var list = Array.prototype.filter.call(nodes, function (node) {
@@ -7610,6 +7806,8 @@ function wireEvents() {
   });
 
   document.addEventListener('keydown', function (event) {
+    // The trash dialog handles its own keys; nothing behind it may react.
+    if (trashModalEl) return;
     var modalOpen = !$('modal').hidden;
     if (event.key === 'Escape' && modalOpen) { closeModal(); return; }
     if (event.key === 'Tab' && modalOpen) { trapModalFocus(event); return; }

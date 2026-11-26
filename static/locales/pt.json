@@ -8783,6 +8783,27 @@
                 "failedNotice": "Falha ao excluir: {{error}}",
                 "failed": "Falha ao excluir"
             },
+            "trash": {
+                "deleted": "“{{name}}” foi movido para a lixeira.",
+                "undoDelete": "Desfazer exclusão",
+                "title": "Lixeira",
+                "count": "{{count}} de {{limit}} itens · {{size}}",
+                "view": "Ver",
+                "empty": "Esvaziar",
+                "scheduleUses": "usado em {{count}} períodos programados",
+                "restore": "Restaurar",
+                "close": "Fechar",
+                "hint": "Os temas excluídos ficam aqui (os {{limit}} mais recentes) até você restaurá-los ou removê-los de vez. Ao restaurar, só os períodos programados que ainda estão livres são recuperados.",
+                "emptyList": "A lixeira está vazia",
+                "restoring": "Restaurando…",
+                "restored": "“{{name}}” restaurado.",
+                "restoredWithSchedule": "“{{name}}” restaurado com {{count}} períodos programados.",
+                "restoreFailed": "Não foi possível restaurar o tema: {{error}}",
+                "confirmEmpty": "Excluir permanentemente {{count}} itens da lixeira? Eles não poderão ser restaurados.",
+                "emptying": "Esvaziando a lixeira…",
+                "emptied": "Lixeira esvaziada",
+                "emptyFailed": "Não foi possível esvaziar a lixeira: {{error}}"
+            },
             "file": {
                 "readFailed": "Falha ao ler o arquivo",
                 "readFailedNotice": "Falha ao ler o arquivo: {{error}}"
