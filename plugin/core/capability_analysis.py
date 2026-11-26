@@ -354,13 +354,16 @@ def _untrusted(name: str, bindings) -> bool:
 
 
 def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bool:
-    """The family argument statically resolves to socket.AF_UNIX, through
-    names that are not rebound (for socket in ...: socket.AF_UNIX is not)."""
+    """The family argument is spelled AF_UNIX (socket.AF_UNIX, AF_UNIX) and
+    statically resolves to it, through names that are not rebound (for
+    socket in ...: socket.AF_UNIX is not). Aliases (family = ...) are not
+    followed: only these few spellings are trusted."""
     argument = _call_argument(call, index, "family")
     # Cheap test first: this runs at every call level of every chain.
-    # A bare name may be an alias (family = socket.AF_UNIX); a dotted one
-    # must end in AF_UNIX.
-    if not (isinstance(argument, ast.Name) or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")):
+    if not (
+        (isinstance(argument, ast.Name) and argument.id == "AF_UNIX")
+        or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")
+    ):
         return False
     if index == 0 and (
         len(call.args) > 3
@@ -380,7 +383,7 @@ def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bo
 def _local_construction(node: ast.Call, called: str, external, bound, bindings) -> bool:
     """socket.socket(AF_UNIX) or create_datagram_endpoint(family=AF_UNIX)
     itself (family is keyword-only on create_datagram_endpoint)."""
-    if not (external and bound):
+    if not (external and bound) or _untrusted(_root_name(_dotted_name(node.func)), bindings):
         return False
     if called == "socket.socket":
         return _unix_family(node, 0, bindings)
@@ -531,7 +534,11 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
                     # or an attribute of a literal import; a longer chain is
                     # left to the next steps of this walk.
                     dotted = _dotted_name(func, walker)
-                    called, external, bound = _resolve_with_origin(dotted, bindings) if dotted else (None, False, False)
+                    called, external, bound = (
+                        _resolve_with_origin(dotted, bindings)
+                        if dotted and not _untrusted(_root_name(dotted), bindings)
+                        else (None, False, False)
+                    )
                     if not dotted and isinstance(func, ast.Attribute):
                         imported = _literal_import(func.value, bindings)
                         if imported is not None:
@@ -625,12 +632,14 @@ def _references(tree, walker: _AnalysisWalker):
         # this scope: not known to keep one value (only weakens local-socket
         # tracking; the aliases themselves resolve as before).
         assigned = {key for key, _value in assignments}
-        imported = {
-            item.asname or item.name.split(".")[0]
-            for node in nodes
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for item in node.names
-        } & assigned
+        import_counts: dict[str, int] = {}
+        for node in nodes:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for item in node.names:
+                    name = item.asname or item.name.split(".")[0]
+                    import_counts[name] = import_counts.get(name, 0) + 1
+        # Imported and also assigned, or imported more than once.
+        imported = {name for name, count in import_counts.items() if count > 1 or name in assigned}
         comprehended = set().union(*comprehension_locals.values()) if comprehension_locals else set()
         # Names a match pattern captures (case s:, case [*s], case {**s}).
         captured = {
@@ -878,7 +887,8 @@ def _build_bindings(declared, inherited, nodes, walker):
             if key[len(_UNTRUSTED):] not in declared:
                 bindings[key] = value
         elif key.partition(".")[0] not in declared:
-            bindings[key] = value
+            # A local socket is only trusted in the scope that made it.
+            bindings[key] = (_unmark_local_socket(value[0])[0], value[1]) if value[0] else value
     for node in nodes:
         walker.check()
         if isinstance(node, ast.ImportFrom):
@@ -926,15 +936,8 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
     # A family name already bound (imported or inherited) and also assigned
     # here (from socket import AF_UNIX; AF_UNIX = 2).
     uncertain.update(key for key in counts if bindings.get(key, (None,))[0] in _UNIX_FAMILIES)
-    # self.x already bound by the class to something other than this local
-    # socket (another method sets it, or it is set through setattr).
-    uncertain.update(
-        key
-        for key in counts
-        if "." in key and key in bindings and not (bindings[key][0] or "").startswith(_UNIX_SOCKET)
-    )
-    # Root name each plain-name assignment reads from (alias = family).
-    roots: dict[str, str] = {}
+    # Root names each plain-name assignment reads from (alias = family).
+    roots: dict[str, set[str]] = {}
     readers: dict[str, list[str]] = {}
     for key, node in assignments:
         walker.check()
@@ -942,7 +945,7 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
             root = _root_name(_plain_name(node))
             if root:
                 readers.setdefault(root, []).append(key)
-                roots[key] = root
+                roots.setdefault(key, set()).add(root)
     # Aliases of an uncertain name are uncertain too.
     pending = list(uncertain)
     while pending:
@@ -957,26 +960,16 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         if "." not in key:
             bindings[_UNTRUSTED + key] = (None, False)
     # Assignments whose getattr / socket root leads back to themselves
-    # (b = getattr(a, "x"); a = getattr(b, "y")) would grow on every round;
-    # they keep the reading they had before getattr was followed. Each name
-    # is walked once (white / on the current path / done).
-    cyclic: set[str] = set()
-    done: set[str] = set()
-    for start in roots:
-        path: list[str] = []
-        on_path: set[str] = set()
-        name = start
-        while name in roots and name not in done and name not in on_path:
-            walker.check()
-            path.append(name)
-            on_path.add(name)
-            name = roots[name]
-        if name in on_path:
-            cyclic.update(path[path.index(name):])
-        done.update(path)
+    # through any assignment of the names involved (b = getattr(a, "x");
+    # a = getattr(b, "y"), also when b is reassigned later) would grow on
+    # every round; they keep the reading they had before getattr was followed.
+    cyclic = _cyclic_names(roots, walker)
 
-    def bind(key, resolved, external):
-        if key in uncertain:
+    def bind(key, resolved, external, construction=False):
+        # Only a plain name assigned once, straight from the construction,
+        # keeps the local-socket marker (not attributes, aliases or names
+        # bound any other way).
+        if key in uncertain or "." in key or not construction:
             resolved = _unmark_local_socket(resolved)[0]
         binding = resolved, external
         resolved_bindings[key] = binding
@@ -999,7 +992,7 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
                 literal[3] == _ROOT_IMPORT
                 or (key not in cyclic and not _references_binding(_plain_name(node), key))
             ):
-                bind(key, literal[0], literal[1])
+                bind(key, literal[0], literal[1], literal[3] == _ROOT_SOCKET)
                 continue
             value = _name(node)
             if not value or _references_binding(value, key):
@@ -1027,93 +1020,67 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         previous = state
 
 
+def _cyclic_names(roots: dict[str, set[str]], walker) -> set[str]:
+    """Names on a cycle of the name -> root-names graph (Tarjan, iterative,
+    linear in the number of edges)."""
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    cyclic: set[str] = set()
+    for start in roots:
+        if start in index:
+            continue
+        work = [(start, iter(roots.get(start, ())))]
+        index[start] = low[start] = len(index)
+        stack.append(start)
+        on_stack.add(start)
+        while work:
+            walker.check()
+            name, edges = work[-1]
+            for nxt in edges:
+                if nxt not in roots:
+                    continue
+                if nxt not in index:
+                    index[nxt] = low[nxt] = len(index)
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, iter(roots[nxt])))
+                    break
+                if nxt in on_stack:
+                    low[name] = min(low[name], index[nxt])
+            else:
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    low[parent] = min(low[parent], low[name])
+                if low[name] == index[name]:
+                    component = []
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        component.append(member)
+                        if member == name:
+                            break
+                    if len(component) > 1 or name in roots.get(name, ()):
+                        cyclic.update(component)
+    return cyclic
+
+
 def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     """Collect self assignments from methods without inheriting method locals."""
     assignments = []
-    set_through: set[str] = set()
-    writes: dict[str, int] = {}
-    # A class attribute (sock = socket.socket() in the class body) is what
-    # self.sock holds until a method replaces it.
-    for statement in node.body:
-        walker.check()
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            names: set[str] = set()
-            for target in targets:
-                _target_names(target, names)
-            set_through.update(f"self.{name}" for name in names)
     for method in node.body:
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = method.args
-            nodes = list(walker.scope_nodes(method.body))
+            nodes = walker.scope_nodes(method.body)
             _, method_assignments = _collect_declarations(nodes, (), walker)
-            own = [(key, value) for key, value in method_assignments if key.startswith("self.")]
-            assignments.extend(own)
-            # Parameters and locals of this method are not shadowed here (as
-            # before): a self.x whose socket family is spelled with one of
-            # them (def __init__(self, AF_UNIX) / AF_UNIX = socket.AF_INET)
-            # is not known to be local.
-            local = {
-                arg.arg
-                for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
-                if arg is not None
-            } | {key for key, _value in method_assignments if "." not in key}
-            set_through.update(key for key, value in own if _family_root_in(value, local, walker))
-            _self_writes(method, writes, set_through, walker)
-    # self.x written in a way the alias resolution does not follow (a tuple,
-    # for / with / augmented target, a nested function, setattr): another
-    # value may be stored there. Cross-class writes (o.x = ..., a subclass)
-    # are not seen either; the local-socket downgrade accepts that.
-    plain: dict[str, int] = {}
-    for key, _value in assignments:
-        plain[key] = plain.get(key, 0) + 1
-    set_through.update(key for key, count in writes.items() if count > plain.get(key, 0))
-    if "*" in set_through:
-        set_through.update(key for key, _value in assignments)
+            assignments.extend(
+                (key, value) for key, value in method_assignments if key.startswith("self.")
+            )
     class_bindings = dict(bindings)
-    _propagate_assignments(assignments, class_bindings, walker, shared | set_through)
+    _propagate_assignments(assignments, class_bindings, walker, shared)
     return class_bindings
-
-
-def _family_root_in(value: ast.AST, names: set[str], walker) -> bool:
-    """A call in value passes a family (first argument or family=) rooted
-    in one of names."""
-    for node in ast.walk(value):
-        walker.poll()
-        if isinstance(node, ast.Call):
-            argument = _call_argument(node, 0, "family")
-            if isinstance(argument, (ast.Name, ast.Attribute)) and _root_name(_dotted_name(argument)) in names:
-                return True
-    return False
-
-
-def _self_writes(method, writes: dict[str, int], set_through: set[str], walker) -> None:
-    """Count every store to self.x in a method, nested scopes included, and
-    note setattr(self, ...) and aliases of self ("*": any attribute)."""
-    for node in ast.walk(method):
-        walker.poll()
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.ctx, (ast.Store, ast.Del))
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-        ):
-            key = f"self.{node.attr}"
-            writes[key] = writes.get(key, 0) + 1
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("setattr", "delattr"):
-            if node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "self":
-                attribute = _literal_string(node.args[1]) if len(node.args) > 1 else None
-                set_through.add(f"self.{attribute}" if attribute else "*")
-        elif isinstance(node, ast.Attribute) and node.attr == "__dict__" and isinstance(node.value, ast.Name) and node.value.id == "self":
-            set_through.add("*")
-        elif (
-            isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-        ):
-            # me = self; me.x = ...
-            set_through.add("*")
 
 
 def _qualified(function: str, name: str) -> str:

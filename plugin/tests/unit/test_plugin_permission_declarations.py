@@ -2222,11 +2222,7 @@ def test_aliased_getattr_with_a_constant_name_is_still_a_blind_spot(tmp_path):
         "import socket\ns = socket.socket(family=socket.AF_UNIX, type=socket.SOCK_STREAM)\ns.listen()\n",
         "import socket\ns = socket.socket(socket.AddressFamily.AF_UNIX)\ns.listen()\n",
         "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
-        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
-        "import socket\nfamily = socket.AF_UNIX\ns = socket.socket(family)\ns.listen()\n",
         "from socket import socket as sock, AF_UNIX\ns = sock(AF_UNIX)\ns.listen()\n",
-        ("import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
-         "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n"),
     ],
 )
 def test_unix_socket_servers_are_only_possible_evidence(tmp_path, source):
@@ -2480,8 +2476,11 @@ def test_self_attributes_written_in_other_ways_are_not_local(tmp_path, write):
     assert _scan(tmp_path, _SELF_SOCKET.format(write))["permissions"][LISTEN]["basis"] == "resolved_call"
 
 
-def test_a_self_attribute_set_only_to_a_unix_socket_is_local(tmp_path):
-    assert _scan(tmp_path, _SELF_SOCKET.format("pass"))["permissions"][LISTEN]["basis"] == "resolved_name"
+def test_self_attributes_are_never_local(tmp_path):
+    # Only a plain local name keeps the marker; the construction itself
+    # stays possible evidence.
+    report = _scan(tmp_path, _SELF_SOCKET.format("pass"))
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_call"}
 
 def test_followed_getattr_on_an_environment_value_adds_no_evidence(tmp_path):
     (tmp_path / "plain").mkdir()
@@ -2565,7 +2564,7 @@ def test_alias_cycles_that_settle_resolve_as_before(tmp_path):
             "s = socket.socket(alias)\ns.listen()\n",
             "resolved_call",
         ),
-        ("import socket\nfamily = socket.AF_UNIX\nalias = family\ns = socket.socket(alias)\ns.listen()\n", "resolved_name"),
+        ("import socket\nfamily = socket.AF_UNIX\nalias = family\ns = socket.socket(alias)\ns.listen()\n", "resolved_call"),
         # A method local shadowing the module constant.
         (
             "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
@@ -2600,13 +2599,13 @@ def test_long_alias_chains_stay_within_budget(tmp_path, monkeypatch):
         (
             "import socket\nclass C:\n    def __init__(self):\n        self.s = socket.socket(socket.AF_UNIX)\n"
             "    def other(self):\n        AF_UNIX = 1\n    def go(self):\n        self.s.listen()\n",
-            "resolved_name",
+            "resolved_call",
         ),
         (
             "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
             "        self.s = socket.socket(AF_UNIX)\n    def other(self, AF_UNIX):\n        pass\n"
             "    def go(self):\n        self.s.listen()\n",
-            "resolved_name",
+            "resolved_call",
         ),
         # A class attribute default is another socket self.sock may hold.
         (
@@ -2616,5 +2615,86 @@ def test_long_alias_chains_stay_within_budget(tmp_path, monkeypatch):
         ),
     ],
 )
-def test_self_attribute_family_trust_is_judged_per_method(tmp_path, source, basis):
+def test_self_attribute_sockets_keep_direct_evidence(tmp_path, source, basis):
     assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Aliases of the socket or of the family are not followed.
+        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ns.listen()\n",
+        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
+        "import socket\nfamily = socket.AF_UNIX\ns = socket.socket(family)\ns.listen()\n",
+        # Nor is a socket made in another scope, or stored in an attribute.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    s.listen()\n",
+        (
+            "import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n"
+        ),
+        # Constructor alias assigned twice, name bound by two imports, a
+        # nested alias of a family, self.s = parameter, a method import
+        # shadowing AF_UNIX, object.__setattr__, a module attribute, a
+        # family bound by two imports.
+        "import socket, evil\nmake = evil.factory\nif c:\n    make = socket.socket\nmake(socket.AF_UNIX).listen()\n",
+        "from evil import socket\nif 0:\n    import socket\ns = socket.socket(socket.AF_UNIX)\ns.listen()\n",
+        (
+            "import socket\nfrom socket import AF_INET, AF_UNIX\nfamily = AF_INET\nif c:\n    family = AF_UNIX\n"
+            "def f():\n    fam = family\n    socket.socket(fam).listen()\n"
+        ),
+        (
+            "import socket\nsock = socket.socket(socket.AF_UNIX)\nclass C:\n    def __init__(self, sock):\n"
+            "        self.s = sock\n    def go(self):\n        self.s.listen()\n"
+        ),
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        from mylib import AF_UNIX\n        self.s = socket.socket(AF_UNIX)\n"
+            "    def go(self):\n        self.s.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def other(self):\n        object.__setattr__(self, 'sock', socket.socket())\n"
+            "    def go(self):\n        self.sock.listen()\n"
+        ),
+        (
+            "import socket, ns\nns.sock = socket.socket(socket.AF_UNIX)\ndef f():\n    ns.sock = socket.socket()\n"
+            "def g():\n    ns.sock.listen()\n"
+        ),
+        (
+            "import socket\nfrom socket import AF_INET as family\nif use_unix:\n    from socket import AF_UNIX as family\n"
+            "s = socket.socket(family)\ns.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    sock = None\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def go(self):\n        self.sock.listen()\n"
+        ),
+    ],
+)
+def test_only_the_narrow_local_socket_shapes_are_trusted(tmp_path, source):
+    # On main all of these are resolved_call.
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind('/p')\ns.listen()\n",
+        "import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    s.listen()\n",
+        "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
+    ],
+)
+def test_the_narrow_local_socket_shapes_are_possible_evidence(tmp_path, source):
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize("long_tail", [False, True])
+def test_getattr_cycles_through_an_earlier_assignment_are_detected(tmp_path, long_tail):
+    # b is reassigned after the cycle, which runs through its earlier
+    # assignment. As on main: completed, nothing lost.
+    source = "import pathlib as a\nimport x\nimport subprocess\nb = getattr(a, 'Path')\na = getattr(b, 'cwd')\nb = x\n"
+    source += "".join(f"v{i} = {i}\n" for i in range(300)) if long_tail else ""
+    source += "a.push_message()\nsubprocess.run([])\n"
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["capabilities"] == ["messages.push"]
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
