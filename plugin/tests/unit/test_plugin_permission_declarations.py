@@ -2897,3 +2897,92 @@ def test_a_family_name_used_as_data_disables_the_downgrade(tmp_path, main_prefix
     files = {"net_setup.py": other} if other else {}
     report = _scan(tmp_path, source, **files)
     assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "main_prefix,other",
+    [
+        ("setattr(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import sys\nsetattr(socket, sys.argv[1], 2)\n", None),
+        ("setattr(socket, b'AF_UNIX'.decode(), 2)\n", None),
+        ("exec(b'socket.AF_' b'UNIX = 2')\n", None),
+        ("import builtins\ngetattr(builtins, 'set' + 'attr')(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import builtins\nw = getattr(builtins, 'setattr')\n", None),
+        ("w = setattr\n", None),
+        ("for key in socket.__dict__:\n    pass\n", None),
+        ("globals()['AF_' + 'UNIX'] = 2\n", None),
+        ("import sys\nsys.modules['sock' + 'et'] = object()\n", None),
+        # In another file.
+        ("", "import socket\nx = 'F_UNIX'\nsetattr(socket, 'A' + x, 2)\n"),
+    ],
+)
+def test_a_family_name_built_at_runtime_disables_the_downgrade(tmp_path, main_prefix, other):
+    source = _UNIX_SERVER.replace("import socket\n", "import socket\n" + main_prefix, 1)
+    files = {"net_setup.py": other} if other else {}
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "class C:\n    def __init__(self):\n        setattr(self, 'name', 1)\n        object.__setattr__(self, 'x', 2)\n",
+        "class C:\n    def __init__(self):\n        self.__setattr__('name', 1)\n        getattr(self, 'name')\n",
+    ],
+)
+def test_a_constant_attribute_name_keeps_the_downgrade(tmp_path, prefix):
+    report = _scan(tmp_path, _UNIX_SERVER + prefix)
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+_REINIT_CLIENT = "import socket\ndef go():\n    s = socket.socket(socket.AF_UNIX)\n    {}\n    s.connect(('evil.com', 80))\n"
+
+
+@pytest.mark.parametrize(
+    "use,downgraded",
+    [
+        ("s.setblocking(False)", True),
+        ("s.__init__(socket.AF_INET)", False),
+        ("getattr(s, '__init__')(2)", False),
+        ("socket.socket.__init__(s, socket.AF_INET)", False),
+        ("reinit(s)", False),
+        ("t = s", False),
+        ("return s", False),
+        ("s._sock = None", False),
+        ("def inner():\n        s.__init__(socket.AF_INET)\n    inner()", False),
+    ],
+)
+def test_a_socket_used_other_than_as_a_receiver_is_not_trusted(tmp_path, use, downgraded):
+    report = _scan(tmp_path, _REINIT_CLIENT.format(use))
+    assert _bases(report) == {CONNECT: "resolved_name" if downgraded else "resolved_call"}
+
+
+def test_a_socket_reinitialised_by_a_module_helper_is_not_trusted(tmp_path):
+    source = (
+        "import socket\ndef reinit(x):\n    x.__init__(socket.AF_INET)\ndef go():\n"
+        "    s = socket.socket(socket.AF_UNIX)\n    reinit(s)\n    s.connect(('evil.com', 80))\n"
+    )
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "import socket\nimport main\nmain.s.__init__(socket.AF_INET)\n",
+        "import main\ngetattr(main.s, '__init__')(2)\n",
+    ],
+)
+def test_a_module_socket_reinitialised_from_another_file_is_not_trusted(tmp_path, other):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_super_init_keeps_the_downgrade(tmp_path):
+    source = _UNIX_SERVER + "class C(object):\n    def __init__(self):\n        super().__init__()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize("name", ["socket.py", "lib/socket.py", "socket/__init__.py"])
+def test_a_plugin_module_named_socket_disables_the_downgrade(tmp_path, name):
+    report = _scan(tmp_path, _UNIX_SERVER, **{name: "AF_UNIX = 2\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}

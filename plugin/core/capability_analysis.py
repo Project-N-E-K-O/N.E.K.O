@@ -372,16 +372,47 @@ _FAMILIES_WRITTEN = _UNTRUSTED + "*families"
 _FAMILY_NAMES = ("AF_UNIX", "AddressFamily")
 
 
+# Names that can rewrite a module attribute or run code built at runtime.
+# Any use of one (a name, an attribute or the same string) counts as a
+# family write; see _families_written.
+_DYNAMIC_WRITERS = frozenset({
+    "setattr", "delattr", "__setattr__", "__delattr__",
+    "exec", "eval", "compile", "vars", "globals", "locals", "__dict__", "__builtins__",
+    "__getattribute__", "attrgetter", "methodcaller",
+    # Another module object behind "import socket".
+    "modules", "meta_path", "path_hooks",
+})
+# Writers whose name argument, when a str constant, is read statically.
+_NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
+_NAME_READERS = frozenset({"getattr"})
+
+
+def _constant_name_call(call: ast.Call) -> bool:
+    # setattr(obj, "name", ...), obj.__setattr__("name", ...),
+    # object.__setattr__(obj, "name", ...), getattr(obj, "name").
+    if any(isinstance(arg, ast.Starred) for arg in call.args[:2]):
+        return False
+    return any(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in call.args[:2])
+
+
+def _super_call(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "super"
+
+
 def _families_written(sources, walker) -> bool:
     """The plugin's own code may rebind a socket family constant.
 
     A family name used as data counts, rather than a list of call shapes:
-    a store or del of the .AF_UNIX / .AddressFamily attribute, any string
-    constant that contains a family name (setattr / delattr / __setattr__
-    in any spelling, vars(...)[...], .update({...}), exec("...")), or a
-    keyword argument of that name (.update(AF_UNIX=...)). This errs on the
-    strict side: a plugin that merely mentions "AF_UNIX" in a string gets
-    the same result as without the AF_UNIX rule.
+    a store or del of the .AF_UNIX / .AddressFamily attribute, any str or
+    bytes constant that contains a family name, or a keyword argument of
+    that name (.update(AF_UNIX=...)). A write whose name cannot be read
+    statically counts too: any use of a name in _DYNAMIC_WRITERS (exec,
+    vars, __dict__ ...; setattr and the like only when the attribute name
+    is not a str constant), a getattr whose name is not a str constant, and
+    any .__init__ other than super().__init__ (a socket re-initialised in
+    place, also from another file).
+    The AF_UNIX downgrade thus assumes a plugin without such dynamic code;
+    otherwise it gets the same result as without the AF_UNIX rule.
 
     Every file is parsed for this (names are compared after the parser's
     normalisation), before the main pass; one walk per file, honouring the
@@ -389,17 +420,51 @@ def _families_written(sources, walker) -> bool:
     """
     for relative, source in sources:
         walker.poll()
+        parts = str(relative).replace("\\", "/").split("/")
+        if parts[-1] == "socket.py" or parts[-2:] == ["socket", "__init__.py"]:
+            # A plugin module that may shadow the socket module.
+            return True
         try:
             tree = ast.parse(source, filename=relative)
         except (SyntaxError, ValueError, RecursionError):
             continue  # reported by the main pass
+        # ast.walk visits a call before its callee.
+        static_callees: set[int] = set()
         for node in ast.walk(tree):
             walker.poll()
-            if isinstance(node, ast.Attribute):
-                if node.attr in _FAMILY_NAMES and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if isinstance(node, ast.Call):
+                callee = node.func
+                name = callee.id if isinstance(callee, ast.Name) else (
+                    callee.attr if isinstance(callee, ast.Attribute) else None
+                )
+                if name in _NAMED_WRITERS or name in _NAME_READERS:
+                    if _constant_name_call(node):
+                        static_callees.add(id(callee))
+                    elif name in _NAME_READERS:
+                        return True
+            elif isinstance(node, (ast.Name, ast.Attribute)):
+                name = node.id if isinstance(node, ast.Name) else node.attr
+                if name in _DYNAMIC_WRITERS and id(node) not in static_callees:
+                    return True
+                if name == "__init__" and isinstance(node, ast.Attribute) and not _super_call(node.value):
+                    # A socket re-initialised in place (main.s.__init__(AF_INET)
+                    # from another file); super().__init__() is not one.
+                    return True
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr in _FAMILY_NAMES
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                ):
                     return True
             elif isinstance(node, ast.Constant):
-                if isinstance(node.value, str) and any(name in node.value for name in _FAMILY_NAMES):
+                value = node.value
+                if isinstance(value, bytes):
+                    value = value.decode("latin-1")
+                if isinstance(value, str) and (
+                    value in _DYNAMIC_WRITERS
+                    or value == "__init__"
+                    or any(name in value for name in _FAMILY_NAMES)
+                ):
                     return True
             elif isinstance(node, ast.keyword):
                 if node.arg in _FAMILY_NAMES:
@@ -720,6 +785,7 @@ def _references(tree, walker: _AnalysisWalker, families_trusted: bool = True):
         _propagate_assignments(
             assignments, bindings, walker,
             rebound | shared | imported | comprehended | captured | set(parameters),
+            escaped=escaped,
         )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
@@ -774,6 +840,7 @@ def _references(tree, walker: _AnalysisWalker, families_trusted: bool = True):
             yield reference
 
     shared = _shared_names(tree, walker)
+    escaped = _escaped_names(tree, walker)
     yield from scope(tree.body, {} if families_trusted else {_FAMILIES_WRITTEN: (None, False)})
 
 
@@ -869,6 +936,34 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
                 if isinstance(target, (ast.Tuple, ast.List)) or (opaque and isinstance(target, ast.Name)):
                     _target_names(target, names)
     return frozenset(names)
+
+
+def _escaped_names(tree, walker) -> frozenset[str]:
+    """Names used other than as the receiver of a public attribute.
+
+    A socket can be re-initialised in place (s.__init__(AF_INET), or by a
+    helper it is passed to), so a local socket name is only trusted while
+    every use of it reads an attribute whose name does not start with "_"
+    (s.bind(...), s.connect(...), s.family). One pass over the whole file:
+    a use anywhere in it (any scope) counts, which only errs on the strict
+    side. Only weakens local-socket tracking; polls without charging the
+    node budget, like _families_written.
+    """
+    receivers: set[int] = set()
+    escaped: set[str] = set()
+    # ast.walk visits an attribute before its receiver.
+    for node in ast.walk(tree):
+        walker.poll()
+        if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and not node.attr.startswith("_")
+            ):
+                receivers.add(id(node.value))
+        elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Store) and id(node) not in receivers:
+            escaped.add(node.id)
+    return frozenset(escaped)
 
 
 def _is_data_read_result(resolved: str) -> bool:
@@ -987,13 +1082,16 @@ def _references_binding(value: str, key: str) -> bool:
     return value == key or value.startswith((key + ".", key + "()"))
 
 
-def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozenset(), unfollowed=frozenset()):
+def _propagate_assignments(
+    assignments, bindings, walker, uncertain_names=frozenset(), unfollowed=frozenset(), escaped=frozenset()
+):
     """Resolve aliases until the final binding of each assignment stops changing.
 
     ``uncertain_names`` are also bound by other targets (loop, with ...) or
     from other scopes (global / nonlocal). ``unfollowed`` holds ids of
     values whose getattr / socket root is resolved as before getattr was
-    followed.
+    followed. ``escaped`` names never keep the local-socket marker (see
+    _escaped_names).
     """
     counts: dict[str, int] = {}
     for key, _node in assignments:
@@ -1037,7 +1135,7 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         # Only a plain name assigned once, straight from the construction,
         # keeps the local-socket marker (not attributes, aliases or names
         # bound any other way).
-        if key in uncertain or "." in key or not construction:
+        if key in uncertain or key in escaped or "." in key or not construction:
             resolved = _unmark_local_socket(resolved)[0]
         binding = resolved, external
         resolved_bindings[key] = binding
