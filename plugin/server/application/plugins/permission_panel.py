@@ -32,6 +32,7 @@ from plugin.sdk.shared.permissions.catalog import (
     PERMISSIONS,
     PRIVACY_GROUPS,
     RISK_TIERS,
+    TIER_HIGH,
     TIER_COLLAPSE_OVER,
     UNLISTED_TIERS,
     group_tier,
@@ -42,8 +43,12 @@ from plugin.sdk.shared.permissions.declarations import (
     PermissionDeclarations,
     parse_permission_declarations,
 )
-from plugin.server.application.plugins.capability_analysis_service import read_report
+from plugin.server.application.plugins.capability_analysis_service import (
+    read_report,
+    schedule_analysis,
+)
 from plugin.server.application.plugins.permission_service import (
+    MESSAGES_PUSH,
     permission_record,
     record_states,
 )
@@ -60,7 +65,9 @@ from plugin.server.infrastructure.plugin_permissions import (
 RECONCILE_MATCHED = "matched"  # declared and found
 RECONCILE_UNDECLARED = "undeclared"  # found, not declared
 RECONCILE_UNSCANNED = "unscanned"  # declared, not found
-RECONCILE_SCAN_PENDING = "scan_pending"  # declared; no finished scan yet
+RECONCILE_SCAN_PENDING = "scan_pending"  # declared; the scan is queued or running
+# declared; the scan failed or is unavailable (``analysis.status`` says which)
+RECONCILE_SCAN_UNAVAILABLE = "scan_unavailable"
 # The foreground / background condition is the plugin's own claim: the host
 # cannot verify whether the user is using the plugin yet.
 CONDITION_BASIS = "plugin_reported"
@@ -68,6 +75,7 @@ CONDITION_BASIS = "plugin_reported"
 UNUSED_DAYS = 30
 WEEK_DAYS = 7
 _SCANNED_STATUSES = frozenset({"completed", "partial"})
+_SCANNING_STATUSES = frozenset({"queued", "running"})
 _PERSONAL_DATA = ("plugin_sdk.main_agent.memory:read", "plugin_sdk.main_agent.conversations:read")
 _SENDS_OUT = ("system.network:connect", "plugin_sdk.models:invoke")
 _MAX_MANIFEST_BYTES = 1024 * 1024
@@ -147,15 +155,20 @@ def _read_manifest(root: Path | None) -> dict:
         return {}
 
 
-def _inputs(plugin_id: str, meta: dict) -> _PluginInputs:
+def _inputs(plugin_id: str, meta: dict, *, verify: bool = False) -> _PluginInputs:
+    """``verify``: check the cached scan against the plugin's files (a tree
+    walk) and queue a new scan when it is stale or missing. The single-plugin
+    panel does; the all-plugin views use the cached reports as they are."""
     config_path = meta.get("config_path")
     root = Path(config_path).parent if config_path else None
     version = str(meta.get("version") or "")
-    report = (
-        read_report(plugin_id, root, version, verify_revision=False)
-        if root is not None
-        else {"status": "unavailable"}
-    )
+    if root is None:
+        report = {"status": "unavailable"}
+    else:
+        report = read_report(plugin_id, root, version, verify_revision=verify)
+        if verify and report.get("status") == "unavailable" and not report.get("analysis_id"):
+            schedule_analysis(plugin_id)
+            report = read_report(plugin_id, root, version, verify_revision=False)
     manifest = _read_manifest(root)
     declarations, _issues = parse_permission_declarations(manifest)
     return _PluginInputs(
@@ -199,13 +212,16 @@ def _scan_summary(permission: str, findings: list[dict], basis: object) -> dict 
     }
 
 
-def _reconcile(declared: bool, found: bool, scanned: bool) -> str | None:
+def _reconcile(declared: bool, found: bool, status: object) -> str | None:
+    scanned = status in _SCANNED_STATUSES
     if declared and found:
         return RECONCILE_MATCHED
     if found:
         return RECONCILE_UNDECLARED
     if declared:
-        return RECONCILE_UNSCANNED if scanned else RECONCILE_SCAN_PENDING
+        if scanned:
+            return RECONCILE_UNSCANNED
+        return RECONCILE_SCAN_PENDING if status in _SCANNING_STATUSES else RECONCILE_SCAN_UNAVAILABLE
     return None
 
 
@@ -267,7 +283,7 @@ def _rows(inputs: _PluginInputs, index: UsageIndex, checks_off: bool, now: datet
             {
                 "permission": permission,
                 "tier": PERMISSION_TIERS[permission],
-                "reconcile": _reconcile(declared, bool(findings), scanned),
+                "reconcile": _reconcile(declared, bool(findings), report.get("status")),
                 "declared": _declaration(inputs, permission),
                 "scan": _scan_summary(permission, findings, item.get("basis")),
                 "state": resolved.status,
@@ -318,16 +334,20 @@ def _blind_spots(report: dict) -> dict:
                 "file": row.get("file"),
                 "count": sum(types.values()),
                 "types": types,
-                "high_risk": any(BLIND_SPOT_TIERS.get(kind) == "high" for kind in types),
+                "high_risk": any(BLIND_SPOT_TIERS.get(kind) == TIER_HIGH for kind in types),
             }
         )
     not_analyzed = [row for row in report.get("not_analyzed") or [] if isinstance(row, dict)]
     return {
         "files": files,
         "counted": sum(row["count"] for row in files),
-        # Each entry is one skipped file or directory; omitted counts what a
-        # cut-short list left out.
-        "not_analyzed_files": sum(1 + int(row.get("omitted") or 0) for row in not_analyzed),
+        # A row with a file is one skipped file or directory; a row without
+        # one either sums up what a cut-short list left out (``omitted``) or
+        # notes a scan-wide condition (over budget, unreadable), not a file.
+        "not_analyzed_files": sum(
+            1 if row.get("file") is not None else int(row.get("omitted") or 0)
+            for row in not_analyzed
+        ),
     }
 
 
@@ -377,7 +397,7 @@ def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
     meta = _plugin_metas().get(plugin_id)
     if meta is None:
         raise _not_found(plugin_id)
-    inputs = _inputs(plugin_id, meta)
+    inputs = _inputs(plugin_id, meta, verify=True)
     checks_off = _checks_off()
     rows = _rows(inputs, index, checks_off, datetime.now(timezone.utc))
     report = inputs.report
@@ -457,7 +477,10 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
                 # Approximate: the store keeps no earlier permission set, so
                 # "asks for more after an update" is any plugin with an
                 # earlier decision that still has items to decide. Items a
-                # newer analyzer found on an unchanged plugin count too.
+                # newer analyzer found on an unchanged plugin count too. An
+                # update that changed the plugin's source is a new plugin
+                # (its decisions were dropped, see ``grants_reset``): it is
+                # asked in full and listed in to_confirm.
                 target = upgraded if _has_decision(inputs.record) else to_confirm
                 target.append({"plugin_id": inputs.plugin_id, "items": items})
         # Used while the user has not decided: not asked in a dialog, listed
@@ -493,7 +516,9 @@ def _can_use(row: dict) -> bool:
     disclosure-only permission it declares or was found using."""
     if row["state"] == "granted":
         return True
-    return not PERMISSIONS[row["permission"]].enforced and (
+    # ``enforced`` is the effective flag: also false while the master switch
+    # has the checks off, when an undecided permission is not refused either.
+    return not row["enforced"] and (
         row["declared"] is not None or row["scan"] is not None
     )
 
@@ -614,6 +639,18 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
         "plugins": out,
         "recent": [use.to_dict() for use in index.recent(group.permissions)],
     }
+
+
+def check_refusable(permission: str, state_value: str) -> None:
+    """Sending content to N.E.K.O is disclosure only: it is approved or left
+    undecided, never refused (a stored refusal would still read undecided)."""
+    if state_value == "denied" and permission == MESSAGES_PUSH:
+        raise ServerDomainError(
+            "PERMISSION_NOT_REFUSABLE",
+            "This permission is disclosure only and cannot be refused",
+            422,
+            details={"permission": permission},
+        )
 
 
 def check_condition_allowed(plugin_id: str, permission: str, state_value: str, condition: str) -> None:

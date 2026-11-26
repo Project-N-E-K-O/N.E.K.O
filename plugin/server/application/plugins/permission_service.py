@@ -437,7 +437,7 @@ def decide_permission(
 
 def clear_permission(plugin_id: str, permission_id: str) -> dict:
     """Return one permission of the plugin to undecided."""
-    return permission_store.clear(plugin_id, permission_id)
+    return permission_store.clear(plugin_id, permission_id, source=current_source(plugin_id))
 
 
 def bind_permission_source(plugin_id: str, source: PluginSource) -> None:

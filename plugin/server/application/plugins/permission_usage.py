@@ -40,6 +40,10 @@ RECENT_LIMIT = 50
 DAYS_KEPT = 31
 _ORIGINS_KEPT = 1024
 _FILE_NAME = "call_audit.jsonl"
+# Written once per host start (see record_coverage_start). Since then every
+# use is audited, including allowed host-side uses outside any call; older
+# entries may lack those, so history only counts from the oldest such entry.
+COVERAGE_START = "usage_coverage_start"
 
 # A network target as the plugin process reports it: "name(address):port",
 # "address:port" or a bare name / address (a long name may be cut with "…").
@@ -48,7 +52,7 @@ _FILE_NAME = "call_audit.jsonl"
 _HOST = r"[\w\-]+(?:\.[\w\-]+)*\.?"
 _IP = r"\[[0-9A-Fa-f:.]+(?:%[\w.\-]+)?\]|[0-9]{1,3}(?:\.[0-9]{1,3}){3}"
 _PORT = r"(?::[0-9]{1,5})?"
-_NAMED_TARGET = re.compile(rf"(?P<host>{_HOST})…?\((?:{_IP})\){_PORT}")
+_NAMED_TARGET = re.compile(rf"(?P<host>{_HOST}…?)\((?:{_IP})\){_PORT}")
 _BARE_TARGET = re.compile(rf"(?P<host>{_IP}|{_HOST}){_PORT}")
 
 
@@ -119,7 +123,7 @@ class UsageIndex:
         # ones come through observe(), so none is counted twice.
         self._created = self._now()
         self._seeded = False
-        self._since: datetime | None = None
+        self._since: datetime | None = None  # oldest coverage start seen
         self._last: dict[tuple[str, str], Use] = {}
         # Last use that was not refused.
         self._last_effective: dict[tuple[str, str], Use] = {}
@@ -139,6 +143,8 @@ class UsageIndex:
         try:
             self._add(entry)
         except Exception:
+            # Runs inside call_audit.record: a malformed entry is skipped,
+            # it must never fail the recording itself.
             pass
 
     def _add(self, entry: dict) -> None:
@@ -149,8 +155,10 @@ class UsageIndex:
             return
         kind = entry.get("kind")
         with self._lock:
-            if self._since is None or at < self._since:
-                self._since = at
+            if kind == COVERAGE_START:
+                if self._since is None or at < self._since:
+                    self._since = at
+                return
             if kind == "forward":
                 call_id, origin = _text(entry.get("call_id")), _text(entry.get("origin_kind"))
                 if call_id and origin:
@@ -289,7 +297,8 @@ class UsageIndex:
     # ------------------------------------------------------------------
 
     def history_since(self) -> datetime | None:
-        """Time of the oldest indexed entry; None when there is none."""
+        """Since when the audit covers every use: the oldest coverage start
+        still in the audit; None when there is none."""
         self.ensure_seeded()
         with self._lock:
             return self._since
@@ -319,11 +328,11 @@ class UsageIndex:
             return sum(count for day, count in daily.items() if day >= first)
 
     def latest(self, permissions) -> Use | None:
-        """The newest use of any of ``permissions`` by any plugin."""
+        """The newest use (not refused) of any of ``permissions`` by any plugin."""
         self.ensure_seeded()
         wanted = set(permissions)
         with self._lock:
-            uses = [use for (_, permission), use in self._last.items() if permission in wanted]
+            uses = [use for (_, permission), use in self._last_effective.items() if permission in wanted]
         return max(uses, key=lambda use: use.at, default=None)
 
     def plugins_using(self, permissions) -> set[str]:
@@ -356,6 +365,13 @@ class UsageIndex:
 
 
 usage_index = UsageIndex()
+
+
+def record_coverage_start() -> None:
+    """Note in the audit that complete use recording starts now (host start)."""
+    from plugin.server.application.plugins import call_audit
+
+    call_audit.record({"kind": COVERAGE_START})
 
 
 def install() -> None:

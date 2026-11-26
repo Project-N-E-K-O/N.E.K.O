@@ -141,6 +141,8 @@ def record(entry: dict) -> None:
         try:
             observer(item)
         except Exception:
+            # An observer must never stop an entry from being recorded; it
+            # is a reader of the audit, not part of it.
             pass
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so

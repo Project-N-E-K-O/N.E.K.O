@@ -94,7 +94,7 @@ def _known_permission(permission: str) -> str:
 
 
 @serialized_plugin_operation
-async def _decide(plugin_id: str, permission: str, decision: PermissionDecision) -> dict:
+async def _decide(plugin_id: str, permission: str, decision: PermissionDecision) -> None:
     await asyncio.to_thread(permission_panel.ensure_plugin_known, plugin_id)
     await asyncio.to_thread(
         permission_panel.check_condition_allowed,
@@ -107,21 +107,23 @@ async def _decide(plugin_id: str, permission: str, decision: PermissionDecision)
         decide_permission, plugin_id, permission, decision.state, condition=decision.condition
     )
     await asyncio.to_thread(permission_panel.forget_refused, plugin_id, permission)
-    return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
 
 
 @serialized_plugin_operation
-async def _clear(plugin_id: str, permission: str) -> dict:
+async def _clear(plugin_id: str, permission: str) -> None:
     await asyncio.to_thread(permission_panel.ensure_plugin_known, plugin_id)
     await asyncio.to_thread(clear_permission, plugin_id, permission)
     await asyncio.to_thread(permission_panel.forget_refused, plugin_id, permission)
-    return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
 
 
 def _busy() -> HTTPException:
     return HTTPException(
         status_code=409,
-        detail="Another plugin operation is in progress",
+        detail={
+            "code": "PLUGIN_OPERATION_BUSY",
+            "message": "Another plugin operation is in progress",
+            "details": {},
+        },
         headers={"X-Error-Code": "PLUGIN_OPERATION_BUSY"},
     )
 
@@ -134,8 +136,11 @@ async def put_permission_decision(plugin_id: str, permission: str, body: Permiss
     """Allow or refuse one permission; returns the updated panel data."""
     try:
         _known_permission(permission)
+        permission_panel.check_refusable(permission, body.state)
         with bounded_operation_wait(20.0):
-            return await _decide(plugin_id, permission, body)
+            await _decide(plugin_id, permission, body)
+        # Built after the operation lock is released.
+        return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
     except PluginOperationBusy:
         raise _busy()
     except ServerDomainError as exc:
@@ -151,7 +156,8 @@ async def delete_permission_decision(plugin_id: str, permission: str):
     try:
         _known_permission(permission)
         with bounded_operation_wait(20.0):
-            return await _clear(plugin_id, permission)
+            await _clear(plugin_id, permission)
+        return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
     except PluginOperationBusy:
         raise _busy()
     except ServerDomainError as exc:

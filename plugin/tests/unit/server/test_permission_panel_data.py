@@ -36,7 +36,9 @@ FS_WRITE = "system.fs:write"
 
 MARKET = PluginSource("market", "abcdef0123456789")
 MANUAL = PluginSource("manual")
-NOW = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
+# One clock for fixed-time indexes and for entries fed to the panel fixture
+# (whose store and index use the real time): fixed when the module loads.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 class ConfigManager:
@@ -274,7 +276,10 @@ def test_files_are_read_once_and_only_for_entries_before_the_index(tmp_path):
     # observer as well, so the file copy must not count twice.
     live = _decision("a", MEMORY, ts=_ts(timedelta(seconds=-1)))
     lines = [json.dumps(old), "not json", json.dumps(live)]
-    (tmp_path / "audit" / "call_audit.jsonl.1").write_text(json.dumps(_decision("a", CONNECT, ts=_ts(timedelta(days=50)))) + "\n")
+    (tmp_path / "audit" / "call_audit.jsonl.1").write_text(
+        json.dumps({"ts": _ts(timedelta(days=50)), "kind": "usage_coverage_start"}) + "\n"
+        + json.dumps(_decision("a", CONNECT, ts=_ts(timedelta(days=49)))) + "\n"
+    )
     (tmp_path / "audit" / "call_audit.jsonl").write_text("\n".join(lines) + "\n")
     index.observe(live)
 
@@ -378,7 +383,12 @@ def _report(**permissions):
         "permissions": {_KEYS[key]: value for key, value in permissions.items()},
         "blind_spots": [{"type": "native_loader", "file": "core/compat.py", "line": 7}],
         "blind_spot_files": [{"file": "core/compat.py", "count": 1, "types": {"native_loader": 1}, "high_risk": True}],
-        "not_analyzed": [{"reason": "test", "file": "tests"}, {"reason": "frontend", "file": "ui/a.vue", "omitted": 2}],
+        "not_analyzed": [
+            {"reason": "test", "file": "tests"},
+            {"reason": "frontend", "file": "ui/a.vue"},
+            {"reason": "vendor", "file": None, "omitted": 5},  # a list cut short
+            {"reason": "budget_exceeded", "file": None},  # scan-wide, not a file
+        ],
     }
 
 
@@ -473,7 +483,7 @@ def test_panel_user_view_has_blind_spots_by_file_without_lines(env):
     assert panel["blind_spots"] == {
         "files": [{"file": "core/compat.py", "count": 1, "types": {"native_loader": 1}, "high_risk": True}],
         "counted": 1,
-        "not_analyzed_files": 4,
+        "not_analyzed_files": 7,
     }
     assert "line" not in json.dumps(panel["blind_spots"])
     assert panel["developer"]["blind_spots"] == [{"type": "native_loader", "file": "core/compat.py", "line": 7}]
@@ -506,7 +516,7 @@ def test_panel_last_used_and_unused_30_days(env, monkeypatch):
         entry["decided_at"] = old
     env.store.restore("weather", record)
     now = datetime.now(timezone.utc)
-    env.index.observe(_decision("other", MODELS, ts=(now - timedelta(days=45)).isoformat()))
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
     env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=2)).isoformat()))
 
     rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
@@ -723,7 +733,7 @@ def test_undeclared_non_system_item_needs_confirmation(env):
 def test_recent_grant_is_not_unused(env):
     _weather(env)
     env.store.decide("weather", FS_READ, "granted", source=MARKET)
-    env.index.observe(_decision("other", MODELS, ts=(datetime.now(timezone.utc) - timedelta(days=45)).isoformat()))
+    env.index.observe({"ts": (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
     rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
     assert rows[FS_READ]["unused_30d"] is False
 
@@ -857,7 +867,7 @@ def test_refusals_older_than_the_stored_decision_are_ignored(env):
     [
         ("api.example.com(93.184.216.34):443", "api.example.com"),
         ("天气.example(1.2.3.4):80", "天气.example"),
-        ("averyveryl…(1.2.3.4):443", "averyveryl"),
+        ("averyveryl…(1.2.3.4):443", "averyveryl…"),
         ("93.184.216.34:443", "93.184.216.34"),
         ("[2001:db8::1]:443", "[2001:db8::1]"),
         ("api.example.com", "api.example.com"),
@@ -909,3 +919,114 @@ def test_buckets_are_pruned_as_time_moves_on(tmp_path):
     for day in range(3):
         index.observe(_decision("a", MEMORY, ts=(clock["now"] - timedelta(days=day)).isoformat()))
     assert len(index._daily[("a", MEMORY)]) <= 32
+
+
+
+def test_history_counts_only_from_a_coverage_start(tmp_path):
+    """Entries from before complete recording began do not prove 30 days."""
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=60))))
+    assert index.history_since() is None and index.covers_days(30) is False
+
+    index.observe({"ts": _ts(timedelta(days=10)), "kind": "usage_coverage_start"})
+    assert index.history_since() == NOW - timedelta(days=10)
+    assert index.covers_days(30) is False
+
+
+def test_coverage_start_is_recorded_in_the_audit(monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    seen = []
+    call_audit.add_observer(seen.append)
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: None)
+    try:
+        permission_usage.record_coverage_start()
+    finally:
+        call_audit.remove_observer(seen.append)
+    assert [entry["kind"] for entry in seen] == ["usage_coverage_start"]
+
+
+def test_latest_is_the_newest_use_not_a_refused_attempt(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(hours=1))))
+    index.observe(_decision("b", MEMORY, verdict="would_deny", enforcing=True, reason="self_not_approved"))
+    assert index.latest([MEMORY]).plugin_id == "a"
+
+
+def test_cleared_permission_keeps_old_refusals_out_after_a_restart(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.store.decide("p", SPAWN, "granted")
+    env.store.clear("p", SPAWN)
+    # Rebuilt from the files after a restart: the refusal is seen again.
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert permission_panel.pending(index=env.index)["first_use"] == []
+
+
+def test_master_switch_off_counts_undecided_items_as_usable(env, monkeypatch):
+    _weather(env)
+    monkeypatch.setattr(permission_panel, "_checks_off", lambda: True)
+    overview = permission_panel.privacy_overview(index=env.index)
+    groups = {row["group"]: row["plugins"] for row in overview["groups"]}
+    assert groups["memory"] == 1 and groups["network"] == 1
+    assert overview["combos"] == [{"plugin_id": "weather", "reads": [MEMORY], "sends": [CONNECT]}]
+
+
+@pytest.mark.parametrize(
+    ("status", "reconcile"),
+    [("queued", "scan_pending"), ("running", "scan_pending"), ("failed", "scan_unavailable"),
+     ("unavailable", "scan_unavailable")],
+)
+def test_declared_rows_without_a_finished_scan(env, status, reconcile):
+    env.plugin("p", report={"status": status})
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("p", index=env.index)["rows"]}
+    assert rows[CONNECT]["reconcile"] == reconcile
+
+
+def test_panel_verifies_the_scan_and_queues_a_stale_one(env, monkeypatch):
+    env.plugin("p")
+    calls, scheduled = [], []
+
+    def read_report(pid, root, version, verify_revision=True):
+        calls.append(verify_revision)
+        return {"status": "queued"} if scheduled else {"status": "unavailable"}
+
+    monkeypatch.setattr(permission_panel, "read_report", read_report)
+    monkeypatch.setattr(permission_panel, "schedule_analysis", scheduled.append)
+
+    panel = permission_panel.plugin_panel("p", index=env.index)
+
+    assert calls == [True, False] and scheduled == ["p"]
+    assert panel["analysis"]["status"] == "queued"
+    calls.clear()
+    permission_panel.privacy_overview(index=env.index)
+    assert calls == [False]  # the all-plugin views do not walk every tree
+
+
+@pytest.mark.asyncio
+async def test_disclosure_only_permission_cannot_be_refused(env):
+    _weather(env)
+    refused = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{PUSH}", {"state": "denied"})
+    assert refused.status_code == 422
+    assert refused.headers["X-Error-Code"] == "PERMISSION_NOT_REFUSABLE"
+    assert env.store.read("weather") == {}
+    granted = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{PUSH}", {"state": "granted"})
+    assert granted.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+async def test_busy_operation_lock_answers_in_the_module_error_shape(env, monkeypatch, method):
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+    from plugin.server.routes import plugin_permissions as routes
+
+    async def busy(*_args, **_kwargs):
+        raise PluginOperationBusy()
+
+    monkeypatch.setattr(routes, "_decide" if method == "PUT" else "_clear", busy)
+    _weather(env)
+    response = await _call(method, f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "granted"})
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "PLUGIN_OPERATION_BUSY"
+    assert response.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
+    assert response.json()["detail"]["details"] == {}

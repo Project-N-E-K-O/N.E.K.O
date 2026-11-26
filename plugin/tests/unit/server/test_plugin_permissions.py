@@ -492,7 +492,8 @@ def test_clear_returns_a_permission_to_undecided(manager):
     store = PluginPermissionStore(manager)
     store.decide("x", MEMORY_READ, "granted")
 
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    entry = store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]
+    assert entry["state"] == "undecided" and entry["decided_at"]
 
 
 def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
@@ -516,7 +517,7 @@ def test_legacy_names_resolve_to_permission_ids_in_decide_and_clear(manager):
     record = store.decide("x", "memory.read", "granted")
     assert list(record["permissions"]) == [MEMORY_READ]
 
-    assert store.clear("x", "memory.read")["permissions"] == {}
+    assert store.clear("x", "memory.read")["permissions"][MEMORY_READ]["state"] == "undecided"
 
 
 def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
@@ -898,13 +899,14 @@ def test_clear_on_legacy_denied_record_stores_an_undecided_exception(manager):
     assert record["permissions"][CONVERSATIONS_READ]["state"] == "undecided"
 
 
-def test_clear_on_ordinary_record_deletes_the_entry(manager):
+def test_clear_on_ordinary_record_keeps_a_timed_undecided_entry(manager):
     store = PluginPermissionStore(manager)
     store.decide("x", MEMORY_READ, "granted")
     saves = manager.saves
 
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    first = store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]
+    assert first["state"] == "undecided" and first["decided_at"]
+    assert store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ] == first
     assert manager.saves == saves + 1
 
 

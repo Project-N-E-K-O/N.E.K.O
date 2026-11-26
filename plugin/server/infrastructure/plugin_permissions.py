@@ -645,46 +645,58 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
-    def clear(self, plugin_id: str, permission_id: object) -> dict:
+    def clear(
+        self,
+        plugin_id: str,
+        permission_id: object,
+        *,
+        source: PluginSource | None = None,
+    ) -> dict:
         """Return one permission to undecided.
 
-        On a ``legacy_denied`` record a missing entry still means denied, so
-        an explicit ``undecided`` entry is stored instead of deleting it. An
-        id outside the vocabulary is accepted only when the record already
-        holds it (e.g. an id the vocabulary has since dropped).
+        An explicit ``undecided`` entry with the time is stored, so readers
+        can tell what happened before the user's last choice; it counts as
+        no decision everywhere (and on a ``legacy_denied`` record it keeps a
+        missing entry from meaning denied). A permission that is undecided
+        already (no entry, or an ``undecided`` one; on a ``legacy_denied``
+        record only the latter) is left as it is, without a write. ``source``
+        is applied like in :meth:`decide`. An id outside the vocabulary is accepted only when the
+        record already holds it (e.g. an id the vocabulary has since
+        dropped), and its entry is removed.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
             raise ValueError(f"Unknown permission: {permission_id!r}")
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
             if known_id is None:
                 if record is None or permission_id not in record.get("permissions", {}):
                     raise ValueError(f"Unknown permission: {permission_id!r}")
-                known_id = permission_id
-            permission_id = known_id
             if record is None:
                 return {}
-            entry = record.get("permissions", {}).get(permission_id)
-            if record.get(LEGACY_DENIED):
-                if entry is not None and entry.get("state") == STATE_UNDECIDED:
+            if known_id is not None:
+                entry = (record.get("permissions") or {}).get(known_id)
+                if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
-            elif entry is None:
-                return copy.deepcopy(record)
+                if entry is None and not record.get(LEGACY_DENIED):
+                    return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
-            if record.get(LEGACY_DENIED):
-                permissions[permission_id] = {
+            if known_id is None:
+                del permissions[permission_id]
+            else:
+                permissions[known_id] = {
                     "state": STATE_UNDECIDED,
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
-            else:
-                del permissions[permission_id]
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)

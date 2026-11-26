@@ -589,6 +589,9 @@ class ServerLifecycleService:
         _lifecycle_module._operations_shutting_down = False
         from plugin.server.application.plugins import call_audit
         call_audit.reopen()
+        # From here on every use is audited (last use / unused for 30 days).
+        from plugin.server.application.plugins.permission_usage import record_coverage_start
+        record_coverage_start()
         from plugin.core.capability_policy import startup_notices
         for notice in startup_notices():
             logger.warning("{}", notice)
