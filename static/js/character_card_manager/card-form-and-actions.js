@@ -2481,7 +2481,12 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         if (currentCatgirl) {
             if (isUnsafeCharacterPathSegment(currentCatgirl)) {
                 console.warn('[CharacterCardManager] 当前角色名不能安全放进 URL path，跳过语音状态检查以允许救援切换:', currentCatgirl);
-                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+                return {
+                    ok: true,
+                    currentCatgirl,
+                    switchRevision: currentData.switch_revision,
+                    skippedVoiceCheckForInvalidName: true
+                };
             }
             const voiceResp = await fetch(
                 `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
@@ -2493,7 +2498,12 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
             const voiceData = await voiceResp.json();
             if (voiceData && voiceData.invalid_name) {
                 console.warn('[CharacterCardManager] 当前角色名已被后端标记为非法，跳过语音状态检查以允许救援切换:', currentCatgirl);
-                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+                return {
+                    ok: true,
+                    currentCatgirl,
+                    switchRevision: currentData.switch_revision,
+                    skippedVoiceCheckForInvalidName: true
+                };
             }
             if (voiceData.is_voice_mode) {
                 const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
