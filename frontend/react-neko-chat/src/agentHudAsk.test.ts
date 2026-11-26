@@ -350,13 +350,50 @@ describe('what the task agents a task agent started ask', () => {
     expect(typed.value).toBe('half a sen');
   });
 
+  it('takes what they ask from the server when the word of it was missed, the task above unchanged', async () => {
+    vi.useFakeTimers();
+    const schedule = new Function(`${reconcileSource}
+ return scheduleAgentTaskReconciliation;`)();
+    const told = vi.fn();
+    const hudUpdate = window.AgentHUD.updateAgentTaskHUD;
+    window.AgentHUD.updateAgentTaskHUD = told;
+    window._agentTaskMap = new Map([
+      ['c1', asking('c1', [])],
+      ['c2', asking('c2', [below('c3', permission('q3'))])],
+      ['c5', asking('c5', [below('c6', permission('q6'))])],
+    ]);
+    // The connection was away: under c1 one asks now, under c2 it asks no more, under c5 it asks the next thing.
+    const server = [
+      asking('c1', [below('c4', permission('q4'))]),
+      asking('c2', []),
+      asking('c5', [below('c6', permission('q7'))]),
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ tasks: server }) })));
+    try {
+      schedule();
+      await vi.advanceTimersByTimeAsync(60000);
+      const now = id => window._agentTaskMap.get(id).sub_questions.map(item => `${item.id}:${item.question.id}`);
+      expect([now('c1'), now('c2'), now('c5')]).toEqual([['c4:q4'], [], ['c6:q7']]);
+      expect(told).toHaveBeenCalled();
+      // Nothing changed since: the HUD is not told again.
+      told.mockClear();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(told).not.toHaveBeenCalled();
+    } finally {
+      window._agentTaskMap = new Map();
+      await vi.advanceTimersByTimeAsync(60000);
+      window.AgentHUD.updateAgentTaskHUD = hudUpdate;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('says who asks by what it does, and by its name where that says more', () => {
     show([asking('c1', [below('c2', permission('q2'), { title: 'agent-c2' }), below('c3', permission('q3'), { title: '', name: '' })])]);
     expect(row('c1', 'c2').querySelector('.task-sub-ask-who').textContent).toBe('agent-c2');
     expect(row('c1', 'c3').querySelector('.task-sub-ask-who').textContent).toBe('使魔');
   });
 
-  it('puts the next one up with its buttons held back once the one open is answered', () => {
+  it('puts the next one up with its buttons held back once the one open is answered', async () => {
     vi.useFakeTimers();
     const two = [below('c2', permission('q2')), below('c3', permission('q3', 'git push'))];
     show([asking('c1', two)]);
@@ -366,18 +403,32 @@ describe('what the task agents a task agent started ask', () => {
     vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
     expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(false);
 
-    // Drawn while it was open before, folded since, with words typed in it: shown as it was, held back the same.
-    const three = [below('c4', permission('q4')), below('c5', permission('q5')), below('c6', permission('q6'))];
-    show([asking('c1', three)]);
-    head('c1', 'c5').click();
-    opened('c1', 'c5').querySelector('.task-ask-input').value = 'half a sen';
-    head('c1', 'c4').click();
-    show([asking('c1', three.slice(1))]);
-    const box = opened('c1', 'c5');
-    expect(box.querySelector('.task-ask-input').value).toBe('half a sen');
-    expect([box.dataset.settling, box.style.pointerEvents]).toEqual(['true', 'none']);
-    vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
-    expect([box.dataset.settling, box.style.pointerEvents]).toEqual([undefined, '']);
+    // Drawn while it was open before, folded since, with words typed in it: shown as it was, held back the same,
+    // from the keyboard as well (a button reached by Tab, Enter in the line).
+    const sent = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, note_taken: true }) }));
+    vi.stubGlobal('fetch', sent);
+    try {
+      const three = [below('c4', permission('q4')), below('c5', { kind: 'report', id: 'q5', question: 'Use the newest?' }), below('c6', permission('q6'))];
+      show([asking('c1', three)]);
+      head('c1', 'c5').click();
+      opened('c1', 'c5').querySelector('.task-ask-input').value = 'half a sen';
+      head('c1', 'c4').click();
+      show([asking('c1', three.slice(1))]);
+      const box = opened('c1', 'c5');
+      const input = box.querySelector('.task-ask-input');
+      expect(input.value).toBe('half a sen');
+      expect(box.querySelector('[data-ask-send]').disabled).toBe(true);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(window.NekoPowerAsk.SETTLE_MS);
+      expect(box.querySelector('[data-ask-send]').disabled).toBe(false);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent.mock.calls.map(call => call[0])).toEqual(['/api/agent/commissions/c5/answer']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('shows what one asks anew in place of what it asked with the buttons held back', () => {

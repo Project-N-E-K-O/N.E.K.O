@@ -1659,18 +1659,8 @@ window.AgentHUD._fillSubAskRow = function (row, task, item, open, switched, last
     }
     const shown = box.style.display !== 'none';
     box.style.display = open ? '' : 'none';
-    if (open && !shown && switched) {
-        // 收起时就画好了的，里面可能有打到一半的字，不重画：先挡住点击，停的时间一样。
-        box.dataset.settling = 'true';
-        box.style.pointerEvents = 'none';
-        box.style.opacity = '0.55';
-        clearTimeout(box._settleTimer);
-        box._settleTimer = setTimeout(() => {
-            delete box.dataset.settling;
-            box.style.pointerEvents = '';
-            box.style.opacity = '';
-        }, window.NekoPowerAsk.SETTLE_MS);
-    }
+    // 收起时就画好了的，里面可能有打到一半的字，不重画：让它自己的按钮停一下（键盘、回车也发不出去）。
+    if (open && !shown && switched) box.settle();
 };
 
 // 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
