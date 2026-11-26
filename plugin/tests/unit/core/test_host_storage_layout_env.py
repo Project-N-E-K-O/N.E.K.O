@@ -3967,6 +3967,7 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
 @pytest.mark.parametrize("failure_order", ["rpc_first", "handler_first"])
 def test_replace_config_update_overtaking_in_flight_write_retains_accepted_baseline(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     write_kind: str,
     failure_order: str,
 ) -> None:
@@ -3974,6 +3975,16 @@ def test_replace_config_update_overtaking_in_flight_write_retains_accepted_basel
     import asyncio
     import copy
     from plugin.core.context import PluginContext
+    from plugin.server.application import config as config_application
+
+    local_query_calls: list[str] = []
+
+    class _UnexpectedQueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            local_query_calls.append(plugin_id)
+            raise AssertionError(f"Unexpected local disk query for {plugin_id}")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _UnexpectedQueryService)
 
     class _RecordingInstance:
         def __init__(self) -> None:
@@ -4072,6 +4083,7 @@ def test_replace_config_update_overtaking_in_flight_write_retains_accepted_basel
             loaded = await ctx.get_own_config()
             assert loaded["config"] == {"k": "accepted"}
             assert read_rpcs == []
+            assert local_query_calls == []
         finally:
             release_rpc.set()
             allow_handler_fail.set()
@@ -4089,11 +4101,22 @@ def test_replace_config_update_overtaking_in_flight_write_retains_accepted_basel
 @pytest.mark.plugin_unit
 def test_replace_config_update_overtaking_in_flight_write_preserves_uncertainty_and_commit_invalidation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify uncertain pre-write baseline preservation and committed-write cache invalidation."""
     import asyncio
     import copy
     from plugin.core.context import PluginContext
+    from plugin.server.application import config as config_application
+
+    local_query_calls: list[str] = []
+
+    class _UnavailableQueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            local_query_calls.append(plugin_id)
+            raise RuntimeError(f"local config query unavailable for {plugin_id}")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _UnavailableQueryService)
 
     class _RecordingInstance:
         def __init__(self) -> None:
@@ -4199,7 +4222,9 @@ def test_replace_config_update_overtaking_in_flight_write_preserves_uncertainty_
                     assert ctx._effective_config_uncertain is True
                     assert getattr(ctx, "_in_flight_write_baseline", None) is None
 
+                    local_query_calls.clear()
                     loaded = await ctx.get_own_config()
+                    assert local_query_calls == ["demo"]
                     assert loaded["config"] == {"k": "disk"}
                     assert len(read_rpcs) == 1
                 finally:
@@ -4304,7 +4329,9 @@ def test_replace_config_update_overtaking_in_flight_write_preserves_uncertainty_
                 assert ctx._effective_config_uncertain is True
                 assert getattr(ctx, "_in_flight_write_baseline", None) is None
 
+                local_query_calls.clear()
                 loaded = await ctx.get_own_config()
+                assert local_query_calls == ["demo"]
                 assert loaded["config"] == {"k": "committed"}
                 assert len(read_rpcs) == 1
             finally:

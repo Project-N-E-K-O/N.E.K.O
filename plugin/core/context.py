@@ -2932,7 +2932,7 @@ class PluginContext:
                     self._in_flight_write_baseline = (
                         int(getattr(self, "_effective_config_publish_seq", 0) or 0),
                         True,
-                        copy.deepcopy(old_effective_config),
+                        old_effective_config,
                         old_effective_config_uncertain,
                     )
                     should_flush_optimistic = True
@@ -3159,7 +3159,7 @@ class PluginContext:
                     self._in_flight_write_baseline = (
                         int(getattr(self, "_effective_config_publish_seq", 0) or 0),
                         True,
-                        copy.deepcopy(old_effective_config),
+                        old_effective_config,
                         old_effective_config_uncertain,
                     )
                     should_flush_optimistic = True
