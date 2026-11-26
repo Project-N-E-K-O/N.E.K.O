@@ -29,6 +29,7 @@ import memory.user_directives as user_directives_module
 from config.prompts.prompts_sys import (
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
+    SESSION_INIT_NO_NEKOPOWER,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
 )
@@ -59,6 +60,7 @@ UNCHANGED_LOCALES = (
 SYS_TABLES = {
     "SESSION_INIT_PROMPT": SESSION_INIT_PROMPT,
     "SESSION_INIT_PROMPT_AGENT": SESSION_INIT_PROMPT_AGENT,
+    "SESSION_INIT_NO_NEKOPOWER": SESSION_INIT_NO_NEKOPOWER,
     "AGENT_TASKS_HEADER": AGENT_TASKS_HEADER,
     "AGENT_TASKS_NOTICE": AGENT_TASKS_NOTICE,
 }
@@ -117,7 +119,8 @@ def brief_requests(monkeypatch):
 
 def _expected_prompt(key: str, *, agent_enabled: bool) -> str:
     if not agent_enabled:
-        return SESSION_INIT_PROMPT[key].format(name=NAME) + PERSONA
+        # NekoPower off (the owner here has no switches at all): the opening says she cannot act.
+        return SESSION_INIT_PROMPT[key].format(name=NAME) + SESSION_INIT_NO_NEKOPOWER[key] + PERSONA
     return (
         SESSION_INIT_PROMPT_AGENT[key].format(name=NAME)
         + PERSONA

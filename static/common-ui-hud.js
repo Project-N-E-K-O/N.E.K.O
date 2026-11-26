@@ -99,6 +99,21 @@ async function _agentHudMutationFetch(url, options) {
     return send(true);
 }
 
+// 桌面版的省算力模式（N.E.K.O.-PC，Windows/macOS）正把桌宠窗口裁到模型附近：这时不显示任务悬浮窗
+// （owner 2026-11-26 定；离模型远的悬浮窗本来也会被裁掉）。裁剪期间壳才挂
+// __nekoNiriPetPhysicalCrop；__nekoLive2DPeekHostStage 只在 Windows/macOS 的壳里有，用来和 Linux
+// 上常开的物理裁剪分开。没有 isActive 就当没在裁剪（和 avatar-popup-common.js 同一口径）。
+function isPetPowerSaveCropActive() {
+    try {
+        const crop = window.__nekoNiriPetPhysicalCrop;
+        if (!crop || !window.__nekoLive2DPeekHostStage) return false;
+        return typeof crop.isActive === 'function' && crop.isActive() === true;
+    } catch (_) {
+        return false;
+    }
+}
+window.AgentHUD.isPetPowerSaveCropActive = isPetPowerSaveCropActive;
+
 function isAgentTaskHudVisiblePreferenceEnabled() {
     try {
         return localStorage.getItem(AGENT_TASK_HUD_VISIBLE_KEY) !== 'false';
@@ -615,6 +630,22 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     });
                 });
             }
+            // 桌面版的省算力模式把桌宠窗口裁到模型附近时不显示悬浮窗（isPetPowerSaveCropActive）：开关下面说一句。
+            // 平时藏着，裁剪期间由 agent_ui_v2.js 打开（面板每次打开都会 render，裁剪状态变了也刷新）。
+            const cropNote = document.createElement('div');
+            cropNote.id = `${avatarPrefix}-agent-taskhud-crop-note`;
+            cropNote.hidden = true;
+            cropNote.setAttribute('data-i18n', 'settings.toggles.taskHudHiddenByPowerSave');
+            cropNote.textContent = window.t
+                ? window.t('settings.toggles.taskHudHiddenByPowerSave')
+                : '省算力模式下不显示悬浮窗';
+            Object.assign(cropNote.style, {
+                fontSize: '11px',
+                lineHeight: '1.4',
+                color: 'var(--neko-popup-text-sub, #888)',
+                padding: '0 12px 6px'
+            });
+            popup.appendChild(cropNote);
         }
 
         if (toggle.separatorAfter) {
@@ -1100,7 +1131,7 @@ window.AgentHUD.showAgentTaskHUD = function (options = {}) {
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
     const taskHiddenByPreference = (!ignoreVisibilityPreference && !isAgentTaskHudVisiblePreferenceEnabled());
     const hasPluginContent = !!(window.NekoPluginViews && window.NekoPluginViews.hasContent());
-    if (isAgentHudSuppressedByGoodbye() || (taskHiddenByPreference && !hasPluginContent)) {
+    if (isAgentHudSuppressedByGoodbye() || isPetPowerSaveCropActive() || (taskHiddenByPreference && !hasPluginContent)) {
         this.hideAgentTaskHUD();
         return;
     }
@@ -1194,6 +1225,31 @@ window.AgentHUD.hideAgentTaskHUD = function () {
         this._hideTimeout = null;
     }, 300);
 };
+
+// 省算力裁剪开始就藏起悬浮窗；结束了按平时的规则重新判断要不要显示（任务、开关、插件内容）。
+// 壳每次应用裁剪状态（进入、更新、退出）都派发这个事件，这里只在「裁不裁」变了时动。
+window.AgentHUD._petPowerSaveCropWasActive = isPetPowerSaveCropActive();
+window.AgentHUD.onPetPowerSaveCropStateApplied = function () {
+    const active = isPetPowerSaveCropActive();
+    if (active === this._petPowerSaveCropWasActive) return;
+    this._petPowerSaveCropWasActive = active;
+    if (active) {
+        this.hideAgentTaskHUD();
+        return;
+    }
+    if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
+    // 开关已关、还有任务在办或在等回话时，checkAndToggleTaskHUD 什么都不做（它当悬浮窗本来就开着），
+    // 可悬浮窗刚被裁剪藏起：这里自己叫回来。「显示悬浮窗」开关和告别模式由 showAgentTaskHUD 把关。
+    const taskMap = window._agentTaskMap;
+    const underWay = !!(taskMap && typeof taskMap.values === 'function') && Array.from(taskMap.values()).some(task =>
+        task && (task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user'));
+    const hasPluginContent = !!(window.NekoPluginViews && typeof window.NekoPluginViews.hasContent === 'function'
+        && window.NekoPluginViews.hasContent());
+    if (underWay || hasPluginContent) this.showAgentTaskHUD();
+};
+window.addEventListener('neko:niri-pet-physical-crop-state-applied', () => {
+    window.AgentHUD.onPetPowerSaveCropStateApplied();
+});
 
 // 更新任务 HUD 内容
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
