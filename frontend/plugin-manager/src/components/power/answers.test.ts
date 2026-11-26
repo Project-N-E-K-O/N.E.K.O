@@ -341,11 +341,14 @@ describe('where the cards are shown', () => {
     await flush()
     expect(shift()).toBe(Math.round(108 - left * 390))
     expect(shift()).toBeGreaterThan(0)
-    // Narrower than the card itself: the card is put in its middle.
+    const drawnWidth = () => (container.querySelector('[data-ask-of="s1"] [data-ask-bubble]') as HTMLElement).style.width
+    expect(drawnWidth()).toBe('216px')
+    // Narrower than the card itself: the card is made as narrow, and put in its middle.
     Object.defineProperty(territory, 'clientWidth', { configurable: true, value: 200 })
     told.forEach(tell => tell())
     await flush()
     expect(shift()).toBe(Math.round(100 - left * 200))
+    expect(drawnWidth()).toBe('200px')
     localStorage.removeItem('neko-power-colony-spots')
     vi.unstubAllGlobals()
   })

@@ -1,7 +1,7 @@
 <template>
   <!-- Above the head of a familiar that waits for the user: what it asks in a line or two, answered from here. -->
   <div
-    class="ask-bubble" :class="{ below }" :style="{ '--shift': `${shift ?? 0}px` }" :data-ask-bubble="ask.id ?? ''" :data-shape="shape" role="group" :aria-label="t('power.colony.askLabel', { name })"
+    class="ask-bubble" :class="{ below }" :style="{ '--shift': `${shift ?? 0}px`, width: room ? `${room}px` : undefined }" :data-ask-bubble="ask.id ?? ''" :data-shape="shape" role="group" :aria-label="t('power.colony.askLabel', { name })"
     @pointerdown.stop @pointerup.stop @keydown.stop
   >
     <p class="line" :title="whole" data-testid="bubble-asked">{{ line }}</p>
@@ -51,8 +51,8 @@ import type { GivenAnswer } from '../ask'
  * is behind "more", where whoever shows this opens the whole question.
  */
 /** `below`: it stands under the familiar and not above it (one that stands near the top, where a card above would be cut off). */
-// `shift`: how far it is moved sideways from above the familiar, to stay within the territory; its pointer stays above the familiar.
-const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string; below?: boolean; shift?: number }>()
+// `room`: how wide it may be, where the territory is narrower than it draws itself. `shift`: how far it is moved sideways from above the familiar, to stay within the territory; its pointer stays above the familiar.
+const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string; below?: boolean; shift?: number; room?: number }>()
 const emit = defineEmits<{ answer: [given: GivenAnswer]; more: [] }>()
 const { t, te } = useI18n()
 

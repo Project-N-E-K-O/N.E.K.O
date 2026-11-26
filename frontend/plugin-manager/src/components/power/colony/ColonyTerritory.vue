@@ -62,7 +62,7 @@
       <AskBubble
         v-if="cardOpen(member.id)"
         :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
-        :below="below(member.id)" :shift="shift(member.id)"
+        :below="below(member.id)" :shift="shift(member.id)" :room="room"
         :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
         @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
       />
@@ -252,14 +252,15 @@ const below = (id: string) => at(id).y * size.value.height < CARD_ROOM
  * How far (in pixels) the card of one that stands near the left or right edge is moved inwards, so that
  * all of it is within the territory: what reaches beyond is cut off by what the territories stand in.
  */
+// As wide as the territory is drawn: narrower than it asks to be where the page has less room.
+const width = computed(() => drawn.value || size.value.width)
+/** How wide a card may be: no wider than the territory, where that is narrower than a card. */
+const room = computed(() => Math.min(CARD_WIDTH, width.value))
 function shift(id: string): number {
-  // As wide as the territory is drawn: narrower than it asks to be where the page has less room.
-  const width = drawn.value || size.value.width
-  const middle = at(id).x * width
-  const half = CARD_WIDTH / 2
-  // In one narrower than the card, the card is put in its middle.
-  if (width <= CARD_WIDTH) return Math.round(width / 2 - middle)
-  return Math.round(Math.min(Math.max(middle, half), width - half) - middle)
+  const middle = at(id).x * width.value
+  const half = room.value / 2
+  // (In a territory as narrow as the card, that is its middle.)
+  return Math.round(Math.min(Math.max(middle, half), width.value - half) - middle)
 }
 function stateWord(look: CatLook): string {
   const key = `power.home.states.${look}`
