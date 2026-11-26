@@ -159,6 +159,10 @@ _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _WOKEN_REASON = "it rested; what it waited for takes it up again"
 _ASK_NOT_HANDED_OVER_REASON = "the question could not be handed to the copy that was to answer it"
 _ASK_NOT_ASKED_REASON = "not asked after all"
+# The task agents a stopped commission started that ``abort`` stops with it:
+# those under way, and those stopped already, whose closing may have failed.
+# Not those that ended otherwise: their sessions are theirs to keep.
+_STOPPABLE_CHILD_STATUSES = ACTIVE_STATUSES | {"cancelled"}
 # Tools a task agent that another task agent started is not offered: it
 # starts none itself, writes to its own team only (and asks other sessions
 # nothing), and hands its result back when its part is done instead of
@@ -6590,11 +6594,48 @@ class TaskAgentManager(TreeWork):
     async def abort(self, commission_id: str) -> None:
         """Stop a commission's task agent, and the task agents it started.
 
-        The caller has set the commission ``cancelled`` already.
+        The caller has set the commission ``cancelled`` already. Calling
+        this again for it does nothing more than closing what is still open
+        of it: one whose closing failed at the stop is closed then. So are
+        the task agents it started that were stopped already (with it, or
+        before it): one whose own closing failed is closed this way too.
+
+        One of those that cannot be stopped or closed does not keep the
+        others, nor this commission's own session, from being ended: the
+        first failure is raised once the rest is done.
         """
-        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
-            await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
-            await self.abort(child.id)
+        failed: Exception | None = None
+        try:
+            children = await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES)
+        except Exception as exc:  # noqa: BLE001 - raised once this one is ended
+            logger.warning("finding what commission %s started failed", commission_id, exc_info=True)
+            children, failed = [], exc
+        for child in children:
+            try:
+                if child.status != "cancelled":
+                    # Not closed unless its stop is written: closing is for a stopped one.
+                    moved = await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                    if not moved.applied and (moved.commission is None or moved.commission.status != "cancelled"):
+                        # It ended meanwhile, some other way: its session is its own.
+                        continue
+                # One stopped already is closed again with nothing written: a
+                # ledger that cannot be written to does not keep it open.
+                await self.abort(child.id)
+            except Exception as exc:  # noqa: BLE001 - raised once the rest is ended
+                logger.warning("stopping commission %s with its parent failed", child.id, exc_info=True)
+                if failed is None:
+                    failed = exc
+        try:
+            await self._abort_own(commission_id)
+        except Exception:
+            if failed is None:
+                raise
+            logger.warning("closing stopped commission %s failed", commission_id, exc_info=True)
+        if failed is not None:
+            raise failed
+
+    async def _abort_own(self, commission_id: str) -> None:
+        """``abort`` for the commission itself, once the task agents it started are seen to."""
         if commission_id in self._queue:
             self._queue.remove(commission_id)
         # Asked whether another member is to do it: nobody answers that any more.

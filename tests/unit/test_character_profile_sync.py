@@ -382,7 +382,7 @@ async def test_approved_profile_survives_response_loss_without_mixing_new_edit(t
         local = await runtime.profiles.local(UID)
         await runtime.profiles.approve(UID, local["local_hash"], 0)
         service.fail_once = True
-        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+        with pytest.raises(ValueError, match="^chat_sync_network_unavailable$"):
             await runtime.profiles.step(UID, manual=True)
         first = service.profile_requests[0].content
         config.data["猫娘"]["Synthetic"]["设定"] = "later declined edit"

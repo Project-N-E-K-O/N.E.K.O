@@ -397,6 +397,23 @@
             }, 450);
             textEl._copyFeedbackTimer = feedbackTimer;
         }
+        // ===== 状态提示送达回执 =====
+        // 桌面壳把页面的 showStatusToast 单向转发到本窗口，发送方拿不到送达结果。
+        // 这里在真正显示后经同源 BroadcastChannel 回执一次，发送方（如首次贴边提示）
+        // 据此确认已显示，没收到就补发。只在 show 定时器真正触发时发：定时器到点前被
+        // 清空或被下一条替换的提示从未显示，不能回执。
+        var STATUS_TOAST_SHOWN_CHANNEL = 'neko-status-toast-shown';
+        var statusToastShownChannel = null;
+        function announceStatusToastShown(message) {
+            if (!message || !String(message).trim()) return;
+            try {
+                if (!statusToastShownChannel && typeof BroadcastChannel === 'function') {
+                    statusToastShownChannel = new BroadcastChannel(STATUS_TOAST_SHOWN_CHANNEL);
+                }
+                if (statusToastShownChannel) statusToastShownChannel.postMessage({ message: String(message) });
+            } catch (_) {}
+        }
+
         function showStatusToast(message, duration) {
             if (duration == null) duration = 3000;
             if (!message || !message.trim()) {
@@ -478,6 +495,7 @@
             showTimer = setTimeout(function() {
                 statusToast.classList.add('show');
                 showTimer=null;
+                announceStatusToastShown(message);
                 trackCompactStatusInputRegionThroughTransition();
                 startStatusPointerTracking();
             }, 10);

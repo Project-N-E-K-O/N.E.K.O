@@ -570,7 +570,10 @@ request was sent, or an answer that is not a JSON object; the outcome is
 unknown), `host_unavailable` (the request could
 not reach the host), `busy` (earlier calls for the same name used up the
 budget before this one could be sent; nothing was sent and `cleanup` is
-`None`), `not_registered` (unregister: the plugin had no local
+`None`. Also on an unregister, or a `cleanup`, whose requests already sent
+left too little budget to remove a stale registration they reported
+(below): that removal was not sent and the registration is still
+listed in `refused_roles`), `not_registered` (unregister: the plugin had no local
 record of the name and `main_server` removed nothing of this plugin's under
 it; with a local record the same answer is `ok=True, removed=False` and the
 local handler is dropped), `invalid_request`.
@@ -603,7 +606,11 @@ Local state follows `ok`, so the plugin and the host agree:
   (e.g. a register that timed out and landed late), so both the cleanup
   and `unregister_llm_tool_async` then remove it too, by the id
   `main_server` reported (never with an unfiltered request), and report
-  `ok` only once every reported registration is gone. Tools registered through the
+  `ok` only once every reported registration is gone. The cleanup skips
+  this removal when the plugin holds a handler for the name again by then
+  (e.g. another thread registered it with the sync call): the reported
+  registration may be that live one, so it is left in place and stays in
+  `refused_roles`. Tools registered through the
   sync call or `@llm_tool`, and names the plugin no longer holds, are
   unregistered without an id (any registration of this plugin), as
   before.

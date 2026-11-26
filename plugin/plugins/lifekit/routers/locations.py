@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, tr, ui
 from plugin.sdk.shared.core.router import PluginRouter
@@ -33,22 +33,38 @@ class LocationsRouter(PluginRouter):
         super().__init__(name="locations")
         self._write_confirmations = WriteConfirmationGate()
 
-    async def _load(self) -> List[Dict[str, Any]]:
+    async def _load(self) -> Optional[List[Dict[str, Any]]]:
         plugin = self.main_plugin
         if not plugin.store.enabled:
-            return []
-        result = await plugin.store.get(_STORE_KEY, [])
+            return None
+        try:
+            result = await plugin.store.get(_STORE_KEY, [])
+        except Exception as exc:
+            plugin.logger.warning("store.get failed: {}", exc)
+            return None
         if hasattr(result, "is_ok") and callable(result.is_ok):
             if result.is_ok():
                 data = result.value
             else:
                 plugin.logger.warning("store.get failed: {}", result.error)
-                return []
+                return None
         elif hasattr(result, "value"):
             data = result.value
         else:
             data = result
-        return [dict(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        if not isinstance(data, list):
+            plugin.logger.warning(
+                "saved_locations has invalid type {}; refusing to overwrite",
+                type(data).__name__,
+            )
+            return None
+        return [dict(item) for item in data if isinstance(item, dict)]
+
+    @staticmethod
+    def _load_error_message(plugin: Any, i18n: Any) -> str:
+        if not getattr(getattr(plugin, "store", None), "enabled", True):
+            return i18n.t("locations.save_failed")
+        return i18n.t("locations.load_failed")
 
     async def _save(self, locations: List[Dict[str, Any]]) -> bool:
         plugin = self.main_plugin
@@ -77,7 +93,13 @@ class LocationsRouter(PluginRouter):
         llm_result_model=ListLocationsResult,
     )
     async def list_locations(self, **_):
+        plugin = self.main_plugin
+        if not plugin.store.enabled:
+            return Ok({"count": 0, "locations": []})
         locations = await self._load()
+        if locations is None:
+            plugin._resolve_locale()
+            return Err(SdkError(plugin._i18n.t("locations.load_failed")))
         return Ok({"count": len(locations), "locations": locations})
 
     @ui.action(
@@ -206,6 +228,8 @@ class LocationsRouter(PluginRouter):
 
         async with plugin._locations_lock:
             locations = await self._load()
+            if locations is None:
+                return Err(SdkError(self._load_error_message(plugin, i18n)))
             for loc in locations:
                 if loc.get("label") == clean_label:
                     return Err(SdkError(i18n.t("locations.duplicate", label=clean_label)))
@@ -313,6 +337,8 @@ class LocationsRouter(PluginRouter):
             })
         async with plugin._locations_lock:
             locations = await self._load()
+            if locations is None:
+                return Err(SdkError(self._load_error_message(plugin, i18n)))
             before = len(locations)
             locations = [loc for loc in locations if loc.get("id") != key and loc.get("label") != key]
             if len(locations) == before:
@@ -386,6 +412,8 @@ class LocationsRouter(PluginRouter):
             })
         async with plugin._locations_lock:
             locations = await self._load()
+            if locations is None:
+                return Err(SdkError(self._load_error_message(plugin, i18n)))
             found = False
             for loc in locations:
                 if loc.get("id") == key or loc.get("label") == key:

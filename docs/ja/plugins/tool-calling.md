@@ -532,7 +532,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
 `main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（使える応答がなかった：`request_timeout` 内にホストが応答しなかった、
 リクエスト送信後に `main_server` が応答しなかった、または応答が JSON オブジェクトでなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
-`busy`（同じ名前の先行呼び出しが予算を使い切り、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
+`busy`（同じ名前の先行呼び出しが予算を使い切り、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`。解除または `cleanup` で送信済みのリクエストが予算を使い、それらが報告した古い登録（後述）を削除するだけの予算が残っていない場合も `busy`：その削除は送られておらず、その登録は `refused_roles` に残ります）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
 ツールが何も削除されなかった。ローカルに記録がある場合、同じ応答は `ok=True, removed=False` となりローカルのハンドラを外します）、
 `invalid_request`。
 
@@ -555,7 +555,9 @@ result = await self.unregister_llm_tool_async("custom_tool")
   実行中の後片付けや解除が、同じ名前の新しい登録を消すことはありません。その role は
   `"reason": "different registration"` 付きで `refused_roles` に入ります。そうした登録は古いもの（例：タイムアウトした登録が
   後から届いたもの）なので、後片付けと `unregister_llm_tool_async` はどちらも `main_server` が報告した ID を指定して
-  それも削除し（ID なしの広い解除は送りません）、報告された登録がすべて消えてから `ok` を返します。同期版や `@llm_tool` で登録したツール、
+  それも削除し（ID なしの広い解除は送りません）、報告された登録がすべて消えてから `ok` を返します。
+  ただし後片付けの時点でプラグイン側にその名前のハンドラが再び登録されている場合（例：別スレッドが同期版で登録した）、
+  報告された登録はその使用中のものかもしれないため、後片付けはそれを削除せず、`refused_roles` に残します。同期版や `@llm_tool` で登録したツール、
   ローカルにもう無い名前は、従来どおり ID なし（このプラグインのどの登録でも）で解除されます。
 - `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
   プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。
