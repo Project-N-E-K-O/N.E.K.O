@@ -2702,3 +2702,46 @@ def test_getattr_cycles_through_an_earlier_assignment_are_detected(tmp_path, lon
     assert report["status"] == "completed"
     assert report["capabilities"] == ["messages.push"]
     assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A star import may rebind an imported family name too.
+        "import socket\nfrom socket import AF_UNIX\nfrom evil import *\n\nsocket.socket(AF_UNIX).listen()\n",
+        # A method taken from the construction is not the socket.
+        "import socket\nconnect = socket.socket(socket.AF_UNIX).connect\nconnect('/p')\nlisten = socket.socket(socket.AF_UNIX).listen\nlisten()\n",
+    ],
+)
+def test_star_imports_and_bound_methods_are_not_local(tmp_path, source):
+    report = _scan(tmp_path, source)
+    rows = report["permissions"].get(LISTEN, report["permissions"][CONNECT])["findings"]
+    # The calls through the stored name stay direct (as on main).
+    assert [row["basis"] for row in rows if row["line"] in (3, 5, 6)] and all(
+        row["basis"] == "resolved_call" for row in rows if row["line"] in (3, 5, 6)
+    )
+
+
+def test_a_long_getattr_attribute_name_does_not_stop_the_scan(tmp_path):
+    name = "a" * 4100
+    source = f"import os, subprocess\ndef f(obj):\n    value = getattr(obj, '{name}')\nv = getattr(os, '{name}')\nv()\nsubprocess.run([])\n"
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "init,spawn",
+    [
+        # getattr on a method parameter: not resolved through the module of
+        # the same name (as on main).
+        ("def __init__(self, runner):\n        self.run = getattr(runner, 'run')", "import_only"),
+        # On the module itself it is followed, like self.run = runner.run.
+        ("def __init__(self):\n        self.run = getattr(runner, 'run')", "resolved_call"),
+    ],
+)
+def test_getattr_on_a_method_parameter_is_not_the_module(tmp_path, init, spawn):
+    source = f"import subprocess as runner\nclass C:\n    {init}\n    def go(self):\n        self.run()\n"
+    report = _scan(tmp_path, source)
+    assert report["permissions"]["system.process:spawn"]["basis"] == spawn
+    assert report["capabilities"] == []
