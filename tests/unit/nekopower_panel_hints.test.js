@@ -41,7 +41,7 @@ class FakeElement {
     querySelectorAll() { return []; }
 }
 
-function load({ crop = null, peekHostStage = false } = {}) {
+function load({ crop = null, peekHostStage = false, pluginContent = false } = {}) {
     const elements = new Map();
     for (const id of ['live2d-agent-master', 'live2d-agent-keyboard', 'live2d-agent-browser',
         'live2d-agent-user-plugin', 'live2d-agent-status']) {
@@ -83,6 +83,8 @@ function load({ crop = null, peekHostStage = false } = {}) {
     };
     if (crop) window.__nekoNiriPetPhysicalCrop = crop;
     if (peekHostStage) window.__nekoLive2DPeekHostStage = { version: 1, prepare() { return false; } };
+    // A plugin view sits in the HUD: it is shown even with the floating-window switch off.
+    if (pluginContent) window.NekoPluginViews = { hasContent: () => true, syncHud() {}, clear() {} };
     const fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
     window.fetch = fetch;
     const context = vm.createContext({
@@ -211,7 +213,23 @@ test('the task HUD is not shown while the power-saving crop is on, whatever asks
     h.window.AgentHUD.showAgentTaskHUD();
     assert.equal(h.hud.style.opacity, '0', 'faded out instead of shown');
     h.window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
-    assert.equal(h.hud.style.opacity, '0', 'plugin content does not bring it back either');
+    assert.equal(h.hud.style.opacity, '0', 'nor does asking past the floating-window switch');
+});
+
+test('plugin content: shown past the switch as before, not while cropping, back as the crop ends', () => {
+    let active = false;
+    const h = load({ crop: { isActive: () => active }, peekHostStage: true, pluginContent: true });
+    h.window.localStorage.getItem = (key) => (key === 'neko-agent-taskhud-visible' ? 'false' : null);
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.opacity, '1', 'with the switch off, plugin content still shows it');
+    active = true;
+    h.cropApplied();
+    assert.equal(h.hud.style.opacity, '0', 'gone as the crop starts');
+    h.window.AgentHUD.showAgentTaskHUD();
+    assert.equal(h.hud.style.opacity, '0', 'plugin content does not bring it back while cropping');
+    active = false;
+    h.cropApplied();
+    assert.equal(h.hud.style.opacity, '1', 'back as the crop ends');
 });
 
 test('the Linux physical crop does not hide the task HUD', () => {
