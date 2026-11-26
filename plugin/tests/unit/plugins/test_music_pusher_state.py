@@ -600,3 +600,81 @@ async def test_removing_corrupt_state_backups_clears_recovery_incomplete_and_res
     assert snap3["corrupt_state_backups"] == []
     persisted3 = json.loads(plugin3._state_file.read_text(encoding="utf-8"))
     assert "tasks_recovery_incomplete" not in persisted3
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_unreadable_backup_listing_keeps_tasks_recovery_incomplete_paused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin1 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin1, "_ensure_scheduler_task", lambda: None)
+    plugin1._upload_dir.mkdir(parents=True, exist_ok=True)
+    audio_a = plugin1._upload_dir / "keep_on_eperm.mp3"
+    audio_a.write_bytes(b"ID3-EPERM")
+
+    plugin1._upload_name_map = {
+        "keep_on_eperm.mp3": {
+            "stored_filename": "keep_on_eperm.mp3",
+            "original_filename": "keep_on_eperm.mp3",
+            "title": "Keep Eperm",
+            "artist": "Artist",
+            "duration_sec": 30,
+            "deleted": True,
+        }
+    }
+    plugin1._save_upload_name_map_locked()
+    plugin1._state_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin1._state_file.write_text("{corrupt", encoding="utf-8")
+
+    # Boot 1 creates .corrupt.* backup and persists tasks_recovery_incomplete=True.
+    assert (await plugin1.on_start()).is_ok()
+    assert audio_a.is_file()
+
+    # Boot 2: directory listing fails with PermissionError; must fail closed and keep GC paused.
+    real_iterdir = Path.iterdir
+    data_dir = plugin1._state_file.parent
+
+    def _deny_data_dir_iterdir(self_path: Path):
+        if self_path == data_dir:
+            raise PermissionError("permission denied")
+        return real_iterdir(self_path)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_data_dir_iterdir)
+
+    plugin2 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin2, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin2.on_start()).is_ok()
+    assert audio_a.is_file()
+    assert plugin2._tasks_recovery_incomplete is True
+    snap2 = plugin2._build_runtime_snapshot()
+    assert snap2["degraded"] is True
+    assert snap2["tasks_recovery_incomplete"] is True
+    assert snap2["upload_gc_paused"] is True
+    assert snap2["corrupt_state_backups"] == []
+    persisted2 = json.loads(plugin2._state_file.read_text(encoding="utf-8"))
+    assert persisted2.get("tasks_recovery_incomplete") is True
+
+    # Boot 2b: even if scheduler_state.json is absent while iterdir fails, keep GC paused.
+    plugin2._state_file.unlink()
+    plugin2b = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin2b, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin2b.on_start()).is_ok()
+    assert audio_a.is_file()
+    assert plugin2b._tasks_recovery_incomplete is True
+
+    # Restore directory readability and remove backup files -> Boot 3 clears flag & runs GC.
+    monkeypatch.undo()
+    for backup_file in data_dir.glob("scheduler_state.json.corrupt.*"):
+        backup_file.unlink()
+
+    plugin3 = _make_plugin(tmp_path)
+    monkeypatch.setattr(plugin3, "_ensure_scheduler_task", lambda: None)
+    assert (await plugin3.on_start()).is_ok()
+    assert not audio_a.exists()
+    assert plugin3._tasks_recovery_incomplete is False
+    snap3 = plugin3._build_runtime_snapshot()
+    assert snap3["degraded"] is False
+    assert snap3["tasks_recovery_incomplete"] is False
+    assert snap3["upload_gc_paused"] is False

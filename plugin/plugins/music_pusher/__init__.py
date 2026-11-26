@@ -1221,18 +1221,41 @@ class MusicPusherPlugin(NekoPluginBase):
                 return f"状态文件 {path.name} 损坏且暂无法备份，已拒绝保存以防数据丢失"
         return None
 
-    def _list_corrupt_state_backups_locked(self) -> list[str]:
+    def _list_corrupt_state_backups_locked(self) -> list[str] | None:
+        prefix = f"{self._state_file.name}.corrupt."
         try:
-            return sorted(
-                str(p)
-                for p in self._state_file.parent.glob(f"{self._state_file.name}.corrupt.*")
-                if p.is_file()
-            )
-        except OSError:
+            entries = list(self._state_file.parent.iterdir())
+        except FileNotFoundError:
             return []
+        except OSError as exc:
+            self.logger.warning(
+                "Failed to list corrupt state backups in {}: {}",
+                self._state_file.parent,
+                exc,
+            )
+            return None
+        backups: list[str] = []
+        for p in entries:
+            if not p.name.startswith(prefix):
+                continue
+            try:
+                if p.is_file():
+                    backups.append(str(p))
+            except OSError as exc:
+                self.logger.warning(
+                    "Failed to stat corrupt state backup {}: {}",
+                    p,
+                    exc,
+                )
+                return None
+        backups.sort()
+        return backups
 
-    def _has_corrupt_state_backup_locked(self) -> bool:
-        return bool(self._list_corrupt_state_backups_locked())
+    def _has_corrupt_state_backup_locked(self) -> bool | None:
+        backups = self._list_corrupt_state_backups_locked()
+        if backups is None:
+            return None
+        return bool(backups)
 
     def _has_incomplete_task_state_locked(self) -> bool:
         return bool(
@@ -1300,10 +1323,12 @@ class MusicPusherPlugin(NekoPluginBase):
 
         path = self._state_file
         if not path.exists():
-            if self._has_corrupt_state_backup_locked():
+            has_backup = self._has_corrupt_state_backup_locked()
+            if has_backup is not False:
                 self.logger.warning(
-                    "scheduler_state.json missing while corrupt state backup(s) still exist; "
-                    "keeping tombstoned upload GC paused until corrupt backups are removed"
+                    "scheduler_state.json missing while corrupt state backups {}; "
+                    "keeping tombstoned upload GC paused until backup state is confirmed clear",
+                    "still exist" if has_backup is True else "could not be listed",
                 )
                 self._tasks_recovery_incomplete = True
             return
@@ -1321,14 +1346,19 @@ class MusicPusherPlugin(NekoPluginBase):
             self._backup_corrupt_file_locked(path, "invalid_root_type")
             return
         if _coerce_bool(data.get("tasks_recovery_incomplete"), False):
-            if self._has_corrupt_state_backup_locked():
-                self._tasks_recovery_incomplete = True
-            else:
+            has_backup = self._has_corrupt_state_backup_locked()
+            if has_backup is False:
                 self.logger.info(
                     "Corrupt scheduler state backups removed; clearing tasks_recovery_incomplete "
                     "and resuming tombstoned upload GC"
                 )
                 self._tasks_recovery_incomplete = False
+            else:
+                if has_backup is None:
+                    self.logger.warning(
+                        "Could not list corrupt state backups; keeping tasks_recovery_incomplete active"
+                    )
+                self._tasks_recovery_incomplete = True
         if (
             data.get("music_items") is not None and not isinstance(data.get("music_items"), list)
         ) or (
@@ -1498,7 +1528,7 @@ class MusicPusherPlugin(NekoPluginBase):
             "degraded_files": degraded_files,
             "tasks_recovery_incomplete": tasks_recovery_incomplete,
             "upload_gc_paused": bool(self._has_incomplete_task_state_locked()),
-            "corrupt_state_backups": corrupt_state_backups,
+            "corrupt_state_backups": corrupt_state_backups if corrupt_state_backups is not None else [],
             "now": _iso(),
         }
 
