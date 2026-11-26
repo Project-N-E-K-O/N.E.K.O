@@ -8,9 +8,29 @@ if (!THREE) {
     console.error('[MMD Interaction] THREE.js 未加载，交互功能将不可用');
 }
 
+// 桌面宿主接管模型拖动时（它直接挪承载模型的那一层），平移拖动不再由页面写模型坐标，
+// 否则两边同时挪同一个模型。判据和 Live2D 的 isLive2DHostModelDragActive 一致：
+// 宿主在 window.__nekoNiriPetPhysicalCrop 上声明 hostModelDragOwnershipVersion，
+// 再用 isHostModelDragActive() 报告这次按下是否由它接管。
+function isMMDHostModelDragActive() {
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    if (!api) return false;
+    const ownershipVersion = Number(api.hostModelDragOwnershipVersion);
+    if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;
+    if (typeof api.isHostModelDragActive !== 'function') return true;
+    try {
+        return api.isHostModelDragActive() !== false;
+    } catch (_) {
+        return true;
+    }
+}
+
 class MMDInteraction {
     constructor(manager) {
         this.manager = manager;
+        // 宿主据此判断这一版页面会按 isHostModelDragActive() 让出平移拖动、
+        // 并且画布尺寸没变时 onWindowResize 不重设画布。
+        this.hostModelDragOwnershipVersion = 1;
 
         // 拖拽和缩放
         this.isDragging = false;
@@ -419,7 +439,9 @@ class MMDInteraction {
             }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
-            if (this.dragMode === 'pan') {
+            if (this.dragMode === 'pan' && isMMDHostModelDragActive()) {
+                // 宿主接管了这次拖动：上面已记下指针（跨屏、拖动提示照常用），模型坐标由宿主负责。
+            } else if (this.dragMode === 'pan') {
                 // 像素精确平移模型（参考 VRM 风格，基于相机 FOV/距离）
                 const mesh = this.manager.currentModel?.mesh;
                 if (!mesh) return;
@@ -578,7 +600,8 @@ class MMDInteraction {
             getModel: () => this.manager.currentModel?.mesh,
             setScale: scale => this.manager.currentModel.mesh.scale.setScalar(scale),
             enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.mesh
-                && !this.checkLocked() && !isYuiGuideDragLocked()
+                && !this.checkLocked() && !isYuiGuideDragLocked(),
+            isHostModelDragActive: isMMDHostModelDragActive
         });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler);

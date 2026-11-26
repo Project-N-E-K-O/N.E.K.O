@@ -121,7 +121,7 @@
         };
     }
 
-    function installThree(interaction, { getModel, setScale, enabled }) {
+    function installThree(interaction, { getModel, setScale, enabled, isHostModelDragActive }) {
         const manager = interaction.manager;
         const canvas = manager.renderer.domElement;
         const THREE = global.THREE;
@@ -189,6 +189,11 @@
                 const desired = planePoint(gesture.center, pinch.plane);
                 if (!desired) return;
                 setScale(Math.max(0.1, Math.min(50, pinch.scale * gesture.ratio)));
+                // 宿主接管拖动时只让出模型坐标，缩放照常（和 Live2D 的捏合一致）。
+                if (typeof isHostModelDragActive === 'function' && isHostModelDragActive()) {
+                    manager._lastInteractionBoostTs = performance.now();
+                    return;
+                }
                 const model = pinch.model;
                 model.updateWorldMatrix(true, false);
                 const current = model.localToWorld(pinch.local.clone());

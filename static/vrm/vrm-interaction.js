@@ -52,9 +52,29 @@ if (typeof window !== 'undefined') {
     window.NekoVRMSafeFraming = Object.freeze({ calculateExpandedFov, calculateFramingRatio });
 }
 
+// 桌面宿主接管模型拖动时（它直接挪承载模型的那一层），平移拖动不再由页面写模型坐标，
+// 否则两边同时挪同一个模型。判据和 Live2D 的 isLive2DHostModelDragActive 一致：
+// 宿主在 window.__nekoNiriPetPhysicalCrop 上声明 hostModelDragOwnershipVersion，
+// 再用 isHostModelDragActive() 报告这次按下是否由它接管。
+function isVRMHostModelDragActive() {
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    if (!api) return false;
+    const ownershipVersion = Number(api.hostModelDragOwnershipVersion);
+    if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;
+    if (typeof api.isHostModelDragActive !== 'function') return true;
+    try {
+        return api.isHostModelDragActive() !== false;
+    } catch (_) {
+        return true;
+    }
+}
+
 class VRMInteraction {
     constructor(manager) {
         this.manager = manager;
+        // 宿主据此判断这一版页面会按 isHostModelDragActive() 让出平移拖动、
+        // 并且画布尺寸没变时 onWindowResize 不重设画布。
+        this.hostModelDragOwnershipVersion = 1;
 
         // 拖拽和缩放相关
         this.isDragging = false;
@@ -972,7 +992,9 @@ class VRMInteraction {
                 }
             }
 
-            if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
+            if (this.dragMode === 'pan' && isVRMHostModelDragActive()) {
+                // 宿主接管了这次拖动：上面已记下指针（跨屏、拖动提示照常用），模型坐标由宿主负责。
+            } else if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
                 // 动态计算平移速度：根据相机距离和FOV，使鼠标移动距离与屏幕上模型移动距离同步
                 // 这样无论缩放级别如何，鼠标移动100像素，模型在屏幕上也移动100像素
                 const camera = this.manager.camera;
@@ -1163,7 +1185,8 @@ class VRMInteraction {
             getModel: () => this.manager.currentModel?.scene,
             setScale: scale => this.manager.setModelScaleScalar(scale),
             enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.scene
-                && !this.checkLocked() && !isYuiGuideDragLocked()
+                && !this.checkLocked() && !isYuiGuideDragLocked(),
+            isHostModelDragActive: isVRMHostModelDragActive
         });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler); // 绑定到 document 以支持拖出画布

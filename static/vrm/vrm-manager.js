@@ -46,6 +46,22 @@ function normalizeBundledVrmAnimationPath(animationPath) {
     return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
 }
 
+// 渲染尺寸、画布缓冲区、画布样式尺寸和相机宽高比都已经是目标值。
+function isVRMRendererSizeCurrent(renderer, camera, width, height) {
+    const canvas = renderer && renderer.domElement;
+    const THREE = typeof window !== 'undefined' ? window.THREE : null;
+    if (!canvas || !canvas.style || !camera || !THREE || typeof renderer.getSize !== 'function'
+        || typeof renderer.getPixelRatio !== 'function') return false;
+    const size = renderer.getSize(new THREE.Vector2());
+    const pixelRatio = renderer.getPixelRatio();
+    return size.x === width && size.y === height
+        && canvas.width === Math.floor(width * pixelRatio)
+        && canvas.height === Math.floor(height * pixelRatio)
+        && canvas.style.width === width + 'px'
+        && canvas.style.height === height + 'px'
+        && camera.aspect === width / height;
+}
+
 class VRMManager {
     constructor() {
         this.scene = null;
@@ -1812,6 +1828,9 @@ class VRMManager {
 
             if (!Number.isFinite(visibleWidth) || !Number.isFinite(visibleHeight)
                 || visibleWidth <= 0 || visibleHeight <= 0) return;
+            // 尺寸没变就不重设：setSize 会重新分配画布缓冲区，画布在下一次渲染前是空的。
+            // 宿主改了窗口尺寸、页面视口却不变时（resize 事件照常派发）就是这种情况。
+            if (isVRMRendererSizeCurrent(this.renderer, this.camera, visibleWidth, visibleHeight)) return;
             this.camera.aspect = visibleWidth / visibleHeight;
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(visibleWidth, visibleHeight, false);
@@ -1831,6 +1850,7 @@ class VRMManager {
         }
 
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+        if (isVRMRendererSizeCurrent(this.renderer, this.camera, width, height)) return;
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
