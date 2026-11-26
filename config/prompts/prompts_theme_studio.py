@@ -778,6 +778,16 @@ THEME_STUDIO_MESSAGES: dict[str, dict[str, str]] = {
         "es": "Id de entrada de la biblioteca no válido; se rechazó la modificación: {theme_id}",
         "pt": "Id de entrada da biblioteca inválido; alteração recusada: {theme_id}",
     },
+    "library.updateMeta.invalidTags": {
+        "zh": "标签格式不对：要传字符串列表（或用逗号分隔的一段文字），每个标签都得是文字。",
+        "zh-TW": "標籤格式不正確：請傳入字串清單（或以逗號分隔的一段文字），每個標籤都必須是文字。",
+        "en": "Invalid tags: send a list of strings (or one comma-separated string); every tag must be text.",
+        "ja": "タグの形式が正しくありません。文字列のリスト（またはカンマ区切りの文字列）を指定し、各タグは文字列にしてください。",
+        "ko": "태그 형식이 올바르지 않습니다. 문자열 목록(또는 쉼표로 구분한 문자열 하나)을 보내야 하며, 각 태그는 텍스트여야 합니다.",
+        "ru": "Недопустимые метки: передайте список строк (или одну строку через запятую); каждая метка должна быть текстом.",
+        "es": "Etiquetas no válidas: envía una lista de cadenas (o una sola cadena separada por comas); cada etiqueta debe ser texto.",
+        "pt": "Etiquetas inválidas: envie uma lista de strings (ou uma única string separada por vírgulas); cada etiqueta deve ser texto.",
+    },
     "library.updateMeta.nothingToChange": {
         "zh": "没有要修改的内容（name / note / tags 都没给）。",
         "zh-TW": "沒有要修改的內容（name / note / tags 都沒有提供）。",

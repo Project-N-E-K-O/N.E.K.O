@@ -8888,6 +8888,10 @@
                 "savedStatus": "자동 전환을 저장했습니다",
                 "saveFailedNotice": "자동 전환 저장 실패: {{error}}",
                 "saveFailedStatus": "자동 전환 저장 실패"
+            },
+            "tools": {
+                "hideTags": "태그 접기",
+                "moreTags": "태그 {{count}}개 더 보기"
             }
         },
         "sync": {

@@ -8888,6 +8888,10 @@
                 "savedStatus": "Auto-switch saved",
                 "saveFailedNotice": "Failed to save auto-switch: {{error}}",
                 "saveFailedStatus": "Failed to save auto-switch"
+            },
+            "tools": {
+                "hideTags": "Show fewer tags",
+                "moreTags": "+{{count}} tags"
             }
         },
         "sync": {

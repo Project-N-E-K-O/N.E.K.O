@@ -8888,6 +8888,10 @@
                 "savedStatus": "Автосмена сохранена",
                 "saveFailedNotice": "Не удалось сохранить автосмену: {{error}}",
                 "saveFailedStatus": "Не удалось сохранить автосмену"
+            },
+            "tools": {
+                "hideTags": "Свернуть метки",
+                "moreTags": "Ещё меток: {{count}}"
             }
         },
         "sync": {

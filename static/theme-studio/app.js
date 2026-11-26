@@ -4481,6 +4481,8 @@ var LIB_FAV_FAMILY = '__fav__';
 var LIB_CUSTOM_FAMILY = '__custom__';
 var LIB_FAV_KEY = 'nts.library.favorites';
 var LIB_COLLAPSE_KEY = 'nts.catalog.collapsed';
+/** Tag filter bar: chips shown before the "+N tags" toggle (user tags can grow the bar without bound). */
+var LIB_TAG_VISIBLE = 14;
 
 /** Ids of the six valid families (same order as the tabs). */
 function libFamilyIds() {
@@ -4544,6 +4546,22 @@ function libMatchesQuery(item, query) {
 function libMatchesTag(item, tag) {
   if (!tag) return true;
   return libTagsOf(item).indexOf(String(tag)) >= 0;
+}
+
+/**
+ * Adaptive tag bar layout. `tags` comes frequency-sorted (libraryTags); the active
+ * tag is pinned first so it never hides behind the toggle, and only `limit` chips
+ * are shown while collapsed. Returns { shown, overflow } where overflow is how many
+ * tags the collapsed bar leaves out (0 = no toggle needed).
+ */
+function libTagBarLayout(tags, active, expanded, limit) {
+  var list = tags instanceof Array ? tags.slice() : [];
+  var max = isFinite(limit) && limit > 0 ? Math.floor(limit) : list.length;
+  if (active && list.indexOf(active) >= 0) {
+    list = [active].concat(list.filter(function (tag) { return tag !== active; }));
+  }
+  var overflow = Math.max(0, list.length - max);
+  return { shown: expanded ? list : list.slice(0, max), overflow: overflow };
 }
 
 function libIsFavorite(item, favorites) {
@@ -4710,6 +4728,7 @@ var libraryState = {
   family: '',    // family filter ('' = all; LIB_FAV_FAMILY = favorites virtual family)
   query: '',     // search text
   favorites: [], // favorite id list (synced with localStorage)
+  tagsExpanded: false, // tag filter bar shows every tag instead of the first LIB_TAG_VISIBLE
   lastShuffle: null
 };
 /** Switch to the "Custom" tab to show an action's result (save / import / restore). Tag filter
@@ -5106,7 +5125,26 @@ function renderLibraryFilters() {
     return chip;
   };
   host.appendChild(makeChip(tsT('library.filter.all', '全部'), ''));
-  tags.forEach(function (tag) { host.appendChild(makeChip(tag, tag)); });
+  var layout = libTagBarLayout(tags, libraryState.filter, libraryState.tagsExpanded, LIB_TAG_VISIBLE);
+  layout.shown.forEach(function (tag) { host.appendChild(makeChip(tag, tag)); });
+  if (layout.overflow > 0) {
+    var more = el('button', {
+      type: 'button',
+      class: 'lib-chip lib-chip-more',
+      text: libraryState.tagsExpanded
+        ? tsT('library.tools.hideTags', '收起标签')
+        : tsT('library.tools.moreTags', '还有 {{count}} 个标签', { count: layout.overflow }),
+      'aria-expanded': libraryState.tagsExpanded ? 'true' : 'false'
+    });
+    more.addEventListener('click', function () {
+      libraryState.tagsExpanded = !libraryState.tagsExpanded;
+      renderLibraryFilters();
+      // The toggle is rebuilt; keep keyboard focus on it.
+      var again = host.querySelector('.lib-chip-more');
+      if (again && typeof again.focus === 'function') again.focus();
+    });
+    host.appendChild(more);
+  }
 }
 
 /** Render the library list filtered by family + tag + search; favorites are pinned first in "All". */
@@ -5383,13 +5421,14 @@ function openMetaModal(item) {
   }
 }
 
-/** "暖色，渐变 ; 深色" -> ['暖色','渐变','深色'] (at most 4, same rules as the backend's _theme_tags). */
+/** "暖色，渐变 ; 深色" -> ['暖色','渐变','深色'] (at most 4 unique, same rules as the backend's _theme_tags). */
 function parseTagInput(text) {
-  return String(text || '')
-    .split(/[,，、;；\s]+/)
-    .filter(function (part) { return part.trim(); })
-    .map(function (part) { return part.trim().slice(0, 12); })
-    .slice(0, 4);
+  var out = [];
+  String(text || '').split(/[,，、;；\s]+/).forEach(function (part) {
+    var tag = part.trim().slice(0, 12).trim();
+    if (tag && out.length < 4 && out.indexOf(tag) < 0) out.push(tag);
+  });
+  return out;
 }
 
 async function saveThemeMeta() {
@@ -8075,6 +8114,7 @@ window.__ntsPanel = window.__ntsPanel || {
   openMetaModal: openMetaModal,
   saveThemeMeta: saveThemeMeta,
   parseTagInput: parseTagInput,
+  libTagBarLayout: libTagBarLayout,
   initRestartHint: initRestartHint,
   RESTART_HINT_KEY: RESTART_HINT_KEY,
   editorSyncPlan: editorSyncPlan,

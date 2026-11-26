@@ -8888,6 +8888,10 @@
                 "savedStatus": "自动换主题已保存",
                 "saveFailedNotice": "保存自动换主题失败：{{error}}",
                 "saveFailedStatus": "保存自动换主题失败"
+            },
+            "tools": {
+                "hideTags": "收起标签",
+                "moreTags": "还有 {{count}} 个标签"
             }
         },
         "sync": {

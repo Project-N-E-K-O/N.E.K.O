@@ -83,8 +83,8 @@ _service_started = False
 _app_exiting = False
 _data_dir_override: Path | None = None
 # Entries were written for a plugin host that ran them one at a time, and
-# several do read-modify-write outside ``_WRITE_LOCK`` (e.g. update_theme_meta
-# vs delete_theme). Worker threads must not change that, so dispatch is
+# several do read-modify-write outside ``_WRITE_LOCK`` (update_theme_meta now
+# holds it for the whole edit, but not every entry does). Worker threads must not change that, so dispatch is
 # serialised here. Entries finish in milliseconds; only the event loop is freed.
 _ENTRY_LOCK = threading.Lock()
 

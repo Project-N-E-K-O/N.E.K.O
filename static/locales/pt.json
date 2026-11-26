@@ -8888,6 +8888,10 @@
                 "savedStatus": "Troca automática salva",
                 "saveFailedNotice": "Falha ao salvar a troca automática: {{error}}",
                 "saveFailedStatus": "Falha ao salvar a troca automática"
+            },
+            "tools": {
+                "hideTags": "Mostrar menos etiquetas",
+                "moreTags": "+{{count}} etiquetas"
             }
         },
         "sync": {

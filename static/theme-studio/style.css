@@ -1403,10 +1403,10 @@ kbd {
 }
 
 .lib-chip {
-  height: 20px;
-  padding: 0 9px;
+  height: 24px;
+  padding: 0 10px;
   font-size: 11px;
-  line-height: 18px;
+  line-height: 22px;
   color: var(--text-sub);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
@@ -1415,6 +1415,9 @@ kbd {
 }
 
 .lib-chip:hover { color: var(--text); border-color: var(--border); }
+
+/* "+N tags" / "Show fewer tags" toggle at the end of the tag filter bar. */
+.lib-chip-more { border-style: dashed; font-weight: 600; }
 
 .lib-chip.is-active {
   color: #fff;
@@ -1475,10 +1478,10 @@ kbd {
 .lib-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
 
 .lib-tag {
-  height: 15px;
-  padding: 0 5px;
-  font-size: 10px;
-  line-height: 13px;
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 22px;
   color: var(--text-faint);
   background: var(--surface-2);
   border: 1px solid var(--border-soft);

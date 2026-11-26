@@ -8888,6 +8888,10 @@
                 "savedStatus": "Cambio automático guardado",
                 "saveFailedNotice": "No se pudo guardar el cambio automático: {{error}}",
                 "saveFailedStatus": "No se pudo guardar el cambio automático"
+            },
+            "tools": {
+                "hideTags": "Mostrar menos etiquetas",
+                "moreTags": "+{{count}} etiquetas"
             }
         },
         "sync": {

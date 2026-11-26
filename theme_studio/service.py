@@ -891,16 +891,30 @@ def _theme_note(value: Any) -> str:
     return _strip_controls(value).strip()[:120] if isinstance(value, str) else ""
 
 
+#: Tag limits shared by save / import / edit / listing (the panel's parseTagInput mirrors them).
+THEME_TAG_LIMIT = 4
+THEME_TAG_MAX_LEN = 12
+
+
 def _theme_tags(value: Any) -> list:
-    """Tags kept on import / save (at most 4, 12 chars each, same as built-in themes)."""
+    """Normalise a tag list: trim, drop control chars / empties / non-strings, clip, dedupe.
+
+    At most ``THEME_TAG_LIMIT`` unique tags of ``THEME_TAG_MAX_LEN`` chars each
+    (same as built-in themes). Duplicates are compared after trimming and
+    clipping, so "warm" and " warm " count once and do not waste a slot -- the
+    panel's tag filter counts each tag once per theme.
+    """
     if not isinstance(value, list):
         return []
-    out = []
-    for tag in value[:4]:
-        if isinstance(tag, str):
-            cleaned = _strip_controls(tag).strip()
-            if cleaned:
-                out.append(cleaned[:12])
+    out: list = []
+    for tag in value:
+        if len(out) >= THEME_TAG_LIMIT:
+            break
+        if not isinstance(tag, str):
+            continue
+        cleaned = _strip_controls(tag).strip()[:THEME_TAG_MAX_LEN].strip()
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
     return out
 
 
@@ -3519,11 +3533,9 @@ class ThemeStudioService(NekoPluginBase):
                     "builtin": False,
                     "note": (raw.get("note").strip()[:120]
                              if isinstance(raw.get("note"), str) else ""),
-                    "tags": [
-                        tag.strip()[:12]
-                        for tag in (raw.get("tags") or [])[:4]
-                        if isinstance(tag, str) and tag.strip()
-                    ] if isinstance(raw.get("tags"), list) else [],
+                    # Same normaliser as save / import / edit, so a hand-edited entry
+                    # lists exactly what the next edit would write back.
+                    "tags": _theme_tags(raw.get("tags")),
                     "family": _preset_family(raw, clean_vars, clean_dark),
                     "preview": _preset_preview(clean_vars, clean_dark),
                     "material": _material_badge(raw.get("materials")),
@@ -3622,12 +3634,7 @@ class ThemeStudioService(NekoPluginBase):
             )
             if errors:
                 self._log("warning", f"内置主题 {path.name} 有 {len(errors)} 条被忽略")
-            tags_raw = raw.get("tags")
-            tags = []
-            if isinstance(tags_raw, list):
-                for tag in tags_raw[:4]:
-                    if isinstance(tag, str) and tag.strip():
-                        tags.append(tag.strip()[:12])
+            tags = _theme_tags(raw.get("tags"))
             note_raw = raw.get("note")
             note = note_raw.strip()[:120] if isinstance(note_raw, str) else ""
             items.append(
@@ -4850,6 +4857,13 @@ class ThemeStudioService(NekoPluginBase):
         tags: Any = None,
         **_,
     ):
+        # The whole read-modify-write runs under the lock: reading outside it let a
+        # concurrent delete (move to trash) or save land between the read and the
+        # write, and the stale payload would then resurrect or clobber the entry.
+        with _WRITE_LOCK:
+            return self._update_theme_meta_unlocked(theme_id or id, name, note, tags)
+
+    def _update_theme_meta_unlocked(self, theme_id: Any, name: Any, note: Any, tags: Any):
         """Edit only name / note / tags; **never change id, vars, dark_vars or saved_at**.
 
         Why the id must not follow the name: the id is the key shared by
@@ -4859,8 +4873,12 @@ class ThemeStudioService(NekoPluginBase):
         users would see "I favorited it, where did it go?" and "the scheduled
         theme does not exist". So once generated the id is fixed; renaming
         only touches display fields.
+
+        Tags: a list of strings (or a comma-separated string from the CLI) is
+        normalised by ``_theme_tags`` (trim, dedupe, at most 4 x 12 chars); an
+        empty list clears them. Any other shape, or a list holding non-strings,
+        is refused instead of being read as "clear all tags".
         """
-        theme_id = theme_id or id
         if name is None and note is None and tags is None:
             return Err(SdkError(_msg("library.updateMeta.nothingToChange")))
         try:
@@ -4907,6 +4925,8 @@ class ThemeStudioService(NekoPluginBase):
                 if isinstance(tags, str):
                     # The panel sends an array; a hand-written comma-separated string from the CLI is accepted too, so callers need not guess the format.
                     tags = [part for part in re.split(r"[,，、;；\s]+", tags) if part]
+                if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+                    raise SdkError(_msg("library.updateMeta.invalidTags"))
                 clean_tags = _theme_tags(tags)
                 if clean_tags:
                     if clean_tags != list(payload.get("tags") or []):
@@ -4934,8 +4954,7 @@ class ThemeStudioService(NekoPluginBase):
                     }
                 )
 
-            with _WRITE_LOCK:
-                _write_json_atomic(path, payload)
+            _write_json_atomic(path, payload)
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001

@@ -8888,6 +8888,10 @@
                 "savedStatus": "自動切り替えを保存しました",
                 "saveFailedNotice": "自動切り替えの保存に失敗しました：{{error}}",
                 "saveFailedStatus": "自動切り替えの保存に失敗しました"
+            },
+            "tools": {
+                "hideTags": "タグを折りたたむ",
+                "moreTags": "他 {{count}} 個のタグ"
             }
         },
         "sync": {
