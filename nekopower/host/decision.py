@@ -1218,9 +1218,18 @@ class LexicalDecisionModel:
                 # which, the user is asked, among those.
                 return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
-                # (For "these", what of their project's work was left out goes
-                # on: "the footer one" of the shop site's. She is told it does.)
-                return Triage(kind="stop", targets=stopped, left_running=kin, model_calls=1), 1, False
+                # For "these", where some of their project's work was left out,
+                # all of it that goes on is said, shown or not ("the footer
+                # one" of the shop site's, or "all the shop site work" read as
+                # the one item shown: what was shown and not named goes on as
+                # well, owner's automatic review). Where none of it was left
+                # out, what it names is what was meant, as when the list is
+                # whole: nothing is said.
+                going_on = [
+                    item.id for item in request.active
+                    if item.id not in stopped and any(_kin(item, other) for other in shown_stopped)
+                ] if kin else []
+                return Triage(kind="stop", targets=stopped, left_running=going_on, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
             # nothing of hers it names is under way.
             if not under_way:

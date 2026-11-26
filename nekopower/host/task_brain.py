@@ -56,7 +56,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from nekopower.host import call_audit
@@ -631,22 +631,26 @@ class TaskBrain:
             async def tell() -> None:
                 # Looked at when it is written (a stop of everything may come
                 # between this callback and then).
-                if generation != self._dispatch_generation and receipt.kind != "stop_failed":
-                    # Everything was stopped since: what this round came to
-                    # is over with it, and nothing of it is told now. Not what
-                    # a stop it made could not end: stopping everything does
-                    # not take up what is stopped already.
-                    return
+                said = receipt
+                if generation != self._dispatch_generation:
+                    if receipt.kind != "stop_failed":
+                        # Everything was stopped since: what this round came
+                        # to is over with it, and nothing of it is told now.
+                        return
+                    # Not what a stop it made could not end: stopping
+                    # everything does not take up what is stopped already.
+                    # What it said goes on was stopped with everything.
+                    said = replace(receipt, left_running=[])
                 await self._reporter.receipt(
                     lanlan_name,
-                    kind=receipt.kind,
-                    text=receipt.text(lang),
-                    commission=receipt.first,
+                    kind=said.kind,
+                    text=said.text(lang),
+                    commission=said.first,
                     # Not told in time what it did with the work: she says so
                     # now, as a question it may have answered still waits. So
                     # a stop that left some of a project's work going on: the
                     # user is not to take it all for stopped meanwhile.
-                    urgent=receipt.unread or bool(receipt.left_running),
+                    urgent=said.unread or bool(said.left_running),
                 )
 
             self._spawn(tell())
@@ -730,20 +734,22 @@ class TaskBrain:
                     unconfirmed.append(after)
                 elif after is not None:
                     over.append(after)
-            # What of their project's work goes on, not shown to the reading
-            # and not meant by it ("the footer one" of the shop site's): as it
-            # is now, so not one that ended meanwhile or went with the stop.
+            # What of their project's work goes on, not meant by the stop ("the
+            # footer one" of the shop site's): as it is now, so not one that
+            # ended meanwhile or went with the stop. Read at once, in one look
+            # at her work under way. Not once the host is closing: it ends
+            # all of it.
             left_running: list[Commission] = []
-            for commission_id in triage.left_running:
+            if triage.left_running and not self._closed:
                 try:
-                    now = await self._ledger.get(commission_id)
+                    under_way = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - said as it was read: under way
-                    logger.warning("reading commission %s after a stop failed", commission_id, exc_info=True)
-                    now = by_id.get(commission_id)
-                if now is not None and now.active:
-                    left_running.append(now)
+                    logger.warning("reading her work under way after a stop failed", exc_info=True)
+                    under_way = [by_id[item] for item in triage.left_running if item in by_id]
+                now = {item.id: item for item in under_way}
+                left_running = [now[item] for item in triage.left_running if item in now]
             if not_stopped or unconfirmed:
                 return Receipt(
                     kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed,
