@@ -1030,3 +1030,15 @@ async def test_busy_operation_lock_answers_in_the_module_error_shape(env, monkey
     assert response.headers["X-Error-Code"] == "PLUGIN_OPERATION_BUSY"
     assert response.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
     assert response.json()["detail"]["details"] == {}
+
+
+def test_an_update_that_reset_the_grants_is_listed_as_upgraded(env):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    env.store.decide("weather", CONNECT, "granted", source=MARKET)
+    env.store.sync_source("weather", PluginSource("market", "new-fingerprint"))
+
+    result = permission_panel.pending(index=env.index)
+
+    assert [row["plugin_id"] for row in result["upgraded"]] == ["weather"]
+    assert result["to_confirm"] == []

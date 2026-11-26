@@ -478,10 +478,11 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
                 # "asks for more after an update" is any plugin with an
                 # earlier decision that still has items to decide. Items a
                 # newer analyzer found on an unchanged plugin count too. An
-                # update that changed the plugin's source is a new plugin
-                # (its decisions were dropped, see ``grants_reset``): it is
-                # asked in full and listed in to_confirm.
-                target = upgraded if _has_decision(inputs.record) else to_confirm
+                # update that changed the plugin's source dropped its
+                # decisions (``grants_reset``); it is still listed as
+                # upgraded, which is what the user did (e.g. a market update).
+                earlier = _has_decision(inputs.record) or _grants_reset(inputs.record) is not None
+                target = upgraded if earlier else to_confirm
                 target.append({"plugin_id": inputs.plugin_id, "items": items})
         # Used while the user has not decided: not asked in a dialog, listed
         # here instead. Whatever the declaration and the scan say.
