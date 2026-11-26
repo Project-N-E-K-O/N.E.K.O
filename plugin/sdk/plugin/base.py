@@ -1160,24 +1160,28 @@ class NekoPluginBase(_SharedNekoPluginBase):
         removed_ids: set[str] = set()
         error: str | None = None
         message: str | None = None
+        no_id = (
+            f"another registration of {name!r} holds the name but main_server did not "
+            "report its id; not removed"
+        )
         while queue:
             rid = queue.pop(0)
             if rid in removed_ids or attempts.get(rid, 0) >= _LLM_TOOL_MAX_REMOVAL_ATTEMPTS:
                 continue
             attempts[rid] = attempts.get(rid, 0) + 1
             if not rid:
-                error, message = "partial_failure", (
-                    f"another registration of {name!r} holds the name but main_server did not "
-                    "report its id; not removed"
-                )
+                error, message = "partial_failure", no_id
                 continue
             left = deadline - time.monotonic()
             if left < min(_LLM_TOOL_MIN_SEND_BUDGET, budget / 2):
                 # Nothing is sent, so the outcome is known (the holder stays):
                 # "busy", like a call whose lock wait used up its budget, not
-                # "timeout", which means the outcome is unknown. An earlier
-                # error (a holder without an id) is kept: a retry cannot fix it.
-                if error is None:
+                # "timeout", which means the outcome is unknown. A holder
+                # without an id, seen before or still queued, is reported
+                # instead: a retry cannot fix it.
+                if error is None and "" in queue:
+                    error, message = "partial_failure", no_id
+                elif error is None:
                     error, message = "busy", (
                         f"another registration of {name!r} holds the name and too little of the "
                         f"{budget}s budget is left to remove it; nothing more was sent"

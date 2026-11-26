@@ -867,10 +867,14 @@ async def test_cleanup_reports_busy_when_too_little_budget_is_left_for_the_follo
 
 
 @pytest.mark.asyncio
-async def test_busy_does_not_hide_an_earlier_holder_without_an_id(monkeypatch):
+@pytest.mark.parametrize("holders", [
+    (("R1", ""), ("R2", "C")),   # id-less holder checked before the budget runs out
+    (("R1", "C"), ("R2", "")),   # id-less holder still queued when it runs out
+], ids=["seen_first", "still_queued"])
+async def test_busy_does_not_hide_an_earlier_holder_without_an_id(monkeypatch, holders):
     """A holder reported without an id cannot be removed (partial_failure);
-    when the budget then runs out before the next follow-up, that error is
-    kept instead of being replaced by busy."""
+    when the budget runs out before the next follow-up, that error is
+    reported instead of busy, wherever the id-less holder is queued."""
     from plugin.sdk.plugin import base
 
     real = base.time.monotonic
@@ -889,7 +893,7 @@ async def test_busy_does_not_hide_an_earlier_holder_without_an_id(monkeypatch):
         calls.append(kwargs)
         # The first answer arrives after 38 of the 40 seconds.
         offset["s"] += 38.0
-        return _held_by(("R1", ""), ("R2", "C"))
+        return _held_by(*holders)
 
     _install_host(plugin, host)
 
