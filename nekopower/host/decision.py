@@ -203,6 +203,10 @@ class Triage:
     # An answer that chose "always" or "session", read from the user's words:
     # it allows the one request ("once"), and she is told the buttons do more.
     narrowed: bool = False
+    # An "ambiguous" among several requests for approval: what is said cannot
+    # tell which (it is asked whatever is said), and she is told the buttons
+    # on each question can.
+    by_buttons: bool = False
 
 
 @dataclass(slots=True)
@@ -577,6 +581,13 @@ def _shown(request: DecisionRequest) -> tuple[list[tuple[str, list[str]]], list[
     return sections, numbered
 
 
+def _kin(one: Commission, other: Commission) -> bool:
+    """Whether two commissions are of one project or one familiar's (its session)."""
+    return bool(
+        (one.project and one.project == other.project) or (one.session_id and one.session_id == other.session_id)
+    )
+
+
 def _numbers(value: Any, count: int) -> list[int]:
     """Return the item numbers a reading names, in range and once each."""
     seen: list[int] = []
@@ -875,12 +886,20 @@ class LexicalDecisionModel:
         picked = [numbered[number - 1] for number in _numbers(reading.get("items"), len(numbered))]
         if does == "new":
             return None, 1, False
-        if does == "unsure" and len(picked) > 1:
+        if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
+            # It means one of these and cannot say which (an answer or an
+            # addition is to one): which, the user is asked.
             return Triage(kind="ambiguous", targets=[item.id for _place, item in picked], model_calls=1), 1, False
         # Whether the sentence itself says which item it means (names its
         # work, project, familiar, command, file or an option it picks).
         said_which = reading.get("named") is True
-        waiting = [item.id for _place, item in numbered if item.status == "waiting_user" and item.question()]
+        # What waits for the user, all of it: the list may have left some out,
+        # and those count as much when the user is to be asked which.
+        all_waiting = {
+            item.id: item for item in (*request.active, *request.answerable)
+            if item.status == "waiting_user" and item.question()
+        }
+        waiting = list(all_waiting)
 
         def answered(target: Commission, choice: str | None, calls: int = 1) -> tuple[Triage | None, int, bool]:
             # (A choice is read for a request for approval alone.) Read from
@@ -899,18 +918,28 @@ class LexicalDecisionModel:
                 False,
             )
 
-        if does == "answer" and len(picked) == 1:
+        # (One: an answer or an addition that names several was asked about above.)
+        if does == "answer" and picked:
             _place, target = picked[0]
             if target.status == "waiting_user" and target.question():
-                if not said_which and len(waiting) > 1:
+                # An answer the target offers that another question waiting
+                # offers too ("Cats" to two that offer Cats / Dogs) names
+                # neither, whatever the model makes of it.
+                offered = {str(option) for option in (target.question() or {}).get("options") or []}
+                shared = (target.question() or {}).get("kind") != "permission" and any(
+                    offered & {str(option) for option in (other.question() or {}).get("options") or []}
+                    for other_id, other in all_waiting.items()
+                    if other_id != target.id
+                )
+                if (not said_which or shared) and len(waiting) > 1:
                     # A plain "yes" with several questions waiting: which, the
                     # user is asked, and none of them is answered on a guess.
                     return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
                 if (target.question() or {}).get("kind") == "permission":
                     approvals = [
-                        item.id
-                        for _place, item in numbered
-                        if item.id in waiting and (item.question() or {}).get("kind") == "permission"
+                        item_id
+                        for item_id, item in all_waiting.items()
+                        if (item.question() or {}).get("kind") == "permission"
                     ]
                     if len(approvals) > 1:
                         # Several requests for approval wait: which this allows
@@ -918,8 +947,13 @@ class LexicalDecisionModel:
                         # model says it is named. (Their commands are written by
                         # task agents and are what it read that by; none is
                         # decided by a reading words a task agent wrote could
-                        # steer.)
-                        return Triage(kind="ambiguous", targets=approvals, model_calls=1), 1, False
+                        # steer.) Asked again, the words would say no more:
+                        # she is told the buttons on each question do.
+                        return (
+                            Triage(kind="ambiguous", targets=approvals, by_buttons=True, model_calls=1),
+                            1,
+                            False,
+                        )
                     # What it chose is read apart, from the user's words alone.
                     return answered(target, await self._read_choice(request, target), calls=2)
                 return answered(target, None)
@@ -932,11 +966,19 @@ class LexicalDecisionModel:
                 # what waits for the user is its answer, a refusal, as the
                 # prompt has it; a stop is a stop.)
                 return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
-            if len(stopped) > 1 and len(request.active) > len(under_way):
+            hidden = [item for item in request.active if item.id not in under_way]
+            if len(stopped) > 1 and hidden:
                 # A stop of several (a project, a familiar's) while some of her
                 # work was left out of the list: it may mean those as well,
                 # which were not shown. Which, the user is asked, among all.
                 return Triage(kind="ambiguous", targets=[item.id for item in request.active], model_calls=1), 1, False
+            shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
+            kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
+            if kin:
+                # One of a project's or a familiar's work is stopped while more
+                # of it was left out ("stop the shop site work"): which, the
+                # user is asked, among those.
+                return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
                 return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
@@ -944,7 +986,7 @@ class LexicalDecisionModel:
             if not under_way:
                 return Triage(kind="nothing_active", model_calls=1), 1, False
             return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
-        if does == "add" and len(picked) == 1:
+        if does == "add" and picked:
             place, target = picked[0]
             if place == _ENDED:
                 return Triage(kind="continue", targets=[target.id], model_calls=1), 1, False

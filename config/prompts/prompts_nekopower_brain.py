@@ -469,10 +469,12 @@ RECEIPT_TEXTS = {
         "answered": "已把回答交给：{title}",
         "ambiguous": "对不上是哪一件，先问清楚再说。候选：\n{candidates}",
         "nothing_active": "现在没有在办的事。",
-        "unclear_answer": "{title} 在等回话，但这句话看不出是同意还是拒绝。可以回答：始终允许、仅本会话允许、本次允许、拒绝。",
+        "unclear_answer": "{title} 在等回话，但这句话看不出是同意还是拒绝。可以回答：本次允许、拒绝（要始终允许或仅本会话允许，请用户点问话上的按钮）。",
         "joined": "、",
         "unread": "（没来得及判断这句话是不是在回答、叫停或补充在办的事，已先当新的事处理；如果其实是，请用户再说一次。）",
         "narrowed": "（只放行了这一次（本次允许）：打字或说出来的回答最多放行一次。要始终允许或仅本会话允许，请用户点问话上的按钮。）",
+        "stop_failed": "没能停下：{title}。可以在界面上再停一次。",
+        "by_buttons": "（同时有几条批准在等，说的话分不清是哪一条：请用户点对应问话上的按钮。）",
     },
     'zh-TW': {
         "accepted": "已受理：{title}",
@@ -484,10 +486,12 @@ RECEIPT_TEXTS = {
         "answered": "已把回答交給：{title}",
         "ambiguous": "對不上是哪一件，先問清楚再說。候選：\n{candidates}",
         "nothing_active": "現在沒有在辦的事。",
-        "unclear_answer": "{title} 在等回話，但這句話看不出是同意還是拒絕。可以回答：始終允許、僅本會話允許、本次允許、拒絕。",
+        "unclear_answer": "{title} 在等回話，但這句話看不出是同意還是拒絕。可以回答：本次允許、拒絕（要始終允許或僅本會話允許，請使用者點問話上的按鈕）。",
         "joined": "、",
         "unread": "（沒來得及判斷這句話是不是在回答、叫停或補充在辦的事，已先當新的事處理；如果其實是，請使用者再說一次。）",
         "narrowed": "（只放行了這一次（本次允許）：打字或說出來的回答最多放行一次。要始終允許或僅本會話允許，請使用者點問話上的按鈕。）",
+        "stop_failed": "沒能停下：{title}。可以在介面上再停一次。",
+        "by_buttons": "（同時有幾條批准在等，說的話分不清是哪一條：請使用者點對應問話上的按鈕。）",
     },
     'en': {
         "accepted": "Accepted: {title}",
@@ -499,10 +503,12 @@ RECEIPT_TEXTS = {
         "answered": "Answer handed to: {title}",
         "ambiguous": "It is unclear which task is meant; ask before going on. Candidates:\n{candidates}",
         "nothing_active": "Nothing is under way right now.",
-        "unclear_answer": "{title} is waiting for an answer, but this does not say yes or no. Possible answers: always allow, allow for this session, allow this once, deny.",
+        "unclear_answer": "{title} is waiting for an answer, but this does not say yes or no. Possible answers: allow this once, deny (to always allow it or allow it for this session, the user uses the buttons on the question).",
         "joined": ", ",
         "unread": "(It could not be told in time whether this answers, stops or adds to work under way; it was taken as new work. If it was one of those, ask the user to say it again.)",
         "narrowed": "(Allowed this once only: an answer typed or said allows one request at most. To always allow it or allow it for this session, ask the user to use the buttons on the question.)",
+        "stop_failed": "Could not stop: {title}. It can be stopped again on screen.",
+        "by_buttons": "(Several requests for approval are waiting, and words cannot tell which this is for: ask the user to use the buttons on the question they mean.)",
     },
     'ja': {
         "accepted": "受け付けました：{title}",
@@ -514,10 +520,12 @@ RECEIPT_TEXTS = {
         "answered": "回答を渡しました：{title}",
         "ambiguous": "どの用件のことか分かりません。先に確認してください。候補：\n{candidates}",
         "nothing_active": "いま進めている用件はありません。",
-        "unclear_answer": "{title} は返事を待っていますが、この言葉からは許可か拒否か分かりません。答え方：常に許可、このセッションだけ許可、今回だけ許可、拒否。",
+        "unclear_answer": "{title} は返事を待っていますが、この言葉からは許可か拒否か分かりません。答え方：今回だけ許可、拒否（常に許可・このセッションだけ許可にするには、ユーザーに確認のボタンを押してもらってください）。",
         "joined": "、",
         "unread": "（進行中の用件への回答・中止・追加かどうかを時間内に判断できなかったため、新しい用件として扱いました。そのつもりだった場合は、ユーザーにもう一度言ってもらってください。）",
         "narrowed": "（今回だけ許可しました。入力や音声での回答で許可できるのは 1 回までです。常に許可・このセッションだけ許可にするには、確認のボタンを押すようユーザーに伝えてください。）",
+        "stop_failed": "止められませんでした：{title}。画面からもう一度止められます。",
+        "by_buttons": "（許可の確認が複数待っていて、言葉ではどれのことか分かりません。ユーザーに、該当する確認のボタンを押してもらってください。）",
     },
     'ko': {
         "accepted": "접수했습니다: {title}",
@@ -529,10 +537,12 @@ RECEIPT_TEXTS = {
         "answered": "답변을 넘겼습니다: {title}",
         "ambiguous": "어느 일을 말하는지 알 수 없습니다. 먼저 확인하세요. 후보:\n{candidates}",
         "nothing_active": "지금 진행 중인 일이 없습니다.",
-        "unclear_answer": "{title}이(가) 답을 기다리고 있지만, 이 말로는 허락인지 거절인지 알 수 없습니다. 가능한 답: 항상 허용, 이번 세션만 허용, 이번만 허용, 거부.",
+        "unclear_answer": "{title}이(가) 답을 기다리고 있지만, 이 말로는 허락인지 거절인지 알 수 없습니다. 가능한 답: 이번만 허용, 거부(항상 허용이나 이번 세션만 허용은 사용자가 질문의 버튼을 눌러야 합니다).",
         "joined": ", ",
         "unread": "(진행 중인 일에 대한 답변·중지·추가인지 제때 판단하지 못해 새 일로 처리했습니다. 그런 뜻이었다면 사용자에게 다시 말해 달라고 하세요.)",
         "narrowed": "(이번만 허용했습니다. 입력하거나 말로 한 답변으로는 한 번까지만 허용됩니다. 항상 허용하거나 이번 세션만 허용하려면 질문의 버튼을 누르라고 사용자에게 알려 주세요.)",
+        "stop_failed": "중지하지 못했습니다: {title}. 화면에서 다시 중지할 수 있습니다.",
+        "by_buttons": "(허용 요청이 여러 개 기다리고 있어 말로는 어느 것인지 알 수 없습니다. 사용자에게 해당 질문의 버튼을 눌러 달라고 하세요.)",
     },
     'ru': {
         "accepted": "Принято: {title}",
@@ -544,10 +554,12 @@ RECEIPT_TEXTS = {
         "answered": "Ответ передан: {title}",
         "ambiguous": "Непонятно, о какой задаче речь; сначала уточните. Варианты:\n{candidates}",
         "nothing_active": "Сейчас ничего не выполняется.",
-        "unclear_answer": "{title} ждёт ответа, но из этих слов неясно, да или нет. Возможные ответы: разрешать всегда, разрешить на эту сессию, разрешить только в этот раз, отказать.",
+        "unclear_answer": "{title} ждёт ответа, но из этих слов неясно, да или нет. Возможные ответы: разрешить только в этот раз, отказать (чтобы разрешать всегда или на эту сессию, пользователь нажимает кнопку в вопросе).",
         "joined": ", ",
         "unread": "(Не удалось вовремя понять, отвечает ли это на вопрос, останавливает или дополняет текущую работу; это принято как новая задача. Если имелось в виду это, попросите пользователя сказать ещё раз.)",
         "narrowed": "(Разрешено только в этот раз: ответ, написанный или сказанный словами, разрешает не больше одного запроса. Чтобы разрешать всегда или на эту сессию, попросите пользователя нажать кнопку в вопросе.)",
+        "stop_failed": "Не удалось остановить: {title}. Это можно сделать ещё раз на экране.",
+        "by_buttons": "(Ждут несколько запросов на разрешение, и по словам не понять, к какому это относится: попросите пользователя нажать кнопку в нужном вопросе.)",
     },
     'es': {
         "accepted": "Aceptado: {title}",
@@ -559,10 +571,12 @@ RECEIPT_TEXTS = {
         "answered": "Respuesta entregada a: {title}",
         "ambiguous": "No está claro a qué tarea se refiere; pregunta antes de seguir. Candidatas:\n{candidates}",
         "nothing_active": "Ahora mismo no hay nada en marcha.",
-        "unclear_answer": "{title} espera una respuesta, pero esto no dice ni sí ni no. Respuestas posibles: permitir siempre, permitir en esta sesión, permitir solo esta vez, denegar.",
+        "unclear_answer": "{title} espera una respuesta, pero esto no dice ni sí ni no. Respuestas posibles: permitir solo esta vez, denegar (para permitir siempre o en esta sesión, el usuario usa los botones de la pregunta).",
         "joined": ", ",
         "unread": "(No se pudo saber a tiempo si esto responde, detiene o añade algo a una tarea en curso; se tomó como una tarea nueva. Si era eso, pide al usuario que lo repita.)",
         "narrowed": "(Permitido solo esta vez: una respuesta escrita o dicha permite una solicitud como mucho. Para permitir siempre o en esta sesión, pide al usuario que use los botones de la pregunta.)",
+        "stop_failed": "No se pudo detener: {title}. Se puede detener de nuevo desde la pantalla.",
+        "by_buttons": "(Hay varias solicitudes de permiso esperando y por las palabras no se sabe a cuál se refiere: pide al usuario que use los botones de la pregunta que quiere responder.)",
     },
     'pt': {
         "accepted": "Aceito: {title}",
@@ -574,10 +588,12 @@ RECEIPT_TEXTS = {
         "answered": "Resposta entregue a: {title}",
         "ambiguous": "Não está claro de qual tarefa se trata; pergunte antes de continuar. Candidatas:\n{candidates}",
         "nothing_active": "Não há nada em andamento agora.",
-        "unclear_answer": "{title} aguarda uma resposta, mas isto não diz sim nem não. Respostas possíveis: permitir sempre, permitir nesta sessão, permitir só desta vez, negar.",
+        "unclear_answer": "{title} aguarda uma resposta, mas isto não diz sim nem não. Respostas possíveis: permitir só desta vez, negar (para permitir sempre ou nesta sessão, o usuário usa os botões da pergunta).",
         "joined": ", ",
         "unread": "(Não deu para saber a tempo se isto responde, interrompe ou acrescenta algo a uma tarefa em andamento; foi tratado como tarefa nova. Se era isso, peça ao usuário para repetir.)",
         "narrowed": "(Permitido só desta vez: uma resposta escrita ou falada permite um pedido no máximo. Para permitir sempre ou nesta sessão, peça ao usuário para usar os botões da pergunta.)",
+        "stop_failed": "Não deu para interromper: {title}. Dá para interromper de novo pela tela.",
+        "by_buttons": "(Há vários pedidos de permissão aguardando e pelas palavras não dá para saber a qual se refere: peça ao usuário para usar os botões da pergunta certa.)",
     },
 }
 
@@ -644,8 +660,8 @@ QUERY_TEXTS = {
 }
 
 # How the answers to a permission prompt are named when the question is put to
-# her. Each name reads back as its own choice through the patterns below
-# (``tests/unit/nekopower/test_host_decision.py`` holds them to that).
+# her, and (in English) to the small model that reads what an answer chose
+# (``TASK_BRAIN_ANSWER_PROMPT``, ``decision._read_choice``).
 PERMISSION_OPTION_NAMES = {
     'zh': {"always": "始终允许", "session": "仅本会话允许", "once": "本次允许", "deny": "拒绝"},
     'zh-TW': {"always": "始終允許", "session": "僅本會話允許", "once": "本次允許", "deny": "拒絕"},

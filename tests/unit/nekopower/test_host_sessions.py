@@ -948,8 +948,9 @@ async def test_a_dispatched_sentence_that_adds_to_a_commission_that_is_done_goes
     assert (done.session_id, done.continues, done.route) == (first.commission_id, first.commission_id, "task_agent")
     assert (done.workdir, done.session_dir) == (earlier.workdir, earlier.session_dir)
     assert (await host.ledger.get(first.commission_id)).status == "done"
-    # No plugin is installed: there is nothing to choose between, and no model is asked.
-    assert host.decision._llm.calls == []
+    # No plugin is installed: there is nothing to choose between, and no plugin is chosen by a model.
+    # What the sentence does with the one that ended is read, once.
+    assert host.decision._llm.calls == [] and len(host.decision._llm.under_way_calls) == 1
     (decision,) = await _events(host, receipt.commission_id, "decision")
     assert (decision.payload["route"], decision.payload["continues"]) == ("task_agent", first.commission_id)
     said = _user_messages(scripts["rename the photos"].requests[0])

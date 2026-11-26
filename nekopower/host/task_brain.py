@@ -98,7 +98,7 @@ class Receipt:
     """What a dispatch is answered with."""
 
     # "accepted", "received", "duplicate", "no_capability", "stopped", "told",
-    # "answered", "ambiguous", "nothing_active" or "unclear_answer".
+    # "answered", "ambiguous", "nothing_active", "unclear_answer" or "stop_failed".
     kind: str
     commissions: list[Commission] = field(default_factory=list)
     # For "no_capability": disabled, not_installed, not_enabled, denied or no_match.
@@ -111,6 +111,11 @@ class Receipt:
     # Whether an answer that chose "always" or "session" allowed the one
     # request alone (``Triage.narrowed``): the receipt says the buttons do more.
     narrowed: bool = False
+    # For "ambiguous" among several requests for approval (``Triage.by_buttons``):
+    # the receipt says the buttons on each question tell which.
+    by_buttons: bool = False
+    # For "stop_failed" (the commissions it could not stop): those it did stop.
+    stopped: list[Commission] = field(default_factory=list)
 
     @property
     def commission_id(self) -> str | None:
@@ -157,7 +162,7 @@ class TurnCheck:
 
 
 # Receipts of a dispatch made for her that she has to act on at once.
-_RECEIPTS_TO_ACT_ON = frozenset({"no_capability", "ambiguous", "unclear_answer"})
+_RECEIPTS_TO_ACT_ON = frozenset({"no_capability", "ambiguous", "unclear_answer", "stop_failed"})
 
 # Told about a direct plugin call's progress: ``(commission, update)``.
 ProgressListener = Callable[[Commission, dict[str, Any]], None]
@@ -269,7 +274,14 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
         candidates = "\n".join(
             f"- {commission.title} ({status_word(commission.status, lang)})" for commission in receipt.commissions
         )
-        return templates["ambiguous"].format(candidates=candidates)
+        said = templates["ambiguous"].format(candidates=candidates)
+        return f"{said} {templates['by_buttons']}" if receipt.by_buttons else said
+    if receipt.kind == "stop_failed":
+        said = templates["stop_failed"].format(title=templates["joined"].join(item.title for item in receipt.commissions))
+        if receipt.stopped:
+            done = templates["stopped"].format(title=templates["joined"].join(item.title for item in receipt.stopped))
+            said = f"{done} {said}"
+        return said
     if receipt.kind == "stopped" and len(receipt.commissions) > 1:
         title = templates["joined"].join(commission.title for commission in receipt.commissions)
     template = templates.get(receipt.kind)
@@ -608,9 +620,16 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        # One under way and among those that ended as well (it ended while they
-        # were read) is taken as it was under way: that is what was read.
-        by_id = {commission.id: commission for commission in (*request.recent, *request.active, *request.answerable)}
+        # What was read is acted on as it was read. One that ended while the
+        # lists were read is among those under way and those that ended: an
+        # answer goes to it as it waited (with that question), and what goes
+        # on with one that is over takes it as it ended.
+        rows = (
+            (*request.active, *request.answerable, *request.recent)
+            if triage.kind == "continue"
+            else (*request.recent, *request.active, *request.answerable)
+        )
+        by_id = {commission.id: commission for commission in rows}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
         # The commission this sentence goes on with, when it is one that is over.
@@ -619,25 +638,43 @@ class TaskBrain:
         if triage.kind == "nothing_active":
             return Receipt(kind="nothing_active", model_calls=calls)
         if triage.kind == "ambiguous":
-            return Receipt(kind="ambiguous", commissions=targets, model_calls=calls)
+            return Receipt(kind="ambiguous", commissions=targets, model_calls=calls, by_buttons=triage.by_buttons)
         if triage.kind == "duplicate" and targets:
             return Receipt(kind="duplicate", commissions=targets, model_calls=calls, unread=triage.unread)
         if triage.kind == "stop" and targets:
             # Every one it means: "stop everything on the shop site" may be several.
             # Each is stopped on its own: one that cannot be does not keep the
-            # others going. Only what is stopped now is said to be (not one that
-            # ended meanwhile, nor one that is gone).
+            # others going. Only what this stop ends is said to be stopped (not
+            # one that ended meanwhile or was stopped from the board, nor one
+            # that is gone); one it could not stop is said to be so.
             stopped: list[Commission] = []
+            not_stopped: list[Commission] = []
             for target in targets:
+                if self._closed:
+                    # Closing ends what is under way with the host; nothing
+                    # more is begun after it.
+                    break
                 try:
-                    after = await self.abort(target.id, reason="stopped through a dispatch", notify=False)
+                    after, moved = await self._stop(target.id, reason="stopped through a dispatch", notify=False)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - the others are stopped all the same
                     logger.warning("stopping commission %s through a dispatch failed", target.id, exc_info=True)
+                    # Stopped once its status is written (nothing running can
+                    # change it then), though what followed failed.
+                    try:
+                        after = await self._ledger.get(target.id)
+                    except Exception:  # noqa: BLE001 - not known: not said to be stopped
+                        after = None
+                    if after is not None and after.status == "cancelled":
+                        stopped.append(after)
+                    else:
+                        not_stopped.append(target)
                     continue
-                if after is not None and after.status == "cancelled":
+                if moved and after is not None:
                     stopped.append(after)
+            if not_stopped:
+                return Receipt(kind="stop_failed", commissions=not_stopped, stopped=stopped, model_calls=calls)
             if not stopped:
                 return Receipt(kind="nothing_active", model_calls=calls)
             return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
@@ -1207,6 +1244,10 @@ class TaskBrain:
         that goes away once the status is written does not leave the plugin
         run or the task agent going.
         """
+        return (await self._stop(commission_id, reason=reason, notify=notify))[0]
+
+    async def _stop(self, commission_id: str, *, reason: str, notify: bool) -> tuple[Commission | None, bool]:
+        """``abort``, and whether this call is what stopped it (not one that was over already)."""
         caller = asyncio.current_task()
         stopping = asyncio.ensure_future(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
         self._stopping.add(stopping)
@@ -1215,10 +1256,10 @@ class TaskBrain:
 
     async def _abort(
         self, commission_id: str, *, reason: str, notify: bool, caller: asyncio.Task[Any] | None
-    ) -> Commission | None:
+    ) -> tuple[Commission | None, bool]:
         commission = await self._ledger.get(commission_id)
         if commission is None:
-            return None
+            return None, False
         report = None
         if notify:
             report = self._reporter.task_result_report(
@@ -1242,7 +1283,7 @@ class TaskBrain:
             # may still be going: a stop asks for that cancel again.
             if self._runner.active_runs(commission_id):
                 await self._runner.cancel_commission(commission_id, reason)
-            return commission
+            return commission, False
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
             timer.cancel()
@@ -1267,7 +1308,7 @@ class TaskBrain:
                 source_commission=commission.id,
                 same_tendency_prefix=stop_tendency_prefix(target),
             )
-        return moved.commission
+        return moved.commission, True
 
     async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
         """Pass a sentence on to a commission. Only a task agent can take one.

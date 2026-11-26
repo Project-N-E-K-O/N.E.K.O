@@ -878,12 +878,13 @@ _ENDED = _ended("c5", "sort the photos")
         ({"does": "add", "items": [2]}, None, False),
         ({"does": "add", "items": [4]}, None, False),
         ({"does": "unsure", "items": [1, 3]}, ("ambiguous", ["c1", "c3"], None), False),
+        # An answer or an addition is to one: one that names several asks which.
+        ({"does": "answer", "items": [1, 4]}, ("ambiguous", ["c1", "c4"], None), False),
+        ({"does": "add", "items": [3, 5]}, ("ambiguous", ["c3", "c5"], None), False),
         ({"does": "new"}, None, False),
         ('```json\n{"does": "stop", "items": [3], "named": true}\n```', ("stop", ["c3"], None), False),
         # What names nothing it could be is not told: new work, and said to be so.
         ({"does": "answer", "items": [3]}, None, True),
-        ({"does": "answer", "items": [1, 4]}, None, True),
-        ({"does": "add", "items": [3, 5]}, None, True),
         ({"does": "unsure", "items": [1]}, None, True),
         ({"does": "stop", "items": []}, None, True),
         ({"does": "maybe", "items": [1]}, None, True),
@@ -967,11 +968,50 @@ async def test_with_several_requests_for_approval_waiting_the_user_is_asked_whic
         request("yes, run the build", active=[build, delete, asks])
     )
 
-    assert (triage.kind, triage.targets, calls, llm.choice_calls) == ("ambiguous", ["c1", "c2"], 1, [])
+    # Asked again, words would say no more: she is told the buttons on each question do.
+    assert (triage.kind, triage.targets, triage.by_buttons, calls, llm.choice_calls) == (
+        "ambiguous", ["c1", "c2"], True, 1, [],
+    )
     # One that answers the open question is read as before.
     llm = _reading({"does": "answer", "items": [3], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[build, delete, asks]))
-    assert (triage.kind, triage.targets) == ("answer", ["c3"])
+    assert (triage.kind, triage.targets, triage.by_buttons) == ("answer", ["c3"], False)
+    # A plain "yes" with several waiting is asked about as before, with nothing said of the buttons.
+    llm = _reading({"does": "answer", "items": [3], "named": False})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
+    assert (triage.kind, triage.by_buttons) == ("ambiguous", False)
+
+
+async def test_a_request_for_approval_left_out_of_the_list_counts_all_the_same(monkeypatch):
+    # More questions wait than the list shows: one left out is a request for approval as much.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    parent = commission("c9", "tidy the blog", route="task_agent", status="working")
+    shown = _waiting("k1", "run the build", _BUILD, parent_id="c9")
+    left_out = _waiting("k2", "delete old posts", {**_BUILD, "detail": {"command": "rm -r old"}}, parent_id="c9")
+    llm = _reading({"does": "answer", "items": [2], "named": True})
+
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("yes, run the build", active=[parent], answerable=[shown, left_out])
+    )
+
+    assert "rm -r old" not in llm.under_way_calls[-1][-1]["content"]
+    assert (triage.kind, triage.targets, triage.by_buttons, llm.choice_calls) == ("ambiguous", ["k1", "k2"], True, [])
+
+
+async def test_an_answer_another_question_offers_too_names_neither():
+    pets = {"kind": "question", "question": "Which picture?", "options": ["Cats", "Dogs"]}
+    post = _waiting("c1", "write a post", pets)
+    card = _waiting("c2", "make a card", {**pets, "question": "Which picture for the card?"})
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
+
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2"])
+    # One no other question offers is answered.
+    card = _waiting("c2", "make a card", {"kind": "question", "question": "Which colour?", "options": ["Red", "Blue"]})
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
+    assert (triage.kind, triage.targets) == ("answer", ["c1"])
 
 
 async def test_a_stop_of_several_while_some_work_was_not_shown_asks_which(monkeypatch):
@@ -981,10 +1021,26 @@ async def test_a_stop_of_several_while_some_work_was_not_shown_asks_which(monkey
     llm = _reading({"does": "stop", "items": [1, 2], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop the shop site", active=shop))
     assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2", "c3"])
-    # One it names is stopped.
+    # One it names, while more of its project was left out ("stop the shop site" with one of it
+    # shown): which, the user is asked, among those.
     llm = _reading({"does": "stop", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop page 1", active=shop))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c3"])
+    # So for a familiar's work (its session).
+    scout = [commission(f"c{n}", f"look up page {n}", route="task_agent", session_id="s-scout") for n in (1, 2, 3)]
+    llm = _reading({"does": "stop", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop page 1", active=scout))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c3"])
+    # One it names, of which nothing was left out, is stopped.
+    mixed = [*shop[:2], commission("c3", "write the cat food post", route="task_agent", project="Blog")]
+    llm = _reading({"does": "stop", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop shop site page 1", active=mixed))
     assert (triage.kind, triage.targets) == ("stop", ["c1"])
+    # Several, while other work was left out (of another project): it may mean those as well, as
+    # "stop all of it" would. Which, the user is asked, among all.
+    llm = _reading({"does": "stop", "items": [1, 2], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop the shop site", active=mixed))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2", "c3"])
     # With all of them shown, several are stopped.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 3)
     llm = _reading({"does": "stop", "items": [1, 2, 3], "named": True})
@@ -1245,8 +1301,8 @@ async def test_every_sentence_of_the_evaluation_set_is_shown_with_what_waits_and
         else:
             chose = (row["choice"] or [None])[0]
             narrowed = chose in ("always", "session")
-            assert (triage.targets, triage.choice, triage.narrowed) == (
-                [f"c{row['answers']}"], "once" if narrowed else chose, narrowed,
+            assert (triage.kind, triage.targets, triage.choice, triage.narrowed) == (
+                "answer", [f"c{row['answers']}"], "once" if narrowed else chose, narrowed,
             ), row
 
 
