@@ -404,6 +404,50 @@ async def test_page_config_uses_the_live2d_asset_from_its_committed_identity_sna
 
 
 @pytest.mark.asyncio
+async def test_synced_delete_reconciles_persisted_fallback_when_outer_restore_write_fails(monkeypatch):
+    uid = 'a' * 32
+    chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
+    websocket = AsyncMock()
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda **_kwargs: copy.deepcopy(chars)))
+    save_calls = 0
+
+    async def save(updated):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 1:
+            chars.clear()
+            chars.update(copy.deepcopy(updated))
+            return
+        raise OSError('restore write failed before replacing persisted fallback')
+
+    async def failed_before_commit(_name):
+        return {'success': False, 'error': 'delete precommit failed'}
+
+    manager.asave_characters = save
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {'A': SimpleNamespace(websocket=websocket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', failed_before_commit)
+
+    assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    assert chars['当前猫娘'] == 'B'
+    assert 'A' in chars['猫娘']
+    websocket.send_text.assert_awaited_once()
+    frame = json.loads(websocket.send_text.await_args.args[0])
+    assert (frame['old_catgirl'], frame['new_catgirl']) == ('A', 'B')
+    assert frame['switch_revision'] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == 'B'
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {'current_catgirl': 'B', 'switch_revision': frame['switch_revision']}
+
+
+@pytest.mark.asyncio
 async def test_synced_delete_notifies_fallback_even_when_cancelled_after_commit(monkeypatch):
     uid = 'a' * 32
     chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
