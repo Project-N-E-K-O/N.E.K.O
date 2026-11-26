@@ -276,6 +276,8 @@ class _Bridge:
             maxsize = int(getattr(self._q, "maxsize", 0) or 0)
             if maxsize <= 0:
                 return True
+            # Best-effort reservation so delete backfill does not self-fill the queue ahead
+            # of the caller's own live delta write without cross-producer locking overhead.
             needed = 1 + max(0, int(reserve_slots))
             try:
                 return (self._q.qsize() + needed) <= maxsize
@@ -505,6 +507,9 @@ def can_enqueue_snapshot(*, reserve_slots: int = 0) -> bool:
     return _bridge.can_enqueue_snapshot(reserve_slots=reserve_slots)
 
 
+can_enqueue_snapshot._supports_reserve_slots = True  # type: ignore[attr-defined]
+
+
 def refresh_ingest_endpoint() -> str:
     """Re-read the ingest endpoint the plane actually bound, and return it.
 
@@ -572,6 +577,9 @@ def publish_snapshot(
             reserve_slots=reserve_slots,
         )
     )
+
+
+publish_snapshot._supports_reserve_slots = True  # type: ignore[attr-defined]
 
 
 # ── Provider frames ────────────────────────────────────────────────────

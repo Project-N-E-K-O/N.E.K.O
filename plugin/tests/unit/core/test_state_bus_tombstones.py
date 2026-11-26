@@ -31,8 +31,11 @@ def _new_state() -> GlobalState:
     gs._deleted_lifecycle_ids_order.clear()
     gs._pending_event_deletes.clear()
     gs._pending_lifecycle_deletes.clear()
-    gs._unpublished_event_ids.clear()
-    gs._unpublished_lifecycle_ids.clear()
+    gs._unpublished_event_counts.clear()
+    gs._unpublished_lifecycle_counts.clear()
+    gs._published_event_ids.clear()
+    gs._published_lifecycle_ids.clear()
+    gs._dropped_pending_delete_counts = {"events": 0, "lifecycle": 0}
     return gs
 
 
@@ -398,6 +401,7 @@ def test_idle_flush_hook_and_overflow_fallback_recover_without_subsequent_writes
             gs.append_event_record({"event_id": f"ov-{idx}", "type": "ov"})
             assert gs.delete_event(f"ov-{idx}") is True
         assert list(gs._pending_event_deletes) == ["ov-1", "ov-2", "ov-3"]
+        assert gs._dropped_pending_delete_counts["events"] == 1
 
         bridge_ready["ok"] = True
         calls.clear()
@@ -1020,15 +1024,16 @@ def test_unpublished_outage_deletes_do_not_evict_pre_outage_pending_deletes(
 
         assert list(gs._pending_event_deletes) == ["ev-pre-outage"]
         assert list(gs._pending_lifecycle_deletes) == ["lc-pre-outage"]
-        assert gs._unpublished_event_ids == set()
-        assert gs._unpublished_lifecycle_ids == set()
+        assert gs._unpublished_event_counts == {}
+        assert gs._unpublished_lifecycle_counts == {}
+        assert gs._dropped_pending_delete_counts == {"events": 0, "lifecycle": 0}
 
-        # Also verify _unpublished_*_ids stays bounded when _event_store / _lifecycle_store evicts oldest.
+        # Also verify _unpublished_*_counts stays bounded when _event_store / _lifecycle_store evicts oldest.
         gs._event_store = type(gs._event_store)(maxlen=2)
         gs.append_event_record({"event_id": "ev-ring-0", "type": "r"})
         gs.append_event_record({"event_id": "ev-ring-1", "type": "r"})
         gs.append_event_record({"event_id": "ev-ring-2", "type": "r"})
-        assert gs._unpublished_event_ids == {"ev-ring-1", "ev-ring-2"}
+        assert gs._unpublished_event_counts == {"ev-ring-1": 1, "ev-ring-2": 1}
 
         bridge_ready["ok"] = True
         snap_calls.clear()
@@ -1153,7 +1158,7 @@ def test_delete_backfill_reserves_last_bridge_queue_slot_for_new_record(
         # and ev-live-1 reliably lands in slot 2.
         gs.append_event_record({"event_id": "ev-live-1", "type": "live"})
         assert list(gs._pending_event_deletes) == ["d2"]
-        assert "ev-live-1" not in gs._unpublished_event_ids
+        assert "ev-live-1" not in gs._unpublished_event_counts
         assert bridge._q.qsize() == 2
 
         # Start real bridge sender -> transmits [d0, d1], ev-live-1, and flush hook drains d2.
@@ -1203,7 +1208,7 @@ def test_delete_backfill_reserves_last_bridge_queue_slot_for_new_record(
         gs._pending_delete_retry_after["events"] = 0.0
         gs.append_event_record({"event_id": "ev-live-2", "type": "live"})
         assert list(gs._pending_event_deletes) == ["d3"]
-        assert "ev-live-2" not in gs._unpublished_event_ids
+        assert "ev-live-2" not in gs._unpublished_event_counts
         assert bridge._q.qsize() == 2
 
         bridge.start()
@@ -1223,5 +1228,414 @@ def test_delete_backfill_reserves_last_bridge_queue_slot_for_new_record(
             and [it.get("event_id") for it in m.get("items", [])] == ["d3"]
             for m in sent_msgs
         )
+    finally:
+        bridge.stop()
+
+
+def test_duplicate_id_publish_then_fail_still_deletes_remote_copy() -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    gs = _new_state()
+    registry = build_default_store_registry(maxlen=100, frames_maxlen=10)
+    srv = MessagePlaneIngestServer(
+        endpoint=f"inproc://dup_id_delete_{uuid.uuid4().hex}",
+        stores=registry,
+        pub_server=None,
+        auth_token="test-token",
+    )
+    events_store = registry.get("events")
+    lifecycle_store = registry.get("lifecycle")
+    assert events_store is not None and lifecycle_store is not None
+
+    snap_calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": True}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        if not bridge_ready["ok"]:
+            return False
+        st = registry.get(store)
+        assert st is not None
+        st.publish(topic=topic, payload=dict(record))
+        return True
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        snap_calls.append((store, mode, [dict(r) for r in records]))
+        if not bridge_ready["ok"]:
+            return False
+        srv._ingest_snapshot(
+            {"store": store, "topic": topic, "mode": mode, "items": [dict(r) for r in records]}
+        )
+        return True
+
+    try:
+        with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+            "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+        ):
+            # 1) Same ID succeeds first (including trace_id fallback), then fails later -> delete MUST clean remote.
+            gs.append_event_record({"event_id": "dup-ev", "type": "first"})
+            gs.append_event_record({"trace_id": "dup-trace", "type": "first"})
+            gs.append_lifecycle_record({"lifecycle_id": "dup-lc", "type": "first"})
+
+            bridge_ready["ok"] = False
+            gs.append_event_record({"event_id": "dup-ev", "type": "second-fail"})
+            gs.append_event_record({"trace_id": "dup-trace", "type": "second-fail"})
+            gs.append_lifecycle_record({"lifecycle_id": "dup-lc", "type": "second-fail"})
+
+            assert "dup-ev" in gs._published_event_ids
+            assert "dup-trace" in gs._published_event_ids
+            assert "dup-lc" in gs._published_lifecycle_ids
+            assert "dup-ev" not in gs._unpublished_event_counts
+            assert "dup-trace" not in gs._unpublished_event_counts
+            assert "dup-lc" not in gs._unpublished_lifecycle_counts
+
+            bridge_ready["ok"] = True
+            assert gs.delete_event("dup-ev") is True
+            assert gs.delete_event("dup-trace") is True
+            assert gs.delete_lifecycle("dup-lc") is True
+
+            assert [
+                item["payload"].get("event_id") or item["payload"].get("trace_id")
+                for item in events_store.get_recent("all", 20)
+            ] == []
+            assert [
+                item["payload"].get("lifecycle_id")
+                for item in lifecycle_store.get_recent("all", 20)
+            ] == []
+
+            # 2) Eviction of first published copy followed by a failed append of the same ID still cleans remote.
+            gs._event_store = type(gs._event_store)(maxlen=2)
+            gs._lifecycle_store = type(gs._lifecycle_store)(maxlen=2)
+
+            gs.append_event_record({"event_id": "evict-pub", "type": "published"})
+            gs.append_lifecycle_record({"lifecycle_id": "lc-evict-pub", "type": "published"})
+
+            bridge_ready["ok"] = False
+            gs.append_event_record({"event_id": "mid-ev", "type": "mid"})
+            gs.append_event_record({"event_id": "evict-pub", "type": "reappend-fail"})
+            gs.append_lifecycle_record({"lifecycle_id": "mid-lc", "type": "mid"})
+            gs.append_lifecycle_record({"lifecycle_id": "lc-evict-pub", "type": "reappend-fail"})
+
+            bridge_ready["ok"] = True
+            assert gs.delete_event("evict-pub") is True
+            assert gs.delete_lifecycle("lc-evict-pub") is True
+            assert "evict-pub" not in {
+                it["payload"].get("event_id") for it in events_store.get_recent("all", 20)
+            }
+            assert "lc-evict-pub" not in {
+                it["payload"].get("lifecycle_id") for it in lifecycle_store.get_recent("all", 20)
+            }
+            assert gs.delete_event("mid-ev") is True
+            assert gs.delete_lifecycle("mid-lc") is True
+            assert gs._unpublished_event_counts == {}
+            assert gs._unpublished_lifecycle_counts == {}
+
+            # 3) Duplicate unpublished copies where one is evicted while bridge is down still skip remote delete.
+            gs._event_store = type(gs._event_store)(maxlen=2)
+            gs._lifecycle_store = type(gs._lifecycle_store)(maxlen=2)
+            gs.append_event_record({"event_id": "pre-ev", "type": "pre"})
+            gs.append_lifecycle_record({"lifecycle_id": "pre-lc", "type": "pre"})
+
+            bridge_ready["ok"] = False
+            assert gs.delete_event("pre-ev") is True
+            assert gs.delete_lifecycle("pre-lc") is True
+
+            gs.append_event_record({"event_id": "u-ev", "type": "u1"})
+            gs.append_event_record({"event_id": "u-ev", "type": "u2"})
+            assert gs._unpublished_event_counts["u-ev"] == 2
+            gs.append_event_record({"event_id": "u-ev-other", "type": "other"})
+            assert gs._unpublished_event_counts == {"u-ev": 1, "u-ev-other": 1}
+
+            gs.append_lifecycle_record({"lifecycle_id": "u-lc", "type": "u1"})
+            gs.append_lifecycle_record({"lifecycle_id": "u-lc", "type": "u2"})
+            assert gs._unpublished_lifecycle_counts["u-lc"] == 2
+            gs.append_lifecycle_record({"lifecycle_id": "u-lc-other", "type": "other"})
+            assert gs._unpublished_lifecycle_counts == {"u-lc": 1, "u-lc-other": 1}
+
+            snap_calls.clear()
+            assert gs.delete_event("u-ev") is True
+            assert gs.delete_lifecycle("u-lc") is True
+            assert list(gs._pending_event_deletes) == ["pre-ev"]
+            assert list(gs._pending_lifecycle_deletes) == ["pre-lc"]
+            assert "u-ev" not in gs._unpublished_event_counts
+            assert "u-lc" not in gs._unpublished_lifecycle_counts
+
+            bridge_ready["ok"] = True
+            plane_bridge_mod._bridge._run_flush_hooks()
+            assert gs._pending_event_deletes == {}
+            assert gs._pending_lifecycle_deletes == {}
+            assert ("events", "delete", [{"event_id": "pre-ev", "trace_id": "pre-ev"}]) in snap_calls
+            assert (
+                "lifecycle",
+                "delete",
+                [{"lifecycle_id": "pre-lc", "trace_id": "pre-lc"}],
+            ) in snap_calls
+            assert all(
+                it.get("event_id") != "u-ev" and it.get("lifecycle_id") != "u-lc"
+                for _, _, recs in snap_calls
+                for it in recs
+            )
+
+            # 4) Existing contract: deleting an ID already evicted from local deque (removed=False)
+            # returns False and does not enqueue a new remote delete, while still flushing existing pending deletes.
+            gs._event_store = type(gs._event_store)(maxlen=2)
+            gs.append_event_record({"event_id": "already-evicted", "type": "gone"})
+            gs.append_event_record({"event_id": "k1", "type": "keep"})
+            gs.append_event_record({"event_id": "k2", "type": "keep"})
+            gs._pending_event_deletes["seed-pend"] = {"event_id": "seed-pend", "trace_id": "seed-pend"}
+            gs._pending_delete_retry_after["events"] = 0.0
+            snap_calls.clear()
+            assert gs.delete_event("already-evicted") is False
+            assert gs._pending_event_deletes == {}
+            assert snap_calls == [
+                ("events", "delete", [{"event_id": "seed-pend", "trace_id": "seed-pend"}])
+            ]
+    finally:
+        srv.close()
+
+
+def test_sync_message_plane_updates_published_and_unpublished_tracking() -> None:
+    gs = _new_state()
+    gs._event_store = type(gs._event_store)(maxlen=3)
+    gs._lifecycle_store = type(gs._lifecycle_store)(maxlen=3)
+
+    pub_ok = {"ok": True}
+    snap_ok = {"ok": False}
+
+    with patch(
+        "plugin.server.messaging.plane_bridge.publish_record",
+        side_effect=lambda **_kw: pub_ok["ok"],
+    ), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot",
+        side_effect=lambda **_kw: snap_ok["ok"],
+    ):
+        gs.append_event_record({"event_id": "ev-old", "type": "old"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-old", "type": "old"})
+        assert gs._published_event_ids == {"ev-old": None}
+        assert gs._published_lifecycle_ids == {"lc-old": None}
+
+        pub_ok["ok"] = False
+        gs.append_event_record({"event_id": "ev-1", "type": "one"})
+        gs.append_event_record({"event_id": "ev-2", "type": "two"})
+        gs.append_event_record({"event_id": "ev-3", "type": "three"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-1", "type": "one"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-2", "type": "two"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-3", "type": "three"})
+        gs._pending_event_deletes["pre-ev"] = {"event_id": "pre-ev", "trace_id": "pre-ev"}
+        gs._pending_lifecycle_deletes["pre-lc"] = {"lifecycle_id": "pre-lc", "trace_id": "pre-lc"}
+
+        # Failed replace snapshot must preserve tracking and pending deletes.
+        assert gs.sync_message_plane_events() == 3
+        assert gs.sync_message_plane_lifecycle() == 3
+        assert "ev-old" in gs._published_event_ids
+        assert "lc-old" in gs._published_lifecycle_ids
+        assert gs._unpublished_event_counts == {"ev-1": 1, "ev-2": 1, "ev-3": 1}
+        assert gs._unpublished_lifecycle_counts == {"lc-1": 1, "lc-2": 1, "lc-3": 1}
+        assert "pre-ev" in gs._pending_event_deletes
+        assert "pre-lc" in gs._pending_lifecycle_deletes
+
+        # Successful replace snapshot resets published IDs to retained items and clears unpublished/pending.
+        snap_ok["ok"] = True
+        assert gs.sync_message_plane_events() == 3
+        assert gs.sync_message_plane_lifecycle() == 3
+        assert gs._pending_event_deletes == {}
+        assert gs._pending_lifecycle_deletes == {}
+        assert gs._unpublished_event_counts == {}
+        assert gs._unpublished_lifecycle_counts == {}
+        assert list(gs._published_event_ids.keys()) == ["ev-1", "ev-2", "ev-3"]
+        assert list(gs._published_lifecycle_ids.keys()) == ["lc-1", "lc-2", "lc-3"]
+
+        # Subsequent failed re-append of an ID in the replaced snapshot still deletes remotely.
+        gs.append_event_record({"event_id": "ev-1", "type": "fail-after-sync"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-1", "type": "fail-after-sync"})
+        assert "ev-1" not in gs._unpublished_event_counts
+        assert "lc-1" not in gs._unpublished_lifecycle_counts
+
+    with patch("plugin.server.messaging.plane_bridge.publish_snapshot", return_value=True) as pub_snap:
+        assert gs.delete_event("ev-1") is True
+        assert gs.delete_lifecycle("lc-1") is True
+        assert pub_snap.call_count == 2
+        assert pub_snap.call_args_list[0].kwargs["records"] == [
+            {"event_id": "ev-1", "trace_id": "ev-1"}
+        ]
+        assert pub_snap.call_args_list[1].kwargs["records"] == [
+            {"lifecycle_id": "lc-1", "trace_id": "lc-1"}
+        ]
+
+
+def test_extend_records_keeps_unpublished_counts_bounded_and_tracks_evicted_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    state_module = sys.modules["plugin.core.state"]
+    gs = _new_state()
+    gs._event_store = type(gs._event_store)(maxlen=2)
+    gs._lifecycle_store = type(gs._lifecycle_store)(maxlen=2)
+
+    attempted: list[tuple[str, str]] = []
+    outcomes: dict[tuple[str, int], bool] = {}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        idx = len(attempted)
+        rid = record.get("event_id") or record.get("lifecycle_id") or record.get("trace_id") or ""
+        attempted.append((store, str(rid)))
+        return outcomes.get((store, idx), False)
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", return_value=True
+    ) as pub_snap:
+        # 1) Repeated oversized failing batches attempt publish for all items,
+        # while _unpublished_*_counts tracks only retained tail records.
+        assert gs.extend_event_records(
+            [{"event_id": f"b1-e{i}", "type": "e"} for i in range(4)]
+        ) == 4
+        assert [rid for st, rid in attempted if st == "events"] == [
+            "b1-e0",
+            "b1-e1",
+            "b1-e2",
+            "b1-e3",
+        ]
+        assert gs._unpublished_event_counts == {"b1-e2": 1, "b1-e3": 1}
+
+        assert gs.extend_event_records(
+            [{"event_id": f"b2-e{i}", "type": "e"} for i in range(4)]
+        ) == 4
+        assert gs._unpublished_event_counts == {"b2-e2": 1, "b2-e3": 1}
+
+        assert gs.extend_lifecycle_records(
+            [{"lifecycle_id": f"b1-l{i}", "type": "l"} for i in range(4)]
+        ) == 4
+        assert gs._unpublished_lifecycle_counts == {"b1-l2": 1, "b1-l3": 1}
+
+        # 2) Duplicate unpublished batch counts only retained copies (2, not 3), then drains to 0 on eviction.
+        assert gs.extend_event_records(
+            [{"event_id": "dup-u", "type": "d"} for _ in range(3)]
+        ) == 3
+        assert gs._unpublished_event_counts == {"dup-u": 2}
+        assert gs.extend_event_records(
+            [{"event_id": "k1", "type": "k"}, {"event_id": "k2", "type": "k"}]
+        ) == 2
+        assert gs._unpublished_event_counts == {"k1": 1, "k2": 1}
+
+        assert gs.extend_lifecycle_records(
+            [{"lifecycle_id": "dup-ul", "type": "d"} for _ in range(3)]
+        ) == 3
+        assert gs._unpublished_lifecycle_counts == {"dup-ul": 2}
+        assert gs.extend_lifecycle_records(
+            [{"lifecycle_id": "lk1", "type": "k"}, {"lifecycle_id": "lk2", "type": "k"}]
+        ) == 2
+        assert gs._unpublished_lifecycle_counts == {"lk1": 1, "lk2": 1}
+
+        # 3) Mixed batch where idx=0 succeeds (even though evicted from deque) and idx=2 fails:
+        # published status wins so later delete removes remotely.
+        attempted.clear()
+        outcomes[("events", 0)] = True
+        assert gs.extend_event_records(
+            [
+                {"event_id": "mix-ev", "type": "ok-evicted"},
+                {"event_id": "mix-mid", "type": "fail-mid"},
+                {"event_id": "mix-ev", "type": "fail-retained"},
+            ]
+        ) == 3
+        assert "mix-ev" in gs._published_event_ids
+        assert gs._unpublished_event_counts == {"mix-mid": 1}
+        assert gs.delete_event("mix-ev") is True
+        pub_snap.assert_called_with(
+            store="events",
+            records=[{"event_id": "mix-ev", "trace_id": "mix-ev"}],
+            topic="all",
+            mode="delete",
+        )
+
+        attempted.clear()
+        outcomes.clear()
+        pub_snap.reset_mock()
+        outcomes[("lifecycle", 0)] = True
+        assert gs.extend_lifecycle_records(
+            [
+                {"lifecycle_id": "mix-lc", "type": "ok-evicted"},
+                {"lifecycle_id": "mix-lcmid", "type": "fail-mid"},
+                {"lifecycle_id": "mix-lc", "type": "fail-retained"},
+            ]
+        ) == 3
+        assert "mix-lc" in gs._published_lifecycle_ids
+        assert gs._unpublished_lifecycle_counts == {"mix-lcmid": 1}
+        assert gs.delete_lifecycle("mix-lc") is True
+        pub_snap.assert_called_with(
+            store="lifecycle",
+            records=[{"lifecycle_id": "mix-lc", "trace_id": "mix-lc"}],
+            topic="all",
+            mode="delete",
+        )
+
+    # 4) Verify _published_*_ids stays LRU-bounded at MAX_PUBLISHED_BUS_IDS.
+    monkeypatch.setattr(state_module, "MAX_PUBLISHED_BUS_IDS", 3)
+    with patch("plugin.server.messaging.plane_bridge.publish_record", return_value=True):
+        for idx in range(4):
+            gs.append_event_record({"event_id": f"lru-e{idx}", "type": "p"})
+            gs.append_lifecycle_record({"lifecycle_id": f"lru-l{idx}", "type": "p"})
+        assert list(gs._published_event_ids.keys()) == ["lru-e1", "lru-e2", "lru-e3"]
+        assert list(gs._published_lifecycle_ids.keys()) == ["lru-l1", "lru-l2", "lru-l3"]
+
+        gs.append_event_record({"event_id": "lru-e1", "type": "refresh"})
+        gs.append_event_record({"event_id": "lru-e4", "type": "p"})
+        assert list(gs._published_event_ids.keys()) == ["lru-e3", "lru-e1", "lru-e4"]
+
+        gs.append_lifecycle_record({"lifecycle_id": "lru-l1", "type": "refresh"})
+        gs.append_lifecycle_record({"lifecycle_id": "lru-l4", "type": "p"})
+        assert list(gs._published_lifecycle_ids.keys()) == ["lru-l3", "lru-l1", "lru-l4"]
+
+    # 5) Verify extend_event_records backfill uses reserve_slots=1 (does not starve behind large batches).
+    sent_msgs: list[dict] = []
+
+    class _FakeSocket:
+        linger = 0
+
+        def connect(self, _ep: str) -> None:
+            pass
+
+        def close(self, _linger: int = 0) -> None:
+            pass
+
+        def send(self, raw: bytes, flags: int = 0) -> None:
+            sent_msgs.append(ormsgpack.unpackb(raw))
+
+    class _FakeCtx:
+        def socket(self, _kind: int) -> _FakeSocket:
+            return _FakeSocket()
+
+    monkeypatch.setattr(plane_bridge_mod.zmq.Context, "instance", staticmethod(lambda: _FakeCtx()))
+    bridge = plane_bridge_mod._Bridge()
+    bridge._enabled = True
+    bridge._endpoint = f"inproc://extend_reserve_{uuid.uuid4().hex}"
+    bridge._q = queue.Queue(maxsize=2)
+    monkeypatch.setattr(plane_bridge_mod, "_bridge", bridge)
+
+    gs2 = _new_state()
+    try:
+        gs2.append_event_record({"event_id": "ext-d0", "type": "d"})
+        bridge._q.get_nowait()
+        bridge._q.put_nowait({"kind": "blocker"})
+        bridge._q.put_nowait({"kind": "blocker"})
+        assert gs2.delete_event("ext-d0") is True
+        assert list(gs2._pending_event_deletes) == ["ext-d0"]
+
+        while not bridge._q.empty():
+            bridge._q.get_nowait()
+        gs2._pending_delete_retry_after["events"] = 0.0
+
+        assert (
+            gs2.extend_event_records(
+                [
+                    {"event_id": "ext-new-0", "type": "n"},
+                    {"event_id": "ext-new-1", "type": "n"},
+                ]
+            )
+            == 2
+        )
+        assert gs2._pending_event_deletes == {}
+        assert bridge._q.qsize() == 2  # 1 delete snapshot + first new delta; second delta overflows cleanly.
+        assert list(gs2._unpublished_event_counts) == ["ext-new-1"]
     finally:
         bridge.stop()
