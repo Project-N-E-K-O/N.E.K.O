@@ -93,7 +93,6 @@ from nekopower.host.ledger import (
     Session,
     SessionRow,
     Transition,
-    WAITS_IN_TREE_REFUSAL,
     WakeRequest,
     new_session_id,
 )
@@ -5446,97 +5445,37 @@ class TaskAgentManager(TreeWork):
     async def _end_what_it_started(self, commission_id: str) -> None:
         """End the task agents a commission that is over had started: they must not go on working for nobody.
 
-        (How it ended is written by now. Should what it started not be
-        readable, even asked again, its session is let go all the same:
-        left open, it would keep its place for a commission that is over,
-        and the senders of its notes would hear nothing.)
+        For any end: of a run (``_act_on_end``), at a landing, of the quota
+        partway through (``_on_usage``), or of the usage the user allowed
+        (``_wind_up_step``). How it ended is written by now, and the caller
+        closes its own session once this returns. These ends come once, so
+        what the ledger is asked, and each one's stop, is tried again after
+        a failure (``_looked``). Each by itself: one that cannot be stopped
+        this moment does not leave the others at work, nor keep the
+        commission's own session open; nor does a ledger that cannot say
+        what it started (left open, the session would keep its place for a
+        commission that is over, and the senders of its notes would hear
+        nothing). One whose stop cannot be written, even asked again, is
+        closed all the same: left open, it would go on working, and using
+        requests, for a commission that is over (on record it stays at work,
+        and can still be stopped). One whose stop is refused because it
+        ended meanwhile, some other way, is not closed: its session is its
+        own, and its own end lets it go. Every failure is logged and none is
+        raised: no caller has anyone to hand it to (the runtime that asks
+        ``_cb_budget`` takes a failure for room to go on, and would make the
+        request it asked about; ``_pump_events`` would only log it).
 
         Not one whose work is done and waits in its git worktree for the
         user (held back, or not landed): it is stuck over that alone, and
-        is done once the user has it landed. That is read once before, and
-        looked at again as each one's end is written
-        (``_stopped_with_parent``): one that comes to wait after the
-        reading, or that a reading which failed missed, is left to wait all
-        the same. Only one that is stuck waits so: one taken up again since
-        (queued, or at work) keeps its worktree on record as it was left
-        until it is at work in it, and is ended as any other. Where its end
-        cannot be written at all, one that is stuck may be such a one, and
-        is left as it is (it is not at work).
+        is done once the user has it landed. That is looked at as its stop
+        is written (``_stopped_with_parent``), not read once before: one
+        that comes to wait meanwhile is not missed, one taken up again
+        meanwhile is not passed by, and a ledger that cannot be read does
+        not make it look like none. Where its stop cannot be written at all,
+        one that is stuck may be such a one, and is left as it is (it is not
+        at work).
         """
-        # (Read before those it started are: one the user has landed this moment is still among
-        # these, or is over by the time those are read. And one landed and done after this is
-        # read, before its end is written, is passed by here, not stopped as one that ended.)
-        waiting = await self._waits_in_tree()
-        # Those whose worktree the user's decision is being carried out on, apart: whatever they
-        # stand at, and though the worktrees could not be read (nothing is awaited since).
-        deciding = set(self._decided_for.values())
-        try:
-            started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - its own end stands, and its session is closed
-            logger.warning("ending what a commission that is over had started failed", exc_info=True)
-            started = []
-        for child in started:
-            if child.id in deciding or (child.id in waiting and child.status == "blocked"):
-                continue
-            # Each by itself, and each step of it: one that cannot be ended
-            # this moment does not leave the others at work, and one whose
-            # end is written is still stopped where that write failed.
-            try:
-                moved = await self._looked(lambda child=child: self._stopped_with_parent(child.id))
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - it is stopped all the same, see below
-                logger.warning("ending a task agent whose parent is over failed", exc_info=True)
-                if child.status == "blocked":
-                    # Stuck, so not at work: it may be one whose changes wait in its worktree for
-                    # the user, which cannot be told with the ledger as it is. It is left as it is.
-                    continue
-            else:
-                if moved is None or (not moved.applied and moved.refusal == WAITS_IN_TREE_REFUSAL):
-                    # Its changes wait in its worktree for the user, or the user's decision on
-                    # them is being carried out: it is left to wait.
-                    continue
-            try:
-                await self._looked(lambda child=child: self.abort(child.id))
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - the others are still ended
-                logger.warning("stopping a task agent whose parent is over failed", exc_info=True)
-
-    async def _stop_what_it_started(self, commission_id: str) -> None:
-        """Stop the task agents a commission had started, now that it ended for what it used.
-
-        For the ends of ``_on_usage`` (the quota ran out partway through)
-        and ``_wind_up_step`` (the usage the user allowed is used up): its
-        own end is written by now, and the caller closes its session once
-        this returns. These ends come once, so what the ledger is asked, and
-        each one's stop, is tried again after a failure, as
-        ``_end_what_it_started`` does (``_looked``).
-        Each by itself: one that cannot be stopped this moment does not
-        leave the others at work, nor keep the commission's own session
-        open; nor does a ledger that cannot say what it started. One whose
-        stop cannot be written, even asked again, is closed all the same,
-        as there: left open, it would go on working, and using requests,
-        for a commission that is over (on record it stays at work, and can
-        still be stopped). One whose stop is refused because it ended
-        meanwhile, some other way, is not closed: its session is its own.
-        Every failure is logged and none is raised: neither caller has
-        anyone to hand it to (the runtime that asks ``_cb_budget`` takes a
-        failure for room to go on, and would make the request it asked
-        about; ``_pump_events`` would only log it).
-
-        Not one whose work is done and waits in its git worktree for the
-        user (held back, or not landed), as there: it is stuck over that
-        alone, and is done once the user has it landed. That is looked at
-        as its stop is written (``_stopped_with_parent``), not read once
-        before: one that comes to wait meanwhile is not missed, and a
-        ledger that cannot be read does not make it look like none. Where
-        its stop cannot be written at all, one that is stuck may be such a
-        one, and is left as it is (it is not at work).
-        """
-        what = "for a commission that ended for what it used"
+        what = "for a commission that is over"
         try:
             started = await self._looked(
                 lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES), what=what
@@ -5598,12 +5537,17 @@ class TaskAgentManager(TreeWork):
         that landing writes waits, as it tells the parent, only for a
         landing of the parent's own; none of the ends this is asked from is
         within one.)
+
+        Only one still under way is written (``only_from``): one that ended
+        meanwhile is refused with nothing put on its record, as one that
+        waits in its worktree is; one stopped already is refused as such.
         """
         await self._landing_end_written(commission_id)
         if commission_id in self._decided_for.values():
             return None
         return await self._ledger.transition(
-            commission_id, "cancelled", reason="its parent finished", unless_waiting_in_tree=True
+            commission_id, "cancelled", reason="its parent finished", only_from=ACTIVE_STATUSES,
+            unless_waiting_in_tree=True,
         )
 
     @staticmethod
@@ -6327,7 +6271,7 @@ class TaskAgentManager(TreeWork):
             return
         # After requests of its own: some of the work may be done.
         await self._fail(commission_id, _QUOTA_RUN_REASON, said="quota_run")
-        await self._stop_what_it_started(commission_id)
+        await self._end_what_it_started(commission_id)
         await self._close_session(session)
 
     async def _on_error(self, session: _Session, event: dict[str, Any], refused: list[int]) -> None:
@@ -10133,7 +10077,7 @@ class TaskAgentManager(TreeWork):
             # must not turn it into a stopped one.
             session.wound_up = True
             await self._end(commission_id, "blocked", reason=_USAGE_REASON, text=text, result_summary=self._summary(text))
-            await self._stop_what_it_started(commission_id)
+            await self._end_what_it_started(commission_id)
         await self._close_session(session)
         return {"stop": True}
 
