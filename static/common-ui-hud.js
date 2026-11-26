@@ -1438,12 +1438,14 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         const below = this._syncSubAsks(task);
         if (below) desired.push(below);
     });
-    // 卡片不在了的那一块也拿掉。
+    // 卡片不在了的那一块也拿掉；它下面上一次展开的是哪只，也不用再记着了。
     if (this._subAskBlocks) this._subAskBlocks.forEach((block, taskId) => {
         if (desired.indexOf(block) !== -1) return;
         block.remove();
         this._subAskBlocks.delete(taskId);
-        delete this._subAskOpen[taskId];
+    });
+    if (this._subAskOpen) Object.keys(this._subAskOpen).forEach(taskId => {
+        if (!activeIds.has(taskId)) delete this._subAskOpen[taskId];
     });
 
     // 只挪位置不对的卡片：已经站在该站的位置上的不动。把卡片挪走再插回会让卡片里正在打字的输入框
@@ -1518,7 +1520,7 @@ window.AgentHUD._syncSubAsks = function (task) {
     if (!list.length) {
         if (block) block.remove();
         this._subAskBlocks.delete(task.id);
-        delete this._subAskOpen[task.id];
+        // 上一次展开的是哪只留着：答完、空了一下、下一只才冒出来时，它照样是顶上来的那只，按钮先停一下。
         return null;
     }
     if (!block) {

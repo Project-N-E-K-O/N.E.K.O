@@ -403,6 +403,16 @@ describe('what the task agents a task agent started ask', () => {
     vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
     expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(false);
 
+    // Answered, none asking for a moment, and then another one: put up in the same place all the same.
+    show([asking('c1', [])]);
+    show([asking('c1', [below('c7', permission('q7'))])]);
+    expect(opened('c1', 'c7').querySelector('[data-choice="once"]').disabled).toBe(true);
+    vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
+    // Once the task's card was gone, one that asks under it later is the first there again: not held back.
+    show([task('c9')]);
+    show([asking('c1', [below('c8', permission('q8'))])]);
+    expect(opened('c1', 'c8').querySelector('[data-choice="once"]').disabled).toBe(false);
+
     // Drawn while it was open before, folded since, with words typed in it: shown as it was, held back the same,
     // from the keyboard as well (a button reached by Tab, Enter in the line).
     const sent = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, note_taken: true }) }));
