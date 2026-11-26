@@ -576,3 +576,79 @@ def test_profile_writes_numeric_alias_fallback_precedence_and_affected_active(
         updates={"feature": {"x": 6}},
     )
     assert upd_blank["affected_active"] is True
+
+
+@pytest.mark.plugin_unit
+def test_get_profile_config_and_delete_profile_config_numeric_alias_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.server.infrastructure.config_profiles import get_profile_config
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    one_path = profiles_dir / "one.toml"
+    one_path.write_text("[feature]\nx=1\n", encoding="utf-8")
+    zero_one_path = profiles_dir / "zero_one.toml"
+    zero_one_path.write_text("[feature]\nx=99\n", encoding="utf-8")
+    profiles_toml = plugin_dir / "profiles.toml"
+
+    # 1) get_profile_config("01") falls back to registered "1" without adding alias entry,
+    #    and respects exact "01" precedence when present.
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='1'\n[config_profiles.files]\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    module.update_profile_config(
+        plugin_id="demo",
+        profile_name="01",
+        updates={"feature": {"x": 7}},
+    )
+    fetched_alias = get_profile_config(
+        plugin_id="demo",
+        profile_name="01",
+        config_path=config_path,
+    )
+    assert fetched_alias["profile"]["exists"] is True
+    assert fetched_alias["config"] == {"feature": {"x": 7}}
+
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='01'\n"
+        "[config_profiles.files]\n'01'='profiles/zero_one.toml'\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    fetched_exact = get_profile_config(
+        plugin_id="demo",
+        profile_name="01",
+        config_path=config_path,
+    )
+    assert fetched_exact["config"] == {"feature": {"x": 99}}
+
+    # 2) delete_profile_config("1") with NEKO_PLUGIN_DEMO_PROFILE=01:
+    #    affected_active is False when "01" has its own valid registration,
+    #    True when only "1" (or "01" whitespace + "1" fallback) served active "01".
+    monkeypatch.setenv("NEKO_PLUGIN_DEMO_PROFILE", "01")
+    deleted_inactive = module.delete_profile_config(plugin_id="demo", profile_name="1")
+    assert deleted_inactive["removed"] is True
+    assert deleted_inactive["affected_active"] is False
+
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='1'\n[config_profiles.files]\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    deleted_active = module.delete_profile_config(plugin_id="demo", profile_name="1")
+    assert deleted_active["removed"] is True
+    assert deleted_active["affected_active"] is True
+
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='01'\n"
+        "[config_profiles.files]\n'01'='   '\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    deleted_blank_fallback = module.delete_profile_config(plugin_id="demo", profile_name="1")
+    assert deleted_blank_fallback["removed"] is True
+    assert deleted_blank_fallback["affected_active"] is True

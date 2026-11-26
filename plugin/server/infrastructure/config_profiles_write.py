@@ -16,6 +16,7 @@ from plugin.server.infrastructure.config_profiles import (
     _resolve_profiles_cfg,
     get_profile_config,
     get_profiles_state,
+    lookup_registered_profile_path,
     resolve_profile_path,
 )
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock, plugin_config_file_lock
@@ -298,25 +299,6 @@ def _validate_profile_name(profile_name: object) -> str:
     return normalized
 
 
-def _lookup_registered_profile_path(
-    files_map: Mapping[str, str],
-    profile_name: str,
-) -> tuple[str, str] | None:
-    raw_path = files_map.get(profile_name)
-    if isinstance(raw_path, str) and raw_path.strip():
-        return profile_name, raw_path
-    if profile_name.isdigit():
-        try:
-            numeric_name = str(int(profile_name))
-        except ValueError:
-            numeric_name = ""
-        if numeric_name:
-            numeric_raw = files_map.get(numeric_name)
-            if isinstance(numeric_raw, str) and numeric_raw.strip():
-                return numeric_name, numeric_raw
-    return None
-
-
 def _profile_affects_active(
     *,
     base_dir: Path,
@@ -329,7 +311,7 @@ def _profile_affects_active(
         return False
     if active_name == profile_name:
         return True
-    active_entry = _lookup_registered_profile_path(files_map, active_name)
+    active_entry = lookup_registered_profile_path(files_map, active_name)
     if active_entry is None:
         return False
     _, active_raw = active_entry
@@ -477,7 +459,7 @@ def update_profile_config(
                 data["config_profiles"] = dict(seeded_cfg)
 
         profiles_cfg, files_map = _normalize_profiles_config(data)
-        registered = _lookup_registered_profile_path(files_map, profile_name)
+        registered = lookup_registered_profile_path(files_map, profile_name)
         if registered is None:
             raise HTTPException(
                 status_code=404,
@@ -588,6 +570,11 @@ def delete_profile_config(
         )
         profiles_cfg, files_map = _normalize_profiles_config(data)
         previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        previous_active_entry = (
+            lookup_registered_profile_path(files_map, previous_active)
+            if previous_active is not None
+            else None
+        )
 
         removed = False
         if profile_name in files_map:
@@ -599,9 +586,15 @@ def delete_profile_config(
             profiles_cfg.pop("active", None)
 
         new_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        new_active_entry = (
+            lookup_registered_profile_path(files_map, new_active)
+            if new_active is not None
+            else None
+        )
         affected_active = bool(
             (removed and previous_active == profile_name)
             or (previous_active != new_active)
+            or (previous_active_entry != new_active_entry)
         )
 
         data["config_profiles"] = profiles_cfg
