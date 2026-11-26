@@ -1011,8 +1011,6 @@ async def test_questions_that_offer_the_same_answers_say_the_buttons_tell_which(
 
 async def test_an_answer_not_in_latin_letters_is_a_word_of_its_own_as_well():
     yes = {"kind": "question", "question": "¿Seguro?", "options": ["Sí", "No"]}
-    post = _waiting("c1", "write a post", yes)
-    card = _waiting("c2", "make a card", {**yes, "options": ["No", "Luego"]})
     # One answer however its accent is written: offered by both, it names neither.
     post = _waiting("c1", "write a post", {**yes, "options": ["Blue", "Si\u0301"]})
     card = _waiting("c2", "make a card", {**yes, "options": ["Blue", "Sí"]})
