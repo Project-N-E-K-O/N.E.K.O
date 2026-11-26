@@ -2593,6 +2593,7 @@ async def _delete_synced_character(uid: str, before_delete):
         committed_switch_revision = 0
         rollback_switch_revision = 0
         surviving_switch_target = None
+        reconcile_cancelled = False
 
         def mark_delete_committed():
             nonlocal committed_switch_revision
@@ -2664,14 +2665,16 @@ async def _delete_synced_character(uid: str, before_delete):
                     # observer fired. Reconcile ordering/delivery to the actual
                     # persisted authority before returning.
                     try:
-                        latest = await _aload_authoritative_characters(cm)
+                        latest, reconcile_cancelled = await _await_coroutine_to_completion(
+                            _aload_authoritative_characters(cm)
+                        )
                         registry = latest.get('猫娘', {})
                         surviving = str(latest.get('当前猫娘', '') or '').strip()
                         if surviving and surviving in registry:
                             surviving_switch_target = surviving
                             if _catgirl_switch_revision_target != surviving:
                                 committed_switch_revision = _advance_current_catgirl_switch_revision(surviving)
-                    except (Exception, asyncio.CancelledError):
+                    except Exception:
                         logger.exception("Failed to reconcile current character after sync deletion rollback")
             notify_revision = rollback_switch_revision or committed_switch_revision
             if switched and notify_revision:
@@ -2696,6 +2699,8 @@ async def _delete_synced_character(uid: str, before_delete):
                     await _await_cleanup_to_completion(notify_committed_switch())
                 except (Exception, asyncio.CancelledError):
                     logger.exception("Failed to notify committed fallback after sync deletion")
+            if reconcile_cancelled:
+                raise asyncio.CancelledError
         return success
 
 

@@ -6176,11 +6176,17 @@ async def test_synced_delete_cancel_during_successful_finalize_publishes_fallbac
         deletion.cancel()
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.shield(deletion), timeout=1)
+        release_finalize.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(deletion, timeout=5)
     finally:
         release_finalize.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(deletion, timeout=5)
+        if not deletion.done():
+            deletion.cancel()
+        try:
+            await deletion
+        except asyncio.CancelledError:
+            pass
 
     stored = cm.load_characters()
     assert stored["当前猫娘"] == fallback
