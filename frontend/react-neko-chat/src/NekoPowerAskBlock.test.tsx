@@ -5,7 +5,7 @@ import CompactNekoPowerAskPrompt, {
   CompactAskOrRecommendationPrompt, NEKOPOWER_ASK_NOTICE_MS, pendingNekoPowerAsk,
 } from './CompactNekoPowerAskPrompt';
 import MessageBlockView from './MessageBlockView';
-import { NEKOPOWER_ASK_SETTLE_MS, askView } from './NekoPowerAskBlock';
+import { NEKOPOWER_ASK_SETTLE_MS, askView, useNekoPowerAskDrafts } from './NekoPowerAskBlock';
 import { parseChatMessage } from './message-schema';
 import type { ChatMessage, MessageAction } from './message-schema';
 
@@ -291,6 +291,38 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(within([first]));
     expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('');
     expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('lets go of what was typed for a question that is over without its card being drawn so, or whose chat was emptied', () => {
+    // The chat, which holds the messages: it says which questions are left.
+    function Chat({ messages }: { messages: ChatMessage[] }) {
+      useNekoPowerAskDrafts(messages);
+      return (
+        <ChatScreenVisibilityProvider messages={messages}>
+          <CompactAskOrRecommendationPrompt messages={messages} />
+        </ChatScreenVisibilityProvider>
+      );
+    }
+    const first = ask(twoQuestions, {}, 'e1');
+    const view = render(<Chat messages={[first]} />);
+    const input = () => view.container.querySelector('[data-ask-input]') as HTMLInputElement;
+    const type = (value: string) => fireEvent.change(input(), { target: { value } });
+    // While it waits, giving way to another one and coming back keeps what was put into it.
+    type('half a sentence');
+    view.rerender(<Chat messages={[first, ask(inWords, {}, 'e2')]} />);
+    view.rerender(<Chat messages={[first, ask(inWords, { state: 'answered', answer: 'x' }, 'e2')]} />);
+    expect(input().value).toBe('half a sentence');
+    // Over (taken back, answered elsewhere) with nothing to say of it: above the composer its card
+    // is taken away and never drawn as closed.
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'closed' }, 'e1')]} />);
+    expect(view.container.querySelector('#compact-nekopower-ask-prompt')).toBeNull();
+    view.rerender(<Chat messages={[first]} />);
+    expect(input().value).toBe('');
+    // The chat emptied: the same.
+    type('once more');
+    view.rerender(<Chat messages={[]} />);
+    view.rerender(<Chat messages={[first]} />);
+    expect(input().value).toBe('');
   });
 
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {

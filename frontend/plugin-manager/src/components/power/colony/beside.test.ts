@@ -378,6 +378,29 @@ describe('the question on the board', () => {
     expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
   })
 
+  it('says it above the board where the familiar has no card on it any more by the time the board is read again', async () => {
+    vi.useFakeTimers()
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    const other = card({ id: 'desk', name: 'Shop/desk', commission: null, state: 'idle' })
+    api.getBoard.mockResolvedValue(board([waiting, other]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    // While its card is there, the card says it and nothing is said above the board.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null }), other], 'r2'))
+    await click(document.querySelector(`[data-familiar="${waiting.id}"] [data-choice="deny"]`))
+    await flush()
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    expect(byTest('board-answer-note')).toBeNull()
+    // Read again, the familiar that was answered is gone from the board.
+    api.getBoard.mockResolvedValue(board([other], 'r3'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(document.querySelector(`[data-familiar="${waiting.id}"]`)).toBeNull()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+  })
+
   it('takes those words away again after a while: nothing else would, once the familiar is back at its work', async () => {
     vi.useFakeTimers()
     const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }

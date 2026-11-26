@@ -239,6 +239,50 @@ describe('a box drawn anew for a commission that showed another question a momen
     expect(once(container).disabled).toBe(false)
   })
 
+  it.each([['the box', AskBox], ['the card above a head', AskBubble]])('goes on holding %s back for what is left, taken away and drawn again before that moment is over', async (_, component) => {
+    vi.useFakeTimers()
+    const next = () => permission({ id: 'q2', detail: { command: 'rm -rf dist' } })
+    const { container, state } = await mount(page(component as Component), { ask: permission() })
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: next() }
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    // Another one's was opened in its stead, and then this one again: the press on its way is on its way still.
+    vi.advanceTimersByTime(300)
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: next() }
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    // For what was left of it, and not anew from where it was drawn again.
+    vi.advanceTimersByTime(SETTLE_MS - 301)
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    vi.advanceTimersByTime(1)
+    await flush()
+    expect(once(container).disabled).toBe(false)
+  })
+
+  it.each([['the box', AskBox], ['the card above a head', AskBubble]])('holds %s back for what is left as well where the question changed in it and it is then drawn anew', async (_, component) => {
+    vi.useFakeTimers()
+    const next = () => permission({ id: 'q2', detail: { command: 'rm -rf dist' } })
+    const { container, state } = await mount(page(component as Component), { ask: permission() })
+    // In the same box this time: the question changes where it stands.
+    state.props = { ask: next() }
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    vi.advanceTimersByTime(300)
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: next() }
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    vi.advanceTimersByTime(SETTLE_MS - 300)
+    await flush()
+    expect(once(container).disabled).toBe(false)
+  })
+
   it('is not held back where no page keeps what was shown', async () => {
     const { container } = await mount(AskBox, { ask: permission(), busy: '', place: 'c1' })
     expect(once(container).disabled).toBe(false)

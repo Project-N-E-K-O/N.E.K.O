@@ -15,6 +15,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
 import { CompactAskOrRecommendationPrompt } from './CompactNekoPowerAskPrompt';
+import { useNekoPowerAskDrafts } from './NekoPowerAskBlock';
 import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
@@ -1104,6 +1105,7 @@ function CompactChatApp({
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  useNekoPowerAskDrafts(messages);
   useEffect(() => {
     const resetCompactPreview = (event: Event) => {
       const detail = (event as CustomEvent).detail;

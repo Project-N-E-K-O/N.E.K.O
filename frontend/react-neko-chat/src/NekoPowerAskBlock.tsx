@@ -27,6 +27,25 @@ const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
 // task) and comes back has what was put into it still there. Let go of once the question is over.
 const drafts = new Map<string, { reply: string; picked: Record<string, string[]> }>();
 
+/**
+ * Lets go of what was put into questions that do not wait among these messages any more. One
+ * that is over is not always drawn so (above the composer its card is just taken away), and a
+ * chat that is emptied draws none of its cards again: so it is the chat itself, where the
+ * messages are held, that says which questions are left.
+ */
+export function useNekoPowerAskDrafts(messages: ChatMessage[]): void {
+  useEffect(() => {
+    if (!drafts.size) return;
+    const waiting = new Set<string>();
+    for (const message of messages) {
+      for (const block of message.blocks) {
+        if (block.type === 'nekopower_ask' && block.state === 'pending') waiting.add(`${block.taskId}:${block.questionId}`);
+      }
+    }
+    for (const key of [...drafts.keys()]) if (!waiting.has(key)) drafts.delete(key);
+  }, [messages]);
+}
+
 export interface AskQuestion {
   /** Where it stands among the questions ("0", "1", ...): what the answer names it by. */
   id: string;

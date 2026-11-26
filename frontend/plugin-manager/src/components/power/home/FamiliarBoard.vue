@@ -5,7 +5,7 @@
       <span :class="{ loud: tally.waiting > 0 }">{{ t('power.home.waiting', { count: tally.waiting }) }}</span>
     </div>
     <!-- Of an answer whose added sentence was not taken, where no card of a familiar is there to say it on. -->
-    <p v-if="lostElsewhere" class="notice notice--warn" role="status" data-testid="board-answer-note">{{ lostElsewhere }}</p>
+    <p v-if="lostAbove" class="notice notice--warn" role="status" data-testid="board-answer-note">{{ lostAbove }}</p>
     <p v-if="error" class="notice notice--warn" role="status" data-testid="board-error">{{ error }}</p>
     <div v-else-if="loaded && !hives.length" class="notice" data-testid="board-empty">
       <strong>{{ t('power.home.empty') }}</strong>
@@ -106,6 +106,14 @@ function answerCard(card: BoardCard, given: GivenAnswer) {
   lost.value = withoutCard(card.id)
   void answerOne({ id: card.commission.id, ask: card.commission.ask }, given)
 }
+
+// What is said above the board: also of a familiar that has no card on it any more by the time the board is
+// read again (it was let go, or its project put away), where its card cannot say it.
+const lostAbove = computed(() => {
+  if (lostElsewhere.value) return lostElsewhere.value
+  const shown = new Set(hives.value.flatMap(hive => hive.members.map(card => card.id)))
+  return Object.entries(lost.value).find(([id]) => !shown.has(id))?.[1] ?? ''
+})
 
 const hives = computed<Hive[]>(() => {
   const now = board.value

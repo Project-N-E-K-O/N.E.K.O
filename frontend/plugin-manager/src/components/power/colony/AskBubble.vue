@@ -41,7 +41,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
-import { SETTLE_MS, askLines, askQuestions, askShape, askSummary, askWhole, choiceLabel, confirmation, useTookPlace } from '../ask'
+import { askLines, askQuestions, askShape, askSummary, askWhole, choiceLabel, confirmation, useTookPlace } from '../ask'
 import type { GivenAnswer } from '../ask'
 
 /**
@@ -79,9 +79,17 @@ const whole = computed(() => askWhole(props.ask)?.text ?? askLines(props.ask, t,
 // Another question took this one's place a moment ago: its buttons wait, so that a press on
 // its way to the last one does not answer it.
 const tookPlace = useTookPlace()
-// Drawn anew for a commission that showed another question a moment ago: held back as well.
-const settling = ref(tookPlace(props.place, props.ask.id))
-let settled: ReturnType<typeof setTimeout> | null = settling.value ? setTimeout(() => { settling.value = false }, SETTLE_MS) : null
+const settling = ref(false)
+let settled: ReturnType<typeof setTimeout> | null = null
+function holdBack(ms: number) {
+  if (settled) clearTimeout(settled)
+  settled = null
+  settling.value = ms > 0
+  if (ms > 0) settled = setTimeout(() => { settling.value = false }, ms)
+}
+// Drawn anew for a commission that showed another question a moment ago: held back as well, and
+// for what is left of that moment where it is this one that was taken away and is drawn again.
+holdBack(tookPlace(props.place, props.ask.id))
 const held = computed(() => props.busy !== '' || settling.value)
 
 function give(given: GivenAnswer) {
@@ -99,10 +107,7 @@ watch(typing, async shown => {
 watch(() => props.ask.id, () => {
   reply.value = ''
   typing.value = shape.value === 'words'
-  tookPlace(props.place, props.ask.id)
-  settling.value = true
-  if (settled) clearTimeout(settled)
-  settled = setTimeout(() => { settling.value = false }, SETTLE_MS)
+  holdBack(tookPlace(props.place, props.ask.id, true))
 })
 onBeforeUnmount(() => { if (settled) clearTimeout(settled) })
 </script>

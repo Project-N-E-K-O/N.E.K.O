@@ -89,23 +89,31 @@ export const confirmation = (yes: boolean, added: string): GivenAnswer => ({ cho
 export const SETTLE_MS = 900
 
 /**
- * Which question each commission was last shown asking, kept by the page that shows them
- * (`rememberAsks`). The box of a question goes away once it is answered, and the next one of
- * the same commission is drawn anew: by this it knows that it takes another's place, and holds
- * its buttons back as one that changed where it stood does.
+ * Which question each commission was last shown asking, and until when its buttons are held
+ * back, kept by the page that shows them (`rememberAsks`). The box of a question goes away once
+ * it is answered, and the next one of the same commission is drawn anew: by this it knows that
+ * it takes another's place, and holds its buttons back as one that changed where it stood does.
+ * One taken away and drawn again before that moment is over goes on waiting for what is left.
  */
-const ASK_MEMORY: InjectionKey<Map<string, string>> = Symbol('asks shown')
+const ASK_MEMORY: InjectionKey<Map<string, { id: string; until: number }>> = Symbol('asks shown')
 export function rememberAsks(): void {
   provide(ASK_MEMORY, new Map())
 }
-/** For the box of a question: note that this one is shown for `place` (its commission); true if another was before. */
-export function useTookPlace(): (place: string | null | undefined, id: string | undefined) => boolean {
+/**
+ * For the box of a question: note that this one is shown for `place` (its commission), and say
+ * for how long its buttons are to be held back yet, in milliseconds. The whole of `SETTLE_MS`
+ * where another was shown there before (or `swapped`: it changed where the box stood); what is
+ * left of that where the same one is drawn again before it is over; nothing otherwise.
+ */
+export function useTookPlace(): (place: string | null | undefined, id: string | undefined, swapped?: boolean) => number {
   const memory = inject(ASK_MEMORY, null)
-  return (place, id) => {
-    if (!memory || !place) return false
-    const last = memory.get(place)
-    memory.set(place, id ?? '')
-    return last !== undefined && last !== (id ?? '')
+  return (place, id, swapped = false) => {
+    const now = Date.now()
+    const last = memory && place ? memory.get(place) : undefined
+    const another = swapped || (last !== undefined && last.id !== (id ?? ''))
+    const until = another ? now + SETTLE_MS : last?.until ?? 0
+    if (memory && place) memory.set(place, { id: id ?? '', until })
+    return Math.max(0, until - now)
   }
 }
 
