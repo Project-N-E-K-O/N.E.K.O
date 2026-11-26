@@ -606,7 +606,7 @@ def _said(label: str, spoken: str) -> bool:
 
     One written in Latin letters as a word of its own: "no" is not in "not"
     nor in "Noël". Next to writing that has no spaces between its words
-    ("文章配图选Dogs") it is a word all the same.
+    (Chinese, Japanese, Korean) it is a word all the same.
     """
     if not label.isascii():
         return label in spoken
