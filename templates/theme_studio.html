@@ -74,13 +74,6 @@
         <span data-i18n="themeStudio.page.toolbar.onlyDirty">只看改动</span>
       </label>
 
-      <label class="check-field" id="only-dark-diff-chip" hidden>
-        <input type="checkbox" id="only-dark-diff">
-        <span data-i18n="themeStudio.page.controls.darkDiff">只看暗色差异</span>
-      </label>
-      <p class="dark-diff-summary" id="dark-diff-summary" hidden></p>
-      <button type="button" class="btn btn-ghost btn-sm dark-bulk" id="dark-clear-all" hidden data-i18n="themeStudio.page.controls.clearDark">清除暗色覆盖</button>
-
       <button type="button" class="btn btn-ghost btn-sm catalog-collapse" id="btn-toggle-groups" aria-controls="groups" title="展开或收起所有变量分组（状态会记住）" data-i18n-title="themeStudio.page.toolbar.toggleGroupsTitle">全部收起</button>
 
       <span class="toolbar-sep" aria-hidden="true"></span>
@@ -106,7 +99,6 @@
       <section class="editor-column" aria-label="变量编辑器" data-i18n-aria="themeStudio.page.editor.aria">
         <div class="notice" id="notice" role="status" hidden>
           <span class="notice-text" id="notice-text"></span>
-          <button type="button" class="notice-action" id="notice-action" hidden></button>
           <button type="button" class="notice-close" id="notice-close" aria-label="关闭提示" data-i18n-aria="themeStudio.page.editor.closeNotice"></button>
         </div>
         <div id="materials-root"></div>
@@ -190,13 +182,6 @@
             <span class="card-title" data-i18n="themeStudio.page.library.title">主题仓库</span>
             <input type="search" class="lib-search" id="lib-search" placeholder="搜主题名 / 描述 / 标签" data-i18n-placeholder="themeStudio.page.library.searchPlaceholder" autocomplete="off" spellcheck="false" aria-label="搜索主题名、描述或标签" data-i18n-aria="themeStudio.page.library.searchAria">
             <div class="card-tools">
-              <select class="lib-sort" id="lib-sort" data-i18n-aria="themeStudio.page.controls.sort" aria-label="主题排序">
-                <option value="default" data-i18n="themeStudio.page.controls.sortDefault">默认排序</option>
-                <option value="name" data-i18n="themeStudio.page.controls.sortName">按名称</option>
-                <option value="detail" data-i18n="themeStudio.page.controls.sortDetail">按变量数</option>
-                <option value="saved" data-i18n="themeStudio.page.controls.sortSaved">按保存时间</option>
-              </select>
-              <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-compare" data-i18n="themeStudio.page.controls.compare">对比主题</button>
               <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-shuffle" title="随机换一套内置主题，不满意再点一次" data-i18n-title="themeStudio.page.library.shuffleTitle" data-i18n="themeStudio.page.library.shuffle">换个心情</button>
               <button type="button" class="icon-btn" id="btn-lib-refresh" aria-label="刷新仓库列表" title="刷新列表" data-i18n-aria="themeStudio.page.library.refreshAria" data-i18n-title="themeStudio.page.library.refreshTitle">
               <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5a5.5 5.5 0 0 1 4.9 3H11a.75.75 0 0 0 0 1.5h3.25A.75.75 0 0 0 15 6.25V3a.75.75 0 0 0-1.5 0v1.1A7 7 0 0 0 1.06 7.2a.75.75 0 1 0 1.49.2A5.5 5.5 0 0 1 8 2.5Zm6.45 6.1a.75.75 0 0 1 .59.87A7 7 0 0 1 2.5 11.9V13a.75.75 0 0 1-1.5 0v-3.25a.75.75 0 0 1 .75-.75H5a.75.75 0 0 1 0 1.5H3.6a5.5 5.5 0 0 0 9.98-2.31.75.75 0 0 1 .87-.59Z"/></svg>
@@ -231,107 +216,7 @@
         <section class="card quick-card" aria-label="快捷调校" data-i18n-aria="themeStudio.page.quick.title">
           <div class="card-head">
             <span class="card-title" data-i18n="themeStudio.page.quick.title">快捷调校</span>
-            <button type="button" class="btn btn-sm btn-primary" id="btn-recipe-apple" data-i18n="themeStudio.page.controls.recipe">苹果液态玻璃</button>
           </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-mat-label" data-i18n="themeStudio.materials.overview.preset">材质预设</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-mat-label">
-              <select class="quick-select" id="sel-material-preset" aria-labelledby="quick-mat-label">
-                <option value="clear" data-i18n="themeStudio.materials.presetDesc.clear">清透玻璃，轻微着色</option>
-                <option value="frosted" data-i18n="themeStudio.materials.presetDesc.frosted">磨砂雾面，常规阅读</option>
-                <option value="liquid" data-i18n="themeStudio.materials.presetDesc.liquid">苹果风液态玻璃</option>
-                <option value="smoke" data-i18n="themeStudio.materials.presetDesc.smoke">烟熏暗调，低饱和</option>
-                <option value="soft" data-i18n="themeStudio.materials.presetDesc.soft">柔和低对比，长时使用</option>
-                <option value="prism" data-i18n="themeStudio.materials.presetDesc.prism">棱镜色散，强边缘光</option>
-                <option value="custom" disabled data-i18n="themeStudio.materials.comp.custom">自定义</option>
-              </select>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-auto-material"  data-i18n="themeStudio.page.controls.autoMaterial">按壁纸选择材质</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-auto-palette"  data-i18n="themeStudio.page.controls.autoPalette">按壁纸生成配色</button>
-              <select class="quick-select" id="palette-preset" data-i18n-aria="themeStudio.page.controls.scheme" aria-label="配色方案">
-                <option value="" data-i18n="themeStudio.page.controls.scheme">配色方案</option>
-                <option value="sakura" data-i18n="themeStudio.page.controls.schemeSakura">樱雾</option>
-                <option value="ocean" data-i18n="themeStudio.page.controls.schemeOcean">深海</option>
-                <option value="forest" data-i18n="themeStudio.page.controls.schemeForest">松林</option>
-                <option value="dusk" data-i18n="themeStudio.page.controls.schemeDusk">黄昏</option>
-                <option value="graphite" data-i18n="themeStudio.page.controls.schemeGraphite">石墨</option>
-                <option value="aurora" data-i18n="themeStudio.page.controls.schemeAurora">极光</option>
-              </select>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-look-label" data-i18n="themeStudio.page.controls.look">玻璃观感</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-look-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-look-clear" aria-pressed="false" data-i18n="themeStudio.page.controls.clear">清透</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-look-std" aria-pressed="false" data-i18n="themeStudio.page.controls.standard">标准</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-look-solid" aria-pressed="false" data-i18n="themeStudio.page.controls.solid">厚实</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-rim-label" data-i18n="themeStudio.page.controls.rim">边缘高光</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-rim-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-rim-off" aria-pressed="false" data-i18n="common.off">关</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-rim-std" aria-pressed="true" data-i18n="themeStudio.page.controls.standard">标准</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-rim-strong" aria-pressed="false" data-i18n="themeStudio.page.controls.strong">强</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-chroma-label" data-i18n="themeStudio.page.controls.chroma">边缘色散</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-chroma-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-chroma-off" aria-pressed="false" data-i18n="common.off">关</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-chroma-std" aria-pressed="true" data-i18n="themeStudio.page.controls.subtle">淡</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-chroma-strong" aria-pressed="false" data-i18n="themeStudio.page.controls.strong">强</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-thickness-label" data-i18n="themeStudio.page.controls.thickness">玻璃厚度</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-thickness-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-glass-thin" aria-pressed="false" data-i18n="themeStudio.page.controls.thin">薄</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-glass-std" aria-pressed="false" data-i18n="themeStudio.page.controls.standard">标准</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-glass-thick" aria-pressed="false" data-i18n="themeStudio.page.controls.thick">厚</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-plate-label" data-i18n="themeStudio.page.controls.plate">输入框底板</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-plate-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-plate-hide" aria-pressed="true" data-i18n="themeStudio.page.controls.hidden">隐藏</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-plate-light" aria-pressed="false" data-i18n="themeStudio.page.controls.subtle">淡</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-plate-std" aria-pressed="false" data-i18n="themeStudio.page.controls.standard">标准</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-border-label" data-i18n="themeStudio.page.controls.border">玻璃边框</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-border-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-border-weak" aria-pressed="false" data-i18n="themeStudio.page.controls.subtle">淡</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-border-std" aria-pressed="false" data-i18n="themeStudio.page.controls.standard">标准</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-border-strong" aria-pressed="false" data-i18n="themeStudio.page.controls.strong">强</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-grain-label" data-i18n="themeStudio.page.controls.grain">玻璃颗粒</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-grain-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-grain-off" aria-pressed="false" data-i18n="common.off">关</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-grain-soft" aria-pressed="false" data-i18n="themeStudio.page.controls.fine">细</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-grain-strong" aria-pressed="false" data-i18n="themeStudio.page.controls.coarse">粗</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-quality-label" data-i18n="themeStudio.materials.presets.quality">性能档</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-quality-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-perf-saver" aria-pressed="false" data-i18n="themeStudio.materials.qualityDesc.saver">省电优先，效果减半</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-perf-balanced" aria-pressed="true" data-i18n="themeStudio.materials.qualityDesc.balanced">均衡，默认</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-perf-high" aria-pressed="false" data-i18n="themeStudio.materials.qualityDesc.high">高品质，增强光效</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-perf-ultra" aria-pressed="false" data-i18n="themeStudio.materials.qualityDesc.ultra">极致，全部效果</button>
-            </div>
-          </div>
-          <div class="quick-row">
-            <span class="quick-label" id="quick-heavy-label" data-i18n="themeStudio.page.controls.heavy">长对话时简化气泡</span>
-            <div class="quick-btns" role="group" aria-labelledby="quick-heavy-label">
-              <button type="button" class="btn btn-mini quick-btn" id="btn-heavy-auto" aria-pressed="true" data-i18n="themeStudio.page.controls.autoHeavy">自动（超过 40 条）</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-heavy-on" aria-pressed="false" data-i18n="themeStudio.page.controls.always">始终</button>
-              <button type="button" class="btn btn-mini quick-btn" id="btn-heavy-off" aria-pressed="false" data-i18n="common.off">关</button>
-            </div>
-          </div>
-          <p class="quick-hint" id="perf-hint" role="note" data-i18n="themeStudio.materials.presets.qualityHint">省电模式减少模糊和光效，高品质和极致模式保留更多细节。</p>
           <div class="quick-row">
             <span class="quick-label" data-i18n="themeStudio.page.quick.glow">光效强度</span>
             <div class="quick-btns" role="group" aria-label="光效强度" data-i18n-aria="themeStudio.page.quick.glow">
@@ -348,7 +233,7 @@
               <button type="button" class="btn btn-mini quick-btn" id="btn-font-mono" aria-pressed="false" data-i18n="themeStudio.page.quick.fontMono">等宽</button>
             </div>
           </div>
-          <p class="card-foot" data-i18n="themeStudio.page.quick.foot">配色和材质草稿点「应用」后保存。长对话简化和边缘光偏好会立即生效。</p>
+          <p class="card-foot" data-i18n="themeStudio.page.quick.foot">这两组是「一键铺开」：只把一组变量填进编辑区，点「应用」才写进服务器；不满意按 Ctrl+Z 一步退回。</p>
         </section>
         <section class="card schedule-card" aria-label="按时段自动换主题" data-i18n-aria="themeStudio.page.schedule.title">
           <div class="card-head">
@@ -398,64 +283,20 @@
     <footer class="app-footer" aria-label="操作" data-i18n-aria="themeStudio.page.footer.aria">
       <div class="footer-left">
         <button type="button" class="btn btn-primary" id="btn-apply" data-busy="false">应用</button>
-        <button type="button" class="btn btn-ghost" id="btn-undo-apply" disabled data-i18n="themeStudio.page.controls.undoApply">撤回上次应用</button>
         <button type="button" class="btn btn-danger" id="btn-reset" title="恢复内置默认主题，清空所有自定义颜色" data-i18n-title="themeStudio.page.footer.resetTitle" data-i18n="themeStudio.page.footer.reset">重置</button>
         <span class="footer-sep" aria-hidden="true"></span>
         <button type="button" class="btn" id="btn-export" data-i18n="themeStudio.page.footer.export">导出</button>
-        <button type="button" class="btn btn-ghost" id="btn-share-card" data-i18n="themeStudio.page.controls.shareCard">下载预览图</button>
-        <button type="button" class="btn btn-ghost" id="btn-preview" aria-pressed="false" data-i18n="themeStudio.page.controls.tryOn">试用 2 分钟</button>
-        <button type="button" class="btn" id="btn-preview-accept" hidden data-i18n="themeStudio.page.controls.accept">保留预览效果</button>
         <button type="button" class="btn" id="btn-import" data-i18n="themeStudio.page.footer.import">导入</button>
         <button type="button" class="btn btn-ghost" id="btn-reload" data-i18n="themeStudio.page.footer.reload">重新读取</button>
       </div>
       <div class="footer-right">
-        <button type="button" class="footer-hint footer-hint-btn" id="btn-shortcuts" aria-haspopup="dialog" aria-controls="shortcut-sheet">
-          <kbd>Ctrl</kbd><kbd>↵</kbd> <span data-i18n="themeStudio.page.footer.applyHint">应用</span> · <kbd>?</kbd> <span data-i18n="themeStudio.page.controls.shortcuts">键盘快捷键</span>
-        </button>
+        <span class="footer-hint"><kbd>Ctrl</kbd><kbd>↵</kbd> <span data-i18n="themeStudio.page.footer.applyHint">应用</span></span>
         <span class="footer-status" id="status" role="status" aria-live="polite">就绪</span>
       </div>
     </footer>
       </div><!-- /.app -->
     </div><!-- /.container-content -->
   </div><!-- /.container -->
-
-  <div class="shortcut-sheet" id="shortcut-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="shortcut-title">
-    <div class="shortcut-panel">
-      <div class="shortcut-head">
-        <span id="shortcut-title" data-i18n="themeStudio.page.controls.shortcuts">键盘快捷键</span>
-        <button type="button" class="modal-close" id="shortcut-close" data-i18n-aria="common.close" aria-label="关闭">×</button>
-      </div>
-      <ul class="shortcut-list" id="shortcut-list"></ul>
-      <p class="shortcut-foot" data-i18n="themeStudio.page.controls.typing">在输入框内打字时，? 和 / 可正常输入。</p>
-    </div>
-  </div>
-
-  <div class="modal" id="compare-modal" hidden role="dialog" aria-modal="true" aria-labelledby="compare-title" aria-describedby="compare-hint">
-    <div class="modal-panel compare-panel" id="compare-panel">
-      <div class="modal-head">
-        <span id="compare-title" data-i18n="themeStudio.page.controls.compare">对比主题</span>
-        <button type="button" class="modal-close" id="compare-close" data-i18n-aria="common.close" aria-label="关闭">×</button>
-      </div>
-      <p class="modal-hint" id="compare-hint" data-i18n="themeStudio.page.controls.compareHint">选择两套主题，对比亮色或暗色模式下的颜色与对比度，也可选择编辑中的配色。</p>
-      <div class="compare-pickers">
-        <label><span data-i18n="themeStudio.page.controls.left">主题 A</span><select id="compare-a"></select></label>
-        <label><span data-i18n="themeStudio.page.controls.right">主题 B</span><select id="compare-b"></select></label>
-        <label><span data-i18n="themeStudio.page.toolbar.modeAria">明暗模式</span><select id="compare-mode">
-          <option value="light" data-i18n="themeStudio.page.toolbar.light">亮色</option>
-          <option value="dark" data-i18n="themeStudio.page.toolbar.dark">暗色</option>
-        </select></label>
-        <label class="compare-diff"><input type="checkbox" id="compare-only-diff"> <span data-i18n="themeStudio.page.controls.different">只看差异</span></label>
-        <label class="compare-diff"><input type="checkbox" id="compare-only-fail"> <span data-i18n="themeStudio.page.controls.failed">只看未达标项</span></label>
-      </div>
-      <div class="compare-summary" id="compare-summary" role="status"></div>
-      <div class="compare-scroll">
-        <div class="compare-body" id="compare-body" role="table" data-i18n-aria="themeStudio.page.controls.results" aria-label="对比结果"></div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-primary" id="compare-done" data-i18n="common.close">关闭</button>
-      </div>
-    </div>
-  </div>
 
   <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-hint" hidden>
     <div class="modal-panel" id="modal-panel">

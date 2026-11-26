@@ -47,14 +47,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 
 from main_routers.config_router._shared import check_config_mutation_request
 from main_routers.cookies_login_router import verify_local_access
 from theme_studio import (
     backgrounds_dir,
     entries,
-    get_theme_body,
+    get_theme_document_async,
     library_dir,
     presets_dir,
     run_entry,
@@ -72,6 +72,14 @@ router = APIRouter(
 #: dash only. Rules out ``..`` and path separators at the source.
 _RE_SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 _RE_ENTRY_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _no_store(payload: dict[str, Any]) -> JSONResponse:
+    """Palette response; must not be cached or the 1.5 s poll reads stale data."""
+    response = JSONResponse(content=payload)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _safe_file_sync(directory: Path, filename: str) -> Path:
@@ -93,20 +101,15 @@ async def _safe_file(directory: Path, filename: str) -> Path:
 
 
 @router.get("/theme.json")
-@router.get("/palette", name="get_palette")
-async def get_theme_json(request: Request, rev: str | None = None) -> Response:
-    """Return the current palette, or an empty 304 when a window is up to date."""
-    revision, body = await asyncio.to_thread(get_theme_body)
-    etag = f'"{revision}"'
-    headers = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "ETag": etag}
-    validator_header = request.headers.get("if-none-match", "")
-    validators = {
-        value.strip().removeprefix("W/")
-        for value in validator_header.split(",")
-    }
-    if etag in validators or "*" in validators or (not validator_header and rev == revision):
-        return Response(status_code=304, headers=headers)
-    return Response(content=body, media_type="application/json", headers=headers)
+async def get_theme_json() -> JSONResponse:
+    """Current palette; the loader and the panel both read this endpoint."""
+    return _no_store(await get_theme_document_async())
+
+
+@router.get("/palette")
+async def get_palette() -> JSONResponse:
+    """REST alias of ``/theme.json`` for scripts and debugging."""
+    return _no_store(await get_theme_document_async())
 
 
 @router.post("/run/{entry_id}", dependencies=[Depends(verify_local_access)])

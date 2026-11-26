@@ -29,7 +29,6 @@ from typing import Any
 from .i18n import msg as _msg
 
 MATERIAL_VERSION = 1
-MATERIAL_PRESET_LIMIT = 24
 
 QUALITY_MODES = ("saver", "balanced", "high", "ultra")
 
@@ -450,33 +449,24 @@ def _blank_params() -> dict[str, dict[str, Any]]:
     return {section: _section_defaults(section) for section in SECTIONS}
 
 
-def _checked_param(param: Param, value: Any, field: str, warnings: list[str]) -> tuple[bool, Any]:
-    ok, result = _coerce_param(param, value)
-    if not ok:
-        warnings.append(_msg("materials.warning.invalid", field=field))
-    elif param.kind in ("number", "px", "percent", "deg", "ms") and float(value) != result:
-        warnings.append(_msg("materials.warning.clamped", field=field, value=result))
-    return ok, result
-
-
-def _assign_section(target: dict, section: str, payload: dict, prefix: str, warnings: list[str]) -> None:
-    for key, value in payload.items():
-        field = f"{prefix}.{key}"
-        param = PARAM_BY_KEY.get(key)
-        if param is None:
-            warnings.append(_msg("materials.warning.invalid", field=field))
-        elif param.section != section:
-            warnings.append(_msg("materials.warning.wrongSection", field=field, section=param.section))
-        else:
-            ok, coerced = _checked_param(param, value, field, warnings)
-            if ok:
-                target[key] = coerced
-
-
 def _clean_section(raw: Any, section: str, warnings: list[str], prefix: str) -> dict[str, Any]:
+    """One section of params -> valid values; invalid values fall back to the param default with a warning."""
     out = _section_defaults(section)
-    if isinstance(raw, dict):
-        _assign_section(out, section, raw, prefix, warnings)
+    if not isinstance(raw, dict):
+        return out
+    for param in PARAMS_BY_SECTION[section]:
+        if param.key not in raw:
+            continue
+        ok, value = _coerce_param(param, raw[param.key])
+        if not ok:
+            warnings.append(f"{prefix}.{param.key}: 非法值 {raw[param.key]!r}，已回退默认")
+            continue
+        if param.kind in ("number", "px", "percent", "deg", "ms") and float(value) != float(raw[param.key]):
+            warnings.append(
+                f"{prefix}.{param.key}: {raw[param.key]!r} 超出范围 "
+                f"[{param.minimum:g}, {param.maximum:g}]，已钳制为 {value:g}"
+            )
+        out[param.key] = value
     return out
 
 
@@ -529,7 +519,6 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         refractAlpha=0.5, refractLocal=0.75,
         dispStrength=0.22, dispRange=42, dispAlpha=0.32, dispShift=3, dispWidth=1.5,
         liquid=True, liquidAmp=9, liquidSpeed=5, liquidRange=78, liquidSmooth=85, liquidStrength=0.7,
-        noise=True, noiseStrength=0.45, noiseAlpha=0.35, noiseSize=2, noiseDensity=72,
         radius=26, radiusCard=24, radiusButton=16, radiusDialog=30, radiusInput=20,
         borderWidth=1, borderAlpha=0.55, shadowStrength=0.55, shadowSpread=2,
         shadowDistance=14, shadowBlur=44,
@@ -636,7 +625,15 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
             if not isinstance(payload, dict):
                 continue
             explicit: dict[str, Any] = {}
-            _assign_section(explicit, section, payload, f"dark.{section}", warnings)
+            for key, value in payload.items():
+                param = PARAM_BY_KEY.get(key)
+                if param is None or param.section != section:
+                    continue
+                ok, coerced = _coerce_param(param, value)
+                if not ok:
+                    warnings.append(f"dark.{section}.{key}: 非法值 {value!r}，继承亮色")
+                    continue
+                explicit[key] = coerced
             if explicit:
                 dark_clean[section] = explicit
         clean["dark"] = dark_clean
@@ -647,30 +644,23 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
         for comp, payload in components_raw.items():
             name = str(comp)
             if name not in COMPONENTS or not isinstance(payload, dict):
-                warnings.append(_msg("materials.warning.invalid", field=f"components.{name}"))
                 continue
             mode = str(payload.get("mode", "inherit")).strip().lower()
             if mode not in ("inherit", "preset", "custom"):
-                warnings.append(_msg("materials.warning.invalid", field=f"components.{name}.mode"))
                 mode = "inherit"
             entry: dict[str, Any] = {"mode": mode}
             preset_name = str(payload.get("preset", "")).strip().lower()
             if preset_name in PRESETS:
                 entry["preset"] = preset_name
-            elif preset_name:
-                warnings.append(_msg("materials.warning.invalid", field=f"components.{name}.preset"))
-            for key, value in payload.items():
-                if key in ("mode", "preset"):
+            for key in COMPONENT_PARAMS:
+                if key not in payload:
                     continue
-                field = f"components.{name}.{key}"
-                if key not in COMPONENT_PARAMS:
-                    warnings.append(_msg("materials.warning.invalid", field=field))
+                ok, coerced = _coerce_param(PARAM_BY_KEY[key], payload[key])
+                if not ok:
+                    warnings.append(f"components.{name}.{key}: 非法值 {payload[key]!r}，已忽略")
                     continue
-                ok, coerced = _checked_param(PARAM_BY_KEY[key], value, field, warnings)
-                if ok:
-                    entry[key] = coerced
+                entry[key] = coerced
             if entry["mode"] == "custom" and not any(k in entry for k in COMPONENT_PARAMS):
-                warnings.append(_msg("materials.warning.invalid", field=f"components.{name}.mode"))
                 entry["mode"] = "inherit"
             components[name] = entry
         clean["components"] = components
@@ -683,7 +673,9 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
             if not title or not isinstance(payload, dict):
                 continue
             if title.lower() in PRESET_IDS:
-                warnings.append(_msg("theme.preset.nameReserved", name=title))
+                warnings.append(
+                    "custom_presets: %r 与内置预设同名，已忽略（内置预设不能被自定义覆盖）" % title
+                )
                 continue
             kept[title] = {
                 section: _clean_section(payload.get(section), section, [], title) for section in SECTIONS
@@ -694,7 +686,6 @@ def normalize_materials(raw: Any) -> tuple[dict[str, Any], list[str]]:
     # free text left over from older versions) fall back to custom -- theme.json must not keep a
     # label pointing at nothing.
     if clean["preset"] not in PRESET_IDS and clean["preset"] not in clean["custom_presets"]:
-        warnings.append(_msg("materials.warning.invalid", field="preset"))
         clean["preset"] = "custom"
 
     return clean, warnings
@@ -712,7 +703,7 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
     """
     base = copy.deepcopy(current) if isinstance(current, dict) else default_materials()
     if not isinstance(patch, dict):
-        return base, [_msg("theme.preset.invalidMaterials")]
+        return base, ["materials: 补丁必须是对象"]
 
     warnings: list[str] = []
 
@@ -727,21 +718,19 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
             base["preset"] = key
         elif key == "custom":
             base["preset"] = "custom"
-        elif preset.strip() in (base.get("custom_presets") or {}):
-            key = preset.strip()
+        elif key in (base.get("custom_presets") or {}):
             for section in SECTIONS:
                 source = (base["custom_presets"][key] or {}).get(section)
                 if isinstance(source, dict):
                     base[section].update(copy.deepcopy(source))
             base["preset"] = key
         else:
-            base["preset"] = "custom"
-            warnings.append(_msg("materials.warning.invalid", field="preset"))
+            warnings.append(f"preset: 未知预设 {preset!r}，已保持 custom")
 
     if "enabled" in patch:
         coerced = _coerce_bool(patch.get("enabled"))
         if coerced is None:
-            warnings.append(_msg("materials.warning.invalid", field="enabled"))
+            warnings.append(f"enabled: 无法解析为布尔值 {patch.get('enabled')!r}")
         else:
             base["enabled"] = coerced
 
@@ -750,12 +739,12 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
         if quality in QUALITY_MODES:
             base["quality"] = quality
         else:
-            warnings.append(_msg("materials.warning.invalid", field="quality"))
+            warnings.append(f"quality: 未知画质档位 {patch.get('quality')!r}")
 
     if "lock" in patch:
         coerced_lock = _coerce_bool(patch.get("lock"))
         if coerced_lock is None:
-            warnings.append(_msg("materials.warning.invalid", field="lock"))
+            warnings.append(f"lock: 无法解析为布尔值 {patch.get('lock')!r}")
         else:
             base["lock"] = coerced_lock
 
@@ -763,7 +752,15 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
         payload = patch.get(section)
         if not isinstance(payload, dict):
             continue
-        _assign_section(base[section], section, payload, section, warnings)
+        for key, value in payload.items():
+            param = PARAM_BY_KEY.get(key)
+            if param is None or param.section != section:
+                continue
+            ok, coerced = _coerce_param(param, value)
+            if not ok:
+                warnings.append(f"{section}.{key}: 非法值 {value!r}，已忽略")
+                continue
+            base[section][key] = coerced
 
     dark_patch = patch.get("dark")
     if isinstance(dark_patch, dict):
@@ -773,7 +770,15 @@ def apply_materials(current: dict[str, Any], patch: Any) -> tuple[dict[str, Any]
             if not isinstance(payload, dict):
                 continue
             bucket = dark.setdefault(section, {})
-            _assign_section(bucket, section, payload, f"dark.{section}", warnings)
+            for key, value in payload.items():
+                param = PARAM_BY_KEY.get(key)
+                if param is None or param.section != section:
+                    continue
+                ok, coerced = _coerce_param(param, value)
+                if not ok:
+                    warnings.append(f"dark.{section}.{key}: 非法值 {value!r}，已忽略")
+                    continue
+                bucket[key] = coerced
 
     components_patch = patch.get("components")
     if isinstance(components_patch, dict):
@@ -1247,7 +1252,6 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
                 tint_strength = float(glob.get("tintStrength", 0.35))
                 comp_opacity = _clamp(float(style["opacity"]), 0.0, 1.0)
                 target[f"--nts-mt-c-bg-{comp}"] = _rgba(tint, comp_opacity * tint_strength)
-                target[f"--nts-mt-c-opacity-{comp}"] = _css_value(PARAM_BY_KEY["opacity"], comp_opacity)
             if "shadowStrength" in style:
                 comp_strength = _clamp(float(style["shadowStrength"]), 0.0, 1.0)
                 if comp_strength <= 0.001:

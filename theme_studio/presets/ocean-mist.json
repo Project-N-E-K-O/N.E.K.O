@@ -156,7 +156,7 @@
     "--nts-accent-bg": "rgba(104, 233, 225, 0.14)",
     "--nts-chip-bg": "rgba(152, 241, 216, 0.18)",
     "--nts-chip-text": "#e6fcfb",
-    "--nts-rec-bg": "rgba(255, 255, 255, 0.55)",
+    "--nts-rec-bg": "rgba(255, 255, 255, 0.12)",
     "--nts-rec-text": "#e6fcfb",
     "--nts-rec-border": "rgba(104, 233, 225, 0.34)",
     "--nts-accent": "#68e9e1",

@@ -1212,7 +1212,7 @@ function metaDirtyCount() {
 }
 
 /** All uncommitted changes in the panel: variables + name/enabled. */
-function pendingChangeCount() { return dirtyCount() + metaDirtyCount() + materialsDirtyCount(); }
+function pendingChangeCount() { return dirtyCount() + metaDirtyCount(); }
 
 function dirtyCount() {
   var light = Object.keys(state.edited.light).length + Object.keys(state.cleared.light).length;
@@ -1717,7 +1717,6 @@ function updateUndoButtons() {
 
 function initUndoShortcuts() {
   document.addEventListener('keydown', function (event) {
-    if (event.defaultPrevented || event.isComposing || activeEditorDialog()) return;
     var meta = event.ctrlKey || event.metaKey;
     if (!meta) return;
     var target = event.target;
@@ -1738,307 +1737,6 @@ function initUndoShortcuts() {
 
 /* ===== UNDO_END ===== */
 
-
-// Store only unapplied palette and metadata edits. Material drafts are owned by
-// the material editor and may contain a different saved baseline.
-var DRAFT_KEY = 'neko.themeStudio.draft';
-var draftReady = false;
-var draftTimer = 0;
-var lastDraftRaw = null;
-function readDraft() {
-  try {
-    lastDraftRaw = localStorage.getItem(DRAFT_KEY);
-    var value = JSON.parse(lastDraftRaw);
-    if (value && value.v === 1 && Date.now() - value.ts < 7 * 86400000) return value;
-  } catch (error) { /* Storage is optional. */ }
-  return null;
-}
-
-function saveDraftNow() {
-  if (!draftReady || !state.palette) return;
-  clearTimeout(draftTimer);
-  try {
-    if (!dirtyCount() && !metaDirtyCount()) {
-      if (lastDraftRaw !== null && localStorage.getItem(DRAFT_KEY) === lastDraftRaw) localStorage.removeItem(DRAFT_KEY);
-      lastDraftRaw = null;
-      return;
-    }
-    var draft = {
-      v: 1, ts: Date.now(), revision: state.palette.revision, edited: state.edited, cleared: state.cleared
-    };
-    var name = $('theme-name');
-    var enabled = $('theme-enabled');
-    if (name && name.value !== state.metaName) draft.name = name.value;
-    if (enabled && enabled.checked !== state.metaEnabled) draft.enabled = enabled.checked;
-    lastDraftRaw = JSON.stringify(draft);
-    localStorage.setItem(DRAFT_KEY, lastDraftRaw);
-  } catch (error) { /* The editor also works with storage disabled. */ }
-}
-
-function scheduleDraftSave() {
-  if (!draftReady) return;
-  clearTimeout(draftTimer);
-  draftTimer = setTimeout(saveDraftNow, 300);
-}
-
-function restoreDraftIfAny() {
-  if (draftReady || !state.palette) return;
-  var draft = readDraft();
-  draftReady = true;
-  if (!draft || dirtyCount() || metaDirtyCount()) return;
-  if (draft.revision && draft.revision !== state.palette.revision &&
-      !window.confirm(tsT('workflow.draftConflict', 'The saved theme changed. Restore the previous draft on top of it?'))) {
-    saveDraftNow();
-    return;
-  }
-  ['light', 'dark'].forEach(function (mode) {
-    ['edited', 'cleared'].forEach(function (field) {
-      var values = draft[field] && draft[field][mode];
-      if (!values || typeof values !== 'object') return;
-      Object.keys(values).forEach(function (key) {
-        if (!Object.prototype.hasOwnProperty.call(CATALOG_BY_KEY, key)) return;
-        if (field === 'cleared' && values[key] === true) state.cleared[mode][key] = true;
-        if (field === 'edited' && typeof values[key] === 'string') state.edited[mode][key] = values[key];
-      });
-    });
-  });
-  if (typeof draft.name === 'string') $('theme-name').value = draft.name;
-  if (typeof draft.enabled === 'boolean') $('theme-enabled').checked = draft.enabled;
-  syncAll();
-  applyFilters();
-  var count = pendingChangeCount();
-  if (count) showNotice('ok', tsT('workflow.draftRestored', 'Restored {{count}} unsaved changes', {count: count}));
-}
-
-function samePaletteValue(a, b) {
-  if (a === b) return true;
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  var x = parseColor(a);
-  var y = parseColor(b);
-  return !!(x && y && x.r === y.r && x.g === y.g && x.b === y.b && Math.abs(x.a - y.a) < 0.004);
-}
-
-function markEditedForMode(mode, key, value) {
-  if (mode === state.mode) { markEdited(key, value); return; }
-  delete state.cleared[mode][key];
-  var saved = state.palette && (mode === 'dark' ? state.palette.dark_vars : state.palette.vars);
-  if (saved && samePaletteValue(saved[key], value)) delete state.edited[mode][key];
-  else state.edited[mode][key] = value;
-}
-
-function draftPaletteBoth(extracted, seeds) {
-  var light = p55BuildVars(extracted, 'light', seeds);
-  var dark = p55BuildVars(extracted, 'dark', seeds);
-  undoGroup(function () {
-    [['light', light], ['dark', dark]].forEach(function (pair) {
-      Object.keys(pair[1].vars).forEach(function (key) {
-        markEditedForMode(pair[0], key, pair[1].vars[key]);
-      });
-    });
-  });
-  syncAll();
-  return {light: light, dark: dark, notes: light.notes.concat(dark.notes)};
-}
-
-var PREVIEW_PALETTE_KEYS = [
-  '--nts-chat-bg', '--nts-chat-bg-image', '--nts-panel-bg', '--nts-panel-text',
-  '--nts-ai-bubble-bg', '--nts-ai-bubble-text', '--nts-user-bubble-bg', '--nts-user-bubble-text',
-  '--nts-accent', '--nts-topbar-bg', '--nts-topbar-text'
-];
-var previewPaletteSig = '';
-function syncPreviewPalette(force) {
-  if (!$('mt-pv')) return;
-  var values = effectiveVars(state.mode);
-  var vars = {};
-  PREVIEW_PALETTE_KEYS.forEach(function (key) {
-    if (values[key]) vars[key] = values[key];
-  });
-  var sig = state.mode + JSON.stringify(vars);
-  if (!force && sig === previewPaletteSig) return;
-  previewPaletteSig = sig;
-  document.dispatchEvent(new CustomEvent('nts:palette-change', {detail: {mode: state.mode, vars: vars}}));
-}
-
-var lastApplyUndo = null;
-function snapshotForUndo(palette) {
-  return palette ? JSON.parse(JSON.stringify(palette)) : null;
-}
-
-function makeApplyUndo(snapshot, counts, note, response) {
-  var revision = response && (response.revision || (response.palette && response.palette.revision));
-  if (response && response.previous_revision && (!snapshot || snapshot.revision !== response.previous_revision)) return null;
-  return snapshot && revision ? {palette: snapshot, revision: revision, counts: counts, note: note} : null;
-}
-
-function syncUndoApplyButton() {
-  var btn = $('btn-undo-apply');
-  if (btn) {
-    btn.disabled = state.busy || !lastApplyUndo;
-    btn.title = (lastApplyUndo && [lastApplyUndo.counts, lastApplyUndo.note].filter(Boolean).join('\n')) ||
-      tsT('workflow.undoApply', 'Undo last apply');
-  }
-}
-
-function undoVars(previous, current) {
-  var values = Object.assign({}, previous);
-  Object.keys(current || {}).forEach(function (key) {
-    if (!Object.prototype.hasOwnProperty.call(values, key)) values[key] = '';
-  });
-  return values;
-}
-
-async function undoLastApply() {
-  if (state.busy || !lastApplyUndo) return;
-  var undo = lastApplyUndo;
-  var old = undo.palette;
-  setBusy(true, tsT('workflow.undoApply', 'Undo last apply'));
-  try {
-    var current = await callPlugin('get_theme', {});
-    var result;
-    if (current.revision === undo.revision) {
-      result = await callPlugin('apply_theme', {
-        base_revision: undo.revision, name: old.name, enabled: old.enabled, materials: old.materials,
-        vars: undoVars(old.vars, current.vars), dark_vars: undoVars(old.dark_vars, current.dark_vars)
-      });
-    }
-    if (!result || result.applied === false) {
-      showNotice('warn', tsT('workflow.undoConflict', 'The saved theme changed. The last apply can no longer be undone.'));
-    } else {
-      clearPreviewState();
-      pokeThemeWindows();
-      await reloadPalette({silent: true, keepMaterialDrafts: true});
-      showNotice('ok', tsT('workflow.undoDone', 'The previous theme was restored.'));
-    }
-    lastApplyUndo = null;
-  } catch (error) { showWorkflowError(error); }
-  finally { setBusy(false); }
-}
-
-function pokeThemeWindows() {
-  try { localStorage.setItem('neko.themeStudio.poke', String(Date.now())); } catch (error) { /* Polling remains available. */ }
-}
-function showWorkflowError(error) {
-  showNotice('error', tsT('workflow.operationFailed', 'Could not complete this action: {{error}}', {error: pluginErrorMessage(error)}));
-}
-
-var previewTimer = 0;
-function previewActive() { return !!state.previewing; }
-function previewRemaining() {
-  return Math.max(0, Math.ceil((state.previewDeadline - Date.now()) / 1000)) || 0;
-}
-function syncPreviewButton() {
-  var btn = $('btn-preview');
-  var accept = $('btn-preview-accept');
-  var left = previewRemaining();
-  var time = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
-  if (btn) {
-    btn.textContent = previewActive()
-      ? tsT('workflow.previewStop', 'Stop preview ({{time}})', {time: time})
-      : tsT('workflow.previewStart', 'Preview for 2 minutes');
-    btn.setAttribute('aria-pressed', String(previewActive()));
-    btn.disabled = state.busy;
-  }
-  if (accept) { accept.hidden = !previewActive(); accept.disabled = state.busy; }
-}
-function clearPreviewState() {
-  state.previewing = null;
-  state.previewDeadline = 0;
-  clearInterval(previewTimer);
-  syncPreviewButton();
-}
-async function togglePreview(options) {
-  if (state.busy) return;
-  setBusy(true);
-  try {
-    if (previewActive()) {
-      await callPlugin('stop_preview', {id: state.previewing});
-      clearPreviewState();
-      showNotice('ok', tsT('workflow.previewStopped', 'Preview stopped.'));
-    } else {
-      if (invalidRowCount()) {
-        showNotice('warn', tsT('actions.apply.invalidShort', 'Correct invalid entries first.'));
-        return;
-      }
-      var seconds = Math.max(5, Math.min(600, Number(options && options.seconds) || 120));
-      var result = await callPlugin('start_preview', {
-        palette: buildArgs('light'), dark: buildArgs('dark'), seconds: seconds, materials: currentMaterialsPayload()
-      });
-      var preview = result.preview;
-      seconds = preview.seconds || seconds;
-      state.previewing = preview.id;
-      state.previewDeadline = preview.expires_at * 1000;
-      syncPreviewButton();
-      previewTimer = setInterval(function () {
-        if (Date.now() >= state.previewDeadline) clearPreviewState();
-        else syncPreviewButton();
-      }, 1000);
-      showNotice('ok', tsT('workflow.previewActive', 'Other windows are previewing this draft for {{time}}.', {time: Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0')}));
-    }
-    pokeThemeWindows();
-  } catch (error) { showWorkflowError(error); }
-  finally { setBusy(false); }
-}
-async function acceptPreview() {
-  if (previewActive() && Date.now() < state.previewDeadline) await applyTheme();
-}
-
-var livePrecheckTimer = null;
-var livePrecheckSignature = '';
-var livePrecheck = null;
-function scheduleLivePrecheck() {
-  var payload = dirtyCount() ? {palette: effectiveVars('light'), dark: effectiveVars('dark'), standalone: true} : null;
-  var key = payload ? JSON.stringify(payload) : '';
-  if (key === livePrecheckSignature) return;
-  livePrecheckSignature = key;
-  livePrecheck = null;
-  clearTimeout(livePrecheckTimer);
-  if (!key) return;
-  livePrecheckTimer = setTimeout(async function () {
-    try {
-      var result = await callPlugin('check_contrast', payload);
-      if (livePrecheckSignature !== key) return;
-      livePrecheck = result;
-      renderChanges();
-    } catch (error) { /* Readability hints are optional. */ }
-  }, 400);
-}
-function renderLivePrecheckRow(list) {
-  var fails = livePrecheck && livePrecheck.fails;
-  if (!fails || !fails.length) return;
-  var first = fails[0];
-  var row = el('li', {class: 'change-row change-precheck is-warn'});
-  row.appendChild(el('span', {class: 'change-mode', text: tsT('workflow.contrast', 'Readability')}));
-  row.appendChild(el('span', {class: 'change-label', text: tsT('workflow.below', 'Below target: {{count}}', {count: fails.length})}));
-  row.appendChild(el('span', {class: 'change-delta', text: contrastPairLabel(first) + ' · ' + first.ratio + ':1 / ' + first.floor + ':1'}));
-  var jump = el('button', {type: 'button', class: 'btn btn-mini', text: tsT('workflow.goto', 'Go to setting')});
-  jump.addEventListener('click', function () { setMode(first.mode); focusRowByKey(first.fg); });
-  row.appendChild(jump);
-  list.appendChild(row);
-}
-async function confirmContrast(light, dark) {
-  try {
-    var result = await callPlugin('check_contrast', {palette: light, dark: dark, standalone: true});
-    if (!result.fails || !result.fails.length) return true;
-    var details = result.fails.slice(0, 3).map(function (item) {
-      // Fixed host surfaces (e.g. the compact recommendation prompt) have no variable to name.
-      var bgLabel = item.bg ? ' / ' + changeKeyLabel(item.bg) : '';
-      return changeModeLabel(item.mode) + ' · ' + contrastPairLabel(item) + bgLabel + ' · ' + item.ratio + ':1 / ' + item.floor + ':1';
-    });
-    return window.confirm(tsT('workflow.applyAnyway', 'Some text falls below its contrast target. Apply anyway?') + '\n\n' + details.join('\n'));
-  } catch (error) { return true; }
-}
-
-async function exportShareCard() {
-  if (state.busy) return;
-  if (pendingChangeCount() && !window.confirm(tsT('workflow.sharePending', 'The preview image uses the saved theme. Download it without your unsaved changes?'))) return;
-  setBusy(true, tsT('actions.export.busy', 'Exporting…'));
-  try {
-    var result = downloadExportResult(await callPlugin('export_share_card', {}));
-    showNotice('ok', savedHint(result));
-  } catch (error) { showWorkflowError(error); }
-  finally { setBusy(false); }
-}
-
 function markEdited(key, value) {
   undoPush(key);
   // Remember the last edited value that passed validation: invalid input on a non-color
@@ -2049,7 +1747,7 @@ function markEdited(key, value) {
   // Changing back to the server's value = unchanged: otherwise the button would still say
   // "changed" after retyping it, and Apply would write the same value again (version +1,
   // making users think something broke).
-  if (samePaletteValue(serverValue(key), value)) {
+  if (serverValue(key) === value) {
     delete editedMap()[key];
     return;
   }
@@ -2219,13 +1917,7 @@ function setStatus(text, kind) {
 }
 
 /** kind: 'ok' | 'warn' | 'error' — left accent bar and colours. Empty text hides the notice. */
-function showNotice(kind, text, action) {
-  var button = $('notice-action');
-  if (button) {
-    button.hidden = !text || !action;
-    button.textContent = action ? action.label : '';
-    button.onclick = action && (action.handler || action.onClick);
-  }
+function showNotice(kind, text) {
   var node = $('notice');
   if (!node) return;
   if (!text) {
@@ -2425,16 +2117,12 @@ function buildRow(item, countNode) {
   var isGradient = item.type === 'gradient';
 
   var stateTag = el('span', { class: 'row-state' });
-  var labelMain = el('span', { class: 'label-main', text: item.label });
-
-  var darkFlag = el('span', { class: 'row-darkflag', hidden: true, text: tsT('rows.diffFlag','Dark ≠ light'),
-    title: tsT('rows.diffHint', 'Dark override differs from the light value.') });
-  var keyNode = el('span', { class: 'k', text: item.key });
   var label = el('div', { class: 'row-label', title: item.key }, [
     el('span', { class: 'label-line' }, [
-      labelMain, stateTag, darkFlag
+      el('span', { class: 'label-main', text: item.label }),
+      stateTag
     ]),
-    keyNode
+    el('span', { class: 'k', text: item.key })
   ]);
 
   var colorInput = null;
@@ -2818,13 +2506,7 @@ function buildRow(item, countNode) {
     'aria-label': tsT('editor.row.pasteAria', '粘贴到 {{label}}', { label: item.label }),
     onclick: function () { pasteRowValue(item); }
   });
-  var copyLightTitle = tsT('rows.copyLight', 'Copy light value to dark');
-  var toLightBtn = el('button', {
-    type: 'button', class: 'row-icon row-to-light', hidden: true, text: '=',
-    title: copyLightTitle, 'aria-label': copyLightTitle,
-    onclick: function () { copyLightIntoDark(item.key); }
-  });
-  var rowExtra = el('div', { class: 'row-extra' }, [toLightBtn, copyBtn, pasteBtn, clearBtn]);
+  var rowExtra = el('div', { class: 'row-extra' }, [copyBtn, pasteBtn, clearBtn]);
 
   // Five grid columns: label | swatch or type tag | editor | opacity or native value | copy/paste/clear
   // Non-colour rows have no swatch; a same-width type tag fills in so input left edges line up.
@@ -2843,21 +2525,18 @@ function buildRow(item, countNode) {
     ];
   }
   var rowEl = el('div', { class: 'row' }, rowChildren);
-  [copyBtn, pasteBtn, clearBtn].forEach(function (node) { node.tabIndex = -1; });
-  if (colorInput && hexInput) colorInput.tabIndex = -1;
-  rowEl.addEventListener('keydown', function (event) { handleRowKeydown(event, item); });
 
   var hint = null;
   if (item.hint) {
     hint = el('div', { class: 'hint', title: item.hint, text: item.hint });
   }
 
-  var container = el('div', { class: 'row-wrap', 'data-key': item.key }, [rowEl, hint]);
+  var container = el('div', { class: 'row-wrap' }, [rowEl, hint]);
   // With "Only changed" on, typing a value back to the original makes the row clean; hiding it
   // right away would make the row vanish under the user and drop input focus. Keep it until focus
   // really leaves, then let focusout remove it (see rowHoldsFocus in applyFilters).
   container.addEventListener('focusout', function () {
-    if (!state.onlyDirty && !state.onlyDarkDiff) return;
+    if (!state.onlyDirty) return;
     window.setTimeout(function () {
       if (container.contains(document.activeElement)) return;
       applyFilters();
@@ -2872,8 +2551,7 @@ function buildRow(item, countNode) {
     selectInput: selectInput,
     previewHost: previewHost, previewNode: previewNode,
     gradAngle: gradAngle, gradFrom: gradFrom, gradTo: gradTo, gradGen: gradGen,
-    item: item, countNode: countNode, labelMain: labelMain, keyNode: keyNode, hintNode: hint,
-    darkFlag: darkFlag, toLightBtn: toLightBtn
+    item: item, countNode: countNode
   };
 
   countNode.dataset.total = String(Number(countNode.dataset.total || 0) + 1);
@@ -2998,8 +2676,7 @@ function flushEditorGlobals() {
   updateButtons();
   // With "Only changed" on, rows that become clean should leave the list; but the row being typed
   // in must stay (applyFilters keeps the focused row), or the input loses focus and the row vanishes.
-  if (state.onlyDirty || state.onlyDarkDiff) applyFilters();
-  else refreshDarkFlags();
+  if (state.onlyDirty) applyFilters();
 }
 
 /** Batch the refresh to the next frame; multiple calls within one frame refresh once. */
@@ -3173,89 +2850,6 @@ function rowMatches(item, query) {
   return rowMatchesQuery(item, query);
 }
 
-function highlightRowText(node, value, query) {
-  if (!node || node.dataset.highlightQuery === query) return;
-  node.dataset.highlightQuery = query;
-  if (!query || !value) { node.textContent = value; return; }
-  var pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-  var fragment = document.createDocumentFragment();
-  var last = 0, match;
-  while ((match = pattern.exec(value)) !== null) {
-    fragment.appendChild(document.createTextNode(value.slice(last, match.index)));
-    fragment.appendChild(el('mark', { class: 'row-hl', text: match[0] }));
-    last = pattern.lastIndex;
-  }
-  fragment.appendChild(document.createTextNode(value.slice(last)));
-  node.replaceChildren(fragment);
-}
-
-function darkDiffersFromLight(key, light, dark) {
-  return !!dark[key] && !samePaletteValue(dark[key], light[key]);
-}
-
-function refreshDarkFlags() {
-  var darkMode = state.mode === 'dark';
-  var light = effectiveVars('light'), dark = effectiveVars('dark');
-  var count = 0, overrides = 0;
-  Object.keys(rowsByKey).forEach(function (key) {
-    var ref = rowsByKey[key];
-    var differs = darkMode && darkDiffersFromLight(key, light, dark);
-    if (differs) count += 1;
-    if (dark[key]) overrides += 1;
-    ref.darkFlag.hidden = !differs;
-    ref.toLightBtn.hidden = !darkMode;
-    ref.container.classList.toggle('is-darkdiff', differs);
-  });
-  var summary = $('dark-diff-summary');
-  if (summary) {
-    summary.hidden = !darkMode;
-    if (darkMode) summary.textContent = tsT('rows.diffSummary', '{{count}} dark overrides differ from the light values.', { count: count });
-  }
-  var bulk = $('dark-clear-all');
-  if (bulk) {
-    bulk.hidden = !darkMode;
-    bulk.textContent = tsT('rows.clearDark', 'Clear dark overrides ({{count}})', { count: overrides });
-  }
-  var toggle = $('only-dark-diff');
-  if (toggle) {
-    var chip = toggle.closest('.filter-chip') || toggle.parentNode;
-    if (chip) chip.hidden = !darkMode;
-    if (!darkMode) toggle.checked = state.onlyDarkDiff = false;
-  }
-}
-
-function setOnlyDarkDiff(on) {
-  state.onlyDarkDiff = !!on;
-  applyFilters();
-}
-
-function copyLightIntoDark(key) {
-  if (state.mode !== 'dark') return false;
-  var value = effectiveVars('light')[key];
-  if (value) markEdited(key, value);
-  else clearRow(key);
-  syncRow(key);
-  return true;
-}
-
-function clearAllDarkOverrides() {
-  if (state.mode !== 'dark') return 0;
-  var keys = Object.keys(effectiveVars('dark')).filter(function (key) { return !!rowsByKey[key]; });
-  if (!keys.length) {
-    showToast(tsT('rows.noOverrides', 'No dark overrides to clear.'));
-    return 0;
-  }
-  undoGroup(function () { keys.forEach(clearRow); });
-  syncAll();
-  showToast(tsT('rows.clearedOverrides', 'Cleared {{count}} dark overrides. Undo to restore them.', { count: keys.length }));
-  return keys.length;
-}
-
-function wireDarkBulk() {
-  var bulk = $('dark-clear-all');
-  if (bulk) bulk.addEventListener('click', clearAllDarkOverrides);
-}
-
 /**
  * Apply "search query + only changed" to rows and groups:
  * - row level: row-wrap[hidden]
@@ -3264,9 +2858,7 @@ function wireDarkBulk() {
  */
 function applyFilters() {
   var query = (state.filter || '').trim().toLowerCase();
-  var onlyDarkDiff = state.mode === 'dark' && state.onlyDarkDiff;
-  var light = onlyDarkDiff && effectiveVars('light'), dark = onlyDarkDiff && effectiveVars('dark');
-  var filtering = !!query || state.onlyDirty || onlyDarkDiff;
+  var filtering = !!query || state.onlyDirty;
   var shown = 0;
 
   CATALOG.forEach(function (group) {
@@ -3275,17 +2867,12 @@ function applyFilters() {
     group.items.forEach(function (item) {
       var ref = rowsByKey[item.key];
       if (!ref) return;
-      var match = rowMatches(item, query) && (!onlyDarkDiff || darkDiffersFromLight(item.key, light, dark));
+      var match = rowMatches(item, query);
       // Focused row: its value was just typed back to the original and dropped out of "only changed",
       // but the user is still in it; hiding it would steal the input. Keep it until focusout.
       if (!match && rowHoldsFocus(ref) && rowMatchesQuery(item, query)) match = true;
       if (ref.container) ref.container.hidden = !match;
-      if (match) {
-        visible += 1; shown += 1;
-        highlightRowText(ref.labelMain, item.label, query);
-        highlightRowText(ref.keyNode, item.key, query);
-        highlightRowText(ref.hintNode, item.hint, query);
-      }
+      if (match) { visible += 1; shown += 1; }
     });
     if (section) {
       section.hidden = visible === 0;
@@ -3300,7 +2887,6 @@ function applyFilters() {
 
   var clear = $('search-clear');
   if (clear) clear.hidden = !query;
-  refreshDarkFlags();
 }
 
 function setFilter(value) {
@@ -3314,50 +2900,6 @@ function clearFilter() {
   state.filter = '';
   applyFilters();
   if (input) input.focus();
-}
-
-function rowOrderKeys() {
-  return Array.prototype.slice.call(document.querySelectorAll('.row-wrap:not([hidden])'))
-    .filter(function (wrap) { return !wrap.closest('.is-collapsed, [hidden]'); })
-    .map(function (wrap) { return wrap.dataset.key; });
-}
-
-function rowPrimaryInput(key) {
-  var ref = rowsByKey[key];
-  if (!ref) return null;
-  return ref.hexInput || ref.textInput || ref.selectInput || ref.switchInput ||
-    (ref.imageField && ref.imageField.querySelector('[data-act="pick"]'));
-}
-
-function focusRowByKey(key) {
-  var input = rowPrimaryInput(key);
-  if (!input || input.disabled) return false;
-  input.focus();
-  if (typeof input.select === 'function' && input.type === 'text') input.select();
-  return true;
-}
-
-function moveRowFocus(delta) {
-  var active = document.activeElement;
-  var wrap = active && active.closest('.row-wrap');
-  if (!wrap) return false;
-  var keys = rowOrderKeys();
-  var index = keys.indexOf(wrap.dataset.key);
-  return index >= 0 && focusRowByKey(keys[index + delta]);
-}
-
-function handleRowKeydown(event, item) {
-  if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || event.isComposing) return;
-  switch (event.key.toLowerCase()) {
-    case 'arrowup': if (moveRowFocus(-1)) event.preventDefault(); return;
-    case 'arrowdown': if (moveRowFocus(1)) event.preventDefault(); return;
-    case 'c': copyRowValue(item); break;
-    case 'v': pasteRowValue(item); break;
-    case 'backspace':
-    case 'delete': rowsByKey[item.key].clearBtn.click(); break;
-    default: return;
-  }
-  event.preventDefault();
 }
 
 function setOnlyDirty(on) {
@@ -4278,14 +3820,6 @@ function changeKeyLabel(key) {
   return (item && item.label) || key;
 }
 
-function contrastPairLabel(row) {
-  var label = changeKeyLabel(row.fg);
-  if (row.pair === 'compact-user-bubble' || row.pair === 'compact-ai-bubble') {
-    return tsT('library.tools.compactHistory', 'Compact history · {{label}}', { label: label });
-  }
-  return label;
-}
-
 /** Revert one change: drop the local edit/clear mark, then sync the row back to the server value. */
 function revertChange(entry) {
   if (!entry) return;
@@ -4301,18 +3835,16 @@ function revertChange(entry) {
 }
 
 function revertAllChanges() {
-  var count = pendingChangeCount();
-  if (!count) return;
-  if (!window.confirm(tsT('editor.changes.revertAllConfirm', '要撤销全部 {{count}} 项未应用的改动吗？撤销后无法恢复。', { count: count }))) return;
+  var entries = pendingChangeList();
+  if (!entries.length) return;
+  if (!window.confirm(tsT('editor.changes.revertAllConfirm', '要撤销全部 {{count}} 项未应用的改动吗？撤销后无法恢复。', { count: entries.length }))) return;
   state.edited = { light: {}, dark: {} };
   state.cleared = { light: {}, dark: {} };
   markAllRowsValid();
   clearRgbMemory();
-  renderMeta({ discard: true });
-  resetMaterialsLocal();
   syncAll();
   renderChanges();
-  showNotice('warn', tsT('editor.changes.revertedAllNotice', '已撤销 {{count}} 项未应用的改动（服务器上的配色没动）。', { count: count }));
+  showNotice('warn', tsT('editor.changes.revertedAllNotice', '已撤销 {{count}} 项未应用的改动（服务器上的配色没动）。', { count: entries.length }));
   showToast(tsT('editor.changes.revertedAll', '已撤销全部改动'), 'ok');
 }
 
@@ -4323,10 +3855,9 @@ function renderChanges() {
   var list = $('changes-list');
   var countNode = $('changes-count');
   var entries = pendingChangeList();
-  var total = pendingChangeCount();
-  if (countNode) countNode.textContent = total ? String(total) : '';
-  card.hidden = !total;
-  if (!total) {
+  if (countNode) countNode.textContent = entries.length ? String(entries.length) : '';
+  card.hidden = !entries.length;
+  if (!entries.length) {
     if (list) list.innerHTML = '';
     return;
   }
@@ -4356,40 +3887,21 @@ function renderChanges() {
     });
     undo.addEventListener('click', function () { revertChange(entry); });
     row.appendChild(undo);
-    if (entry.mode === 'light' || entry.mode === 'dark') {
-      var goto = el('button', {type: 'button', class: 'btn btn-mini', text: tsT('workflow.goto', 'Go to setting')});
-      goto.addEventListener('click', function () { setMode(entry.mode); focusRowByKey(entry.key); });
-      row.appendChild(goto);
-    }
     list.appendChild(row);
   });
-  if (materialsDirtyCount()) {
-    var materialRow = el('li', {class: 'change-row'});
-    materialRow.appendChild(el('span', {class: 'change-label', text: tsT('actions.apply.partMaterials', 'Materials') + ' (' + materialsDirtyCount() + ')'}));
-    var reset = el('button', {class: 'btn btn-mini', type: 'button', text: tsT('editor.changes.undo', 'Undo')});
-    reset.addEventListener('click', function () { resetMaterialsLocal(); updateButtons(); });
-    materialRow.appendChild(reset);
-    list.appendChild(materialRow);
-  }
-  renderLivePrecheckRow(list);
 }
 
 /* ===== CHANGES_END ===== */
 
 function updateButtons() {
   var n = pendingChangeCount();
-  scheduleDraftSave();
-  syncPreviewPalette();
-  scheduleLivePrecheck();
-  syncUndoApplyButton();
-  syncPreviewButton();
   var applyBtn = $('btn-apply');
   applyBtn.textContent = n
     ? tsT('editor.apply.withCount', '应用（{{count}} 项改动）', { count: n })
     : tsT('editor.apply.label', '应用');
   applyBtn.disabled = state.busy;
   applyBtn.dataset.busy = state.busy ? 'true' : 'false';
-  ['btn-reset', 'btn-export', 'btn-import', 'btn-reload', 'btn-revert-mode', 'btn-share-card'].forEach(function (id) {
+  ['btn-reset', 'btn-export', 'btn-import', 'btn-reload', 'btn-revert-mode'].forEach(function (id) {
     var node = $(id);
     if (node) node.disabled = state.busy;
   });
@@ -4623,13 +4135,16 @@ async function applyTheme() {
     return;
   }
 
-  var args = {vars: lightVars, dark_vars: darkVars};
-  if (enabledChanged) args.enabled = enabled;
+  var args = {
+    vars: lightVars,
+    dark_vars: darkVars,
+    enabled: enabled
+  };
   if (materialsDirty) args.materials = materials;
-  // Let the backend normalize the submitted name and return any warning.
-  if (nameChanged) args.name = name;
-  var before = snapshotForUndo(state.palette);
-  if (before && before.revision) args.base_revision = before.revision;
+  // An emptied name is submitted as the default name, matching the backend's
+  // "empty / whitespace = restore default name"; DEFAULT_THEME_NAME matches the
+  // backend constant and the placeholder.
+  if (nameChanged) args.name = name || DEFAULT_THEME_NAME;
 
   setBusy(true, tsT('actions.apply.busy', '正在应用…'));
   // Material snapshot at submit time: material controls stay editable during save /
@@ -4639,25 +4154,7 @@ async function applyTheme() {
   // save is in flight, so only the drafts that were actually submitted are cleared.
   var draftsAtSubmit = snapshotDrafts();
   try {
-    if ((nLight || nDark) && !(await confirmContrast(effectiveVars('light'), effectiveVars('dark')))) return;
     var result = await callPlugin('apply_theme', args);
-    if (result && result.applied === false && result.conflict) {
-      if (!window.confirm(tsT('workflow.conflict', 'The saved theme changed while you were editing. Apply your changes to the latest version?'))) return;
-      before = await callPlugin('get_theme', {});
-      if (!before.revision || before.revision !== result.conflict.disk_revision) {
-        showNotice('warn', tsT('sync.blockedToast', 'The saved theme has changed.'));
-        return;
-      }
-      args.base_revision = before.revision;
-      result = await callPlugin('apply_theme', args);
-    }
-    if (!result || result.applied === false) {
-      showNotice('warn', tsT('sync.blockedToast', 'The saved theme has changed.'));
-      return;
-    }
-    clearPreviewState();
-    pokeThemeWindows();
-    lastApplyUndo = makeApplyUndo(before, '', '', result);
     var rejected = result && result.rejected;
     // After a successful write we must read back and check the result: if a silent
     // failure is swallowed, the panel keeps old values while saying "applied" --
@@ -4702,14 +4199,8 @@ async function applyTheme() {
     if (nameChanged) parts.push(tsT('actions.apply.partName', '主题名「{{name}}」', { name: name || DEFAULT_THEME_NAME }));
     if (materialsDirty) parts.push(tsT('actions.apply.partMaterials', '高级材质'));
     var counts = parts.length ? parts.join(' / ') : tsT('actions.apply.noVarChanges', '无变量改动');
-    if (lastApplyUndo) lastApplyUndo.counts = counts;
     var readbackNote = reloaded ? '' :
       '\n' + tsT('actions.apply.readbackFailedNote', '已写入，但回读失败，面板仍标记为「未同步」（改动标记已保留），请点「重新读取」。');
-    if (result.name_warning) readbackNote += '\n' + result.name_warning;
-    if (Array.isArray(result.material_warnings) && result.material_warnings.length) {
-      readbackNote += '\n' + result.material_warnings.join('\n');
-    }
-    if (reloaded && nameChanged && nameInput && nameInput.value.trim() === name) nameInput.value = reloaded.name;
     if (rejected && rejected.length) {
       showNotice('warn', tsT('actions.apply.partialNotice',
         '已应用（{{counts}}），但后端拒绝了 {{rejected}} 条，已把它们的原值放回面板便于就地修正：\n',
@@ -4741,11 +4232,7 @@ async function resetTheme() {
   if (!window.confirm(tsT('actions.reset.confirm', '确定恢复内置默认主题？当前所有自定义颜色都会被清除。'))) return;
   setBusy(true, tsT('actions.reset.busy', '正在重置…'));
   try {
-    var before = snapshotForUndo(state.palette);
     var result = await callPlugin('reset_theme', {});
-    lastApplyUndo = makeApplyUndo(before, tsT('actions.reset.doneShort', 'Reset'), '', result);
-    clearPreviewState();
-    pokeThemeWindows();
     state.edited = { light: {}, dark: {} };
     state.cleared = { light: {}, dark: {} };
     markAllRowsValid();
@@ -4778,10 +4265,7 @@ async function resetTheme() {
  * iframe without allow-downloads), so the backend no longer writes to Desktop / Downloads.
  */
 async function saveThemeFile(args) {
-  return downloadExportResult(await callPlugin('export_to_file', args));
-}
-
-function downloadExportResult(result) {
+  var result = await callPlugin('export_to_file', args);
   var data = result && result.data ? String(result.data) : '';
   if (!data || !result.filename) throw new Error(tsT('actions.export.noFileContent', '后端没有返回文件内容'));
   downloadBlob(base64ToBytes(data), result.filename, result.mime || 'application/octet-stream');
@@ -4954,15 +4438,7 @@ var LIB_FAMILIES = [
 ];
 var LIB_FAV_FAMILY = '__fav__';
 var LIB_CUSTOM_FAMILY = '__custom__';
-
-var LIB_RECENT_FAMILY = '__recent__';
-var RECENT_KEY = 'neko.themeStudio.recent';
-var RECENT_LIMIT = 12;
 var LIB_FAV_KEY = 'nts.library.favorites';
-var LIB_SORT_KEY = 'neko.themeStudio.libSort';
-var LIB_SORTS = ['default', 'name', 'detail', 'saved'];
-
-var LIB_TAG_VISIBLE = 14;
 var LIB_COLLAPSE_KEY = 'nts.catalog.collapsed';
 
 /** Ids of the six valid families (same order as the tabs). */
@@ -5019,14 +4495,9 @@ function libSearchText(item) {
 
 /** Search: case-insensitive substring match on name / note / tags. */
 function libMatchesQuery(item, query) {
-  var q = String(query || '').replace(/\u3000/g, ' ').trim().toLowerCase();
+  var q = String(query || '').trim().toLowerCase();
   if (!q) return true;
-  var text = libSearchText(item);
-  var terms = q.split(/\s+/);
-  for (var i = 0; i < terms.length; i += 1) {
-    if (terms[i] && text.indexOf(terms[i]) < 0) return false;
-  }
-  return true;
+  return libSearchText(item).indexOf(q) >= 0;
 }
 
 function libMatchesTag(item, tag) {
@@ -5040,10 +4511,9 @@ function libIsFavorite(item, favorites) {
 }
 
 /** Family filter; LIB_FAV_FAMILY / LIB_CUSTOM_FAMILY are two virtual families. */
-function libMatchesFamily(item, family, favorites, recent) {
+function libMatchesFamily(item, family, favorites) {
   if (!family) return true;
   if (family === LIB_FAV_FAMILY) return libIsFavorite(item, favorites);
-  if (family === LIB_RECENT_FAMILY) return !!item && (recent || []).indexOf(String(item.id)) >= 0;
   // "Custom" = entries the user saved or imported (backend builtin=false).
   if (family === LIB_CUSTOM_FAMILY) return !item || !item.builtin;
   return libFamilyOf(item) === family;
@@ -5059,7 +4529,6 @@ function libSelectLibrary(items, opts) {
   var tag = opts && opts.tag ? opts.tag : '';
   var family = opts && opts.family ? opts.family : '';
   var favorites = opts && opts.favorites instanceof Array ? opts.favorites : [];
-  var recent = (opts && opts.recent) || [];
   var picked = [];
   var list = items instanceof Array ? items : [];
   for (var i = 0; i < list.length; i += 1) {
@@ -5067,13 +4536,9 @@ function libSelectLibrary(items, opts) {
     if (!item) continue;
     if (!libMatchesTag(item, tag)) continue;
     if (!libMatchesQuery(item, query)) continue;
-    if (!libMatchesFamily(item, family, favorites, recent)) continue;
+    if (!libMatchesFamily(item, family, favorites)) continue;
     picked.push(item);
   }
-  if (family === LIB_RECENT_FAMILY) {
-    return picked.sort(function (a, b) { return recent.indexOf(String(a.id)) - recent.indexOf(String(b.id)); });
-  }
-  if (opts && opts.sort && opts.sort !== 'default') return libApplySort(picked, opts.sort);
   if (family) {
     return family === LIB_CUSTOM_FAMILY
       ? libSortCustomWithFavorites(picked, favorites)
@@ -5086,83 +4551,6 @@ function libSelectLibrary(items, opts) {
     else rest.push(picked[j]);
   }
   return favs.concat(rest);
-}
-
-
-var sessionLibrarySort = '';
-function libSortMode() {
-  if (sessionLibrarySort) return sessionLibrarySort;
-  var raw = '';
-  try {
-    raw = libraryStorage().getItem(LIB_SORT_KEY) || '';
-  } catch (error) {
-    raw = '';
-  }
-  for (var i = 0; i < LIB_SORTS.length; i += 1) {
-    if (LIB_SORTS[i] === raw) return raw;
-  }
-  return 'default';
-}
-
-function libSetSortMode(mode) {
-  var id = 'default';
-  for (var i = 0; i < LIB_SORTS.length; i += 1) {
-    if (LIB_SORTS[i] === mode) id = mode;
-  }
-  sessionLibrarySort = id;
-  try {
-    libraryStorage().setItem(LIB_SORT_KEY, id);
-  } catch (error) { /* Storage can be disabled. */ }
-  return id;
-}
-
-function libItemDetail(item) {
-  var light = Number(item && item.light) || 0;
-  var dark = Number(item && item.dark) || 0;
-  return light + dark;
-}
-
-function libSavedRank(item) {
-
-  var raw = String((item && item.saved_at) || '');
-  if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return '';
-  return raw;
-}
-
-function libApplySort(items, mode) {
-  var list = (items instanceof Array ? items : []).slice();
-  if (mode === 'name') {
-    list.sort(function (a, b) {
-      return String(a && a.name || '').localeCompare(String(b && b.name || ''), document.documentElement.lang || undefined);
-    });
-    return list;
-  }
-  if (mode === 'detail') {
-    list.sort(function (a, b) {
-      var diff = libItemDetail(b) - libItemDetail(a);
-      if (diff) return diff;
-      return String(a && a.name || '').localeCompare(String(b && b.name || ''), document.documentElement.lang || undefined);
-    });
-    return list;
-  }
-
-  list.sort(function (a, b) {
-    var ra = libSavedRank(a);
-    var rb = libSavedRank(b);
-    if (ra !== rb) {
-      if (!ra) return 1;
-      if (!rb) return -1;
-      return ra < rb ? 1 : -1;
-    }
-    return String(a && a.name || '').localeCompare(String(b && b.name || ''), document.documentElement.lang || undefined);
-  });
-  return list;
-}
-
-function libRenderSortSelect() {
-  var select = $('lib-sort');
-  if (!select) return;
-  select.value = libSortMode();
 }
 
 /**
@@ -5185,8 +4573,8 @@ function libSortCustomWithFavorites(items, favorites) {
  * current tag + search. The badge thus reads "this tab will show N", and a 0 makes
  * it obvious the filters need changing.
  */
-function libFamilyCounts(items, query, tag, favorites, recent) {
-  var counts = { all: 0, fav: 0, custom: 0, recent: 0, families: {} };
+function libFamilyCounts(items, query, tag, favorites) {
+  var counts = { all: 0, fav: 0, custom: 0, families: {} };
   for (var i = 0; i < LIB_FAMILIES.length; i += 1) counts.families[LIB_FAMILIES[i].id] = 0;
   var list = items instanceof Array ? items : [];
   for (var j = 0; j < list.length; j += 1) {
@@ -5198,7 +4586,6 @@ function libFamilyCounts(items, query, tag, favorites, recent) {
     var family = libFamilyOf(item);
     if (counts.families[family] !== undefined) counts.families[family] += 1;
     if (libIsFavorite(item, favorites)) counts.fav += 1;
-    if (recent && recent.indexOf(String(item.id)) >= 0) counts.recent += 1;
     if (!item.builtin) counts.custom += 1;
   }
   return counts;
@@ -5282,8 +4669,6 @@ var libraryState = {
   family: '',    // family filter ('' = all; LIB_FAV_FAMILY = favorites virtual family)
   query: '',     // search text
   favorites: [], // favorite id list (synced with localStorage)
-  recent: libReadIdList(libraryStorage(), RECENT_KEY),
-  tagsExpanded: false,
   lastShuffle: null
 };
 /** Switch to the "Custom" tab to show an action's result (save / import / restore). Tag filter
@@ -5313,63 +4698,6 @@ function libraryStorage() {
 
 function saveLibraryFavorites() {
   libWriteIdList(libraryStorage(), LIB_FAV_KEY, libraryState.favorites);
-}
-
-
-function libRecentIndexOf(id) {
-  var key = String(id || '');
-  if (!key) return -1;
-  return libraryState.recent.indexOf(key);
-}
-
-function libRecentPush(id) {
-  var key = String(id || '');
-  if (!key) return false;
-  var list = libraryState.recent.filter(function (each) { return each !== key; });
-  list.unshift(key);
-  libraryState.recent = list.slice(0, RECENT_LIMIT);
-  libWriteIdList(libraryStorage(), RECENT_KEY, libraryState.recent);
-  return true;
-}
-
-function libPruneRecent(items) {
-  var alive = Object.create(null);
-  var list = items instanceof Array ? items : [];
-  for (var i = 0; i < list.length; i += 1) {
-    if (list[i] && list[i].id !== undefined) alive[String(list[i].id)] = true;
-  }
-  var kept = [];
-  for (var j = 0; j < libraryState.recent.length; j += 1) {
-    if (alive[libraryState.recent[j]]) kept.push(libraryState.recent[j]);
-  }
-  if (kept.length !== libraryState.recent.length) {
-    libraryState.recent = kept;
-    libWriteIdList(libraryStorage(), RECENT_KEY, kept);
-  }
-}
-
-function currentThemeLabel() {
-  var meta = $('meta-name');
-  if (!meta) return '';
-  return String(meta.textContent || '').trim();
-}
-
-
-function libRecentMaybeRecord(name) {
-  var label = String(name || '').trim();
-  if (!label) return false;
-  var items = libraryState.items || [];
-  if (!items.length) return false;
-  var hit = null;
-  for (var i = 0; i < items.length; i += 1) {
-    if (items[i] && String(items[i].name || '').trim() === label) { hit = items[i]; break; }
-  }
-  if (!hit) return false;
-  if (libRecentIndexOf(hit.id) === 0) return false;
-  libRecentPush(hit.id);
-
-  renderLibrary();
-  return true;
 }
 
 /** Toggle a favorite; returns true when it was just favorited. */
@@ -5471,14 +4799,12 @@ function libraryCardSig(item) {
     libFamilyOf(item),
     String(item && item.id !== undefined ? item.id : ''),
     String(item && item.name || ''),
-    String(item && item.name || '') === currentThemeLabel() ? 'cur' : '',
     String(item && item.note || ''),
     String(item && item.saved_at || ''),
     String(item && item.light || 0),
     String(item && item.dark || 0),
     item && item.has_image ? '1' : '0',
     item && item.material ? String(item.material.preset || '') + '/' + String(item.material.quality || '') : '',
-    item && item.contrast ? String(item.contrast.min) + '/' + String(item.contrast.fails) : '',
     tags.join('\u0001')
   ].join('\u0000');
 }
@@ -5538,31 +4864,6 @@ function buildLibraryItem(item) {
       }) + (item.material.enabled === false ? tsT('library.item.materialOffByDefault', '（主题里默认未启用）') : '')
     }, [el('span', { text: tsT('library.item.materialChip', '材质 · {{material}}', { material: materialLabel }) })]);
     nameRow.appendChild(materialChip);
-  }
-
-  var contrast = item && item.contrast;
-  if (contrast && contrast.min) {
-    var contrastFails = Number(contrast.fails) || 0;
-    var contrastText = Number(contrast.min).toFixed(2) + ':1';
-    var contrastTitle = tsT('library.tools.contrast', 'Worst contrast: {{ratio}} · {{count}} failures. Open comparison.',
-      { ratio: contrastText, count: contrastFails });
-    nameRow.appendChild(el('button', {
-      class: 'lib-ratio' + (contrastFails ? ' is-fail' : ''),
-      type: 'button',
-      tabIndex: -1,
-      title: contrastTitle,
-      'data-min': String(contrast.min),
-      'data-fails': String(contrastFails),
-      'data-compare-open': '1',
-      'aria-label': contrastTitle,
-      onclick: function () { openCompareFor(item); }
-    }, [el('span', { text: contrastText })]));
-  }
-  if (name && name === currentThemeLabel()) {
-    nameRow.appendChild(el('span', {
-      class: 'lib-current-chip',
-      title: tsT('library.tools.current', 'Current')
-    }, [el('span', { text: tsT('library.tools.current', 'Current') })]));
   }
   var text = el('div', { class: 'lib-text' }, [nameRow]);
   // The description is truncated to one line; the title holds the full text on hover.
@@ -5674,10 +4975,6 @@ function buildLibraryItem(item) {
     deleteBtn.addEventListener('click', function () { deleteLibraryItem(item, deleteBtn); });
   }
 
-  [favBtn, applyBtn, exportBtn, jsonBtn].forEach(function (b) { b.tabIndex = -1; });
-  if (metaBtn) metaBtn.tabIndex = -1;
-  if (deleteBtn) deleteBtn.tabIndex = -1;
-  if (tags.length) tagRow.querySelectorAll('.lib-tag').forEach(function (b) { b.tabIndex = -1; });
   var libBtns = [favBtn, applyBtn, exportBtn, jsonBtn];
   if (metaBtn) libBtns.push(metaBtn);
   if (deleteBtn) libBtns.push(deleteBtn);
@@ -5686,8 +4983,6 @@ function buildLibraryItem(item) {
     el('div', { class: 'lib-btns' }, libBtns)
   ]);
   row.setAttribute('data-id', String(item.id || ''));
-  row.tabIndex = -1;
-  row.addEventListener('keydown', function (event) { libCardKeydown(event, row, item); });
   // Hover / focus preview: the right-hand preview switches to this theme while the
   // pointer or keyboard focus is on the card, and restores on leave. (Hovering the
   // card's buttons bubbles up to the card too, which is fine: previewing it while the
@@ -5699,50 +4994,6 @@ function buildLibraryItem(item) {
   return row;
 }
 
-
-function libFamilyScrollIntoView(tab) {
-  var host = $('lib-family-tabs');
-  if (!host || !tab || typeof host.scrollLeft !== 'number') return;
-  var span = host.clientWidth;
-  if (!span) return;
-  var max = Math.max(0, host.scrollWidth - span);
-
-  var hostBox = host.getBoundingClientRect();
-  var tabBox = tab.getBoundingClientRect();
-  var left = tabBox.left - hostBox.left + host.scrollLeft;
-  var width = tabBox.width;
-  var pad = 6;
-
-  var target = 0;
-  if (left < host.scrollLeft + pad) target = left - pad;
-  else if (left + width > host.scrollLeft + span - pad) target = left + width - span + pad;
-  else return;
-  target = Math.max(0, Math.min(target, max));
-  if (Math.abs(host.scrollLeft - target) > 1) host.scrollLeft = target;
-}
-
-function libFamilyScrollIntoViewSoon(tab) {
-  if (!tab) return;
-  var run = function () { libFamilyScrollIntoView(tab); };
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(function () { requestAnimationFrame(run); });
-  } else {
-    setTimeout(run, 32);
-  }
-}
-
-var libFamilyResizeTimer = null;
-window.addEventListener('resize', function () {
-  if (libFamilyResizeTimer) clearTimeout(libFamilyResizeTimer);
-  libFamilyResizeTimer = setTimeout(function () {
-    libFamilyResizeTimer = null;
-    var host = $('lib-family-tabs');
-    if (!host) return;
-    var active = host.querySelector('.lib-family-tab.is-active');
-    if (active) libFamilyScrollIntoView(active);
-  }, 160);
-});
-
 /** Family tab row (All / Favorites / the six real families), with count badges under the current filters. */
 function renderLibraryFamilies() {
   var host = $('lib-family-tabs');
@@ -5751,7 +5002,7 @@ function renderLibraryFamilies() {
   if (!libraryState.items.length) { host.hidden = true; return; }
   host.hidden = false;
   var counts = libFamilyCounts(libraryState.items, libraryState.query, libraryState.filter,
-    libraryState.favorites, libraryState.recent);
+    libraryState.favorites);
   var makeTab = function (family, label, count) {
     var tab = el('button', {
       type: 'button',
@@ -5766,7 +5017,6 @@ function renderLibraryFamilies() {
       libraryState.family = family;
       renderLibrary();
     });
-    tab.addEventListener('focus', function () { libFamilyScrollIntoView(tab); });
     return tab;
   };
   host.appendChild(makeTab('', tsT('library.filter.all', '全部'), counts.all));
@@ -5774,13 +5024,10 @@ function renderLibraryFamilies() {
   // filter results; hidden, users would never learn the feature exists. Each has a
   // guiding empty-state text.
   host.appendChild(makeTab(LIB_FAV_FAMILY, tsT('library.family.favorites', '收藏'), counts.fav));
-  host.appendChild(makeTab(LIB_RECENT_FAMILY, tsT('library.tools.recent', 'Recent'), counts.recent));
   host.appendChild(makeTab(LIB_CUSTOM_FAMILY, libFamilyLabel(LIB_CUSTOM_FAMILY), counts.custom));
   LIB_FAMILIES.forEach(function (family) {
     host.appendChild(makeTab(family.id, libFamilyLabel(family.id), counts.families[family.id] || 0));
   });
-  var active = host.querySelector('.lib-family-tab.is-active');
-  if (active) libFamilyScrollIntoViewSoon(active);
 }
 
 /** When un-favoriting the last card makes it disappear, return focus to the "Favorites" tab. */
@@ -5818,150 +5065,7 @@ function renderLibraryFilters() {
     return chip;
   };
   host.appendChild(makeChip(tsT('library.filter.all', '全部'), ''));
-
-  var active = libraryState.filter;
-  var ordered = tags;
-  if (active && ordered.indexOf(active) >= 0) {
-    ordered = [active].concat(tags.filter(function (tag) { return tag !== active; }));
-  }
-  var overflow = ordered.length - LIB_TAG_VISIBLE;
-  var shown = libraryState.tagsExpanded ? ordered : ordered.slice(0, LIB_TAG_VISIBLE);
-  shown.forEach(function (tag) { host.appendChild(makeChip(tag, tag)); });
-  if (overflow > 0) {
-    var more = el('button', {
-      type: 'button',
-      class: 'lib-chip lib-chip-more',
-      text: libraryState.tagsExpanded ? tsT('library.tools.hideTags', 'Show fewer tags')
-        : tsT('library.tools.moreTags', '+{{count}} tags', { count: overflow }),
-      'aria-expanded': libraryState.tagsExpanded ? 'true' : 'false'
-    });
-    more.addEventListener('click', function () {
-      libraryState.tagsExpanded = !libraryState.tagsExpanded;
-      renderLibraryFilters();
-    });
-    host.appendChild(more);
-  }
-}
-
-
-function libCardNodes() {
-  var list = $('lib-list');
-  if (!list) return [];
-  return Array.prototype.slice.call(list.querySelectorAll('.lib-item'));
-}
-
-function libRovingSync() {
-  var cards = libCardNodes();
-  if (!cards.length) return null;
-  var id = libraryState.rovingId;
-  var target = null;
-  for (var i = 0; i < cards.length; i += 1) {
-    if (id && cards[i].getAttribute('data-id') === String(id)) { target = cards[i]; break; }
-  }
-  if (!target) target = cards[0];
-  cards.forEach(function (card) { card.tabIndex = card === target ? 0 : -1; });
-  libraryState.rovingId = target.getAttribute('data-id') || '';
-  return target;
-}
-
-function libRovingFocus(node) {
-  if (!node) return;
-  libraryState.rovingId = node.getAttribute('data-id') || '';
-  libRovingSync();
-  try { node.focus({ preventScroll: false }); } catch (error) { node.focus(); }
-}
-
-function libRovingMove(dx, dy) {
-  var cards = libCardNodes();
-  if (!cards.length) return null;
-  var current = document.activeElement && document.activeElement.closest
-    ? document.activeElement.closest('.lib-item') : null;
-  var index = cards.indexOf(current);
-  if (index < 0) return cards[0];
-  var rects = cards.map(function (card) { return card.getBoundingClientRect(); });
-  var base = rects[index];
-  var best = -1;
-  var bestScore = Infinity;
-  for (var i = 0; i < cards.length; i += 1) {
-    if (i === index) continue;
-    var r = rects[i];
-    var vGap = r.top - base.top;
-    var hGap = r.left - base.left;
-    if (dy > 0 && vGap <= 2) continue;
-    if (dy < 0 && vGap >= -2) continue;
-    if (dx > 0 && hGap <= 2) continue;
-    if (dx < 0 && hGap >= -2) continue;
-    var score = (dy !== 0 ? Math.abs(hGap) * 4 + Math.abs(vGap) : Math.abs(vGap) * 4 + Math.abs(hGap));
-    if (score < bestScore) { bestScore = score; best = i; }
-  }
-  if (best < 0) {
-
-    best = index + (dy > 0 || dx > 0 ? 1 : -1);
-    if (best < 0 || best >= cards.length) return cards[index];
-  }
-  return cards[best];
-}
-
-function libRefocusCard(id) {
-  var list = $('lib-list');
-  if (!list) return;
-  var node = libCardNodes().find(function (card) { return card.dataset.id === String(id); });
-  if (node) libRovingFocus(node);
-}
-
-function libCardKeydown(event, row, item) {
-  if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.target !== row) return;
-  var key = event.key;
-  var navigational = { ArrowDown: [0, 1], ArrowUp: [0, -1], ArrowRight: [1, 0], ArrowLeft: [-1, 0] };
-  if (navigational[key]) {
-    event.preventDefault();
-    libRovingFocus(libRovingMove(navigational[key][0], navigational[key][1]));
-    return;
-  }
-  if (key === 'Enter' || key === ' ') {
-    event.preventDefault();
-    var applyBtn = row.querySelector('[data-act="apply"]');
-    if (applyBtn) applyBtn.click();
-    return;
-  }
-  var lower = String(key).toLowerCase();
-  if (lower === 'f') {
-    event.preventDefault();
-    var favBtn = row.querySelector('.lib-fav');
-    if (favBtn) favBtn.click();
-    libRefocusCard(item.id);
-    return;
-  }
-  if (lower === 's') {
-    event.preventDefault();
-    var shareBtn = row.querySelector('[data-act="export"]');
-    if (shareBtn) shareBtn.click();
-    libRefocusCard(item.id);
-    return;
-  }
-  if (lower === 'c') {
-    event.preventDefault();
-    openCompareFor(item);
-    return;
-  }
-  if (lower === 'j') {
-    event.preventDefault();
-    var jsonBtn = row.querySelector('[data-act="json"]');
-    if (jsonBtn) jsonBtn.click();
-    libRefocusCard(item.id);
-    return;
-  }
-  if (lower === 'e') {
-    event.preventDefault();
-    var metaBtn = row.querySelector('[data-act="meta"]');
-    if (metaBtn) metaBtn.click();
-    libRefocusCard(item.id);
-    return;
-  }
-  if (key === 'Delete') {
-    var delBtn = row.querySelector('[data-act="delete"]');
-    if (delBtn) { event.preventDefault(); delBtn.click(); }
-  }
+  tags.forEach(function (tag) { host.appendChild(makeChip(tag, tag)); });
 }
 
 /** Render the library list filtered by family + tag + search; favorites are pinned first in "All". */
@@ -5974,16 +5078,8 @@ function renderLibrary() {
     query: libraryState.query,
     tag: libraryState.filter,
     family: libraryState.family,
-    favorites: libraryState.favorites, recent: libraryState.recent, sort: libSortMode()
+    favorites: libraryState.favorites
   });
-
-
-  var focusInside = false;
-  var focusId = '';
-  if (list.contains(document.activeElement) && document.activeElement.closest) {
-    var focusedCard = document.activeElement.closest('.lib-item');
-    if (focusedCard) { focusInside = true; focusId = focusedCard.getAttribute('data-id') || ''; }
-  }
   // Reuse card nodes from the last render: typing a search only adds/removes visible items
   // instead of rebuilding the whole list (24 themes x 10+ nodes).
   var keep = Object.create(null);
@@ -6009,8 +5105,6 @@ function renderLibrary() {
     else if (libraryState.query) {
       empty.textContent = tsT('library.emptyState.query', '没有匹配「{{query}}」的主题，换个词试试，或点「全部」清空筛选。',
         { query: libraryState.query });
-    } else if (libraryState.family === LIB_RECENT_FAMILY) {
-      empty.textContent = tsT('library.tools.emptyRecent', 'Apply a theme to see it here.');
     } else if (libraryState.family === LIB_FAV_FAMILY) {
       empty.textContent = tsT('library.emptyState.favorites', '还没有收藏任何主题：点主题卡片下方的「☆ 收藏」按钮就能收藏，收藏会排在「全部」最前面。');
     } else if (libraryState.family === LIB_CUSTOM_FAMILY) {
@@ -6023,38 +5117,19 @@ function renderLibrary() {
   }
   renderLibraryFamilies();
   renderLibraryFilters();
-  var roving = libRovingSync();
-  if (focusInside) {
-    var want = libCardNodes().find(function (node) { return node.dataset.id === focusId; });
-    libRovingFocus(want || roving);
-  }
   return visible;
 }
 
-
-var libInflight = null;
-var libraryReadId = 0;
-function refreshLibrary(options) {
-  if (libInflight && !(options && options.fresh) && !state.busy) return libInflight;
-  var p = refreshLibraryNow(++libraryReadId);
-  libInflight = p;
-  var clear = function () { if (libInflight === p) libInflight = null; };
-  p.then(clear, clear);
-  return p;
-}
-
-async function refreshLibraryNow(readId) {
+async function refreshLibrary() {
   var list = $('lib-list');
   var empty = $('lib-empty');
   if (!list) return null;
   try {
     var result = await callPlugin('list_themes', {});
-    if (readId !== libraryReadId) return libraryState.items;
     // The backend returns {count, themes:[...]} (early versions used `items`; a field mismatch left the library forever blank).
     var items = result && result.themes instanceof Array ? result.themes
       : (result && result.items instanceof Array ? result.items : []);
     libraryState.items = items;
-    libPruneRecent(items);
     // Favorites may hold ids of deleted themes: prune them against the new list and write back to localStorage.
     var prunedFavorites = libPruneFavorites(libraryState.favorites, items);
     if (prunedFavorites.length !== libraryState.favorites.length || prunedFavorites.join('\n') !== libraryState.favorites.join('\n')) {
@@ -6063,7 +5138,7 @@ async function refreshLibraryNow(readId) {
     }
     // Unknown family values (old versions / hand edits) fall back to "All"; the two virtual families are valid.
     if (libraryState.family && libraryState.family !== LIB_FAV_FAMILY &&
-        libraryState.family !== LIB_CUSTOM_FAMILY && libraryState.family !== LIB_RECENT_FAMILY &&
+        libraryState.family !== LIB_CUSTOM_FAMILY &&
         libFamilyIds().indexOf(libraryState.family) < 0) {
       libraryState.family = '';
     }
@@ -6079,7 +5154,6 @@ async function refreshLibraryNow(readId) {
     if (scheduleState.loaded) renderSchedule();
     return items;
   } catch (error) {
-    if (readId !== libraryReadId) return libraryState.items;
     // A library read failure must not block the editor: show a hint, do not throw.
     if (empty) {
       empty.hidden = false;
@@ -6131,12 +5205,6 @@ async function saveLibraryTheme() {
     showToast(note
       ? tsT('library.save.doneWithNote', '已保存「{{name}}」到自定义（简介已写入，分享时一起带走）', { name: savedName })
       : tsT('library.save.done', '已保存「{{name}}」到自定义', { name: savedName }), 'ok');
-    var renamedFrom = (result && result.renamed_from) || '';
-    if (renamedFrom) {
-
-      showNotice('ok', tsT('library.tools.renamed', 'A theme named “{{old}}” already exists. Saved as “{{name}}”.',
-        { old: renamedFrom, name: savedName }));
-    }
     setStatus(tsT('library.save.doneStatus', '已保存到自定义主题'), 'ok');
   } catch (error) {
     showNotice('error', tsT('library.save.failedNotice', '保存到仓库失败：{{error}}', { error: pluginErrorMessage(error) }));
@@ -6151,13 +5219,8 @@ async function applyLibraryItem(item, button) {
   if (state.busy) return;
   if (button) button.disabled = true;
   setBusy(true, tsT('library.apply.busy', '正在切换主题…'));
-
-  var undoSnapshot = snapshotForUndo(state.palette);
-  var beforeName = (undoSnapshot && undoSnapshot.name) || tsT('library.save.currentTheme', 'Current theme');
   try {
     var result = await callPlugin('apply_saved_theme', { id: item.id });
-    clearPreviewState();
-    pokeThemeWindows();
     // Wholesale replacement: unapplied panel changes become invalid, so clear them before reading back.
     // discardEdits also resets the name / enabled inputs to what the backend saved.
     state.edited = { light: {}, dark: {} };
@@ -6181,10 +5244,6 @@ async function applyLibraryItem(item, button) {
       (reloaded ? '' : '\n' + tsT('actions.readbackFailedHint', '回读失败，面板显示可能不是最新值，请点「重新读取」。')));
     showToast(switchedText, 'ok');
     setStatus(tsT('library.apply.doneStatus', '已切换主题') + (reloaded ? '' : tsT('actions.readbackFailedSuffix', '（回读失败）')), reloaded ? 'ok' : 'warn');
-    libRecentPush(item.id);
-    renderLibrary();
-    lastApplyUndo = makeApplyUndo(undoSnapshot, switchedText, beforeName, result);
-    syncUndoApplyButton();
     verifyAppliedShortly();
   } catch (error) {
     showNotice('error', tsT('library.apply.failedNotice', '切换主题失败：{{error}}', { error: pluginErrorMessage(error) }));
@@ -6353,10 +5412,6 @@ function initRestartHint() {
   });
 }
 
-function undoDeleteTheme(themeId) {
-  return restoreTrashTheme(themeId);
-}
-
 async function deleteLibraryItem(item, button) {
   if (state.busy) return;
   var now = Date.now();
@@ -6398,14 +5453,7 @@ async function deleteLibraryItem(item, button) {
     // The backend silently drops slots that point to missing themes; the UI's
     // "now ... will switch to" must follow.
     if (scheduleState.loaded) await refreshSchedule();
-    var goneName = String(item.name || item.id);
-    var deleted = tsT('library.tools.deleted', 'Moved “{{name}}” to the trash.', { name: goneName });
-    showNotice('ok', deleted, {
-      label: tsT('library.tools.undoDelete', 'Undo deletion'),
-      onClick: function () { undoDeleteTheme(item.id); }
-    });
-    showToast(deleted, 'ok');
-    await refreshHealth({ fresh: true });
+    showToast(tsT('library.delete.done', '已删除'), 'ok');
     setStatus(tsT('library.delete.doneStatus', '已删除仓库条目'), 'ok');
   } catch (error) {
     // The button was disabled above; it must be restored on failure, otherwise the card
@@ -7117,7 +6165,6 @@ function hashText(text) {
  *  FNV over 96x2 key/values takes microseconds; once every 5 s costs nothing. */
 function paletteSignature(p) {
   if (!p || typeof p !== 'object') return '';
-  if (p.revision) return String(p.revision);
   function pairBlock(map) {
     if (!map || typeof map !== 'object') return '';
     return Object.keys(map).sort().map(function (key) {
@@ -7142,7 +6189,6 @@ function materialsSignatureText(materials) {
 /** Unapplied edits in the material center count as 1 pending item: external sync must not overwrite them. */
 function materialsDirtyCount() {
   var api = window.NekoMaterials;
-  if (api && typeof api.diffCount === 'function') return api.diffCount();
   if (!api || typeof api.isDirty !== 'function') return 0;
   try { return api.isDirty() ? 1 : 0; } catch (e) { return 0; }
 }
@@ -7163,8 +6209,8 @@ function externalSyncBlockers() {
   var modal = $('modal');
   return {
     busy: !!state.busy,
-    dirty: pendingChangeCount(),
-    modalOpen: !!(modal && !modal.hidden) || !!activeEditorDialog()
+    dirty: pendingChangeCount() + materialsDirtyCount(),
+    modalOpen: !!(modal && !modal.hidden)
   };
 }
 
@@ -7207,7 +6253,6 @@ async function checkExternalChange() {
     var raw = await response.json();
     externalSyncState.failures = 0;
     externalSyncState.warned = false;
-    if (!state.busy && previewActive() && (!raw.preview || !raw.preview.active || raw.preview.id !== state.previewing)) clearPreviewState();
     var signature = paletteSignature(raw);
     var blockers = externalSyncBlockers();
     var decision = externalSyncDecision(signature, {
@@ -7247,9 +6292,6 @@ async function checkExternalChange() {
     // previous theme name: the UI already looks default while the panel says the old
     // theme is active, which is exactly the reported symptom.
     refreshHealth({});
-    libRecentMaybeRecord(palette.name);
-    if (lastApplyUndo && palette.revision !== lastApplyUndo.revision) lastApplyUndo = null;
-    syncUndoApplyButton();
     return true;
   } catch (error) {
     noteExternalSyncFailure();
@@ -7352,7 +6394,6 @@ async function reloadPalette(options) {
       // The status bar always shows both counts so "only one group configured" is not missed.
       setStatus(tsT('sync.loadedStatus', '已读取 · 亮色 {{light}} / 暗色 {{dark}}', { light: c.light, dark: c.dark }), 'ok');
     }
-    restoreDraftIfAny();
     return palette;
   } catch (error) {
     if (!silent) {
@@ -7502,19 +6543,6 @@ function renderHealth(info) {
   items.push(healthItem(tsT('health.key.currentTheme', '当前主题'), currentText, info.theme_enabled ? 'ok' : 'warn'));
   if (!info.theme_enabled && level === 'ok') level = 'warn';
 
-
-
-  var recovery = info.theme_recovery;
-  if (recovery && typeof recovery === 'object') {
-    level = 'bad';
-    items.push(healthItem(
-      tsT('health.key.currentTheme', 'Current theme'),
-      tsT('library.tools.recovery', 'The theme file could not be read. The original was saved as {{file}}. Apply a theme to replace the factory colors.',
-        { file: recovery.file || '—' }),
-      'bad'
-    ));
-  }
-
   var light = Number(info.light_vars) || 0;
   var dark = Number(info.dark_vars) || 0;
   if (light + dark === 0) {
@@ -7530,25 +6558,6 @@ function renderHealth(info) {
   items.push(healthItem(tsT('health.key.backgrounds', '背景图'),
     tsT('health.backgroundCount', '{{count}} 张', { count: Number(info.background_count) || 0 }), 'ok'));
 
-  var trash = info.trash && typeof info.trash === 'object' ? info.trash : null;
-  var trashCount = trash ? Number(trash.count) || 0 : 0;
-  if (trashCount > 0) {
-    var trashBytes = Number(trash.bytes) || 0;
-    var trashLimit = Number(trash.limit) || 30;
-    var trashItem = healthItem(
-      tsT('library.tools.trash', 'Trash'),
-      tsT('library.tools.trashCount', '{{count}} of {{limit}} entries · {{size}}', {
-        count: trashCount, limit: trashLimit, size: trashBytes >= 1024 ? Math.round(trashBytes / 1024) + ' KB' : trashBytes + ' B'
-      }),
-      'ok'
-    );
-    trashItem.actions = [
-      { label: tsT('library.tools.viewTrash', 'View trash'), onClick: openTrashModal },
-      { label: tsT('library.tools.emptyTrash', 'Empty trash'), onClick: clearTrashFromHealth }
-    ];
-    items.push(trashItem);
-  }
-
   var loaderVersion = String(info.loader_version || '');
   if (loaderVersion) {
     items.push(healthItem(tsT('health.key.loader', '加载器资源'), 'v' + loaderVersion
@@ -7560,52 +6569,11 @@ function renderHealth(info) {
 
   var diag = info.diagnostics;
   if (diag && typeof diag === 'object') {
-
-
-    var surfaces = Array.isArray(diag.mt_surfaces) ? diag.mt_surfaces : [];
-    if (surfaces.length) {
-      var surfaceLabels = {
-        chatWindow: tsT('catalog.groups.chatWindow', 'Chat window'), chatShell: tsT('editor.compare.chatBg', 'Chat background'),
-        composer: tsT('catalog.groups.composer', 'Input area'), capsule: changeKeyLabel('--nts-chip-text'),
-        topbar: changeKeyLabel('--nts-topbar-bg'), assistantBubble: tsT('editor.compare.aiBubble', 'AI bubble'),
-        userBubble: tsT('editor.compare.userBubble', 'User bubble')
-      };
-      var surfaceHit = [];
-      var surfaceMiss = [];
-      for (var si = 0; si < surfaces.length; si += 1) {
-        var sf = surfaces[si] || {};
-        if (sf.r || sf.b || sf.f) surfaceHit.push(sf.k);
-        else surfaceMiss.push(surfaceLabels[sf.k] || String(sf.k || ''));
-      }
-      items.push(healthItem(
-        tsT('library.tools.surfaces', 'Material surfaces'),
-        tsT('library.tools.surfaceStats', 'Active: {{count}}/{{total}} · Missing: {{missing}}',
-          { count: surfaceHit.length, total: surfaces.length, missing: surfaceMiss.join(', ') || '—' }),
-        surfaceMiss.length ? 'warn' : 'ok'
-      ));
-    }
     var page = String(diag.page || tsT('health.unknownPage', '未知页面'));
     var when = String(diag.received_at || '');
     items.push(healthItem(tsT('health.key.report', '应用侧上报'), page + (when ? ' · ' + when : '')
       + tsT('health.reportStats', ' · nts 变量 {{vars}} · 样式规则 {{rules}}',
         { vars: Number(diag.nts_vars) || 0, rules: Number(diag.rules) || 0 }), 'ok'));
-
-
-    var mtPreset = String(diag.mt_preset || '');
-    var mtQuality = String(diag.mt_quality || '');
-    var mtVars = Number(diag.mt_vars) || 0;
-    var mtRules = Number(diag.mt_rules) || 0;
-    var wantPreset = String(info.material_preset || '');
-    if (mtVars > 0) {
-      items.push(healthItem(tsT('library.tools.materialLayer', 'Material layer'), (mtPreset || wantPreset || '—')
-        + (mtQuality ? ' · ' + mtQuality : '') + tsT('health.reportStats', ' · nts variables {{vars}} · rules {{rules}}',
-          { vars: mtVars, rules: mtRules }), 'ok'));
-    } else if (wantPreset && wantPreset !== 'clear') {
-      if (level === 'ok') level = 'warn';
-      items.push(healthItem(tsT('library.tools.materialLayer', 'Material layer'),
-        tsT('library.tools.materialMissing', 'Preset {{preset}} is selected, but no material variables were reported.',
-          { preset: wantPreset }), 'warn'));
-    }
     if (diag.enabled === false) {
       level = 'bad';
       items.push(healthItem(tsT('health.key.loaderState', '加载器状态'), tsT('health.loaderDisabled', '上报说主题是停用的 —— 打开面板的启用开关再点「应用」'), 'bad'));
@@ -7649,17 +6617,6 @@ function renderHealth(info) {
     var li = el('li', { class: items[i].level === 'ok' ? '' : 'is-' + items[i].level });
     li.appendChild(el('span', { class: 'hk', text: tsT('health.keyLabel', '{{key}}：', { key: items[i].key }) }));
     li.appendChild(el('span', { class: 'hv', text: items[i].value }));
-
-    var acts = Array.isArray(items[i].actions)
-      ? items[i].actions
-      : (items[i].action ? [items[i].action] : []);
-    for (var a = 0; a < acts.length; a += 1) {
-      var act = acts[a];
-      if (!act || typeof act.onClick !== 'function') continue;
-      var actBtn = el('button', { class: 'hk-action', type: 'button', text: String(act.label || '') });
-      actBtn.addEventListener('click', act.onClick);
-      li.appendChild(actBtn);
-    }
     listNode.appendChild(li);
   }
 
@@ -7673,160 +6630,16 @@ function renderHealth(info) {
   stateNode.className = 'health-line is-' + level;
 }
 
-
-var trashModalEl = null;
-
-function trashItemsFromStatus() {
-  var status = state.status || {};
-  var trash = status.trash && typeof status.trash === 'object' ? status.trash : {};
-  var items = Array.isArray(trash.items) ? trash.items : [];
-  return items.filter(function (item) { return item && item.theme_id; });
-}
-
-function closeTrashModal() {
-  if (!trashModalEl) return;
-  trashModalEl.remove();
-  trashModalEl = null;
-  var button = document.querySelector('#health-list .hk-action');
-  if (button) button.focus();
-}
-
-function formatTrashTime(value) {
-  var text = String(value || '');
-  if (!text) return '—';
-  return text.replace('T', ' ').replace(/\.[0-9]+/, '').replace(/([+-][0-9]{2}:[0-9]{2}|Z)$/, '');
-}
-
-function renderTrashList(listNode, emptyNode) {
-  while (listNode.firstChild) listNode.removeChild(listNode.firstChild);
-  var items = trashItemsFromStatus();
-  emptyNode.hidden = items.length > 0;
-  for (var i = 0; i < items.length; i += 1) {
-    var item = items[i];
-    var row = el('div', { class: 'trash-row', 'data-theme-id': item.theme_id });
-    var main = el('div', { class: 'trash-main' }, [
-      el('div', { class: 'trash-name', text: String(item.name || item.theme_id) }),
-      el('div', {
-        class: 'trash-meta',
-        text: formatTrashTime(item.deleted_at)
-          + (Number(item.schedule_zones) > 0 ? ' · ' + tsT('library.tools.scheduleUses', '{{count}} schedule periods',
-            { count: Number(item.schedule_zones) }) : '')
-      })
-    ]);
-    row.appendChild(main);
-    var restore = el('button', { class: 'hk-action trash-restore', type: 'button', text: tsT('library.tools.restore', 'Restore') });
-    restore.disabled = item.restorable === false;
-    restore.addEventListener('click', function (themeId) {
-      return function () { restoreTrashTheme(themeId, this); };
-    }(item.theme_id));
-    row.appendChild(restore);
-    listNode.appendChild(row);
-  }
-}
-
-async function restoreTrashTheme(themeId, button) {
-  if (state.busy) return;
-  if (button) button.disabled = true;
-  setBusy(true, tsT('library.tools.restoring', 'Restoring…'));
-  try {
-    var res = await callPlugin('restore_theme', { theme_id: themeId });
-    var name = (res && res.name) || themeId;
-    var zones = Array.isArray(res.schedule_restored) ? res.schedule_restored.length : Number(res.restored_schedule_zones) || 0;
-    var message = tsT('library.tools.restored', 'Restored “{{name}}” ({{count}} schedule periods).', { name: name, count: zones });
-    hideNotice();
-    showToast(message, 'ok');
-    setStatus(message, 'ok');
-    await refreshLibrary({ fresh: true });
-    if (scheduleState.loaded) await refreshSchedule();
-    var status = await refreshHealth({ fresh: true });
-    if (status && trashModalEl) {
-      renderTrashList(trashModalEl.querySelector('.trash-list'), trashModalEl.querySelector('.trash-empty'));
-      if (!trashItemsFromStatus().length) closeTrashModal();
-    } else if (!trashModalEl) {
-      libRefocusCard(themeId);
-    }
-  } catch (error) {
-    showToast(tsT('library.tools.restoreFailed', 'Could not restore the theme: {{error}}', { error: pluginErrorMessage(error) }), 'error');
-    if (button) button.disabled = false;
-  } finally {
-    setBusy(false);
-  }
-}
-
-function openTrashModal() {
-  if (trashModalEl) return;
-  var listNode = el('div', { class: 'trash-list' });
-  var emptyNode = el('div', { class: 'trash-empty', text: '—' });
-  var closeBtn = el('button', { class: 'hk-action', type: 'button', text: tsT('shortcuts.close', 'Close the dialog') });
-  var title = tsT('library.tools.trash', 'Trash');
-  var panel = el('div', { class: 'trash-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [
-    el('div', { class: 'trash-head' }, [
-      el('h3', { text: title }),
-      closeBtn
-    ]),
-    el('p', { class: 'trash-hint', text: tsT('library.tools.trashHint', 'Deleted themes are kept here until restored or removed.') }),
-    listNode,
-    emptyNode
-  ]);
-  trashModalEl = el('div', { class: 'trash-modal', id: 'trash-modal' }, [panel]);
-  document.body.appendChild(trashModalEl);
-  trashModalEl.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') { event.preventDefault(); closeTrashModal(); }
-    if (event.key === 'Tab') trapModalFocus(event, trashModalEl);
-  });
-  closeBtn.addEventListener('click', closeTrashModal);
-  trashModalEl.addEventListener('mousedown', function (event) {
-    if (event.target === trashModalEl) closeTrashModal();
-  });
-  renderTrashList(listNode, emptyNode);
-  closeBtn.focus();
-}
-
-function clearTrashFromHealth() {
-  var status = state.status || {};
-  var trash = status.trash && typeof status.trash === 'object' ? status.trash : {};
-  var count = Number(trash.count) || 0;
-  if (state.busy) return;
-  if (!window.confirm(tsT('library.tools.confirmEmpty', 'Permanently delete {{count}} trash entries? They cannot be restored.', { count: count }))) {
-    return;
-  }
-  setBusy(true, tsT('library.tools.emptyTrash', 'Empty trash'));
-  callPlugin('clear_trash', {})
-    .then(function (result) {
-      var removed = Number((result || {}).removed) || 0;
-      showToast(tsT('library.tools.cleared', 'Removed {{count}} files from the trash.', { count: removed }), 'ok');
-      return refreshHealth({ fresh: true });
-    })
-    .catch(function (error) {
-      showToast(tsT('library.tools.clearFailed', 'Could not empty the trash: {{error}}', { error: pluginErrorMessage(error) }), 'error');
-    })
-    .then(function () { setBusy(false); });
-}
-
-var healthInflight = null;
-var healthReadId = 0;
 function refreshHealth(options) {
-  var opts = options || {};
-  if (healthInflight && !opts.toast && !opts.fresh && !state.busy) return healthInflight;
-  var p = refreshHealthNow(opts, ++healthReadId);
-  healthInflight = p;
-  var clear = function () { if (healthInflight === p) healthInflight = null; };
-  p.then(clear, clear);
-  return p;
-}
-
-function refreshHealthNow(options, readId) {
   var opts = options || {};
   return callPlugin('studio_status', {})
     .then(function (result) {
-      if (readId !== healthReadId) return state.status;
       state.status = result || {};
       renderHealth(state.status);
       if (opts.toast) showToast(tsT('health.refreshedToast', '运行状态已刷新'), 'ok');
       return state.status;
     })
     .catch(function (error) {
-      if (readId !== healthReadId) return state.status;
       state.status = null;
       var stateNode = $('health-state');
       if (stateNode) {
@@ -7910,14 +6723,14 @@ function closeModal() {
 }
 
 /** While the modal is open, keep Tab inside it so focus does not reach the row editors behind. */
-function trapModalFocus(event, dialog) {
-  var panel = dialog || $('modal-panel') || $('modal');
+function trapModalFocus(event) {
+  var panel = $('modal-panel') || $('modal');
   if (!panel) return;
-  var nodes = panel.querySelectorAll('button, select, textarea, input, [tabindex]:not([tabindex="-1"])');
+  var nodes = panel.querySelectorAll('button, textarea, input, [tabindex]:not([tabindex="-1"])');
   var list = Array.prototype.filter.call(nodes, function (node) {
     return !node.disabled && node.offsetParent !== null;
   });
-  if (!list.length) return;
+  if (list.length < 2) return;
   var first = list[0];
   var last = list[list.length - 1];
   if (event.shiftKey && document.activeElement === first) {
@@ -7927,205 +6740,6 @@ function trapModalFocus(event, dialog) {
     event.preventDefault();
     first.focus();
   }
-}
-
-
-var COMPARE_CURRENT_ID = '__current__';
-var compareCache = new Map();
-var compareGeneration = 0;
-
-function cmpColor(value) {
-  var color = parseColor(value);
-  return color && [color.r, color.g, color.b, color.a];
-}
-
-function compareThemeOptions() {
-  var options = [{ id: COMPARE_CURRENT_ID, label: tsT('library.tools.editable', 'Current draft') }];
-  (libraryState.items || []).forEach(function (item) {
-    options.push({ id: item.id, label: item.name || item.id });
-  });
-  return options;
-}
-
-function fillCompareSelect(select, selectedId) {
-  if (!select) return;
-  select.textContent = '';
-  compareThemeOptions().forEach(function (opt) {
-    var node = el('option', { value: opt.id, text: opt.label });
-    select.appendChild(node);
-  });
-  var available = Array.prototype.some.call(select.options, function (o) { return o.value === selectedId; });
-  select.value = available ? selectedId : (select.options[0] ? select.options[0].value : '');
-}
-
-async function compareLoad(id) {
-  if (compareCache.has(id)) return compareCache.get(id);
-  var work = (async function () {
-    var light, dark;
-    if (id === COMPARE_CURRENT_ID) {
-      light = effectiveVars('light');
-      dark = effectiveVars('dark');
-    } else {
-      var result = await callPlugin('theme_json', { theme_id: id });
-      var theme = JSON.parse(result.payload);
-      light = theme.vars || {};
-      dark = theme.dark_vars || {};
-    }
-    // The server composites the same theme surfaces for the preset audit and both columns.
-    var report = await callPlugin('check_contrast', { palette: light, dark: dark, standalone: true });
-    return { rows: report.rows || [], light: light, dark: dark };
-  })();
-  compareCache.set(id, work);
-  try {
-    return await work;
-  } catch (error) {
-    if (compareCache.get(id) === work) compareCache.delete(id);
-    throw error;
-  }
-}
-
-function compareCell(row, vars) {
-  var cell = el('span', { class: 'cmp-cell', role: 'cell' });
-  if (!row) {
-    cell.appendChild(el('span', { class: 'cmp-ratio is-missing', text: '—' }));
-    return cell;
-  }
-  // Prefer the theme variable; fixed host surfaces only come with the resolved hex.
-  var bgColor = (row.bg && vars[row.bg]) || row.surface || '';
-  var swatch = el('span', { class: 'cmp-swatch', title: bgColor });
-  swatch.style.backgroundColor = bgColor || 'transparent';
-  var text = el('span', { class: 'cmp-fg', text: vars[row.fg] || '—' });
-  text.style.color = vars[row.fg] || '';
-  text.style.backgroundColor = bgColor;
-  cell.appendChild(swatch);
-  cell.appendChild(text);
-  cell.appendChild(el('span', { class: 'cmp-ratio' + (row.ok ? '' : ' is-fail'), text: Number(row.ratio).toFixed(2),
-    title: tsT('library.tools.threshold', 'Minimum contrast: {{floor}}:1', { floor: row.floor }) }));
-  return cell;
-}
-
-function renderThemeComparison(a, b) {
-  var body = $('compare-body');
-  var summary = $('compare-summary');
-  var mode = $('compare-mode').value;
-  var onlyDiff = $('compare-only-diff').checked;
-  var onlyFail = $('compare-only-fail').checked;
-  var pairs = new Set();
-  function byPair(column) {
-    var entries = new Map();
-    column.rows.forEach(function (row) {
-      if (row.mode === mode) { pairs.add(row.pair); entries.set(row.pair, row); }
-    });
-    return entries;
-  }
-  var left = byPair(a), right = byPair(b);
-  var different = 0, failedA = 0, failedB = 0, shown = 0;
-  body.textContent = '';
-  pairs.forEach(function (pair) {
-    var ra = left.get(pair), rb = right.get(pair), fields = ra || rb;
-    var changed = !ra || !rb || ra.ratio !== rb.ratio || ra.ok !== rb.ok
-      || a[mode][fields.fg] !== b[mode][fields.fg] || a[mode][fields.bg] !== b[mode][fields.bg];
-    var fail = (ra && !ra.ok) || (rb && !rb.ok);
-    if (changed) different += 1;
-    if (ra && !ra.ok) failedA += 1;
-    if (rb && !rb.ok) failedB += 1;
-    if ((onlyDiff && !changed) || (onlyFail && !fail)) return;
-    var row = el('div', { role: 'row', class: 'cmp-row' + (changed ? ' is-diff' : ''), 'data-pair': pair });
-    row.appendChild(el('span', { class: 'cmp-label', role: 'rowheader', text: contrastPairLabel(fields) }));
-    row.appendChild(compareCell(ra, a[mode]));
-    row.appendChild(compareCell(rb, b[mode]));
-    body.appendChild(row);
-    shown += 1;
-  });
-  summary.textContent = '';
-  [
-    tsT('library.tools.different', 'Different: {{count}}/{{total}}', { count: different, total: pairs.size }),
-    tsT('library.tools.failures', '{{side}} failures: {{count}}', { side: 'A', count: failedA }),
-    tsT('library.tools.failures', '{{side}} failures: {{count}}', { side: 'B', count: failedB }),
-    tsT('library.tools.visible', 'Showing {{count}} pairs', { count: shown })
-  ].forEach(function (text) { summary.appendChild(el('span', { class: 'cmp-tag', text: text })); });
-}
-
-async function refreshCompare() {
-  var generation = ++compareGeneration;
-  try {
-    var results = await Promise.all([compareLoad($('compare-a').value), compareLoad($('compare-b').value)]);
-    if (generation === compareGeneration) renderThemeComparison(results[0], results[1]);
-  } catch (error) {
-    if (generation !== compareGeneration) return;
-    $('compare-body').textContent = '';
-    $('compare-summary').textContent = tsT('library.tools.compareFailed', 'Could not compare themes: {{error}}',
-      { error: pluginErrorMessage(error) });
-  }
-}
-
-
-function openCompare(opts) {
-  var modal = $('compare-modal');
-  if (!modal) return;
-  var options = opts || {};
-  compareCache.clear();
-  state.compareReturnFocus = options.returnFocus || document.activeElement;
-  var items = libraryState.items || [];
-  var idA = options.a || (items.length ? items[0].id : COMPARE_CURRENT_ID);
-  var idB = options.b || (items.length > 1 ? items[1].id : COMPARE_CURRENT_ID);
-  fillCompareSelect($('compare-a'), idA);
-  fillCompareSelect($('compare-b'), idB);
-  $('compare-only-diff').checked = !!options.onlyDiff;
-  if ($('compare-only-fail')) $('compare-only-fail').checked = !!options.onlyFail;
-  $('compare-mode').value = options.mode === 'dark' ? 'dark' : 'light';
-  modal.hidden = false;
-  refreshCompare();
-  var firstPick = $('compare-a');
-  if (firstPick) { try { firstPick.focus(); } catch (e) {  } }
-}
-
-function openCompareFor(item) {
-  if (!item || !item.id) return;
-  var mode = (item.contrast && item.contrast.mode === 'dark') ? 'dark' : 'light';
-  openCompare({
-    a: item.id,
-    b: COMPARE_CURRENT_ID,
-    mode: mode,
-    onlyFail: true,
-    returnFocus: document.activeElement
-  });
-}
-
-function closeCompare() {
-  var modal = $('compare-modal');
-  compareGeneration += 1;
-  compareCache.clear();
-  if (modal) modal.hidden = true;
-  var back = state.compareReturnFocus;
-  state.compareReturnFocus = null;
-  if (back && typeof back.focus === 'function') {
-    try { back.focus(); } catch (e) {  }
-  }
-}
-
-function wireCompare() {
-  var openBtn = $('btn-lib-compare');
-  if (openBtn) openBtn.addEventListener('click', openCompare);
-  ['compare-a', 'compare-b', 'compare-mode', 'compare-only-diff', 'compare-only-fail'].forEach(function (id) {
-    var node = $(id);
-    if (node) node.addEventListener('change', function () { refreshCompare(); });
-  });
-  var closeBtn = $('compare-close');
-  if (closeBtn) closeBtn.addEventListener('click', closeCompare);
-  var doneBtn = $('compare-done');
-  if (doneBtn) doneBtn.addEventListener('click', closeCompare);
-  var modal = $('compare-modal');
-  if (modal) {
-    modal.addEventListener('click', function (event) {
-      if (event.target === modal) closeCompare();
-    });
-  }
-  document.addEventListener('keydown', function (event) {
-    if (!modal || modal.hidden) return;
-    if (event.key === 'Escape') { event.preventDefault(); closeCompare(); }
-    if (event.key === 'Tab') trapModalFocus(event, modal);
-  });
 }
 
 function copyText(text) {
@@ -8351,13 +6965,22 @@ var VARIANT_TEXT_PAIRS = [
   ['--nts-panel-text', '--nts-panel-bg'],
   ['--nts-popover-text', '--nts-popover-bg'],
   ['--nts-modal-text', '--nts-modal-bg'],
-  ['--nts-rec-text', '--nts-rec-bg'],
+  // null = fixed host surface: --nts-rec-text only lands on the compact
+  // recommendation prompt, whose background no theme variable reaches.
+  ['--nts-rec-text', null],
   ['--nts-chip-text', '--nts-chip-bg'],
   ['--nts-topbar-text', '--nts-topbar-bg'],
   ['--nts-code-text', '--nts-code-bg'],
   ['--nts-tool-bubble-text', '--nts-tool-bubble-bg'],
   ['--nts-status-text', '--nts-status-bg']
 ];
+/** Background of the compact recommendation prompt (.compact-music-recommendation-prompt
+ *  in the React chat stylesheet; light rgba(255,255,255,.96), dark #252d3d). Same
+ *  constants as COMPACT_PROMPT_BG in theme_studio/contrast.py. */
+var REC_PROMPT_BG = {
+  light: { r: 255, g: 255, b: 255, a: 1 },
+  dark: { r: 37, g: 45, b: 61, a: 1 }
+};
 var variantState = { index: 0, lastLabel: '' };
 
 function rgbToHsl(r, g, b) {
@@ -8516,7 +7139,8 @@ function wallpaperPalette(colors, mode) {
   out['--nts-link'] = colorToHex(mixToward(accent, dark ? white : black, dark ? 0.22 : 0.14));
   out['--nts-highlight'] = colorToHex(mixToward(accent, dark ? white : black, dark ? 0.55 : 0.35));
   out['--nts-rec-bg'] = colorToHex(mixToward(panel, dark ? black : white, dark ? 0.04 : 0.42));
-  out['--nts-rec-text'] = wallpaperInk(mixToward(panel, dark ? black : white, dark ? 0.04 : 0.42), 4.5);
+  // The card text stays the host's; --nts-rec-text only paints the compact prompt.
+  out['--nts-rec-text'] = wallpaperInk(dark ? REC_PROMPT_BG.dark : REC_PROMPT_BG.light, 4.5);
   out['--nts-rec-border'] = colorToHex(border);
   out['--nts-chip-bg'] = colorToHex(mixToward(accent, dark ? black : white, dark ? 0.68 : 0.88));
   out['--nts-chip-text'] = wallpaperInk(mixToward(accent, dark ? black : white, dark ? 0.68 : 0.88), 4.5);
@@ -8560,9 +7184,11 @@ function buildVariantPalette(step) {
     });
     VARIANT_TEXT_PAIRS.forEach(function (pair) {
       var text = out[mode][pair[0]] || current[pair[0]];
-      var bg = out[mode][pair[1]] || current[pair[1]];
-      if (!text || !bg) return;
-      var fixed = contrastFixColor(parseColor(text), parseColor(bg), 4.5);
+      var bgColor = pair[1] === null
+        ? REC_PROMPT_BG[mode]
+        : parseColor(out[mode][pair[1]] || current[pair[1]] || '');
+      if (!text || !bgColor) return;
+      var fixed = contrastFixColor(parseColor(text), bgColor, 4.5);
       if (fixed && fixed.color) out[mode][pair[0]] = colorToHex(fixed.color);
       else if (!out[mode][pair[0]]) out[mode][pair[0]] = String(text);
     });
@@ -8816,786 +7442,6 @@ function initQuickPresets() {
 
 /* ===== BATCH3_END ===== */
 
-
-
-var RIM_PREF_KEY = 'neko.themeStudio.rim';
-var LOOK_RIM = { clear: '2', std: '1', solid: '0' };
-
-var LOOK_CHROMA = { clear: '2', std: '1', solid: '0' };
-
-var CHROMA_PREF_KEY = 'neko.themeStudio.chroma';
-
-function readChromaPref() {
-  try {
-    var raw = window.localStorage.getItem(CHROMA_PREF_KEY);
-    return raw === '0' || raw === '2' ? raw : '1';
-  } catch (error) { return '1'; }
-}
-
-function setChromaPref(value) {
-  var v = value === '0' || value === '2' ? value : '1';
-  try { window.localStorage.setItem(CHROMA_PREF_KEY, v); } catch (error) { /* Optional in restricted browser contexts. */ }
-  if (window.NekoThemeStudio && typeof window.NekoThemeStudio.setChroma === 'function') {
-    window.NekoThemeStudio.setChroma(v);
-  }
-  try {
-    document.dispatchEvent(new CustomEvent('nts:chroma-change', { detail: { value: v } }));
-  } catch (error) { /* Optional in restricted browser contexts. */ }
-  return v;
-}
-
-var HEAVY_PREF_KEY = 'neko.themeStudio.heavy';
-var HEAVY_LEVELS = [
-  { id: 'btn-heavy-auto', value: 'auto' },
-  { id: 'btn-heavy-on', value: 'on' },
-  { id: 'btn-heavy-off', value: 'off' }
-];
-
-function readHeavyPref() {
-  try {
-    var raw = window.localStorage.getItem(HEAVY_PREF_KEY);
-    return raw === 'on' || raw === 'off' ? raw : 'auto';
-  } catch (error) { return 'auto'; }
-}
-
-function setHeavyPref(value) {
-  var v = value === 'on' || value === 'off' ? value : 'auto';
-  try { window.localStorage.setItem(HEAVY_PREF_KEY, v); } catch (error) { /* Optional in restricted browser contexts. */ }
-  if (window.NekoThemeStudio && typeof window.NekoThemeStudio.setHeavy === 'function') {
-    window.NekoThemeStudio.setHeavy(v);
-  }
-  try {
-    document.dispatchEvent(new CustomEvent('nts:heavy-change', { detail: { value: v } }));
-  } catch (error) { /* Optional in restricted browser contexts. */ }
-  return v;
-}
-
-function syncHeavyButtons() {
-  var current = readHeavyPref();
-  HEAVY_LEVELS.forEach(function (level) {
-    var node = document.getElementById(level.id);
-    if (!node) return;
-    var active = level.value === current;
-    node.setAttribute('aria-pressed', active ? 'true' : 'false');
-    node.classList.toggle('is-active', active);
-  });
-}
-
-function wireHeavyButtons() {
-  HEAVY_LEVELS.forEach(function (level) {
-    var node = document.getElementById(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      setHeavyPref(level.value);
-      syncHeavyButtons();
-      showToast(tsT('glass.setting', '{{value}} selected.', { value: node.textContent }), 'ok');
-    });
-  });
-  document.addEventListener('nts:heavy-change', syncHeavyButtons);
-  syncHeavyButtons();
-}
-
-function readRimPref() {
-  try {
-    var raw = window.localStorage.getItem(RIM_PREF_KEY);
-    return raw === '0' || raw === '2' ? raw : '1';
-  } catch (error) { return '1'; }
-}
-
-function setRimPref(value) {
-  var v = value === '0' || value === '2' ? value : '1';
-  try { window.localStorage.setItem(RIM_PREF_KEY, v); } catch (error) { /* Optional in restricted browser contexts. */ }
-  if (window.NekoThemeStudio && typeof window.NekoThemeStudio.setRim === 'function') {
-    window.NekoThemeStudio.setRim(v);
-  }
-  try {
-    document.dispatchEvent(new CustomEvent('nts:rim-change', { detail: { value: v } }));
-  } catch (error) { /* Optional in restricted browser contexts. */ }
-  return v;
-}
-
-var LOOK_LEVELS = [
-
-  { id: 'clear', opacity: 0.46, brightness: 0.7 },
-  { id: 'std', opacity: 0.56, brightness: 0.88 },
-  { id: 'solid', opacity: 0.68, brightness: 1 }
-];
-var LOOK_BRIGHTNESS_KEY = '--nts-chat-bg-image-brightness';
-
-function currentLookOpacity() {
-  var api = window.NekoMaterials;
-  try {
-    var snap = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
-    if (snap && snap.global && snap.global.opacity !== undefined) return Number(snap.global.opacity);
-  } catch (error) { /* Optional in restricted browser contexts. */ }
-  return null;
-}
-
-function currentLookBrightness() {
-  var ed = state.edited[state.mode] || {};
-  if (Object.prototype.hasOwnProperty.call(ed, LOOK_BRIGHTNESS_KEY)) {
-    return Number(ed[LOOK_BRIGHTNESS_KEY]);
-  }
-  var palette = state.palette || {};
-  var bag = (state.mode === 'dark' ? palette.dark_vars : palette.vars) || {};
-  if (Object.prototype.hasOwnProperty.call(bag, LOOK_BRIGHTNESS_KEY)) {
-    return Number(bag[LOOK_BRIGHTNESS_KEY]);
-  }
-  var light = palette.vars || {};
-  if (Object.prototype.hasOwnProperty.call(light, LOOK_BRIGHTNESS_KEY)) {
-    return Number(light[LOOK_BRIGHTNESS_KEY]);
-  }
-  return 1;
-}
-
-function syncLookButtons() {
-  var opacity = currentLookOpacity();
-  var brightness = currentLookBrightness();
-  LOOK_LEVELS.forEach(function (level) {
-    var btn = $('btn-look-' + level.id);
-    if (!btn) return;
-    var active = opacity !== null && Math.abs(opacity - level.opacity) < 0.005 &&
-      Math.abs(brightness - level.brightness) < 0.02;
-    btn.classList.toggle('is-active', active);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-}
-
-function applyLookLevel(level) {
-  var api = window.NekoMaterials;
-  if (!api || typeof api.patch !== 'function') {
-    showToast(tsT('glass.unavailable', 'The material editor is still loading.'), 'warn');
-    return;
-  }
-  api.patch([{ key: 'opacity', value: level.opacity }], 'both');
-
-  markEdited(LOOK_BRIGHTNESS_KEY, String(level.brightness));
-
-  var rimValue = LOOK_RIM[level.id];
-  setRimPref(rimValue);
-  setChromaPref(LOOK_CHROMA[level.id]);
-  syncAll();
-  syncLookButtons();
-
-  updateButtons();
-  showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: $('btn-look-' + level.id).textContent }), 'info');
-}
-
-function wireLookLevels() {
-  LOOK_LEVELS.forEach(function (level) {
-    var btn = $('btn-look-' + level.id);
-    if (!btn) return;
-    btn.addEventListener('click', function () { applyLookLevel(level); });
-  });
-  syncLookButtons();
-}
-
-var MATERIAL_PRESETS = ['clear', 'frosted', 'liquid', 'smoke', 'soft', 'prism'];
-
-function currentMaterialPreset() {
-  var api = window.NekoMaterials;
-  try {
-    var snap = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
-    var id = snap && snap.preset ? String(snap.preset) : '';
-    return MATERIAL_PRESETS.indexOf(id) >= 0 ? id : 'custom';
-  } catch (error) {
-    return 'custom';
-  }
-}
-
-function syncMaterialPresetSelect() {
-  var sel = $('sel-material-preset');
-  if (!sel) return;
-  var id = currentMaterialPreset();
-  if (sel.value !== id) sel.value = id;
-}
-
-function applyMaterialPreset(id) {
-  var api = window.NekoMaterials;
-  if (!api || typeof api.applyPreset !== 'function') {
-    showToast(tsT('glass.unavailable', 'The material editor is still loading.'), 'warn');
-    return false;
-  }
-  api.applyPreset(id);
-
-  syncLookButtons();
-  try { document.dispatchEvent(new CustomEvent('nts:materials-change')); } catch (error) { /* Optional in restricted browser contexts. */ }
-  syncMaterialPresetSelect();
-  updateButtons();
-  var label = materialPresetLabel(id);
-
-  var note = (typeof api.lastPresetNote === 'function') ? api.lastPresetNote() : '';
-  showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: note ? label + ' (' + note + ')' : label }), 'ok');
-  return true;
-}
-
-var AUTO_WALLPAPER_KEY = '--nts-chat-bg-image';
-
-function wallpaperUrl() {
-  var raw = String(displayValue(AUTO_WALLPAPER_KEY) || '').trim();
-  if (!RE_BG_VALUE.test(raw)) return '';
-  var match = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(raw);
-  if (!match) return '';
-  var href = match[1];
-  try { return new URL(href, window.location.href).href; } catch (error) { return ''; }
-}
-
-function wallpaperStats(url) {
-  return new Promise(function (resolve, reject) {
-    var img = new Image();
-    img.decoding = 'async';
-    img.onload = function () {
-      try {
-        var side = 48;
-        var canvas = document.createElement('canvas');
-        canvas.width = side;
-        canvas.height = side;
-        var ctx = canvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, side, side);
-        var data = ctx.getImageData(0, 0, side, side).data;
-        var n = 0;
-        var sumL = 0;
-        var sumS = 0;
-        var sumL2 = 0;
-        for (var i = 0; i + 3 < data.length; i += 4) {
-          if (data[i + 3] < 8) continue;
-          var r = data[i] / 255;
-          var g = data[i + 1] / 255;
-          var b = data[i + 2] / 255;
-          var max = Math.max(r, g, b);
-          var min = Math.min(r, g, b);
-          var l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          var s = max <= 0 ? 0 : (max - min) / max;
-          n += 1;
-          sumL += l;
-          sumS += s;
-          sumL2 += l * l;
-        }
-        if (n < 8) { reject(new Error(tsT('glass.transparent', 'The image is almost transparent.'))); return; }
-        var meanL = sumL / n;
-        var variance = Math.max(0, sumL2 / n - meanL * meanL);
-        resolve({ luminance: meanL, saturation: sumS / n, contrast: Math.sqrt(variance) });
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = function () { reject(new Error(tsT('glass.loadFailed', 'The image could not be loaded.'))); };
-    img.src = url;
-  });
-}
-
-function pickPresetForStats(stats) {
-  var l = Number(stats && stats.luminance) || 0;
-  var s = Number(stats && stats.saturation) || 0;
-  var c = Number(stats && stats.contrast) || 0;
-  if (l < 0.22) return 'smoke';
-  if (s > 0.42) return l > 0.58 ? 'prism' : 'liquid';
-  if (c > 0.20) return 'frosted';
-  if (s < 0.10 && l > 0.70) return 'clear';
-  return 'soft';
-}
-
-function materialPresetLabel(id) {
-  var sel = $('sel-material-preset');
-  if (sel) {
-    var opt = sel.querySelector('option[value="' + id + '"]');
-    if (opt) return String(opt.textContent);
-  }
-  return id;
-}
-
-function describeWallpaperStats(stats) {
-  return tsT('glass.stats', 'Brightness {{brightness}} · Saturation {{saturation}} · Contrast {{contrast}}', { brightness: stats.luminance.toFixed(2), saturation: stats.saturation.toFixed(2), contrast: stats.contrast.toFixed(2) });
-}
-
-function autoMaterialFromWallpaper() {
-  var url = wallpaperUrl();
-  if (!url) {
-    showToast(tsT('glass.noWallpaper', 'Choose a chat background image in the palette first.'), 'warn');
-    return Promise.resolve({ preset: '', reason: 'no-wallpaper', stats: null });
-  }
-  return wallpaperStats(url).then(function (stats) {
-    var id = pickPresetForStats(stats);
-    if (url !== wallpaperUrl()) return { preset: '', reason: 'wallpaper-changed', stats: stats };
-    if (!applyMaterialPreset(id)) return { preset: '', reason: 'unavailable', stats: stats };
-    showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: materialPresetLabel(id) + ' (' + describeWallpaperStats(stats) + ')' }), 'info');
-    return { preset: id, reason: 'ok', stats: stats };
-  }).catch(function (error) {
-    var message = (error && error.message) || String(error);
-    showToast(tsT('glass.imageReadError', 'Could not read the wallpaper: {{error}}', { error: message }), 'warn');
-    return { preset: '', reason: 'error', stats: null, error: message };
-  });
-}
-
-function paletteHexContrast(a, b) {
-  return contrastRatio(parseColor(a), parseColor(b));
-}
-
-function mixPaletteHex(a, b, weight) {
-  return colorToHex(mixToward(parseColor(a), parseColor(b), weight));
-}
-
-function ensurePaletteContrast(fg, bg, target) {
-  var want = Number(target) || 4.5;
-  var best = fg;
-  var bestRatio = paletteHexContrast(fg, bg);
-  if (bestRatio >= want) return { value: best, ratio: bestRatio };
-
-  var dirs = ['#000000', '#ffffff'];
-  for (var d = 0; d < dirs.length; d += 1) {
-    for (var i = 1; i <= 20; i += 1) {
-      var candidate = mixPaletteHex(fg, dirs[d], i / 20);
-      var ratio = paletteHexContrast(candidate, bg);
-      if (ratio > bestRatio) { best = candidate; bestRatio = ratio; }
-      if (ratio >= want) return { value: candidate, ratio: ratio };
-    }
-  }
-  return { value: best, ratio: bestRatio };
-}
-
-function adjustPaletteLuminance(hex, low, high) {
-  var color = hex;
-  var lum = colorLuma(parseColor(color));
-  var guard = 0;
-  while (lum > high && guard < 24) { color = mixPaletteHex(color, '#000000', 0.08); lum = colorLuma(parseColor(color)); guard += 1; }
-  while (lum < low && guard < 48) { color = mixPaletteHex(color, '#ffffff', 0.10); lum = colorLuma(parseColor(color)); guard += 1; }
-  return color;
-}
-
-function wallpaperBuckets(url) {
-  return new Promise(function (resolve, reject) {
-    var img = new Image();
-    img.decoding = 'async';
-    img.onload = function () {
-      try {
-        var side = 64;
-        var canvas = document.createElement('canvas');
-        canvas.width = side;
-        canvas.height = side;
-        var ctx = canvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, side, side);
-        var data = ctx.getImageData(0, 0, side, side).data;
-        var buckets = {};
-        var total = 0;
-        for (var i = 0; i + 3 < data.length; i += 4) {
-          if (data[i + 3] < 16) continue;
-          var rgb = [data[i], data[i + 1], data[i + 2]];
-          var hsl = rgbToHsl(rgb[0], rgb[1], rgb[2]);
-          var satBand = hsl.s < 0.14 ? 0 : (hsl.s < 0.42 ? 1 : 2);
-          var lightBand = hsl.l < 0.32 ? 0 : (hsl.l < 0.68 ? 1 : 2);
-          var key = (satBand === 0 ? 'n' : Math.floor(hsl.h / 30)) + '_' + satBand + '_' + lightBand;
-          if (!buckets[key]) buckets[key] = { n: 0, r: 0, g: 0, b: 0, s: 0, l: 0, hue: hsl.h };
-          var bucket = buckets[key];
-          bucket.n += 1;
-          bucket.r += rgb[0];
-          bucket.g += rgb[1];
-          bucket.b += rgb[2];
-          bucket.s += hsl.s;
-          bucket.l += hsl.l;
-          total += 1;
-        }
-        if (total < 32) { reject(new Error(tsT('glass.transparent', 'The image is almost transparent.'))); return; }
-        var list = Object.keys(buckets).map(function (key) {
-          var bucket = buckets[key];
-          return {
-            key: key,
-            weight: bucket.n / total,
-            hex: toHex(bucket.r / bucket.n, bucket.g / bucket.n, bucket.b / bucket.n),
-            saturation: bucket.s / bucket.n,
-            lightness: bucket.l / bucket.n,
-            hue: bucket.hue
-          };
-        }).sort(function (a, b) { return b.weight - a.weight; });
-        resolve({ buckets: list, total: total });
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = function () { reject(new Error(tsT('glass.loadFailed', 'The image could not be loaded.'))); };
-    img.src = url;
-  });
-}
-
-function p55BuildVars(extracted, mode, seeds) {
-  var dark = mode === 'dark';
-  var buckets = (extracted && extracted.buckets) || [];
-  if (!buckets.length && !(seeds && seeds.background && seeds.accent)) throw new Error(tsT('glass.noColors', 'No colors could be extracted.'));
-  var dominant = buckets[0] || { hex: seeds.background, weight: 1, saturation: 0, lightness: 0.5, hue: 0 };
-
-  var background = adjustPaletteLuminance(
-    (seeds && seeds.background) ? seeds.background : dominant.hex,
-    dark ? 0.015 : 0.82, dark ? 0.055 : 0.96
-  );
-  var vivid = null;
-  buckets.forEach(function (bucket) {
-    if (bucket.saturation < 0.12) return;
-
-    var stand = paletteHexContrast(bucket.hex, background);
-    if (stand < 1.8) return;
-    var score = bucket.saturation * Math.pow(bucket.weight, 0.35) * Math.min(1, stand / 3);
-    if (!vivid || score > vivid.score) { vivid = { bucket: bucket, score: score }; }
-  });
-  if (!vivid) {
-    var best = null;
-    buckets.forEach(function (bucket) {
-      var c = paletteHexContrast(bucket.hex, background);
-      if (!best || c > best.c) best = { bucket: bucket, c: c };
-    });
-    vivid = { bucket: best ? best.bucket : dominant, score: 0 };
-  }
-
-  var accentSource = (seeds && seeds.accent) ? seeds.accent : vivid.bucket.hex;
-  var accent = accentSource;
-
-  accent = ensurePaletteContrast(accent, background, 3).value;
-
-  var panel = dark ? mixPaletteHex(background, '#ffffff', 0.05) : mixPaletteHex(background, '#ffffff', 0.55);
-  var surface = dark ? mixPaletteHex(background, '#ffffff', 0.10) : mixPaletteHex(background, '#ffffff', 0.74);
-
-  var panelText = ensurePaletteContrast(dark ? '#f2f6fa' : '#1d232b', panel, 7).value;
-  var panelTextSub = ensurePaletteContrast(dark ? '#c3ccd6' : '#4a5563', panel, 4.5).value;
-  var text = panelText;
-  var textSub = panelTextSub;
-  var topbar = mixPaletteHex(accent, background, dark ? 0.78 : 0.82);
-  var topbarText = ensurePaletteContrast(text, topbar, 4.5).value;
-  var userBubble = mixPaletteHex(accent, background, dark ? 0.72 : 0.82);
-  var userText = ensurePaletteContrast(text, userBubble, 7).value;
-  var aiBubble = surface;
-  var aiText = ensurePaletteContrast(text, aiBubble, 7).value;
-  var inputBg = dark ? mixPaletteHex(background, '#ffffff', 0.12) : mixPaletteHex(background, '#ffffff', 0.9);
-  var inputText = ensurePaletteContrast(text, inputBg, 7).value;
-  var inputBorder = mixPaletteHex(accent, inputBg, 0.55);
-  var codeBg = mixPaletteHex(background, '#000000', dark ? 0.35 : 0.07);
-  var codeText = ensurePaletteContrast(dark ? '#e6edf3' : '#22303c', codeBg, 7).value;
-  var highlight = mixPaletteHex(accent, '#ffffff', dark ? 0.25 : 0.68);
-  var link = ensurePaletteContrast(accent, background, 4.5).value;
-
-  var vars = {
-    '--nts-chat-bg': background,
-    '--nts-chat-panel-bg': panel,
-    '--nts-panel-bg': panel,
-    '--nts-panel-text': panelText,
-    '--nts-panel-text-sub': panelTextSub,
-    '--nts-panel-border': mixPaletteHex(accent, panel, 0.62),
-    '--nts-topbar-bg': topbar,
-    '--nts-topbar-text': topbarText,
-    '--nts-input-bg': inputBg,
-    '--nts-input-text': inputText,
-    '--nts-input-border': inputBorder,
-    '--nts-input-placeholder': ensurePaletteContrast(textSub, inputBg, 3).value,
-    '--nts-user-bubble-bg': userBubble,
-    '--nts-user-bubble-text': userText,
-    '--nts-user-bubble-border': mixPaletteHex(accent, userBubble, 0.6),
-    '--nts-ai-bubble-bg': aiBubble,
-    '--nts-ai-bubble-text': aiText,
-    '--nts-ai-bubble-border': mixPaletteHex(accent, aiBubble, 0.78),
-    '--nts-code-bg': codeBg,
-    '--nts-code-text': codeText,
-    '--nts-accent': accent,
-    '--nts-link': link,
-    '--nts-highlight': highlight,
-    '--nts-send-bg': accent,
-    '--nts-send-text': ensurePaletteContrast(dark ? '#101418' : '#ffffff', accent, 4.5).value,
-    '--nts-button-bg': mixPaletteHex(accent, panel, 0.35),
-    '--nts-button-text': ensurePaletteContrast(dark ? '#101418' : '#ffffff', mixPaletteHex(accent, panel, 0.35), 4.5).value,
-    '--nts-chip-bg': mixPaletteHex(accent, background, 0.86),
-    '--nts-chip-text': ensurePaletteContrast(text, mixPaletteHex(accent, background, 0.86), 7).value
-  };
-
-  var notes = [tsT('glass.colors', 'Background {{background}} · Accent {{accent}} · Text contrast {{ratio}}:1', { background: background, accent: accent, ratio: paletteHexContrast(text, background).toFixed(1) })];
-  return { vars: vars, notes: notes, accent: accent, background: background };
-}
-
-var PALETTE_SCHEMES = [
-  { id: 'sakura', background: '#fff6f8', accent: '#e5789a' },
-  { id: 'ocean', background: '#f2f7fb', accent: '#1f6f9e' },
-  { id: 'forest', background: '#f3f7f1', accent: '#2f7d4f' },
-  { id: 'dusk', background: '#fff5e8', accent: '#c2661a' },
-  { id: 'graphite', background: '#f4f5f7', accent: '#4a5568' },
-  { id: 'aurora', background: '#eef7f4', accent: '#0f7d6b' }
-];
-
-function paletteSchemeName(id) {
-  var select = $('palette-preset');
-  var option = select && select.querySelector('option[value="' + id + '"]');
-  return option ? option.textContent : id;
-}
-
-function schemeBuckets(scheme) {
-  function bucket(hex, weight) {
-    var rgb = parseColor(hex);
-    var hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-    return {
-      hex: hex,
-      weight: weight,
-      saturation: hsl.s,
-      lightness: hsl.l,
-      hue: hsl.h
-    };
-  }
-  return { buckets: [bucket(scheme.background, 0.62), bucket(scheme.accent, 0.38)], total: 2 };
-}
-
-function applyPaletteScheme(id) {
-  var scheme = null;
-  PALETTE_SCHEMES.forEach(function (item) { if (item.id === id) scheme = item; });
-  if (!scheme) return { reason: 'unknown-scheme', id: id, vars: {} };
-  var mode = (window.state && state.mode) || 'light';
-  var drafted = null;
-  try {
-    drafted = draftPaletteBoth(schemeBuckets(scheme), { background: scheme.background, accent: scheme.accent });
-  } catch (error) {
-    showToast(tsT('glass.paletteError', 'Could not generate the palette: {{error}}', { error: (error && error.message) || error }), 'warn');
-    return { reason: 'error', id: id, vars: {}, error: String(error) };
-  }
-  showToast(tsT('glass.paletteReady', 'Drafted {{count}} colors for each mode. {{detail}}. Click Apply to save.', { count: Object.keys(drafted.light.vars).length, detail: drafted.notes.join(" / ") }), 'info');
-  return {
-    reason: 'ok',
-    id: id,
-    name: paletteSchemeName(scheme.id),
-    vars: drafted.light.vars,
-    darkVars: drafted.dark.vars,
-    notes: drafted.notes,
-    mode: mode
-  };
-}
-
-function wirePaletteScheme() {
-  var select = $('palette-preset');
-  if (!select) return;
-  select.addEventListener('change', function () {
-    var id = select.value;
-    if (!id) return;
-    applyPaletteScheme(id);
-
-    select.value = '';
-  });
-}
-
-window.NekoPaletteSchemes = {
-  get list() { return PALETTE_SCHEMES.map(function (item) { return { id: item.id, name: paletteSchemeName(item.id) }; }); },
-  apply: applyPaletteScheme,
-  build: function (id, mode) {
-    var scheme = null;
-    PALETTE_SCHEMES.forEach(function (item) { if (item.id === id) scheme = item; });
-    if (!scheme) throw new Error('unknown scheme: ' + id);
-    return p55BuildVars(schemeBuckets(scheme), mode || ((window.state && state.mode) || 'light'),
-      { background: scheme.background, accent: scheme.accent });
-  }
-};
-
-function autoPaletteFromWallpaper() {
-  var url = wallpaperUrl();
-  if (!url) {
-    showToast(tsT('glass.noWallpaper', 'Choose a chat background image in the palette first.'), 'warn');
-    return Promise.resolve({ reason: 'no-wallpaper', vars: {} });
-  }
-  var mode = (window.state && state.mode) || 'light';
-  return wallpaperBuckets(url).then(function (extracted) {
-    if (url !== wallpaperUrl()) return { reason: 'wallpaper-changed', vars: {} };
-    var drafted = draftPaletteBoth(extracted);
-    showToast(tsT('glass.paletteReady', 'Drafted {{count}} colors for each mode. {{detail}}. Click Apply to save.', { count: Object.keys(drafted.light.vars).length, detail: drafted.notes.join(" / ") }), 'info');
-    return {
-      reason: 'ok',
-      vars: drafted.light.vars,
-      darkVars: drafted.dark.vars,
-      notes: drafted.notes,
-      mode: mode
-    };
-  }).catch(function (error) {
-    var message = (error && error.message) || String(error);
-    showToast(tsT('glass.imageReadError', 'Could not read the wallpaper: {{error}}', { error: message }), 'warn');
-    return { reason: 'error', vars: {}, error: message };
-  });
-}
-
-function wireAutoPalette() {
-  var btn = $('btn-auto-palette');
-  if (!btn) return;
-  btn.addEventListener('click', function () { autoPaletteFromWallpaper(); });
-}
-
-window.NekoPaletteAuto = {
-  fromImage: function (url, mode) {
-    return wallpaperBuckets(url).then(function (extracted) {
-      var built = p55BuildVars(extracted, mode || 'light');
-      return { vars: built.vars, notes: built.notes, accent: built.accent, background: built.background,
-        buckets: extracted.buckets.length };
-    });
-  },
-  fromWallpaper: function () { return autoPaletteFromWallpaper(); },
-  contrast: paletteHexContrast,
-  ensure: function (fg, bg, target) { return ensurePaletteContrast(fg, bg, target); }
-};
-
-function wireAutoMaterial() {
-  var btn = $('btn-auto-material');
-  if (!btn) return;
-  btn.addEventListener('click', function () { autoMaterialFromWallpaper(); });
-}
-
-window.NekoMaterialAuto = {
-  fromImage: function (url) {
-    return wallpaperStats(url).then(function (stats) {
-      return { preset: pickPresetForStats(stats), stats: stats };
-    });
-  },
-  fromStats: function (stats) { return pickPresetForStats(stats); },
-  fromWallpaper: function () { return autoMaterialFromWallpaper(); },
-  statsOfWallpaper: function () {
-    var url = wallpaperUrl();
-    return url ? wallpaperStats(url) : Promise.resolve(null);
-  }
-};
-
-function wireMaterialPreset() {
-  var sel = $('sel-material-preset');
-  if (!sel) return;
-  sel.addEventListener('change', function () {
-    var id = String(sel.value || '');
-    if (!id || id === 'custom') { syncMaterialPresetSelect(); return; }
-    applyMaterialPreset(id);
-  });
-  syncMaterialPresetSelect();
-}
-
-var shortcutReturnFocus = null;
-
-function activeEditorDialog() {
-  return ['shortcut-sheet', 'compare-modal', 'trash-modal', 'modal'].map($).find(function (dialog) {
-    return dialog && !dialog.hidden;
-  });
-}
-
-function renderShortcutList() {
-  var list = $('shortcut-list');
-  if (!list) return;
-  list.textContent = '';
-  var shortcuts = [
-  [["Ctrl","↵"], tsT('shortcuts.apply', 'Apply changes')],
-  [["Ctrl","S"], tsT('shortcuts.save', 'Save changes')],
-  [["Alt","Z"], tsT('shortcuts.undoApply', 'Undo the last application')],
-  [["Alt","P"], tsT('shortcuts.preview', 'Start or stop preview')],
-  [["Ctrl","Z"], tsT('shortcuts.undo', 'Undo a draft edit')],
-  [["Ctrl","Shift","Z"], tsT('shortcuts.redo', 'Redo a draft edit')],
-  [["/"], tsT('shortcuts.search', 'Search variables')],
-  [["Ctrl","K"], tsT('shortcuts.library', 'Search the theme library')],
-  [["Alt","↑ / ↓"], tsT('shortcuts.row', 'Move between variable rows')],
-  [["Alt","C"], tsT('shortcuts.copy', 'Copy this row’s value')],
-  [["Alt","V"], tsT('shortcuts.paste', 'Paste into this row')],
-  [["Alt","Backspace"], tsT('shortcuts.clear', 'Reset this row')],
-  [["↑","↓","←","→"], tsT('shortcuts.cards', 'Move between theme cards')],
-  [["Enter"], tsT('shortcuts.use', 'Apply the selected theme')],
-  [["F"], tsT('shortcuts.favorite', 'Toggle favorite')],
-  [["S"], tsT('shortcuts.share', 'Export the selected theme')],
-  [["J"], tsT('shortcuts.json', 'Copy theme JSON')],
-  [["E"], tsT('shortcuts.edit', 'Edit theme details')],
-  [["C"], tsT('shortcuts.compare', 'Compare themes')],
-  [["Delete"], tsT('shortcuts.remove', 'Delete the selected theme')],
-  [["?"], tsT('shortcuts.help', 'Toggle keyboard shortcuts')],
-  [["Esc"], tsT('shortcuts.close', 'Close the dialog')]
-  ];
-  var mac = /Mac|iPad|iPhone/.test(navigator.platform || '');
-  shortcuts.forEach(function (entry) {
-    var row = document.createElement('li');
-    var keys = document.createElement('span');
-    keys.className = 'keys';
-    entry[0].forEach(function (key) {
-      var badge = document.createElement('kbd');
-      badge.textContent = key === 'Ctrl' && mac ? '⌘' : key;
-      keys.appendChild(badge);
-    });
-    var label = document.createElement('span');
-    label.textContent = entry[1];
-    row.appendChild(keys);
-    row.appendChild(label);
-    list.appendChild(row);
-  });
-}
-
-function openShortcutSheet() {
-  var sheet = $('shortcut-sheet');
-  if (!sheet || activeEditorDialog()) return;
-  renderShortcutList();
-  shortcutReturnFocus = document.activeElement;
-  sheet.hidden = false;
-  $('shortcut-close').focus();
-}
-
-function closeShortcutSheet() {
-  $('shortcut-sheet').hidden = true;
-  var back = shortcutReturnFocus;
-  shortcutReturnFocus = null;
-  if (back && document.contains(back)) back.focus();
-}
-
-function wireShortcuts() {
-  var sheet = $('shortcut-sheet');
-  if (!sheet) return;
-  $('btn-shortcuts').addEventListener('click', openShortcutSheet);
-  $('shortcut-close').addEventListener('click', closeShortcutSheet);
-  sheet.addEventListener('click', function (event) {
-    if (event.target === sheet) closeShortcutSheet();
-  });
-  window.addEventListener('localechange', function () {
-    if (!sheet.hidden) renderShortcutList();
-  });
-}
-
-var VIEW_KEY = 'neko.themeStudio.view';
-
-function readViewState() {
-  try {
-    return JSON.parse(window.localStorage.getItem(VIEW_KEY)) || {};
-  } catch (error) { return {}; }
-}
-
-function writeViewState(patch) {
-  try {
-    var old = readViewState();
-    window.localStorage.setItem(VIEW_KEY, JSON.stringify({
-      mode: patch.mode === undefined ? old.mode : patch.mode,
-      scroll: patch.scroll === undefined ? old.scroll : patch.scroll
-    }));
-  } catch (error) { /* Storage can be unavailable in private windows. */ }
-}
-
-// The scroller grows when the library loads. Wait for its first render before
-// restoring an offset, and give user navigation precedence in the meantime.
-function initEditorView() {
-  var saved = readViewState();
-  setMode(saved.mode === 'dark' ? 'dark' : 'light');
-  var scroller = document.querySelector('.container-content');
-  if (!scroller) return function () {};
-  var target = Number(saved.scroll);
-  var pending = Number.isFinite(target) && target > 0;
-  var timer;
-  var gestures = ['pointerdown', 'keydown', 'wheel', 'touchmove'];
-  function finish() {
-    pending = false;
-    gestures.forEach(function (type) { document.removeEventListener(type, finish, true); });
-  }
-  function save() {
-    if (!pending) writeViewState({ scroll: Math.round(scroller.scrollTop) });
-  }
-  if (pending) gestures.forEach(function (type) {
-    document.addEventListener(type, finish, { capture: true, passive: true });
-  });
-  scroller.addEventListener('scroll', function () {
-    if (pending || timer) return;
-    timer = window.setTimeout(function () { timer = 0; save(); }, 250);
-  }, { passive: true });
-  window.addEventListener('pagehide', save);
-  return function () {
-    if (!pending) return;
-    window.requestAnimationFrame(function () {
-      if (!pending) return;
-      scroller.scrollTop = target;
-      finish();
-    });
-  };
-}
-
 function wireEvents() {
   $('mode-light').addEventListener('click', function () { setMode('light'); });
   $('mode-dark').addEventListener('click', function () { setMode('dark'); });
@@ -9611,330 +7457,6 @@ function wireEvents() {
   });
 
   $('btn-apply').addEventListener('click', applyTheme);
-  $('btn-preview').addEventListener('click', togglePreview);
-  $('btn-preview-accept').addEventListener('click', acceptPreview);
-  $('btn-undo-apply').addEventListener('click', undoLastApply);
-  $('btn-share-card').addEventListener('click', exportShareCard);
-  document.addEventListener('nts:palette-request', function () { syncPreviewPalette(true); });
-  window.addEventListener('pagehide', saveDraftNow);
-  window.addEventListener('localechange', function () {
-    updateButtons();
-    refreshDarkFlags();
-    libraryCardCache = Object.create(null);
-    if (libraryState.items.length) renderLibrary();
-    if (state.status) renderHealth(state.status);
-    var compare = $('compare-modal');
-    if (compare && !compare.hidden) {
-      ['compare-a', 'compare-b'].forEach(function (id) { fillCompareSelect($(id), $(id).value); });
-      refreshCompare();
-    }
-  });
-  wireCompare();
-  wireDarkBulk();
-  if ($('only-dark-diff')) $('only-dark-diff').addEventListener('change', function () {setOnlyDarkDiff(this.checked);});
-  if ($('lib-sort')) {
-    libRenderSortSelect();
-    $('lib-sort').addEventListener('change', function () {libSetSortMode(this.value); renderLibrary();});
-  }
-
-  if ($('btn-look-clear')) wireLookLevels();
-  wireMaterialPreset();
-
-  if ($('btn-auto-material')) wireAutoMaterial();
-  if ($('btn-auto-palette')) wireAutoPalette();
-  if ($('palette-preset')) wirePaletteScheme();
-
-  document.addEventListener('nts:materials-change', function () {
-    updateButtons();
-
-    syncGlassButtons();
-    syncGrainButtons();
-    syncBorderButtons();
-    syncPerfButtons();
-    syncMaterialPresetSelect();
-    if ($('btn-look-clear')) syncLookButtons();
-  });
-
-  var GLASS_LEVELS = [
-    { id: 'btn-glass-thin', value: 0.42 },
-    { id: 'btn-glass-std', value: 0.58 },
-    { id: 'btn-glass-thick', value: 0.72 }
-  ];
-  function syncGlassButtons() {
-    var api = window.NekoMaterials;
-    var snap = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
-    var current = snap && snap.global ? Number(snap.global.opacity) : null;
-    GLASS_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var on = current !== null && Math.abs(current - level.value) < 0.005;
-      node.setAttribute('aria-pressed', on ? 'true' : 'false');
-      node.classList.toggle('is-active', on);
-    });
-  }
-  GLASS_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      var api = window.NekoMaterials;
-      if (!api || typeof api.patch !== 'function') { showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.')); return; }
-      api.patch([{ key: 'opacity', value: level.value }], 'both');
-      syncGlassButtons();
-      updateButtons();
-      showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  function syncPerfHint() {
-    var node = $('perf-hint');
-    if (!node) return;
-    var mode = typeof readHeavyPref === 'function' ? readHeavyPref() : 'auto';
-    if (mode !== 'auto' && mode !== 'on' && mode !== 'off') mode = 'auto';
-    node.textContent = mode === 'on' ? tsT('glass.onHint', 'Chat effects are always simplified.') :
-      mode === 'off' ? tsT('glass.offHint', 'All effects stay active in long chats and may slow scrolling.') :
-      tsT('glass.autoHint', 'Simplifies chat effects after 40 messages.');
-    node.classList.toggle('is-warn', mode === 'off');
-  }
-
-  var PERF_LEVELS = [
-    { id: 'btn-perf-saver', key: 'saver' },
-    { id: 'btn-perf-balanced', key: 'balanced' },
-    { id: 'btn-perf-high', key: 'high' },
-    { id: 'btn-perf-ultra', key: 'ultra' }
-  ];
-  function currentQuality() {
-    var api = window.NekoMaterials;
-    if (api && typeof api.getQuality === 'function') {
-      var q = api.getQuality();
-      if (q) return String(q);
-    }
-    var sel = $('mt-quality');
-    return sel && sel.value ? String(sel.value) : 'balanced';
-  }
-  function syncPerfButtons() {
-    var now = currentQuality();
-    PERF_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var active = level.key === now;
-      node.setAttribute('aria-pressed', active ? 'true' : 'false');
-      node.classList.toggle('is-active', active);
-    });
-  }
-  PERF_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      var api = window.NekoMaterials;
-      if (!api || typeof api.setQuality !== 'function') { showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.')); return; }
-      if (!api.setQuality(level.key)) { showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.')); return; }
-      syncPerfButtons();
-      updateButtons();
-      showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  var GRAIN_LEVELS = [
-    { id: 'btn-grain-off', values: { noise: false } },
-    { id: 'btn-grain-soft', values: { noise: true, noiseStrength: 0.45, noiseAlpha: 0.35, noiseSize: 2, noiseDensity: 72 } },
-    { id: 'btn-grain-strong', values: { noise: true, noiseStrength: 0.85, noiseAlpha: 0.5, noiseSize: 3, noiseDensity: 58 } }
-  ];
-  function syncGrainButtons() {
-    var api = window.NekoMaterials;
-    var snap = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
-    var surf = snap && snap.surface ? snap.surface : null;
-    var on = !!(surf && surf.noise);
-    var strength = surf ? Number(surf.noiseStrength) : 0;
-    GRAIN_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var active;
-      if (level.values.noise === false) active = !on;
-      else if (!on) active = false;
-      else if (level.values.noiseStrength >= 0.7) active = strength >= 0.65;
-      else active = strength < 0.65;
-      node.setAttribute('aria-pressed', active ? 'true' : 'false');
-      node.classList.toggle('is-active', active);
-    });
-  }
-  GRAIN_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      var api = window.NekoMaterials;
-      if (!api || typeof api.patch !== 'function') { showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.')); return; }
-      var entries = Object.keys(level.values).map(function (key) {
-        return { key: key, value: level.values[key] };
-      });
-      api.patch(entries, 'both');
-      syncGrainButtons();
-      updateButtons();
-      showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  var APPLE_RECIPE = {
-    params: [
-      { key: 'opacity', value: 0.58 },
-      { key: 'borderAlpha', value: 0.42 },
-      { key: 'noise', value: true },
-      { key: 'noiseStrength', value: 0.45 },
-      { key: 'noiseAlpha', value: 0.35 },
-      { key: 'noiseSize', value: 2 },
-      { key: 'noiseDensity', value: 72 }
-    ],
-    preset: 'liquid'
-  };
-  (function wireAppleRecipe() {
-    var node = $('btn-recipe-apple');
-    if (!node) return;
-    node.addEventListener('click', function () {
-      var api = window.NekoMaterials;
-      if (!api || typeof api.applyPreset !== 'function') {
-        showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.'));
-        return;
-      }
-      api.applyPreset(APPLE_RECIPE.preset);
-      if (typeof api.patch === 'function') api.patch(APPLE_RECIPE.params, 'both');
-
-      try { window.localStorage.setItem('neko.themeStudio.plate', '0'); } catch (error) { /* Optional in restricted browser contexts. */ }
-      if (window.NekoThemeStudio && typeof window.NekoThemeStudio.setPlate === 'function') {
-        window.NekoThemeStudio.setPlate('0');
-      }
-      try { syncGlassButtons(); syncGrainButtons(); syncBorderButtons(); syncPlateButtons(); syncRimButtons(); } catch (error) { /* Optional in restricted browser contexts. */ }
-      updateButtons();
-      showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: node.textContent }), 'ok');
-    });
-  })();
-
-  var BORDER_LEVELS = [
-    { id: 'btn-border-weak', value: 0.22 },
-    { id: 'btn-border-std', value: 0.42 },
-    { id: 'btn-border-strong', value: 0.62 }
-  ];
-  function syncBorderButtons() {
-    var api = window.NekoMaterials;
-    var snap = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
-    var surf = snap && snap.surface ? snap.surface : null;
-    var current = surf ? Number(surf.borderAlpha) : null;
-    BORDER_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var on = current !== null && isFinite(current) && Math.abs(current - level.value) < 0.005;
-      node.setAttribute('aria-pressed', on ? 'true' : 'false');
-      node.classList.toggle('is-active', on);
-    });
-  }
-  BORDER_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      var api = window.NekoMaterials;
-      if (!api || typeof api.patch !== 'function') { showNotice('warn', tsT('glass.unavailable', 'The material editor is still loading.')); return; }
-      api.patch([{ key: 'borderAlpha', value: level.value }], 'both');
-      syncBorderButtons();
-      updateButtons();
-      showToast(tsT('glass.draftSetting', '{{value}} selected. Click Apply to save.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  var PLATE_KEY = 'neko.themeStudio.plate';
-  var PLATE_LEVELS = [
-    { id: 'btn-plate-hide', value: '0' },
-    { id: 'btn-plate-light', value: '1' },
-    { id: 'btn-plate-std', value: '2' }
-  ];
-  function readPlate() {
-    try {
-      var raw = window.localStorage.getItem(PLATE_KEY);
-      return raw === '1' || raw === '2' ? raw : '0';
-    } catch (error) { return '0'; }
-  }
-  function syncPlateButtons() {
-    var current = readPlate();
-    PLATE_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var on = current === level.value;
-      node.setAttribute('aria-pressed', on ? 'true' : 'false');
-      node.classList.toggle('is-active', on);
-    });
-  }
-  PLATE_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      try { window.localStorage.setItem(PLATE_KEY, level.value); } catch (error) { /* Optional in restricted browser contexts. */ }
-      if (window.NekoThemeStudio && typeof window.NekoThemeStudio.setPlate === 'function') {
-        window.NekoThemeStudio.setPlate(level.value);
-      }
-      syncPlateButtons();
-      showToast(tsT('glass.setting', '{{value}} selected.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  var RIM_LEVELS = [
-    { id: 'btn-rim-off', value: '0' },
-    { id: 'btn-rim-std', value: '1' },
-    { id: 'btn-rim-strong', value: '2' }
-  ];
-  function syncRimButtons() {
-    var current = readRimPref();
-    RIM_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var on = current === level.value;
-      node.setAttribute('aria-pressed', on ? 'true' : 'false');
-      node.classList.toggle('is-active', on);
-    });
-  }
-  RIM_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      setRimPref(level.value);
-      showToast(tsT('glass.setting', '{{value}} selected.', { value: node.textContent }), 'ok');
-    });
-  });
-
-  document.addEventListener('nts:rim-change', syncRimButtons);
-  syncRimButtons();
-
-  var CHROMA_LEVELS = [
-    { id: 'btn-chroma-off', value: '0' },
-    { id: 'btn-chroma-std', value: '1' },
-    { id: 'btn-chroma-strong', value: '2' }
-  ];
-  function syncChromaButtons() {
-    var current = readChromaPref();
-    CHROMA_LEVELS.forEach(function (level) {
-      var node = $(level.id);
-      if (!node) return;
-      var on = current === level.value;
-      node.setAttribute('aria-pressed', on ? 'true' : 'false');
-      node.classList.toggle('is-active', on);
-    });
-  }
-  CHROMA_LEVELS.forEach(function (level) {
-    var node = $(level.id);
-    if (!node) return;
-    node.addEventListener('click', function () {
-      setChromaPref(level.value);
-      showToast(tsT('glass.setting', '{{value}} selected.', { value: node.textContent }), 'ok');
-    });
-  });
-  document.addEventListener('nts:chroma-change', syncChromaButtons);
-  syncChromaButtons();
-  syncPlateButtons();
-  syncGrainButtons();
-  syncPerfButtons();
-
-  window.addEventListener('localechange', syncPerfHint);
-  syncPerfHint();
-  document.addEventListener('nts:heavy-change', syncPerfHint);
-  wireHeavyButtons();
-  syncGlassButtons();
-
   $('btn-reset').addEventListener('click', resetTheme);
   $('btn-export').addEventListener('click', exportTheme);
   $('btn-import').addEventListener('click', openImport);
@@ -10086,59 +7608,25 @@ function wireEvents() {
     if (event.target === $('modal')) closeModal();
   });
 
-  wireShortcuts();
   document.addEventListener('keydown', function (event) {
-    if (event.defaultPrevented || event.isComposing) return;
-    var dialog = activeEditorDialog();
-    var key = String(event.key).toLowerCase();
-    var meta = event.ctrlKey || event.metaKey;
-    if (dialog) {
-      if (dialog.id === 'shortcut-sheet') {
-        if (key === 'escape' || key === '?') {
-          event.preventDefault();
-          closeShortcutSheet();
-        } else if (key === 'tab') {
-          event.preventDefault();
-          $('shortcut-close').focus();
-        }
-      } else if (dialog.id === 'modal') {
-        if (key === 'escape') closeModal();
-        if (key === 'tab') trapModalFocus(event);
-      }
+    var modalOpen = !$('modal').hidden;
+    if (event.key === 'Escape' && modalOpen) { closeModal(); return; }
+    if (event.key === 'Tab' && modalOpen) { trapModalFocus(event); return; }
+    // Ignore global shortcuts while the modal is open, or apply/search would fire in the hidden background
+    if (modalOpen) return;
+    if ((event.ctrlKey || event.metaKey) && (event.key === 'Enter' || event.key === 'NumpadEnter')) {
+      event.preventDefault();
+      applyTheme();
       return;
     }
-    if (meta && !event.altKey && !event.shiftKey) {
-      if (key === 's' || key === 'enter' || key === 'numpadenter') {
-        event.preventDefault();
-        if (!event.repeat && !state.busy && (key !== 's' || pendingChangeCount() > 0)) applyTheme();
-      } else if (key === 'k') {
-        event.preventDefault();
-        var field = $('lib-search');
-        if (field) { field.focus(); field.select(); }
-      }
-      return;
-    }
-    if (meta || isTypingTarget(event.target)) return;
-    if (event.altKey) {
-      if (event.shiftKey || (key !== 'p' && key !== 'z')) return;
+    if (event.key === '/' && !isTypingTarget(event.target) && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
-      if (event.repeat || state.busy) return;
-      if (key === 'p') togglePreview();
-      else if (lastApplyUndo) undoLastApply();
-      return;
-    }
-    if (key === '/' && search) {
-      event.preventDefault();
-      search.focus();
-    } else if (key === '?' && !event.repeat) {
-      event.preventDefault();
-      openShortcutSheet();
+      if (search) search.focus();
     }
   });
 }
 
 function setMode(mode) {
-  if (state.mode !== mode) writeViewState({mode: mode});
   state.mode = mode;
   $('mode-light').classList.toggle('is-active', mode === 'light');
   $('mode-dark').classList.toggle('is-active', mode === 'dark');
@@ -10208,14 +7696,14 @@ function bootstrap() {
   // Drag-and-drop import (v0.5.0): bound on body, so dropping anywhere on the panel works
   initDropImport();
   initFocusRecovery();
-  var restoreView = initEditorView();
+  setMode('light');
   // Render from local state first so the panel never shows blank; get_theme corrects it afterwards.
   syncAll();
   applyFilters();
   reloadPalette({});
   // The library is fetched separately (it reads themes/, not theme.json). A failure only
   // leaves the list empty without affecting the editor: refreshLibrary swallows errors into #lib-empty.
-  Promise.resolve(refreshLibrary()).then(restoreView, restoreView);
+  refreshLibrary();
   // Readability audit: pre-scan the current state so a broken palette shows right away.
   renderAudit(true);
   // Scheduled switching: the dropdown options depend on the library list.
@@ -10224,15 +7712,9 @@ function bootstrap() {
   // It is the only place users can self-diagnose "installed but no effect".
   refreshHealth({});
   // External change detection: start after the initial requests settle so they do not compete.
-  setTimeout(function () { if (document.visibilityState !== 'hidden') startExternalSync(); }, EXTERNAL_SYNC_START_DELAY_MS);
+  setTimeout(startExternalSync, EXTERNAL_SYNC_START_DELAY_MS);
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') {
-      startExternalSync();
-      checkExternalChange();
-    } else {
-      stopExternalSync();
-      saveDraftNow();
-    }
+    if (document.visibilityState === 'visible') checkExternalChange();
   });
 }
 
@@ -10303,24 +7785,12 @@ setTimeout(function () {
 
 window.NekoPanel = window.NekoPanel || {
   call: function (entryId, args) { return callPlugin(entryId, args); },
-  toast: function (message, kind) { showToast(message, kind); },
-  notice: showNotice,
-  clearNotice: function () {
-    var button = $('notice-action');
-    if (button) { button.hidden = true; button.onclick = null; button.textContent = ''; }
-  }
+  toast: function (message, kind) { showToast(message, kind); }
 };
 
 /* Automation/debug hooks: the panel has no module system, so test scripts reach internals via window.
  * Attached only when missing; never overwrites an existing object. */
 window.__ntsPanel = window.__ntsPanel || {
-  copyLightIntoDark: copyLightIntoDark,
-  clearAllDarkOverrides: clearAllDarkOverrides,
-  togglePreview: togglePreview,
-  acceptPreview: acceptPreview,
-  previewRemaining: previewRemaining,
-  previewActive: previewActive,
-  libRecentMaybeRecord: libRecentMaybeRecord,
   checkPanelFreshness: checkPanelFreshness,
   panelVersionOf: panelVersionOf,
   hoverPreview: hoverPreview,

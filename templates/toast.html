@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN"{{ theme_boot_attributes | default({}) | xmlattr }}>
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,9 +7,7 @@
     <link rel="stylesheet" href="/static/css/index.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <!-- 主题工坊（本体内置）：界面主题加载器。只读 /api/theme_studio/theme.json。 -->
-    {% if theme_loader_css_version is defined %}
-    {% if theme_critical_css %}<style id="nts-boot">{{ theme_critical_css | safe }}</style>{% endif %}
-    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    {% if theme_loader_css_version is defined %}<link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
     <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>{% endif %}
     <!-- i18next 加载器（复用 index.html 的 i18n 基础设施） -->
     <script src="/static/i18n-i18next.js"></script>

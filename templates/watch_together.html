@@ -1,10 +1,9 @@
 <!doctype html>
-<html{{ theme_boot_attributes | default({}) | xmlattr }}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Watch together</title>
 <link rel="stylesheet" href="/static/game/games/watch-together/watch-together.css?v={{ static_asset_version }}">
 <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
     {% if theme_loader_css_version is defined %}
-    {% if theme_critical_css %}<style id="nts-boot">{{ theme_critical_css | safe }}</style>{% endif %}
     <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
     <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
     {% endif %}

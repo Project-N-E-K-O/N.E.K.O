@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN"{{ theme_boot_attributes | default({}) | xmlattr }}>
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <title>Soccer MVP (VRM sensei 接入验证)</title>
@@ -9,7 +9,6 @@
 <link rel="stylesheet" href="/static/game/games/soccer/soccer-demo.css?v={{ static_asset_version }}">
 
     {% if theme_loader_css_version is defined %}
-    {% if theme_critical_css %}<style id="nts-boot">{{ theme_critical_css | safe }}</style>{% endif %}
     <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
     <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
     {% endif %}

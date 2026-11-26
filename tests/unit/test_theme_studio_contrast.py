@@ -107,6 +107,15 @@ def test_recommendation_text_is_checked_on_the_compact_prompt():
     assert not by_pair(light_text, "light")["recommendation-text"]["ok"]
 
 
+def test_full_chat_recommendation_card_is_checked_with_the_host_text():
+    """``--nts-rec-bg`` paints the full-chat card, whose text stays the host's colour."""
+    rows = {label: (fg_key, bg_key) for label, fg_key, bg_key, _, _ in contrast.PAIRS}
+    assert rows["recommendation-card"] == (None, "--nts-rec-bg")
+    light_card = {"--nts-chat-bg": "#0f1a22", "--nts-rec-bg": "rgba(255, 255, 255, 0.55)"}
+    row = next(r for r in contrast.audit_vars(light_card, "dark") if r["pair"] == "recommendation-card")
+    assert not row["ok"], "light host text on a light card in dark mode must be reported"
+
+
 def test_every_preset_recommendation_text_reads_on_the_compact_prompt():
     themes = contrast.themes_from_dir(str(PRESETS))
     fails, _ = contrast.failing(themes)

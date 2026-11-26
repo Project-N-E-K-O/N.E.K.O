@@ -389,15 +389,10 @@ body.theme-studio-page {
 /* ============================================================
    4. Responsive
    ============================================================ */
-
-@media (max-width: 1040px) {
-  .theme-studio-page .container-header .meta-pills { display: none; }
-}
-
 @media (max-width: 900px) {
   .theme-studio-page .container-content { padding: 18px 16px 0; }
   .theme-studio-page .container-header { padding: 12px 16px; }
-  .theme-studio-page .container-header .header-version { display: none; }
+  .theme-studio-page .container-header .meta-pills .pill { max-width: 150px; }
 }
 
 @media (max-width: 620px) {

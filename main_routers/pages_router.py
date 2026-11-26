@@ -249,13 +249,6 @@ def _static_assets_ctx() -> dict:
         loader_ctx = loader_versions(_THEME_STUDIO_LOADER_DIR, cached_version)
         _theme_loader_ctx_cache = (now, cached_version, loader_ctx)
     ctx.update(loader_ctx)
-    if loader_ctx:
-        from theme_studio.boot import boot_palette
-
-        css, gates = boot_palette()
-        if css is not None:
-            ctx["theme_critical_css"] = css
-            ctx["theme_boot_attributes"] = dict.fromkeys(("data-nts-boot-ready", *gates), "1")
     return ctx
 
 

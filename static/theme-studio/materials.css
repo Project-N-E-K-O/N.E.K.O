@@ -42,12 +42,6 @@
 .mt-pane { padding: 11px 14px 16px; min-height: 320px; max-height: 620px; overflow: auto; }
 .mt-sub { margin: 13px 0 5px; font-size: 11px; font-weight: 650; letter-spacing: .05em; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
 .mt-sub:first-child { margin-top: 2px; }
-.mt-sub-title { flex: 0 1 auto; }
-.mt-sub-reset { margin-left: auto; padding: 1px 8px; border: 1px solid var(--border-soft, rgba(39,184,234,.16));
-  border-radius: 999px; background: transparent; color: var(--text-sub, #5c6f7e); font: inherit;
-  font-size: 10.5px; letter-spacing: .02em; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
-.mt-sub-reset:hover { background: var(--accent-soft, rgba(64,197,241,.13)); color: var(--accent, #147ea6); }
-.mt-sub-reset:focus-visible { outline: 2px solid var(--accent, #147ea6); outline-offset: 1px; }
 .mt-sub::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
 .mt-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.6; margin: 0 0 8px; }
 
@@ -59,10 +53,10 @@
 .mt-num { width: 100%; font: inherit; font-size: 11.5px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
 .mt-num:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--ring); }
 .mt-color { width: 100%; display: flex; align-items: center; gap: 6px; }
-.mt-color input[type="color"] { width: 32px; height: 26px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; flex: none; }
-.mt-color input[type="text"] { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums; }
+.mt-color input[type="color"] { width: 30px; height: 23px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; flex: none; }
+.mt-color input[type="text"] { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums; }
 .mt-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-sub); cursor: pointer; }
-.mt-toggle input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.mt-toggle input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .mt-select-full { width: 100%; }
 
 /* ---------- Preset / component cards ---------- */
@@ -82,36 +76,30 @@
 /* ---------- Preview ---------- */
 .mt-pv-wrap { border-left: 1px solid var(--border-soft); background: var(--surface-2); padding: 11px; }
 .mt-pv-title { font-size: 11px; font-weight: 650; letter-spacing: .05em; color: var(--text-faint); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.mt-pv-bg { font: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0; padding: 5px 8px; min-height: 24px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-sub); cursor: pointer; flex: none; }
+.mt-pv-bg { font: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-sub); cursor: pointer; flex: none; }
 .mt-pv-bg:hover { border-color: var(--accent-line); color: var(--text); }
-.mt-pv { position: relative; border-radius: 12px; overflow: hidden; min-height: 268px; background: var(--nts-chat-bg, #10141d); isolation: isolate; }
+.mt-pv { position: relative; border-radius: 12px; overflow: hidden; min-height: 268px; background: #10141d; isolation: isolate; }
 /* The preview wallpaper can be dark or light: dark shows white-glass reflections and highlights,
    light shows whether things stay readable in light scenes. Glass looks very different on each,
    so offering only one would leave users guessing. */
-.mt-pv[data-bg="light"], .mt-pv-ref[data-bg="light"] { background: var(--nts-chat-bg, #eef2f7); }
+.mt-pv[data-bg="light"], .mt-pv-ref[data-bg="light"] { background: #eef2f7; }
 .mt-pv[data-bg="light"] .mt-pv-wall,
-.mt-pv-ref[data-bg="light"] .mt-pv-wall {
-  background-image: var(--nts-chat-bg-image,
-    radial-gradient(120% 80% at 18% 12%, #bae6fd 0%, transparent 58%),
-    radial-gradient(110% 78% at 82% 22%, #ddd6fe 0%, transparent 60%),
-    radial-gradient(130% 92% at 50% 108%, #bbf7d0 0%, transparent 62%),
-    linear-gradient(160deg, #f1f5f9, #e2e8f0 60%, #eef2f7));
-  background-size: cover;
-  background-position: center;
+.mt-pv-ref[data-bg="light"] .mt-pv-wall { background:
+  radial-gradient(120% 80% at 18% 12%, #bae6fd 0%, transparent 58%),
+  radial-gradient(110% 78% at 82% 22%, #ddd6fe 0%, transparent 60%),
+  radial-gradient(130% 92% at 50% 108%, #bbf7d0 0%, transparent 62%),
+  linear-gradient(160deg, #f1f5f9, #e2e8f0 60%, #eef2f7);
   filter: saturate(1.02);
 }
-.mt-pv-wall { position: absolute; inset: 0;
-  background-image: var(--nts-chat-bg-image,
-    radial-gradient(120% 80% at 18% 12%, #7dd3fc 0%, transparent 58%),
-    radial-gradient(110% 78% at 82% 22%, #a78bfa 0%, transparent 60%),
-    radial-gradient(130% 92% at 50% 108%, #34d399 0%, transparent 62%),
-    linear-gradient(160deg, #0b1120, #1e293b 60%, #0f172a));
-  background-size: cover;
-  background-position: center;
+.mt-pv-wall { position: absolute; inset: 0; background:
+  radial-gradient(120% 80% at 18% 12%, #7dd3fc 0%, transparent 58%),
+  radial-gradient(110% 78% at 82% 22%, #a78bfa 0%, transparent 60%),
+  radial-gradient(130% 92% at 50% 108%, #34d399 0%, transparent 62%),
+  linear-gradient(160deg, #0b1120, #1e293b 60%, #0f172a);
   filter: saturate(1.15);
 }
 .mt-pv-stack { position: relative; padding: 16px 13px; display: flex; flex-direction: column; gap: 9px; }
-.mt-pv-card { position: relative; overflow: hidden; padding: 11px 12px; color: var(--nts-ai-bubble-text, rgba(255,255,255,.94)); font-size: 11.5px; line-height: 1.55;
+.mt-pv-card { position: relative; overflow: hidden; padding: 11px 12px; color: rgba(255,255,255,.94); font-size: 11.5px; line-height: 1.55;
   border-radius: var(--nts-mt-radius-c, var(--nts-mt-radius, 16px));
   border: var(--nts-mt-border-width, 1px) solid var(--nts-mt-border, rgba(255,255,255,.3));
   background-color: var(--nts-mt-bg, rgba(255,255,255,.18));
@@ -155,13 +143,12 @@
 .mt-pv-lines i { display: block; height: 6px; border-radius: 4px; background: rgba(255,255,255,.55); }
 .mt-pv-lines i + i { margin-top: 6px; width: 62%; background: rgba(255,255,255,.34); }
 .mt-pv-msg { margin-left: 22px; }
-.mt-pv-tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 4px;
-  background: color-mix(in srgb, var(--nts-accent, #5FB8E8) 62%, transparent); margin-right: 5px; }
+.mt-pv-tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(255,255,255,.18); margin-right: 5px; }
 /* Dark body text on the light wallpaper: preview text must follow the backdrop brightness, white text on light is unreadable */
-.mt-pv[data-bg="light"] .mt-pv-card { color: var(--nts-ai-bubble-text, rgba(15, 23, 42, .88)); }
+.mt-pv[data-bg="light"] .mt-pv-card { color: rgba(15, 23, 42, .88); }
 .mt-pv[data-bg="light"] .mt-pv-lines i { background: rgba(15, 23, 42, .40); }
 .mt-pv[data-bg="light"] .mt-pv-lines i + i { background: rgba(15, 23, 42, .22); }
-.mt-pv[data-bg="light"] .mt-pv-tag { background: color-mix(in srgb, var(--nts-accent, #5FB8E8) 62%, rgba(15, 23, 42, .06)); }
+.mt-pv[data-bg="light"] .mt-pv-tag { background: rgba(15, 23, 42, .08); }
 /* The three decoration layers map one-to-one to the same-named layers in the app window:
    sheen = top soft band, inner = inner highlight, ambient = ambient reflection. They all use
    the backend-compiled image variables, so the preview shows exactly the app's layering --
@@ -175,20 +162,6 @@
 
 .mt-comp-row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 44px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-sub); }
 .mt-comp-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
-input.mt-comp-num {
-  width: 100%;
-  min-width: 0;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--ring); }
 .mt-pv-stack { z-index: 1; }
 .mt-pv-card { z-index: 0; }
 .mt-pv-ambient { z-index: 0; }
@@ -208,12 +181,11 @@ input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-s
   .mt-preset { transition: none; }
 }
 
-/* Put actions on their own row so translated button labels can wrap on narrow screens. */
-.mt-preset-wrap { display: grid; align-content: start; min-width: 0; gap: 4px; }
-.mt-preset-wrap .mt-preset { width: 100%; }
-.mt-preset-ops { display: flex; flex-wrap: wrap; gap: 4px; }
-.mt-preset-ops button:disabled { opacity: .55; }
-.mt-preset-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+/* Custom presets: the card plus a delete button in the top-right corner, so deleting never hits the card and applies the preset. */
+.mt-preset-wrap { position: relative; }
+.mt-preset-wrap .mt-preset { width: 100%; padding-right: 46px; }
+.mt-preset-del { position: absolute; top: 6px; right: 6px; opacity: .72; }
+.mt-preset-del:hover { opacity: 1; }
 .mt-save-row { display: flex; gap: 7px; align-items: center; margin: 7px 0 2px; }
 .mt-input { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
 .mt-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -340,7 +312,7 @@ input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-s
 }
 .mt-pv-btn {
   flex: none; display: flex; align-items: center; padding: 4px 11px;
-  font-size: 10.5px; font-weight: 600; color: var(--nts-ai-bubble-text, rgba(255, 255, 255, .94));
+  font-size: 10.5px; font-weight: 600; color: rgba(255, 255, 255, .94);
   border-radius: var(--nts-mt-c-radius-button, var(--nts-mt-radius));
   background-color: var(--nts-mt-c-bg-button, var(--nts-mt-bg));
   border: var(--nts-mt-c-border-width-button, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
@@ -368,7 +340,7 @@ input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-s
 }
 .mt-pv-side i { display: block; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .45); }
 .mt-pv-pop {
-  padding: 8px 9px; color: var(--nts-panel-text, rgba(255, 255, 255, .9));
+  padding: 8px 9px; color: rgba(255, 255, 255, .9);
   border-radius: var(--nts-mt-c-radius-dialog, var(--nts-mt-radius));
   background-color: var(--nts-mt-c-bg-dialog, var(--nts-mt-bg));
   border: var(--nts-mt-c-border-width-dialog, var(--nts-mt-border-width)) solid var(--nts-mt-border, rgba(255, 255, 255, .3));
@@ -379,8 +351,8 @@ input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-s
 .mt-pv-pop-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; font-weight: 600; margin-bottom: 5px; }
 .mt-pv-x { font-size: 9px; opacity: .7; }
 .mt-pv-pop-body { font-size: 10px; line-height: 1.5; opacity: .85; }
-.mt-pv[data-bg="light"] .mt-pv-btn { color: var(--nts-ai-bubble-text, rgba(15, 23, 42, .88)); }
-.mt-pv[data-bg="light"] .mt-pv-pop { color: var(--nts-panel-text, rgba(15, 23, 42, .88)); }
+.mt-pv[data-bg="light"] .mt-pv-btn,
+.mt-pv[data-bg="light"] .mt-pv-pop { color: rgba(15, 23, 42, .88); }
 .mt-pv[data-bg="light"] .mt-pv-side i { background: rgba(15, 23, 42, .35); }
 /* The compare layer keeps only the right half: clip-path cuts the left 50%, a 1px bright line marks the seam. */
 .mt-pv-ref { position: absolute; inset: 0; z-index: 2; display: none; pointer-events: none; overflow: hidden; clip-path: inset(0 0 0 50%); }
@@ -394,42 +366,3 @@ input.mt-comp-num:focus { outline: none; border-color: var(--accent-line); box-s
 .mt-pv[data-compare="1"] .mt-pv-label-cur,
 .mt-pv[data-compare="1"] .mt-pv-ref .mt-pv-side-label { display: block; }
 .mt-pv-bg.is-on { border-color: var(--accent-line); color: var(--text); background: var(--surface-2); }
-#mt-pv[data-plain="1"] .mt-pv-card,
-#mt-pv[data-plain="1"] .mt-pv-btn,
-#mt-pv[data-plain="1"] .mt-pv-input,
-#mt-pv[data-plain="1"] .mt-pv-pop,
-#mt-pv[data-plain="1"] .mt-pv-side i,
-#mt-pv[data-plain="1"] .mt-pv-lines i,
-#mt-pv[data-plain="1"] .mt-pv-avatar {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-  background-image: none !important;
-  background-color: var(--nts-panel-bg, #ffffff) !important;
-  box-shadow: 0 1px 2px rgba(15, 26, 34, 0.10) !important;
-  border: 1px solid color-mix(in srgb, var(--nts-accent, #5FB8E8) 26%, transparent) !important;
-  corner-shape: round !important;
-}
-
-#mt-pv[data-plain="1"] .mt-pv-btn {
-  background-color: var(--nts-accent, #5FB8E8) !important;
-  color: var(--nts-send-text, #ffffff) !important;
-  border-color: transparent !important;
-}
-
-#mt-pv[data-plain="1"] .mt-pv-msg,
-#mt-pv[data-plain="1"] .mt-pv-tag {
-  background-color: var(--nts-ai-bubble-bg, rgba(255, 255, 255, 0.9)) !important;
-  color: var(--nts-ai-bubble-text, #12232f) !important;
-}
-
-#mt-pv[data-plain="1"] .mt-pv-wall {
-  background-image: none !important;
-  background-color: var(--nts-chat-bg, #10141d) !important;
-}
-
-#mt-pv[data-plain="1"] .mt-pv-ambient,
-#mt-pv[data-plain="1"] .mt-pv-edge,
-#mt-pv[data-plain="1"] .mt-pv-inner,
-#mt-pv[data-plain="1"] .mt-pv-noise,
-#mt-pv[data-plain="1"] .mt-pv-card::before,
-#mt-pv[data-plain="1"] .mt-pv-card::after { display: none; }

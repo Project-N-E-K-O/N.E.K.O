@@ -45,6 +45,10 @@ paints them:
     ``.compact-music-recommendation-prompt``, whose background no theme
     variable reaches, so the text is checked on that fixed host colour
     (``COMPACT_PROMPT_BG``, from frontend/react-neko-chat/src/styles.css).
+  - Recommendation card (full chat): ``--nts-rec-bg`` over the message list,
+    under the host's own ``--recommendation-text`` (the loader does not
+    recolour the card text), so the fixed host text colour
+    (``REC_CARD_TEXT``) is checked against the theme's card background.
   - Chip (``.system-chip``, ``--nts-chip-text``): ``--nts-chip-bg`` over the
     message list, where system messages render. The same colours also paint
     composer chips (galgame options, visit bar badge) over the window.
@@ -94,8 +98,18 @@ COMPACT_PROMPT_BG = {
     "dark": (37, 45, 61, 1.0),
 }
 
-# (label, text key, background key, surface kind, minimum contrast ratio)
-PAIRS: list[tuple[str, str, str | None, str, float]] = [
+# --recommendation-text of the full-chat .proactive-recommendation card in the
+# React chat stylesheet (light #344b5d; dark #e2e9ee). The loader paints the
+# card with --nts-rec-bg but leaves this text colour alone.
+REC_CARD_TEXT = {
+    "light": (52, 75, 93, 1.0),
+    "dark": (226, 233, 238, 1.0),
+}
+
+# (label, text key, background key, surface kind, minimum contrast ratio).
+# A text key of None means the host's fixed text colour for that surface
+# (see FIXED_TEXT); a background key of None means a fixed host surface.
+PAIRS: list[tuple[str, str | None, str | None, str, float]] = [
     ("topbar", "--nts-topbar-text", "--nts-topbar-bg", WINDOW, 4.5),
     ("input", "--nts-input-text", "--nts-input-bg", WINDOW, 4.5),
     ("input-placeholder", "--nts-input-placeholder", "--nts-input-bg", WINDOW, 3.0),
@@ -112,11 +126,15 @@ PAIRS: list[tuple[str, str, str | None, str, float]] = [
     ("modal-text", "--nts-modal-text", "--nts-modal-bg", MODAL, 4.5),
     ("popover-text", "--nts-popover-text", "--nts-popover-bg", WINDOW, 4.5),
     ("recommendation-text", "--nts-rec-text", None, COMPACT_PROMPT, 4.5),
+    ("recommendation-card", None, "--nts-rec-bg", MESSAGE_LIST, 4.5),
     ("chip-text", "--nts-chip-text", "--nts-chip-bg", MESSAGE_LIST, 4.5),
     ("status-text", "--nts-status-text", "--nts-status-bg", AI_BUBBLE_BLOCK, 3.0),
     ("tool-bubble", "--nts-tool-bubble-text", "--nts-tool-bubble-bg", MESSAGE_LIST, 4.5),
     ("code-text", "--nts-code-text", "--nts-code-bg", WINDOW, 4.5),
 ]
+
+# Host text colours for pairs whose text key is None, keyed by pair label.
+FIXED_TEXT = {"recommendation-card": REC_CARD_TEXT}
 
 
 def parse_color(value):
@@ -268,7 +286,11 @@ def audit_vars(vars_map, mode="light"):
     """
     rows = []
     for label, fg_key, bg_key, kind, floor in PAIRS:
-        fg = average_color(vars_map.get(fg_key))
+        if fg_key is None:
+            fixed = FIXED_TEXT.get(label) or {}
+            fg = fixed.get(mode, fixed.get("light"))
+        else:
+            fg = average_color(vars_map.get(fg_key))
         bg = average_color(vars_map.get(bg_key)) if bg_key else True
         if fg is None or bg is None:
             rows.append({"pair": label, "skip": True})
