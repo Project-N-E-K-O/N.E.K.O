@@ -2755,3 +2755,38 @@ def test_cards_refresh_cannot_erase_newer_switch_receipt(
     )
     assert state["afterSwitch"] == ["C", 802]
     assert state["afterRefresh"] == ["C", 802]
+
+@pytest.mark.frontend
+def test_rescue_preflight_keeps_current_switch_revision(
+    mock_page: Page, running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async input => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+                if (url.pathname === '/api/characters/current_catgirl') {
+                    return new Response(JSON.stringify({
+                        current_catgirl: '../legacy-name',
+                        switch_revision: 901
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                return originalFetch(input);
+            };
+            try {
+                return await ensureCanModifyCardsOutsideVoiceMode();
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+        """
+    )
+
+    assert state["ok"] is True
+    assert state["currentCatgirl"] == "../legacy-name"
+    assert state["switchRevision"] == 901
+    assert state["skippedVoiceCheckForInvalidName"] is True
+
