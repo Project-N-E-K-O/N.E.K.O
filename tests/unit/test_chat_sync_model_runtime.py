@@ -577,28 +577,46 @@ async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'none'])
-async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, monkeypatch, work):
-    from unittest.mock import AsyncMock
-    from services.chat_sync.runtime import ChatSyncServiceError
+@pytest.mark.parametrize('endpoint', ['capabilities', 'binding'])
+@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'failed', 'error', 'none'])
+async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, endpoint, work):
+    paths = []
 
-    runtime, _, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     state = runtime.models.store.get(DOMAIN.key())
+    state['selection'] = (await adapter.read(UID))['selection']
     if work != 'upload':
         state.pop('pending')
-    if work in {'candidate', 'revision'}:
+    if work in {'candidate', 'revision', 'failed'}:
         state['seen_revision'] = state['revision'] + 1
     if work == 'candidate':
         state['candidate'] = {'token': 'f' * 32, 'revision': state['seen_revision'], 'record': state['remote'],
                               'expected': state['selection'], 'path': '/user_live2d/cloud-sync/candidate/model.model3.json'}
+    if work == 'failed':
+        state['failed'] = state['seen_revision']
+    if work == 'error':
+        state['error'] = True
     runtime.models.store.put(DOMAIN.key(), state)
-    monkeypatch.setattr(runtime.models, 'step', AsyncMock(side_effect=ChatSyncServiceError(404)))
+
+    async def observed(request):
+        suffix = '/models/capabilities' if endpoint == 'capabilities' else '/model-binding'
+        if request.url.path.endswith(suffix):
+            paths.append(str(request.url))
+            return httpx.Response(404, json={'detail': 'Not Found'})
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
     try:
         await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
-        state = runtime.scheduler.channel_status(DOMAIN.key())['model']
-        assert state['lastError'] is None
-        assert state['status'] == ('success' if work == 'none' else 'waiting')
-        assert (state['lastSuccessAt'] is not None) is (work == 'none')
+        assert runtime.models.store.get(DOMAIN.key()) == state
+        status = runtime.scheduler.channel_status(DOMAIN.key())['model']
+        assert status['lastError'] is None
+        assert status['status'] == ('success' if work == 'none' else 'waiting')
+        assert (status['lastSuccessAt'] is not None) is (work == 'none')
+        assert len(paths) == 1
+        if endpoint == 'binding' and work == 'none':
+            assert 'metadataOnly=true' in paths[0]
     finally:
         await runtime.close()
 
@@ -716,6 +734,40 @@ async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(t
         state = runtime.models.store.get(DOMAIN.key())
         assert state['candidate']['revision'] == service.model_revision
         assert 'failed' not in state and 'conflict' not in state
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_newer_local_model_confirmation_supersedes_old_renderer_failure(tmp_path):
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        service.model = {'schemaVersion': 1, 'model': None}
+        service.model_revision += 1
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        candidate = (await runtime.models.status(UID))['candidate']
+        assert not await runtime.models.finish(UID, candidate['token'], False)
+        failed_revision = service.model_revision
+        adapter.path = '/C.model3.json'
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert (await runtime.models.status(UID)) == {'conflict': True, 'failed': True}
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+        await runtime.models.resolve(UID, 'local')
+        await runtime._automatic_models(bindings, presence)
+        assert service.model_revision > failed_revision
+        for _ in range(2):
+            assert runtime.models.store.get(DOMAIN.key())['revision'] == service.model_revision
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
+            assert await runtime.models.status(UID) == {'conflict': False, 'failed': False}
+            runtime.test_clock[0] += PULL_INTERVAL_MS
+            await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 2
     finally:
         await runtime.close()
 

@@ -674,7 +674,8 @@ class DesktopChatSyncRuntime:
                         # A failed read must not quarantine the writer gate.
                         return read_error
                     pending = bool(model_state and (
-                        any(model_state.get(field) for field in ('pending', 'candidate', 'conflict', 'failed', 'error'))
+                        any(model_state.get(field) for field in ('pending', 'candidate', 'conflict'))
+                        or self.models.has_unresolved_failure(model_state)
                         or model_state.get('seen_revision', 0) > model_state.get('revision', 0)))
                     self.scheduler.success(domain, 'model', pending=pending)
 

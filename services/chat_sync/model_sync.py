@@ -173,7 +173,11 @@ class DesktopModelSync:
             await self._step(uid, manual=manual, automatic_only=automatic_only)
         except AutomaticRoleInactive:
             raise
-        except Exception:
+        except Exception as exc:
+            # Automatic checks accept missing endpoints on legacy services.
+            # Preserve existing work without creating a new retry failure.
+            if automatic_only and getattr(exc, "status_code", None) == 404:
+                raise
             # Persist a safe retry affordance without exposing signed URLs or provider errors.
             async with self.lock:
                 try:
@@ -409,6 +413,12 @@ class DesktopModelSync:
         finally:
             part.unlink(missing_ok=True)
 
+    @staticmethod
+    def has_unresolved_failure(state):
+        """A newer confirmed revision supersedes an earlier renderer failure."""
+        failed = state.get("failed")
+        return bool(state.get("error") or (failed and failed >= state.get("revision", 0)))
+
     async def status(self, uid):
         runtime = self.runtime
         binding = await asyncio.to_thread(runtime.state.binding, uid)
@@ -423,7 +433,7 @@ class DesktopModelSync:
         candidate = state.get("candidate")
         if candidate and candidate["expected"] == current["selection"]:
             return {**progress, "candidate": {"token": candidate["token"], "path": candidate["path"], "name": current["name"]}}
-        return {**progress, "conflict": bool(state.get("conflict")), "failed": bool(state.get("failed") or state.get("error"))}
+        return {**progress, "conflict": bool(state.get("conflict")), "failed": self.has_unresolved_failure(state)}
 
     async def finish(self, uid, token, loaded):
         try:
