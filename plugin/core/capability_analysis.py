@@ -147,6 +147,10 @@ class _AnalysisWalker:
         ):
             raise _AnalysisBudgetExceeded
 
+    def poll(self) -> None:
+        if self.stop is not None and self.stop.is_set():
+            raise _AnalysisBudgetExceeded
+
     def scope_nodes(self, body):
         """Walk one lexical scope, leaving nested functions/classes to their own scope."""
         stack = [iter(body)]
@@ -208,7 +212,7 @@ def _resolve_with_origin(
                 return value, False, False
             if len(replacement) + len(value) - end > MAX_REFERENCE_LENGTH:
                 raise _AnalysisBudgetExceeded
-            return replacement + value[end:], external, True
+            return _extend(replacement, value[end:]), external, True
     return value, False, None
 
 
@@ -254,18 +258,60 @@ def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | No
     return None
 
 
-def _source_root(node: ast.AST) -> str:
-    """Root name as written, seeing through a constant getattr's receiver
-    (getattr(subprocess, "run")() is rooted in subprocess)."""
+def _plain_name(node: ast.AST) -> str:
+    """Like _name, spelling a constant getattr(x, "a") as x.a."""
+    parts = []
+    length = 0
     while True:
-        if _constant_getattr(node) is not None:
-            node = node.args[0]
+        found = _constant_getattr(node)
+        if found is not None:
+            node, attribute = found
+            parts.extend((attribute, "."))
+            length += len(attribute) + 1
         elif isinstance(node, ast.Attribute):
+            parts.extend((node.attr, "."))
+            length += len(node.attr) + 1
             node = node.value
         elif isinstance(node, ast.Call):
+            parts.append("()")
+            length += 2
             node = node.func
         else:
-            return node.id if isinstance(node, ast.Name) else ""
+            break
+        if length > MAX_REFERENCE_LENGTH:
+            raise _AnalysisBudgetExceeded
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return "".join(reversed(parts))
+
+
+class _Reflected(str):
+    """A resolved path that went through a followed constant getattr.
+
+    ``legacy`` is the path as it resolved before getattr was followed (rooted
+    in the unresolved "getattr()"); the legacy capability scan keeps reading
+    that one, so its result does not change.
+    """
+
+    def __new__(cls, value: str, legacy: str):
+        path = super().__new__(cls, value)
+        path.legacy = legacy
+        return path
+
+
+def _extend(resolved: str, suffix: str) -> str:
+    """resolved + suffix, keeping a _Reflected path's legacy spelling."""
+    if isinstance(resolved, _Reflected):
+        return _Reflected(resolved + suffix, resolved.legacy + suffix)
+    return resolved + suffix
+
+
+def _legacy(method: str, external: bool) -> tuple[str, bool]:
+    """(method, external) as the legacy capability scan reads them."""
+    if isinstance(method, _Reflected):
+        # Rooted in the bare, unresolved getattr: never external.
+        return str(method.legacy), False
+    return method, external
 
 
 # A socket.socket(AF_UNIX) object in a resolved path. "[" never appears in a
@@ -291,18 +337,12 @@ def _unix_family(call: ast.Call, index: int | None, bindings) -> bool:
     return bool(external and bound) and resolved in _UNIX_FAMILIES
 
 
-def _unix_socket_call(node: ast.AST, bindings, walker) -> bool:
-    """socket.socket(socket.AF_UNIX, ...) or socket.socket(family=AF_UNIX)."""
-    if not isinstance(node, ast.Call) or not _unix_family(node, 0, bindings):
-        return False
-    func = _resolve_chain_root(node.func, bindings, walker)
-    resolved, external, bound = func[:3] if func else _resolve_with_origin(_name(node.func), bindings)
-    return bool(external and bound) and resolved == "socket.socket"
-
-
 def _unmark_local_socket(resolved: str) -> tuple[str, bool]:
     if resolved.startswith(_UNIX_SOCKET):
-        return "socket.socket()" + resolved[len(_UNIX_SOCKET):], True
+        plain = "socket.socket()" + resolved[len(_UNIX_SOCKET):]
+        if isinstance(resolved, _Reflected):
+            plain = _Reflected(plain, resolved.legacy)
+        return plain, True
     return resolved, False
 
 
@@ -350,7 +390,9 @@ def _literal_import(node: ast.AST, bindings) -> tuple[str, str] | None:
     ):
         return None
     resolved, external, bound = _resolve_with_origin(_name(func), bindings)
-    if bound and external and resolved == "importlib.import_module":
+    # Not through a followed getattr (im = getattr(importlib, "import_module")):
+    # that stays a dynamic_import blind spot, as getattr(...)("x") does.
+    if bound and external and resolved == "importlib.import_module" and not isinstance(resolved, _Reflected):
         if any(item.arg not in ("name", "package") for item in node.keywords) or len(node.args) > 2:
             return None
         module = _literal_string(_call_argument(node, 0, "name"))
@@ -374,11 +416,12 @@ def _literal_import(node: ast.AST, bindings) -> tuple[str, str] | None:
     return None
 
 
-def _external_getattr(node: ast.AST, bindings, walker) -> tuple[str, bool] | None:
+def _external_getattr(node: ast.AST, bindings, walker) -> str | None:
     """getattr(x, "name") itself, as x.name, when x has an external origin.
 
-    Only external origins are followed: the legacy capability scan reads
-    non-external references, and must not start seeing through getattr.
+    Only external origins are followed, and the result is a _Reflected path,
+    so the legacy capability scan (which reads non-external references)
+    sees what it saw before getattr was followed.
     """
     found = _constant_getattr(node, bindings)
     if found is None:
@@ -390,10 +433,17 @@ def _external_getattr(node: ast.AST, bindings, walker) -> tuple[str, bool] | Non
         return None
     if len(resolved) + len(attribute) + 1 > MAX_REFERENCE_LENGTH:
         raise _AnalysisBudgetExceeded
-    return resolved + "." + attribute, inner[3] if inner else False
+    # Before: the unresolved "getattr()" (_name of this call).
+    return _Reflected(resolved + "." + attribute, "getattr()")
 
 
-def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool, bool, bool] | None:
+# Kinds of chain root found by _resolve_chain_root.
+_ROOT_IMPORT = "import"
+_ROOT_GETATTR = "getattr"
+_ROOT_SOCKET = "socket"
+
+
+def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool, bool, str] | None:
     """Resolve an attribute / call chain rooted in something _name cannot
     spell, as the equivalent plain spelling:
 
@@ -403,8 +453,8 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
       .write_text()), as the attribute access;
     - socket.socket(socket.AF_UNIX) (see _UNIX_SOCKET).
 
-    The fourth item tells whether the root is a getattr (whose written root
-    name is then its receiver's, see _source_root).
+    The fourth item is the kind of root (_ROOT_*). Each part of the chain is
+    resolved at most once, so nested forms stay linear.
     """
     parts = []
     node = raw_node
@@ -413,19 +463,41 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
         root = None
         literal = _literal_import(node, bindings)
         if literal is not None:
-            root = literal[1], not _sdk_module(literal[1]), False
+            root = literal[1], not _sdk_module(literal[1]), _ROOT_IMPORT
         else:
             reflected = _external_getattr(node, bindings, walker)
             if reflected is not None:
-                root = reflected[0], True, True
-            elif _unix_socket_call(node, bindings, walker):
-                root = _UNIX_SOCKET, True, False
+                root = reflected, True, _ROOT_GETATTR
+            elif isinstance(node, ast.Call) and _unix_family(node, 0, bindings):
+                func = node.func
+                through_getattr = _constant_getattr(func, bindings) is not None
+                if through_getattr:
+                    called = _external_getattr(func, bindings, walker)
+                    if called is None:
+                        # The rest of the chain is that getattr: unresolved.
+                        return None
+                elif isinstance(func, (ast.Name, ast.Attribute)):
+                    called, external, bound = _resolve_with_origin(_name(func), bindings)
+                    if not (external and bound):
+                        called = None
+                else:
+                    called = None
+                if called == "socket.socket":
+                    root = _extend(called, "()")
+                    root = (
+                        _Reflected(_UNIX_SOCKET, root.legacy) if isinstance(root, _Reflected) else _UNIX_SOCKET,
+                        True,
+                        _ROOT_SOCKET,
+                    )
+                elif through_getattr:
+                    # Resolved already; the next step would repeat it.
+                    root = _extend(called, "()"), True, _ROOT_GETATTR
         if root is not None:
-            prefix, external, via_getattr = root
-            resolved = prefix + "".join(reversed(parts))
+            prefix, external, kind = root
+            resolved = _extend(prefix, "".join(reversed(parts)))
             if len(resolved) > MAX_REFERENCE_LENGTH:
                 raise _AnalysisBudgetExceeded
-            return resolved, external, True, via_getattr
+            return resolved, external, True, kind
         if isinstance(node, ast.Attribute):
             parts.extend((node.attr, "."))
             node = node.value
@@ -485,12 +557,16 @@ def _references(tree, walker: _AnalysisWalker):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
         bindings = _build_bindings(declared, inherited, nodes, walker)
-        _propagate_assignments(assignments, bindings, walker)
+        _propagate_assignments(assignments, bindings, walker, shared)
         # Names rebound here, plus those inherited from enclosing scopes that
         # this scope does not bind itself (it may import its own copy).
         rebound = _derived_rebound(
             _rebound_names(nodes, walker) | (outer_rebound - declared), assignments, walker
         )
+        for name in rebound | shared:
+            # A family name rebound by a loop, with, ... or elsewhere.
+            if bindings.get(name, (None,))[0] in _UNIX_FAMILIES:
+                bindings[name] = (None, False)
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
         membership = {
@@ -525,7 +601,7 @@ def _references(tree, walker: _AnalysisWalker):
             extra = comprehension_locals.get(id(owner), frozenset()) if owner is not None else frozenset()
             return scope(body, inherited, parameters, function, rebound | extra)
 
-        for reference in _emit_references(nodes, bindings, nested, walker, function):
+        for reference in _emit_references(nodes, bindings, nested, walker, function, shared):
             # Nested scopes already applied their own view of rebinding.
             if id(reference.node) in own:
                 changes = {}
@@ -544,7 +620,22 @@ def _references(tree, walker: _AnalysisWalker):
                     reference = replace(reference, **changes)
             yield reference
 
+    shared = _shared_names(tree, walker)
     yield from scope(tree.body, {})
+
+
+def _shared_names(tree, walker) -> frozenset[str]:
+    """Names a global / nonlocal statement lets another scope assign.
+
+    One extra pass over the file; it honours the stop event but is not
+    charged to the node budget, which the scopes already count.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        walker.poll()
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return frozenset(names)
 
 
 def _written_targets(nodes, walker) -> set[int]:
@@ -656,7 +747,7 @@ def _derived_rebound(rebound: frozenset[str], assignments, walker) -> frozenset[
             walker.check()
             if "." in key or key in names:
                 continue
-            if _source_root(value) in names:
+            if _root_name(_plain_name(value)) in names:
                 names.add(key)
                 changed = True
     return frozenset(names)
@@ -734,41 +825,61 @@ def _references_binding(value: str, key: str) -> bool:
     return value == key or value.startswith((key + ".", key + "()"))
 
 
-def _propagate_assignments(assignments, bindings, walker):
-    """Resolve aliases until the final binding of each assignment stops changing."""
+def _propagate_assignments(assignments, bindings, walker, shared=frozenset()):
+    """Resolve aliases until the final binding of each assignment stops changing.
+
+    ``shared`` names are also assigned elsewhere (global / nonlocal).
+    """
     counts: dict[str, int] = {}
     for key, _node in assignments:
         counts[key] = counts.get(key, 0) + 1
+    # Assigned more than once or elsewhere: the name may hold another socket
+    # or family, so it is not known to be a local one.
+    uncertain = {key for key, count in counts.items() if count > 1 or key in shared}
+
+    def bind(key, resolved, external):
+        if key in uncertain:
+            resolved = _unmark_local_socket(resolved)[0]
+        binding = resolved, external
+        resolved_bindings[key] = binding
+        bindings[key] = binding
+
     previous = None
     while True:
         resolved_bindings = {}
         for key, node in assignments:
             walker.check()
             literal = _resolve_chain_root(node, bindings, walker)
-            if literal is not None:
-                resolved = literal[0]
-                if counts[key] > 1:
-                    # Assigned more than once: the name may hold another
-                    # socket, so it is not known to be a local one.
-                    resolved = _unmark_local_socket(resolved)[0]
-                binding = resolved, literal[1]
-                resolved_bindings[key] = binding
-                bindings[key] = binding
+            # As with a plain x = x.attr, a getattr or socket rooted in the
+            # name it is assigned to is not followed (it would grow forever);
+            # the binding stays what it was before getattr was followed.
+            if literal is not None and (
+                literal[3] == _ROOT_IMPORT or not _references_binding(_plain_name(node), key)
+            ):
+                bind(key, literal[0], literal[1])
                 continue
             value = _name(node)
             if not value or _references_binding(value, key):
                 continue
             resolved, external = _resolve(value, bindings)
             if external or not _references_binding(resolved, key):
-                binding = resolved, external
-                resolved_bindings[key] = binding
-                bindings[key] = binding
+                bind(key, resolved, external)
         if resolved_bindings == previous or not resolved_bindings:
-            return
+            break
         previous = resolved_bindings
+    # A family name is trusted only when bound once, to the family itself
+    # (not "from socket import AF_UNIX" followed by "AF_UNIX = 2").
+    for key in counts:
+        binding = bindings.get(key)
+        if (
+            binding is not None
+            and binding[0] in _UNIX_FAMILIES
+            and (key in uncertain or resolved_bindings.get(key, (None,))[0] not in _UNIX_FAMILIES)
+        ):
+            bindings[key] = (None, False)
 
 
-def _propagate_self_attributes(node, bindings, walker):
+def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     """Collect self assignments from methods without inheriting method locals."""
     assignments = []
     for method in node.body:
@@ -780,7 +891,7 @@ def _propagate_self_attributes(node, bindings, walker):
                 (key, value) for key, value in method_assignments if key.startswith("self.")
             )
     class_bindings = dict(bindings)
-    _propagate_assignments(assignments, class_bindings, walker)
+    _propagate_assignments(assignments, class_bindings, walker, shared)
     return class_bindings
 
 
@@ -788,13 +899,13 @@ def _qualified(function: str, name: str) -> str:
     return f"{function}.{name}" if function else name
 
 
-def _emit_references(nodes, bindings, scope, walker, function=""):
+def _emit_references(nodes, bindings, scope, walker, function="", shared=frozenset()):
     for node in nodes:
         walker.check()
         if isinstance(node, ast.ClassDef):
             yield from scope(
                 node.body,
-                _propagate_self_attributes(node, bindings, walker),
+                _propagate_self_attributes(node, bindings, walker, shared),
                 function=_qualified(function, node.name),
                 owner=node,
             )
@@ -818,12 +929,15 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                 raw = _name(receiver)
                 inner = _resolve_chain_root(receiver, bindings, walker)
                 resolved, external, bound = inner[:3] if inner else _resolve_with_origin(raw, bindings)
-                method, local_socket = _unmark_local_socket(resolved + "." + attribute)
+                method, local_socket = _unmark_local_socket(_extend(resolved, "." + attribute))
                 # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
+                is_call = isinstance(node, ast.Call) and isinstance(node.func, ast.Call)
+                if not local_socket and is_call and external and bound and method == "socket.socket":
+                    # getattr(socket, "socket")(socket.AF_UNIX)
+                    local_socket = _unix_family(node, 0, bindings)
                 yield _Reference(
-                    node, method, external, bound, function,
-                    isinstance(node, ast.Call) and isinstance(node.func, ast.Call),
-                    raw_root=_source_root(receiver) if inner and inner[3] else _root_name(raw),
+                    node, method, external, bound, function, is_call,
+                    raw_root=_root_name(_plain_name(receiver)) if inner and inner[3] != _ROOT_IMPORT else _root_name(raw),
                     local_socket=local_socket,
                 )
             else:
@@ -832,10 +946,10 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                 raw_root = _root_name(raw)
                 literal = _resolve_chain_root(target, bindings, walker)
                 if literal is not None:
-                    resolved, external, bound, via_getattr = literal
+                    resolved, external, bound, kind = literal
                     via_call_result = False
-                    if via_getattr:
-                        raw_root = _source_root(target)
+                    if kind != _ROOT_IMPORT:
+                        raw_root = _root_name(_plain_name(target))
                 else:
                     resolved, external, bound = _resolve_with_origin(raw, bindings)
                     via_call_result = (
@@ -1294,14 +1408,17 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
     else:
         direct = BASIS_RESOLVED_CALL if reference.is_call else BASIS_RESOLVED_NAME
         named = BASIS_RESOLVED_NAME
-    if not reference.external:
+    legacy_method, legacy_external = _legacy(reference.method, reference.external)
+    if not legacy_external:
         # Definite only for the SDK itself, not the plugin's own plugin.* modules.
-        sdk_resolved = reference.bound is True and _sdk_origin(reference.method)
+        sdk_resolved = (
+            reference.bound is True and legacy_method is reference.method and _sdk_origin(legacy_method)
+        )
         sdk_basis = direct if sdk_resolved else BASIS_SUFFIX_MATCH
-        capability = _capability_for(reference.method)
+        capability = _capability_for(legacy_method)
         if capability:
             results.append((LEGACY_CAPABILITY_PERMISSIONS[capability], sdk_basis, {}))
-        call_target = reference.method.removesuffix("()")
+        call_target = legacy_method.removesuffix("()")
         for suffix, permission in _SDK_PERMISSION_SUFFIXES:
             if call_target.endswith(suffix):
                 results.append((permission, sdk_basis, {}))
@@ -1693,13 +1810,13 @@ class _PermissionCollector:
             "file": relative,
             "line": node.lineno,
             "function": reference.function,
-            "method": reference.method,
+            "method": str(reference.method),
         }
         for permission, basis, extra in _reference_permissions(reference):
             self.add_finding(permission, basis, {**row, **extra})
         kind = _reference_blind_spot(reference)
         if kind:
-            self.add_blind_spot(kind, relative, node.lineno, method=reference.method)
+            self.add_blind_spot(kind, relative, node.lineno, method=str(reference.method))
 
     def report(self, declarations: PermissionDeclarations, warnings, skipped) -> tuple[dict, dict]:
         for warning in warnings:
@@ -1804,7 +1921,8 @@ def analyze_capabilities(
                 collector.scan(relative, reference)
                 if isinstance(reference.node, (ast.Import, ast.ImportFrom)):
                     continue
-                node, method, external = reference.node, reference.method, reference.external
+                node = reference.node
+                method, external = _legacy(reference.method, reference.external)
                 capability = None if external else _capability_for(method)
                 if capability:
                     capabilities.add(capability)

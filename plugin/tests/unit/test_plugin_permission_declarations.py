@@ -2118,8 +2118,8 @@ def _without_lines(report: dict) -> dict:
 @pytest.mark.parametrize(
     "reflective,plain,before,after",
     [
-        # (getattr spelling, attribute spelling, basis on main before this
-        # change, basis now; None: the permission was not reported at all).
+        # (getattr spelling, attribute spelling, bases on main before this
+        # change, bases now; a missing permission was not reported at all).
         (
             "import pathlib\nP = getattr(pathlib, 'Path')\nP('/etc/x').write_text('a')\n",
             "import pathlib\nP = pathlib.Path\nP('/etc/x').write_text('a')\n",
@@ -2172,9 +2172,7 @@ def test_constant_getattr_results_are_followed_like_the_attribute(tmp_path, refl
     report = _scan(tmp_path / "getattr", reflective)
     expected = _scan(tmp_path / "plain", plain)
     assert _bases(report) == after
-    # ``before`` documents the main result this changes; only the rebound
-    # case was already equivalent.
-    assert (after == before) is ("for subprocess" in reflective)
+    del before  # documents the main result; see the PR for the comparison
     assert _without_lines(report) == _without_lines(expected)
     assert report["blind_spots"] == expected["blind_spots"] == []
     assert [(issue.severity, issue.code) for issue in compare_declarations(report)] == [
@@ -2287,3 +2285,111 @@ def test_datagram_endpoints_listen_only_with_a_local_address(tmp_path, call, bas
     # On main none of these reported system.network:listen.
     assert report["permissions"].get(LISTEN, {}).get("basis") == basis
     assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Receivers from an external origin whose result reaches an
+        # SDK-looking method: main read these as "getattr()()..." (not
+        # external), so the legacy capability scan matched them.
+        "import extlib\nctx = getattr(extlib, 'get_ctx')()\nctx.push_message(source='a')\n",
+        "import extlib\ngetattr(extlib, 'get_ctx')().push_message('a')\n",
+        "import extlib\nP = getattr(extlib, 'Plugin')\nP().push_message('x')\n",
+        "import extlib\ngetattr(getattr(extlib, 'get_ctx')(), 'push_message')('x')\n",
+        "import importlib\nim = getattr(importlib, 'import_module')\nim('x').push_message()\n",
+    ],
+)
+def test_followed_getattr_keeps_the_legacy_reading(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["capabilities"] == ["messages.push"]
+    assert [row["method"] for row in report["evidence"]] == ["getattr()().push_message"]
+    assert report["permissions"]["plugin_sdk.main_agent.messages:push"]["basis"] == "suffix_match"
+
+
+@pytest.mark.parametrize(
+    "source,bases",
+    [
+        # x = getattr(x, "a") is not followed, like x = x.a (it would grow
+        # on every round); the result stays as on main.
+        ("import os\nos = getattr(os, 'path')\nos.join('a')\n", {}),
+        ("import subprocess\nsubprocess = getattr(subprocess, 'x')\nsubprocess.run([])\n", {"system.process:spawn": "import_only"}),
+        ("import socket\nsocket = socket.socket(socket.AF_UNIX)\nsocket.listen()\n", {CONNECT: "resolved_name"}),
+    ],
+)
+def test_self_referencing_assignments_are_not_followed(tmp_path, source, bases):
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert _bases(report) == bases
+
+
+def test_import_module_through_getattr_stays_a_blind_spot(tmp_path):
+    report = _scan(tmp_path, "import importlib\nim = getattr(importlib, 'import_module')\nim('subprocess').run([])\n")
+    assert "dynamic_import" in {spot["type"] for spot in report["blind_spots"]}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ngetattr(socket, 'socket')(socket.AF_UNIX).listen()\n",
+        "import socket\ns = getattr(socket, 'socket')(socket.AF_UNIX)\ns.listen()\n",
+        "import socket\nmake = getattr(socket, 'socket')\ns = make(socket.AF_UNIX)\ns.listen()\n",
+    ],
+)
+def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
+    # On main: connect resolved_call, listen not reported.
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # t may hold the INET socket when it listens.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nt = socket.socket()\nt.listen()\nt = s\n",
+        # Assigned by another scope.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    global s\n    s = socket.socket()\n"
+        "def g():\n    s.listen()\n",
+        "import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    def g():\n        nonlocal s\n"
+        "        s = socket.socket()\n    g()\n    s.listen()\n",
+        # The family name is rebound.
+        "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\nsocket.socket(AF_UNIX).listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nfor AF_UNIX in families:\n    socket.socket(AF_UNIX).listen()\n",
+        "import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
+        "socket.socket(AF_UNIX).listen()\n",
+        # A class attribute set to another socket in another method.
+        "import socket\nclass S:\n    def a(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+        "    def b(self):\n        self.sock = socket.socket()\n    def c(self):\n        self.sock.listen()\n",
+    ],
+)
+def test_sockets_that_may_not_be_unix_keep_their_listen_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] in ("resolved_call", "suffix_match")
+    assert report["permissions"][LISTEN]["basis"] != "resolved_name"
+
+
+def test_the_local_socket_marker_never_reaches_the_report(tmp_path):
+    report = _scan(
+        tmp_path,
+        "import socket\nclass P:\n    def go(self):\n        s = socket.socket(socket.AF_UNIX)\n"
+        "        getattr(s, 'bind')('/p')\n        s.listen()\n        s.push_message()\n"
+        "        socket.socket(socket.AF_UNIX).__dict__\n",
+    )
+    rows = [row for item in report["permissions"].values() for row in item["findings"]]
+    methods = [row["method"] for row in rows + report["evidence"] + report["blind_spots"]]
+    assert methods and not [method for method in methods if "[" in method or "AF_UNIX" in method]
+    assert all(type(method) is str for method in methods)
+    assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nx = socket" + ".socket(socket.AF_UNIX)" * 60 + "\n",
+        "import socket\nx = " + "getattr(" * 60 + "socket" + ", 'socket')(socket.AF_UNIX)" * 60 + "\n",
+        "x = " + "getattr(" * 60 + "obj" + ", 'f')(socket.AF_UNIX)" * 60 + "\n",
+    ],
+)
+def test_nested_getattr_and_socket_chains_stay_within_budget(tmp_path, monkeypatch, source):
+    # Each part of a chain is resolved once: well under a small budget.
+    monkeypatch.setattr(capability_analysis, "MAX_NODES", 200_000)
+    assert _scan(tmp_path, source)["status"] == "completed"
