@@ -1295,6 +1295,19 @@ async def test_a_stop_of_the_one_it_names_says_what_of_its_project_was_not_shown
     assert (receipt.kind, ids(receipt.commissions), ids(receipt.left_running)) == ("stopped", [footer.id], [images.id])
     monkeypatch.setattr(host.ledger, "get", get)
 
+    # A stop that could not end all of what it ran says so as well.
+    footer = await filed("redo the footer", "Shop site")
+
+    async def not_closed(commission_id: str) -> None:
+        raise RuntimeError("the task agent did not close")
+
+    abort = host.brain._task_agents.abort
+    monkeypatch.setattr(host.brain._task_agents, "abort", not_closed)
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    assert (receipt.kind, ids(receipt.unconfirmed), ids(receipt.left_running)) == ("stop_failed", [footer.id], [images.id])
+    assert receipt.text("en").endswith(RECEIPT_TEXTS["en"]["left_running"].format(titles="compress product images"))
+    monkeypatch.setattr(host.brain._task_agents, "abort", abort)
+
     # Told late (the reading outlasted the first round): she is woken to say it, as the user is not to
     # take all of it for stopped meanwhile. A late stop with nothing left going on comes along with
     # her next turn, as before.
@@ -1341,10 +1354,10 @@ def test_a_receipt_names_a_few_of_what_goes_on_and_says_how_many_there_are():
         "已叫停：page 0 " + note.format(titles="page 1、page 2、page 3")
     )
     # Past three, how many there are.
-    many = Receipt(kind="stopped", commissions=stopped, left_running=[one(n) for n in range(1, 6)])
-    assert many.text("zh") == "已叫停：page 0 " + note.format(titles="page 1、page 2、page 3 等 5 件")
+    many = Receipt(kind="stopped", commissions=stopped, left_running=[one(n) for n in range(1, 8)])
+    assert many.text("zh") == "已叫停：page 0 " + note.format(titles="page 1、page 2、page 3 等 7 件")
     assert many.text("en") == "Stopped: page 0 " + RECEIPT_TEXTS["en"]["left_running"].format(
-        titles="page 1, page 2, page 3 and 2 more"
+        titles="page 1, page 2, page 3 and 4 more"
     )
     # So after a stop that could not all be done.
     failed = Receipt(kind="stop_failed", commissions=[one(9)], stopped=stopped, left_running=[one(1)])
@@ -1353,11 +1366,12 @@ def test_a_receipt_names_a_few_of_what_goes_on_and_says_how_many_there_are():
         + RECEIPT_TEXTS["en"]["left_running"].format(titles="page 1")
     )
     assert RECEIPT_TEXTS["en"]["left_running"].split(" ")[0] not in Receipt(kind="stop_failed", commissions=[one(9)]).text("en")
-    # Every language names them, and how many past three.
+    # Every language names them, and how many past three (all of them, or how many more).
     for lang, texts in RECEIPT_TEXTS.items():
         said = many.text(lang)
         assert "page 1" in said and "page 3" in said and "page 4" not in said, lang
-        assert "{" not in said and texts["left_running_more"].format(titles="", count=5, more=2).strip() in said, lang
+        assert "{" not in said and texts["left_running_more"].format(titles="", count=7, more=4).strip() in said, lang
+        assert "7" in said or "4" in said, lang
 
 
 async def test_a_stop_says_whether_it_is_what_ended_the_commission(server, hosts, tmp_path):
