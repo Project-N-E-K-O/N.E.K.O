@@ -2598,9 +2598,166 @@
     });
   }
 
+  var AI_SVG_NS = 'http://www.w3.org/2000/svg';
+  var AI_SVG_ALLOWED_TAGS = {
+    svg: true,
+    g: true,
+    path: true,
+    line: true,
+    polyline: true,
+    polygon: true,
+    rect: true,
+    circle: true,
+    ellipse: true
+  };
+  var AI_SVG_PRESENTATION_ATTRS = {
+    fill: 'fill',
+    stroke: 'stroke',
+    'stroke-width': 'stroke-width',
+    'stroke-linecap': 'stroke-linecap',
+    'stroke-linejoin': 'stroke-linejoin',
+    'stroke-opacity': 'stroke-opacity',
+    'fill-opacity': 'fill-opacity',
+    opacity: 'opacity',
+    transform: 'transform',
+    'stroke-dasharray': 'stroke-dasharray',
+    'stroke-dashoffset': 'stroke-dashoffset',
+    'fill-rule': 'fill-rule',
+    'clip-rule': 'clip-rule'
+  };
+  var AI_SVG_TAG_ATTRS = {
+    svg: {
+      viewbox: 'viewBox',
+      role: 'role',
+      'aria-hidden': 'aria-hidden',
+      preserveaspectratio: 'preserveAspectRatio',
+      focusable: 'focusable',
+      width: 'width',
+      height: 'height',
+      xmlns: 'xmlns'
+    },
+    g: {},
+    path: { d: 'd' },
+    line: { x1: 'x1', y1: 'y1', x2: 'x2', y2: 'y2' },
+    polyline: { points: 'points' },
+    polygon: { points: 'points' },
+    rect: { x: 'x', y: 'y', width: 'width', height: 'height', rx: 'rx', ry: 'ry' },
+    circle: { cx: 'cx', cy: 'cy', r: 'r' },
+    ellipse: { cx: 'cx', cy: 'cy', rx: 'rx', ry: 'ry' }
+  };
+
+  var AI_SVG_NUMBER_PATTERN = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+  var AI_SVG_ARG_SEP_PATTERN = '(?:\\s+(?:,\\s*)?|,\\s*)';
+  var AI_SVG_TRANSFORM_ITEM_PATTERN =
+    '(?:translate|scale|rotate|skewX|skewY|matrix)\\(\\s*' +
+    AI_SVG_NUMBER_PATTERN +
+    '(?:' + AI_SVG_ARG_SEP_PATTERN + AI_SVG_NUMBER_PATTERN + ')*' +
+    '\\s*\\)';
+  var AI_SVG_TRANSFORM_LIST_RE = new RegExp(
+    '^' +
+    AI_SVG_TRANSFORM_ITEM_PATTERN +
+    '(?:(?:\\s*,\\s*|\\s*)' + AI_SVG_TRANSFORM_ITEM_PATTERN + ')*$'
+  );
+
+  function isSafeAiSvgAttributeValue(attrName, rawValue) {
+    if (rawValue === null || rawValue === undefined) return false;
+    var value = String(rawValue).trim();
+    if (!value || value.length > 16384) return false;
+    if (/[\u0000-\u001f\u007f<>]/.test(value)) return false;
+    var lowered = value.toLowerCase();
+    if (/(?:url\s*\(|expression\s*\(|javascript:|vbscript:|data:|http:|https:)/.test(lowered)) {
+      return false;
+    }
+    if (attrName === 'xmlns') return value === AI_SVG_NS;
+    if (attrName === 'viewBox') return /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[\s,]+-?(?:\d+(?:\.\d+)?|\.\d+)){3}$/.test(value);
+    if (attrName === 'preserveAspectRatio') return /^(?:none|(?:x(?:Min|Mid|Max)Y(?:Min|Mid|Max))(?:\s+(?:meet|slice))?)$/.test(value);
+    if (attrName === 'aria-hidden' || attrName === 'focusable') return value === 'true' || value === 'false';
+    if (attrName === 'role') return /^[a-zA-Z-]{1,32}$/.test(value);
+    if (attrName === 'd') return /^[MmZzLlHhVvCcSsQqTtAaEe0-9.,+\-\s]+$/.test(value);
+    if (attrName === 'points') return /^[0-9.,+\-eE\s]+$/.test(value);
+    if (attrName === 'transform') return AI_SVG_TRANSFORM_LIST_RE.test(value);
+    if (attrName === 'stroke-linecap') return /^(?:butt|round|square)$/.test(value);
+    if (attrName === 'stroke-linejoin') return /^(?:miter|round|bevel)$/.test(value);
+    if (attrName === 'fill-rule' || attrName === 'clip-rule') return /^(?:nonzero|evenodd)$/.test(value);
+    if (attrName === 'fill' || attrName === 'stroke') {
+      return /^(?:none|transparent|currentColor|#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\(\s*[-+\d.,%\s]+\)|[a-zA-Z]{1,32})$/.test(value);
+    }
+    if (attrName === 'stroke-dasharray') return /^(?:none|[-+\d.,\s]+)$/.test(value);
+    return /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|px)?$/.test(value);
+  }
+
+  function sanitizeAiDrawingSvgElement(svgMarkup) {
+    if (typeof svgMarkup !== 'string' || !svgMarkup.trim()) return null;
+    if (typeof DOMParser !== 'function') return null;
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
+    } catch (_) {
+      return null;
+    }
+    if (!doc || !doc.documentElement) return null;
+    if (typeof doc.getElementsByTagName === 'function' && doc.getElementsByTagName('parsererror').length > 0) {
+      return null;
+    }
+    var rootTag = String(doc.documentElement.localName || doc.documentElement.tagName || '').toLowerCase();
+    if (rootTag !== 'svg') return null;
+
+    var elementCount = 0;
+    var maxElements = 500;
+    var maxDepth = 16;
+
+    function cloneSafeNode(sourceNode, depth) {
+      if (!sourceNode || depth > maxDepth || elementCount >= maxElements) return null;
+      if (sourceNode.nodeType !== 1) return null;
+      var tag = String(sourceNode.localName || sourceNode.tagName || '').toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(AI_SVG_ALLOWED_TAGS, tag)) return null;
+      if (depth > 0 && tag === 'svg') return null;
+      elementCount += 1;
+      var cleanEl = document.createElementNS(AI_SVG_NS, tag);
+      var tagAttrs = AI_SVG_TAG_ATTRS[tag] || {};
+      var attrs = sourceNode.attributes || [];
+      for (var i = 0; i < attrs.length; i += 1) {
+        var attr = attrs[i];
+        if (!attr || typeof attr.name !== 'string') continue;
+        var lowerAttr = attr.name.toLowerCase();
+        if (lowerAttr.indexOf('on') === 0 || lowerAttr === 'style' || lowerAttr === 'href' || lowerAttr === 'xlink:href' || lowerAttr === 'src') {
+          continue;
+        }
+        var canonicalName = Object.prototype.hasOwnProperty.call(tagAttrs, lowerAttr)
+          ? tagAttrs[lowerAttr]
+          : (Object.prototype.hasOwnProperty.call(AI_SVG_PRESENTATION_ATTRS, lowerAttr) ? AI_SVG_PRESENTATION_ATTRS[lowerAttr] : null);
+        if (!canonicalName) continue;
+        if (isSafeAiSvgAttributeValue(canonicalName, attr.value)) {
+          cleanEl.setAttribute(canonicalName, String(attr.value).trim());
+        }
+      }
+      var children = sourceNode.childNodes || [];
+      for (var j = 0; j < children.length; j += 1) {
+        var safeChild = cloneSafeNode(children[j], depth + 1);
+        if (safeChild) cleanEl.appendChild(safeChild);
+      }
+      return cleanEl;
+    }
+
+    return cloneSafeNode(doc.documentElement, 0);
+  }
+
+  function sanitizeAiDrawingSvgMarkup(svgMarkup) {
+    var safeSvg = sanitizeAiDrawingSvgElement(svgMarkup);
+    if (!safeSvg) return '';
+    if (typeof XMLSerializer === 'function') {
+      return new XMLSerializer().serializeToString(safeSvg);
+    }
+    return safeSvg.outerHTML || '';
+  }
+
   function showAiDrawing(svgMarkup) {
     hideAllStageViews();
-    els.aiDrawing.innerHTML = svgMarkup || '';
+    els.aiDrawing.innerHTML = '';
+    var safeSvg = sanitizeAiDrawingSvgElement(svgMarkup);
+    if (safeSvg) {
+      els.aiDrawing.appendChild(safeSvg);
+    }
     var svg = els.aiDrawing.querySelector('svg');
     normalizeAiDrawingSvg(svg);
     els.aiDrawing.style.visibility = 'hidden';
@@ -3869,7 +4026,11 @@
     list.forEach(function (summary, index) {
       var aiArt = els.summary.querySelector('[data-summary-ai-art="' + index + '"]');
       if (aiArt) {
-        aiArt.innerHTML = summary.aiSvg || '';
+        aiArt.innerHTML = '';
+        var safeSummarySvg = sanitizeAiDrawingSvgElement(summary.aiSvg);
+        if (safeSummarySvg) {
+          aiArt.appendChild(safeSummarySvg);
+        }
         normalizeAiDrawingSvg(aiArt.querySelector('svg'));
       }
     });
@@ -3948,8 +4109,9 @@
   }
 
   function saveAiSvgFile(svgMarkup, filename) {
-    if (!svgMarkup) return;
-    downloadBlob(filename, svgMarkup, 'image/svg+xml;charset=utf-8');
+    var safeMarkup = sanitizeAiDrawingSvgMarkup(svgMarkup);
+    if (!safeMarkup) return;
+    downloadBlob(filename, safeMarkup, 'image/svg+xml;charset=utf-8');
   }
 
   function saveAiPngFile(svgMarkup, filename) {
@@ -3960,13 +4122,8 @@
 
   function svgMarkupToPngBlob(svgMarkup) {
     return new Promise(function (resolve, reject) {
-      if (!svgMarkup) {
-        resolve(null);
-        return;
-      }
-      var doc = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
-      var svg = doc.documentElement;
-      if (!svg || String(svg.tagName || '').toLowerCase() !== 'svg') {
+      var svg = sanitizeAiDrawingSvgElement(svgMarkup);
+      if (!svg) {
         resolve(null);
         return;
       }

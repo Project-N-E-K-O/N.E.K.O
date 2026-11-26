@@ -71,6 +71,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-25-theme-studio-backup-skipped-images",
         "2026-11-25-theme-studio-panel-i18n",
         "2026-11-25-theme-studio-subscriptions-merge",
+        "2026-11-25-theme-studio-chat-audio-merge",
+        "2026-11-25-chat-audio-message-glue",
         "2026-11-25-chat-audio-ui-only",
         "2026-11-25-bailian-api-host",
         "2026-11-25-chat-audio-main-merge-2",
@@ -661,7 +663,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "15e38b81d19cd2379856f223175b2395dfd8d68cb734e7c8e405809beca36c9d"
+LOCALE_KEY_SIGNATURE = "8b53a910bf6be7331a8d09e59f706ed3022f119ba2304b21cf7dc4e9734c35ea"
 
 
 _BUMP_INSTRUCTIONS = (

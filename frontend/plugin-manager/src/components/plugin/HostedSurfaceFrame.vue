@@ -72,11 +72,36 @@
         </el-tag>
       </div>
     </div>
+
+    <template v-for="dialog in activeParseDocumentConfirmDialogs" :key="dialog.token">
+      <el-dialog
+        :model-value="true"
+        :title="t('common.confirm')"
+        :append-to="parseDocumentConfirmAppendTarget"
+        append-to-body
+        :close-on-click-modal="false"
+        width="min(440px, calc(100vw - 32px))"
+        data-testid="parse-document-confirm-dialog"
+        :before-close="dialog.cancel"
+        @update:model-value="(open: boolean) => { if (!open) dialog.cancel() }"
+        @close="dialog.cancel"
+      >
+        <p class="hosted-surface-frame__confirm-message">{{ dialog.message }}</p>
+        <template #footer>
+          <el-button data-testid="parse-document-confirm-cancel" @click="dialog.cancel">
+            {{ t('common.cancel') }}
+          </el-button>
+          <el-button type="primary" data-testid="parse-document-confirm-ok" @click="dialog.accept">
+            {{ t('common.confirm') }}
+          </el-button>
+        </template>
+      </el-dialog>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
@@ -87,6 +112,7 @@ import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
 import { ElMessageBox } from 'element-plus'
 import { usePluginDisplayFrame } from '@/composables/usePluginDisplay'
+import { displayRevision } from '@/composables/usePluginDisplayDialog'
 
 const props = withDefaults(defineProps<{
   pluginId: string
@@ -149,10 +175,57 @@ let currentLoadId = 0
 let sourceController: AbortController | null = null
 let hostedRequestGeneration = 0
 let componentMounted = false
+type ParseDocumentConfirmOutcome = 'confirm' | 'user_cancel' | 'host_cancel'
+type PendingParseDocumentConfirm = {
+  requestId: string
+  token: number
+  message: string
+  accept: () => void
+  cancel: () => void
+  resolve: (outcome: ParseDocumentConfirmOutcome) => void
+}
+let parseDocumentConfirmToken = 0
+const pendingParseDocumentConfirm = shallowRef<PendingParseDocumentConfirm | null>(null)
+const activeParseDocumentConfirmDialogs = computed(() => (
+  pendingParseDocumentConfirm.value ? [pendingParseDocumentConfirm.value] : []
+))
+const fullscreenRevision = ref(0)
+function handleFullscreenChange() {
+  fullscreenRevision.value += 1
+}
+const parseDocumentConfirmAppendTarget = computed<string | HTMLElement>(() => {
+  void displayRevision.value
+  void fullscreenRevision.value
+  void pendingParseDocumentConfirm.value
+  const target = displayTarget.value
+  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) {
+    return target
+  }
+  return 'body'
+})
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
 let contextQueue: Promise<unknown> = Promise.resolve()
+
+function settlePendingParseDocumentConfirm(
+  outcome: ParseDocumentConfirmOutcome,
+  filter?: { token?: number; requestId?: string },
+) {
+  const current = pendingParseDocumentConfirm.value
+  if (!current) return
+  if (filter?.token !== undefined && current.token !== filter.token) return
+  if (filter?.requestId !== undefined && current.requestId !== filter.requestId) return
+  pendingParseDocumentConfirm.value = null
+  current.resolve(outcome)
+}
+
+function releasePendingParseDocumentConfirm(requestIdToCancel?: string) {
+  settlePendingParseDocumentConfirm(
+    'host_cancel',
+    requestIdToCancel !== undefined ? { requestId: requestIdToCancel } : undefined,
+  )
+}
 
 function readContextInOrder() {
   const generation = hostedRequestGeneration
@@ -171,6 +244,7 @@ function readContextInOrder() {
 }
 
 function abortAllHostedRequests(reason: string) {
+  releasePendingParseDocumentConfirm()
   for (const controller of contextControllers) controller.abort(reason)
   contextControllers.clear()
   contextQueue = Promise.resolve()
@@ -218,21 +292,16 @@ const surfaceUrl = computed(() => {
 // component and the embedded iframe. Two iframe modes coexist:
 //
 //   - ``surface.mode === 'static'``: iframe loads ``surfaceUrl`` (an http(s)
-//     URL or a same-origin path). The trusted origin is parsed from that URL
-//     and resolved against ``window.location.origin`` for relative paths.
+//     URL or a same-origin path). Legacy static plugins rely on same-origin
+//     `/runs`, `/security/csrf-token`, `/plugin/{id}/ui-api/*`, ES modules,
+//     and `localStorage`, so keep same-origin until static plugins move to a
+//     dedicated origin (tracked separately). The trusted origin is parsed from
+//     that URL and resolved against ``window.location.origin`` for relative paths.
 //
 //   - ``hosted-tsx`` / ``markdown``: iframe is loaded via ``srcdoc=...``. The
 //     spec mandates these iframes report ``event.origin === 'null'`` (an opaque
 //     origin), so we accept the literal string ``'null'`` as the trusted
 //     origin sentinel for srcdoc iframes.
-//
-// ``handleMessage`` rejects any message whose ``event.origin`` does not match
-// this value, and ``handleHostedRequest`` posts responses with this origin
-// rather than ``'*'``. The fallback to ``'*'`` is intentional and only used
-// for the srcdoc case where the standard requires ``'*'`` because the child
-// is in an opaque origin and cannot be addressed by name; in that branch the
-// inbound origin check (combined with ``event.source ===
-// iframeRef.value.contentWindow``) is what enforces the trust boundary.
 const trustedIframeOrigin = computed(() => {
   if (props.surface.mode === 'static') {
     const url = surfaceUrl.value
@@ -355,8 +424,9 @@ function handleError() {
 function flushStaticSurfaceMessages() {
   const target = iframeRef.value?.contentWindow
   if (!target || !staticSurfaceReady.value) return
+  const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
   for (const message of pendingStaticSurfaceMessages.splice(0)) {
-    target.postMessage(message, trustedIframeOrigin.value)
+    target.postMessage(message, targetOrigin)
   }
 }
 
@@ -364,7 +434,8 @@ function sendSurfaceMessage(message: unknown) {
   if (props.surface.mode !== 'static') return
   const target = iframeRef.value?.contentWindow
   if (target && staticSurfaceReady.value) {
-    target.postMessage(message, trustedIframeOrigin.value)
+    const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+    target.postMessage(message, targetOrigin)
     return
   }
   if (pendingStaticSurfaceMessages.length >= maxPendingStaticSurfaceMessages) {
@@ -541,6 +612,9 @@ function handleMessage(event: MessageEvent) {
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    if (requestId) {
+      releasePendingParseDocumentConfirm(requestId)
+    }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
     hostedActionControllers.get(requestId)?.abort('client-cancelled')
     return
@@ -664,13 +738,51 @@ async function handleHostedRequest(data: any) {
         respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
         return
       }
+      if (pendingParseDocumentConfirm.value) {
+        respond({
+          ok: false,
+          error: 'Document parsing confirmation is already pending.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      }
       const requestedTimeoutMs = Number(data.timeoutMs)
       const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
+      const requestDeadline = Date.now() + timeoutMs
+      const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
+      const confirmToken = ++parseDocumentConfirmToken
+      const confirmMessage = t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName })
+      const confirmOutcome = await new Promise<ParseDocumentConfirmOutcome>((resolve) => {
+        pendingParseDocumentConfirm.value = {
+          requestId,
+          token: confirmToken,
+          message: confirmMessage,
+          accept: () => settlePendingParseDocumentConfirm('confirm', { token: confirmToken }),
+          cancel: () => settlePendingParseDocumentConfirm('user_cancel', { token: confirmToken }),
+          resolve,
+        }
+      })
+      if (!isCurrentRequest() || confirmOutcome === 'host_cancel') {
+        return
+      }
+      if (confirmOutcome === 'user_cancel') {
+        respond({
+          ok: false,
+          error: 'Document parsing was cancelled by the user.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      }
+      const remainingTimeoutMs = requestDeadline - Date.now()
+      if (remainingTimeoutMs <= 0) {
+        respond({ ok: false, error: 'Document parsing timed out.', code: 'document_parse_timeout' })
+        return
+      }
       const controller = new AbortController()
       hostedDocumentControllers.set(requestId, controller)
-      const timeoutId = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
+      const timeoutId = window.setTimeout(() => controller.abort('timeout'), remainingTimeoutMs)
       try {
-        const parsed = await parseHostedDocument(file, { timeoutMs, signal: controller.signal })
+        const parsed = await parseHostedDocument(file, { timeoutMs: remainingTimeoutMs, signal: controller.signal })
         if (!parsed?.document) throw new Error('Document parser returned an invalid response.')
         respond({ ok: true, result: parsed.document })
       } catch (caught: any) {
@@ -720,12 +832,14 @@ async function refreshContext() {
 
 onMounted(() => {
   componentMounted = true
+  document.addEventListener('fullscreenchange', handleFullscreenChange)
   window.addEventListener('message', handleMessage)
   loadHostedTsx()
 })
 
 onBeforeUnmount(() => {
   componentMounted = false
+  document.removeEventListener('fullscreenchange', handleFullscreenChange)
   clearLoadDelay()
   loadPhase.value = 'idle'
   sourceController?.abort('surface-disposed')
@@ -906,5 +1020,12 @@ defineExpose({
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
+}
+
+.hosted-surface-frame__confirm-message {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--el-text-color-primary);
+  word-break: break-word;
 }
 </style>

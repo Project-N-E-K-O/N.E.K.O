@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from filelock import FileLock, Timeout as FileLockTimeout
 
@@ -41,6 +41,20 @@ INSECURE_COOKIE = COOKIE + "_http"
 INSECURE_CHALLENGE_COOKIE = CHALLENGE_COOKIE + "_http"
 SESSION_TTL = 30 * 24 * 3600
 LOGIN_PATH = "/instance-access/login"
+_INTERNAL_SCOPE_KEY_SALT = secrets.token_bytes(32)
+
+
+def _internal_service_key_digest(key: str) -> bytes:
+    """Compute a process-local one-way HMAC digest of the instance key for ASGI scope checks."""
+    return hmac.new(_INTERNAL_SCOPE_KEY_SALT, key.encode("utf-8"), hashlib.sha256).digest()
+
+
+def verify_admitted_internal_service_key(scope: dict, signing_key: str) -> bool:
+    """Confirm that an admitted internal-service request matches the current signing key."""
+    admitted = scope.get("neko.internal_service_key_digest")
+    if not isinstance(admitted, bytes) or not isinstance(signing_key, str) or not signing_key:
+        return False
+    return hmac.compare_digest(admitted, _internal_service_key_digest(signing_key))
 
 
 def _key_path() -> Path:
@@ -126,18 +140,7 @@ def instance_key() -> str:
     return key
 
 
-def _local_native(request: Request) -> bool:
-    """Exempt actual local calls, never forwarded or non-loopback Host traffic."""
-    remote = is_remote_backend_deployment()
-    if is_behind_proxy() or remote:
-        # Even a browser running on the Docker host needs the instance session.
-        # Keep headerless loopback service-to-service calls compatible; do not
-        # accidentally exempt the login page or an explicitly supplied session.
-        browser_or_session = (request.headers.get("origin") or request.headers.get("sec-fetch-site")
-                              or "text/html" in request.headers.get("accept", "")
-                              or request.headers.get("authorization") or _session_cookies(request))
-        if has_forwarding_metadata(request.headers) or browser_or_session:
-            return False
+def _is_loopback_peer_and_host(request: Request) -> bool:
     try:
         peer = ipaddress.ip_address(request.client.host if request.client else "")
         host = request.url.hostname or ""
@@ -145,6 +148,35 @@ def _local_native(request: Request) -> bool:
         return (getattr(peer, "ipv4_mapped", None) or peer).is_loopback and host_local
     except ValueError:
         return False
+
+
+def _local_native(request: Request, *, is_websocket: bool = False) -> bool:
+    """Exempt actual local calls, never forwarded or non-loopback Host traffic."""
+    if is_behind_proxy() or is_remote_backend_deployment():
+        browser_or_session = (
+            request.headers.get("origin")
+            or request.headers.get("sec-fetch-site")
+            or "text/html" in request.headers.get("accept", "")
+            or request.headers.get("authorization")
+            or _session_cookies(request)
+        )
+        if has_forwarding_metadata(request.headers) or browser_or_session:
+            return False
+        # In remote/proxy mode, headerless loopback only bypasses auth for unauthenticated
+        # local health probes (Docker/watchdog); all other routes and WebSockets must
+        # present an instance credential or signed internal-service proof.
+        websocket = (
+            is_websocket
+            or request.scope.get("type") == "websocket"
+            or request.headers.get("upgrade", "").lower() == "websocket"
+        )
+        return (
+            not websocket
+            and request.method in {"GET", "HEAD"}
+            and request.url.path == "/health"
+            and _is_loopback_peer_and_host(request)
+        )
+    return _is_loopback_peer_and_host(request)
 
 
 def _signed(key: str, purpose: str, host: str, identifier: str, expires: int) -> str:
@@ -363,10 +395,76 @@ async def _login_verification_pause(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+INTERNAL_SERVICE_HEADER = "x-neko-internal-service"
+
+
 def market_internal_proof(key: str, method: str, path: str, public_origin: str = "") -> str:
     """Bind a service handoff to its Market route and public origin for 60 seconds."""
     return _signed(key, "market-internal-remote", method + ":" + path + ":" + public_origin,
                    "market", int(time.time()) + 60)
+
+
+def internal_service_proof(
+    key: str,
+    method: str,
+    path: str,
+    *,
+    port: int | None = None,
+    expires: int | None = None,
+) -> str:
+    """Bind an internal service-to-service hop to its method, optional target port, and path for 60 seconds."""
+    deadline = int(time.time()) + 60 if expires is None else int(expires)
+    target = f"{method.upper()}:{int(port)}:{path}" if port is not None else f"{method.upper()}:{path}"
+    return _signed(key, "internal-service", target, "internal", deadline)
+
+
+def _request_signing_path(request: Request) -> str:
+    """Return the canonical raw request path (without query string) for proof verification."""
+    raw = request.scope.get("raw_path")
+    if isinstance(raw, (bytes, bytearray)) and raw:
+        return bytes(raw).split(b"?", 1)[0].decode("latin-1")
+    if isinstance(raw, str) and raw:
+        return raw.split("?", 1)[0]
+    scope_path = request.scope.get("path")
+    if isinstance(scope_path, str) and scope_path:
+        return scope_path
+    return request.url.path
+
+
+def _request_signing_port(request: Request) -> int | None:
+    """Return the target service port from ASGI server scope; fail closed if unavailable."""
+    server = request.scope.get("server")
+    if (
+        isinstance(server, (tuple, list))
+        and len(server) >= 2
+        and isinstance(server[1], int)
+        and not isinstance(server[1], bool)
+        and 0 < server[1] <= 65535
+    ):
+        return server[1]
+    return None
+
+
+def _internal_service_identity(request: Request, key: str) -> str | None:
+    proof = request.headers.get(INTERNAL_SERVICE_HEADER, "")
+    if not proof or has_forwarding_metadata(request.headers):
+        return None
+    try:
+        peer = ipaddress.ip_address(request.client.host if request.client else "")
+        local_peer = (getattr(peer, "ipv4_mapped", None) or peer).is_loopback
+    except ValueError:
+        return None
+    if not local_peer:
+        return None
+    port = _request_signing_port(request)
+    if port is None:
+        return None
+    return _verified(
+        key,
+        "internal-service",
+        f"{request.method.upper()}:{port}:{_request_signing_path(request)}",
+        proof,
+    )
 
 
 def _market_internal_identity(request: Request, key: str) -> str | None:
@@ -408,7 +506,7 @@ class InstanceAccessMiddleware:
             # copy; share the per-connection transport decisions with them.
             scope["neko.require_https"] = _strict(request)
             scope["neko.secure_transport"] = _secure_transport(request)
-        if _local_native(request):
+        if _local_native(request, is_websocket=(scope["type"] == "websocket")):
             return await self.app(scope, receive, send)
         if scope["type"] == "http" and self.community_handoff_authorizer and _transport_allowed(request):
             authorized, replay_body = await self.community_handoff_authorizer(request)
@@ -434,11 +532,13 @@ class InstanceAccessMiddleware:
                 return await self.app(scope, receive, send)
         path = scope.get("path", "")
         login_page = scope["type"] == "http" and (path == LOGIN_PATH or (request.method == "GET" and "text/html" in request.headers.get("accept", "")))
-        if not login_page and not request.headers.get("authorization") and not _session_cookies(request) and not request.headers.get("x-neko-market-internal"):
+        if not login_page and not request.headers.get("authorization") and not _session_cookies(request) and not request.headers.get("x-neko-market-internal") and not request.headers.get(INTERNAL_SERVICE_HEADER):
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
         try:
             key = await asyncio.to_thread(instance_key)
-            internal_identity = _market_internal_identity(request, key)
+            market_identity = _market_internal_identity(request, key)
+            service_identity = _internal_service_identity(request, key)
+            internal_identity = market_identity or service_identity
             identity = internal_identity or remote_instance_identity(request, key=key)
         except (OSError, ValueError, FileLockTimeout):
             return await self._deny(scope, receive, send, "instance_access_unavailable", 503)
@@ -458,8 +558,12 @@ class InstanceAccessMiddleware:
                             and not request.headers.get("origin"))
         if not internal_identity and not oauth_callback and not entry_navigation and not _same_origin(request):
             return await self._deny(scope, receive, send, "origin_not_allowed", 403)
+        scope.pop("neko.internal_service_key_digest", None)
         scope["neko.instance_identity"] = identity
-        if internal_identity:
+        if not market_identity and service_identity == "internal":
+            # Store only a process-salted one-way digest (never the raw key or a closure holding it).
+            scope["neko.internal_service_key_digest"] = _internal_service_key_digest(key)
+        if market_identity:
             scope["neko.market_public_origin"] = request.headers.get("x-neko-market-public-origin", "")
             # The signed purpose includes remote; changing the network hop to
             # loopback must never grant native-only Market token privileges.
@@ -511,6 +615,7 @@ class InstanceAccessMiddleware:
                 elif started:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
                 else:
+                    started = True
                     await self._deny(scope, receive, send, "instance_authorization_required", 401)
                 raise OSError("instance authorization revoked")
             if message["type"] == "http.response.start":
@@ -537,6 +642,8 @@ class InstanceAccessMiddleware:
             if revoked:
                 return ({"type": "websocket.disconnect", "code": 4401}
                         if scope["type"] == "websocket" else {"type": "http.disconnect"})
+            if message.get("type") in ("http.disconnect", "websocket.disconnect"):
+                return message
             if not await still_authorized():
                 revoked = True
                 if scope["type"] == "websocket":
@@ -547,9 +654,12 @@ class InstanceAccessMiddleware:
 
         try:
             return await self.app(scope, private_receive, private_send)
-        except OSError:
+        except (OSError, ClientDisconnect):
             if not revoked:
                 raise
+        if revoked and scope["type"] == "http" and not started:
+            started = True
+            await self._deny(scope, receive, send, "instance_authorization_required", 401)
 
     def _warn_unlabelled_tls(self):
         # The browser is on https:// but nothing tells this server so: pairing

@@ -4682,10 +4682,14 @@ async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_
     # The end could not be put on record, and how the commission stands could not be read at
     # once: asked again, it ends as a run without a report does, and is not left at work.
     commission = await wait_status(host, receipt.commission_id, "done")
-    assert commission.result_summary == "All built." and {"read", "written"} <= set(failed)
+    assert commission.result_summary == "All built." and "written" in failed
     # And its session is let go: it does not keep its place for a commission that is over.
     await _let_go(host)
     assert host.task_agents._sessions == {}
+    # Only by now is all of the end acted on: what it started is looked at after the end is
+    # written (``_end_what_it_started``), and the session let go after that. Looked at as soon
+    # as the commission is done, that look may not have been made yet.
+    assert "read" in failed
     # The look that failed was made again, and not passed over.
     assert looks[which[0]] > which[1]
 

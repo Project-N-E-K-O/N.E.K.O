@@ -994,6 +994,33 @@
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnComposerAudioMessage: function (handler) {
+            I.state.onComposerAudioMessage = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        // 返回是否已生效。清空目标会让聊天窗当作换角色而丢掉草稿，所以收起麦克风时：
+        // options.keepDraft（线路暂不可用、角色没变）：有录音或草稿就推迟到草稿结束；
+        // options.stopCapture（实时语音要用麦克风）：只停掉正在采集的录音，试听 / 发送中的
+        // 草稿保留到请求结束，失败后仍可重发
+        setAudioMessageTarget: function (target, options) {
+            var next = typeof target === 'string' ? target.trim() : '';
+            if (I.state.audioMessageTarget === next) {
+                I.state.deferredAudioMessageTarget = null;
+                return true;
+            }
+            var phase = I.state.audioMessagePhase;
+            var capturing = phase === 'recording' || phase === 'starting';
+            if (!next && options && (options.keepDraft || options.stopCapture)
+                    && typeof I.isAudioMessageActive === 'function' && I.isAudioMessageActive()
+                    && !(options.stopCapture && capturing)) {
+                I.state.deferredAudioMessageTarget = next;
+                return false;
+            }
+            I.state.deferredAudioMessageTarget = null;
+            I.state.audioMessageTarget = next;
+            I.renderWindow();
+            return true;
+        },
         setOnTheaterSubmit: function (handler) {
             I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
             I.renderWindow();

@@ -20,7 +20,7 @@ N.E.K.O. does not currently publish a separately versioned HTTP API with a blank
 http://127.0.0.1:48911
 ```
 
-There is no blanket authentication layer in front of the main API. Some sensitive integration routes, including `/api/tools` and `/api/capture`, enforce loopback access themselves; many first-party UI routes do not. Do not expose port `48911` to an untrusted LAN or the public Internet. Provider API keys are managed by the [configuration system](/config/), not by an API bearer token.
+In the default local mode, there is no blanket authentication layer in front of the main API. Some sensitive integration routes, including `/api/tools` and `/api/capture`, enforce loopback access themselves; many first-party UI routes do not. Do not expose port `48911` to an untrusted LAN or the public Internet. When `NEKO_BEHIND_PROXY` or `NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, `InstanceAccessMiddleware` enforces instance credentials (`Authorization: Bearer <instance_key>` or a paired browser session cookie) on API routes—including loopback external integrations, which receive HTTP `401` without credentials. Provider API keys are managed by the [configuration system](/config/), not by an API bearer token.
 
 Paths documented here do not end in `/` unless explicitly shown.
 
