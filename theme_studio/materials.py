@@ -1247,6 +1247,7 @@ def compile_materials(materials: dict[str, Any]) -> tuple[dict[str, str], dict[s
                 tint_strength = float(glob.get("tintStrength", 0.35))
                 comp_opacity = _clamp(float(style["opacity"]), 0.0, 1.0)
                 target[f"--nts-mt-c-bg-{comp}"] = _rgba(tint, comp_opacity * tint_strength)
+                target[f"--nts-mt-c-opacity-{comp}"] = _css_value(PARAM_BY_KEY["opacity"], comp_opacity)
             if "shadowStrength" in style:
                 comp_strength = _clamp(float(style["shadowStrength"]), 0.0, 1.0)
                 if comp_strength <= 0.001:

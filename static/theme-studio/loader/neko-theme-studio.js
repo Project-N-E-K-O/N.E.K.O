@@ -199,7 +199,7 @@
   //          surface lift honours the panel's animation / reduced-motion switches.
   //   1.6.113 A throw inside one poll tick no longer stops polling; with a server
   //          boot palette the cached materials are restored for the first frame.
-  var SCRIPT_VERSION = '1.6.113';
+  var SCRIPT_VERSION = '1.6.114';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -714,7 +714,7 @@
       // by one; accepting only a single layer would reject
       // `0 0 20px rgba(...), 0 0 15px rgba(...)` entirely -> no gate -> the shadow
       // silently disappears.
-      var layers = shadowLayers(v);
+      var layers = splitCssLayers(v);
       if (!layers.length || layers.length > 4) return false;
       for (var li = 0; li < layers.length; li++) {
         if (!shadowLayerOk(shadowTokens(layers[li]))) return false;
@@ -808,8 +808,8 @@
     return true;
   }
 
-  /** Split a multi-layer box-shadow on top-level commas (same shape as the backend _split_shadow_layers). */
-  function shadowLayers(value) {
+  /** Split CSS layers or gradient stops without splitting the commas inside a colour function. */
+  function splitCssLayers(value) {
     var layers = [];
     var depth = 0;
     var buf = '';
@@ -1622,7 +1622,7 @@
     ':root[data-nts-mt]:root:root:root:root body.api-key-settings-page .container,',
     ':root[data-nts-mt]:root:root:root:root body .composer-icon-popover {',
     '  background-color: var(--nts-mt-bg-c) !important;',
-    '  background-image:',
+    '  --nts-mt-effects:',
     '    var(--nts-mt-inner-img),',
     '    var(--nts-mt-inner2),',
     '    var(--nts-mt-rim-img),',
@@ -1631,7 +1631,8 @@
     '    var(--nts-mt-noise-img),',
     '    var(--nts-mt-ambient-img),',
     '    linear-gradient(var(--nts-mt-refract-tint), var(--nts-mt-refract-tint)),',
-    '    var(--nts-mt-dye) !important;',
+    '    var(--nts-mt-dye);',
+    '  background-image: var(--nts-mt-effects) !important;',
     '  background-size: auto, auto, auto, auto, auto, auto, var(--nts-mt-ambient-size) var(--nts-mt-ambient-size),',
     '    var(--nts-mt-refract-size) var(--nts-mt-refract-size), var(--nts-mt-drift-size) !important;',
     '  background-repeat: no-repeat !important;',
@@ -1969,20 +1970,6 @@
 :root[data-nts-mt]:root:root:root:root:root body .compact-export-history-bubble,
 :root[data-nts-mt]:root:root:root:root:root body .composer-overflow-popover,
 :root[data-nts-mt]:root:root:root:root:root body .composer-icon-popover {
-  --nts-glass-tint: var(--nts-mt-bg-c);
-  --nts-chat-panel-bg: var(--nts-mt-bg-c);
-  --nts-input-bg: var(--nts-mt-bg-c);
-  --nts-panel-glass-tint: var(--nts-mt-bg-c);
-  --nts-panel-gradient:
-    var(--nts-mt-inner-img),
-    var(--nts-mt-inner2),
-    var(--nts-mt-rim-img),
-    var(--nts-mt-sheen-img),
-    var(--nts-mt-spot),
-    var(--nts-mt-noise-img),
-    var(--nts-mt-ambient-img),
-    linear-gradient(var(--nts-mt-refract-tint), var(--nts-mt-refract-tint)),
-    var(--nts-mt-dye);
   --nts-glass-filter: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
   --nts-chat-blur: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
   --nts-chat-panel-blur: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
@@ -2005,19 +1992,7 @@
 :root[data-nts-mt]:root:root:root:root:root body .message-bubble-user,
 :root[data-nts-mt]:root:root:root:root:root body .message-bubble-tool,
 :root[data-nts-mt]:root:root:root:root:root body .message-bubble-system {
-  --nts-bubble-glass-tint: var(--nts-mt-bg-c);
   --nts-bubble-glass-filter: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
-  --nts-ai-bubble-bg: var(--nts-mt-bg-c);
-  --nts-user-bubble-bg: var(--nts-mt-bg-c);
-  --nts-tool-bubble-bg: var(--nts-mt-bg-c);
-  --nts-mt-stack-c: var(--nts-mt-inner-img), var(--nts-mt-inner2), var(--nts-mt-rim-img), var(--nts-mt-sheen-img), var(--nts-mt-spot), var(--nts-mt-noise-img), var(--nts-mt-ambient-img), linear-gradient(var(--nts-mt-refract-tint), var(--nts-mt-refract-tint)), var(--nts-mt-dye);
-  --nts-ai-bubble-gradient: var(--nts-mt-stack-c);
-  --nts-user-bubble-gradient: var(--nts-mt-stack-c);
-  --nts-ai-bubble-border: var(--nts-mt-border);
-}
-
-:root[data-nts-mt]:root:root:root:root:root body .message-bubble-user {
-  --nts-user-bubble-border: var(--nts-accent);
 }
 
 :root[data-nts-mt]:root:root:root:root:root body .chat-window,
@@ -2043,38 +2018,39 @@
   backdrop-filter: none !important;
 }
 
-:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame,
-:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .window-topbar,
-:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .message-bubble-assistant,
-:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .message-bubble-user,
-:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .compact-export-history-bubble {
-
-  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-input-bg: rgba(255, 255, 255, calc(0.24 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-panel-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
-  --nts-bubble-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
-  --nts-ai-bubble-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-user-bubble-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-tool-bubble-bg: rgba(255, 255, 255, calc(0.15 + 0.6 * var(--nts-mt-opacity, 0.58)));
+/* Keep the role palette on the surface. Component opacity scales its alpha;
+   the compiled glass tint and highlights are separate layers above it. */
+:root[data-nts-mt] .compact-chat-surface-frame {
+  --nts-mt-palette-color: var(--nts-chat-panel-bg, var(--nts-chat-bg, transparent));
+  --nts-mt-palette-image: var(--nts-mt-panel-gradient, none);
+  --nts-mt-opacity-c: var(--nts-mt-c-opacity-chat, var(--nts-mt-opacity));
 }
-
-:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame,
-:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .window-topbar,
-:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .message-bubble-assistant,
-:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .message-bubble-user,
-:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .compact-export-history-bubble {
-
-  --nts-mt-bg-c: rgba(26, 32, 42, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-chat-panel-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-input-bg: rgba(24, 30, 40, calc(0.24 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-panel-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
-  --nts-bubble-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
-  --nts-ai-bubble-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-user-bubble-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
-  --nts-tool-bubble-bg: rgba(24, 30, 40, calc(0.15 + 0.6 * var(--nts-mt-opacity, 0.58)));
+:root[data-nts-mt] .window-topbar {
+  --nts-mt-palette-color: var(--nts-topbar-bg, transparent);
+  --nts-mt-palette-image: none;
+  --nts-mt-opacity-c: var(--nts-mt-c-opacity-topbar, var(--nts-mt-opacity));
+}
+:root[data-nts-mt] :is(.message-bubble-user, .message-bubble-assistant, .message-bubble-tool, .message-bubble-system, .compact-export-history-bubble) {
+  --nts-mt-opacity-c: var(--nts-mt-c-opacity-bubble, var(--nts-mt-opacity));
+  --nts-mt-palette-color: transparent;
+  --nts-mt-palette-image: none;
+}
+:root[data-nts-mt] :is(.message-bubble-user, .compact-export-history-message.is-user .compact-export-history-bubble) {
+  --nts-mt-palette-color: var(--nts-user-bubble-bg, transparent);
+  --nts-mt-palette-image: var(--nts-mt-user-bubble-gradient, none);
+}
+:root[data-nts-mt] :is(.message-bubble-assistant, .compact-export-history-message.is-assistant .compact-export-history-bubble) {
+  --nts-mt-palette-color: var(--nts-ai-bubble-bg, transparent);
+  --nts-mt-palette-image: var(--nts-mt-ai-bubble-gradient, none);
+}
+:root[data-nts-mt] :is(.message-bubble-tool, .message-bubble-system, .compact-export-history-message.is-system .compact-export-history-bubble) {
+  --nts-mt-palette-color: var(--nts-tool-bubble-bg, transparent);
+}
+:root[data-nts-mt]:root:root:root:root:root body :is(.compact-chat-surface-frame, .window-topbar, .message-bubble-user,
+    .message-bubble-assistant, .message-bubble-tool, .message-bubble-system, .compact-export-history-bubble) {
+  --nts-mt-surface-tint: var(--nts-mt-bg-c);
+  background-color: color-mix(in srgb, var(--nts-mt-palette-color) calc(100% * var(--nts-mt-opacity-c, 1)), transparent) !important;
+  background-image: var(--nts-mt-effects), linear-gradient(var(--nts-mt-surface-tint), var(--nts-mt-surface-tint)), var(--nts-mt-palette-image) !important;
 }
 
 :root[data-nts-mt]:root:root:root:root:root body .composer-input-shell {
@@ -2092,38 +2068,26 @@ background-image: none !important;
 }
 
 :root[data-nts-mt][data-nts-plate="0"]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame {
-  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-glass-tint: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-input-bg: rgba(255, 255, 255, calc(0.05 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-mt-surface-tint: color-mix(in srgb, var(--nts-mt-bg-c) 20%, transparent);
   --nts-glass-rim: rgba(255, 255, 255, 0.62) !important;
 }
 :root[data-nts-mt][data-nts-plate="1"]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame {
-  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-glass-tint: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-input-bg: rgba(255, 255, 255, calc(0.12 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-mt-surface-tint: color-mix(in srgb, var(--nts-mt-bg-c) 55%, transparent);
   --nts-glass-rim: rgba(255, 255, 255, 0.55) !important;
 }
 :root[data-nts-mt][data-nts-plate="0"][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame {
-  --nts-mt-bg-c: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-glass-tint: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-chat-panel-bg: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-input-bg: rgba(18, 24, 32, calc(0.08 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-mt-surface-tint: color-mix(in srgb, var(--nts-mt-bg-c) 20%, transparent);
   --nts-glass-rim: rgba(255, 255, 255, 0.3) !important;
 }
 :root[data-nts-mt][data-nts-plate="1"][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame {
-  --nts-mt-bg-c: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-glass-tint: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-chat-panel-bg: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
-  --nts-input-bg: rgba(20, 26, 34, calc(0.16 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-mt-surface-tint: color-mix(in srgb, var(--nts-mt-bg-c) 55%, transparent);
   --nts-glass-rim: rgba(255, 255, 255, 0.26) !important;
 }
 
 :root[data-nts-mt][data-nts-mt-heavy]:root:root:root:root:root body :is(.message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble) {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
-  background-image: none !important;
+  background-image: linear-gradient(var(--nts-mt-surface-tint), var(--nts-mt-surface-tint)), var(--nts-mt-palette-image) !important;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08) !important;
 }
 :root[data-nts-mt][data-nts-mt-heavy]:root:root:root:root:root body :is(.message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble)::before,
@@ -3391,6 +3355,31 @@ background-image: none !important;
     return true;
   }
 
+  // Apply the same component opacity to the stops of a validated palette gradient.
+  // An opaque authored stop would otherwise hide the backdrop even at zero opacity.
+  function materialGradientDeclarations(readValue) {
+    var css = '';
+    ['user-bubble-gradient', 'ai-bubble-gradient', 'panel-gradient'].forEach(function (key) {
+      var value = readValue('--nts-' + key);
+      if (!value) return;
+      var gradient = RE_GRAD_HEAD.exec(value);
+      if (!gradient) return;
+      var component = key === 'panel-gradient' ? 'chat' : 'bubble';
+      var weight = 'calc(100% * var(--nts-mt-c-opacity-' + component + ', var(--nts-mt-opacity, 1)))';
+      var stops = splitCssLayers(gradient[2]).map(function (part) {
+        var stop = RE_GRAD_STOP.exec(part);
+        return stop ? 'color-mix(in srgb, ' + stop[1] + ' ' + weight + ', transparent)' +
+          (stop[2] ? ' ' + stop[2] + '%' : '') : part;
+      });
+      css += ';--nts-mt-' + key + ':' + gradient[1] + '-gradient(' + stops.join(', ') + ')';
+    });
+    return css;
+  }
+
+  function paletteDeclarations(palette) {
+    return declBlock(palette) + materialGradientDeclarations(function (key) { return palette[key]; });
+  }
+
   /** Get one material variable map (mode = light | dark); invalid entries are silently dropped. */
   function materialVarsOf(p, mode) {
     var out = {};
@@ -4080,12 +4069,12 @@ background-image: none !important;
     var previousStamp = currentVersion;
     var fading = previousStamp && previousStamp !== stampOf(p) && beginThemeSwapFade();
     var css = '';
-    var l = declBlock(light);
+    var l = paletteDeclarations(light);
     // Light values must be scoped to "not dark", otherwise a light-only palette
     // leaks into dark mode (independent verifier counterexample CE-B: light values
     // in :root{} still applied in dark mode).
     if (l) css += LIGHT_SCOPE + '{' + l + '}';
-    var d = declBlock(dark);
+    var d = paletteDeclarations(dark);
     if (d) css += ':root[data-theme="dark"]{' + d + '}';
     // Material variables are likewise split into light/dark blocks and share the
     // palette's <style>. The dark map is complete (the backend fills missing dark
@@ -4193,8 +4182,19 @@ background-image: none !important;
       if (!(countVars(mtLight) + countVars(mtDark))) return false;
       var css = '';
       var ml = declBlock(mtLight);
+      // The server owns the first-frame palette. Use its current gradients with
+      // the cached component opacity, even if the cached palette used other colours.
+      var root = document.documentElement;
+      var bootStyle = getComputedStyle(root);
+      var gradients = materialGradientDeclarations(function (key) {
+        var value = bootStyle.getPropertyValue(key).trim();
+        return isSafeGradient(value) ? value : '';
+      });
+      var isDark = root.getAttribute('data-theme') === 'dark';
+      if (!isDark) ml += gradients;
       if (ml) css += LIGHT_SCOPE + '{' + ml + '}';
       var md = declBlock(mtDark);
+      if (isDark) md += gradients;
       if (md) css += ':root[data-theme="dark"]{' + md + '}';
       css = PROBE_CSS + css + '\n' + GLASS_CSS + '\n' + MATERIAL_CSS + '\n' + SURFACE_CSS;
       var el = styleEl();
