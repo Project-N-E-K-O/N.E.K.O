@@ -552,7 +552,12 @@
     }
     /** Close the card of a task's question: all of that task's, or the one that asked `questionId`. */
     function close(taskId, questionId) {
-        queued = queued.filter(function (args) { return args[0] !== taskId || (questionId && view(args[2]).id !== questionId); });
+        queued = queued.filter(function (args) {
+            if (args[0] !== taskId || (questionId && view(args[2]).id !== questionId)) return true;
+            // One that only waited for the window is over like the rest: a late report of it is not shown.
+            setOver(view(args[2]).id);
+            return false;
+        });
         if (questionId) {
             setOver(questionId);
             flying.delete(taskId + ':' + questionId);

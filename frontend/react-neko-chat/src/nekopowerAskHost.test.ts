@@ -939,6 +939,22 @@ describe('the cards of the chat window', () => {
     expect(messages).toEqual([]);
   });
 
+  it('does not show a question again that only waited for the window when whatever its task asked is said to be over', () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    asks.receive(frame(permission));
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    // Of c1 as a whole, with no question named; then its report once more, late.
+    asks.receive(frame(null));
+    asks.receive(frame(permission));
+    w.reactChatWindowHost = host;
+    vi.advanceTimersByTime(600);
+    // Another task's is as it was.
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c2-q2']);
+  });
+
   it('does not put back a card that was out of the chat when whatever its task asked is said to be over', async () => {
     vi.useFakeTimers();
     const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
