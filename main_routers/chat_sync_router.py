@@ -92,7 +92,8 @@ def _error(exc: ValueError) -> HTTPException:
     """Expose fixed adapter errors without bearer, network body or account PII."""
     code = str(exc)
     status = 401 if code == "chat_sync_login_required" else 409
-    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later"}:
+    if code in {"chat_sync_unavailable", "chat_sync_network_unavailable", "chat_sync_internal_error",
+                "chat_sync_service_rejected", "chat_sync_retry_later"}:
         status = 503
     return HTTPException(status, code, headers={"Cache-Control": "no-store"})
 
@@ -126,6 +127,7 @@ async def status(runtime: Runtime):
             **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch", "localOnlyOriginals")},
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
+            "channelStatus": binding.get("channelStatus"),
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
             # Fixed local codes: capacity, archive subject or inbox waiting states.
             "localMemoryDiagnostics": binding.get("localMemoryDiagnostics", []),

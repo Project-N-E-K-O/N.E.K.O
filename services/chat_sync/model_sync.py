@@ -173,7 +173,11 @@ class DesktopModelSync:
             await self._step(uid, manual=manual, automatic_only=automatic_only)
         except AutomaticRoleInactive:
             raise
-        except Exception:
+        except Exception as exc:
+            # Automatic checks accept missing endpoints on legacy services.
+            # Preserve existing work without creating a new retry failure.
+            if automatic_only and getattr(exc, "status_code", None) == 404:
+                raise
             # Persist a safe retry affordance without exposing signed URLs or provider errors.
             async with self.lock:
                 try:
@@ -400,7 +404,7 @@ class DesktopModelSync:
                                 digest.update(chunk)
                                 output.write(chunk)
             except httpx.HTTPError:
-                raise ValueError("chat_sync_unavailable") from None
+                raise ValueError("chat_sync_network_unavailable") from None
             if count != package["size"] or digest.hexdigest() != package["sha256"]:
                 raise ValueError("invalid_cloud_model_hash")
             await guard()
@@ -408,6 +412,12 @@ class DesktopModelSync:
             return target
         finally:
             part.unlink(missing_ok=True)
+
+    @staticmethod
+    def has_unresolved_failure(state):
+        """A newer confirmed revision supersedes an earlier renderer failure."""
+        failed = state.get("failed")
+        return bool(state.get("error") or (failed and failed >= state.get("revision", 0)))
 
     async def status(self, uid):
         runtime = self.runtime
@@ -418,11 +428,12 @@ class DesktopModelSync:
         state = await asyncio.to_thread(self.store.get, ChatDomain(binding["owner_id"], uid).key())
         if not state:
             return {}
+        progress = {'pending': True} if state.get('pending') else {}
         current = await self.adapter.read(uid)
         candidate = state.get("candidate")
         if candidate and candidate["expected"] == current["selection"]:
-            return {"candidate": {"token": candidate["token"], "path": candidate["path"], "name": current["name"]}}
-        return {"conflict": bool(state.get("conflict")), "failed": bool(state.get("failed") or state.get("error"))}
+            return {**progress, "candidate": {"token": candidate["token"], "path": candidate["path"], "name": current["name"]}}
+        return {**progress, "conflict": bool(state.get("conflict")), "failed": self.has_unresolved_failure(state)}
 
     async def finish(self, uid, token, loaded):
         try:
@@ -525,7 +536,7 @@ class DesktopModelSync:
                 try:
                     response = await client.put(signed["url"], headers=signed["headers"], content=chunks())
                 except httpx.HTTPError:
-                    raise ValueError("chat_sync_unavailable") from None
+                    raise ValueError("chat_sync_network_unavailable") from None
                 if response.status_code not in {200, 201, 204}:
                     raise OSError("cloud_model_upload_unavailable")
             # A mutable cache file must not publish bytes changed after the preflight hash.

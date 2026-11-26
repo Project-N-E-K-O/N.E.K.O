@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable
 import queue
 import os
 import secrets
@@ -142,6 +144,21 @@ def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
     return host, port
 
 
+_FLUSH_HOOK_MIN_INTERVAL_SECONDS = 0.2
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _is_reliable_snapshot(msg: object) -> bool:
+    return (
+        isinstance(msg, dict)
+        and msg.get("kind") == "snapshot"
+        and msg.get("mode") in ("delete", "replace")
+    )
+
+
 class _Bridge:
     def __init__(self) -> None:
         self._endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
@@ -149,6 +166,32 @@ class _Bridge:
         self._q: "queue.Queue[dict[str, object]]" = queue.Queue(maxsize=4096)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._flush_hooks_lock = threading.Lock()
+        self._flush_hooks: list[Callable[[], None]] = []
+        self._pending_snapshot_lock = threading.RLock()
+        self._q_not_empty = threading.Condition(self._pending_snapshot_lock)
+        self._pending_snapshots: deque[dict[str, object]] = deque()
+        self._active_stop: threading.Event | None = None
+
+    def register_flush_hook(self, hook: Callable[[], None]) -> None:
+        if not callable(hook):
+            return
+        with self._flush_hooks_lock:
+            if hook not in self._flush_hooks:
+                self._flush_hooks.append(hook)
+
+    def unregister_flush_hook(self, hook: Callable[[], None]) -> None:
+        with self._flush_hooks_lock:
+            self._flush_hooks = [item for item in self._flush_hooks if item is not hook]
+
+    def _run_flush_hooks(self) -> None:
+        with self._flush_hooks_lock:
+            hooks = list(self._flush_hooks)
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:
+                pass
 
     def start(self) -> None:
         if not self._enabled:
@@ -164,7 +207,11 @@ class _Bridge:
         # loss the retirement path exists to end. Its own event stays set, so it
         # leaves on its own schedule and cannot be recalled.
         self._stop = threading.Event()
-        t = threading.Thread(target=self._run, args=(self._stop,), daemon=True)
+        stop = self._stop
+        with self._pending_snapshot_lock:
+            self._active_stop = stop
+            self._q_not_empty.notify_all()
+        t = threading.Thread(target=self._run, args=(stop,), daemon=True)
         self._thread = t
         t.start()
 
@@ -206,6 +253,11 @@ class _Bridge:
             # with the process anyway; raising here would only turn a clean
             # shutdown into a traceback.
             pass
+        try:
+            with self._pending_snapshot_lock:
+                self._q_not_empty.notify_all()
+        except _RUNTIME_ERRORS:
+            pass
         t = self._thread
         self._thread = None
         if t is not None and t.is_alive():
@@ -216,6 +268,21 @@ class _Bridge:
                 # to the next ``start()``, not a correctness requirement -- the
                 # retired thread holds its own stop event and cannot be recalled.
                 pass
+
+    def can_enqueue_snapshot(self, *, reserve_slots: int = 0) -> bool:
+        if not self._enabled:
+            return False
+        with self._pending_snapshot_lock:
+            maxsize = int(getattr(self._q, "maxsize", 0) or 0)
+            if maxsize <= 0:
+                return True
+            # Best-effort reservation so delete backfill does not self-fill the queue ahead
+            # of the caller's own live delta write without cross-producer locking overhead.
+            needed = 1 + max(0, int(reserve_slots))
+            try:
+                return (self._q.qsize() + needed) <= maxsize
+            except NotImplementedError:
+                return not self._q.full()
 
     def enqueue_delta(
         self,
@@ -235,15 +302,6 @@ class _Bridge:
         """
         if not self._enabled:
             return False
-        if max_queue_depth is not None:
-            try:
-                if self._q.qsize() >= int(max_queue_depth):
-                    return False
-            except NotImplementedError:
-                # qsize() is documented as unreliable/absent on some platforms.
-                # Losing the ceiling degrades to the old behaviour; refusing the
-                # record instead would be worse.
-                pass
         msg = {
             "v": 1,
             "kind": "delta_batch",
@@ -258,10 +316,21 @@ class _Bridge:
                 }
             ],
         }
-        try:
-            self._q.put_nowait(msg)
-        except queue.Full:
-            return False
+        with self._pending_snapshot_lock:
+            if max_queue_depth is not None:
+                try:
+                    if self._q.qsize() >= int(max_queue_depth):
+                        return False
+                except NotImplementedError:
+                    # qsize() is documented as unreliable/absent on some platforms.
+                    # Losing the ceiling degrades to the old behaviour; refusing the
+                    # record instead would be worse.
+                    pass
+            try:
+                self._q.put_nowait(msg)
+            except queue.Full:
+                return False
+            self._q_not_empty.notify()
         return True
 
     def enqueue_snapshot(
@@ -271,9 +340,10 @@ class _Bridge:
         topic: str,
         items: list[dict[str, object]],
         mode: str = "replace",
-    ) -> None:
+        reserve_slots: int = 0,
+    ) -> bool:
         if not self._enabled:
-            return
+            return False
         msg = {
             "v": 1,
             "kind": "snapshot",
@@ -284,10 +354,15 @@ class _Bridge:
             "mode": str(mode),
             "items": list(items) if isinstance(items, list) else [],
         }
-        try:
-            self._q.put_nowait(msg)
-        except queue.Full:
-            return
+        with self._pending_snapshot_lock:
+            if reserve_slots > 0 and not self.can_enqueue_snapshot(reserve_slots=reserve_slots):
+                return False
+            try:
+                self._q.put_nowait(msg)
+            except queue.Full:
+                return False
+            self._q_not_empty.notify()
+        return True
 
     def _wait_tcp_ready(self, endpoint: str, stop: threading.Event) -> None:
         parsed = _parse_tcp_endpoint(endpoint)
@@ -328,18 +403,71 @@ class _Bridge:
                 pass
             return
 
+        last_flush_hook_ts = 0.0
         try:
             while not stop.is_set():
+                msg: dict[str, object] | None = None
+                from_pending_slot = False
+                with self._pending_snapshot_lock:
+                    if stop.is_set() or (
+                        self._active_stop is not None and self._active_stop is not stop
+                    ):
+                        return
+                    if self._pending_snapshots:
+                        msg = self._pending_snapshots[0]
+                        from_pending_slot = True
+                    else:
+                        try:
+                            msg = self._q.get_nowait()
+                        except queue.Empty:
+                            self._q_not_empty.wait(timeout=0.2)
+                        except _RUNTIME_ERRORS:
+                            pass
+                        if msg is not None and _is_reliable_snapshot(msg):
+                            self._pending_snapshots.append(msg)
+                            from_pending_slot = True
+                if msg is None:
+                    if stop.is_set():
+                        break
+                    if self._q.empty():
+                        self._run_flush_hooks()
+                        last_flush_hook_ts = _monotonic()
+                    continue
                 try:
-                    msg = self._q.get(timeout=0.2)
-                except queue.Empty:
+                    raw = _dumps(msg)
+                except (RuntimeError, ValueError, TypeError, AttributeError):
+                    if from_pending_slot:
+                        with self._pending_snapshot_lock:
+                            if self._pending_snapshots and self._pending_snapshots[0] is msg:
+                                self._pending_snapshots.popleft()
                     continue
-                except _RUNTIME_ERRORS:
+                send_failed = False
+                with self._pending_snapshot_lock:
+                    if stop.is_set() or (
+                        self._active_stop is not None and self._active_stop is not stop
+                    ):
+                        return
+                    try:
+                        sock.send(raw, flags=zmq.NOBLOCK)
+                        if (
+                            from_pending_slot
+                            and self._pending_snapshots
+                            and self._pending_snapshots[0] is msg
+                        ):
+                            self._pending_snapshots.popleft()
+                    except (OSError, zmq.ZMQError):
+                        send_failed = True
+                if send_failed:
+                    if from_pending_slot:
+                        stop.wait(0.05)
                     continue
-                try:
-                    sock.send(_dumps(msg), flags=zmq.NOBLOCK)
-                except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError):
-                    continue
+                now = _monotonic()
+                if self._q.empty() or (
+                    not self._q.full()
+                    and (now - last_flush_hook_ts) >= _FLUSH_HOOK_MIN_INTERVAL_SECONDS
+                ):
+                    self._run_flush_hooks()
+                    last_flush_hook_ts = _monotonic()
         finally:
             try:
                 sock.close(0)
@@ -351,6 +479,12 @@ _bridge = _Bridge()
 
 
 def start_bridge() -> None:
+    try:
+        from plugin.core.state import state as _global_state
+
+        _global_state._ensure_plane_bridge_flush_hook_registered()
+    except Exception:
+        pass
     _bridge.start()
 
 
@@ -361,6 +495,19 @@ def stop_bridge() -> None:
 def message_bridge_is_alive() -> bool:
     """Whether the sender thread is running. See ``_Bridge.is_alive``."""
     return _bridge.is_alive()
+
+
+def is_bridge_enabled() -> bool:
+    """Whether the message-plane bridge is enabled by configuration."""
+    return bool(_bridge._enabled)
+
+
+def can_enqueue_snapshot(*, reserve_slots: int = 0) -> bool:
+    """Whether the bridge is enabled and its outbound queue can accept a snapshot."""
+    return _bridge.can_enqueue_snapshot(reserve_slots=reserve_slots)
+
+
+can_enqueue_snapshot._supports_reserve_slots = True  # type: ignore[attr-defined]
 
 
 def refresh_ingest_endpoint() -> str:
@@ -405,14 +552,34 @@ def publish_record(*, store: str, record: dict[str, object], topic: str = "all")
     return bool(_bridge.enqueue_delta(store=store, topic=topic, payload=record))
 
 
+def register_pending_flush_hook(hook: Callable[[], None]) -> None:
+    _bridge.register_flush_hook(hook)
+
+
+def unregister_pending_flush_hook(hook: Callable[[], None]) -> None:
+    _bridge.unregister_flush_hook(hook)
+
+
 def publish_snapshot(
     *,
     store: str,
     records: list[dict[str, object]],
     topic: str = "all",
     mode: str = "replace",
-) -> None:
-    _bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode)
+    reserve_slots: int = 0,
+) -> bool:
+    return bool(
+        _bridge.enqueue_snapshot(
+            store=store,
+            topic=topic,
+            items=records,
+            mode=mode,
+            reserve_slots=reserve_slots,
+        )
+    )
+
+
+publish_snapshot._supports_reserve_slots = True  # type: ignore[attr-defined]
 
 
 # ── Provider frames ────────────────────────────────────────────────────

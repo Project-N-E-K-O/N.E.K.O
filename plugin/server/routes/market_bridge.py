@@ -19,6 +19,7 @@ import hmac
 import json
 import re
 import secrets
+import threading
 import time
 import tomllib
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
 from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
@@ -132,6 +134,7 @@ _OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
 _OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
 _OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 _OAUTH_REFRESH_LOCK = asyncio.Lock()
+_OAUTH_STATE_FILE_LOCK = threading.RLock()
 _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
@@ -2371,9 +2374,8 @@ async def market_oauth_start(
     expires_at = time.time() + _OAUTH_SESSION_TTL_SECONDS
     redirect_uri = _oauth_redirect_uri_for_request(request)
 
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
-    _write_private_json(
-        _OAUTH_PENDING_FILE,
+    await asyncio.to_thread(
+        _start_oauth_session_sync,
         {
             "state": state,
             "code_verifier": code_verifier,
@@ -2489,20 +2491,13 @@ async def market_oauth_callback(
     file URL. A loopback redirect mirrors the pattern used by desktop apps such
     as VS Code and lets the already-running local server receive the code.
     """
-    pending = _read_json_file(_OAUTH_PENDING_FILE)
-    if not pending:
+    outcome = await asyncio.to_thread(_commit_oauth_callback_sync, code, state)
+    if outcome == "not_started":
         raise HTTPException(status_code=400, detail="OAuth 登录尚未开始")
-    if time.time() > float(pending.get("expires_at") or 0):
-        _unlink_if_exists(_OAUTH_PENDING_FILE)
+    if outcome == "expired":
         raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
-    expected_state = str(pending.get("state") or "")
-    if not expected_state or not secrets.compare_digest(state, expected_state):
+    if outcome == "state_mismatch":
         raise HTTPException(status_code=400, detail="OAuth state 校验失败")
-
-    _write_private_json(
-        _OAUTH_CALLBACK_FILE,
-        {"code": code, "state": state, "timestamp": time.time()},
-    )
     locale = _preferred_oauth_callback_locale(
         request.headers.get("accept-language", "")
     )
@@ -2590,30 +2585,34 @@ async def market_oauth_status(
                 logger.info(
                     "Refreshed Auth access token was rejected while resolving subject"
                 )
-                if _unlink_oauth_token_if_matches(token_snapshot):
+                if await asyncio.to_thread(_unlink_oauth_token_if_matches, token_snapshot):
                     _clear_account_summary_cache()
                 return MarketOAuthStatusResponse(
                     authenticated=False,
                     market_web_url=MARKET_WEB_URL,
                 )
         subject = _extract_auth_subject(auth_user)
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _oauth_status_after_cas_conflict(token_snapshot)
+        if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
+            return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
         if subject:
             token_data["subject"] = subject
             token_data["subject_pending"] = False
             token_data["auth_state"] = "ready"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             token_snapshot = dict(token_data)
         else:
             token_data["subject"] = None
             token_data["subject_pending"] = True
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             return MarketOAuthStatusResponse(
                 authenticated=False,
                 auth_state="pending",
@@ -2659,8 +2658,10 @@ async def market_oauth_status(
         token_data["market_user_verified_at"] = time.time()
     token_data["auth_state"] = "ready"
     token_data["updated_at"] = time.time()
-    if not _write_oauth_token_if_matches(token_snapshot, token_data):
-        return _oauth_status_after_cas_conflict(token_snapshot)
+    if not await asyncio.to_thread(
+        _write_oauth_token_if_matches, token_snapshot, token_data
+    ):
+        return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
 
     return MarketOAuthStatusResponse(
         authenticated=True,
@@ -2701,8 +2702,10 @@ async def market_oauth_account_summary(
         return MarketOAuthAccountSummaryResponse.model_validate(cached)
 
     async with _ACCOUNT_SUMMARY_LOCK:
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
+        if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         cached = _fresh_account_summary(cache_key)
         if cached is not None:
             return MarketOAuthAccountSummaryResponse.model_validate(cached)
@@ -2733,15 +2736,21 @@ async def market_oauth_account_summary(
                 )
             except _OAuthAccessTokenRejected:
                 logger.info("Refreshed Auth access token was rejected by userinfo")
-                if _unlink_oauth_token_if_matches(token_snapshot):
+                if await asyncio.to_thread(_unlink_oauth_token_if_matches, token_snapshot):
                     _clear_account_summary_cache()
                 return _unauthenticated_account_summary()
 
             cache_key = _account_summary_cache_key(token_data)
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
         summary = _build_account_summary(token_data, auth_user, market_user)
-        _store_account_summary(cache_key, summary)
+        if not await asyncio.to_thread(
+            _store_account_summary_if_snapshot_matches_sync,
+            token_snapshot,
+            cache_key,
+            summary,
+        ):
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         return summary
 
 
@@ -2756,31 +2765,28 @@ async def market_oauth_complete(
     """Consume browser-callback authorization codes and exchange for Auth tokens."""
     _verify_token(token, authorization=authorization)
 
-    pending = _read_json_file(_OAUTH_PENDING_FILE)
-    if not pending:
+    input_status, pending, callback = await asyncio.to_thread(
+        _read_oauth_complete_inputs_sync
+    )
+    if input_status == "not_started":
         return MarketOAuthCompleteResponse(
             completed=False,
             authenticated=False,
             message="OAuth 登录尚未开始",
         )
-    if time.time() > float(pending.get("expires_at") or 0):
-        _unlink_if_exists(_OAUTH_PENDING_FILE)
-        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    if input_status == "expired":
         raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
-
-    callback = _read_json_file(_OAUTH_CALLBACK_FILE)
-    if not callback:
+    if input_status == "waiting":
         return MarketOAuthCompleteResponse(
             completed=False,
             authenticated=False,
             message="等待浏览器授权回调",
         )
-
-    state = str(callback.get("state") or "")
-    if not state or not secrets.compare_digest(state, str(pending.get("state") or "")):
-        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    if input_status == "state_mismatch":
         raise HTTPException(status_code=400, detail="OAuth state 校验失败")
 
+    assert pending is not None and callback is not None
+    state = str(callback.get("state") or "")
     code = str(callback.get("code") or "")
     code_verifier = str(pending.get("code_verifier") or "")
     if not code or not code_verifier:
@@ -2793,9 +2799,12 @@ async def market_oauth_complete(
     try:
         auth_user = await _fetch_auth_userinfo(access_token)
     except _OAuthAccessTokenRejected as exc:
-        await _require_active_oauth_session(state, token_payload)
-        _clear_oauth_session()
+        rejected_active = await asyncio.to_thread(
+            _reject_active_oauth_session_sync, state
+        )
         await _revoke_oauth_token_best_effort(token_payload)
+        if not rejected_active:
+            raise HTTPException(status_code=409, detail="oauth_session_cancelled") from exc
         raise HTTPException(status_code=401, detail="auth_token_rejected") from exc
     subject = _extract_auth_subject(auth_user)
 
@@ -2836,10 +2845,12 @@ async def market_oauth_complete(
     if market_state == "ready":
         stored["market_api_url_last_verified"] = _normalized_base_url(MARKET_API_URL)
         stored["market_user_verified_at"] = now
-    await _require_active_oauth_session(state, token_payload)
-    _write_private_json(_OAUTH_TOKEN_FILE, stored)
-    _clear_account_summary_cache()
-    _clear_oauth_session()
+    committed = await asyncio.to_thread(
+        _commit_completed_oauth_session_sync, state, stored
+    )
+    if not committed:
+        await _revoke_oauth_token_best_effort(token_payload)
+        raise HTTPException(status_code=409, detail="oauth_session_cancelled")
 
     return MarketOAuthCompleteResponse(
         completed=True,
@@ -2866,11 +2877,7 @@ async def market_oauth_logout(
 ):
     """Clear local Auth OAuth tokens; revoke failures must not prevent local logout."""
     _verify_token(token, authorization=authorization)
-    token_data = _read_json_file(_OAUTH_TOKEN_FILE)
-    _clear_account_summary_cache()
-    _unlink_if_exists(_OAUTH_TOKEN_FILE)
-    _unlink_if_exists(_OAUTH_PENDING_FILE)
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    token_data = await asyncio.to_thread(_logout_oauth_sync)
     if token_data:
         await _revoke_oauth_token_best_effort(token_data)
     return MarketOAuthLogoutResponse(message="已退出 Auth 登录")
@@ -3069,8 +3076,9 @@ def _auth_issuer() -> str:
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if isinstance(payload.get("user"), dict):
+        payload = {**payload, "user": scrub_non_finite_numbers(payload["user"])}
+    atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     try:
         path.chmod(0o600)
     except OSError as exc:
@@ -3091,32 +3099,33 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
     """CAS guard for async OAuth work that may finish after logout/re-login."""
 
-    current = _read_json_file(_OAUTH_TOKEN_FILE)
-    if not current:
-        return False
-    expected_token = snapshot.get("access_token")
-    current_token = current.get("access_token")
-    if not (
-        isinstance(expected_token, str)
-        and isinstance(current_token, str)
-        and secrets.compare_digest(expected_token, current_token)
-    ):
-        return False
-    expected_session = snapshot.get("session_id")
-    if isinstance(expected_session, str) and expected_session:
-        current_session = current.get("session_id")
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if not current:
+            return False
+        expected_token = snapshot.get("access_token")
+        current_token = current.get("access_token")
         if not (
-            isinstance(current_session, str)
-            and secrets.compare_digest(expected_session, current_session)
+            isinstance(expected_token, str)
+            and isinstance(current_token, str)
+            and secrets.compare_digest(expected_token, current_token)
         ):
             return False
-    expected_revision = _oauth_state_revision(snapshot)
-    current_revision = _oauth_state_revision(current)
-    return (
-        current.get("refresh_generation") == snapshot.get("refresh_generation")
-        and expected_revision is not None
-        and current_revision == expected_revision
-    )
+        expected_session = snapshot.get("session_id")
+        if isinstance(expected_session, str) and expected_session:
+            current_session = current.get("session_id")
+            if not (
+                isinstance(current_session, str)
+                and secrets.compare_digest(expected_session, current_session)
+            ):
+                return False
+        expected_revision = _oauth_state_revision(snapshot)
+        current_revision = _oauth_state_revision(current)
+        return (
+            current.get("refresh_generation") == snapshot.get("refresh_generation")
+            and expected_revision is not None
+            and current_revision == expected_revision
+        )
 
 
 def _current_oauth_token_for_same_session_snapshot(
@@ -3129,16 +3138,17 @@ def _current_oauth_token_for_same_session_snapshot(
     identity has not been replaced.
     """
 
-    current = _read_json_file(_OAUTH_TOKEN_FILE)
-    if (
-        not current
-        or not _oauth_token_provenance_matches(current)
-        or current.get("access_token") != snapshot.get("access_token")
-        or current.get("session_id") != snapshot.get("session_id")
-        or current.get("refresh_generation") != snapshot.get("refresh_generation")
-    ):
-        return None
-    return current
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if (
+            not current
+            or not _oauth_token_provenance_matches(current)
+            or current.get("access_token") != snapshot.get("access_token")
+            or current.get("session_id") != snapshot.get("session_id")
+            or current.get("refresh_generation") != snapshot.get("refresh_generation")
+        ):
+            return None
+        return current
 
 
 def _current_oauth_token_for_invalidated_snapshot(
@@ -3194,21 +3204,151 @@ def _write_oauth_token_if_matches(
     snapshot: dict[str, Any],
     payload: dict[str, Any],
 ) -> bool:
-    if not _oauth_token_snapshot_matches(snapshot):
-        return False
-    revision = _oauth_state_revision(snapshot)
-    if revision is None:
-        return False
-    payload["state_revision"] = revision + 1
-    _write_private_json(_OAUTH_TOKEN_FILE, payload)
-    return True
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        revision = _oauth_state_revision(snapshot)
+        if revision is None:
+            return False
+        payload["state_revision"] = revision + 1
+        _write_private_json(_OAUTH_TOKEN_FILE, payload)
+        return True
+
+
+def _commit_refreshed_oauth_token_sync(
+    current: dict[str, Any],
+    refreshed: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Commit refreshed credentials atomically under ``_OAUTH_STATE_FILE_LOCK``."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if _write_oauth_token_if_matches(current, refreshed):
+            return refreshed
+        latest = _current_oauth_token_for_same_session_snapshot(current)
+        if latest is None:
+            return None
+        merged = dict(latest)
+        for key in (
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "scope",
+            "expires_at",
+            "auth_url",
+            "issuer",
+            "client_id",
+            "refresh_generation",
+            "updated_at",
+            "refreshed_at",
+        ):
+            if key in refreshed:
+                merged[key] = refreshed[key]
+        merged.pop("market_user_verified_at", None)
+        if _write_oauth_token_if_matches(latest, merged):
+            return merged
+        return None
 
 
 def _unlink_oauth_token_if_matches(snapshot: dict[str, Any]) -> bool:
-    if not _oauth_token_snapshot_matches(snapshot):
-        return False
-    _unlink_if_exists(_OAUTH_TOKEN_FILE)
-    return True
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        return True
+
+
+def _unlink_oauth_token_if_unchanged(expected_token: dict[str, Any]) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if current != expected_token:
+            return False
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        return True
+
+
+def _start_oauth_session_sync(pending_payload: dict[str, Any]) -> None:
+    with _OAUTH_STATE_FILE_LOCK:
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        _write_private_json(_OAUTH_PENDING_FILE, pending_payload)
+
+
+def _commit_oauth_callback_sync(code: str, state: str) -> str:
+    with _OAUTH_STATE_FILE_LOCK:
+        pending = _read_json_file(_OAUTH_PENDING_FILE)
+        if not pending:
+            return "not_started"
+        if time.time() > float(pending.get("expires_at") or 0):
+            _unlink_if_exists(_OAUTH_PENDING_FILE)
+            return "expired"
+        expected_state = str(pending.get("state") or "")
+        if not expected_state or not secrets.compare_digest(state, expected_state):
+            return "state_mismatch"
+        _write_private_json(
+            _OAUTH_CALLBACK_FILE,
+            {"code": code, "state": state, "timestamp": time.time()},
+        )
+        return "ok"
+
+
+def _read_oauth_complete_inputs_sync() -> (
+    tuple[str, dict[str, Any] | None, dict[str, Any] | None]
+):
+    with _OAUTH_STATE_FILE_LOCK:
+        pending = _read_json_file(_OAUTH_PENDING_FILE)
+        if not pending:
+            return "not_started", None, None
+        if time.time() > float(pending.get("expires_at") or 0):
+            _clear_oauth_session()
+            return "expired", None, None
+        callback = _read_json_file(_OAUTH_CALLBACK_FILE)
+        if not callback:
+            return "waiting", pending, None
+        state = str(callback.get("state") or "")
+        if not state or not secrets.compare_digest(state, str(pending.get("state") or "")):
+            _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+            return "state_mismatch", pending, callback
+        return "ok", pending, callback
+
+
+def _is_active_oauth_session_unlocked(expected_state: str) -> bool:
+    current = _read_json_file(_OAUTH_PENDING_FILE)
+    current_state = str(current.get("state") or "") if current else ""
+    return (
+        bool(current_state)
+        and secrets.compare_digest(current_state, expected_state)
+        and time.time() <= float(current.get("expires_at") or 0)
+    )
+
+
+def _reject_active_oauth_session_sync(expected_state: str) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _is_active_oauth_session_unlocked(expected_state):
+            return False
+        _clear_oauth_session()
+        return True
+
+
+def _commit_completed_oauth_session_sync(
+    expected_state: str,
+    stored: dict[str, Any],
+) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _is_active_oauth_session_unlocked(expected_state):
+            return False
+        _write_private_json(_OAUTH_TOKEN_FILE, stored)
+        _clear_account_summary_cache()
+        _clear_oauth_session()
+        return True
+
+
+def _logout_oauth_sync() -> dict[str, Any] | None:
+    with _OAUTH_STATE_FILE_LOCK:
+        token_data = _read_json_file(_OAUTH_TOKEN_FILE)
+        _clear_account_summary_cache()
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        return token_data
 
 
 def _market_token_expires_soon(token_data: dict[str, Any]) -> bool:
@@ -3328,7 +3468,7 @@ async def _ensure_valid_oauth_token(
         return None
     if not _oauth_token_provenance_matches(token_data):
         logger.info("Skip saved Auth token: auth_url/client_id provenance mismatch")
-        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        await asyncio.to_thread(_unlink_oauth_token_if_unchanged, token_data)
         return None
     if (
         rejected_access_token is not None
@@ -3339,7 +3479,7 @@ async def _ensure_valid_oauth_token(
         return token_data
     if not token_data.get("refresh_token"):
         logger.info("Saved Auth token is expired and has no refresh token")
-        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        await asyncio.to_thread(_unlink_oauth_token_if_matches, token_data)
         return None
 
     async with _OAUTH_REFRESH_LOCK:
@@ -3356,7 +3496,7 @@ async def _ensure_valid_oauth_token(
         if not force_refresh and not _market_token_expires_soon(current):
             return current
         if not current.get("refresh_token"):
-            _unlink_oauth_token_if_matches(current)
+            await asyncio.to_thread(_unlink_oauth_token_if_matches, current)
             return None
 
         try:
@@ -3364,7 +3504,7 @@ async def _ensure_valid_oauth_token(
         except HTTPException as exc:
             logger.info("Auth token refresh failed: {}", exc.detail)
             if exc.status_code == 401:
-                _unlink_oauth_token_if_matches(current)
+                await asyncio.to_thread(_unlink_oauth_token_if_matches, current)
                 return None
             if force_refresh:
                 raise
@@ -3372,31 +3512,34 @@ async def _ensure_valid_oauth_token(
                 return current
             return None
 
-        if not _write_oauth_token_if_matches(current, refreshed):
-            latest = _current_oauth_token_for_same_session_snapshot(current)
-            if latest is not None:
-                merged = dict(latest)
-                for key in (
-                    "access_token",
-                    "refresh_token",
-                    "token_type",
-                    "scope",
-                    "expires_at",
-                    "auth_url",
-                    "issuer",
-                    "client_id",
-                    "refresh_generation",
-                    "updated_at",
-                    "refreshed_at",
-                ):
-                    if key in refreshed:
-                        merged[key] = refreshed[key]
-                merged.pop("market_user_verified_at", None)
-                if _write_oauth_token_if_matches(latest, merged):
-                    return merged
-            await _revoke_oauth_token_best_effort(refreshed)
+        commit_task = asyncio.create_task(
+            asyncio.to_thread(_commit_refreshed_oauth_token_sync, current, refreshed)
+        )
+        cancelled = False
+        while True:
+            try:
+                committed = await asyncio.shield(commit_task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if commit_task.cancelled():
+                    raise
+        if committed is None:
+            revoke_task = asyncio.create_task(_revoke_oauth_token_best_effort(refreshed))
+            while True:
+                try:
+                    await asyncio.shield(revoke_task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if revoke_task.cancelled():
+                        raise
+            if cancelled:
+                raise asyncio.CancelledError
             return None
-        return refreshed
+        if cancelled:
+            raise asyncio.CancelledError
+        return committed
 
 
 def _unlink_if_exists(path: Path) -> None:
@@ -3409,8 +3552,9 @@ def _unlink_if_exists(path: Path) -> None:
 
 
 def _clear_oauth_session() -> None:
-    _unlink_if_exists(_OAUTH_PENDING_FILE)
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    with _OAUTH_STATE_FILE_LOCK:
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
 
 
 async def _require_active_oauth_session(
@@ -3419,14 +3563,11 @@ async def _require_active_oauth_session(
 ) -> None:
     """Reject a completion whose browser session was logged out or replaced."""
 
-    current = _read_json_file(_OAUTH_PENDING_FILE)
-    current_state = str(current.get("state") or "") if current else ""
-    active = (
-        bool(current_state)
-        and secrets.compare_digest(current_state, expected_state)
-        and time.time() <= float(current.get("expires_at") or 0)
-    )
-    if active:
+    def _is_active_sync() -> bool:
+        with _OAUTH_STATE_FILE_LOCK:
+            return _is_active_oauth_session_unlocked(expected_state)
+
+    if await asyncio.to_thread(_is_active_sync):
         return
     await _revoke_oauth_token_best_effort(token_payload)
     raise HTTPException(status_code=409, detail="oauth_session_cancelled")
@@ -3625,14 +3766,15 @@ def _account_summary_for_invalidated_snapshot(
     )
 
 
-def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, int]:
+def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, str, int]:
     return (
         str(token_data.get("subject") or ""),
+        str(token_data.get("session_id") or ""),
         int(token_data.get("refresh_generation") or 0),
     )
 
 
-def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
+def _fresh_account_summary(cache_key: tuple[str, str, int]) -> dict[str, Any] | None:
     cached = _ACCOUNT_SUMMARY_CACHE
     if not cached or cached.get("key") != cache_key:
         return None
@@ -3643,7 +3785,7 @@ def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
 
 
 def _store_account_summary(
-    cache_key: tuple[str, int],
+    cache_key: tuple[str, str, int],
     summary: MarketOAuthAccountSummaryResponse,
 ) -> None:
     global _ACCOUNT_SUMMARY_CACHE
@@ -3652,6 +3794,20 @@ def _store_account_summary(
         "expires_at": time.time() + _ACCOUNT_SUMMARY_TTL_SECONDS,
         "payload": summary.model_dump(mode="json"),
     }
+
+
+def _store_account_summary_if_snapshot_matches_sync(
+    snapshot: dict[str, Any],
+    cache_key: tuple[str, str, int],
+    summary: MarketOAuthAccountSummaryResponse,
+) -> bool:
+    """Persist account summary cache only while ``snapshot`` is still current."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        _store_account_summary(cache_key, summary)
+        return True
 
 
 def _clear_account_summary_cache() -> None:

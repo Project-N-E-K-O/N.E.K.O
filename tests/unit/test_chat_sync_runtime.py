@@ -138,6 +138,26 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memo
 
 
 @pytest.mark.asyncio
+async def test_runtime_status_keeps_recent_success_visible_alongside_model_failure(tmp_path):
+    runtime, _, _ = setup_runtime(tmp_path)
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        runtime.scheduler.claim(DOMAIN.key(), 'pull', 1, 'synthetic-session')
+        runtime.scheduler.success(DOMAIN.key(), 'pull')
+        runtime.scheduler.failure(DOMAIN.key(), 'model', 1, 'synthetic-session', ValueError('private local detail'))
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus']['pull'] == {
+            'status': 'success', 'lastSuccessAt': runtime.test_clock[0], 'lastError': None,
+        }
+        assert binding['channelStatus']['model']['lastError'] == 'chat_sync_internal_error'
+        assert binding['lastSyncError'] == 'chat_sync_internal_error'
+        assert 'private local detail' not in json.dumps(binding)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case,expected", [
     ("saved_unverified", "chat_sync_session_unavailable"),
     ("rejected", "chat_sync_login_required"),
@@ -1017,7 +1037,7 @@ def test_response_loss_reuses_persisted_binding_request(tmp_path):
                 raise httpx.ReadError("synthetic response loss")
 
         service.on_request = lose_first_response
-        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+        with pytest.raises(ValueError, match="chat_sync_network_unavailable"):
             await runtime.enable(UID, "Neko")
         first_body = service.requests[-1].content
         assert runtime.state.binding(UID)["enabled"] == 0
@@ -1363,7 +1383,7 @@ def test_local_https_still_rejects_invalid_server_identity(tmp_path, local_tls_f
             try:
                 host = "127.0.0.1" if failure == "wrong-hostname" else "localhost"
                 await runtime.configure(f"https://{host}:{port}")
-                with pytest.raises(ValueError, match="^chat_sync_unavailable$"):
+                with pytest.raises(ValueError, match="^chat_sync_network_unavailable$"):
                     await runtime._identity("synthetic-local-token")
                 assert requests == []
                 assert runtime.state.bindings() == []
@@ -1712,6 +1732,318 @@ def recent_role_runtime(tmp_path, names, *, chats=None, long_term=False):
     return runtime, service, session
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('channel', ['pull', 'long_term'])
+async def test_deferred_memory_work_remains_waiting_until_a_complete_pass(tmp_path, monkeypatch, channel):
+    from unittest.mock import AsyncMock
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    lane = runtime.recent_memory if channel == 'pull' else runtime.long_term_memory
+    monkeypatch.setattr(runtime.long_term_memory.adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(lane, 'sync', AsyncMock(side_effect=[
+        {'changed': False, 'hasMore': True}, {'changed': False, 'hasMore': False},
+    ]))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        await runtime._channel_pass(UID, channel, presence=presence)
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus'][channel] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        await runtime._channel_pass(UID, channel, presence=presence)
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus'][channel]['status'] == 'success'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_starting_during_long_term_metadata_read_defers_status_without_an_incoming_file(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    busy = [False]
+    runtime.profiles.adapter = SimpleNamespace(busy=lambda _name: busy[0])
+    monkeypatch.setattr(runtime.long_term_memory.adapter, 'flush', AsyncMock(return_value=False))
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            assert request.url.params['metadataOnly'] == 'true'
+            busy[0] = True
+            return httpx.Response(200, json={
+                'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000,
+            })
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        result = await runtime._long_term_memory_pass(UID, presence=await runtime.session_presence_provider())
+        assert result['hasMore']
+        assert not runtime.long_term_memory.adapter.incoming_path(UID).exists()
+        binding, = (await runtime.status())['bindings']
+        assert binding['channelStatus']['long_term']['status'] == 'waiting'
+        assert binding['channelStatus']['long_term']['lastSuccessAt'] is None
+        assert not binding['localMemoryDiagnostics']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('application', ['busy', 'retry', 'applied'])
+async def test_long_term_status_waits_until_the_staged_snapshot_is_consumed(tmp_path, monkeypatch, application):
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    busy = [False]
+    runtime.profiles.adapter = SimpleNamespace(busy=lambda _name: busy[0])
+    incoming = adapter.incoming_path(UID)
+    stage_remote = adapter.stage_remote
+
+    def stage(*args):
+        staged = stage_remote(*args)
+        if application == 'busy':
+            busy[0] = True
+        return staged
+
+    async def flush(_uid):
+        if application == 'applied' and incoming.is_file():
+            incoming.unlink()
+            return True
+        return False
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            value = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000}
+            if request.url.params.get('metadataOnly') != 'true':
+                value['document'] = {'schemaVersion': 1, 'completedAt': 2000, 'entries': []}
+            return httpx.Response(200, json=value)
+        return await service.request(request)
+
+    monkeypatch.setattr(adapter, 'stage_remote', stage)
+    monkeypatch.setattr(adapter, 'flush', flush)
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        result = await runtime._long_term_memory_pass(UID, presence=await runtime.session_presence_provider())
+        assert result['hasMore'] is False
+        assert incoming.is_file() is (application != 'applied')
+        state = runtime.scheduler.channel_status(DOMAIN.key())['long_term']
+        assert state['status'] == ('success' if application == 'applied' else 'waiting')
+        assert (state['lastSuccessAt'] is not None) is (application == 'applied')
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outbox', ['pending', 'republish', 'owed', 'empty'])
+async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, monkeypatch, outbox):
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    snapshots = [
+        {'operationId': operation * 32, 'baseRevision': 0,
+         'document': {'schemaVersion': 1, 'completedAt': completed, 'entries': []}}
+        for operation, completed in [('a', 1000), ('b', 2000)]
+    ]
+    uploads = []
+    grant = epoch = None
+    capture_owed = outbox == 'owed'
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            if request.method == 'PUT':
+                value = json.loads(request.content)
+                uploads.append(value['operationId'])
+                if len(uploads) == 1 and outbox == 'pending':
+                    # Capture B while A's HTTP response is still in flight.
+                    adapter.write_local(grant, epoch, base=None, pending=snapshots[1], sent=[snapshots[0]])
+                return httpx.Response(200, json={
+                    'ownerId': OWNER, 'characterSyncId': UID, 'operationId': value['operationId'],
+                    'revision': len(uploads), 'accepted': True,
+                })
+            if outbox == 'republish':
+                local = adapter.read_local(grant, epoch)
+                adapter.write_local(grant, epoch, base=local['base'], pending=None, republish=True)
+            if capture_owed:
+                adapter.owed_path(UID).touch()
+            return httpx.Response(200, json={
+                'ownerId': OWNER, 'characterSyncId': UID, 'revision': len(uploads), 'completedAt': 2000,
+            })
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        grant = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=snapshots[0])
+        presence = await runtime.session_presence_provider()
+        result = await runtime._long_term_memory_pass(UID, presence=presence)
+        assert result['hasMore'] is False and not adapter.incoming_path(UID).exists()
+        state = runtime.scheduler.channel_status(DOMAIN.key())['long_term']
+        assert state['status'] == ('success' if outbox == 'empty' else 'waiting')
+        assert (state['lastSuccessAt'] is not None) is (outbox == 'empty')
+        if outbox == 'pending':
+            assert adapter.read_local(grant, epoch)['pending']['operationId'] == snapshots[1]['operationId']
+            # The next pass can send B immediately without bypassing retry fences.
+            await runtime._long_term_memory_pass(UID, presence=presence)
+            assert uploads == [snapshot['operationId'] for snapshot in snapshots]
+            assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+        elif outbox == 'owed':
+            capture_owed = False
+            adapter.owed_path(UID).unlink()
+            runtime.scheduler.request_check(DOMAIN.key(), 'long_term')
+            await runtime._long_term_memory_pass(UID, presence=presence)
+            assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('capture_marked', [False, True])
+async def test_long_term_status_cannot_interleave_with_a_snapshot_capture(tmp_path, monkeypatch, capture_marked):
+    from unittest.mock import AsyncMock
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    read_local, owed_path = adapter.read_local, adapter.owed_path
+    requested, attempting, finished = threading.Event(), threading.Event(), threading.Event()
+    errors, recorded = [], []
+    grant = epoch = None
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime.long_term_memory, 'sync', AsyncMock(return_value={'changed': False, 'hasMore': False}))
+
+    def capture():
+        try:
+            assert requested.wait(5)
+            attempting.set()
+            with runtime.writer.locked():
+                adapter.write_local(grant, epoch, base=None, pending={
+                    'operationId': 'b' * 32, 'baseRevision': 0,
+                    'document': {'schemaVersion': 1, 'completedAt': 2000, 'entries': []},
+                })
+                owed_path(UID).unlink(missing_ok=True)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    armed = [True]
+
+    def inspect_owed(uid):
+        if armed[0]:
+            armed[0] = False
+            requested.set()
+            assert attempting.wait(2)
+            # A capture on the same writer must wait until status is committed.
+            finished.wait(1)
+        return owed_path(uid)
+
+    success = runtime.scheduler.success
+
+    def record_success(domain, channel, *, pending=False):
+        local = read_local(grant, epoch)
+        assert pending or not (local and local['pending']), 'Unconfirmed snapshot recorded as successful'
+        if not recorded:
+            assert not finished.is_set(), 'Capture interleaved with status commit'
+        recorded.append(pending)
+        success(domain, channel, pending=pending)
+
+    thread = None
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        grant = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=None)
+        if capture_marked:
+            owed_path(UID).touch()
+        monkeypatch.setattr(adapter, 'owed_path', inspect_owed)
+        monkeypatch.setattr(runtime.scheduler, 'success', record_success)
+        thread = threading.Thread(target=capture)
+        thread.start()
+        presence = await runtime.session_presence_provider()
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert recorded == [capture_marked]
+        assert await asyncio.to_thread(finished.wait, 3)
+        assert not errors
+        assert read_local(grant, epoch)['pending']['operationId'] == 'b' * 32
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert recorded == [capture_marked, True]
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'waiting'
+    finally:
+        requested.set()
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 3)
+            assert not thread.is_alive()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['outbox', 'incoming', 'owed'])
+async def test_long_term_status_read_failure_keeps_the_writer_and_other_channels_available(tmp_path, monkeypatch, source):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    read_local, incoming_path, owed_path = adapter.read_local, adapter.incoming_path, adapter.owed_path
+    fail = [True]
+    reads = [0]
+
+    class UnreadablePath:
+        def is_file(self):
+            raise PermissionError('synthetic private memory path')
+
+    def inspect_local(*args):
+        reads[0] += 1
+        if source == 'outbox' and fail[0] and reads[0] > 1:
+            raise PermissionError('synthetic private memory path')
+        return read_local(*args)
+
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime.long_term_memory, 'sync', AsyncMock(return_value={'changed': False, 'hasMore': False}))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        binding = runtime.state.binding(UID)
+        grant = {**binding, 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=None)
+        saved = adapter.local_path(grant).read_bytes()
+        monkeypatch.setattr(adapter, 'read_local', inspect_local)
+        monkeypatch.setattr(adapter, 'incoming_path', lambda uid: UnreadablePath() if source == 'incoming' and fail[0] else incoming_path(uid))
+        monkeypatch.setattr(adapter, 'owed_path', lambda uid: UnreadablePath() if source == 'owed' and fail[0] else owed_path(uid))
+        presence = await runtime.session_presence_provider()
+        with pytest.raises(PermissionError, match='synthetic private memory path'):
+            await runtime._long_term_memory_pass(UID, presence=presence)
+        runtime.writer.check()
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term'] == {
+            'status': 'error', 'lastSuccessAt': None, 'lastError': 'chat_sync_unavailable',
+        }
+        assert adapter.local_path(grant).read_bytes() == saved
+        assert runtime.scheduler.claim(DOMAIN.key(), 'pull', binding['generation'], presence)
+        runtime.scheduler.success(DOMAIN.key(), 'pull')
+        assert runtime.scheduler.channel_status(DOMAIN.key())['pull']['status'] == 'success'
+        fail[0] = False
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+        assert adapter.local_path(grant).read_bytes() == saved
+    finally:
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()
@@ -1924,7 +2256,7 @@ async def test_status_counts_a_recent_memory_operation_frozen_by_a_lost_receipt(
         (tmp_path / "memory" / "Neko" / "recent.json").write_text(json.dumps([memo, second, third]), encoding="utf-8")
         service.lose_receipt = True
         await run_scheduler_tick(runtime)
-        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_unavailable"
+        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_network_unavailable"
         # Two new entries and one removal stay frozen in the same unacknowledged operation.
         assert await progress() == {"pendingOriginals": 2, "pendingDeletions": 1, "cursor": 1, "hasSealedBatch": True}
         runtime.test_clock[0] += 5_000

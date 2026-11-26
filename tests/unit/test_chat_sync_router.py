@@ -81,7 +81,7 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "localOnlyOriginals": 0,
-                    "lastSyncError": None, "writerRecoveryRequired": False, "localMemoryDiagnostics": [], "profile": None},
+                    "lastSyncError": None, "channelStatus": None, "writerRecoveryRequired": False, "localMemoryDiagnostics": [], "profile": None},
     }]
 
 
@@ -112,6 +112,22 @@ def test_status_route_carries_local_memory_diagnostics(local_client):
     })
     binding = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
     assert binding['localMemoryDiagnostics'] == ['long_term_memory_capacity_exceeded']
+
+
+def test_status_route_preserves_independent_channel_outcomes(local_client):
+    client, runtime = local_client
+    channels = {'pull': {'status': 'success', 'lastSuccessAt': 1000, 'lastError': None},
+                'model': {'status': 'error', 'lastSuccessAt': None, 'lastError': 'chat_sync_internal_error'}}
+    original_status = runtime.status
+
+    async def status():
+        state = await original_status()
+        state['bindings'][0]['channelStatus'] = channels
+        return state
+
+    runtime.status = status
+    result = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
+    assert result['channelStatus'] == channels
 
 
 def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client):
@@ -335,6 +351,8 @@ def test_model_status_preserves_result_without_waking(local_client):
     (WriterQuarantined(), 409, 'chat_sync_writer_recovery_required'),
     (ValueError('chat_sync_login_required'), 401, 'chat_sync_login_required'),
     (ValueError('chat_sync_unavailable'), 503, 'chat_sync_unavailable'),
+    (ValueError('chat_sync_network_unavailable'), 503, 'chat_sync_network_unavailable'),
+    (ValueError('chat_sync_internal_error'), 503, 'chat_sync_internal_error'),
     (ValueError('chat_sync_character_not_found'), 404, 'chat_sync_character_not_found'),
     (ValueError('private malformed state'), 503, 'chat_sync_unavailable'),
     (json.JSONDecodeError('Expecting value', 'private malformed state', 0), 503, 'chat_sync_unavailable'),

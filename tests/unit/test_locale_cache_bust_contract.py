@@ -66,8 +66,12 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-26-sync-status-ask-badge-merge",
+        "2026-11-26-sync-status-ask-cards-merge",
         "2026-11-26-compact-ball-ask-badge",
+        "2026-11-26-sync-review-main-merge",
         "2026-11-26-nekopower-ask-cards",
+        "2026-11-25-sync-channel-status",
         "2026-11-25-chat-audio-message-glue",
         "2026-11-25-chat-audio-ui-main-merge",
         "2026-11-25-chat-audio-ui-only",
@@ -85,8 +89,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-14-chat-audio-theater-nekoclaw-manual-unavailable",
         "2026-11-15-chat-audio-main-rebase-1",
         "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
-        "2026-11-25-subscriptions-panel",
-        "2026-11-25-qwen-token-plan-tts-main-merge",
         "2026-11-24-qwen-token-plan-tts",
         "2026-11-24-chatgpt-account-panel",
         "2026-11-24-agent-model-probe-removed-main-merge",
@@ -660,7 +662,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "ad8c7d9e0da179e467d15d41625d45ea999c2f6023069f2f5dce915d872102b6"
+LOCALE_KEY_SIGNATURE = "89db70baaf3253e6b6759d0e9288b3035a94e35efa3355b41fd5b02e23dd33ad"
 
 
 _BUMP_INSTRUCTIONS = (

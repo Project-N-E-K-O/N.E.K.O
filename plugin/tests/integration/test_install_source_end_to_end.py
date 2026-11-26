@@ -555,3 +555,696 @@ def test_stale_tmp_files_are_swept_on_load(tmp_path: Path) -> None:
     assert not stale1.exists()
     assert not stale2.exists()
     assert unrelated.exists()
+
+
+def test_runtime_missing_lock_file_self_heals_and_preserves_new_installs(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    imported_dir = user_root / "imported_plug"
+    market_dir.mkdir(parents=True)
+    imported_dir.mkdir(parents=True)
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.2.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    mgr.record_import(
+        directory_path=imported_dir,
+        package_filename="imp.neko-plugin",
+        package_sha256="abc123",
+    )
+    assert len(mgr.list_entries()) == 2
+
+    # Delete runtime lock file -> load() self-heals from in-memory snapshot.
+    lock_path.unlink()
+    mgr.load()
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+
+    # Subsequent installs continue persisting both prior and newly installed entries.
+    extra_dir = user_root / "extra_imp"
+    extra_dir.mkdir(parents=True)
+    mgr.record_import(
+        directory_path=extra_dir,
+        package_filename="extra.neko-plugin",
+        package_sha256="def456",
+    )
+    mgr2 = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    mgr2.load()
+    assert {e.directory_name for e in mgr2.list_entries()} == {
+        "market_plug",
+        "imported_plug",
+        "extra_imp",
+    }
+
+
+def test_runtime_missing_lock_falls_back_to_degrade_if_write_fails_and_heals_on_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    imported_dir = user_root / "imported_plug"
+    market_dir.mkdir(parents=True)
+    imported_dir.mkdir(parents=True)
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.2.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    mgr.record_import(
+        directory_path=imported_dir,
+        package_filename="imp.neko-plugin",
+        package_sha256="abc123",
+    )
+    saved_bytes = lock_path.read_bytes()
+
+    # Simulate missing lock + transient write failure -> enters missing_lock read-only degrade.
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+
+    def _fail_create(_path: Path, _data: bytes) -> bool:
+        raise OSError("read-only media")
+
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", _fail_create)
+    mgr.load()
+
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    entries = {e.directory_name: e for e in mgr.list_entries()}
+    assert set(entries) == {"market_plug", "imported_plug"}
+
+    with pytest.raises(InstallSourceError) as err_info:
+        mgr.record_market_install(
+            root_id="user",
+            directory_name="new_mk",
+            plugin_id="new_mk",
+            market_detail={
+                "plugin_market_id": "new_mk",
+                "version": "1.0.0",
+                "package_url": "https://example.test/new.neko-plugin",
+            },
+        )
+    assert err_info.value.code == "INSTALL_SOURCE_READ_ONLY"
+
+    # Once writable again, record_import self-heals and writes all entries (old + new).
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+    extra_dir = user_root / "extra_imp"
+    extra_dir.mkdir(parents=True)
+    mgr.record_import(
+        directory_path=extra_dir,
+        package_filename="extra.neko-plugin",
+        package_sha256="def456",
+    )
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+    assert {e.directory_name for e in mgr.list_entries()} == {
+        "market_plug",
+        "imported_plug",
+        "extra_imp",
+    }
+
+
+def test_reconcile_reloads_admin_restored_lock_instead_of_overwriting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text('[plugin]\nid = "market_plug"\n', encoding="utf-8")
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    saved_bytes = lock_path.read_bytes()
+
+    # Force missing_lock degrade via failed self-heal write.
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    # Admin restores a newer lock file containing an extra imported entry before reconcile runs.
+    extra_dir = user_root / "admin_restored"
+    extra_dir.mkdir(parents=True)
+    (extra_dir / "plugin.toml").write_text('[plugin]\nid = "admin_restored"\n', encoding="utf-8")
+    admin_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    lock_path.write_bytes(saved_bytes)
+    admin_mgr.load()
+    admin_mgr.record_import(
+        directory_path=extra_dir,
+        package_filename="admin.neko-plugin",
+        package_sha256="adminsha",
+    )
+
+    mgr.reconcile()
+    assert mgr.is_degraded is False
+    entries = {e.directory_name: e for e in mgr.list_entries()}
+    assert set(entries) == {"market_plug", "admin_restored"}
+    assert entries["admin_restored"].channel == "imported"
+
+    disk_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    disk_mgr.load()
+    assert {e.directory_name: e.channel for e in disk_mgr.list_entries()} == {
+        "market_plug": "market",
+        "admin_restored": "imported",
+    }
+
+
+def test_reconcile_after_runtime_missing_lock_heals_without_downgrading_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text('[plugin]\nid = "market_plug"\n', encoding="utf-8")
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    mgr.reconcile()
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+    entries = mgr.list_entries()
+    assert len(entries) == 1
+    assert entries[0].channel == "market"
+    assert isinstance(entries[0].source_detail, SourceDetailMarket)
+
+
+def test_reconcile_rolls_back_snapshot_on_save_failure_when_dir_transiently_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "market_plug"\n', encoding="utf-8"
+    )
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    # Simulate a transient scan miss combined with a failing disk write.
+    monkeypatch.setattr(mgr.scanner, "scan", lambda: [])
+
+    def _fail_atomic_create(_path: Path, _data: bytes) -> bool:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", _fail_atomic_create)
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+
+    with pytest.raises(OSError, match="disk full"):
+        mgr.reconcile()
+
+    # Both degrade state and in-memory snapshot must roll back cleanly (not removed=True).
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    entries = mgr.list_entries(include_removed=True)
+    assert len(entries) == 1
+    assert entries[0].removed is False
+    assert entries[0].channel == "market"
+    assert isinstance(entries[0].source_detail, SourceDetailMarket)
+
+    # Once scanner and disk recover, reconcile() heals cleanly.
+    monkeypatch.undo()
+    mgr.reconcile()
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+    healed = mgr.list_entries()
+    assert len(healed) == 1
+    assert healed[0].removed is False
+    assert healed[0].channel == "market"
+
+
+def test_non_missing_lock_degrade_not_cleared_by_reconcile_after_missing_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "market_plug"\n', encoding="utf-8"
+    )
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    # Supersede missing-lock degrade with an unreadable lock path (directory).
+    lock_path.mkdir()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")
+
+    # reconcile() must not clear the unrelated read_failed degrade, but must still scan into memory.
+    mgr.reconcile()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")
+    assert {e.directory_name for e in mgr.list_entries()} == {"market_plug"}
+
+
+def test_runtime_missing_lock_prefers_memory_over_retained_legacy_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    custom_exec_root = tmp_path / "legacy" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    builtin_root.mkdir(parents=True)
+    custom_exec_root.mkdir(parents=True)
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(custom_exec_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    legacy_lock = custom_exec_root.parent / "plugins.lock.json"
+    v1_dir = custom_exec_root / "v1_plug"
+    v2_dir = custom_exec_root / "v2_plug"
+    v1_dir.mkdir()
+    v2_dir.mkdir()
+
+    scanner = PluginDirectoryScanner(builtin_root, custom_exec_root)
+    legacy_mgr = InstallSourceManager(
+        lock_path=legacy_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    legacy_mgr.load()
+    legacy_mgr.record_import(
+        directory_path=v1_dir,
+        package_filename="v1.neko-plugin",
+        package_sha256="111",
+    )
+
+    canonical_lock = resolve_lock_path()
+    mgr = InstallSourceManager(
+        lock_path=canonical_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    mgr.load()
+    assert legacy_lock.is_file()
+    mgr.record_market(
+        directory_path=v2_dir,
+        plugin_market_id="mk-v2",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    assert {e.directory_name for e in mgr.list_entries()} == {"v1_plug", "v2_plug"}
+
+    canonical_lock.unlink()
+    mgr.load()
+    assert canonical_lock.is_file()
+    entries = {e.directory_name: e for e in mgr.list_entries()}
+    assert set(entries) == {"v1_plug", "v2_plug"}
+    assert entries["v2_plug"].channel == "market"
+
+
+def test_record_import_reloads_and_merges_admin_restored_lock_from_missing_lock_degrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    admin_dir = user_root / "admin_plug"
+    new_imp_dir = user_root / "new_imp"
+    for d in (market_dir, admin_dir, new_imp_dir):
+        d.mkdir(parents=True)
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    saved_bytes = lock_path.read_bytes()
+
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    admin_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    lock_path.write_bytes(saved_bytes)
+    admin_mgr.load()
+    admin_mgr.record_market(
+        directory_path=admin_dir,
+        plugin_market_id="mk-admin",
+        version="2.0.0",
+        package_url="https://example.test/admin.neko-plugin",
+    )
+
+    mgr.record_import(
+        directory_path=new_imp_dir,
+        package_filename="new.neko-plugin",
+        package_sha256="abc",
+    )
+    assert mgr.is_degraded is False
+    disk_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    disk_mgr.load()
+    assert {e.directory_name: e.channel for e in disk_mgr.list_entries()} == {
+        "market_plug": "market",
+        "admin_plug": "market",
+        "new_imp": "imported",
+    }
+
+
+def test_atomic_create_if_missing_preserves_existing_file(tmp_path: Path) -> None:
+    from plugin.server.application.install_source.manager import _atomic_create_if_missing
+
+    lock_path = tmp_path / "plugins.lock.json"
+    lock_path.write_bytes(b"existing-admin-bytes")
+    assert _atomic_create_if_missing(lock_path, b"new-bytes") is False
+    assert lock_path.read_bytes() == b"existing-admin-bytes"
+
+
+def test_atomic_create_if_missing_does_not_create_partial_file_when_link_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import os
+    from plugin.server.application.install_source.manager import _atomic_create_if_missing
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    plugin_dir = user_root / "plug"
+    plugin_dir.mkdir(parents=True)
+    mgr.load()
+    mgr.record_import(
+        directory_path=plugin_dir,
+        package_filename="plug.neko-plugin",
+        package_sha256="abc",
+    )
+
+    lock_path.unlink()
+
+    def _no_link(_src: Path, _dst: Path) -> None:
+        raise OSError(errno.ENOTSUP, "hard links unsupported")
+
+    monkeypatch.setattr(os, "link", _no_link)
+    with pytest.raises(OSError):
+        _atomic_create_if_missing(lock_path, b"{}")
+    assert not lock_path.exists()
+
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    assert not lock_path.exists()
+
+
+def test_verified_empty_snapshot_restores_instead_of_reloading_legacy_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    custom_exec_root = tmp_path / "legacy" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    builtin_root.mkdir(parents=True)
+    custom_exec_root.mkdir(parents=True)
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(custom_exec_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    legacy_lock = custom_exec_root.parent / "plugins.lock.json"
+    legacy_dir = custom_exec_root / "old_plug"
+    legacy_dir.mkdir()
+    scanner = PluginDirectoryScanner(builtin_root, custom_exec_root)
+    legacy_mgr = InstallSourceManager(
+        lock_path=legacy_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    legacy_mgr.load()
+    legacy_mgr.record_import(
+        directory_path=legacy_dir,
+        package_filename="old.neko-plugin",
+        package_sha256="111",
+    )
+
+    # Canonical lock is explicitly empty (valid) and verified at runtime.
+    canonical_lock = resolve_lock_path()
+    canonical_lock.parent.mkdir(parents=True, exist_ok=True)
+    canonical_lock.write_text(
+        json.dumps({"schema_version": 2, "updated_at": "2026-01-01T00:00:00.000000Z", "entries": []}),
+        encoding="utf-8",
+    )
+    mgr = InstallSourceManager(
+        lock_path=canonical_lock,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=scanner,
+    )
+    mgr.load()
+    assert mgr.list_entries() == []
+
+    # Deleting canonical lock after it was verified restores empty canonical snapshot (not stale legacy).
+    canonical_lock.unlink()
+    mgr.load()
+    assert canonical_lock.is_file()
+    assert mgr.list_entries() == []
+
+
+def test_restore_entry_for_rollback_merges_admin_restored_lock_from_missing_lock_degrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    mk_dir = user_root / "mk_plug"
+    other_dir = user_root / "other_plug"
+    mk_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True)
+
+    mgr.load()
+    v1_entry, _ = mgr.record_market_install(
+        root_id="user",
+        directory_name="mk_plug",
+        plugin_id="mk_plug",
+        market_detail={
+            "plugin_market_id": "mk_plug",
+            "version": "1.0.0",
+            "package_url": "https://example.test/v1.neko-plugin",
+        },
+    )
+    mgr.record_market_upgrade(
+        root_id="user",
+        directory_name="mk_plug",
+        plugin_id="mk_plug",
+        market_detail={
+            "plugin_market_id": "mk_plug",
+            "version": "2.0.0",
+            "package_url": "https://example.test/v2.neko-plugin",
+        },
+    )
+    saved_v2_bytes = lock_path.read_bytes()
+
+    # Enter missing_lock degrade via failed self-heal.
+    lock_path.unlink()
+    real_atomic_create = manager_mod._atomic_create_if_missing
+    monkeypatch.setattr(
+        manager_mod,
+        "_atomic_create_if_missing",
+        lambda _p, _d: (_ for _ in ()).throw(OSError("busy")),
+    )
+    mgr.load()
+    assert mgr.is_degraded is True
+    monkeypatch.setattr(manager_mod, "_atomic_create_if_missing", real_atomic_create)
+
+    # Admin restores lock with v2 and adds an unrelated entry before rollback runs.
+    lock_path.write_bytes(saved_v2_bytes)
+    admin_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    admin_mgr.load()
+    admin_mgr.record_import(
+        directory_path=other_dir,
+        package_filename="other.neko-plugin",
+        package_sha256="other",
+    )
+
+    mgr.restore_entry_for_rollback(v1_entry)
+    assert mgr.is_degraded is False
+    disk_mgr = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=mgr.builtin_root,
+        user_root=user_root,
+        scanner=mgr.scanner,
+    )
+    disk_mgr.load()
+    entries = {e.directory_name: e for e in disk_mgr.list_entries()}
+    assert set(entries) == {"mk_plug", "other_plug"}
+    assert isinstance(entries["mk_plug"].source_detail, SourceDetailMarket)
+    assert entries["mk_plug"].source_detail.version == "1.0.0"
+
+    # Ordinary read-only degrade must revert in-memory state cleanly without failing rollback.
+    lock_path.unlink()
+    lock_path.mkdir()
+    mgr.load()
+    assert mgr.is_degraded is True
+    # Record a forward change in memory under read_only degrade, then roll it back in memory.
+    mgr.record_market(
+        directory_path=mk_dir,
+        plugin_market_id="mk_plug",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    assert mgr.list_entries()[0].source_detail.version == "2.0.0"  # type: ignore[union-attr]
+    mgr.restore_entry_for_rollback(v1_entry)
+    restored = {e.directory_name: e for e in mgr.list_entries()}
+    assert restored["mk_plug"] == v1_entry
+    assert mgr.is_degraded is True
+
+
+def test_restore_entry_for_rollback_reverts_in_memory_snapshot_in_read_only_degrade(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    mk_dir = user_root / "mk_plug"
+    mk_dir.mkdir(parents=True)
+
+    mgr.load()
+    v1_entry, _ = mgr.record_market_install(
+        root_id="user",
+        directory_name="mk_plug",
+        plugin_id="mk_plug",
+        market_detail={
+            "plugin_market_id": "mk_plug",
+            "version": "1.0.0",
+            "package_url": "https://example.test/v1.neko-plugin",
+        },
+    )
+
+    lock_path.unlink()
+    lock_path.mkdir()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")
+
+    mgr.record_market(
+        directory_path=mk_dir,
+        plugin_market_id="mk_plug",
+        version="2.0.0",
+        package_url="https://example.test/v2.neko-plugin",
+    )
+    in_mem_after_upgrade = mgr.list_entries()
+    assert len(in_mem_after_upgrade) == 1
+    assert isinstance(in_mem_after_upgrade[0].source_detail, SourceDetailMarket)
+    assert in_mem_after_upgrade[0].source_detail.version == "2.0.0"
+
+    mgr.restore_entry_for_rollback(v1_entry)
+    assert mgr.is_degraded is True
+    entries = mgr.list_entries()
+    assert len(entries) == 1
+    assert entries[0] == v1_entry
