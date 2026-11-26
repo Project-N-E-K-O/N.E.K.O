@@ -36,8 +36,19 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
     echo "请在仓库根目录或 local_server/telemetry_server 目录中执行升级脚本" >&2
     exit 1
   fi
-  if [ -L "$PWD/data" ] || [ ! -d "$PWD/data" ] || [ -L "$PWD/data/telemetry.db" ] || [ ! -f "$PWD/data/telemetry.db" ]; then
-    echo "未找到宿主机旧库 $PWD/data/telemetry.db（或为符号链接），已中止升级。" >&2
+  if [ ! -d "$PWD/data" ]; then
+    echo "未找到宿主机旧数据目录 $PWD/data，已中止升级。" >&2
+    exit 1
+  fi
+  legacy_data_dir=$(cd -P "$PWD/data" && pwd)
+  for src in "$legacy_data_dir/telemetry.db" "$legacy_data_dir/telemetry.db-wal" "$legacy_data_dir/telemetry.db-shm"; do
+    if [ -L "$src" ]; then
+      echo "拒绝迁移符号链接文件 $src，请先替换为普通文件。" >&2
+      exit 1
+    fi
+  done
+  if [ ! -f "$legacy_data_dir/telemetry.db" ]; then
+    echo "未找到宿主机旧库 $legacy_data_dir/telemetry.db，已中止升级。" >&2
     exit 1
   fi
 
@@ -49,7 +60,7 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 
   # 3. 一次性将宿主机 ./data/telemetry.db* 先暂存、修正属主后再逐个移入命名卷 telemetry-data（不覆盖卷内已有库）
   docker compose run --rm --no-deps --user root \
-    -v "$PWD/data:/legacy-data:ro" \
+    -v "$legacy_data_dir:/legacy-data:ro" \
     --entrypoint sh telemetry -c '
       set -eu
       for dst in /app/data/telemetry.db /app/data/telemetry.db-wal /app/data/telemetry.db-shm; do

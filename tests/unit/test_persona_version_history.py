@@ -662,3 +662,110 @@ async def test_retired_old_entry_merge_and_keep_old_preserve_observation(
     if action == "merge":
         assert live[0].get("speaker_provenance_mixed") is True
         assert "speaker_id" not in live[0]
+
+
+@pytest.mark.asyncio
+async def test_retired_old_entry_merge_returning_old_text_does_not_resurrect_retired_wording(tmp_path):
+    """When old_text is retired, merge returning old_text or a restatement-blocking wording must not resurrect it."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    # Case 1: merged_text == old_text when old_text is retired
+    pm1, _ = _install(str(tmp_path / "case1"))
+    await _seed_master_fact(
+        pm1, "小天", "旧观察",
+        id="retired_hollow_1",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("hollow", "2026-11-01T00:00:00", issue="hollow")},
+    )
+    await pm1._aqueue_correction("小天", "旧观察", "新观察", "master")
+    cid1 = (await pm1.aload_pending_corrections("小天"))[0]["correction_id"]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "merge", "text": "旧观察"}])):
+        resolved1 = await pm1.resolve_corrections("小天")
+
+    assert resolved1 == 1
+    facts1 = pm1._get_section_facts(await pm1.aensure_persona("小天"), "master")
+    live1 = [e for e in facts1 if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert [e["text"] for e in live1] == ["新观察"]
+    assert live1[0]["applied_correction_id"] == cid1
+    retired1 = next(e for e in facts1 if e.get("id") == "retired_hollow_1")
+    assert "applied_correction_id" not in retired1
+
+    # Case 2: merged_text matches another restatement-blocking retired entry
+    pm2, _ = _install(str(tmp_path / "case2"))
+    await _seed_master_fact(
+        pm2, "小天", "旧观察",
+        id="retired_old_2",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("stale", "2026-11-01T00:00:00", issue="stale")},
+    )
+    await _seed_master_fact(
+        pm2, "小天", "废话融合句",
+        id="retired_redundant_2",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("redundant", "2026-11-01T00:00:00", issue="redundant")},
+    )
+    await pm2._aqueue_correction("小天", "旧观察", "新观察", "master")
+    cid2 = (await pm2.aload_pending_corrections("小天"))[0]["correction_id"]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "merge", "text": "废话融合句"}])):
+        resolved2 = await pm2.resolve_corrections("小天")
+
+    assert resolved2 == 1
+    facts2 = pm2._get_section_facts(await pm2.aensure_persona("小天"), "master")
+    live2 = [e for e in facts2 if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert [e["text"] for e in live2] == ["新观察"]
+    assert live2[0]["applied_correction_id"] == cid2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "extra", "target_text"),
+    [
+        ("merge", {"text": "融合新观察"}, "融合新观察"),
+        ("keep_old", {}, "新观察"),
+    ],
+)
+async def test_fallback_reusing_live_entry_folds_trust_and_event_window(
+    tmp_path, action, extra, target_text,
+):
+    """When fallback reuses an existing live entry, it must fold queued speaker trust and event window while preserving id and history."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "旧观察",
+        id="retired_old_fold",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("merged_into", "2026-11-01T00:00:00", merged_into="existing_live_1")},
+    )
+    prior_hist = [{"text": "更早版本", "replaced_at": "2026-01-01T00:00:00", "reason": "correction", "source_fact_id": None}]
+    await _seed_master_fact(
+        pm, "小天", target_text,
+        id="existing_live_1",
+        speaker_id="qq:alice",
+        speaker_trust=0.95,
+        event_when_raw="2026-04",
+        event_start_at="2026-04-01T00:00:00",
+        event_end_at="2026-04-30T23:59:59",
+        version_history=prior_hist,
+    )
+    await pm._aqueue_correction(
+        "小天", "旧观察", "新观察", "master",
+        new_speaker_provenance={
+            "speaker_id": "qq:alice",
+            "speaker_trust": 0.2,
+            "event_when_raw": "2026-05",
+            "event_start_at": "2026-05-01T00:00:00",
+            "event_end_at": "2026-05-31T23:59:59",
+        },
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": action, **extra}])):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert len(live) == 1
+    entry = live[0]
+    assert entry["id"] == "existing_live_1"
+    assert entry["version_history"] == prior_hist
+    assert entry["speaker_trust"] == pytest.approx(0.2)
+    assert entry["event_start_at"] == "2026-04-01T00:00:00"
+    assert entry["event_end_at"] == "2026-05-31T23:59:59"
+    assert entry["applied_correction_id"] == cid

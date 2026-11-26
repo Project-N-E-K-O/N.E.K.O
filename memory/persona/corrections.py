@@ -34,7 +34,10 @@ from datetime import datetime
 
 
 from memory.facts import safe_int_field
-from memory.introspection import is_permanently_suppressed
+from memory.introspection import (
+    is_permanently_suppressed,
+    retirement_blocks_restatement,
+)
 
 
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
@@ -956,6 +959,94 @@ class CorrectionsMixin:
                         new_entry[entry_key] = deepcopy(item[queued_key])
                 return new_entry
 
+            def _queued_source(prefix: str) -> dict:
+                src: dict = {
+                    'speaker_id': item.get(f'{prefix}_speaker_id'),
+                    'speaker_trust': item.get(f'{prefix}_speaker_trust'),
+                }
+                ent = str(item.get(f'{prefix}_speaker_entity_id') or '').strip()
+                if ent:
+                    src['speaker_entity_id'] = ent
+                if item.get(f'{prefix}_speaker_provenance_mixed') is True:
+                    src['speaker_provenance_mixed'] = True
+                return src
+
+            def _is_blocked_by_retirement(text_value: str) -> bool:
+                return any(
+                    isinstance(e, dict)
+                    and e.get('text', '') == text_value
+                    and _entry_in_scope(e)
+                    and is_permanently_suppressed(e)
+                    and (
+                        text_value == old_text
+                        or retirement_blocks_restatement(e)
+                    )
+                    for e in section_facts
+                )
+
+            def _find_live_entry(target_text: str):
+                return next(
+                    (
+                        (j, e) for j, e in enumerate(section_facts)
+                        if (e.get('text', '') if isinstance(e, dict) else str(e)) == target_text
+                        and _entry_in_scope(e)
+                        and not is_permanently_suppressed(e)
+                    ),
+                    None,
+                )
+
+            def _fold_into_live_entry(
+                live_idx: int,
+                live_entry,
+                *,
+                include_old_source: bool = False,
+                inherited_cids: list[str] | None = None,
+            ) -> dict:
+                if not isinstance(live_entry, dict):
+                    live_entry = self._normalize_entry_for_section(
+                        persona, entity, live_entry,
+                    )
+                    if item_subject is not None:
+                        live_entry.update(item_subject.as_entry_fields())
+                live_entry.update(
+                    _merged_correction_event_fields(live_entry, item)
+                )
+                sources_to_fold: list[dict] = []
+                if include_old_source and (
+                    old_speaker_id
+                    or item.get('old_speaker_provenance_mixed') is True
+                ):
+                    sources_to_fold.append(_queued_source('old'))
+                if (
+                    new_speaker_id
+                    or item.get('new_speaker_provenance_mixed') is True
+                ):
+                    sources_to_fold.append(_queued_source('new'))
+                if sources_to_fold:
+                    from memory.speaker_trust import provenance_of_entries
+                    folded_provenance = provenance_of_entries([
+                        live_entry, *sources_to_fold,
+                    ])
+                    for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                        'speaker_entity_id',
+                    ):
+                        live_entry.pop(key, None)
+                    live_entry.update(folded_provenance)
+                    if any(
+                        src.get('speaker_provenance_mixed') is True
+                        for src in sources_to_fold
+                    ):
+                        live_entry['speaker_provenance_mixed'] = True
+                live_entry = self._normalize_entry(live_entry)
+                if isinstance(live_entry, dict):
+                    _ensure_entry_id(live_entry)
+                    for inherited_cid in (inherited_cids or ()):
+                        _record_applied_cid(live_entry, inherited_cid)
+                    _record_applied_cid(live_entry, item_cid)
+                section_facts[live_idx] = live_entry
+                return live_entry
+
             def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
                 snapshot = {
                     'text': text_value,
@@ -1080,31 +1171,16 @@ class CorrectionsMixin:
                             section_facts[j] = new_entry
                         break
                 if not matched:
-                    live_merged = next(
-                        (
-                            (j, e) for j, e in enumerate(section_facts)
-                            if (e.get('text', '') if isinstance(e, dict) else str(e)) == merged_text
-                            and _entry_in_scope(e)
-                            and not is_permanently_suppressed(e)
-                        ),
-                        None,
-                    )
-                    if live_merged is None:
+                    live_merged = _find_live_entry(merged_text)
+                    if live_merged is not None:
+                        _fold_into_live_entry(
+                            live_merged[0],
+                            live_merged[1],
+                            include_old_source=True,
+                        )
+                    elif not _is_blocked_by_retirement(merged_text):
                         from memory.speaker_trust import provenance_of_entries
                         new_entry = _stamped_new_entry(merged_text)
-
-                        def _queued_source(prefix: str) -> dict:
-                            src: dict = {
-                                'speaker_id': item.get(f'{prefix}_speaker_id'),
-                                'speaker_trust': item.get(f'{prefix}_speaker_trust'),
-                            }
-                            ent = str(item.get(f'{prefix}_speaker_entity_id') or '').strip()
-                            if ent:
-                                src['speaker_entity_id'] = ent
-                            if item.get(f'{prefix}_speaker_provenance_mixed') is True:
-                                src['speaker_provenance_mixed'] = True
-                            return src
-
                         old_source = _queued_source('old')
                         new_source = _queued_source('new')
                         folded_provenance = provenance_of_entries([
@@ -1126,18 +1202,17 @@ class CorrectionsMixin:
                         _record_applied_cid(new_entry, item_cid)
                         section_facts.append(new_entry)
                     else:
-                        live_idx, live_entry = live_merged
-                        if not isinstance(live_entry, dict):
-                            live_entry = self._normalize_entry_for_section(
-                                persona, entity, live_entry,
+                        live_new = _find_live_entry(new_text)
+                        if live_new is not None:
+                            _fold_into_live_entry(
+                                live_new[0],
+                                live_new[1],
+                                include_old_source=False,
                             )
-                            if item_subject is not None:
-                                live_entry.update(item_subject.as_entry_fields())
-                        live_entry = self._normalize_entry(live_entry)
-                        if isinstance(live_entry, dict):
-                            _ensure_entry_id(live_entry)
-                            _record_applied_cid(live_entry, item_cid)
-                        section_facts[live_idx] = live_entry
+                        elif not _is_blocked_by_retirement(new_text):
+                            new_entry = _stamped_new_entry(new_text)
+                            _record_applied_cid(new_entry, item_cid)
+                            section_facts.append(new_entry)
             elif action == 'keep_new':
                 old_entries = [
                     e for e in section_facts
@@ -1156,15 +1231,7 @@ class CorrectionsMixin:
                     or not _entry_in_scope(e)
                     or is_permanently_suppressed(e)
                 ]
-                live_new_match = next(
-                    (
-                        (j, e) for j, e in enumerate(section_facts)
-                        if (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
-                        and _entry_in_scope(e)
-                        and not is_permanently_suppressed(e)
-                    ),
-                    None,
-                )
+                live_new_match = _find_live_entry(new_text)
                 if live_new_match is None:
                     replacement = _stamped_new_entry(new_text)
                     from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
@@ -1212,43 +1279,12 @@ class CorrectionsMixin:
                                 )
                             ]
                         )[-_VH_MAX:]
-                    existing.update(
-                        _merged_correction_event_fields(existing, item)
+                    _fold_into_live_entry(
+                        existing_idx,
+                        existing,
+                        include_old_source=False,
+                        inherited_cids=inherited_cids,
                     )
-                    if (
-                        new_speaker_id
-                        or item.get('new_speaker_provenance_mixed') is True
-                    ):
-                        from memory.speaker_trust import provenance_of_entries
-                        new_source = {
-                            'speaker_id': new_speaker_id,
-                            'speaker_trust': item.get('new_speaker_trust'),
-                        }
-                        _queued_entity = str(
-                            item.get('new_speaker_entity_id') or ''
-                        ).strip()
-                        if _queued_entity:
-                            new_source['speaker_entity_id'] = _queued_entity
-                        if item.get('new_speaker_provenance_mixed') is True:
-                            new_source['speaker_provenance_mixed'] = True
-                        folded_provenance = provenance_of_entries([
-                            existing, new_source,
-                        ])
-                        for key in (
-                            'speaker_id', 'speaker_trust', 'speaker_label',
-                            'speaker_entity_id',
-                        ):
-                            existing.pop(key, None)
-                        existing.update(folded_provenance)
-                        if new_source.get('speaker_provenance_mixed') is True:
-                            existing['speaker_provenance_mixed'] = True
-                    existing = self._normalize_entry(existing)
-                    if isinstance(existing, dict):
-                        _ensure_entry_id(existing)
-                        for inherited_cid in inherited_cids:
-                            _record_applied_cid(existing, inherited_cid)
-                        _record_applied_cid(existing, item_cid)
-                    section_facts[existing_idx] = existing
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.
@@ -1301,32 +1337,17 @@ class CorrectionsMixin:
                         _record_applied_cid(existing, item_cid)
                         break
                 if not matched:
-                    live_new = next(
-                        (
-                            (j, e) for j, e in enumerate(section_facts)
-                            if (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
-                            and _entry_in_scope(e)
-                            and not is_permanently_suppressed(e)
-                        ),
-                        None,
-                    )
-                    if live_new is None:
+                    live_new = _find_live_entry(new_text)
+                    if live_new is not None:
+                        _fold_into_live_entry(
+                            live_new[0],
+                            live_new[1],
+                            include_old_source=False,
+                        )
+                    elif not _is_blocked_by_retirement(new_text):
                         new_entry = _stamped_new_entry(new_text)
                         _record_applied_cid(new_entry, item_cid)
                         section_facts.append(new_entry)
-                    else:
-                        live_idx, live_entry = live_new
-                        if not isinstance(live_entry, dict):
-                            live_entry = self._normalize_entry_for_section(
-                                persona, entity, live_entry,
-                            )
-                            if item_subject is not None:
-                                live_entry.update(item_subject.as_entry_fields())
-                        live_entry = self._normalize_entry(live_entry)
-                        if isinstance(live_entry, dict):
-                            _ensure_entry_id(live_entry)
-                            _record_applied_cid(live_entry, item_cid)
-                        section_facts[live_idx] = live_entry
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
