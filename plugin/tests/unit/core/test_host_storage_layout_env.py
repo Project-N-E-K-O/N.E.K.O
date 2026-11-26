@@ -2298,6 +2298,7 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert ctx._effective_config == {"base": 1, "keep": 2}
         assert instance.refreshed[-1] == {"base": 1, "keep": 2}
         assert ctx._host_config_change_pending == 0
+        assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
 
     asyncio.run(_case_effective_read_inside_failing_config_change_preserves_rollback_ownership())
 
@@ -2396,3 +2397,153 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert sent_cmds[0]["timeout"] == 1.5
 
     asyncio.run(_case_host_merge_respects_shorter_caller_timeout_from_command_msg())
+
+    # 12. Profile switch during config_change must still install and flush fresh settings.
+    async def _case_profile_switch_inside_or_concurrent_with_config_change() -> None:
+        profiles = {
+            "home": {"profile": "home", "store": {"enabled": False}},
+            "work": {"profile": "work", "store": {"enabled": True}},
+        }
+
+        async def _null_local_payload(**_kwargs: object) -> None:
+            return None
+
+        # 12a. Callback calls set_own_active_profile() directly.
+        ctx_cb = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_profile_switch_in_cb" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_cb = _RecordingInstance()
+        ctx_cb._instance = instance_cb
+        ctx_cb._set_effective_config_cache(dict(profiles["home"]))
+        active_cb = {"name": "home"}
+
+        async def _rpc_cb(
+            *,
+            request_type: str,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+                target = str(request_data["profile_name"])
+                active_cb["name"] = target
+                return {"success": True, "active_profile": target}
+            if request_type == "PLUGIN_CONFIG_GET":
+                return {"plugin_id": "demo", "config": dict(profiles[active_cb["name"]])}
+            raise AssertionError(f"Unexpected RPC request: {request_type}")
+
+        ctx_cb._get_local_config_payload = _null_local_payload  # type: ignore[method-assign]
+        ctx_cb._send_request_and_wait_async = _rpc_cb  # type: ignore[method-assign]
+        inside_verified: list[bool] = []
+
+        async def _switch_inside_cb(**_kwargs: object) -> None:
+            await ctx_cb.set_own_active_profile("work")
+            assert ctx_cb._effective_config == {"profile": "work", "store": {"enabled": True}}
+            assert instance_cb.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+            inside_verified.append(True)
+
+        sender_cb = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-profile-in-cb",
+                "config": {"extra": 1},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_cb,
+            events_by_type={"lifecycle": {"config_change": _switch_inside_cb}},
+            plugin_id="demo",
+            res_sender=sender_cb,
+            logger=_FakeLogger(),
+        )
+        assert inside_verified == [True]
+        assert sender_cb.payloads[-1]["success"] is True
+        assert ctx_cb._effective_config == {"profile": "work", "store": {"enabled": True}}
+        assert instance_cb.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+        assert ctx_cb._host_config_change_pending == 0
+        assert not getattr(ctx_cb, "_pending_host_config_owner_tokens", {})
+
+        # 12b. Concurrent timer/coroutine switches profile while config_change is awaiting.
+        for callback_fails in (False, True):
+            ctx_conc = PluginContext(
+                plugin_id="demo",
+                config_path=tmp_path / f"demo_profile_switch_conc_{callback_fails}" / "plugin.toml",
+                logger=_FakeLogger(),  # type: ignore[arg-type]
+                status_queue=None,
+            )
+            instance_conc = _RecordingInstance()
+            ctx_conc._instance = instance_conc
+            ctx_conc._set_effective_config_cache(dict(profiles["home"]))
+            active_conc = {"name": "home"}
+
+            async def _rpc_conc(
+                *,
+                request_type: str,
+                request_data: dict[str, object],
+                _active: dict[str, str] = active_conc,
+                **_kwargs: object,
+            ) -> dict[str, object]:
+                if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+                    target = str(request_data["profile_name"])
+                    _active["name"] = target
+                    return {"success": True, "active_profile": target}
+                if request_type == "PLUGIN_CONFIG_GET":
+                    return {"plugin_id": "demo", "config": dict(profiles[_active["name"]])}
+                raise AssertionError(f"Unexpected RPC request: {request_type}")
+
+            ctx_conc._get_local_config_payload = _null_local_payload  # type: ignore[method-assign]
+            ctx_conc._send_request_and_wait_async = _rpc_conc  # type: ignore[method-assign]
+
+            handler_entered = asyncio.Event()
+            release_handler = asyncio.Event()
+
+            async def _waiting_cb(
+                *,
+                _entered: asyncio.Event = handler_entered,
+                _release: asyncio.Event = release_handler,
+                _fail: bool = callback_fails,
+                **_kwargs: object,
+            ) -> None:
+                _entered.set()
+                await _release.wait()
+                if _fail:
+                    raise RuntimeError("cb failed after external profile switch")
+
+            sender_conc = _FakeResponseSender()
+            cmd_task = asyncio.create_task(
+                host_module._handle_config_update_command(
+                    msg={
+                        "req_id": f"req-profile-conc-{callback_fails}",
+                        "config": {"extra": 2},
+                        "mode": "temporary",
+                        "replace": False,
+                    },
+                    ctx=ctx_conc,
+                    events_by_type={"lifecycle": {"config_change": _waiting_cb}},
+                    plugin_id="demo",
+                    res_sender=sender_conc,
+                    logger=_FakeLogger(),
+                )
+            )
+            try:
+                await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
+                await ctx_conc.set_own_active_profile("work")
+                assert ctx_conc._effective_config == {"profile": "work", "store": {"enabled": True}}
+                assert instance_conc.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+
+                release_handler.set()
+                await cmd_task
+                assert sender_conc.payloads[-1]["success"] is (not callback_fails)
+                assert ctx_conc._effective_config == {"profile": "work", "store": {"enabled": True}}
+                assert instance_conc.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+                assert ctx_conc._host_config_change_pending == 0
+                assert not getattr(ctx_conc, "_pending_host_config_owner_tokens", {})
+            finally:
+                release_handler.set()
+                if not cmd_task.done():
+                    cmd_task.cancel()
+                await asyncio.gather(cmd_task, return_exceptions=True)
+
+    asyncio.run(_case_profile_switch_inside_or_concurrent_with_config_change())

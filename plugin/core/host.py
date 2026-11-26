@@ -1077,9 +1077,13 @@ async def _handle_config_update_command(
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
             begin_host_change = getattr(ctx, "_begin_host_config_change", None)
             end_host_change = getattr(ctx, "_end_host_config_change", None)
+            host_change_owner_token = applied_owner_token if uses_context_publisher else None
             try:
                 if callable(begin_host_change):
-                    begin_host_change()
+                    if host_change_owner_token is not None:
+                        begin_host_change(host_change_owner_token)
+                    else:
+                        begin_host_change()
                 try:
                     with ctx._handler_scope("lifecycle.config_change"):
                         result = config_change_handler(
@@ -1091,7 +1095,10 @@ async def _handle_config_update_command(
                             await result
                 finally:
                     if callable(end_host_change):
-                        end_host_change()
+                        if host_change_owner_token is not None:
+                            end_host_change(host_change_owner_token)
+                        else:
+                            end_host_change()
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")

@@ -1020,16 +1020,37 @@ class PluginContext:
             self._flush_instance_runtime_config()
         return True
 
-    def _begin_host_config_change(self) -> None:
+    def _begin_host_config_change(self, owner_token: int | None = None) -> None:
         with self._get_config_state_lock():
             self._host_config_change_pending = (
                 int(getattr(self, "_host_config_change_pending", 0) or 0) + 1
             )
+            if owner_token is None:
+                self._host_config_change_unscoped_pending = (
+                    int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) + 1
+                )
+            else:
+                pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+                if not isinstance(pending_tokens, dict):
+                    pending_tokens = {}
+                    self._pending_host_config_owner_tokens = pending_tokens
+                pending_tokens[owner_token] = int(pending_tokens.get(owner_token, 0) or 0) + 1
 
-    def _end_host_config_change(self) -> None:
+    def _end_host_config_change(self, owner_token: int | None = None) -> None:
         with self._get_config_state_lock():
             current = int(getattr(self, "_host_config_change_pending", 0) or 0)
             self._host_config_change_pending = max(0, current - 1)
+            if owner_token is None:
+                unscoped = int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0)
+                self._host_config_change_unscoped_pending = max(0, unscoped - 1)
+            else:
+                pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+                if isinstance(pending_tokens, dict):
+                    remaining = int(pending_tokens.get(owner_token, 0) or 0) - 1
+                    if remaining > 0:
+                        pending_tokens[owner_token] = remaining
+                    else:
+                        pending_tokens.pop(owner_token, None)
 
     def _cache_effective_config_from_read(
         self,
@@ -1045,7 +1066,11 @@ class PluginContext:
                 return False
             if bool(getattr(self, "_config_write_in_progress", False)):
                 return False
-            if int(getattr(self, "_host_config_change_pending", 0) or 0) > 0:
+            if int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) > 0:
+                return False
+            pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+            current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+            if isinstance(pending_tokens, dict) and pending_tokens.get(current_owner, 0) > 0:
                 return False
             if read_id <= int(getattr(self, "_last_installed_read_id", 0) or 0):
                 return False
