@@ -121,6 +121,11 @@ class Receipt:
     # to end.
     stopped: list[Commission] = field(default_factory=list)
     unconfirmed: list[Commission] = field(default_factory=list)
+    # For "stopped" and "stop_failed": what of the project's, familiar's or
+    # plugin's work of those it stopped goes on, not stopped, as the stop
+    # meant the items it named and the reading was not shown these
+    # (``Triage.left_running``). The receipt says they go on.
+    left_running: list[Commission] = field(default_factory=list)
 
     @property
     def first(self) -> Commission | None:
@@ -270,6 +275,7 @@ def whole_lines_within(lines: list[str], max_tokens: int, more: str) -> list[str
 
 def render_receipt(receipt: Receipt, lang: str) -> str:
     """Return a receipt as text, in the given language."""
+    from config.nekopower_settings import RECEIPT_LEFT_RUNNING_TITLES
     from config.prompts.prompts_nekopower_brain import NO_CAPABILITY_REASONS, RECEIPT_TEXTS
 
     templates = _texts(RECEIPT_TEXTS, lang)
@@ -278,6 +284,14 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
     note = f" {templates['unread']}" if receipt.unread else ""
     if receipt.narrowed:
         note += f" {templates['narrowed']}"
+    if receipt.left_running:
+        named = templates["joined"].join(item.title for item in receipt.left_running[:RECEIPT_LEFT_RUNNING_TITLES])
+        count = len(receipt.left_running)
+        if count > RECEIPT_LEFT_RUNNING_TITLES:
+            named = templates["left_running_more"].format(
+                titles=named, count=count, more=count - RECEIPT_LEFT_RUNNING_TITLES
+            )
+        note += " " + templates["left_running"].format(titles=named)
     if receipt.kind == "no_capability":
         reason = _texts(NO_CAPABILITY_REASONS, lang).get(receipt.reason) or receipt.reason
         return templates["no_capability"].format(reason=reason) + note
@@ -298,7 +312,7 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
         ):
             if items:
                 said.append(templates[key].format(title=templates["joined"].join(item.title for item in items)))
-        return " ".join(said)
+        return " ".join(said) + note
     if receipt.kind == "stopped" and len(receipt.commissions) > 1:
         title = templates["joined"].join(commission.title for commission in receipt.commissions)
     template = templates.get(receipt.kind)
@@ -629,8 +643,10 @@ class TaskBrain:
                     text=receipt.text(lang),
                     commission=receipt.first,
                     # Not told in time what it did with the work: she says so
-                    # now, as a question it may have answered still waits.
-                    urgent=receipt.unread,
+                    # now, as a question it may have answered still waits. So
+                    # a stop that left some of a project's work going on: the
+                    # user is not to take it all for stopped meanwhile.
+                    urgent=receipt.unread or bool(receipt.left_running),
                 )
 
             self._spawn(tell())
@@ -688,6 +704,8 @@ class TaskBrain:
             # Stopped, though what was running could not all be told to end.
             unconfirmed: list[Commission] = []
             not_stopped: list[Commission] = []
+            # Over already (ended meanwhile, or stopped from the board).
+            over: list[Commission] = []
             for target in targets:
                 if self._closed:
                     # Closing ends what is under way with the host; nothing
@@ -710,13 +728,35 @@ class TaskBrain:
                     # Over already, and what it ran could not be told to end
                     # again: not said to be nothing.
                     unconfirmed.append(after)
+                elif after is not None:
+                    over.append(after)
+            # What of their project's work goes on, not shown to the reading
+            # and not meant by it ("the footer one" of the shop site's): as it
+            # is now, so not one that ended meanwhile or went with the stop.
+            left_running: list[Commission] = []
+            for commission_id in triage.left_running:
+                try:
+                    now = await self._ledger.get(commission_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - said as it was read: under way
+                    logger.warning("reading commission %s after a stop failed", commission_id, exc_info=True)
+                    now = by_id.get(commission_id)
+                if now is not None and now.active:
+                    left_running.append(now)
             if not_stopped or unconfirmed:
                 return Receipt(
-                    kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed, model_calls=calls
+                    kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed,
+                    left_running=left_running, model_calls=calls,
                 )
             if not stopped:
+                if left_running:
+                    # What it names was over already (with how it ended), while
+                    # more of its project goes on: that may be what was meant.
+                    # Which, the user is asked.
+                    return Receipt(kind="ambiguous", commissions=[*over, *left_running], model_calls=calls)
                 return Receipt(kind="nothing_active", model_calls=calls)
-            return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
+            return Receipt(kind="stopped", commissions=stopped, left_running=left_running, model_calls=calls)
         if triage.kind == "answer" and targets:
             target = targets[0]
             is_permission = (target.question() or {}).get("kind") == "permission"

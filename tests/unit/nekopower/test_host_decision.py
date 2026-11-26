@@ -1320,12 +1320,10 @@ async def test_how_much_a_stop_means_decides_what_is_asked_about_what_was_left_o
         assert not unread
         return triage.kind, triage.targets
 
-    # "These" is not taken at its word where some was left out (the model has read "stop all the shop
-    # site work" as "these"): asked as a stop that does not say how much is, so nothing is left running.
-    assert await read({"does": "stop", "items": [1], "named": True, "scope": "these"}, shop) == ("ambiguous", ["c1", "c3"])
-    assert await read({"does": "stop", "items": [1, 2], "named": True, "scope": "these"}, mixed) == (
-        "ambiguous", ["c1", "c2", "c3"]
-    )
+    # "These" is taken at its word where some was left out: what it names is stopped (what of their
+    # project was not shown goes on, and is said to: below).
+    assert await read({"does": "stop", "items": [1], "named": True, "scope": "these"}, shop) == ("stop", ["c1"])
+    assert await read({"does": "stop", "items": [1, 2], "named": True, "scope": "these"}, mixed) == ("stop", ["c1", "c2"])
     # All of a project's, of which more was left out: which, the user is asked, among its work.
     assert await read({"does": "stop", "items": [1], "named": True, "scope": "project"}, shop) == ("ambiguous", ["c1", "c3"])
     # All of a project's, while other work was left out that is none of it: those it names.
@@ -1356,6 +1354,44 @@ async def test_how_much_a_stop_means_decides_what_is_asked_about_what_was_left_o
     for scope in ("these", "project"):
         said = {"does": "stop", "items": [1], "named": False, "scope": scope}
         assert await read(said, mixed) == ("ambiguous", ["c1", "c2", "c3"]), scope
+
+
+async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not_shown_going_on(monkeypatch):
+    # "These", while the list left some of her work out: what it names is stopped, and what of their
+    # project's, familiar's or plugin's work was not shown is said to go on (the model has read "stop
+    # all the shop site work" as "these": that is not left running unsaid). No one is asked.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
+
+    async def read(reading: dict[str, Any], active: list[Commission]) -> tuple[str, list[str], list[str]]:
+        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(request("stop", active=active))
+        assert (calls, unread) == (1, False)
+        return triage.kind, triage.targets, triage.left_running
+
+    these = {"does": "stop", "items": [1], "named": True, "scope": "these"}
+    shop = [commission(f"c{n}", f"shop site page {n}", route="task_agent", project="Shop site") for n in (1, 2, 3)]
+    assert await read(these, shop) == ("stop", ["c1"], ["c3"])
+    # Of several it names, what of their project was left out.
+    assert await read({**these, "items": [1, 2]}, shop) == ("stop", ["c1", "c2"], ["c3"])
+    # So for a familiar's work (its session), and for what one plugin runs.
+    scout = [commission(f"c{n}", f"look up page {n}", route="task_agent", session_id="s-scout") for n in (1, 2, 3)]
+    assert await read(these, scout) == ("stop", ["c1"], ["c3"])
+    weather = [commission(f"c{n}", f"weather in city {n}", route="plugin", plugin_id="weather") for n in (1, 2, 3)]
+    assert await read(these, weather) == ("stop", ["c1"], ["c3"])
+    # What was left out that is none of theirs is not said: it is not what the stop is about.
+    mixed = [*shop[:2], commission("c3", "write the cat food post", route="task_agent", project="Blog")]
+    assert await read(these, mixed) == ("stop", ["c1"], [])
+    # Nothing left out: nothing said.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 3)
+    assert await read(these, shop) == ("stop", ["c1"], [])
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
+    # Only "these" is: of a project ("project"), or not said how much, asked as before, and with
+    # nothing said to go on.
+    for scope in ("project", None, "", "some"):
+        assert await read({**these, "scope": scope}, shop) == ("ambiguous", ["c1", "c3"], []), scope
+    # ("These" said in any case, with spaces round it, is "these".)
+    assert await read({**these, "scope": " These "}, shop) == ("stop", ["c1"], ["c3"])
+    # A bare "stop it" with several shown asks which, though "these".
+    assert await read({**these, "named": False}, shop) == ("ambiguous", ["c1", "c2", "c3"], [])
 
 
 async def test_all_of_nothing_under_way_stops_nothing():
