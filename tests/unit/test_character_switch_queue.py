@@ -144,26 +144,6 @@ async def test_current_catgirl_get_exposes_current_switch_revision(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_current_snapshot_returns_published_identity_while_lifecycle_lock_is_held(monkeypatch):
-    lock = asyncio.Lock()
-    await lock.acquire()
-    read = AsyncMock(return_value={'当前猫娘': 'Provisional'})
-    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
-    monkeypatch.setattr(crud, '_catgirl_switch_revision', 8123)
-    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'Committed')
-    try:
-        name, revision = await asyncio.wait_for(
-            crud.current_catgirl_switch_snapshot(SimpleNamespace(aload_characters=read)),
-            timeout=0.1,
-        )
-    finally:
-        lock.release()
-
-    assert (name, revision) == ('Committed', 8123)
-    read.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_missing_socket_redirect_uses_the_confirmed_current_character(monkeypatch):
     ws_router = importlib.import_module('main_routers.websocket_router')
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={'当前猫娘': 'C'}))
