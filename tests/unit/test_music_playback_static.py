@@ -180,9 +180,6 @@ def test_plugin_http_allowlist_matches_only_normalized_complete_urls():
 def test_exact_http_allowlist_is_carried_without_enabling_http_proxy():
     source = MUSIC_UI_PATH.read_text(encoding="utf-8")
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-    pusher_source = (ROOT / "plugin" / "plugins" / "music_pusher" / "__init__.py").read_text(
-        encoding="utf-8"
-    )
     schema_source = (ROOT / "plugin" / "sdk" / "shared" / "core" / "push_message_schema.py").read_text(
         encoding="utf-8"
     )
@@ -193,10 +190,6 @@ def test_exact_http_allowlist_is_carried_without_enabling_http_proxy():
         encoding="utf-8"
     )
 
-    assert '"http_urls": http_urls,' in pusher_source
-    assert 'allowlist_part["http_urls"] = http_urls' in pusher_source
-    assert '"domains": domains,' in pusher_source
-    assert '"event_id": event_id,' in pusher_source
     assert 'ui_part["http_urls"] = list(md_local["http_urls"])' in schema_source
     assert '"http_urls": list(http_urls)' in bridge_source
     assert '"http_urls": event.get("http_urls")' in runtime_source

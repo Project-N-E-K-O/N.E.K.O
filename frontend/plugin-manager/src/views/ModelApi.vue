@@ -49,7 +49,7 @@
 
       <el-tab-pane :label="t('modelApi.usage')" name="usage">
         <div class="usage-filters">
-          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keyup.enter="loadUsage" />
+          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keydown="enterKey.down" @keyup.enter="enterKey.up(loadUsage)" />
           <el-select v-model="slotFilter" clearable :placeholder="t('modelApi.allSlots')" :aria-label="t('modelApi.allSlots')"><el-option v-for="slot in slots" :key="slot.id" :label="slot.name" :value="slot.id" /></el-select>
           <el-button :loading="loadingUsage" @click="loadUsage">{{ t('common.refresh') }}</el-button>
         </div>
@@ -111,7 +111,7 @@
           <el-form-item :label="t('modelApi.protocol')" required><el-select v-model="form.protocol" :disabled="saving"><el-option label="OpenAI Chat Completions" value="openai_chat" /><el-option label="Anthropic Messages" value="anthropic_messages" /></el-select></el-form-item>
           <el-form-item :label="t('modelApi.model')" required><el-input v-model="form.model" data-testid="slot-model" maxlength="256" :disabled="saving" /></el-form-item>
         </div>
-        <el-form-item :label="t('modelApi.endpoint')" required><el-input v-model="form.base_url" data-testid="slot-endpoint" :placeholder="form.protocol === 'openai_chat' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'" :disabled="saving" /><p class="field-hint">{{ t('modelApi.endpointHint') }}</p></el-form-item>
+        <el-form-item :label="t('modelApi.endpoint')" required><el-input v-model="form.base_url" data-testid="slot-endpoint" :placeholder="endpointPlaceholder" :disabled="saving" /><p class="field-hint">{{ t('modelApi.endpointHint') }}</p></el-form-item>
         <el-form-item :label="t('modelApi.key')" @input.capture="form.key_edited = true">
           <el-input v-model="form.api_key" data-testid="slot-key" :type="form.key_edited ? 'password' : 'text'" autocomplete="new-password" :placeholder="t('modelApi.keyPlaceholder')" :disabled="saving" @copy="copyMaskedKey" @cut="copyMaskedKey" @focus="selectMaskedKey" />
           <p class="field-hint">{{ t('modelApi.keyEditHint') }}</p>
@@ -136,6 +136,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, listModelSlots, testModelSlot, updateModelSlot } from '@/api/models'
+import { useEnterKey } from '@/utils/enterKey'
 import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
@@ -151,6 +152,8 @@ const usage = ref<ModelUsageResult | null>(null)
 const loadingUsage = ref(false)
 const usageError = ref('')
 const pluginFilter = ref(typeof route.query.plugin_id === 'string' ? route.query.plugin_id : '')
+// Enter that picks a word of an input method is not Enter that filters.
+const enterKey = useEnterKey()
 const slotFilter = ref(typeof route.query.slot_id === 'string' ? route.query.slot_id : '')
 const editorOpen = ref(false)
 const editingSlot = ref<ModelSlot | null>(null)
@@ -161,6 +164,8 @@ const testingId = ref('')
 const unbindingId = ref('')
 const testResults = reactive<Record<string, { ok: boolean; message: string }>>({})
 const capabilities: ModelCapability[] = ['text', 'image_input', 'tool_calling', 'streaming']
+// Worked out here and not in the template: compared there, vue-tsc 3.3 takes `form` for a ref in what follows.
+const endpointPlaceholder = computed(() => form.protocol === 'openai_chat' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com')
 const keyUpdateRequired = computed(() => needsModelKeyUpdate(form, editingSlot.value))
 const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.capabilities.every(capability => slot.capabilities.includes(capability))))
 const knownTokens = computed(() => {

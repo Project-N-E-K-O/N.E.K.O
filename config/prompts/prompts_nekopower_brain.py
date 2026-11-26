@@ -469,7 +469,13 @@ RECEIPT_TEXTS = {
         "answered": "已把回答交给：{title}",
         "ambiguous": "对不上是哪一件，先问清楚再说。候选：\n{candidates}",
         "nothing_active": "现在没有在办的事。",
-        "unclear_answer": "{title} 在等回话，但这句话看不出是同意还是拒绝。可以回答：始终允许、仅本会话允许、本次允许、拒绝。",
+        "unclear_answer": "{title} 在等回话，但这句话看不出是同意还是拒绝。可以回答：本次允许、拒绝（要始终允许或仅本会话允许，请用户点问话上的按钮）。",
+        "joined": "、",
+        "unread": "（没来得及判断这句话是不是在回答、叫停或补充在办的事，已先当新的事处理；如果其实是，请用户再说一次。）",
+        "narrowed": "（只放行了这一次（本次允许）：打字或说出来的回答最多放行一次。要始终允许或仅本会话允许，请用户点问话上的按钮。）",
+        "stop_failed": "没能停下：{title}。可以在界面上再停一次。",
+        "stop_unconfirmed": "已叫停：{title}，但没能确认它正在跑的部分都停了，可以在界面上看一下。",
+        "by_buttons": "（几条问话在等，说的话分不清是哪一条：请用户点对应问话上的按钮。）",
     },
     'zh-TW': {
         "accepted": "已受理：{title}",
@@ -481,7 +487,13 @@ RECEIPT_TEXTS = {
         "answered": "已把回答交給：{title}",
         "ambiguous": "對不上是哪一件，先問清楚再說。候選：\n{candidates}",
         "nothing_active": "現在沒有在辦的事。",
-        "unclear_answer": "{title} 在等回話，但這句話看不出是同意還是拒絕。可以回答：始終允許、僅本會話允許、本次允許、拒絕。",
+        "unclear_answer": "{title} 在等回話，但這句話看不出是同意還是拒絕。可以回答：本次允許、拒絕（要始終允許或僅本會話允許，請使用者點問話上的按鈕）。",
+        "joined": "、",
+        "unread": "（沒來得及判斷這句話是不是在回答、叫停或補充在辦的事，已先當新的事處理；如果其實是，請使用者再說一次。）",
+        "narrowed": "（只放行了這一次（本次允許）：打字或說出來的回答最多放行一次。要始終允許或僅本會話允許，請使用者點問話上的按鈕。）",
+        "stop_failed": "沒能停下：{title}。可以在介面上再停一次。",
+        "stop_unconfirmed": "已叫停：{title}，但沒能確認它正在跑的部分都停了，可以在介面上看一下。",
+        "by_buttons": "（幾條問話在等，說的話分不清是哪一條：請使用者點對應問話上的按鈕。）",
     },
     'en': {
         "accepted": "Accepted: {title}",
@@ -493,7 +505,13 @@ RECEIPT_TEXTS = {
         "answered": "Answer handed to: {title}",
         "ambiguous": "It is unclear which task is meant; ask before going on. Candidates:\n{candidates}",
         "nothing_active": "Nothing is under way right now.",
-        "unclear_answer": "{title} is waiting for an answer, but this does not say yes or no. Possible answers: always allow, allow for this session, allow this once, deny.",
+        "unclear_answer": "{title} is waiting for an answer, but this does not say yes or no. Possible answers: allow this once, deny (to always allow it or allow it for this session, the user uses the buttons on the question).",
+        "joined": ", ",
+        "unread": "(It could not be told in time whether this answers, stops or adds to work under way; it was taken as new work. If it was one of those, ask the user to say it again.)",
+        "narrowed": "(Allowed this once only: an answer typed or said allows one request at most. To always allow it or allow it for this session, ask the user to use the buttons on the question.)",
+        "stop_failed": "Could not stop: {title}. It can be stopped again on screen.",
+        "stop_unconfirmed": "Stopped: {title}, but it could not be confirmed that everything it was running has ended; it can be checked on screen.",
+        "by_buttons": "(Several questions are waiting, and words cannot tell which this is for: ask the user to use the buttons on the question they mean.)",
     },
     'ja': {
         "accepted": "受け付けました：{title}",
@@ -505,7 +523,13 @@ RECEIPT_TEXTS = {
         "answered": "回答を渡しました：{title}",
         "ambiguous": "どの用件のことか分かりません。先に確認してください。候補：\n{candidates}",
         "nothing_active": "いま進めている用件はありません。",
-        "unclear_answer": "{title} は返事を待っていますが、この言葉からは許可か拒否か分かりません。答え方：常に許可、このセッションだけ許可、今回だけ許可、拒否。",
+        "unclear_answer": "{title} は返事を待っていますが、この言葉からは許可か拒否か分かりません。答え方：今回だけ許可、拒否（常に許可・このセッションだけ許可にするには、ユーザーに確認のボタンを押してもらってください）。",
+        "joined": "、",
+        "unread": "（進行中の用件への回答・中止・追加かどうかを時間内に判断できなかったため、新しい用件として扱いました。そのつもりだった場合は、ユーザーにもう一度言ってもらってください。）",
+        "narrowed": "（今回だけ許可しました。入力や音声での回答で許可できるのは 1 回までです。常に許可・このセッションだけ許可にするには、確認のボタンを押すようユーザーに伝えてください。）",
+        "stop_failed": "止められませんでした：{title}。画面からもう一度止められます。",
+        "stop_unconfirmed": "中止しました：{title}。ただし、実行中だった部分がすべて止まったかは確認できませんでした。画面で確かめられます。",
+        "by_buttons": "（確認が複数待っていて、言葉ではどれのことか分かりません。ユーザーに、該当する確認のボタンを押してもらってください。）",
     },
     'ko': {
         "accepted": "접수했습니다: {title}",
@@ -517,7 +541,13 @@ RECEIPT_TEXTS = {
         "answered": "답변을 넘겼습니다: {title}",
         "ambiguous": "어느 일을 말하는지 알 수 없습니다. 먼저 확인하세요. 후보:\n{candidates}",
         "nothing_active": "지금 진행 중인 일이 없습니다.",
-        "unclear_answer": "{title}이(가) 답을 기다리고 있지만, 이 말로는 허락인지 거절인지 알 수 없습니다. 가능한 답: 항상 허용, 이번 세션만 허용, 이번만 허용, 거부.",
+        "unclear_answer": "{title}이(가) 답을 기다리고 있지만, 이 말로는 허락인지 거절인지 알 수 없습니다. 가능한 답: 이번만 허용, 거부(항상 허용이나 이번 세션만 허용은 사용자가 질문의 버튼을 눌러야 합니다).",
+        "joined": ", ",
+        "unread": "(진행 중인 일에 대한 답변·중지·추가인지 제때 판단하지 못해 새 일로 처리했습니다. 그런 뜻이었다면 사용자에게 다시 말해 달라고 하세요.)",
+        "narrowed": "(이번만 허용했습니다. 입력하거나 말로 한 답변으로는 한 번까지만 허용됩니다. 항상 허용하거나 이번 세션만 허용하려면 질문의 버튼을 누르라고 사용자에게 알려 주세요.)",
+        "stop_failed": "중지하지 못했습니다: {title}. 화면에서 다시 중지할 수 있습니다.",
+        "stop_unconfirmed": "중지했습니다: {title}. 다만 실행 중이던 부분이 모두 멈췄는지는 확인하지 못했습니다. 화면에서 확인할 수 있습니다.",
+        "by_buttons": "(질문이 여러 개 기다리고 있어 말로는 어느 것인지 알 수 없습니다. 사용자에게 해당 질문의 버튼을 눌러 달라고 하세요.)",
     },
     'ru': {
         "accepted": "Принято: {title}",
@@ -529,7 +559,13 @@ RECEIPT_TEXTS = {
         "answered": "Ответ передан: {title}",
         "ambiguous": "Непонятно, о какой задаче речь; сначала уточните. Варианты:\n{candidates}",
         "nothing_active": "Сейчас ничего не выполняется.",
-        "unclear_answer": "{title} ждёт ответа, но из этих слов неясно, да или нет. Возможные ответы: разрешать всегда, разрешить на эту сессию, разрешить только в этот раз, отказать.",
+        "unclear_answer": "{title} ждёт ответа, но из этих слов неясно, да или нет. Возможные ответы: разрешить только в этот раз, отказать (чтобы разрешать всегда или на эту сессию, пользователь нажимает кнопку в вопросе).",
+        "joined": ", ",
+        "unread": "(Не удалось вовремя понять, отвечает ли это на вопрос, останавливает или дополняет текущую работу; это принято как новая задача. Если имелось в виду это, попросите пользователя сказать ещё раз.)",
+        "narrowed": "(Разрешено только в этот раз: ответ, написанный или сказанный словами, разрешает не больше одного запроса. Чтобы разрешать всегда или на эту сессию, попросите пользователя нажать кнопку в вопросе.)",
+        "stop_failed": "Не удалось остановить: {title}. Это можно сделать ещё раз на экране.",
+        "stop_unconfirmed": "Остановлено: {title}, но не удалось убедиться, что всё, что оно запускало, завершилось; это можно проверить на экране.",
+        "by_buttons": "(Ждут несколько вопросов, и по словам не понять, к какому это относится: попросите пользователя нажать кнопку в нужном вопросе.)",
     },
     'es': {
         "accepted": "Aceptado: {title}",
@@ -541,7 +577,13 @@ RECEIPT_TEXTS = {
         "answered": "Respuesta entregada a: {title}",
         "ambiguous": "No está claro a qué tarea se refiere; pregunta antes de seguir. Candidatas:\n{candidates}",
         "nothing_active": "Ahora mismo no hay nada en marcha.",
-        "unclear_answer": "{title} espera una respuesta, pero esto no dice ni sí ni no. Respuestas posibles: permitir siempre, permitir en esta sesión, permitir solo esta vez, denegar.",
+        "unclear_answer": "{title} espera una respuesta, pero esto no dice ni sí ni no. Respuestas posibles: permitir solo esta vez, denegar (para permitir siempre o en esta sesión, el usuario usa los botones de la pregunta).",
+        "joined": ", ",
+        "unread": "(No se pudo saber a tiempo si esto responde, detiene o añade algo a una tarea en curso; se tomó como una tarea nueva. Si era eso, pide al usuario que lo repita.)",
+        "narrowed": "(Permitido solo esta vez: una respuesta escrita o dicha permite una solicitud como mucho. Para permitir siempre o en esta sesión, pide al usuario que use los botones de la pregunta.)",
+        "stop_failed": "No se pudo detener: {title}. Se puede detener de nuevo desde la pantalla.",
+        "stop_unconfirmed": "Detenido: {title}, pero no se pudo confirmar que todo lo que estaba ejecutando haya terminado; se puede comprobar en la pantalla.",
+        "by_buttons": "(Hay varias preguntas esperando y por las palabras no se sabe a cuál se refiere: pide al usuario que use los botones de la pregunta que quiere responder.)",
     },
     'pt': {
         "accepted": "Aceito: {title}",
@@ -553,7 +595,13 @@ RECEIPT_TEXTS = {
         "answered": "Resposta entregue a: {title}",
         "ambiguous": "Não está claro de qual tarefa se trata; pergunte antes de continuar. Candidatas:\n{candidates}",
         "nothing_active": "Não há nada em andamento agora.",
-        "unclear_answer": "{title} aguarda uma resposta, mas isto não diz sim nem não. Respostas possíveis: permitir sempre, permitir nesta sessão, permitir só desta vez, negar.",
+        "unclear_answer": "{title} aguarda uma resposta, mas isto não diz sim nem não. Respostas possíveis: permitir só desta vez, negar (para permitir sempre ou nesta sessão, o usuário usa os botões da pergunta).",
+        "joined": ", ",
+        "unread": "(Não deu para saber a tempo se isto responde, interrompe ou acrescenta algo a uma tarefa em andamento; foi tratado como tarefa nova. Se era isso, peça ao usuário para repetir.)",
+        "narrowed": "(Permitido só desta vez: uma resposta escrita ou falada permite um pedido no máximo. Para permitir sempre ou nesta sessão, peça ao usuário para usar os botões da pergunta.)",
+        "stop_failed": "Não deu para interromper: {title}. Dá para interromper de novo pela tela.",
+        "stop_unconfirmed": "Interrompido: {title}, mas não deu para confirmar que tudo o que estava rodando terminou; dá para conferir pela tela.",
+        "by_buttons": "(Há várias perguntas aguardando e pelas palavras não dá para saber a qual se refere: peça ao usuário para usar os botões da pergunta certa.)",
     },
 }
 
@@ -620,8 +668,8 @@ QUERY_TEXTS = {
 }
 
 # How the answers to a permission prompt are named when the question is put to
-# her. Each name reads back as its own choice through the patterns below
-# (``tests/unit/nekopower/test_host_decision.py`` holds them to that).
+# her, and (in English) to the small model that reads what an answer chose
+# (``TASK_BRAIN_ANSWER_PROMPT``, ``decision._read_choice``).
 PERMISSION_OPTION_NAMES = {
     'zh': {"always": "始终允许", "session": "仅本会话允许", "once": "本次允许", "deny": "拒绝"},
     'zh-TW': {"always": "始終允許", "session": "僅本會話允許", "once": "本次允許", "deny": "拒絕"},
@@ -634,6 +682,19 @@ PERMISSION_OPTION_NAMES = {
            "deny": "denegar"},
     'pt': {"always": "permitir sempre", "session": "permitir nesta sessão", "once": "permitir só desta vez",
            "deny": "negar"},
+}
+
+# After the answers words can give in the question she passes on: the ones
+# the buttons alone give (``reports.render_question``).
+PERMISSION_BUTTONS_ONLY_TEXT = {
+    'zh': "（{options}请点问话上的按钮）",
+    'zh-TW': "（{options}請點問話上的按鈕）",
+    'en': " ({options}: with the buttons on the question)",
+    'ja': "（{options}は確認のボタンで）",
+    'ko': " ({options}은(는) 질문의 버튼으로)",
+    'ru': " ({options} — кнопками в вопросе)",
+    'es': " ({options}: con los botones de la pregunta)",
+    'pt': " ({options}: com os botões da pergunta)",
 }
 
 # What she is told, along with her next turn, about a commission that was
@@ -1153,41 +1214,13 @@ PERMISSION_CATEGORY_TEXTS = {
 # ======= Cue patterns (matched without a model) =======
 # =====================================================================
 # Regular expressions, case-insensitive, covering the eight interface
-# languages in one list each. They only say what kind of sentence this is;
-# which commission it is about is matched against the ledger.
+# languages in one list each. What a dispatched sentence does with the work
+# under way (answers it, stops it, adds to it) is read by the small model
+# (``TASK_BRAIN_UNDER_WAY_PROMPT``); these serve the orchestrator and queries.
 
-STOP_CUE_PATTERNS = (
-    # Chinese, Simplified and Traditional.
-    r"叫停|停止|停下|停掉|先停|中止|终止|終止|取消|算了|别.{0,6}了|別.{0,6}了|不用.{0,4}了|不要.{0,4}了|不必.{0,4}了",
-    # English.
-    r"\b(?:stop|cancel|abort|halt|never\s?mind|forget\s+it|call\s+it\s+off|don'?t\s+bother)\b",
-    # Japanese.
-    r"止めて|やめて|やめる|中止|キャンセル|取り消",
-    # Korean.
-    r"그만|취소|중지|멈춰|멈추",
-    # Russian.
-    r"останов|отмен|прекрат|хватит|\bстоп\b|не\s+надо",
-    # Spanish and Portuguese.
-    r"\b(?:det[eé]n\w*|cancel\w*|olv[ií]da\w*|d[eé]jalo|ya\s+no|pare|para\s+com|esquece\w*|deixa\s+pra\s+l[aá])\b",
-)
-
-# Words that point at something without naming it ("that one", "it", "please").
-# They are set aside before a sentence is compared with the commissions, so
-# "stop that" reads as a stop request that names nothing.
-VAGUE_REFERENCE_PATTERNS = (
-    r"那个|那個|这个|這個|那件事|这件事|這件事|那件|这件|這件|任务|任務|事情|全部|所有|都|先|吧|啊|呀|了|的",
-    r"\b(?:that|this|it|them|those|these|one|ones|thing|things|task|tasks|everything|all|now|please|the|doing|for\s+me)\b",
-    r"それ|これ|あれ|全部|もう|ください|して|を|は",
-    r"그거|이거|저거|전부|모두|제발|이제|해|줘",
-    r"это|то|всё|все|пожалуйста|уже|сейчас",
-    r"\b(?:eso|esto|aquello|todo|por\s+favor|ya|ahora|isso|isto|aquilo|tudo|agora)\b",
-)
-
-# Words too common to say which commission a stop request means: days, times
-# of day, "help me". "Cancel tomorrow's alarm" shares "tomorrow" with a
-# weather lookup for tomorrow and is still not about it. Only the matching of
-# a stop request against the commissions leaves them out; a sentence made of
-# nothing else still counts as naming something.
+# Words too common to say what a sentence is about: days, times of day,
+# "help me". Left out where the orchestrator matches a sentence's words
+# against what task agents did (``orchestrator.py``).
 GENERIC_WORD_PATTERNS = (
     # Chinese, Simplified and Traditional.
     r"今天|明天|后天|後天|昨天|今晚|明早|明晚|早上|上午|中午|下午|晚上|现在|現在|一会儿|一會兒|待会|待會|等会|等會|马上|馬上|帮我|幫我|给我|給我|一下",
@@ -1210,115 +1243,6 @@ SUPPLEMENT_CUE_PATTERNS = (
     r"추가로|그리고|또한|참고로|바꿔",
     r"также|ещё|кстати|вместо\s+этого|добавь",
     r"\b(?:adem[aá]s|tambi[eé]n|por\s+cierto|en\s+vez\s+de|al[eé]m\s+disso|tamb[eé]m|a\s+prop[oó]sito|em\s+vez\s+de)\b",
-)
-
-# What a sentence that answers whether another member is to do a queued
-# commission says of that choice itself, beside a yes or a no: another one,
-# opening it, waiting, who said so (``decision._says_more_than_an_answer``).
-# Set aside with the yes and the no, not counted among the words that make a
-# sentence new work which says a yes or a no in passing.
-BESIDE_ANSWER_WORD_PATTERNS = (
-    r"另开|再开|新开|开一只|另一只|一只|新的|让它|让另一只|去做|等它|等着|等一下|做完|排队|就行|谢谢|请|用户|说|答应|它|吧",
-    r"\b(?:another|other|new|one|familiar|member|open|start|make|let|it|do|wait|waits|queue|later|busy|the\s+user|user|says|said|answers?|agrees?|allows?|declines?|refuses?|thanks|thank\s+you|please|go\s+for\s+it|for)\b",
-    r"もう一体|別の|新しい|お願い(?:します)?|待って|待ちます|ください|ありがとう",
-    r"하나\s*더|다른|새로|기다릴게|기다려|그렇게|해|부탁|고마워",
-    r"ещё\s+один|другой|подожд\w*|спасибо|пожалуйста",
-    r"\b(?:otro|outro|nuevo|novo|esper\w*|gracias|obrigad[oa]|por\s+favor)\b",
-)
-
-# What a sentence that answers whether a project's leader may start another
-# member that changes files says of that choice, on top of
-# ``BESIDE_ANSWER_WORD_PATTERNS``: the familiar, its changing files, the work
-# handed to it, the user doing it themself, who said so (its question,
-# ``open_session`` in ``PERMISSION_CATEGORY_TEXTS``, says "another familiar
-# that can change files"). Set aside the same way, for that question only.
-HAND_OVER_ANSWER_WORD_PATTERNS = (
-    r"使魔|能改文件|改文件|能改檔案|改檔案|能改|交给|交給|我自己来|我自己來|自己来|自己來|我自己|自己|我来|我來",
-    r"\b(?:familiars?|change|changes|changing|files?|hand|give|lead|leader|myself)\b",
-    r"使い魔|ファイル|変更|変えさせ|変えて|任せ(?:て|る|ます)?|自分で|自分|ユーザー|と言って(?:います)?|言って",
-    r"사역마|파일|바꾸게|바꿔|바꾸|맡겨|맡기|내가|제가|사용자|한대요|한대|주세요|줘",
-    r"фамильяр\w*|файл\w*|менять|меняет|сам|сама",
-    r"\b(?:familiar(?:es)?|archivos?|arquivos?|cambiar|alterar|yo\s+mismo|eu\s+mesmo)\b",
-)
-
-# What a sentence that answers whether a project's leader may start a team
-# says of that choice, on top of the two lists above: the team, its members
-# working at the same time or one after the other, each in a copy of its own
-# that is merged back (its question, ``open_session_team`` in
-# ``PERMISSION_CATEGORY_TEXTS``, says so). Set aside the same way, for that
-# question only.
-START_TEAM_ANSWER_WORD_PATTERNS = (
-    r"组队|組隊|组一支|組一支|队伍|隊伍|团队|團隊|组吧|組吧|一起|同时|同時|分头|分頭|并行|並行|两只|兩隻|俩|倆|它们|它們"
-    r"|就够|就夠|一个一个|一個一個|一个个|一個個|挨个|挨個|轮流|輪流|按顺序|按順序|副本|合回|分开|分開",
-    r"\b(?:team|teams|together|same\s+time|at\s+once|parallel|both|two|them|they|split|one\s+by\s+one"
-    r"|one\s+after\s+(?:the\s+)?other|in\s+turn|copies|copy|merge|merged|enough|form)\b",
-    r"チーム|組んで|組む|一緒に|同時に|同時|並行|二体|2\s*体|両方|順番に|順番|一体ずつ|ひとつずつ|一つずつ|コピー|反映|十分|分けて|分担",
-    r"팀|꾸려|꾸리|같이|함께|동시에|동시|병렬|둘이|두\s*마리|둘\s*다|하나씩|차례로|차례|사본|반영|충분|나눠",
-    r"команд\w*|вместе|одновременно|параллельно|оба|обе|двое|по\s+очереди|по\s+одному|копи\w*",
-    r"\b(?:equipo|equipe|juntos|juntas|a\s+la\s+vez|al\s+mismo\s+tiempo|ao\s+mesmo\s+tempo|en\s+paralelo|em\s+paralelo"
-    r"|ambos|ambas|los\s+dos|os\s+dois|uno\s+por\s+uno|um\s+por\s+um|copias?|c[oó]pias?)\b",
-)
-
-ANSWER_CUE_PATTERNS = (
-    r"^\s*(?:回答|回复|回覆|答复|答覆|告诉它|告訴它|告诉使魔|告訴使魔)",
-    r"^\s*(?:answer|reply|tell\s+(?:it|the\s+familiar))\b",
-    r"^\s*(?:回答[:：]|返事[:：]|答え[:：])",
-    r"^\s*(?:답변|대답)\s*[:：]",
-    r"^\s*(?:ответ|ответь)\s*[:：]?",
-    r"^\s*(?:respuesta|responde|resposta|responda)\s*[:：]?",
-)
-
-# Answers to a permission prompt. The user is offered four: always allow,
-# allow for this session, allow this once, deny (``PERMISSION_OPTION_NAMES``).
-# Checked in this order: deny, session, always, once.
-# A negated approval ("not allowed", "不同意") is a refusal: the approving
-# words alone would otherwise read as yes, so every negation counts here.
-# Session comes before always, so a sentence carrying both scopes ("for this
-# task, always fine") gets the narrower one. Once comes last: its words are
-# the plain approvals that occur in every other answer as well.
-PERMISSION_DENY_PATTERNS = (
-    r"不行|不可以|不能|不允许|不允許|不准|別|别|拒绝|拒絕|禁止|不要|不同意|不批准|不好|不用|算了|没门|沒門",
-    r"\b(?:no|nope|not|deny|denied|don'?t|do\s+not|doesn'?t|isn'?t|aren'?t|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|refuse|reject|never|nah)\b",
-    r"だめ|ダメ|駄目|許可しない|許可しません|いいえ|拒否|やめて|しないで|いや",
-    r"안\s?돼|안\s?됨|안\s?해|하지\s?마|불허|거절|거부|아니",
-    r"\bнет\b|\bне\b|нельзя|запрет|отказ",
-    r"\b(?:no|nunca|den[ií]ega\w*|deneg\w*|rechaz\w*|não|nao|negar|recus\w*|jam[aá]s)\b",
-)
-
-# "For this session": until the commission that asked has ended. The scope has
-# to be said outright; "this task is fine" alone stays a one-time approval.
-PERMISSION_SESSION_PATTERNS = (
-    # Chinese, Simplified and Traditional.
-    r"本会话|本會話|这个会话|這個會話|这次会话|這次會話|本次会话|本次會話|会话内|會話內|会话期间|會話期間"
-    r"|(?:这次|這次|本次|这个|這個|这件|這件)(?:任务|任務|委托|委託|事)(?:里|裡|中|内|內|期间|期間|过程中|過程中|之内|之內)",
-    # English.
-    r"\b(?:this\s+session|for\s+the\s+session|for\s+(?:the\s+rest\s+of\s+)?this\s+(?:task|job|commission)|during\s+this\s+(?:task|session|job|commission))\b",
-    # Japanese.
-    r"このセッション|今のセッション|セッション中|この(?:タスク|作業|依頼|件)(?:の間|中)",
-    # Korean.
-    r"이번\s?세션|이\s?세션|세션\s?동안|이번\s?(?:작업|일|의뢰)\s?(?:동안|중)",
-    # Russian.
-    r"в\s+этой\s+сессии|на\s+(?:эту|всю)\s+сессию|на\s+время\s+(?:этой\s+)?(?:задачи|сессии)|для\s+этой\s+задачи",
-    # Spanish and Portuguese.
-    r"\b(?:(?:en\s+)?esta\s+sesi[oó]n|durante\s+esta\s+(?:tarea|sesi[oó]n)|para\s+esta\s+tarea|n?esta\s+sess[aã]o|durante\s+esta\s+(?:tarefa|sess[aã]o)|para\s+esta\s+tarefa)\b",
-)
-
-PERMISSION_ALWAYS_PATTERNS = (
-    r"以后都|以後都|一直|始终|始終|总是|總是|每次都|都可以|都行|永远|永遠",
-    r"\b(?:always|every\s+time|from\s+now\s+on|whenever)\b",
-    r"今後ずっと|いつも|常に|毎回|ずっと",
-    r"앞으로|항상|매번|계속",
-    r"всегда|каждый\s+раз|впредь",
-    r"\b(?:siempre|cada\s+vez|de\s+ahora\s+en\s+adelante|sempre|toda\s+vez|daqui\s+pra\s+frente)\b",
-)
-
-PERMISSION_ONCE_PATTERNS = (
-    r"就这一次|就這一次|这一次|這一次|可以|好的|好吧|行|同意|允许|允許|批准|没问题|沒問題|嗯",
-    r"\b(?:yes|yeah|yep|ok|okay|sure|allow|allowed|approve|approved|go\s+ahead|fine|just\s+this\s+once)\b",
-    r"今回だけ|はい|いいよ|いいです|許可|どうぞ|オーケー",
-    r"이번만|네|예|좋아|허락|허용|그래",
-    r"\bда\b|можно|разреш|хорошо|только\s+в\s+этот\s+раз|ладно",
-    r"\b(?:s[ií]|vale|claro|permit\w*|adelante|solo\s+esta\s+vez|sim|pode|tudo\s+bem|s[oó]\s+desta\s+vez)\b",
 )
 
 # A query that asks whether something can be done, rather than how a task is going.
@@ -1524,7 +1448,7 @@ TASK_AGENT_USAGE_WIND_UP = (
 # another one: is it a side question (answered by looking, nothing changed)?
 # Only a side question goes to the copy; work waits for the session.
 TASK_BRAIN_SIDE_QUESTION_PROMPT = (
-    "You are an automation assessment agent. You sort a request that was handed to an agent while that agent is busy with something else in "
+    "You are an agentic automation assessment agent, sorting a request that was handed to an agent while that agent is busy with something else in "
     "the same project. Say whether it is a side question or work.\n"
     "A side question asks about how things stand, where something is, what something does, why "
     "something was done, or what was found: it is answered by reading what was said and the files, "
@@ -1548,7 +1472,7 @@ def build_side_question_request(*, task: str, user_said: str, waiting_for: str =
 
 
 TASK_BRAIN_BESIDE_PROMPT = (
-    "You are an automation assessment agent. In a project, one agent is busy with some work. A new request "
+    "You are an agentic automation assessment agent, sorting a request. In a project, one agent is busy with some work. A new request "
     "for the same project has come in and waits for that agent. Another agent could take the new request at "
     "once, in a separate copy of the project, knowing nothing of what the busy agent is doing.\n"
     "Say whether the new request goes on with the busy agent's work: it continues, extends, corrects or "
@@ -1569,6 +1493,145 @@ def build_beside_request(*, task: str, user_said: str, busy: str, at_hand: list[
     return "\n".join(lines)
 
 
+# Asked of the small model whenever a request comes in while there is work it
+# may be about (``decision.LexicalDecisionModel.read_under_way``): her work
+# under way, what waits for the user to answer, what ended lately. Whether
+# the request answers one of those, stops some, adds to one, or is new; what
+# an answer to a request for approval chose is read apart
+# (``TASK_BRAIN_ANSWER_PROMPT``). (The opening words are fixed: the built-in
+# free tier takes a request by them, with the comma.)
+TASK_BRAIN_UNDER_WAY_PROMPT = (
+    "You are an agentic automation assessment agent, sorting a request against the work under way. Familiars "
+    "(agents) work for the user, some in projects where a boss cat hands work on to them. The ITEMS are that work, "
+    "numbered: what is under way, what waits for the user to answer, and what ended lately. The character the user "
+    "talks with has just handed over a REQUEST. Decide what the REQUEST does.\n"
+    "\"answer\": it is the user's answer to what a waiting item asks. It allows or refuses what is asked for, picks "
+    "one of the answers offered, or tells what the question wants to know. An answer may give a reason, say to "
+    "wait, or say who is to do it instead (\"no, wait for the other one\", \"yes, the links are urgent\", \"I'll do "
+    "it myself\"). It may be said about the user (\"the user agrees\") or be meant to be passed on (\"tell the lead "
+    "it is fine\"). Refusing what a question asks is its answer, not a stop: while an item waits, \"wait\", \"not "
+    "now\", \"hold on\" or \"don't\" said to it refuse what it asks (\"deny\"); only dropping the work itself is a "
+    "stop.\n"
+    "\"stop\": it asks to stop, cancel or drop work under way, and says which: give every item it means (\"stop "
+    "everything on the shop site\" can be several, \"stop all of it\" is all). A stop that does not say which, while "
+    "several items are under way (\"stop it\", \"hold on\"), is \"unsure\". Stopping something that is none of the "
+    "items (\"stop the music\", \"cancel tomorrow's alarm\") is new work.\n"
+    "\"add\": it says more about one item's work: something to change, correct, add or keep in mind (\"don't forget "
+    "to sort them by month\"). Going on with an item that ended, doing it again or trying it again is \"add\" to "
+    "that item. A reminder about something none of the items is about (\"don't forget to update the README\") is "
+    "new work.\n"
+    "\"new\": anything else, even if it also says yes, ok, no, please or thanks, or names the same project, page or "
+    "files: \"run the tests\", \"fix the typo on the contact page\", \"ok, and check the weather too\" are new work. "
+    "An instruction about work that no question asks for (\"make the footer links blue\" while asked for approval) "
+    "neither allows nor refuses. A question back (\"what is the difference?\") or small talk (\"thanks\", "
+    "\"sorry\") is new as well.\n"
+    "\"unsure\": it answers, stops or adds to one of several items, and does not say which.\n"
+    "Tell the items apart by what they are about, their project and the familiar on each (its role and name).\n"
+    "WHAT THE USER SAID, when shown, is the user's own words in that turn. It can hold more than this one REQUEST: "
+    "decide about the REQUEST, and use those words to see what the user meant.\n"
+    "With an answer or a stop, also say whether the REQUEST itself says which item it means (it names the work, its "
+    "project, its familiar, the command or file asked about, an option it picks, or says all of it): \"named\": "
+    "true; or false for a bare \"yes\", \"no\", \"stop it\", \"hold on\", \"enough\".\n"
+    'Reply with JSON only: {"does": "new"}; {"does": "stop", "items": [2, 3], "named": true}; {"does": "add", '
+    '"items": [1]}; {"does": "unsure", "items": [1, 2]}; {"does": "answer", "items": [4], "named": false}.'
+)
+
+# How the items of that request say where each stands.
+UNDER_WAY_STATUS_WORDS = {
+    "queued": "queued", "working": "working", "waiting_user": "waiting for the user", "done": "done",
+    "blocked": "blocked", "failed": "failed", "cancelled": "stopped",
+}
+
+# The kinds of question an item waits with, as that request names them.
+UNDER_WAY_QUESTION_KINDS = {
+    "permission": "asks for approval",
+    "confirmation": "asks the user to confirm",
+    "question": "asks the user",
+}
+
+# What the user calls a familiar of each preset, in every language, as the
+# interface names them (``frontend/plugin-manager/src/i18n/power/*.ts``): the
+# request names the familiar on each item by these, as the user would.
+ROLE_NAMES = {
+    'zh': {"boss": "猫老大", "worker": "猫小弟", "scout": "侦察猫", "inspector": "监工猫", "planner": "军师猫",
+           "general": "打工猫", "shadow": "副本"},
+    'zh-TW': {"boss": "貓老大", "worker": "貓小弟", "scout": "偵察貓", "inspector": "監工貓", "planner": "軍師貓",
+              "general": "打工貓", "shadow": "副本"},
+    'en': {"boss": "Boss cat", "worker": "Helper cat", "scout": "Scout cat", "inspector": "Inspector cat",
+           "planner": "Planner cat", "general": "Working cat", "shadow": "Copy"},
+    'ja': {"boss": "ボス猫", "worker": "子分猫", "scout": "偵察猫", "inspector": "監督猫", "planner": "軍師猫",
+           "general": "はたらき猫", "shadow": "分身"},
+    'ko': {"boss": "대장 고양이", "worker": "막내 고양이", "scout": "정찰 고양이", "inspector": "감독 고양이",
+           "planner": "책사 고양이", "general": "일꾼 고양이", "shadow": "분신"},
+    'ru': {"boss": "Кот-вожак", "worker": "Кот-подручный", "scout": "Кот-разведчик", "inspector": "Кот-надсмотрщик",
+           "planner": "Кот-стратег", "general": "Кот-работяга", "shadow": "Двойник"},
+    'es': {"boss": "Gato jefe", "worker": "Gato ayudante", "scout": "Gato explorador", "inspector": "Gato capataz",
+           "planner": "Gato estratega", "general": "Gato currante", "shadow": "Doble"},
+    'pt': {"boss": "Gato chefe", "worker": "Gato ajudante", "scout": "Gato batedor", "inspector": "Gato capataz",
+           "planner": "Gato estrategista", "general": "Gato trabalhador", "shadow": "Duplo"},
+}
+
+
+def build_under_way_request(*, sections: list[tuple[str, list[str]]], task: str, user_said: str) -> str:
+    """Return the user message of that question: the items by section (numbered already), the request, the user's own words when they differ."""
+    lines = ["ITEMS:"]
+    for heading, items in sections:
+        if items:
+            lines.append(heading)
+            lines.extend(items)
+    lines.append(f"REQUEST: {task}")
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"WHAT THE USER SAID: {user_said}")
+    return "\n".join(lines)
+
+
+# Asked of the small model once ``TASK_BRAIN_UNDER_WAY_PROMPT`` has read a
+# request as the answer to a request for approval
+# (``decision.LexicalDecisionModel._read_choice``): what was chosen, shown
+# the answers on offer and what was said, and not what it asks to allow (a
+# task agent wrote that, and it could say what to choose). A request of its
+# own: asked within the longer request, the small model read a plain yes as
+# "always" more often. (The
+# opening words are fixed: the built-in free tier takes a request by them,
+# with the comma.)
+TASK_BRAIN_ANSWER_PROMPT = (
+    "You are an agentic automation assessment agent, reading answers. Agents that work for the user wait for the "
+    "user to answer what they asked: the QUESTIONS, numbered. The character the user talks with has just handed "
+    "over a REQUEST. Decide whether the REQUEST is the user's answer to one of the QUESTIONS.\n"
+    "It is an answer when it responds to what a question asks: it allows or refuses what is asked for, picks one "
+    "of the answers offered, or tells what the question wants to know. An answer may give a reason, say to wait, "
+    "or say who is to do it instead (\"no, wait for the other one\", \"yes, the links are urgent\", \"I'll do it "
+    "myself\"). It may be said about the user (\"the user agrees\") or be meant to be passed on (\"tell the lead "
+    "it is fine\").\n"
+    "It is not an answer when it asks for other work, even if it also says yes, ok, no, please or thanks, or names "
+    "the same project, page or files: \"run the tests\", \"don't forget to update the README\", \"fix the typo on "
+    "the contact page\", \"ok, and check the weather too\" are new work. So is an instruction about the work itself "
+    "(\"make the footer links blue\", \"leave the colour as it is\"): it neither allows nor refuses. A question back "
+    "(\"what is the difference?\") is not an answer, and neither is small talk (\"thanks\", \"sorry\").\n"
+    "WHAT THE USER SAID, when shown, is the user's own words in that turn. It can hold more than this one REQUEST: "
+    "decide about the REQUEST, and use those words to see what the user meant.\n"
+    "For a question that asks for approval, also say what was chosen: \"always\" (allow it from now on, beyond this "
+    "work: every time, never ask again), \"session\" (allow it until this work, task or session is over), \"once\" "
+    "(allow it this time only, or ask again next time; a plain yes, ok, sure, go ahead or please means this), "
+    "\"deny\" (refuse, not now, wait, or do it some other way), or \"unclear\" (it answers, but does not say whether "
+    "it allows). When it names two, take the narrower one.\n"
+    "When several questions wait and the REQUEST answers without saying which, reply \"unsure\".\n"
+    'Reply with JSON only: {"answers": "none"}, {"answers": "unsure"}, or the number of the question, with the '
+    'choice for a question that asks for approval: {"answers": 1, "choice": "once"}.'
+)
+
+def build_choice_request(*, asks: str, offered: list[str], task: str, user_said: str) -> str:
+    """Return the user message of that question: the request for approval in the host's words (``reports.permission_kind``, nothing a task agent wrote) with the answers on offer, the request, and the user's own words when they differ."""
+    lines = [
+        "QUESTIONS:",
+        f"1. (asks for approval) It asks to {asks}. The answers on offer: {' / '.join(offered)}",
+        f"REQUEST: {task}",
+    ]
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"WHAT THE USER SAID: {user_said}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # The orchestrator (``nekopower/host/orchestrator.py``): which task agent a
 # new commission goes to.
@@ -1576,8 +1639,8 @@ def build_beside_request(*, task: str, user_said: str, busy: str, at_hand: list[
 
 # Words that point back at something that was made before ("that list", "the
 # one from last time"): a sentence with one of them follows a matter up, and
-# is not the same job done once more. Narrower than ``VAGUE_REFERENCE_PATTERNS``,
-# which also holds particles every sentence has.
+# is not the same job done once more. Only words that point back, not the
+# particles every sentence has.
 REFERS_BACK_PATTERNS = (
     r"那个|那個|那份|那几|那幾|那些|那篇|那张|那張|那本|那条|那條|上次|之前|刚才|剛才|刚刚|剛剛",
     r"\b(?:earlier|previous(?:ly)?|last\s+time|those|that\s+one|the\s+one\s+from|before)\b",

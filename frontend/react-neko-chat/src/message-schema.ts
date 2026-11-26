@@ -250,6 +250,23 @@ const proactiveRecommendationBlockSchema = z.object({
   expiresAt: z.number().finite().nonnegative().optional(),
 });
 
+// What a NekoPower commission asks the user, answered on the card (NekoPowerAskBlock). The
+// question is handed over as the agent process has it; the card reads what it knows of it.
+// `state` is the host's: it sends the answer and says how that fared.
+const nekopowerAskBlockSchema = z.object({
+  type: z.literal('nekopower_ask'),
+  taskId: z.string().min(1),
+  questionId: z.string(),
+  title: z.string(),
+  question: z.record(z.string(), z.unknown()),
+  state: z.enum(['pending', 'sending', 'answered', 'closed']),
+  // What it was answered with, in words; and what there is to say of how that went.
+  answer: z.string().optional(),
+  notice: z.string().optional(),
+  // Nothing can take a sentence added to an approval (a plugin does the work).
+  noNote: z.boolean().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   // A sent voice message. The recording itself is not stored; audioUrl is an
@@ -268,6 +285,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   htmlCardBlockSchema,
   musicRecommendationBlockSchema,
   proactiveRecommendationBlockSchema,
+  nekopowerAskBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -318,6 +336,9 @@ export const chatWindowPropsSchema = z.object({
   // 录音、试听或发送中为 true。迷你窗折叠后录音控件会卸载但草稿仍在，宿主据此判断，不能看 DOM。
   // 第二个参数是阶段（starting / recording / preview / sending / idle）：宿主据此只停掉占用麦克风的录音。
   onAudioMessageActiveChange: hostCallback([z.boolean(), z.string()]).optional(),
+  // 喵能力有没有问话在等回话（按屏幕上还看得见的消息算）：聊天窗缩成小球时宿主据此给小球加角标。
+  // 小球不归 React 画，最小化后紧凑界面也卸载了，所以由根组件上报，宿主不看 DOM。
+  onNekoPowerAskWaitingChange: hostCallback([z.boolean()]).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

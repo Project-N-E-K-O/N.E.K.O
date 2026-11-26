@@ -457,8 +457,9 @@ def _find_raw_bytes(value: object, path: str = "") -> str | None:
     """Return the path of the first ``bytes``-like value, else ``None``.
 
     A frame must ride as ONE base64 string. A raw twin packs cleanly and takes
-    the wire cost from 1.33x the image to about 2.3x (measured on
-    game_agent_minecraft), which is what pushes a large frame past
+    the wire cost from 1.33x the image to about 2.3x (measured on the
+    game_agent_minecraft plugin, since removed from the repository), which is
+    what pushes a large frame past
     MESSAGE_PLANE_PAYLOAD_MAX_BYTES -- and that drop happens on the other side
     of a socket, so the publisher is told nothing. Refusing the record here
     turns a silent far-side loss into a local, named error.

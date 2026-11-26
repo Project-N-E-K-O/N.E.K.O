@@ -73,25 +73,27 @@
       </div>
     </div>
 
-    <template v-for="dialog in activeParseDocumentConfirmDialogs" :key="dialog.token">
+    <!-- One host-rendered confirmation at a time; sandboxed panels have no allow-modals. -->
+    <template v-for="dialog in activeHostedConfirmDialogs" :key="dialog.token">
       <el-dialog
         :model-value="true"
-        :title="t('common.confirm')"
-        :append-to="parseDocumentConfirmAppendTarget"
+        :title="dialog.title"
+        :append-to="hostedConfirmAppendTarget"
         append-to-body
         :close-on-click-modal="false"
         width="min(440px, calc(100vw - 32px))"
-        data-testid="parse-document-confirm-dialog"
+        :data-testid="`${dialog.testIdPrefix}-dialog`"
         :before-close="dialog.cancel"
         @update:model-value="(open: boolean) => { if (!open) dialog.cancel() }"
         @close="dialog.cancel"
       >
+        <!-- Plugin-supplied text: plain-text interpolation only, never v-html. -->
         <p class="hosted-surface-frame__confirm-message">{{ dialog.message }}</p>
         <template #footer>
-          <el-button data-testid="parse-document-confirm-cancel" @click="dialog.cancel">
+          <el-button :data-testid="`${dialog.testIdPrefix}-cancel`" @click="dialog.cancel">
             {{ t('common.cancel') }}
           </el-button>
-          <el-button type="primary" data-testid="parse-document-confirm-ok" @click="dialog.accept">
+          <el-button type="primary" :data-testid="`${dialog.testIdPrefix}-ok`" @click="dialog.accept">
             {{ t('common.confirm') }}
           </el-button>
         </template>
@@ -106,11 +108,11 @@ import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { loadTsxRenderer, loadMarkdownRenderer } from '@/components/plugin/hosted/rendererModules'
-import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
+import { NO_DESKTOP_BRIDGE, openExternalUrl, openVerifiedLocalPath, resolvePathWithinRoots } from '@/utils/openExternal'
 import { PANEL_FILL_HEIGHT } from '@/utils/constants'
 import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginDisplayFrame } from '@/composables/usePluginDisplay'
 import { displayRevision } from '@/composables/usePluginDisplayDialog'
 
@@ -175,56 +177,136 @@ let currentLoadId = 0
 let sourceController: AbortController | null = null
 let hostedRequestGeneration = 0
 let componentMounted = false
-type ParseDocumentConfirmOutcome = 'confirm' | 'user_cancel' | 'host_cancel'
-type PendingParseDocumentConfirm = {
+// Host-rendered confirmation shared by document parsing and panel actions.
+// 'host_cancel' means the host dropped it (cancel message, surface switch,
+// unmount) and nobody is waiting for an answer; 'timeout' means its deadline
+// passed while still open.
+type HostedConfirmOutcome = 'confirm' | 'user_cancel' | 'host_cancel' | 'timeout'
+type PendingHostedConfirm = {
   requestId: string
   token: number
+  title: string
   message: string
+  testIdPrefix: string
+  kind: 'parseDocument' | 'action'
   accept: () => void
   cancel: () => void
-  resolve: (outcome: ParseDocumentConfirmOutcome) => void
+  resolve: (outcome: HostedConfirmOutcome) => void
 }
-let parseDocumentConfirmToken = 0
-const pendingParseDocumentConfirm = shallowRef<PendingParseDocumentConfirm | null>(null)
-const activeParseDocumentConfirmDialogs = computed(() => (
-  pendingParseDocumentConfirm.value ? [pendingParseDocumentConfirm.value] : []
+let hostedConfirmToken = 0
+const pendingHostedConfirm = shallowRef<PendingHostedConfirm | null>(null)
+const activeHostedConfirmDialogs = computed(() => (
+  pendingHostedConfirm.value ? [pendingHostedConfirm.value] : []
 ))
+// Directories this plugin's panel may open, taken only from the host's own
+// context reads. Never from the panel's messages.
+let openPathRoots: string[] | null = null
 const fullscreenRevision = ref(0)
 function handleFullscreenChange() {
   fullscreenRevision.value += 1
 }
-const parseDocumentConfirmAppendTarget = computed<string | HTMLElement>(() => {
+// Overlays must live inside the fullscreen element to stay visible.
+function fullscreenOverlayTarget(): HTMLElement | null {
+  const target = displayTarget.value
+  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) return target
+  return null
+}
+const hostedConfirmAppendTarget = computed<string | HTMLElement>(() => {
   void displayRevision.value
   void fullscreenRevision.value
-  void pendingParseDocumentConfirm.value
-  const target = displayTarget.value
-  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) {
-    return target
-  }
-  return 'body'
+  void pendingHostedConfirm.value
+  return fullscreenOverlayTarget() ?? 'body'
 })
+type HostMessageEntry = { target: HTMLElement; handle: { close: () => void } | undefined }
+const openHostMessages = new Map<string, HostMessageEntry>()
+function showHostMessage(type: 'warning' | 'error', message: string) {
+  // Element Plus grouping is not used: a grouped message is reused in place
+  // and would stay on its old mount target after entering or leaving
+  // fullscreen. Instead, a repeat of a message that is still visible on the
+  // same target is dropped, and one on another target is replaced.
+  const target = fullscreenOverlayTarget() ?? document.body
+  const key = `${type}\u0000${message}`
+  const existing = openHostMessages.get(key)
+  if (existing && existing.target === target) return
+  existing?.handle?.close()
+  const entry: HostMessageEntry = { target, handle: undefined }
+  openHostMessages.set(key, entry)
+  entry.handle = ElMessage({
+    type,
+    message,
+    appendTo: target,
+    onClose: () => {
+      if (openHostMessages.get(key) === entry) openHostMessages.delete(key)
+    },
+  })
+}
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
 let contextQueue: Promise<unknown> = Promise.resolve()
 
-function settlePendingParseDocumentConfirm(
-  outcome: ParseDocumentConfirmOutcome,
+function settlePendingHostedConfirm(
+  outcome: HostedConfirmOutcome,
   filter?: { token?: number; requestId?: string },
 ) {
-  const current = pendingParseDocumentConfirm.value
+  const current = pendingHostedConfirm.value
   if (!current) return
   if (filter?.token !== undefined && current.token !== filter.token) return
   if (filter?.requestId !== undefined && current.requestId !== filter.requestId) return
-  pendingParseDocumentConfirm.value = null
+  pendingHostedConfirm.value = null
   current.resolve(outcome)
 }
 
-function releasePendingParseDocumentConfirm(requestIdToCancel?: string) {
-  settlePendingParseDocumentConfirm(
+function releasePendingHostedConfirm(requestIdToCancel?: string) {
+  settlePendingHostedConfirm(
     'host_cancel',
     requestIdToCancel !== undefined ? { requestId: requestIdToCancel } : undefined,
   )
+}
+
+// Callers must check pendingHostedConfirm first: confirmations are serialized.
+function openHostedConfirm(options: {
+  requestId: string
+  title: string
+  message: string
+  testIdPrefix: string
+  kind: 'parseDocument' | 'action'
+  // When set, the dialog closes itself with 'timeout' at this time.
+  deadline?: number
+}): Promise<HostedConfirmOutcome> {
+  const token = ++hostedConfirmToken
+  return new Promise<HostedConfirmOutcome>((resolve) => {
+    const deadline = options.deadline
+    const timer = deadline === undefined
+      ? undefined
+      : window.setTimeout(() => settlePendingHostedConfirm('timeout', { token }), Math.max(0, deadline - Date.now()))
+    pendingHostedConfirm.value = {
+      requestId: options.requestId,
+      token,
+      title: options.title,
+      message: options.message,
+      testIdPrefix: options.testIdPrefix,
+      kind: options.kind,
+      accept: () => settlePendingHostedConfirm('confirm', { token }),
+      cancel: () => settlePendingHostedConfirm('user_cancel', { token }),
+      resolve: (outcome) => {
+        if (timer !== undefined) window.clearTimeout(timer)
+        resolve(outcome)
+      },
+    }
+  })
+}
+
+// Split host-only fields off a context read. `paths` holds absolute local
+// directories (they include the OS user name); the host keeps them for the
+// open-path check and never forwards them into the panel iframe.
+function splitHostOnlyContext<T>(context: T): { context: T; roots: string[] } {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return { context, roots: [] }
+  const { paths, ...panelContext } = context as Record<string, unknown>
+  const record = paths && typeof paths === 'object' ? paths as Record<string, unknown> : {}
+  const roots = [record.plugin_dir, record.plugin_dir_unresolved, record.data_dir]
+    .filter((value): value is string => typeof value === 'string' && !!value.trim())
+  return { context: panelContext as T, roots }
 }
 
 function readContextInOrder() {
@@ -236,7 +318,9 @@ function readContextInOrder() {
     const controller = new AbortController()
     contextControllers.add(controller)
     try {
-      return await getPluginHostedSurfaceContext(pluginId, params, { signal: controller.signal, suppressErrorMessage: true })
+      const split = splitHostOnlyContext(await getPluginHostedSurfaceContext(pluginId, params, { signal: controller.signal, suppressErrorMessage: true }))
+      if (componentMounted && generation === hostedRequestGeneration) openPathRoots = split.roots
+      return split.context
     } finally { contextControllers.delete(controller) }
   })
   contextQueue = task.catch(() => {})
@@ -244,7 +328,8 @@ function readContextInOrder() {
 }
 
 function abortAllHostedRequests(reason: string) {
-  releasePendingParseDocumentConfirm()
+  releasePendingHostedConfirm()
+  openPathRoots = null
   for (const controller of contextControllers) controller.abort(reason)
   contextControllers.clear()
   contextQueue = Promise.resolve()
@@ -256,6 +341,11 @@ function abortAllHostedRequests(reason: string) {
 
 const HOST_STARTUP_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600] as const
 const MAX_HOSTED_DOCUMENT_BYTES = 16 * 1024 * 1024
+const DEFAULT_HOSTED_CONFIRM_MS = 120000
+const MAX_HOSTED_CONFIRM_MS = 10 * 60 * 1000
+// Must stay in sync with the margin the panel runtime adds to its confirm request.
+const HOSTED_CONFIRM_RESPONSE_MARGIN_MS = 5000
+const MAX_HOSTED_CONFIRM_MESSAGE_CHARS = 2000
 const HOSTED_DOCUMENT_MIME_BY_EXTENSION = {
   pdf: 'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -522,8 +612,10 @@ async function loadHostedTsx() {
       document = (module as Awaited<ReturnType<typeof loadMarkdownRenderer>>).buildMarkdownDocument(response.source, title, requestLocale)
     } else {
       enterLoadPhase('context', loadId)
-      const context = await getPluginHostedSurfaceContext(pluginId, { kind: surface.kind, id: surface.id, locale: requestLocale }, requestConfig)
+      const split = splitHostOnlyContext(await getPluginHostedSurfaceContext(pluginId, { kind: surface.kind, id: surface.id, locale: requestLocale }, requestConfig))
       if (!isCurrent()) return
+      openPathRoots = split.roots
+      const context = split.context
       enterLoadPhase('render', loadId)
       document = (module as Awaited<ReturnType<typeof loadTsxRenderer>>).buildHostedTsxDocument({
         source: response.source, dependencies: response.dependencies, pluginId, surface, context, locale: requestLocale,
@@ -607,13 +699,13 @@ function handleMessage(event: MessageEvent) {
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-path') {
     const path = typeof data.payload?.path === 'string' ? data.payload.path : ''
-    if (path) openLocalPath(path).catch(() => {}) // 宿主插件发起的打开请求，失败时静默处理
+    if (path) void openHostedSurfacePath(path)
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
     if (requestId) {
-      releasePendingParseDocumentConfirm(requestId)
+      releasePendingHostedConfirm(requestId)
     }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
     hostedActionControllers.get(requestId)?.abort('client-cancelled')
@@ -628,11 +720,45 @@ function handleMessage(event: MessageEvent) {
   }
 }
 
+// Scope: the plugin's own plugin directory and data directory (and anything
+// below them), compared by whole path segments after lexical normalization.
+async function openHostedSurfacePath(rawPath: string) {
+  const generation = hostedRequestGeneration
+  let roots = openPathRoots
+  if (roots === null) {
+    // Markdown surfaces never load context, so read it on first use.
+    try {
+      await readContextInOrder()
+    } catch (caught: unknown) {
+      if (!componentMounted || generation !== hostedRequestGeneration) return
+      showHostMessage('error', t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }))
+      return
+    }
+    if (!componentMounted || generation !== hostedRequestGeneration) return
+    // readContextInOrder stored the roots for this generation.
+    roots = openPathRoots ?? []
+  }
+  const target = resolvePathWithinRoots(rawPath, roots)
+  if (!target) {
+    showHostMessage('warning', t('plugins.ui.openPathOutOfScope'))
+    return
+  }
+  try {
+    await openVerifiedLocalPath(target)
+  } catch (caught: unknown) {
+    if ((caught as { code?: unknown } | null)?.code === NO_DESKTOP_BRIDGE) {
+      showHostMessage('warning', t('plugins.ui.openPathNoBridge'))
+      return
+    }
+    showHostMessage('error', t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }))
+  }
+}
+
 async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
   const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
-  const userInitiated = (method === 'call' || method === 'parseDocument') && data.userInitiated === true
+  const userInitiated = (method === 'call' || method === 'parseDocument' || method === 'confirm') && data.userInitiated === true
   const requestGeneration = hostedRequestGeneration
   let responded = false
   const isCurrentRequest = () => componentMounted && requestGeneration === hostedRequestGeneration
@@ -738,10 +864,13 @@ async function handleHostedRequest(data: any) {
         respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
         return
       }
-      if (pendingParseDocumentConfirm.value) {
+      if (pendingHostedConfirm.value) {
         respond({
           ok: false,
-          error: 'Document parsing confirmation is already pending.',
+          // Code kept for existing parseDocument callers; only the text says why.
+          error: pendingHostedConfirm.value.kind === 'parseDocument'
+            ? 'Document parsing confirmation is already pending.'
+            : 'Another confirmation is already pending.',
           code: 'document_parse_permission_denied',
         })
         return
@@ -750,19 +879,15 @@ async function handleHostedRequest(data: any) {
       const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
       const requestDeadline = Date.now() + timeoutMs
       const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
-      const confirmToken = ++parseDocumentConfirmToken
-      const confirmMessage = t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName })
-      const confirmOutcome = await new Promise<ParseDocumentConfirmOutcome>((resolve) => {
-        pendingParseDocumentConfirm.value = {
-          requestId,
-          token: confirmToken,
-          message: confirmMessage,
-          accept: () => settlePendingParseDocumentConfirm('confirm', { token: confirmToken }),
-          cancel: () => settlePendingParseDocumentConfirm('user_cancel', { token: confirmToken }),
-          resolve,
-        }
+      const confirmOutcome = await openHostedConfirm({
+        requestId,
+        title: t('common.confirm'),
+        message: t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
+        testIdPrefix: 'parse-document-confirm',
+        kind: 'parseDocument',
       })
-      if (!isCurrentRequest() || confirmOutcome === 'host_cancel') {
+      // No dialog deadline here: the expired-deadline check below answers.
+      if (!isCurrentRequest() || confirmOutcome === 'host_cancel' || confirmOutcome === 'timeout') {
         return
       }
       if (confirmOutcome === 'user_cancel') {
@@ -798,6 +923,47 @@ async function handleHostedRequest(data: any) {
           hostedDocumentControllers.delete(requestId)
         }
       }
+      return
+    }
+    if (method === 'confirm') {
+      if (!userInitiated) {
+        respond({
+          ok: false,
+          error: 'Action confirmation must be started by a user action.',
+          code: 'action_confirm_not_user_initiated',
+        })
+        return
+      }
+      if (pendingHostedConfirm.value) {
+        respond({ ok: false, error: t('plugins.ui.actionConfirmPending'), code: 'action_confirm_pending' })
+        return
+      }
+      const rawMessage = data.payload?.message
+      const message = typeof rawMessage === 'string' && rawMessage.trim()
+        ? rawMessage.slice(0, MAX_HOSTED_CONFIRM_MESSAGE_CHARS)
+        : t('plugins.ui.actionConfirmDefault')
+      // Close the dialog a little before the panel's own request timeout so
+      // the panel receives a real answer instead of a lost response.
+      const requestedTimeoutMs = Number(data.timeoutMs)
+      const dialogMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+        ? Math.min(MAX_HOSTED_CONFIRM_MS, Math.max(1000, requestedTimeoutMs - HOSTED_CONFIRM_RESPONSE_MARGIN_MS))
+        : DEFAULT_HOSTED_CONFIRM_MS
+      const outcome = await openHostedConfirm({
+        requestId,
+        title: t('plugins.ui.actionConfirmTitle', { plugin: props.pluginId }),
+        message,
+        testIdPrefix: 'action-confirm',
+        kind: 'action',
+        deadline: Date.now() + dialogMs,
+      })
+      if (!isCurrentRequest() || outcome === 'host_cancel') return
+      if (outcome === 'timeout') {
+        const timeoutMessage = t('plugins.ui.actionConfirmTimeout')
+        showHostMessage('warning', timeoutMessage)
+        respond({ ok: false, error: timeoutMessage, code: 'action_confirm_timeout' })
+        return
+      }
+      respond({ ok: true, result: { confirmed: outcome === 'confirm' } })
       return
     }
     respond({ ok: false, error: `Unsupported hosted surface method: ${method}` })

@@ -589,6 +589,10 @@ class ServerLifecycleService:
         _lifecycle_module._operations_shutting_down = False
         from plugin.server.application.plugins import call_audit
         call_audit.reopen()
+        # Load the master switch's host setting before anything asks for it;
+        # checks only ever read the cached value.
+        from plugin.server.infrastructure.permission_switch import switch_store
+        switch_store.load()
         from plugin.core.capability_policy import startup_notices
         for notice in startup_notices():
             logger.warning("{}", notice)

@@ -12,7 +12,8 @@
         data-yui-guide-id="log-search"
         clearable
         :placeholder="$t('logs.search')"
-        @keyup.enter="refreshLogs"
+        @keydown="enterKey.down"
+        @keyup.enter="enterKey.up(refreshLogs)"
         @clear="refreshLogs"
       />
 
@@ -76,6 +77,7 @@ import { useLogSession } from '@/composables/useLogSession'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
 import { API_BASE_URL, PANEL_FILL_HEIGHT } from '@/utils/constants'
+import { useEnterKey } from '@/utils/enterKey'
 
 const props = withDefaults(defineProps<{
   pluginId: string
@@ -93,6 +95,8 @@ const viewerStyle = computed(() => ({
 const { t } = useI18n()
 const { logs, logFile, totalLines, level: levelFilter, search, lines, loading, isConnected, error, errorCode, connectionFailed, refresh: refreshLogs } = useLogSession(toRef(props, 'pluginId'))
 defineExpose({ refresh: refreshLogs, loading })
+// Enter that picks a word of an input method is not Enter that searches.
+const enterKey = useEnterKey()
 
 // 检测是否有桌面桥接（Electron 环境）
 // 只有在桌面环境中才能打开本地路径；即使后端是本地的，

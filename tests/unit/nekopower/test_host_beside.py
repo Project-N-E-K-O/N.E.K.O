@@ -447,88 +447,33 @@ async def test_the_small_model_is_asked_once_whether_it_goes_on_with_what_the_bu
     await wait_status(host, two.commission_id, "done")
 
 
-# What is read wrongly of the sentences said while the user is asked (``BESIDE_ANSWER_WORDS_MAX``), by name.
-_READ_WRONGLY = {
-    # Answers taken for new work: they say more than a yes or a no (the user then sees a new commission,
-    # with the question still open), or no yes or no at all.
-    ("self", "answers"): ["the user declines, let it wait for the busy one", "好的，就让另一只去做吧，反正它也闲着"],
-    ("independent", "answers"): [
-        "不要，我怕两个同时改会冲突", "开吧，反正修链接和改页头不相关", "用户说可以，让另一个使用魔也开起来修坏链接",
-        "别开了，等页头修完再修链接", "每次都允许，以后别再问我了", "Sounds good, open it.",
-        "Please don't, the two might overwrite each other's changes.", "Hold off until the first familiar is done.",
-        "だめ、ヘッダーの修正が終わるまで待って。", "ユーザーは常に許可すると言っています。", "別のをもう一つ開かないで。",
-        "아니요, 열지 마세요.", "좋아요, 이 세션에서는 계속 허용할게요.", "아니, 지금 하던 거 끝나고 해 줘.",
-    ],
-    # New work taken for answers: short, with little but a yes or a no beside what it asks for.
-    ("self", "new_work"): ["帮我运行一下测试", "别忘了更新 README", "好的，再帮我查一下明天的天气"],
-    ("independent", "new_work"): [],
-}
-
-
-@pytest.mark.parametrize("written_by", ["self", "independent"])
-def test_what_is_said_while_the_user_is_asked_is_read_as_measured(written_by):
-    from nekopower.host.decision import read_answer
-
-    sentences = json.loads((Path(__file__).parent / "fixtures" / "beside_answer_sentences.json").read_text("utf-8"))
-    # Asked as the sentences were written for: the broken links of the shop site, beside the one at its header.
-    question = {
-        "kind": "permission", "category": "open_beside", "options": ["always", "session", "once", "deny"],
-        "detail": {
-            "tool": "beside", "title": "fix the broken links on the shop site", "preset": "general", "tree": True,
-            "member": "Shop site/general", "project": "Shop site", "beside": "Shop site/general",
-            "beside_session": "s1", "at_hand": "redo the header",
-        },
-    }
-    waiting = types.SimpleNamespace(id="c1", status="waiting_user", question=lambda: question)
-    read = {text: read_answer(text, [waiting]) for kind in ("answers", "new_work") for text in sentences[written_by][kind]}
-
-    assert [text for text in sentences[written_by]["answers"] if read[text] is None] == _READ_WRONGLY[(written_by, "answers")]
-    assert [text for text in sentences[written_by]["new_work"] if read[text] is not None] == _READ_WRONGLY[
-        (written_by, "new_work")
-    ]
-    # What is read as an answer says which choice it is: none is an answer that was not understood.
-    assert all(answer.choice for answer in read.values() if answer is not None)
-
-
-async def test_new_work_said_while_the_user_is_asked_is_not_taken_for_an_answer_that_was_not_understood(hosts, tmp_path):
-    from nekopower.host.decision import read_answer
-
-    host, _trees, _workdir, one, scripts, _seen = await _busy(
-        hosts, tmp_path, {**_links(), "price list": ScriptedLLM([_report("prices checked")])}
+async def test_what_is_said_while_the_user_is_asked_is_read_by_the_model(hosts, tmp_path):
+    decisions = FakeDecisionLLM()
+    decisions.under_way = [{"does": "new"}]
+    host, _trees, _workdir, _one, _scripts, _seen = await _busy(
+        hosts, tmp_path, {**_links(), "price list": ScriptedLLM([_report("prices checked")])}, decision_llm=decisions
     )
     two = await _dispatch(host, APART)
     question = await _asked(host, two.commission_id)
-    waiting = await host.ledger.get(two.commission_id)
 
-    # What is asked quotes the commission: its title, its project. Sentences that share words with those and
-    # say no answer are none; one that says an answer is, with the choice it says.
-    for said in ("fix the login page too", "in the shop site, change the footer colour to blue", "what about the links"):
-        assert read_answer(said, [waiting]) is None
-    answered = read_answer("yes, go ahead with the links", [waiting])
-    assert (answered.kind, answered.targets, answered.choice) == ("answer", [two.commission_id], "once")
-    assert read_answer("no", [waiting]).choice == "deny"
-    # Read off the words that say yes or no, and no others ("agree" is none: an Agree button is new work).
-    # Put in other words, it is new work unless it is said as an answer, which is then one not understood.
-    assert read_answer("implement an Agree button in the checkout", [waiting]) is None
-    assert read_answer("the user agrees to another familiar doing it", [waiting]) is None
-    unclear = read_answer("answer: the user agrees", [waiting])
-    assert (unclear.kind, unclear.targets, unclear.choice) == ("answer", [two.commission_id], None)
-    assert read_answer("the user does not agree to that", [waiting]).choice == "deny"
-    # Any other request for approval (save the leader's, ``test_host_decision.py``) is read as it was: a word
-    # shared with what it asks makes a sentence its answer.
-    asked = json.loads(waiting.pending_question)
-    other = dataclasses.replace(
-        waiting, pending_question=json.dumps({**asked, "detail": {**asked["detail"], "tool": "write"}})
-    )
-    assert read_answer("fix the login page too", [other]).kind == "answer"
-
-    # So new work said meanwhile is handed over as new work, and what is asked still waits.
-    more = await _dispatch(host, "go through the whole price list of the shop site and round every amount")
+    # Shown the work of the project (who is on it, what is asked, with the commission it quotes), the model
+    # takes this for new work: it is handed over as such, and what is asked still waits.
+    more = await _dispatch(host, "ok, and make a price list for the bakery on the corner")
     assert more.kind not in ("unclear_answer", "answered", "ambiguous")
     assert more.commission_id not in (None, two.commission_id)
     assert (await host.ledger.get(two.commission_id)).question()["id"] == question["id"]
+    shown = decisions.under_way_calls[-1][-1]["content"]
+    assert "broken links in the footer" in shown and "REQUEST: ok, and make a price list" in shown
+    assert '"fix the header of the shop site" (project "Shop site"; by Working cat' in shown
+
+    # What it reads as the answer is that, with the choice it read: the member that is busy does it later.
+    decisions.under_way = []
+    assert (await _dispatch(host, "no")).kind == "answered"
     host.release.set()
-    await host.abort(two.commission_id)
+    await wait_status(host, two.commission_id, "done")
+    entries = [item for item in (await host.timeline(project="Shop site"))["entries"] if item["commission_id"] == two.commission_id]
+    (answered,) = [item for item in entries if item["kind"] == "answered"]
+    assert answered["detail"]["choice"] == "deny"
     await host.abort(more.commission_id)
 
 

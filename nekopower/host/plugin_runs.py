@@ -537,6 +537,15 @@ class PluginRunner:
             if not runs:
                 del self._active[commission_id]
 
+    def cancels_not_taken(self, commission_id: str) -> list[str]:
+        """Return the commission's runs still going whose cancel the plugin server has not taken.
+
+        The next ``cancel_commission`` asks for those again. (One the server
+        says is gone counts here as well, unless it was a run whose caller
+        had gone away: nothing confirmed it ended.)
+        """
+        return [run_id for run_id in self.active_runs(commission_id) if run_id not in self._cancel_sent]
+
     async def cancel_commission(self, commission_id: str, reason: str = "") -> int:
         """Cancel every run still going under a commission. Returns how many were asked."""
         run_ids = self.active_runs(commission_id)

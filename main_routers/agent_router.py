@@ -686,6 +686,86 @@ async def proxy_task_cancel(task_id: str):
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
+@router.get('/questions')
+async def proxy_questions():
+    """Return what NekoPower commissions ask the user right now, for the chat window to show.
+
+    A page that opens, or comes back after its connection was away, missed
+    the questions put meanwhile; and a task agent's own task agent is not
+    among the tasks of the HUD. Read from the agent process's
+    ``/console/questions``.
+    """
+    from config import AUTOSTART_CSRF_TOKEN
+
+    try:
+        client = _get_http_client()
+        r = await client.get(
+            f"{TOOL_SERVER_BASE}/console/questions",
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            timeout=httpx.Timeout(5.0, connect=1.0),
+        )
+        if not r.is_success:
+            return JSONResponse({"questions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return {"questions": r.json().get("questions") or []}
+    except Exception as e:
+        return JSONResponse({"questions": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/commissions/{commission_id}/answer')
+async def proxy_commission_answer(commission_id: str, payload: dict = Body(...)):
+    """Give the user's answer to a NekoPower commission that waits for one, as the console pages do.
+
+    The chat window and the task HUD are pages of this server; the route
+    that takes the answer is the agent process's
+    ``/console/commissions/{id}/answer``, which asks for the token of this
+    launch. What that route answers is passed back as it is: 409 with
+    ``detail.code`` ``not_taken`` says the question was answered, withdrawn
+    or replaced by another meanwhile. 502 says the answer never got there;
+    504 that it was sent and nothing is known of what came of it.
+    """
+    from urllib.parse import quote
+
+    from config import AUTOSTART_CSRF_TOKEN
+    from utils.internal_http_client import InternalServiceSigningError
+
+    try:
+        client = _get_http_client()
+        r = await client.post(
+            f"{TOOL_SERVER_BASE}/console/commissions/{quote(commission_id, safe='')}/answer",
+            json=payload,
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            # Taking an answer writes the ledger and may hand the task agent a sentence.
+            timeout=httpx.Timeout(10.0, connect=1.0),
+        )
+        try:
+            content = r.json()
+        except ValueError:
+            # Something else than the route answered. A refusal of the request (4xx) took
+            # nothing; anything else leaves it open whether the answer was taken.
+            unknown = not 400 <= r.status_code < 500
+            return JSONResponse(
+                {"success": False, "error": f"tool_server responded {r.status_code}"},
+                status_code=504 if unknown else 502,
+            )
+        return JSONResponse(content, status_code=r.status_code)
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.WriteError,
+        httpx.WriteTimeout,
+        httpx.LocalProtocolError,
+        InternalServiceSigningError,
+    ) as e:
+        # It never reached the agent process, or not all of it: plainly not taken, and can be given again.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+    except Exception as e:
+        # It was sent, and what came of it is not known (no answer in time, the connection
+        # broke): it may have been taken all the same. 504 has the page read how things
+        # stand before it says anything of it, and not offer to send it again meanwhile.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=504)
+
+
 @router.get('/builtin/activity')
 async def proxy_builtin_activity():
     """Which commission is using the keyboard and mouse or the browser right now; for the banner."""

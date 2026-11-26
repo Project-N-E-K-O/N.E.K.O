@@ -30,9 +30,11 @@ MEMORY = "plugin_sdk.main_agent.memory:read"
 
 @pytest.fixture
 def switch(monkeypatch):
-    def set_switch(host=False, legacy=None):
+    def set_switch(host=False, legacy=None, config=False):
+        # host: the NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED variable ("env").
         monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", host)
         monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", legacy)
+        monkeypatch.setattr(capability_policy, "_host_config_disabled", lambda: config)
 
     set_switch()
     return set_switch
@@ -61,14 +63,14 @@ def gate(monkeypatch, tmp_path):
     ("host", "legacy", "sources"),
     [
         (False, None, ()),
-        (True, None, ("host_config",)),
+        (True, None, ("env",)),
         (False, "off", ("legacy_env",)),
         (False, "observe", ("legacy_env",)),
         (False, "enforce", ()),
         (False, "bogus", ()),  # not a known value: ignored, checks stay on
         (False, "", ()),
-        (True, "enforce", ("host_config",)),  # either source switching off wins
-        (True, "off", ("host_config", "legacy_env")),
+        (True, "enforce", ("env",)),  # any source switching off wins
+        (True, "off", ("env", "legacy_env")),
     ],
 )
 def test_switch_sources(switch, host, legacy, sources):
@@ -103,7 +105,7 @@ def test_startup_notices_for_the_deprecated_variable(switch, legacy, expected):
 def test_startup_notices_do_not_contradict_each_other(switch):
     switch(host=True, legacy="enforce")
     legacy_line, switch_line = capability_policy.startup_notices()
-    assert "switches them off anyway" in legacy_line and "switched off" in switch_line
+    assert "the master switch is on anyway (source: env)" in legacy_line and "switched off" in switch_line
 
 
 def test_permission_refusal_keeps_its_audit_code():
@@ -116,7 +118,7 @@ def test_startup_notices(switch):
     assert capability_policy.startup_notices() == []
     switch(host=True)
     (notice,) = capability_policy.startup_notices()
-    assert "switched off" in notice and "host_config" in notice
+    assert "switched off" in notice and "env" in notice
 
 
 def test_settings_read_the_variables(monkeypatch):

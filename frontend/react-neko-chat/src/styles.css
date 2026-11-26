@@ -11124,6 +11124,51 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   -webkit-app-region: no-drag;
 }
 [data-theme="dark"] .compact-music-recommendation-prompt { background: #252d3d; color: #e6ebf2; }
+/* What a NekoPower commission asks, answered on the card (NekoPowerAskBlock). */
+.nekopower-ask { display: grid; gap: 8px; min-width: 0; max-width: 100%; padding: 10px 12px; border: 1px solid rgba(214, 150, 48, .55); border-radius: 12px; background: rgba(255, 250, 240, .9); color: #2a3142; font-size: 13px; line-height: 1.5; }
+.nekopower-ask-bubble { padding: 0; border: 0; background: none; font-size: 12px; }
+.nekopower-ask-answered, .nekopower-ask-closed { border-color: rgba(104, 127, 165, .25); background: rgba(104, 127, 165, .08); }
+.nekopower-ask-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12px; }
+.nekopower-ask-head strong { color: #a8690c; }
+.nekopower-ask-head span { opacity: .7; overflow-wrap: anywhere; }
+.nekopower-ask-answered .nekopower-ask-head strong, .nekopower-ask-closed .nekopower-ask-head strong { color: inherit; opacity: .7; }
+.nekopower-ask-line { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.nekopower-ask-cwd { margin: 0; font-size: .85em; opacity: .85; overflow-wrap: anywhere; }
+.nekopower-ask-bubble .nekopower-ask-line { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.nekopower-ask-bubble .nekopower-ask-line.nekopower-ask-line-whole { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.nekopower-ask-question { display: grid; gap: 6px; }
+.nekopower-ask-row, .nekopower-ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.nekopower-ask-button, .nekopower-ask-option { max-width: 100%; min-height: 28px; padding: 3px 11px; font: inherit; font-size: 12px; cursor: pointer; color: #2f68df; border: 1px solid #2f68df; border-radius: 8px; background: #fff; overflow-wrap: anywhere; }
+.nekopower-ask-option { display: grid; gap: 1px; text-align: left; border-color: rgba(104, 127, 165, .45); color: inherit; }
+.nekopower-ask-option b { color: #2f68df; font-weight: 600; }
+.nekopower-ask-option span { font-size: 11px; opacity: .7; }
+.nekopower-ask-option.is-on { border-color: #2f68df; background: rgba(47, 104, 223, .1); }
+.nekopower-ask-button.is-deny { color: #b23a3a; border-color: #b23a3a; }
+.nekopower-ask-button.is-plain { color: inherit; border-color: rgba(104, 127, 165, .45); opacity: .8; }
+.nekopower-ask-button.is-solid { color: #fff; background: #2f68df; }
+.nekopower-ask-button:disabled, .nekopower-ask-option:disabled { cursor: default; opacity: .45; }
+.nekopower-ask-button:focus-visible, .nekopower-ask-option:focus-visible, .nekopower-ask-say input:focus-visible { outline: 2px solid #2f68df; outline-offset: 1px; }
+.nekopower-ask-whole { margin: 0; padding: 8px 10px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all; font: 12px/1.55 Consolas, Menlo, monospace; border-radius: 8px; background: rgba(104, 127, 165, .14); user-select: text; }
+.nekopower-ask-hint { margin: 0; font-size: 11px; opacity: .65; }
+.nekopower-ask-say { display: flex; gap: 6px; }
+.nekopower-ask-say input { flex: 1; min-width: 0; min-height: 28px; padding: 3px 9px; font: inherit; font-size: 12px; color: inherit; border: 1px solid rgba(104, 127, 165, .45); border-radius: 8px; background: #fff; }
+.nekopower-ask-result { margin: 0; font-weight: 600; color: #1f7a3d; overflow-wrap: anywhere; }
+.nekopower-ask-result.is-gone { color: inherit; opacity: .65; font-weight: 400; }
+.nekopower-ask-notice { margin: 0; color: #a8690c; overflow-wrap: anywhere; }
+.compact-nekopower-ask-prompt { border-color: rgba(214, 150, 48, .55); }
+[data-theme="dark"] .nekopower-ask { background: rgba(70, 52, 20, .55); color: #e6ebf2; border-color: rgba(226, 164, 67, .55); }
+[data-theme="dark"] .nekopower-ask-bubble { background: none; }
+[data-theme="dark"] .nekopower-ask-answered, [data-theme="dark"] .nekopower-ask-closed { background: rgba(104, 127, 165, .16); border-color: rgba(104, 127, 165, .35); }
+[data-theme="dark"] .nekopower-ask-head strong, [data-theme="dark"] .nekopower-ask-notice { color: #e2a443; }
+[data-theme="dark"] .nekopower-ask-button, [data-theme="dark"] .nekopower-ask-option, [data-theme="dark"] .nekopower-ask-say input { background: #1f2634; }
+[data-theme="dark"] .nekopower-ask-button, [data-theme="dark"] .nekopower-ask-option b { color: #8db4ff; }
+[data-theme="dark"] .nekopower-ask-button { border-color: #8db4ff; }
+[data-theme="dark"] .nekopower-ask-button.is-deny { color: #ef8a8a; border-color: #ef8a8a; }
+[data-theme="dark"] .nekopower-ask-button.is-solid { color: #10151f; background: #8db4ff; }
+[data-theme="dark"] .nekopower-ask-button.is-plain { color: inherit; border-color: rgba(160, 176, 204, .45); }
+[data-theme="dark"] .nekopower-ask-result { color: #6fcf8d; }
+[data-theme="dark"] .nekopower-ask-result.is-gone { color: inherit; }
+
 
 .proactive-recommendation {
   --recommendation-text: #344b5d;

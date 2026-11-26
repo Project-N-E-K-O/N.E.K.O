@@ -248,6 +248,28 @@ describe('a familiar up close', () => {
     expect(api.tellCommission).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not pass a sentence on at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const working = card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } })
+    await show([working])
+    api.tellCommission.mockResolvedValue({ success: true })
+    await type('familiar-say', '用 openpyxl')
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.tellCommission).not.toHaveBeenCalled()
+    expect(field('familiar-say').value).toBe('用 openpyxl')
+    // Enter once more, with no word left to pick: now it is passed on.
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+    expect(api.tellCommission).toHaveBeenCalledWith('c1', '用 openpyxl')
+  })
+
   it('shows a question with its choices and answers it by the one that was pressed', async () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask: {
       id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: 'pip install openpyxl' }, options: ['always', 'session', 'once', 'deny'],
@@ -261,6 +283,27 @@ describe('a familiar up close', () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await click(byTest('familiar-ask')?.querySelector('[data-choice="once"]'))
     expect(api.answerCommission).toHaveBeenCalledWith('c1', { choice: 'once', text: undefined, question_id: 'q1' })
+  })
+
+  it('says that a sentence added to an answer was not taken with the familiar that was answered, and no other', async () => {
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'pip install openpyxl' }, options: ['once', 'deny'] }
+    const waits = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask } })
+    const other = card({ id: 's2', name: 'Look it up', kind: 'child', preset: 'scout', leader: false, parent: 's1', title: '' })
+    const { state } = await show([waits, other])
+    let taken = (_: unknown) => {}
+    api.answerCommission.mockReturnValue(new Promise(resolve => { taken = resolve }))
+    await click(byTest('familiar-ask')?.querySelector('[data-choice="deny"]'))
+    // Another familiar is chosen before the answer is back.
+    state.props = { ...state.props, selectedId: 's2' }
+    await flush()
+    api.getProjectBoard.mockResolvedValue(boardOf([card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } }), other], 'r2'))
+    taken({ success: true, note_taken: false })
+    await flush()
+    expect(byTest('familiar-answer-note')).toBeNull()
+    // Back with the one that was answered: said there, in whichever view.
+    state.props = { ...state.props, selectedId: 's1' }
+    await flush()
+    expect(byTest('familiar-answer-note')?.textContent).toBe(words.ask.noteLost)
   })
 
   it('answers a question put in words with what the user typed', async () => {
@@ -282,8 +325,10 @@ describe('a familiar up close', () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Book the train', status: 'waiting_user', started_at: 0, ask: { id: 'q3', kind: 'questions', questions } } })
     const { container } = await show([asking])
     const lines = [...container.querySelectorAll('[data-testid="familiar-asked"]')].map(line => line.textContent)
-    expect(lines).toEqual(['1. Which day? (Friday / Saturday)', '2. Window seat?'])
-    // Answered in words, like a question that is one.
+    expect(lines).toEqual(['1. Which day?', '2. Window seat?'])
+    // What it offers is there to press, said once: not printed into the question as well.
+    expect([...container.querySelectorAll('[data-option]')].map(option => option.getAttribute('data-option'))).toEqual(['Friday', 'Saturday'])
+    // And it can be answered in words, like a question that is one.
     expect(byTest('familiar-reply')).toBeTruthy()
   })
 

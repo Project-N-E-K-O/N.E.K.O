@@ -1411,6 +1411,86 @@
         return icon;
     }
 
+    // ── 喵能力问话角标 ──────────
+    // React 根组件上报「有没有问话在等回话」（onNekoPowerAskWaitingChange，按屏幕上看得见的消息算，
+    // 与紧凑窗输入框上方浮出的问话卡同一个判断）。聊天窗缩成小球后问话卡跟着紧凑界面一起不见了，
+    // 这里只给小球挂一个角标、悬停时说明一句；不自动展开（会打断用户正在做的事）。
+    // 角标不接指针事件：点击、拖动仍然落在小球上。桌面壳另开窗口画的小球据下面派发的
+    // react-chat-window:nekopower-ask-waiting-change 事件自己画。
+    I.nekoPowerAskWaiting = false;
+    var NEKOPOWER_ASK_BADGE_CLASS = 'react-chat-minimized-ask-badge';
+    // 本模块给小球加的悬停说明：只在小球态、有问话在等时挂上，别的时候拿掉。挂上前手柄上
+    // 若已有别人的说明，先记着，拿掉时还原（null 表示原来没有）。
+    var nekoPowerAskBadgeTooltipShown = false;
+    var nekoPowerAskBadgeReplacedTooltip = null;
+
+    function nekoPowerAskWaitingLabel() {
+        return I.getI18nText('chat.nekoPowerAskWaitingBadge', '喵能力在等你回话');
+    }
+
+    function ensureNekoPowerAskBadge(shell) {
+        var badge = shell.querySelector('.' + NEKOPOWER_ASK_BADGE_CLASS);
+        if (badge) return badge;
+        badge = document.createElement('span');
+        badge.className = NEKOPOWER_ASK_BADGE_CLASS;
+        badge.setAttribute('aria-hidden', 'true');
+        var handle = I.getHeader();
+        (handle || shell).appendChild(badge);
+        return badge;
+    }
+
+    I.syncNekoPowerAskBadge = function syncNekoPowerAskBadge() {
+        var shell = I.getShell();
+        if (!shell) return;
+        var waiting = !!I.nekoPowerAskWaiting;
+        if (waiting) {
+            ensureNekoPowerAskBadge(shell);
+            shell.setAttribute('data-nekopower-ask-waiting', 'true');
+        } else {
+            shell.removeAttribute('data-nekopower-ask-waiting');
+        }
+        var handle = I.getHeader();
+        if (!handle) return;
+        if (waiting && I.minimized) {
+            if (!nekoPowerAskBadgeTooltipShown) {
+                nekoPowerAskBadgeReplacedTooltip = handle.getAttribute('data-neko-tooltip');
+            }
+            handle.setAttribute('data-neko-tooltip', nekoPowerAskWaitingLabel());
+            nekoPowerAskBadgeTooltipShown = true;
+        } else if (nekoPowerAskBadgeTooltipShown) {
+            if (nekoPowerAskBadgeReplacedTooltip === null) handle.removeAttribute('data-neko-tooltip');
+            else handle.setAttribute('data-neko-tooltip', nekoPowerAskBadgeReplacedTooltip);
+            nekoPowerAskBadgeTooltipShown = false;
+            nekoPowerAskBadgeReplacedTooltip = null;
+        }
+    };
+
+    function tellNekoPowerAskWaiting() {
+        var waiting = !!I.nekoPowerAskWaiting;
+        I.dispatchHostEvent('nekopower-ask-waiting-change', {
+            waiting: waiting,
+            label: waiting ? nekoPowerAskWaitingLabel() : ''
+        });
+    }
+
+    // 作为 React 的宿主回调（z.function 校验返回值为 void），不能有返回值。
+    I.handleNekoPowerAskWaitingChange = function handleNekoPowerAskWaitingChange(waiting) {
+        var next = waiting === true;
+        var changed = next !== I.nekoPowerAskWaiting;
+        I.nekoPowerAskWaiting = next;
+        I.syncNekoPowerAskBadge();
+        if (!changed) return;
+        tellNekoPowerAskWaiting();
+    };
+
+    // 换了界面语言：React 那边「有没有问话在等」没变就不会再报，悬停说明和给桌面壳的那句话
+    // 在这里按新语言重来一遍（事件照样叫 waiting-change，waiting 不变、label 换成新语言）。
+    window.addEventListener('localechange', function () {
+        if (!I.nekoPowerAskWaiting) return;
+        I.syncNekoPowerAskBadge();
+        tellNekoPowerAskWaiting();
+    });
+
     I.setCompactChatState = function setCompactChatState(nextCompactChatState) {
         var normalized = I.normalizeCompactChatState(nextCompactChatState);
         if (normalized === 'input' && (I.state.homeTutorialInputLocked || I.isHomeTutorialInteractionLocked())) {
@@ -2191,6 +2271,7 @@
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
             shell.setAttribute('data-compact-chat-state', I.getCurrentCompactChatState());
         }
+        I.syncNekoPowerAskBadge();
         I.scheduleCompactMinimizeBallTracking();
     }
 
