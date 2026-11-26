@@ -695,8 +695,14 @@ async function openHostedSurfacePath(rawPath: string) {
     // Markdown surfaces never load context, so read it on first use.
     try {
       roots = readOpenPathRoots(await readContextInOrder())
-    } catch {
-      roots = []
+    } catch (caught: unknown) {
+      if (!componentMounted || generation !== hostedRequestGeneration) return
+      ElMessage({
+        type: 'error',
+        message: t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }),
+        grouping: true,
+      })
+      return
     }
     if (!componentMounted || generation !== hostedRequestGeneration) return
   }

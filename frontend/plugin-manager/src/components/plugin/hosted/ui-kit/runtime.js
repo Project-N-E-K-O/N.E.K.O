@@ -1854,14 +1854,19 @@ function ActionForm(props) {
       const userInitiated = __hostedUserActionDepth > 0;
       const confirmMessage = action.confirm || props.confirm;
       if (confirmMessage) {
+        // Disable submit while the host dialog is open so a second submit
+        // does not collide with the pending confirmation.
+        setLoading(true);
         let confirmed = false;
         try {
           confirmed = await confirmHostedAction(confirmMessage, userInitiated);
         } catch (error) {
           setFormError(formatErrorMessage(error));
+        }
+        if (!confirmed) {
+          setLoading(false);
           return;
         }
-        if (!confirmed) return;
       }
       try {
         setLoading(true);
@@ -2096,6 +2101,8 @@ function ActionButton(props) {
         const userInitiated = !!event && event.isTrusted !== false;
         const confirmMessage = props.confirm || action.confirm;
         if (confirmMessage) {
+          // Disabled while the host dialog is open; the finally below re-enables.
+          setLoading(true);
           let confirmed = false;
           try {
             confirmed = await confirmHostedAction(confirmMessage, userInitiated);

@@ -413,6 +413,26 @@ describe('hosted ui runtime', () => {
       expect(root.querySelector('[role="alert"]')).toBeNull()
     })
 
+    it('disables the button while the host dialog is open', async () => {
+      let answer!: () => void
+      const messages = installHost((message) => {
+        answer = () => window.dispatchEvent(new MessageEvent('message', {
+          data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: { confirmed: false } },
+        }))
+        return null
+      })
+      ui.render(ui.h(ui.ActionButton, { actionId: 'save', confirm: true }), root)
+      fireEvent.click(root.querySelector('button')!)
+      await flushMicrotasks()
+      expect(root.querySelector('button')!.disabled).toBe(true)
+      fireEvent.click(root.querySelector('button')!)
+      expect(requests(messages, 'confirm')).toHaveLength(1)
+      answer()
+      await flushMicrotasks()
+      await flushMicrotasks()
+      expect(root.querySelector('button')!.disabled).toBe(false)
+    })
+
     it('does not run and shows an error when the host never answers', async () => {
       vi.useFakeTimers()
       try {

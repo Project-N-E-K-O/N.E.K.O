@@ -1698,7 +1698,7 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     await flushPromises()
 
     expect(nekoOpenPath).not.toHaveBeenCalled()
-    expect(lastMessageCall()).toMatchObject({ message: 'plugins.ui.openPathOutOfScope' })
+    expect(lastMessageCall()).toMatchObject({ type: 'error', message: 'plugins.ui.openPathFailed' })
   })
 
   it('ignores open-path messages from another window', async () => {
