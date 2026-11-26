@@ -154,7 +154,7 @@ async def _route_context(target: str) -> dict:
     manager = get_session_manager().get(target) if target else None
     core_type = str(getattr(manager, "core_api_type", "") or "").strip().lower()
     if not core_type:
-        core_config = get_config_manager().get_core_config() or {}
+        core_config = await get_config_manager().aget_core_config() or {}
         core_type = str(core_config.get("CORE_API_TYPE") or "").strip().lower()
     try:
         settings = await aload_global_conversation_settings()

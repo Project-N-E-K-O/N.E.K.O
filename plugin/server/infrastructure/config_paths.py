@@ -16,7 +16,11 @@ from plugin.settings import PLUGIN_CONFIG_ROOTS
 logger = get_logger("server.infrastructure.config_paths")
 
 
-def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
+def _registered_plugin_config_candidates(plugin_id: str) -> tuple[object, ...]:
+    """The config paths the registry holds for ``plugin_id``, unresolved.
+
+    Raises ``TimeoutError`` when the registry is busy.
+    """
     candidates: list[object] = []
 
     with state.acquire_plugins_read_lock():
@@ -30,6 +34,14 @@ def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
         host = state.plugin_hosts.get(plugin_id)
         if host is not None:
             candidates.append(getattr(host, "config_path", None))
+    return tuple(candidates)
+
+
+def _resolve_registered_plugin_config_path(
+    plugin_id: str, candidates: tuple[object, ...] | None = None
+) -> Path | None:
+    if candidates is None:
+        candidates = _registered_plugin_config_candidates(plugin_id)
 
     for candidate in candidates:
         if candidate is None:

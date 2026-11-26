@@ -226,7 +226,7 @@ def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def _normalise_path_for_compare(p: Path) -> tuple[str, Path]:
+def _normalise_path_for_compare(p: Path, *, already_resolved: bool = False) -> tuple[str, Path]:
     """Normalise a path for cross-platform prefix comparison.
 
     Returns ``(comparable_str, original_resolved_path)`` — the str form is
@@ -238,7 +238,9 @@ def _normalise_path_for_compare(p: Path) -> tuple[str, Path]:
     so callers can still pull ``.parts`` from it for the final directory name.
     """
 
-    resolved = p.resolve(strict=False)
+    # already_resolved: the caller resolved ``p`` itself and needs this very
+    # location, not wherever its links point by now.
+    resolved = p if already_resolved else p.resolve(strict=False)
     text = str(resolved)
     # Unicode: macOS APFS/HFS+ uses NFD internally; Windows and Linux see
     # whatever the user typed. Normalising to NFC picks a canonical form
@@ -257,6 +259,7 @@ def classify_plugin_path(
     *,
     builtin_root: Path,
     user_root: Path,
+    already_resolved: bool = False,
 ) -> tuple[RootId, str]:
     """Reverse-map a plugin directory path to ``(root_id, directory_name)``.
 
@@ -272,9 +275,12 @@ def classify_plugin_path(
     On no-match, raises :class:`InstallSourceError` with code
     ``"PATH_OUTSIDE_ROOTS"``. Callers typically bubble this up as an
     ``install_source_warning`` rather than fatal failure.
+
+    ``already_resolved``: ``p`` is an absolute path the caller resolved
+    itself; it is classified as given (the roots are still resolved).
     """
 
-    p_key, p_resolved = _normalise_path_for_compare(p)
+    p_key, p_resolved = _normalise_path_for_compare(p, already_resolved=already_resolved)
     b_key, b_resolved = _normalise_path_for_compare(builtin_root)
     u_key, u_resolved = _normalise_path_for_compare(user_root)
     sep = os.sep
@@ -2193,19 +2199,24 @@ class InstallSourceManager:
         directory_path: Path,
         *,
         include_removed: bool = False,
+        snapshot: LockFile | None = None,
+        path_resolved: bool = False,
     ) -> LockEntry | None:
         """Return the install-source entry identified by its full path key.
 
         ``directory_name`` is only unique within a plugin root, so callers
         which must reason about ownership should use this method instead of
-        matching entry names themselves.
+        matching entry names themselves. ``snapshot`` (from :meth:`snapshot`)
+        reads that snapshot instead of the current one. ``path_resolved``:
+        ``directory_path`` is already resolved and is classified as given.
         """
         root_id, directory_name = classify_plugin_path(
             directory_path,
             builtin_root=self.builtin_root,
             user_root=self.user_root,
+            already_resolved=path_resolved,
         )
-        entry = self._find_entry(self._current, root_id, directory_name)
+        entry = self._find_entry(self._current if snapshot is None else snapshot, root_id, directory_name)
         if entry is None or (entry.removed and not include_removed):
             return None
         return entry
@@ -2367,16 +2378,17 @@ class InstallSourceManager:
         self,
         *,
         include_removed: bool = False,
+        snapshot: LockFile | None = None,
     ) -> list[LockEntry]:
         """Return a snapshot of entries, optionally including soft-deleted ones.
 
         Reads ``self._current`` without the lock: writers publish new
         :class:`LockFile` snapshots via a single attribute assignment, so
         each reader sees either the pre-publish or post-publish state in
-        full — never a torn intermediate.
+        full — never a torn intermediate. ``snapshot`` reads that one instead.
         """
 
-        snapshot = self._current
+        snapshot = self._current if snapshot is None else snapshot
         if include_removed:
             return list(snapshot.entries)
         return [e for e in snapshot.entries if not e.removed]

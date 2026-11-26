@@ -261,6 +261,9 @@ async def test_route_context_uses_the_character_session(monkeypatch) -> None:
 
     class _Config:
         def get_core_config(self) -> dict[str, Any]:
+            raise AssertionError("must not read core_config.json on the event loop")
+
+        async def aget_core_config(self) -> dict[str, Any]:
             return {"CORE_API_TYPE": "qwen"}
 
     monkeypatch.setattr(router_module, "get_config_manager", lambda: _Config())
