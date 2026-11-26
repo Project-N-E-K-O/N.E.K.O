@@ -1032,16 +1032,19 @@ class PluginContext:
                         ),
                     )
                 return False
+            effective_uncertain = uncertain or bool(
+                getattr(self, "_effective_config_uncertain", False)
+            )
             self._rejected_host_rollback = None
             self._bump_effective_config_gen()
             if had_cached and isinstance(old_config, dict):
                 self._record_effective_config_locked(
                     copy.deepcopy(old_config),
-                    uncertain=uncertain,
+                    uncertain=effective_uncertain,
                 )
                 should_flush = True
             else:
-                self._record_effective_config_locked(None, uncertain=uncertain)
+                self._record_effective_config_locked(None, uncertain=effective_uncertain)
                 if isinstance(fallback_notify_config, dict):
                     seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
                     self._effective_config_fallback_notify = (
@@ -2634,9 +2637,9 @@ class PluginContext:
             )
             self._bump_effective_config_gen()
             self._effective_config_uncertain = True
-            self._rejected_host_rollback = None
-            new_token = self._allocate_owner_token_locked()
             if owns_current_draft:
+                self._rejected_host_rollback = None
+                new_token = self._allocate_owner_token_locked()
                 self._bind_pending_host_guard_locked(
                     new_token=new_token,
                     source_token=old_owner_token,

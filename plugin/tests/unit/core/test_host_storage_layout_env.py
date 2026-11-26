@@ -2934,3 +2934,86 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert not getattr(ctx_sup, "_owner_token_host_change_root", {})
 
     asyncio.run(_case_uncertain_writes_preserve_host_guard_while_draft_current())
+
+    # 15. Superseded optimistic write timing out inside host replace config_change
+    #     must not steal host owner token for reads or host rollback.
+    async def _case_superseded_stale_write_timeout_preserves_host_ownership(
+        *,
+        raises_in_cb: bool,
+    ) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_stale_timeout_rb_{raises_in_cb}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        rpc_started = asyncio.Event()
+        release_rpc = asyncio.Event()
+
+        async def _disk_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        async def _slow_timeout_rpc(**_kwargs: object) -> dict[str, object]:
+            rpc_started.set()
+            await release_rpc.wait()
+            raise TimeoutError("stale write timed out")
+
+        ctx._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _slow_timeout_rpc  # type: ignore[method-assign]
+
+        write_task = asyncio.create_task(ctx.update_own_config({"draft": 1}))
+        try:
+            await _wait_for_checkpoint_or_task_failure(rpc_started, write_task)
+
+            async def _config_change(**_kwargs: object) -> None:
+                release_rpc.set()
+                res = await write_task
+                assert res["persisted"] is None
+                loaded = await ctx.get_own_effective_config(None)
+                assert loaded["config"] == {"base": 1}
+                assert ctx._effective_config == {"host": 9}
+                assert instance.refreshed[-1] == {"host": 9}
+                assert ctx._effective_config_uncertain is True
+                if raises_in_cb:
+                    raise RuntimeError("host update rejected after stale timeout")
+
+            sender = _FakeResponseSender()
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-stale-to-{raises_in_cb}",
+                    "config": {"host": 9},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _config_change}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+            assert sender.payloads[-1]["success"] is (not raises_in_cb)
+            expected_cfg = {"base": 1, "draft": 1} if raises_in_cb else {"host": 9}
+            assert ctx._effective_config == expected_cfg
+            assert instance.refreshed[-1] == expected_cfg
+            assert ctx._effective_config_uncertain is True
+            assert ctx._host_config_change_pending == 0
+            assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
+            assert not getattr(ctx, "_owner_token_host_change_root", {})
+
+            post_loaded = await ctx.get_own_effective_config(None)
+            assert post_loaded["config"] == {"base": 1}
+            assert ctx._effective_config == {"base": 1}
+            assert ctx._effective_config_uncertain is False
+            assert instance.refreshed[-1] == {"base": 1}
+        finally:
+            release_rpc.set()
+            if not write_task.done():
+                write_task.cancel()
+            await asyncio.gather(write_task, return_exceptions=True)
+
+    asyncio.run(_case_superseded_stale_write_timeout_preserves_host_ownership(raises_in_cb=False))
+    asyncio.run(_case_superseded_stale_write_timeout_preserves_host_ownership(raises_in_cb=True))
