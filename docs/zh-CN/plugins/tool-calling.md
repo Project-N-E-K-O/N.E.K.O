@@ -116,7 +116,18 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 :::
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
-（仅允许 `127.0.0.1` / `::1` / `localhost`）。
+（仅允许本机回环 `127.0.0.1` / `::1` / `localhost`；启用 `NEKO_BEHIND_PROXY` 时，
+调用方必须通过本机回环直连且不附加 `X-Forwarded`、`X-Forwarded-*`、`X-Real-IP`
+或 `Forwarded` 转发头——未携带有效实例凭据的请求会先被实例认证中间件以 HTTP `401`
+拒绝，通过实例认证后仍携带转发头的请求则会被 `verify_local_access` 以 HTTP `403`
+拒绝）。启用
+`NEKO_BEHIND_PROXY` 或 `NEKO_ACTIVITY_TRACKER_REMOTE` 时，本机回环外部调用方同样
+需要携带有效的实例凭据（例如来自 `NEKO_INSTANCE_ACCESS_KEY` 或 `instance_access.key`
+的 `Authorization: Bearer <instance_key>`），否则请求会返回 HTTP `401`。如果同时启用了
+`NEKO_REQUIRE_HTTPS`，即使密钥有效，明文 `http://` 请求也会被 HTTP `401` 拒绝，必须通过
+HTTPS 连接——仅当同时启用 `NEKO_BEHIND_PROXY`、外层网关终止 TLS 且私有 HTTP 上游不对
+不可信客户端暴露时，才允许 `Host` 匹配 `https://` 的 `NEKO_INSTANCE_PUBLIC_ORIGIN`
+（仍需本机回环直连且不携带转发头）。
 
 ### `POST /api/tools/register`
 
@@ -231,14 +242,20 @@ HTTP 注册的外部集成才需要自己起 server 接收。
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
+# 须本机回环直连且不得携带 X-Forwarded-*/X-Real-IP/Forwarded 头；启用 NEKO_REQUIRE_HTTPS 时
+# 请改用 HTTPS 入口（明文 http:// 仅在启用 NEKO_BEHIND_PROXY、外层终止 TLS、私有上游不对外暴露且 Host 匹配 https:// NEKO_INSTANCE_PUBLIC_ORIGIN 时被接受）
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# 仅当启用 NEKO_BEHIND_PROXY 或 NEKO_ACTIVITY_TRACKER_REMOTE 时需要
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
-    """启动时调用：等 main_server 起来后注册工具，最多无限重试。"""
+    """启动时调用：等 main_server 起来后注册工具，遇到凭据拒绝则记日志并停止。"""
     payload = {
         "name": TOOL_NAME,
         "description": "查询指定城市的天气",
@@ -252,25 +269,43 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
-    async with httpx.AsyncClient() as client:
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server 还没起，等等再来
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """退出前调用：撤销工具，避免 LLM 撞到死掉的 callback_url。"""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return True
     except Exception:
-        pass  # main_server 也死了就算了
+        return False  # main_server 也死了就算了
 ```
 
 不要把它接到 `NekoPluginBase` 插件里。生命周期方法只有加了 `@lifecycle(id=...)`

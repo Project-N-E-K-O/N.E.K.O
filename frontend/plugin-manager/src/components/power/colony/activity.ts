@@ -13,6 +13,8 @@ import type { SceneStanding, TimelineEntry } from '@/api/console'
 export type CatLook =
   | 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
   | 'landing' | 'resolving' | 'held' | 'unlanded'
+  // Not there yet: the one that would be opened beside a busy one, should the user say so.
+  | 'unborn'
 
 export interface SceneCat {
   look: CatLook
@@ -54,10 +56,11 @@ function atRest(cats: Map<string, SceneCat>, entry: TimelineEntry) {
  * Return how each session stood once the entries up to `index` had happened.
  *
  * A session that no entry up to there names is not in the answer: whoever
- * draws it decides whether it was there already. What was asked through a
- * tool is not recorded as answered; the commission going on (`started`)
- * says that it was. A session is at one commission at a time: another that
- * waits for its turn in it, or is called off there, leaves it as it stands.
+ * draws it decides whether it was there already. One that asked the user
+ * is at work again once it is answered (`answered`), or goes on (`started`).
+ * A session is at one commission at a time: another that waits for its turn
+ * in it, is asked about there (whether another familiar is to do it beside
+ * it), or is called off there, leaves it as it stands.
  */
 export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStanding[] = []): Map<string, SceneCat> {
   const cats = new Map<string, SceneCat>()
@@ -82,7 +85,8 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
         put(cats, id, 'working')
         if (id) atWork.set(id, entry.commission_id)
         break
-      case 'asked_user': put(cats, id, 'waiting_user'); break
+      // Of one at another commission, what waits for it is asked about: it is still at its own.
+      case 'asked_user': put(cats, id, busyWithAnother(entry) ? undefined : 'waiting_user'); break
       // Answered: at work again (what a tool asked is answered so; a report's answer is followed by `started`).
       case 'answered': {
         const cat = busyWithAnother(entry) ? null : put(cats, id)

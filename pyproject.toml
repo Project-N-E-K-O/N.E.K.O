@@ -221,6 +221,7 @@ exclude = [
 # pyncm-async 已从 PyPI 下架（连同上游 pyncm 与 GitHub 仓库），改为本地 wheel 安装。
 # music plugin 已对该依赖做了 try/except 防御（main_routers/music_router.py），
 # 但 deps/*.whl 本地存档可保证 uv lock/sync 在无网/CI 环境下仍可复现。
+# 来源、Apache-2.0 许可证及 SHA-256 校验清单见 deps/README.md 与 deps/SHA256SUMS。
 [tool.uv.sources]
 pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 rapidocr-pillow = { path = "./deps/rapidocr_pillow" }

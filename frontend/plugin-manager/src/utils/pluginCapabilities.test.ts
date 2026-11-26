@@ -113,6 +113,16 @@ describe('permission findings of an analysis', () => {
     expect(analysisFoundNothing(report)).toBe(false)
   })
 
+  it('does not report nothing found when parts were not analyzed', () => {
+    const report = analysis({
+      blind_spots: [],
+      not_analyzed: [{ type: 'not_analyzed', file: 'ui/panel.vue', line: null, reason: 'non_python' }],
+    })
+    expect(blindSpots(report)).toEqual([])
+    expect(analysisFoundNothing(report)).toBe(false)
+    expect(analysisFoundNothing(analysis({ blind_spots: [], not_analyzed: [] }))).toBe(true)
+  })
+
   it('leaves permissions already listed under their earlier capability name to that list', () => {
     const report = analysis({
       capabilities: ['memory.read'],

@@ -393,10 +393,11 @@ async def _request_memory_server_shutdown() -> None:
     """Request memory_server shutdown after main_server has finished its own cleanup."""
     try:
         from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
 
         shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-        async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
-            response = await client.post(shutdown_url)
+        client = get_internal_http_client()
+        response = await client.post(shutdown_url, timeout=1.0)
         if response.status_code == 200:
             logger.info("已向memory_server发送关闭信号")
         else:

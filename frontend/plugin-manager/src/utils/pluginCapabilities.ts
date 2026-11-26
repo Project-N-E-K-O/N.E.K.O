@@ -115,7 +115,8 @@ export function blindSpotLocation(spot: AnalysisBlindSpot): string | null {
 
 /**
  * "Nothing found" is only true for a finished analysis that saw every file
- * and found no capability, no permission and no blind spot.
+ * and found no capability, no permission and no blind spot. Unread parts are
+ * listed in `not_analyzed` (older servers listed them as blind spots).
  */
 export function analysisFoundNothing(analysis: CapabilityAnalysis | null | undefined): boolean {
   return Boolean(
@@ -124,7 +125,8 @@ export function analysisFoundNothing(analysis: CapabilityAnalysis | null | undef
       && analysis.permissions
       && !analysis.capabilities.length
       && !usedPermissions(analysis).length
-      && !blindSpots(analysis).length,
+      && !blindSpots(analysis).length
+      && !(Array.isArray(analysis.not_analyzed) && analysis.not_analyzed.length),
   )
 }
 

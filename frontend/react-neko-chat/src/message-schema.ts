@@ -252,6 +252,14 @@ const proactiveRecommendationBlockSchema = z.object({
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
+  // A sent voice message. The recording itself is not stored; audioUrl is an
+  // optional same-session object URL for playback.
+  z.object({
+    type: z.literal('audio_message'),
+    durationMs: z.number().int().nonnegative(),
+    transcript: z.string().optional(),
+    audioUrl: z.string().optional(),
+  }),
   imageBlockSchema,
   linkBlockSchema,
   statusBlockSchema,
@@ -302,6 +310,14 @@ export const chatWindowPropsSchema = z.object({
   messages: z.array(chatMessageSchema).optional(),
   userName: z.string().trim().min(1).optional(),
   assistantName: z.string().trim().min(1).optional(),
+  audioMessageTarget: z.string().optional(),
+  // 宿主返回发送 Promise。zod 4 的同步包装器遇到 z.promise 输出会抛 async 错误，这里只同步检查 thenable。
+  onComposerAudioMessage: hostCallback([z.object({
+    requestId: z.string(), target: z.string(), audio: z.string(), sampleRateHz: z.number(),
+  })], z.custom<Promise<unknown>>(value => typeof (value as PromiseLike<unknown> | null)?.then === 'function')).optional(),
+  // 录音、试听或发送中为 true。迷你窗折叠后录音控件会卸载但草稿仍在，宿主据此判断，不能看 DOM。
+  // 第二个参数是阶段（starting / recording / preview / sending / idle）：宿主据此只停掉占用麦克风的录音。
+  onAudioMessageActiveChange: hostCallback([z.boolean(), z.string()]).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

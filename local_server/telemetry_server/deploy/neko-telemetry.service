@@ -26,8 +26,9 @@ Group=nogroup
 WorkingDirectory=/opt/neko-telemetry
 ExecStart=/usr/bin/python3 server.py --port 8099
 
-# ★ 必须修改：管理端鉴权 token
-Environment=TELEMETRY_ADMIN_TOKEN=changeme
+# ★ 启用管理端（查询/导出）请取消注释并改成强随机 token。默认不设：
+# require_admin 在 token 为空或占位值时返回 503，admin API 全程禁用。
+# Environment=TELEMETRY_ADMIN_TOKEN=changeme
 
 # 数据目录（默认 ./data/）
 Environment=TELEMETRY_DB_PATH=/opt/neko-telemetry/data/telemetry.db

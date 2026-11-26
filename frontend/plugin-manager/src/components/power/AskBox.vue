@@ -1,6 +1,6 @@
 <template>
   <div class="ask" data-testid="familiar-ask">
-    <strong>{{ t('power.space.familiars.asks') }}</strong>
+    <strong>{{ beside ? t('power.ask.beside.heading') : t('power.space.familiars.asks') }}</strong>
     <p v-for="(line, index) in lines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
     <el-alert v-if="warning" :title="warning" type="warning" :closable="false" show-icon class="warning" data-testid="ask-warning" />
 
@@ -13,20 +13,21 @@
       <pre ref="wholeText" class="whole" data-testid="ask-whole" tabindex="0">{{ whole.text }}</pre>
     </template>
     <dl v-if="facts.length" class="facts" data-testid="ask-facts">
-      <div v-for="fact in facts" :key="fact.name"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div>
+      <div v-for="fact in facts" :key="fact.name" :data-fact="fact.name"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div>
     </dl>
+    <p v-if="hint" class="muted hint" data-testid="ask-hint">{{ hint }}</p>
 
     <div v-if="ask.options?.length" class="choices">
       <el-button
         v-for="option in ask.options"
         :key="option"
-        :type="option === 'deny' ? 'danger' : 'primary'"
+        :type="option !== 'deny' ? 'primary' : beside ? 'info' : 'danger'"
         plain
         :loading="busy === `choice:${option}`"
         :disabled="busy !== ''"
         :data-choice="option"
         @click="emit('answer', { choice: option })"
-      >{{ choiceLabel(option) }}</el-button>
+      >{{ choiceLabel(ask, option, t, te) }}</el-button>
     </div>
     <div v-else class="say">
       <el-input v-model="reply" :placeholder="t('power.space.familiars.answerPlaceholder')" data-testid="familiar-reply" @keyup.enter="send" />
@@ -41,7 +42,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
-import { askFacts, askLines, askWarning, askWhole } from './ask'
+import { askFacts, askLines, askWarning, askWhole, besideHint, choiceLabel, isBeside } from './ask'
 
 /**
  * What a familiar asks the user while it waits, with what it would do shown
@@ -58,11 +59,9 @@ const lines = computed(() => askLines(props.ask, t, te))
 const whole = computed(() => askWhole(props.ask))
 const facts = computed(() => askFacts(props.ask, t, te))
 const warning = computed(() => askWarning(props.ask, t))
-
-function choiceLabel(option: string): string {
-  const key = `power.space.familiars.choices.${option}`
-  return te(key) ? t(key) : option
-}
+// Whether another familiar is to do what waits for a busy one: refusing it is no danger, it only waits.
+const beside = computed(() => isBeside(props.ask))
+const hint = computed(() => besideHint(props.ask, t, te))
 function send() {
   // Enter sends no more than the button would: nothing while an answer is on its way.
   if (props.busy !== '' || !reply.value.trim()) return
@@ -104,6 +103,7 @@ defineExpose({ clear: () => { reply.value = '' } })
 .facts div { display: flex; gap: 8px; }
 .facts dt { flex: none; color: var(--el-text-color-secondary); }
 .facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
+.hint { margin: 0 0 8px; line-height: 1.6; }
 .choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .say { display: flex; gap: 8px; margin-top: 8px; }
 </style>

@@ -59,7 +59,7 @@ def create_qq_connection(
         )
 
     return OneBotClient(
-        onebot_url=str(settings.get("onebot_url") or "ws://0.0.0.0:6199"),
+        onebot_url=str(settings.get("onebot_url") or "ws://127.0.0.1:6199"),
         token=str(settings.get("token") or ""),
         logger=logger,
         emit_log=emit_log,

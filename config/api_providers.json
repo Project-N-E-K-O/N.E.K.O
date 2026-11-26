@@ -85,7 +85,7 @@
       "recognition_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
-      "decision_url_template": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+      "decision_url_template": "https://{workspace_host}/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
@@ -103,7 +103,7 @@
       "recognition_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
-      "decision_url_template": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone",
+      "decision_url_template": "https://{workspace_host}/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
@@ -165,8 +165,9 @@
       "conversation_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "memory_model": "deepseek-ai/DeepSeek-V4-Flash",
       "recognition_model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-      "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
-      "decision_protocol": "chat_fallback",
+      "decision_model": "Kev-4B",
+      "decision_protocol": "systemone",
+      "decision_url": "https://api.siliconflow.cn/v1/systemone",
       "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "agent_model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },

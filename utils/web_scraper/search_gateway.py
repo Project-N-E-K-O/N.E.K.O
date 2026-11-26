@@ -174,11 +174,14 @@ def _plugin_server_base() -> str:
 
 async def _cancel_run(base: str, run_id: str) -> None:
     try:
+        from utils.internal_http_client import internal_service_event_hooks
+
         timeout = httpx.Timeout(0.5, connect=0.2)
         async with httpx.AsyncClient(
             timeout=timeout,
             proxy=None,
             trust_env=False,
+            event_hooks=internal_service_event_hooks(),
         ) as client:
             await client.post(
                 f"{base}/runs/{run_id}/cancel",
@@ -229,8 +232,15 @@ async def _invoke_plugin(
         "entry_id": "search",
         "args": args,
     }
+    from utils.internal_http_client import internal_service_event_hooks
+
     timeout = httpx.Timeout(5.0, connect=1.0)
-    async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        proxy=None,
+        trust_env=False,
+        event_hooks=internal_service_event_hooks(),
+    ) as client:
         request_timeout = remaining_timeout()
         async with asyncio.timeout(request_timeout):
             response = await client.post(

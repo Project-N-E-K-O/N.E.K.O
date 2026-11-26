@@ -142,6 +142,16 @@
         shell.classList.add('is-idle-docked');
     }
 
+    // A voice message in progress keeps the chat surface open. Only the
+    // compact minimize button may fold it; recording continues while folded.
+    function isAudioMessageActive() {
+        // 以聊天窗报告的状态为准：迷你窗折叠后录音控件已卸载，但草稿仍在
+        if (I.state && I.state.audioMessageActive) return true;
+        var shell = I.getShell();
+        return !!(shell && shell.querySelector('.audio-message-composer[data-audio-message-active="true"]'));
+    }
+    I.isAudioMessageActive = isAudioMessageActive;
+
     function finishIdleDockMinimize(shell) {
         if (I.isIdleDockPlaygroundBlocked()) {
             I.suspendIdleDockForPlayground();
@@ -1089,6 +1099,9 @@
         // （getIdleDockTarget 的 isLegacyFullMinimizedBall 守卫只能阻止 dock 定位，
         // 阻止不了 setChatSurfaceMode('minimized') 本身）。
         if (I.getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
+        // setChatSurfaceMode would reject this minimize, but the fallback below
+        // would still force the shell into its minimized look.
+        if (!I.minimized && isAudioMessageActive()) return;
 
         var parkedRestore = I.idleDockParkedRestore;
         I.idleDockParkedRestore = null;
@@ -1519,6 +1532,10 @@
         var previousMode = I.getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
+        if (nextMinimized && !previousMinimized && transitionOptions.fromCompactMinimizeButton !== true
+                && isAudioMessageActive()) {
+            return previousMode;
+        }
         if (previousMode === normalized) {
             if (I.isMinimizeTransitioning) {
                 I.pendingChatSurfaceMode = null;
@@ -2350,6 +2367,7 @@
         }
 
         overlay.hidden = true;
+        window.dispatchEvent(new Event('react-chat-window:closed'));
         I.resetCompactChatState();
         document.body.classList.remove('react-chat-window-open');
         I.stopCompactMinimizeBallTracking();
