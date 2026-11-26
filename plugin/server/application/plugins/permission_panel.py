@@ -28,6 +28,7 @@ from plugin.core.capability_analysis import (
     POSSIBLE_ONLY_PERMISSIONS,
 )
 from plugin.core.state import state
+from plugin.logging_config import get_logger
 from plugin.sdk.shared.permissions.catalog import (
     ALWAYS_EXPANDED_TIERS,
     BLIND_SPOT_TIERS,
@@ -86,6 +87,8 @@ MANIFEST_UNAVAILABLE = "unavailable"
 MANIFEST_UNUSABLE = "unusable"
 MANIFEST_UNAVAILABLE_CODE = "PLUGIN_MANIFEST_UNAVAILABLE"
 MANIFEST_UNUSABLE_CODE = "PLUGIN_MANIFEST_UNUSABLE"
+logger = get_logger("server.application.plugins.permission_panel")
+
 # Reconciliation of the declaration with the scan, one per permission row.
 RECONCILE_MATCHED = "matched"  # declared and found
 RECONCILE_UNDECLARED = "undeclared"  # found, not declared
@@ -231,24 +234,9 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
     key = str(root)
     wait = 0.0 if budget is None else budget.wait()
     started = time.monotonic()
+    lock = hold_plugin_operation_file_lock(None, timeout=wait)
     try:
-        with hold_plugin_operation_file_lock(None, timeout=wait):
-            if budget is not None:
-                budget.spend(time.monotonic() - started)
-            manifest, status = _load_manifest(root)
-            if status != MANIFEST_READ:
-                with _manifest_cache_lock:
-                    _manifest_cache.pop(key, None)
-                return {}, status
-            # Published while the lock is held, so reads publish in the order
-            # they read; under the version the read file states (an update
-            # installs into the same directory).
-            with _manifest_cache_lock:
-                _manifest_cache.pop(key, None)
-                _manifest_cache[key] = (_manifest_version(manifest), copy.deepcopy(manifest))
-                while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
-                    _manifest_cache.pop(next(iter(_manifest_cache)))
-            return manifest, MANIFEST_READ
+        lock.__enter__()
     except (PluginOperationBusy, OSError):
         # OSError: the lock file itself could not be opened.
         if budget is not None:
@@ -259,6 +247,33 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
         if cached is not None and cached[0] == version:
             return copy.deepcopy(cached[1]), MANIFEST_CACHED
         return {}, MANIFEST_UNAVAILABLE
+    try:
+        if budget is not None:
+            budget.spend(time.monotonic() - started)
+        return _read_held(root, key, version)
+    finally:
+        try:
+            lock.__exit__(None, None, None)
+        except OSError as exc:
+            # The read is done; a failed release does not undo it.
+            logger.warning("plugin operation lock release failed after a manifest read: error={}", type(exc).__name__)
+
+
+def _read_held(root: Path, key: str, version: str) -> tuple[dict, str]:
+    """Read and publish the manifest; the operation lock is held."""
+    manifest, status = _load_manifest(root)
+    with _manifest_cache_lock:
+        _manifest_cache.pop(key, None)
+        if status != MANIFEST_READ:
+            return {}, status
+        # Published while the lock is held, so reads publish in the order
+        # they read; under the version the read file states (an update
+        # installs into the same directory), or the registry's for a plugin
+        # without a manifest file.
+        _manifest_cache[key] = (_manifest_version(manifest) if manifest else version, copy.deepcopy(manifest))
+        while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
+            _manifest_cache.pop(next(iter(_manifest_cache)))
+    return manifest, MANIFEST_READ
 
 
 def _load_manifest(root: Path) -> tuple[dict, str]:

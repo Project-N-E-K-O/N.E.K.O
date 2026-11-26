@@ -1600,3 +1600,26 @@ async def test_a_saved_decision_returns_its_panel_while_another_operation_runs(e
     response = await _call(method, f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "granted"})
     assert response.status_code == 200, response.text
     assert any(row["permission"] == CONNECT for row in response.json()["rows"])
+
+
+def test_a_failed_lock_release_keeps_the_read(env, monkeypatch):
+    class Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            raise OSError("release failed")
+
+    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", lambda _stop, *, timeout=None: Lock())
+    _weather(env)
+    budget = permission_panel._LockBudget(2.0)
+    manifest, status = permission_panel._read_manifest(Path(env.metas["weather"]["config_path"]).parent, "1.0", budget)
+    assert status == "read" and manifest["plugin"]["id"] == "weather"
+    assert budget.blocked is False
+
+
+def test_a_plugin_without_a_manifest_file_is_kept_under_its_registered_version(env, short_wait):
+    env.plugin("bare", manifest=None, report=_report())
+    assert permission_panel.plugin_panel("bare", index=env.index)["manifest"] == "read"
+    with _operation_running_elsewhere():
+        assert permission_panel.plugin_panel("bare", index=env.index)["manifest"] == "cached"
