@@ -282,6 +282,12 @@ UNDER_WAY_READ_ENDED_ROWS = 4
 """How many of her commissions that ended lately (``FOLLOW_UP_RECENT_SECONDS``)
 it is shown, newest first: what a sentence may go on with."""
 
+RECEIPT_LEFT_RUNNING_TITLES = 3
+"""How many of what goes on, not stopped, a stop's receipt names: a stop of the
+items it names while more of their project's, familiar's or plugin's work was
+left out of the reading (past ``UNDER_WAY_READ_ROWS``). Past this many, the
+receipt says how many there are."""
+
 UNDER_WAY_READ_LINE_MAX_TOKENS = 120
 """How much of each item it is shown, besides its question: the title, its
 project, the familiar on it, what its members are at, what came of it."""

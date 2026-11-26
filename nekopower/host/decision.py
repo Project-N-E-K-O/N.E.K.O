@@ -207,6 +207,10 @@ class Triage:
     # tell which (it is asked whatever is said), and she is told the buttons
     # on each question can.
     by_buttons: bool = False
+    # For "stop" of the items it names ("these") while more of their
+    # project's, familiar's or plugin's work was left out of the list: those
+    # commission ids, which are not stopped. The receipt says they go on.
+    left_running: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -1181,38 +1185,54 @@ class LexicalDecisionModel:
             hidden = [item for item in request.active if item.id not in under_way]
             # How much it means: "these" (the items it names), "project" (all
             # of a project's, a familiar's or a plugin's work, however much of
-            # it was shown) or "all" (all the work under way). "These" is not
-            # taken at its word where the list left some out: the model has
-            # read "stop all the shop site work" as "these" (measured), and a
-            # stop that leaves the rest of a project running says nothing of
-            # it. So "these", like a stop that does not say, may be either of
-            # the first two. Which items are stopped is still what it names,
-            # and whether it says which: a bare "stop it" is read as all of it
-            # as often as "cancel all of it" is (measured), so "all" is no
-            # naming of its own.
+            # it was shown) or "all" (all the work under way). "These" is
+            # taken at its word where the list left some out: what it names is
+            # stopped, and what of their project's work was not shown goes on
+            # and is said to (the model has read "stop all the shop site work"
+            # as "these", measured: that is not left running unsaid). A stop
+            # that does not say how much may be either of the first two, and
+            # is asked about as before. Which items are stopped is still what
+            # it names, and whether it says which: a bare "stop it" is read as
+            # all of it as often as "cancel all of it" is (measured), so "all"
+            # is no naming of its own.
             scope = str(reading.get("scope") or "").strip().lower()
-            if not said_which and len(under_way) > 1:
+            if not said_which and len(everything) > 1:
                 # "Stop it" with several under way: which, the user is asked,
                 # not everything stopped on a guess. ("Wait", "not now" said to
                 # what waits for the user is its answer, a refusal, as the
                 # prompt has it; a stop is a stop.) Among all of her work, the
-                # list may have cut.
+                # list may have cut, and counted so: one shown of several is
+                # not taken for the one meant.
                 return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
-            if hidden and (scope == "all" or (len(stopped) > 1 and scope != "project")):
-                # All of it, or a stop of several that is not a project's, while
-                # some of her work was left out of the list: it may mean those
-                # as well, which were not shown. Which, the user is asked, among
-                # all (for "all", though one item was named).
+            if hidden and (scope == "all" or (len(stopped) > 1 and scope not in ("project", "these"))):
+                # All of it, or a stop of several that does not say how much,
+                # while some of her work was left out of the list: it may mean
+                # those as well, which were not shown. Which, the user is asked,
+                # among all (for "all", though one item was named).
                 return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
             kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
-            if kin:
+            if kin and scope != "these":
                 # A project's or a familiar's work is stopped while more of it
-                # was left out ("stop the shop site work", one of it shown, or
-                # "the footer one" of it): which, the user is asked, among those.
+                # was left out ("stop the shop site work", one of it shown):
+                # which, the user is asked, among those.
                 return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
-                return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
+                # For "these", where some of their project's work was left out,
+                # all of it that goes on is said, shown or not ("the footer
+                # one" of the shop site's, or "all the shop site work" read as
+                # the one item shown: what was shown and not named goes on as
+                # well, owner's automatic review). Where none of it was left
+                # out, what it names is what was meant, as when the list is
+                # whole: nothing is said. So for each it names: a stop of the
+                # shop site's one and the blog's one says nothing of the blog,
+                # all of which was shown.
+                cut = [other for other in shown_stopped if any(_kin(item, other) for item in hidden)]
+                going_on = [
+                    item.id for item in request.active
+                    if item.id not in stopped and any(_kin(item, other) for other in cut)
+                ]
+                return Triage(kind="stop", targets=stopped, left_running=going_on, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
             # nothing of hers it names is under way.
             if not under_way:

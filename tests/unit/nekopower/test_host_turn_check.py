@@ -356,6 +356,33 @@ async def test_a_promise_to_stop_something_stops_it(server, hosts, tmp_path):
     assert await _notices(host) == [("filed", "passive", "你刚才答应的事已经替你派发了。已叫停：查上海明天的天气")]
 
 
+async def test_a_promised_stop_that_left_some_of_its_project_going_on_is_told_at_once(server, hosts, tmp_path, monkeypatch):
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+
+    # One row of her work is shown to the reading: of the shop site's two, the footer one. The stop
+    # filed for her is of the one it names; the other goes on, and she is woken to say so.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "停掉页脚那个"}])
+    llm.under_way = [{"does": "stop", "items": [1], "named": True, "scope": "these"}]
+    host = _host(hosts, tmp_path, server, llm)
+    filed = []
+    for title in ("压缩商品图片", "重做页脚"):
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent", project="商城网站"
+        )
+        await host.ledger.transition(commission.id, "working", reason="test")
+        filed.append(commission)
+    images, footer = filed
+
+    result = await _check(host, "页脚那个先停一下", "好，我把页脚那个停掉", external_intent=0.8)
+
+    assert result.receipt.kind == "stopped"
+    assert [(await host.ledger.get(item.id)).status for item in (footer, images)] == ["cancelled", "working"]
+    note = RECEIPT_TEXTS["zh"]["left_running"].format(titles="压缩商品图片")
+    assert await _notices(host) == [("filed", "proactive", f"你刚才答应的事已经替你派发了。已叫停：重做页脚 {note}")]
+
+
 async def test_a_promised_stop_that_could_not_confirm_its_end_is_told_of_that_commission(server, hosts, tmp_path, monkeypatch):
     _weather(server)
     llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "别查天气了"}])

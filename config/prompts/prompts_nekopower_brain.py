@@ -476,6 +476,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "没能停下：{title}。可以在界面上再停一次。",
         "stop_unconfirmed": "已叫停：{title}，但没能确认它正在跑的部分都停了，可以在界面上看一下。",
         "by_buttons": "（几条问话在等，说的话分不清是哪一条：请用户点对应问话上的按钮。）",
+        "left_running": "（同一项目、同一只使魔或同一个插件下还有在办的，这次没停：{titles}。请告诉用户；要一起停，请用户再说一声。）",
+        "left_running_more": "{titles} 等 {count} 件",
     },
     'zh-TW': {
         "accepted": "已受理：{title}",
@@ -494,6 +496,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "沒能停下：{title}。可以在介面上再停一次。",
         "stop_unconfirmed": "已叫停：{title}，但沒能確認它正在跑的部分都停了，可以在介面上看一下。",
         "by_buttons": "（幾條問話在等，說的話分不清是哪一條：請使用者點對應問話上的按鈕。）",
+        "left_running": "（同一專案、同一隻使魔或同一個外掛下還有在辦的，這次沒停：{titles}。請告訴使用者；要一起停，請使用者再說一聲。）",
+        "left_running_more": "{titles} 等 {count} 件",
     },
     'en': {
         "accepted": "Accepted: {title}",
@@ -512,6 +516,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "Could not stop: {title}. It can be stopped again on screen.",
         "stop_unconfirmed": "Stopped: {title}, but it could not be confirmed that everything it was running has ended; it can be checked on screen.",
         "by_buttons": "(Several questions are waiting, and words cannot tell which this is for: ask the user to use the buttons on the question they mean.)",
+        "left_running": "(Still under way and not stopped, of the same project, familiar or plugin: {titles}. Tell the user; if those were meant too, the user can say so.)",
+        "left_running_more": "{titles} and {more} more",
     },
     'ja': {
         "accepted": "受け付けました：{title}",
@@ -530,6 +536,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "止められませんでした：{title}。画面からもう一度止められます。",
         "stop_unconfirmed": "中止しました：{title}。ただし、実行中だった部分がすべて止まったかは確認できませんでした。画面で確かめられます。",
         "by_buttons": "（確認が複数待っていて、言葉ではどれのことか分かりません。ユーザーに、該当する確認のボタンを押してもらってください。）",
+        "left_running": "（同じプロジェクト・同じ使い魔・同じプラグインで、まだ進めていて今回は止めていない用件があります：{titles}。ユーザーに伝えてください。一緒に止めるなら、ユーザーにもう一度言ってもらってください。）",
+        "left_running_more": "{titles} など {count} 件",
     },
     'ko': {
         "accepted": "접수했습니다: {title}",
@@ -548,6 +556,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "중지하지 못했습니다: {title}. 화면에서 다시 중지할 수 있습니다.",
         "stop_unconfirmed": "중지했습니다: {title}. 다만 실행 중이던 부분이 모두 멈췄는지는 확인하지 못했습니다. 화면에서 확인할 수 있습니다.",
         "by_buttons": "(질문이 여러 개 기다리고 있어 말로는 어느 것인지 알 수 없습니다. 사용자에게 해당 질문의 버튼을 눌러 달라고 하세요.)",
+        "left_running": "(같은 프로젝트·사역마·플러그인에서 아직 진행 중이고 이번에 중지하지 않은 일이 있습니다: {titles}. 사용자에게 알려 주세요. 함께 중지하려면 사용자에게 다시 말해 달라고 하세요.)",
+        "left_running_more": "{titles} 등 {count}건",
     },
     'ru': {
         "accepted": "Принято: {title}",
@@ -566,6 +576,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "Не удалось остановить: {title}. Это можно сделать ещё раз на экране.",
         "stop_unconfirmed": "Остановлено: {title}, но не удалось убедиться, что всё, что оно запускало, завершилось; это можно проверить на экране.",
         "by_buttons": "(Ждут несколько вопросов, и по словам не понять, к какому это относится: попросите пользователя нажать кнопку в нужном вопросе.)",
+        "left_running": "(Ещё выполняется и не остановлено — из того же проекта, фамильяра или плагина: {titles}. Скажите об этом пользователю; если он имел в виду и это, пусть скажет ещё раз.)",
+        "left_running_more": "{titles} и ещё {more}",
     },
     'es': {
         "accepted": "Aceptado: {title}",
@@ -584,6 +596,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "No se pudo detener: {title}. Se puede detener de nuevo desde la pantalla.",
         "stop_unconfirmed": "Detenido: {title}, pero no se pudo confirmar que todo lo que estaba ejecutando haya terminado; se puede comprobar en la pantalla.",
         "by_buttons": "(Hay varias preguntas esperando y por las palabras no se sabe a cuál se refiere: pide al usuario que use los botones de la pregunta que quiere responder.)",
+        "left_running": "(Sigue en marcha y no se detuvo, del mismo proyecto, familiar o plugin: {titles}. Díselo al usuario; si también se refería a eso, que lo diga.)",
+        "left_running_more": "{titles} y {more} más",
     },
     'pt': {
         "accepted": "Aceito: {title}",
@@ -602,6 +616,8 @@ RECEIPT_TEXTS = {
         "stop_failed": "Não deu para interromper: {title}. Dá para interromper de novo pela tela.",
         "stop_unconfirmed": "Interrompido: {title}, mas não deu para confirmar que tudo o que estava rodando terminou; dá para conferir pela tela.",
         "by_buttons": "(Há várias perguntas aguardando e pelas palavras não dá para saber a qual se refere: peça ao usuário para usar os botões da pergunta certa.)",
+        "left_running": "(Ainda em andamento e não interrompido, do mesmo projeto, familiar ou plugin: {titles}. Avise o usuário; se ele também queria isso, ele pode dizer.)",
+        "left_running_more": "{titles} e mais {more}",
     },
 }
 
