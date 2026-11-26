@@ -655,12 +655,23 @@ class PluginContext:
         self._effective_config_owner_token = token
         return token
 
+    def _resolve_pending_host_change_root_locked(self, token: int) -> int | None:
+        pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+        if not isinstance(pending_tokens, dict) or not pending_tokens:
+            return None
+        root_map = getattr(self, "_owner_token_host_change_root", None)
+        root = root_map.get(token, token) if isinstance(root_map, dict) else token
+        if pending_tokens.get(root, 0) > 0:
+            return root
+        return None
+
     def _record_effective_config_locked(
         self,
         config_copy: Dict[str, Any] | None,
         *,
         uncertain: bool,
         owner_token: int | None = None,
+        inherit_host_guard_from_token: int | None = None,
     ) -> int:
         self._effective_config = config_copy
         self._effective_config_uncertain = uncertain
@@ -670,9 +681,19 @@ class PluginContext:
         )
         if owner_token is None:
             self._rejected_host_rollback = None
-            return self._allocate_owner_token_locked()
-        self._effective_config_owner_token = owner_token
-        return owner_token
+            new_token = self._allocate_owner_token_locked()
+        else:
+            self._effective_config_owner_token = owner_token
+            new_token = owner_token
+        if inherit_host_guard_from_token is not None:
+            root = self._resolve_pending_host_change_root_locked(inherit_host_guard_from_token)
+            if root is not None and root != new_token:
+                root_map = getattr(self, "_owner_token_host_change_root", None)
+                if not isinstance(root_map, dict):
+                    root_map = {}
+                    self._owner_token_host_change_root = root_map
+                root_map[new_token] = root
+        return new_token
 
     def _flush_instance_runtime_config(self) -> None:
         """Deliver the latest published effective config snapshot to the plugin instance.
@@ -1051,6 +1072,13 @@ class PluginContext:
                         pending_tokens[owner_token] = remaining
                     else:
                         pending_tokens.pop(owner_token, None)
+                        root_map = getattr(self, "_owner_token_host_change_root", None)
+                        if isinstance(root_map, dict) and root_map:
+                            stale_tokens = [
+                                tok for tok, root in root_map.items() if root == owner_token
+                            ]
+                            for tok in stale_tokens:
+                                root_map.pop(tok, None)
 
     def _cache_effective_config_from_read(
         self,
@@ -1068,9 +1096,8 @@ class PluginContext:
                 return False
             if int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) > 0:
                 return False
-            pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
             current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
-            if isinstance(pending_tokens, dict) and pending_tokens.get(current_owner, 0) > 0:
+            if self._resolve_pending_host_change_root_locked(current_owner) is not None:
                 return False
             if read_id <= int(getattr(self, "_last_installed_read_id", 0) or 0):
                 return False
@@ -2761,6 +2788,7 @@ class PluginContext:
                                         self._record_effective_config_locked(
                                             installed_copy,
                                             uncertain=old_effective_config_uncertain,
+                                            inherit_host_guard_from_token=old_owner_token,
                                         )
                                         should_flush_in_memory = True
                                 elif isinstance(self._effective_config, dict):

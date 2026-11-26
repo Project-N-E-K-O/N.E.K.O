@@ -2547,3 +2547,193 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 await asyncio.gather(cmd_task, return_exceptions=True)
 
     asyncio.run(_case_profile_switch_inside_or_concurrent_with_config_change())
+
+    # 13. In-memory writes (persisted=False) inside config_change must keep read protection,
+    #     while persisted writes and profile switches cleanly detach and allow reads.
+    async def _case_in_memory_writes_preserve_host_read_guard_until_authoritative_change() -> None:
+        # 13a. Chained persisted=False writes + get_own_effective_config(None) inside config_change.
+        ctx_mem = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_in_memory_guard" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_mem = _RecordingInstance()
+        ctx_mem._instance = instance_mem
+        ctx_mem._set_effective_config_cache({"base": 1})
+
+        async def _stale_disk_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        async def _non_persisted_rpc(
+            *,
+            request_type: str,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            assert request_type == "PLUGIN_CONFIG_UPDATE"
+            return {"success": True, "persisted": False, "config": {}}
+
+        ctx_mem._get_local_config_payload = _stale_disk_local_payload  # type: ignore[method-assign]
+        ctx_mem._send_request_and_wait_async = _non_persisted_rpc  # type: ignore[method-assign]
+        observed_reads_mem: list[dict[str, object]] = []
+
+        async def _mem_writes_then_read(**_kwargs: object) -> None:
+            res1 = await ctx_mem.update_own_config({"timer": 3})
+            assert res1["persisted"] is False
+            res2 = await ctx_mem.update_own_config({"timer2": 4})
+            assert res2["persisted"] is False
+            loaded = await ctx_mem.get_own_effective_config(None)
+            observed_reads_mem.append(dict(loaded["config"]))
+            assert ctx_mem._effective_config == {"base": 1, "extra": 3, "timer": 3, "timer2": 4}
+            assert instance_mem.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3, "timer2": 4}
+
+        sender_mem = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-guard",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_mem,
+            events_by_type={"lifecycle": {"config_change": _mem_writes_then_read}},
+            plugin_id="demo",
+            res_sender=sender_mem,
+            logger=_FakeLogger(),
+        )
+        assert observed_reads_mem == [{"base": 1}]
+        assert sender_mem.payloads[-1]["success"] is True
+        assert ctx_mem._effective_config == {"base": 1, "extra": 3, "timer": 3, "timer2": 4}
+        assert instance_mem.refreshed[-1] == {"base": 1, "extra": 3, "timer": 3, "timer2": 4}
+        assert ctx_mem._host_config_change_pending == 0
+        assert not getattr(ctx_mem, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_mem, "_owner_token_host_change_root", {})
+
+        # 13b. Control: persisted write detaches from pending host guard so subsequent read installs.
+        ctx_persisted = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_persisted_detach" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_persisted = _RecordingInstance()
+        ctx_persisted._instance = instance_persisted
+        ctx_persisted._set_effective_config_cache({"base": 1})
+        disk_persisted: dict[str, object] = {"base": 1}
+
+        async def _persisted_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": dict(disk_persisted)}
+
+        async def _mixed_persist_rpc(
+            *,
+            request_type: str,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            assert request_type == "PLUGIN_CONFIG_UPDATE"
+            updates = request_data["updates"]
+            assert isinstance(updates, dict)
+            if "timer" in updates:
+                return {"success": True, "persisted": False, "config": {}}
+            disk_persisted.clear()
+            disk_persisted.update({"base": 1, "saved": 9, "from_disk": True})
+            return {"success": True, "persisted": True, "config": {"base": 1, "saved": 9}}
+
+        ctx_persisted._get_local_config_payload = _persisted_local_payload  # type: ignore[method-assign]
+        ctx_persisted._send_request_and_wait_async = _mixed_persist_rpc  # type: ignore[method-assign]
+
+        async def _mem_then_persisted_then_read(**_kwargs: object) -> None:
+            await ctx_persisted.update_own_config({"timer": 3})
+            await ctx_persisted.update_own_config({"saved": 9})
+            loaded = await ctx_persisted.get_own_effective_config(None)
+            assert loaded["config"] == {"base": 1, "saved": 9, "from_disk": True}
+            assert ctx_persisted._effective_config == {"base": 1, "saved": 9, "from_disk": True}
+            assert instance_persisted.refreshed[-1] == {"base": 1, "saved": 9, "from_disk": True}
+
+        sender_persisted = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-persisted-detach",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_persisted,
+            events_by_type={"lifecycle": {"config_change": _mem_then_persisted_then_read}},
+            plugin_id="demo",
+            res_sender=sender_persisted,
+            logger=_FakeLogger(),
+        )
+        assert sender_persisted.payloads[-1]["success"] is True
+        assert ctx_persisted._effective_config == {"base": 1, "saved": 9, "from_disk": True}
+        assert instance_persisted.refreshed[-1] == {"base": 1, "saved": 9, "from_disk": True}
+        assert ctx_persisted._host_config_change_pending == 0
+        assert not getattr(ctx_persisted, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_persisted, "_owner_token_host_change_root", {})
+
+        # 13c. Control: profile switch after persisted=False write inside config_change still refreshes.
+        ctx_prof = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_then_profile" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_prof = _RecordingInstance()
+        ctx_prof._instance = instance_prof
+        profiles = {
+            "home": {"profile": "home", "store": {"enabled": False}},
+            "work": {"profile": "work", "store": {"enabled": True}},
+        }
+        ctx_prof._set_effective_config_cache(dict(profiles["home"]))
+        active_prof = {"name": "home"}
+
+        async def _null_local_payload(**_kwargs: object) -> None:
+            return None
+
+        async def _mem_then_profile_rpc(
+            *,
+            request_type: str,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            if request_type == "PLUGIN_CONFIG_UPDATE":
+                return {"success": True, "persisted": False, "config": {}}
+            if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+                target = str(request_data["profile_name"])
+                active_prof["name"] = target
+                return {"success": True, "active_profile": target}
+            if request_type == "PLUGIN_CONFIG_GET":
+                return {"plugin_id": "demo", "config": dict(profiles[active_prof["name"]])}
+            raise AssertionError(f"Unexpected RPC request: {request_type}")
+
+        ctx_prof._get_local_config_payload = _null_local_payload  # type: ignore[method-assign]
+        ctx_prof._send_request_and_wait_async = _mem_then_profile_rpc  # type: ignore[method-assign]
+
+        async def _mem_then_switch_profile(**_kwargs: object) -> None:
+            await ctx_prof.update_own_config({"timer": 3})
+            await ctx_prof.set_own_active_profile("work")
+            assert ctx_prof._effective_config == {"profile": "work", "store": {"enabled": True}}
+            assert instance_prof.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+
+        sender_prof = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-then-profile",
+                "config": {"extra": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_prof,
+            events_by_type={"lifecycle": {"config_change": _mem_then_switch_profile}},
+            plugin_id="demo",
+            res_sender=sender_prof,
+            logger=_FakeLogger(),
+        )
+        assert sender_prof.payloads[-1]["success"] is True
+        assert ctx_prof._effective_config == {"profile": "work", "store": {"enabled": True}}
+        assert instance_prof.refreshed[-1] == {"profile": "work", "store": {"enabled": True}}
+        assert ctx_prof._host_config_change_pending == 0
+        assert not getattr(ctx_prof, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_prof, "_owner_token_host_change_root", {})
+
+    asyncio.run(_case_in_memory_writes_preserve_host_read_guard_until_authoritative_change())
