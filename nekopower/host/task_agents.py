@@ -93,6 +93,7 @@ from nekopower.host.ledger import (
     Session,
     SessionRow,
     Transition,
+    WAITS_IN_TREE_REFUSAL,
     WakeRequest,
     new_session_id,
 )
@@ -5449,11 +5450,19 @@ class TaskAgentManager(TreeWork):
         readable, even asked again, its session is let go all the same:
         left open, it would keep its place for a commission that is over,
         and the senders of its notes would hear nothing.)
+
+        Not one whose work is done and waits in its git worktree for the
+        user (held back, or not landed): it is stuck over that alone, and
+        is done once the user has it landed. That is read once before, and
+        looked at again as each one's end is written
+        (``_stopped_with_parent``): one that comes to wait after the
+        reading, or that a reading which failed missed, is left to wait all
+        the same. Where its end cannot be written at all, one that is stuck
+        may be such a one, and is left as it is (it is not at work).
         """
-        # Not one whose work is done and waits in its git worktree for the user (held back, or
-        # not landed): it is stuck over that alone, and is done once the user has it landed.
         # (Read before those it started are: one the user has landed this moment is still among
-        # these, or is over by the time those are read.)
+        # these, or is over by the time those are read. And one landed and done after this is
+        # read, before its end is written, is passed by here, not stopped as one that ended.)
         waiting = await self._waits_in_tree()
         try:
             started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
@@ -5468,16 +5477,27 @@ class TaskAgentManager(TreeWork):
             # Each by itself, and each step of it: one that cannot be ended
             # this moment does not leave the others at work, and one whose
             # end is written is still stopped where that write failed.
-            for what, step in (
-                ("ending", lambda child=child: self._ledger.transition(child.id, "cancelled", reason="its parent finished")),
-                ("stopping", lambda child=child: self.abort(child.id)),
-            ):
-                try:
-                    await self._looked(step)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 - the other step, and the others, are still done
-                    logger.warning("%s a task agent whose parent is over failed", what, exc_info=True)
+            try:
+                moved = await self._looked(lambda child=child: self._stopped_with_parent(child.id))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - it is stopped all the same, see below
+                logger.warning("ending a task agent whose parent is over failed", exc_info=True)
+                if child.status == "blocked":
+                    # Stuck, so not at work: it may be one whose changes wait in its worktree for
+                    # the user, which cannot be told with the ledger as it is. It is left as it is.
+                    continue
+            else:
+                if moved is None or (not moved.applied and moved.refusal == WAITS_IN_TREE_REFUSAL):
+                    # Its changes wait in its worktree for the user, or the user's decision on
+                    # them is being carried out: it is left to wait.
+                    continue
+            try:
+                await self._looked(lambda child=child: self.abort(child.id))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the others are still ended
+                logger.warning("stopping a task agent whose parent is over failed", exc_info=True)
 
     async def _stop_what_it_started(self, commission_id: str) -> None:
         """Stop the task agents a commission had started, now that it ended for what it used.

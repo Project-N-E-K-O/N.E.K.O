@@ -3028,6 +3028,121 @@ async def test_a_commission_that_ends_for_what_it_used_is_closed_though_what_it_
     assert team.closed == [team.parent.id]
 
 
+@pytest.mark.parametrize("reading", ["read", "unreadable"])
+async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_their_worktree_to_wait(
+    hosts, tmp_path, monkeypatch, reading
+):
+    """As any commission ends (``_end_what_it_started``): whether what it started waits in its worktree is looked at again as each one's end is written."""
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    monkeypatch.setattr("config.nekopower_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    members: dict[str, str] = {}
+    for name in (
+        "at work",
+        "cannot be written",
+        "waits in its worktree",
+        "waits and cannot be written",
+        "landed meanwhile",
+        "waits by then",
+        "being landed",
+    ):
+        child = await _filed(host, name, parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        members[name] = child.id
+    await host.ledger.transition(parent.id, "done", reason="test")
+
+    def tree_of(name: str) -> str:
+        return f"the-tree-of-{name.replace(' ', '-')}"
+
+    async def waits(name: str, state: str) -> None:
+        # Done, and stuck over its worktree alone (``tree_work``).
+        await host.ledger.transition(members[name], "blocked", reason="test")
+        path = tmp_path / tree_of(name)
+        path.mkdir()
+        await host.ledger.add_tree(
+            id=tree_of(name), project_dir=str(tmp_path), path=str(path), workdir=str(path), state=state,
+            commission_id=members[name],
+        )
+
+    for name in ("waits in its worktree", "waits and cannot be written", "landed meanwhile"):
+        await waits(name, "held")
+    if reading == "unreadable":
+        # The worktrees that wait for the user cannot be read as the end begins: none, as far as
+        # that reading goes (``_waits_in_tree``).
+        async def unreadable(**criteria: Any) -> Any:
+            raise RuntimeError("the ledger cannot be read")
+
+        monkeypatch.setattr(manager._ledger, "trees", unreadable)
+    select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
+    after_reading: list[str] = []
+
+    async def read(**criteria: Any) -> Any:
+        found = await select(**criteria)
+        if criteria.get("parent_id") == parent.id and not after_reading:
+            after_reading.append("done")
+            # After what it started is read, before their ends are written: one comes to wait
+            # for the user, one is being landed at the user's word (on record as being landed,
+            # and in hand), and one is landed and done.
+            await waits("waits by then", "unlanded")
+            await waits("being landed", "landing")
+            manager._decided_for[tree_of("being landed")] = members["being landed"]
+            await transition(members["landed meanwhile"], "working", reason="landed")
+            await transition(members["landed meanwhile"], "done", reason="landed")
+            await host.ledger.update_tree(tree_of("landed meanwhile"), state="discarding")
+        return found
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id in (members["cannot be written"], members["waits and cannot be written"]):
+            raise RuntimeError("the ledger is locked")
+        return await transition(commission_id, status, **kwargs)
+
+    tried: list[str] = []
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(manager._ledger, "select", read)
+    monkeypatch.setattr(manager._ledger, "transition", locked)
+    monkeypatch.setattr(manager, "abort", recorded)
+    try:
+        await manager._end_what_it_started(parent.id)
+    finally:
+        manager._decided_for.pop(tree_of("being landed"), None)
+
+    # Those that wait for the user are left to wait: as read before (where that could be read),
+    # as looked at again when their end is written, or as the user's decision is carried out;
+    # one that is stuck and whose end cannot be written is left as it is. The one at work is
+    # ended and stopped; one whose end cannot be written is stopped all the same, as ever.
+    stopped = ["at work", "cannot be written"]
+    if reading == "unreadable":
+        # Not read before, the one landed and done meanwhile is stopped as one that ended, as
+        # it was where that reading failed before.
+        stopped.append("landed meanwhile")
+    assert sorted(tried) == sorted(members[name] for name in stopped)
+    after = {name: await host.ledger.get(one) for name, one in members.items()}
+    waiting = ("waits in its worktree", "waits and cannot be written", "waits by then", "being landed")
+    assert {name: one.status for name, one in after.items()} == {
+        "at work": "cancelled",
+        "cannot be written": "working",
+        **dict.fromkeys(waiting, "blocked"),
+        "landed meanwhile": "done",
+    }
+    assert after["at work"].status_reason == "its parent finished"
+    for name in waiting:
+        assert after[name].status_reason == "test"
+        assert await _events(host, members[name], "transition_refused") == []
+    refused = await _events(host, members["landed meanwhile"], "transition_refused")
+    assert len(refused) == (1 if reading == "unreadable" else 0)
+    trees = {name: (await host.ledger.get_tree(tree_of(name))).state for name in (*waiting, "landed meanwhile")}
+    assert trees == {
+        "waits in its worktree": "held", "waits and cannot be written": "held", "waits by then": "unlanded",
+        "being landed": "landing", "landed meanwhile": "discarding",
+    }
+
+
 async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(
