@@ -769,6 +769,8 @@ class PluginRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never raised
+                # A cancellation of the caller that came up as an error is one.
+                _reraise_swallowed_cancellation()
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 # Nothing says it ended: it is given up on, as one whose polling failed.
                 completion = {

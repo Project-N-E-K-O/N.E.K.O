@@ -264,6 +264,33 @@ async def test_a_run_whose_wait_failed_unexpectedly_is_cancelled_and_stays_known
     assert runner.active_runs("c1") == []
 
 
+async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_while_waiting_is_one(server, monkeypatch):
+    started = _slow_weather(server)
+    faults = Faults()
+    runner = _runner(server, faults)
+
+    async def wrapped(_run_id: str, **_kwargs: Any) -> dict[str, Any]:
+        await asyncio.wait_for(started.wait(), 5)
+        asyncio.current_task().cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise RuntimeError("the request layer wrapped the cancellation") from None
+        return {}
+
+    monkeypatch.setattr(runner, "_await_completion", wrapped)
+    calling = asyncio.ensure_future(runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}))
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(calling, 5)
+    await wait_until(lambda: faults.cancel_requests == 1, what="the cancel request")
+    await runner.aclose()
+
+    # The caller was cancelled, and the run with it: not a wait that failed, which would go on as if nothing happened.
+    assert faults.cancel_reasons == ["caller cancelled"]
+    assert runner.active_runs("c1") == []
+
+
 async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
     from nekopower.host import plugin_runs
 

@@ -2012,6 +2012,29 @@ async def test_a_commission_that_cannot_be_ended_does_not_keep_esc_from_stopping
     assert (await host.ledger.get(booking)).status == "cancelled"
 
 
+async def test_a_commission_that_uses_both_groups_and_cannot_be_ended_is_asked_once(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    task_id = await _working(host, "订票")
+    await host.ledger.transition(task_id, "cancelled", reason="stopped")
+    builtins.module._in_use.update({KEYBOARD: task_id, BROWSER: task_id})
+    agents = host.brain._task_agents
+    closings: list[str] = []
+
+    async def abort(commission_id: str) -> None:
+        closings.append(commission_id)
+        raise RuntimeError("the runtime did not answer")
+
+    monkeypatch.setattr(agents, "abort", abort)
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    # Tried once for both groups: its session is not waited on twice, and it is not said to be stopped.
+    assert aborted == [(task_id, "Stopped with Esc")]
+    assert closings == [task_id]
+    assert answer == {"success": True, "stopped": []}
+
+
 async def test_a_commission_that_uses_both_groups_is_stopped_once(wiring, builtins, monkeypatch):
     host = wiring.host_mount.get_host()
     task_id = await _working(host, "订票")

@@ -1137,14 +1137,18 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     host = peek_host()
     stopped = []
     not_stopped = []
+    # Each one is asked once, whether or not it could be ended: one that
+    # holds both groups is not stopped twice.
+    tried = set()
     for name in ([group] if group else list(BUILTIN_GROUPS)):
         commission_id = occupant(name)
-        if not commission_id or commission_id in stopped or host is None:
+        if not commission_id or commission_id in tried or host is None:
             continue
         if meant is not None and commission_id != meant:
             not_stopped.append({"group": name, "commission_id": commission_id})
             logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
             continue
+        tried.add(commission_id)
         try:
             commission = await host.abort(commission_id, reason="Stopped with Esc")
         except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
