@@ -587,16 +587,54 @@ async def test_stale_removal_retries_a_registration_that_shows_up_again():
 
 @pytest.mark.asyncio
 async def test_stale_removal_is_not_ok_when_a_registration_keeps_coming_back():
+    """Two registrations keep alternating: main_server refuses the request
+    targeting C because D holds the role, and the one targeting D because C
+    holds it (the only way it answers "different registration"). Each id
+    gets at most two targeted attempts, then the call gives up."""
     plugin, _ = await _plugin_with_tool(role=None)
-    back = _held_by(("R2", "C"), removed=True)
-    host = _ScriptedHost(_held_by(("R1", "C")), back, back, back)
+    host = _ScriptedHost(
+        _held_by(("R1", "C")),
+        _held_by(("R1", "D")),  # targeting C: D holds R1
+        _held_by(("R1", "C")),  # targeting D: C holds R1
+        _held_by(("R1", "D")),
+        _held_by(("R1", "C")),
+    )
     _install_host(plugin, host)
 
     result = await plugin.unregister_llm_tool_async("tool_a")
 
+    targeted = [c["request_data"].get("expected_registration_id") for c in host.calls[1:]]
+    assert targeted == ["C", "D", "C", "D"]
+    assert max(targeted.count(rid) for rid in set(targeted)) <= 2
     assert result["ok"] is False and result["error"] == "partial_failure"
-    assert len(host.calls) == 3  # first + two targeted attempts, then gives up
     assert any(r.get("registration_id") == "C" for r in result["refused_roles"])
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
+async def test_failed_follow_up_still_reports_a_registration_that_came_back():
+    """C is removed by id; the follow-up for D then fails, and its answer
+    reports C on another role again (a timed-out register still writing
+    roles). C must be listed in refused_roles, not counted as removed."""
+    plugin, _ = await _plugin_with_tool(role=None)
+    failed_with_c_back = _held_by(("R3", "C"), removed=True, affected=["R2"])
+    failed_with_c_back.update(
+        ok=False, error="partial_failure", message="some roles failed",
+        failed_roles=[{"role": "R4", "error": "RuntimeError: sync failed"}],
+    )
+    host = _ScriptedHost(
+        _held_by(("R1", "C"), ("R2", "D")),
+        _held_by(("R2", "D"), removed=True, affected=["R1"]),   # C removed
+        failed_with_c_back,                                      # D: fails, C back on R3
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["C", "D"]
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    held = {(r["role"], r["registration_id"]) for r in result["refused_roles"]}
+    assert ("R3", "C") in held
     assert _local_names(plugin) == {"tool_a"}
 
 
@@ -784,9 +822,75 @@ async def test_stale_removal_uses_what_is_left_of_request_timeout(monkeypatch):
     monkeypatch.setattr(base, "time", _Clock)
     late = await plugin2.unregister_llm_tool_async("tool_a", request_timeout=2.0)
 
-    assert late["ok"] is False and late["error"] == "timeout"
+    # Nothing more was sent, so the outcome is known: busy, not timeout.
+    assert late["ok"] is False and late["error"] == "busy"
     assert len(host2.calls) == 1
     assert _local_names(plugin2) == {"tool_a"}
+    assert any(r.get("registration_id") == "stale" for r in late["refused_roles"])
+
+
+@pytest.mark.asyncio
+async def test_cleanup_reports_busy_when_too_little_budget_is_left_for_the_follow_up(monkeypatch):
+    """The failed register's cleanup used most of its 15s budget and its
+    answer reports another registration: the follow-up is not sent and the
+    cleanup reports busy (outcome known, holder kept), not timeout."""
+    from plugin.sdk.plugin import base
+
+    real = base.time.monotonic
+    offset = {"s": 0.0}
+
+    class _Clock:
+        @staticmethod
+        def monotonic():
+            return real() + offset["s"]
+
+    monkeypatch.setattr(base, "time", _Clock)
+    plugin, _ = _make_plugin()
+    replies = [_ALL_SYNC_FAILED, _held_by("older")]
+    calls: list[dict] = []
+
+    async def host(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            # The cleanup's answer arrives after 14 of its 15 seconds.
+            offset["s"] += 14.0
+        return replies[len(calls) - 1]
+
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "rejected"
+    assert result["cleanup"]["ok"] is False and result["cleanup"]["error"] == "busy"
+    assert len(calls) == 2
+    assert any(r.get("registration_id") == "older" for r in result["cleanup"]["refused_roles"])
+
+
+@pytest.mark.asyncio
+async def test_cleanup_leaves_a_registration_whose_handler_is_back_locally():
+    """While the failed register's cleanup runs, another thread registers
+    the same name with the sync call (which does not take the async name
+    lock). The registration main_server then reports may be that live one,
+    so the cleanup must not remove it."""
+    plugin, _ = _make_plugin()
+    calls: list[dict] = []
+    replies = [_ALL_SYNC_FAILED, _held_by("sync_one"), dict(_CLEANED)]
+
+    async def host(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            plugin.register_llm_tool(**_register_kwargs())
+        return replies[len(calls) - 1]
+
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "rejected"
+    assert len(calls) == 2  # register + its own cleanup, no follow-up removal
+    assert result["cleanup"]["ok"] is True
+    assert any(r.get("registration_id") == "sync_one" for r in result["cleanup"]["refused_roles"])
+    assert _local_names(plugin) == {"tool_a"}
 
 
 @pytest.mark.asyncio

@@ -756,6 +756,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
         with self._llm_tools_lock:
             self._llm_tools[meta.name] = meta
 
+    def _holds_llm_tool_locally(self, name: str) -> bool:
+        """Whether a handler for ``name`` is registered locally right now."""
+        with self._llm_tools_lock:
+            return self._llm_tools.get(name) is not None
+
     def _release_llm_tool_locally(self, meta: "LlmToolMeta") -> bool:
         """Drop ``meta`` from ``_llm_tools`` and remove its dynamic entry,
         but only if that exact registration is still current (a
@@ -1166,9 +1171,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 continue
             left = deadline - time.monotonic()
             if left < min(_LLM_TOOL_MIN_SEND_BUDGET, budget / 2):
-                error, message = "timeout", (
+                # Nothing is sent, so the outcome is known (the holder stays):
+                # "busy", like a call whose lock wait used up its budget, not
+                # "timeout", which means the outcome is unknown.
+                error, message = "busy", (
                     f"another registration of {name!r} holds the name and too little of the "
-                    f"{budget}s budget is left to remove it"
+                    f"{budget}s budget is left to remove it; nothing more was sent"
                 )
                 break
             outcome = await self._request_llm_tool_change(
@@ -1181,15 +1189,17 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 build_result=build_unregister_result,
             )
             outcomes.append(outcome)
+            reported = [r.get("registration_id") or "" for r in held(outcome)]
+            # Holders this answer reports: new ones, other roles, or ones
+            # removed earlier that are back (no longer counted as removed).
+            # Also on a failed answer, so a holder that came back is still
+            # listed in refused_roles.
+            removed_ids.difference_update(reported)
             if not outcome["ok"]:
                 error, message = outcome["error"] or "partial_failure", outcome["message"]
                 break
-            reported = [r.get("registration_id") or "" for r in held(outcome)]
             if rid not in reported:
                 removed_ids.add(rid)
-            # Holders this answer reports: new ones, other roles, or ones
-            # removed earlier that are back (no longer counted as removed).
-            removed_ids.difference_update(reported)
             queue.extend(reported)
 
         everything = [first, *outcomes]
@@ -1243,11 +1253,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
         if result["ok"] and any(
             r.get("reason") == "different registration" for r in result["refused_roles"]
-        ):
+        ) and not self._holds_llm_tool_locally(meta.name):
             # Another registration of this plugin holds the name (a register
             # that timed out earlier and landed late). The plugin holds no
             # handler for the name now, so it is a leftover too: remove it by
-            # its reported id, within the cleanup budget.
+            # its reported id, within the cleanup budget. If a handler is
+            # back (a sync register_llm_tool, which does not take the name
+            # lock, ran meanwhile), that registration may be the live one:
+            # leave it, and its refusal stays in the result.
             result = await self._remove_reported_llm_tool_registrations(
                 meta.name, meta.role, result, deadline, _LLM_TOOL_CLEANUP_TIMEOUT,
             )

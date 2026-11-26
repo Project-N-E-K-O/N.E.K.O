@@ -484,7 +484,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
 `main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
-`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`）、`not_registered`（注销：插件本地没有这个名字的记录，
+`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`。注销或 `cleanup` 的第一个请求已有答复、但剩下的预算不够再删它报告的过期注册（见下文）时也是 `busy`：那次删除没有发出，这个注册仍列在 `refused_roles` 里）、`not_registered`（注销：插件本地没有这个名字的记录，
 `main_server` 上也没删到本插件的这个名字；本地有记录时同样的答复是 `ok=True, removed=False`，并删掉本地 handler）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：
@@ -502,7 +502,8 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   只删这一次注册。所以超时了、但还在 `main_server` 上执行的清理或注销，删不掉同名的新注册；那个 role 会出现在
   `refused_roles` 里，带 `"reason": "different registration"`。这样的注册已经过期（比如超时的注册后来才落地），
   所以补发清理和 `unregister_llm_tool_async` 都会按 `main_server` 报告的 ID 把它也删掉（不会发不带 ID 的宽泛注销），
-  报告的注册全部删掉后才返回 `ok`。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
+  报告的注册全部删掉后才返回 `ok`。补发清理到这一步时如果插件本地又有了这个名字的 handler（例如别的线程用同步接口注册了它），
+  报告的注册可能正是那个在用的，补发清理就不删它，它仍留在 `refused_roles` 里。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
   没有的名字，注销时不带 ID（删本插件的任何一次注册），和以前一样。
 - `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
   和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
