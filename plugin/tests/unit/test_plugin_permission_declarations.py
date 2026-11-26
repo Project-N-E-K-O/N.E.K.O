@@ -2911,6 +2911,9 @@ def test_a_family_name_used_as_data_disables_the_downgrade(tmp_path, main_prefix
         ("w = setattr\n", None),
         ("for key in socket.__dict__:\n    pass\n", None),
         ("globals()['AF_' + 'UNIX'] = 2\n", None),
+        ("from builtins import getattr as g\ng(socket, '__set' + 'attr__')('AF_' + 'UNIX', socket.AF_INET)\n", None),
+        ("from inspect import getattr_static as g\n", None),
+        ("import builtins as b\nb.getattr(socket, '__set' + 'attr__')\n", None),
         ("import builtins\ng = getattr\ng(builtins, 'set' + 'attr')(socket, 'AF_' + 'UNIX', 2)\n", None),
         ("import builtins, functools\nfunctools.reduce(getattr, ['x'], builtins)\n", None),
         ("import builtins, inspect\ninspect.getattr_static(builtins, 'set' + 'attr')\n", None),
@@ -3045,6 +3048,8 @@ def test_an_attribute_write_elsewhere_keeps_a_function_local_socket(tmp_path):
         "from socket import socket as S\nS.listen = lambda self: None\n",
         "S = socket.socket\nT = S\nT.bind = lambda self, address: None\n",
         "setattr(socket.socket, 'bind', None)\n",
+        "S = getattr(socket, 'socket')\nS.listen = lambda self: None\n",
+        "import importlib\nm = importlib.import_module('socket')\nm.socket.listen = lambda self: None\n",
     ],
 )
 def test_a_patched_socket_module_disables_the_downgrade(tmp_path, patch):
@@ -3069,8 +3074,10 @@ def test_writing_other_attributes_keeps_the_downgrade(tmp_path):
         "import socket\nimport main\nsuper = lambda: main.s\nsuper().__init__(socket.AF_INET)\n",
         # Spelled super but outside an __init__.
         "import socket\nclass C:\n    def go(self):\n        super().__init__(socket.AF_INET)\n",
-        "import socket\nimport main\ndef super():\n    return main.s\nclass C:\n    def __init__(self):\n"
-        "        super().__init__(socket.AF_INET)\n",
+        (
+            "import socket\nimport main\ndef super():\n    return main.s\nclass C:\n    def __init__(self):\n"
+            "        super().__init__(socket.AF_INET)\n"
+        ),
         "import builtins\nimport main\nbuiltins.super = lambda: main.s\n",
         "import socket\nfrom main import s as super\n",
     ],

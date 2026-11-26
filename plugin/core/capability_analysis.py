@@ -420,9 +420,28 @@ _CONSTRUCTOR_NAMES = frozenset({"socket", "SocketType"})
 
 
 def _receiver_root(node) -> str | None:
-    while isinstance(node, (ast.Attribute, ast.Subscript)):
-        node = node.value
-    return node.id if isinstance(node, ast.Name) else None
+    """Root name of an attribute / subscript chain, seeing through getattr
+    (S = getattr(socket, "socket")); a literal import of the socket module
+    (importlib.import_module("socket")) is rooted in "socket"."""
+    while True:
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        elif isinstance(node, ast.Call) and node.args:
+            callee = node.func
+            name = callee.id if isinstance(callee, ast.Name) else (
+                callee.attr if isinstance(callee, ast.Attribute) else None
+            )
+            if name in _NAME_READERS:
+                node = node.args[0]
+            elif name in ("import_module", "__import__"):
+                module = node.args[0]
+                if isinstance(module, ast.Constant) and isinstance(module.value, str):
+                    return "socket" if module.value.split(".")[0] == "socket" else None
+                return None
+            else:
+                return None
+        else:
+            return node.id if isinstance(node, ast.Name) else None
 
 
 def _super_initialisers(tree, walker) -> set[int]:
@@ -523,6 +542,9 @@ def _families_written(sources, walker, written=None) -> bool:
         for node in ast.walk(tree):
             walker.poll()
             if _binds_super(node):
+                return True
+            if isinstance(node, ast.alias) and node.name.rsplit(".", 1)[-1] in _DYNAMIC_WRITERS:
+                # from builtins import getattr as g; from operator import attrgetter
                 return True
             if isinstance(node, ast.Import):
                 socket_names.update(item.asname or item.name for item in node.names if item.name == "socket")
