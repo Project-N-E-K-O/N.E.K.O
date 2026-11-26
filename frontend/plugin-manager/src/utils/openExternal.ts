@@ -175,7 +175,105 @@ export function openLocalPath(path: string): Promise<void> {
     return Promise.resolve(host.electronShell.openExternal(localPathToFileUrl(target))).then(() => undefined)
   }
   // 纯浏览器环境：没有桌面桥接
-  return Promise.reject(new Error('No desktop bridge available'))
+  return Promise.reject(Object.assign(new Error('No desktop bridge available'), { code: NO_DESKTOP_BRIDGE }))
+}
+
+export const NO_DESKTOP_BRIDGE = 'no_desktop_bridge'
+
+type ScopedPathStyle = 'posix' | 'windows' | 'unc'
+type ScopedPath = {
+  style: ScopedPathStyle
+  // Root marker: '' for posix, 'c:' style drive for windows, '//host/share' for UNC.
+  root: string
+  segments: string[]
+}
+
+/**
+ * Lexically normalize an absolute local path for scope comparison.
+ *
+ * Handles `file://` URLs, `/` and `\` separators, `.` / `..` segments,
+ * repeated and trailing separators, Windows drive letters and UNC shares.
+ * Returns null for anything that is not an absolute path or that cannot be
+ * compared safely (home-relative `~`, Windows device / verbatim prefixes,
+ * `..` above the root, NUL and other control characters, Windows segments
+ * that the OS would silently rewrite).
+ *
+ * Purely lexical: symbolic links and junctions cannot be resolved here.
+ */
+function parseScopedPath(input: string): ScopedPath | null {
+  const raw = normalizeLocalPath(String(input || '').trim())
+  if (!raw || CONTROL_CHARS_RE.test(raw)) return null
+  const slashed = raw.replace(/\\/g, '/')
+  let style: ScopedPathStyle
+  let root: string
+  let rest: string
+  const drive = /^([a-zA-Z]):(?:\/|$)/.exec(slashed)
+  if (drive) {
+    style = 'windows'
+    root = `${drive[1]!.toUpperCase()}:`
+    rest = slashed.slice(2)
+  } else if (slashed.startsWith('//')) {
+    const parts = slashed.slice(2).split('/')
+    const host = parts[0] || ''
+    const share = parts[1] || ''
+    // `//?/...` and `//./...` are Win32 verbatim / device namespaces.
+    if (!host || !share || host === '?' || host === '.') return null
+    style = 'unc'
+    root = `//${host}/${share}`
+    rest = parts.slice(2).join('/')
+  } else if (slashed.startsWith('/')) {
+    style = 'posix'
+    root = ''
+    rest = slashed
+  } else {
+    return null
+  }
+  const segments: string[] = []
+  for (const segment of rest.split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (!segments.length) return null
+      segments.pop()
+      continue
+    }
+    // Windows drops trailing dots/spaces and treats `:` as a stream
+    // separator, so such segments do not name what they spell.
+    if (style !== 'posix' && (/[. ]$/.test(segment) || segment.includes(':'))) return null
+    segments.push(segment)
+  }
+  return { style, root, segments }
+}
+
+function scopedPathKey(path: ScopedPath): string[] {
+  // Windows and UNC paths compare case-insensitively; POSIX paths exactly.
+  const fold = (value: string) => (path.style === 'posix' ? value : value.toLowerCase())
+  return [path.style, fold(path.root), ...path.segments.map(fold)]
+}
+
+function formatScopedPath(path: ScopedPath): string {
+  if (path.style === 'posix') return `/${path.segments.join('/')}`
+  const root = path.style === 'unc' ? path.root.replace(/\//g, '\\') : path.root
+  return `${root}\\${path.segments.join('\\')}`
+}
+
+/**
+ * Return the normalized native path when `target` equals or is inside one of
+ * `roots`, comparing whole path segments; otherwise null. Roots that are
+ * empty or not absolute are ignored.
+ */
+export function resolvePathWithinRoots(target: string, roots: ReadonlyArray<string | null | undefined>): string | null {
+  const parsed = parseScopedPath(target)
+  if (!parsed) return null
+  const targetKey = scopedPathKey(parsed)
+  for (const root of roots) {
+    if (typeof root !== 'string' || !root.trim()) continue
+    const parsedRoot = parseScopedPath(root)
+    if (!parsedRoot) continue
+    const rootKey = scopedPathKey(parsedRoot)
+    if (rootKey.length > targetKey.length) continue
+    if (rootKey.every((part, index) => part === targetKey[index])) return formatScopedPath(parsed)
+  }
+  return null
 }
 
 function isLocalPath(value: string): boolean {

@@ -21,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/plugins', () => apiMocks)
 
 const elementPlusMocks = vi.hoisted(() => ({
+  ElMessage: vi.fn(),
   ElMessageBox: {
     confirm: vi.fn(() => Promise.resolve('confirm')),
     close: vi.fn(),
@@ -1590,5 +1591,275 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(apiMocks.getPluginHostedSurfaceContext).not.toHaveBeenCalled()
     expect(frame.container.querySelector('[data-testid="surface-placeholder"]')).toBeNull()
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
+  const pluginRoot = '/home/u/neko/plugins/study_companion'
+  const dataRoot = '/home/u/.neko/plugins/study_companion/data'
+  let nekoOpenPath: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    apiMocks.callPluginHostedSurfaceAction.mockReset()
+    apiMocks.getPluginHostedSurfaceContext.mockReset()
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ paths: { plugin_dir: pluginRoot, data_dir: dataRoot } })
+    apiMocks.getPluginHostedSurfaceSource.mockReset()
+    apiMocks.parseHostedDocument.mockReset()
+    elementPlusMocks.ElMessage.mockReset()
+    localeRef.value = 'zh-CN'
+    nekoOpenPath = vi.fn(() => Promise.resolve({ ok: true }))
+    Object.defineProperty(window, 'nekoHost', { value: { openPath: nekoOpenPath }, configurable: true })
+  })
+
+  afterEach(() => {
+    try {
+      assertNoNetworkIframes(document.body)
+    } finally {
+      while (mountedFrames.length > 0) mountedFrames.pop()?.unmount()
+      Reflect.deleteProperty(window, 'nekoHost')
+      vi.useRealTimers()
+    }
+  })
+
+  function openPathMessage(path: string) {
+    return { type: 'neko-hosted-surface-open-path', payload: { path } }
+  }
+
+  function confirmRequest(options: { requestId?: string; message?: string; userInitiated?: boolean; timeoutMs?: number } = {}) {
+    return {
+      type: 'neko-hosted-surface-request',
+      requestId: options.requestId || 'confirm-1',
+      method: 'confirm',
+      userInitiated: options.userInitiated !== false,
+      timeoutMs: options.timeoutMs ?? 125000,
+      payload: options.message === undefined ? {} : { message: options.message },
+    }
+  }
+
+  const actionDialog = () => document.querySelector<HTMLElement>('[data-testid="action-confirm-dialog"]')
+  function clickDialogButton(testId: string) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)
+    if (!button) throw new Error(`Expected ${testId}`)
+    button.click()
+  }
+  const lastMessageCall = () => elementPlusMocks.ElMessage.mock.calls.at(-1)?.[0]
+
+  it.each([
+    `${pluginRoot}/exports/report.txt`,
+    `${dataRoot}/out`,
+    `${dataRoot}/`,
+    `${pluginRoot}/a/../b.txt`,
+  ])('opens %s inside the plugin or data directory', async (path) => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(path))
+    await flushPromises()
+    await flushPromises()
+
+    expect(nekoOpenPath).toHaveBeenCalledOnce()
+    expect(nekoOpenPath.mock.calls[0]![0].path.startsWith(pluginRoot) || nekoOpenPath.mock.calls[0]![0].path.startsWith(dataRoot)).toBe(true)
+    expect(elementPlusMocks.ElMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    '/etc/passwd',
+    '/home/u/neko/plugins/study_companion_evil/x',
+    `${pluginRoot}/../other_plugin/secret`,
+    '/home/u/.neko/plugins/study_companion/config/plugin.toml',
+  ])('refuses %s outside the plugin scope and tells the user', async (path) => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(path))
+    await flushPromises()
+    await flushPromises()
+
+    expect(nekoOpenPath).not.toHaveBeenCalled()
+    expect(lastMessageCall()).toMatchObject({ type: 'warning', message: 'plugins.ui.openPathOutOfScope' })
+  })
+
+  it('takes the scope from the host context read, not from the panel message', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest({
+      type: 'neko-hosted-surface-open-path',
+      payload: { path: '/etc/passwd', paths: { plugin_dir: '/etc', data_dir: '/' } },
+    })
+    await flushPromises()
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledOnce()
+    expect(nekoOpenPath).not.toHaveBeenCalled()
+  })
+
+  it('refuses everything when the host cannot read the scope', async () => {
+    apiMocks.getPluginHostedSurfaceContext.mockRejectedValue(new Error('offline'))
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(`${pluginRoot}/x`))
+    await flushPromises()
+    await flushPromises()
+
+    expect(nekoOpenPath).not.toHaveBeenCalled()
+    expect(lastMessageCall()).toMatchObject({ message: 'plugins.ui.openPathOutOfScope' })
+  })
+
+  it('ignores open-path messages from another window', async () => {
+    const frame = await mountFrame()
+    window.dispatchEvent(new MessageEvent('message', { data: openPathMessage(`${pluginRoot}/x`), origin: 'null', source: window }))
+    await flushPromises()
+    await flushPromises()
+
+    expect(frame.postMessage).not.toHaveBeenCalled()
+    expect(apiMocks.getPluginHostedSurfaceContext).not.toHaveBeenCalled()
+    expect(nekoOpenPath).not.toHaveBeenCalled()
+  })
+
+  it('tells the user when opening fails', async () => {
+    nekoOpenPath.mockResolvedValue({ ok: false, error: 'not found' })
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(`${pluginRoot}/missing.txt`))
+    await flushPromises()
+    await flushPromises()
+
+    expect(lastMessageCall()).toMatchObject({ type: 'error', message: 'plugins.ui.openPathFailed' })
+  })
+
+  it('tells the user when there is no desktop bridge', async () => {
+    Reflect.deleteProperty(window, 'nekoHost')
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(`${pluginRoot}/x`))
+    await flushPromises()
+    await flushPromises()
+
+    expect(lastMessageCall()).toMatchObject({ type: 'warning', message: 'plugins.ui.openPathNoBridge' })
+  })
+
+  it('reuses the scope from the hosted-tsx context load', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    const frame = await mountFrame(makeHostedSurface())
+    await flushPromises()
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledOnce()
+    frame.dispatchRequest(openPathMessage(`${dataRoot}/x.txt`))
+    await flushPromises()
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledOnce()
+    expect(nekoOpenPath).toHaveBeenCalledWith({ path: `${dataRoot}/x.txt` })
+  })
+
+  it('keeps the hosted-tsx panel sandbox without allow-modals', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    const frame = await mountFrame(makeHostedSurface())
+    expect(frame.iframe()?.getAttribute('sandbox')).toBe('allow-scripts')
+  })
+
+  it('shows the plugin confirm text as plain text and answers confirmed', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest({ message: '<img src=x onerror=alert(1)>Delete?' }))
+    await flushPromises()
+
+    const dialog = actionDialog()
+    expect(dialog).not.toBeNull()
+    expect(dialog!.getAttribute('aria-label')).toBe('plugins.ui.actionConfirmTitle')
+    expect(dialog!.querySelector('.hosted-surface-frame__confirm-message')?.textContent).toBe('<img src=x onerror=alert(1)>Delete?')
+    expect(dialog!.querySelector('img')).toBeNull()
+    clickDialogButton('action-confirm-ok')
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      { type: 'neko-hosted-surface-response', requestId: 'confirm-1', ok: true, result: { confirmed: true } },
+      '*',
+    )
+  })
+
+  it('uses the translated default text and answers not confirmed on cancel', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest())
+    await flushPromises()
+    expect(actionDialog()?.textContent).toContain('plugins.ui.actionConfirmDefault')
+    clickDialogButton('action-confirm-cancel')
+    await flushPromises()
+
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      { type: 'neko-hosted-surface-response', requestId: 'confirm-1', ok: true, result: { confirmed: false } },
+      '*',
+    )
+  })
+
+  it('closes the dialog at its deadline, answers timeout, and tells the user', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest({ timeoutMs: 125000 }))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(119999)
+    expect(actionDialog()).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'confirm-1', ok: false, code: 'action_confirm_timeout' }),
+      '*',
+    )
+    expect(frame.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ ok: true }), '*')
+    expect(lastMessageCall()).toMatchObject({ type: 'warning', message: 'plugins.ui.actionConfirmTimeout' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('drops the dialog when the panel cancels the request', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest())
+    await flushPromises()
+    const timersWithDialog = vi.getTimerCount()
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'confirm-1' })
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
+    expect(frame.postMessage).not.toHaveBeenCalled()
+    // The dialog deadline timer is released with it.
+    expect(vi.getTimerCount()).toBe(timersWithDialog - 1)
+  })
+
+  it('drops the dialog on unmount without answering', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest())
+    await flushPromises()
+    frame.unmount()
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('serializes confirmations with document parsing', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest({ requestId: 'confirm-a' }))
+    await flushPromises()
+    frame.dispatchRequest(confirmRequest({ requestId: 'confirm-b' }))
+    await flushPromises()
+
+    expect(document.querySelectorAll('[data-testid="action-confirm-dialog"]')).toHaveLength(1)
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'confirm-b', ok: false, code: 'action_confirm_pending' }),
+      '*',
+    )
+  })
+
+  it('refuses confirmations not started by a user action', async () => {
+    const frame = await mountFrame()
+    frame.dispatchRequest(confirmRequest({ userInitiated: false }))
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'confirm-1', ok: false, code: 'action_confirm_not_user_initiated' }),
+      '*',
+    )
+  })
+
+  it('ignores confirmation requests from another window', async () => {
+    await mountFrame()
+    window.dispatchEvent(new MessageEvent('message', { data: confirmRequest(), origin: 'null', source: window }))
+    await flushPromises()
+
+    expect(actionDialog()).toBeNull()
   })
 })

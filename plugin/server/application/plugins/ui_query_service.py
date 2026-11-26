@@ -505,6 +505,29 @@ def _plugin_root_from_meta(plugin_meta: Mapping[str, object]) -> Path | None:
         return None
 
 
+def _hosted_surface_paths(plugin_id: str, plugin_meta: Mapping[str, object]) -> dict[str, str | None]:
+    """Read-only directories the hosted surface host may open for this plugin.
+
+    The plugin-manager host uses these to scope ``open-path`` requests; the
+    panel never supplies them. ``data_dir`` comes from the same SDK helper as
+    the plugin's own ``data_path()``.
+    """
+    plugin_root = _plugin_root_from_meta(plugin_meta)
+    data_dir: str | None
+    try:
+        from types import SimpleNamespace
+
+        from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
+
+        data_dir = str(resolve_plugin_data_dir(SimpleNamespace(plugin_id=plugin_id)))
+    except Exception:
+        data_dir = None
+    return {
+        "plugin_dir": str(plugin_root) if plugin_root is not None else None,
+        "data_dir": data_dir,
+    }
+
+
 def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifier: str) -> Path | None:
     clean_specifier = specifier.split("?", 1)[0].split("#", 1)[0]
     try:
@@ -1608,6 +1631,7 @@ class PluginUiQueryService:
                 "actions": actions,
                 "entries": entries,
                 "config": config_snapshot,
+                "paths": _hosted_surface_paths(plugin_id, plugin_meta),
                 "warnings": warnings,
                 "i18n": {
                     "locale": resolved_locale,

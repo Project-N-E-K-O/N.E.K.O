@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openLocalPath, prepareExternalWindow } from './openExternal'
+import { NO_DESKTOP_BRIDGE, openLocalPath, prepareExternalWindow, resolvePathWithinRoots } from './openExternal'
 
 describe('openLocalPath file URL conversion', () => {
   beforeEach(() => {
@@ -102,5 +102,83 @@ describe('prepareExternalWindow', () => {
     expect(open).not.toHaveBeenCalled()
     target.open('https://market.example/')
     expect(openExternal).toHaveBeenCalledWith('https://market.example/')
+  })
+})
+
+describe('resolvePathWithinRoots', () => {
+  const posixRoots = ['/home/u/neko/plugins/plugin_a', '/home/u/.neko/plugins/plugin_a/data']
+  const windowsRoots = ['C:\\Neko\\plugins\\plugin_a', 'D:/NekoData/plugins/plugin_a/data/']
+
+  it.each([
+    ['/home/u/neko/plugins/plugin_a', '/home/u/neko/plugins/plugin_a'],
+    ['/home/u/neko/plugins/plugin_a/', '/home/u/neko/plugins/plugin_a'],
+    ['/home/u/neko/plugins/plugin_a/out/report.txt', '/home/u/neko/plugins/plugin_a/out/report.txt'],
+    ['/home/u/.neko/plugins/plugin_a/data//exports/./a.csv', '/home/u/.neko/plugins/plugin_a/data/exports/a.csv'],
+    ['/home/u/neko/plugins/plugin_a/x/../y', '/home/u/neko/plugins/plugin_a/y'],
+    ['file:///home/u/neko/plugins/plugin_a/a%20b.txt', '/home/u/neko/plugins/plugin_a/a b.txt'],
+  ])('allows %s inside a POSIX root', (target, expected) => {
+    expect(resolvePathWithinRoots(target, posixRoots)).toBe(expected)
+  })
+
+  it.each([
+    ['c:\\neko\\PLUGINS\\Plugin_A\\out.txt', 'C:\\neko\\PLUGINS\\Plugin_A\\out.txt'],
+    ['C:/Neko/plugins/plugin_a/sub\\file.txt', 'C:\\Neko\\plugins\\plugin_a\\sub\\file.txt'],
+    ['D:\\NekoData\\plugins\\plugin_a\\data', 'D:\\NekoData\\plugins\\plugin_a\\data'],
+    ['file:///C:/Neko/plugins/plugin_a/a.txt', 'C:\\Neko\\plugins\\plugin_a\\a.txt'],
+  ])('allows %s inside a Windows root, ignoring case and separator style', (target, expected) => {
+    expect(resolvePathWithinRoots(target, windowsRoots)).toBe(expected)
+  })
+
+  it.each([
+    '/home/u/neko/plugins/plugin_a_evil',
+    '/home/u/neko/plugins/plugin_a_evil/x',
+    '/home/u/neko/plugins/plugin_a/../plugin_b/x',
+    '/home/u/neko/plugins/plugin_a/../../../../../etc/passwd',
+    '/home/u/neko/plugins',
+    '/HOME/u/neko/plugins/plugin_a',
+    '/etc/passwd',
+    '~/neko/plugins/plugin_a',
+    'neko/plugins/plugin_a',
+    '/home/u/neko/plugins/plugin_a/\u0000x',
+    'https://example.com/home/u/neko/plugins/plugin_a',
+    '',
+  ])('rejects %j for POSIX roots', (target) => {
+    expect(resolvePathWithinRoots(target, posixRoots)).toBeNull()
+  })
+
+  it.each([
+    'C:\\Neko\\plugins\\plugin_a_evil\\x',
+    'C:\\Neko\\plugins\\plugin_a\\..\\plugin_b',
+    'C:\\Neko\\plugins\\plugin_a\\..\\..\\..\\..\\Windows',
+    'E:\\Neko\\plugins\\plugin_a',
+    'C:\\Neko\\plugins\\plugin_a.\\x',
+    'C:\\Neko\\plugins\\plugin_a\\file.txt:stream',
+    '\\\\?\\C:\\Neko\\plugins\\plugin_a\\x',
+    '\\\\server\\share\\Neko\\plugins\\plugin_a',
+    '/Neko/plugins/plugin_a',
+    'C:Neko\\plugins\\plugin_a',
+  ])('rejects %j for Windows roots', (target) => {
+    expect(resolvePathWithinRoots(target, windowsRoots)).toBeNull()
+  })
+
+  it('matches UNC roots by host and share', () => {
+    const roots = ['\\\\nas\\share\\plugins\\plugin_a']
+    expect(resolvePathWithinRoots('//NAS/Share/plugins/plugin_a/x.txt', roots)).toBe('\\\\NAS\\Share\\plugins\\plugin_a\\x.txt')
+    expect(resolvePathWithinRoots('\\\\nas\\other\\plugins\\plugin_a', roots)).toBeNull()
+  })
+
+  it('ignores missing roots', () => {
+    expect(resolvePathWithinRoots('/anything', [null, undefined, '', 'relative/root'])).toBeNull()
+  })
+})
+
+describe('openLocalPath without a desktop bridge', () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, 'nekoHost')
+    Reflect.deleteProperty(window, 'electronShell')
+  })
+
+  it('rejects with a recognizable code', async () => {
+    await expect(openLocalPath('/tmp/x')).rejects.toMatchObject({ code: NO_DESKTOP_BRIDGE })
   })
 })

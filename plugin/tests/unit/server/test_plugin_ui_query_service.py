@@ -160,6 +160,40 @@ def test_surface_context_includes_config_snapshot_only_with_permission(monkeypat
     assert context["actions"] == []
 
 
+def test_surface_context_reports_host_open_path_roots(monkeypatch, tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage_root))
+    plugin_ui = normalize_plugin_ui_manifest(
+        {"plugin": {"ui": {"panel": [{"id": "main", "entry": "ui/panel.tsx"}]}}},
+        plugin_id="demo",
+    )
+    with state.acquire_plugins_write_lock():
+        previous = state.plugins.get("demo")
+        state.plugins["demo"] = {
+            "id": "demo",
+            "config_path": str(config_path),
+            "plugin_ui": plugin_ui,
+            "entries": [],
+        }
+    try:
+        context = asyncio.run(PluginUiQueryService().get_surface_context("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            if previous is None:
+                state.plugins.pop("demo", None)
+            else:
+                state.plugins["demo"] = previous
+
+    assert context["paths"] == {
+        "plugin_dir": str(plugin_dir.resolve()),
+        "data_dir": str(storage_root.resolve() / "plugins" / "demo" / "data"),
+    }
+
+
 def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     ui_dir = plugin_dir / "ui"
