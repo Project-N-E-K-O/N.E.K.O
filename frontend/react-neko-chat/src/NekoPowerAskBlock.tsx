@@ -22,6 +22,11 @@ const CHOICE_WORDS: Record<string, [string, string]> = {
 
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
+// What the user typed and picked for a question that is not answered yet, by task and question.
+// Above the composer one question is shown at a time: one that gives way to another (of another
+// task) and comes back has what was put into it still there. Let go of once the question is over.
+const drafts = new Map<string, { reply: string; picked: Record<string, string[]> }>();
+
 export interface AskQuestion {
   /** Where it stands among the questions ("0", "1", ...): what the answer names it by. */
   id: string;
@@ -89,8 +94,16 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   const view = askView(block.question);
-  const [reply, setReply] = useState('');
-  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const draftKey = `${block.taskId}:${block.questionId}`;
+  const [reply, setReply] = useState(() => drafts.get(draftKey)?.reply ?? '');
+  const [picked, setPicked] = useState<Record<string, string[]>>(() => drafts.get(draftKey)?.picked ?? {});
+  useEffect(() => {
+    if (block.state !== 'pending' && block.state !== 'sending') drafts.delete(draftKey);
+    else if (reply || Object.values(picked).some(labels => labels.length)) drafts.set(draftKey, { reply, picked });
+    else drafts.delete(draftKey);
+    // No more than a few are ever in the making at once; a long session leaves none behind for good.
+    if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
+  }, [draftKey, block.state, reply, picked]);
   const [wholeOpen, setWholeOpen] = useState(false);
   const [settling, setSettling] = useState(settle);
   useEffect(() => {

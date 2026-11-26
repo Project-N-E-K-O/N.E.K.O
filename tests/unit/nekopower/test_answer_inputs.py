@@ -216,6 +216,9 @@ class _Host:
     async def _get(self, commission_id: str) -> Any:
         if self.asks is None:
             return None
+        if self.asks == "nothing":
+            # There, and not asking anything any more.
+            return SimpleNamespace(id=commission_id, question=lambda: None)
         return SimpleNamespace(id=commission_id, question=lambda: {"kind": self.asks, "id": "q1"})
 
     async def _select(self, **criteria: Any) -> list[Any]:
@@ -332,11 +335,37 @@ async def test_a_pick_alone_answers_only_questions_that_offer_something_to_pick(
     host = _Host(asks=kind)
     async with _client(host) as client:
         alone = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}})
+        named = await client.post(
+            "/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}, "question_id": "q1"}
+        )
+        assert named.status_code == 400
         with_words = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}, "text": "yes"})
 
     assert alone.status_code == 400 and alone.json()["detail"] == {"code": "bad_text", "field": "text"}
     assert with_words.status_code == 200
     assert [given[1] for given in host.answers] == ["yes"]
+
+
+@pytest.mark.parametrize(
+    "asks, question_id",
+    [
+        # It asks another question by now (a request for approval, whose id is q1), or nothing at all.
+        ("permission", "q0"),
+        ("nothing", "q0"),
+        ("nothing", None),
+    ],
+)
+async def test_a_pick_that_comes_too_late_is_turned_away_as_late_and_not_as_wrong(asks, question_id):
+    # The pages say of 409 that the question was answered or replaced; 400 would read as an error of theirs.
+    host = _Host(asks=asks, takes_answer=False)
+    payload: dict[str, Any] = {"selected": {"0": ["Yes"]}}
+    if question_id is not None:
+        payload["question_id"] = question_id
+    async with _client(host) as client:
+        late = await client.post("/console/commissions/c1/answer", headers=HEADERS, json=payload)
+
+    assert late.status_code == 409 and late.json()["detail"]["code"] == "not_taken"
+    assert len(host.answers) == 1
 
 
 async def test_a_pick_for_a_commission_that_is_not_there_is_turned_away_as_any_answer_to_it():

@@ -23,6 +23,8 @@
     </div>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="commissions-error" />
+    <!-- Of an answer that was taken while the sentence added to it was not. Above the list: the commission may not be in it any more. -->
+    <el-alert v-if="answered" :title="answered" type="warning" show-icon class="block" data-testid="commission-answer-note" @close="answered = ''" />
     <p v-if="loaded && !rows.length" class="muted pad" data-testid="commissions-empty">{{ t('power.commissions.empty') }}</p>
 
     <table v-if="rows.length" class="rows" data-testid="commissions-table">
@@ -127,6 +129,7 @@ let draft = 0
 watch(sentence, () => { draft += 1 }, { flush: 'sync' })
 const busy = ref('')
 const note = ref('')
+const answered = ref('')
 rememberAsks()
 let timer: ReturnType<typeof setTimeout> | null = null
 let alive = true
@@ -277,9 +280,10 @@ async function answer(item: CommissionRow, given: GivenAnswer) {
   // One answer to a question: nothing more is sent while one is on its way.
   if (!saysSomething(given) || busy.value) return
   let lost = ''
+  answered.value = ''
   const took = await act(answeringAs(given), async () => { lost = await sendAnswer(item.id, given, item.ask, t) }, '', describeAnswerError)
   // The answer is in; the sentence that was to go with it was not taken.
-  if (took && lost) note.value = lost
+  if (took && lost) answered.value = `${item.title}: ${lost}`
 }
 const stop = (item: CommissionRow) => act('stop', () => stopCommission(item.id), t('power.space.familiars.stopped'))
 

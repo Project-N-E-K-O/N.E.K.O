@@ -166,7 +166,8 @@
             if (response.ok) return { ok: true, stale: false, noteLost: Boolean(result && result.note_taken === false) };
             if (response.status !== 504) return { ok: false, stale: response.status === 409, noteLost: false };
         } catch (_) {
-            return { ok: false, stale: false, noteLost: false };
+            // The connection broke after the answer was sent: it may have been taken all the same.
+            // Looked into as below, and not said to have failed.
         }
         // The server gave up waiting after it had passed the answer on: it may be in. Where the
         // same question still waits it was not, and can be sent again. Where it waits no more it is
@@ -517,7 +518,9 @@
             queued = queued.filter(function (args) { return args[0] !== taskId; });
             queued.push([taskId, title, question, route]);
             tries = 0;
-            setTimeout(drain, 500);
+            // One look at a time, for all that waits: each question starting its own would use up
+            // the looks between them before the window is there.
+            if (!draining) draining = setTimeout(drain, 500);
             return;
         }
         // Shown from here on: what waited for the window of this task is older, and is let go of.
@@ -636,7 +639,12 @@
             if (!mine) {
                 // Closed while the answer was on its way (it was answered elsewhere, or is over):
                 // the card says so already, and is not opened again whatever came of this.
+                var api = host();
+                // (Not of a chat that was emptied meanwhile: its cards are gone.)
+                if (!api || !inChat(api, card.message.id)) return;
                 if (result.ok) patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
+                // It stays closed; what is not known of this answer is said on it.
+                else patch(card, { notice: word(result.stale ? 'stale' : 'goneUnsure') });
                 return;
             }
             if (result.ok) {
@@ -671,10 +679,12 @@
     // Once the chat window is there: what waited for it is shown. The page's connection reads
     // what was asked before it opened (`sync`, from `app-websocket.js` as it connects).
     var tries = 0;
+    var draining = null;
     function drain() {
+        draining = null;
         if (!queued.length) return;
         if (!host()) {
-            if (tries++ < 120) setTimeout(drain, 500);
+            if (tries++ < 120) draining = setTimeout(drain, 500);
             return;
         }
         var waitingToShow = queued.splice(0, queued.length);

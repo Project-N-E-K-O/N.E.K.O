@@ -260,6 +260,32 @@ describe('the question above the composer of the compact chat', () => {
     expect(floating()).toBeNull();
   });
 
+  it('keeps what was typed and picked for a question that gives way to another and comes back', () => {
+    const within = (messages: ChatMessage[]) => (
+      <ChatScreenVisibilityProvider messages={messages}>
+        <CompactAskOrRecommendationPrompt messages={messages} />
+      </ChatScreenVisibilityProvider>
+    );
+    const first = ask(twoQuestions, {}, 'd1');
+    const view = render(within([first]));
+    const at = (selector: string) => view.container.querySelector(selector) as HTMLElement;
+    fireEvent.click(at('[data-question="1"] [data-option="b"]'));
+    fireEvent.change(at('[data-ask-input]'), { target: { value: 'half a sentence' } });
+    // Another task asks: its question floats instead, with nothing of the first one's in it.
+    view.rerender(within([first, ask(inWords, {}, 'd2')]));
+    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('');
+    // Answered: the first one is back, as it was left.
+    view.rerender(within([first, ask(inWords, { state: 'answered', answer: 'x' }, 'd2')]));
+    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('half a sentence');
+    expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('true');
+    // Once it is over (its card among the messages says so), nothing of it is kept for a card that is drawn again.
+    view.rerender(within([]));
+    show(ask(twoQuestions, { state: 'closed' }, 'd1')).unmount();
+    view.rerender(within([first]));
+    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('');
+    expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {
     function Clear() {
       const { clearScreen } = useChatScreenVisibility();

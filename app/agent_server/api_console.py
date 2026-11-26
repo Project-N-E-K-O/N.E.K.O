@@ -819,7 +819,11 @@ def build_console_router(
             if not any(label.strip() for labels in (selected or {}).values() for label in labels):
                 raise _refuse(400, "bad_text", field="text")
             commission = await host.ledger.get(commission_id)
-            if commission is not None and (commission.question() or {}).get("kind") != "questions":
+            asked = commission.question() if commission is not None else None
+            # Only of the question that is answered: one that is over, or replaced by another
+            # meanwhile, is turned away below as an answer that came too late (409), which the
+            # pages say so of.
+            if asked and question_id in (None, asked.get("id")) and asked.get("kind") != "questions":
                 raise _refuse(400, "bad_text", field="text")
         if not await host.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected):
             # It asked nothing, or what it asked was answered or withdrawn meanwhile.

@@ -239,6 +239,29 @@ describe('the question inside a card of the task HUD', () => {
     expect(block()).toMatchObject({ state: 'closed', notice: '这个问题已经结束了；这次的回答有没有算上，不确定。' });
   });
 
+  it('does not say an answer failed when the connection broke after it was sent', async () => {
+    vi.useFakeTimers();
+    // The request goes out and nothing comes back; what waits cannot be read either.
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      if (url.includes('/answer')) throw new TypeError('network');
+      const answer = reply(url);
+      return { ok: answer.status === 200, status: answer.status, json: async () => answer.body };
+    }));
+    reply = () => ({ status: 502, body: {} });
+    const box = draw(permission);
+    const once = box.querySelector('[data-choice="once"]') as HTMLButtonElement;
+    press(once);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(box.querySelector('.task-ask-status')?.textContent).toBe('还不确定送到没有，过一会儿再看。');
+    expect(once.disabled).toBe(true);
+    // Readable again, the same question still waits: it was not taken, and can be given again.
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', question: permission }] } });
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS);
+    expect(box.querySelector('.task-ask-status')?.textContent).toBe('没送到，再试一次吧。');
+    expect(once.disabled).toBe(false);
+  });
+
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {
     vi.useFakeTimers();
     const box = draw(permission, { noNote: true, settle: true });
@@ -572,6 +595,54 @@ describe('the cards of the chat window', () => {
     await asks.sync();
     asks.receive(frame(confirmation, { task_id: 'c2' }));
     expect(messages.length).toBe(1);
+  });
+
+  it('says on a card closed while its answer was on its way what is not known of that answer', async () => {
+    const w = window as unknown as Record<string, { getState?: () => unknown }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    let release = () => {};
+    hold = new Promise(resolve => { release = resolve; });
+    // The server gives up waiting; the question waits no more by the time that is looked into.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 200, body: { questions: [] } });
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    asks.receive(frame(null, { question_id: 'q1' }));
+    asks.receive(frame(confirmation));
+    hold = null;
+    release();
+    await flush();
+    // Closed as it was, with what is not known said on it; the next question is as it was.
+    expect(messages.map(message => [message.blocks[0].state, message.blocks[0].notice || ''])).toEqual([
+      ['closed', '这个问题已经结束了；这次的回答有没有算上，不确定。'], ['pending', ''],
+    ]);
+
+    // A chat that was emptied meanwhile is not written to.
+    hold = new Promise(resolve => { release = resolve; });
+    answerFromChat({ taskId: 'c1', questionId: 'q2', choice: 'yes' });
+    await flush();
+    asks.receive(frame(null, { question_id: 'q2' }));
+    const kept = messages;
+    messages = [];
+    hold = null;
+    release();
+    await flush();
+    expect(messages).toEqual([]);
+    expect(kept[1].blocks[0].notice || '').toBe('');
+  });
+
+  it('looks once at a time for the chat window, however many questions wait for it', () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    for (let index = 0; index < 20; index += 1) asks.receive(frame({ ...permission, id: `q${index}` }, { task_id: `t${index}` }));
+    // The window takes five seconds to be there: each question looking on its own would have used up the looks by then.
+    vi.advanceTimersByTime(5000);
+    expect(messages).toEqual([]);
+    w.reactChatWindowHost = host;
+    vi.advanceTimersByTime(600);
+    expect(messages.length).toBe(20);
   });
 
   it('keeps a question for a chat window that is not there yet', () => {
