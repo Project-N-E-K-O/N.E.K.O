@@ -53,7 +53,6 @@ deferred results, ``needs_confirmation`` and ``clarify``.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -71,6 +70,7 @@ from nekopower.host.decision import (
     find_duplicate,
     is_capability_question,
     looks_like_a_task,
+    quote_data,
 )
 from nekopower.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
 from nekopower.host.permissions import DENIED_BY_USER, GrantScope, PermissionGate, PermissionStore
@@ -477,8 +477,9 @@ class TaskBrain:
                 continue
             role = roles.get(session.preset or "", session.preset or "familiar")
             # The title quoted as the rest of what the host did not write
-            # (``decision._quoted``): quotes within it cannot end it.
-            named[session_id] = f"{role} {json.dumps(session.title, ensure_ascii=False)}" if session.title else role
+            # (``decision.quote_data``): quotes and line breaks within it
+            # cannot end it.
+            named[session_id] = f"{role} {quote_data(session.title)}" if session.title else role
         return named
 
     async def _recently_over(self, lanlan_name: str) -> list[Commission]:

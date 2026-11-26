@@ -469,7 +469,7 @@ ANSWER_CHOICES = ("always", "session", "once", "deny")
 _UNDER_WAY, _ASKED, _ENDED = "under_way", "asked", "ended"
 
 
-def _quoted(text: str) -> str:
+def quote_data(text: str) -> str:
     """Return words the host did not write as the reading shows them: a JSON string.
 
     Titles, projects, commands, paths, questions and what work ended with
@@ -477,8 +477,19 @@ def _quoted(text: str) -> str:
     line breaks within escaped, nothing written in them can end the quote,
     start an item of its own or pass for the host's words; the prompt says
     what is quoted is what the request is sorted by, never instructions.
+    Every line break ``str.splitlines`` knows is escaped: JSON leaves NEL,
+    the line separator and the paragraph separator as they are.
     """
-    return json.dumps(text, ensure_ascii=False)
+    quoted = json.dumps(text, ensure_ascii=False)
+    for char in _LINE_BREAKS_JSON_KEEPS:
+        quoted = quoted.replace(char, f"\\u{ord(char):04x}")
+    return quoted
+
+
+# Line breaks to ``str.splitlines`` (and to many a tokenizer and model) that
+# ``json.dumps(..., ensure_ascii=False)`` leaves unescaped: NEL, LINE
+# SEPARATOR, PARAGRAPH SEPARATOR.
+_LINE_BREAKS_JSON_KEEPS = ("\x85", "\u2028", "\u2029")
 
 
 def _cut(line: str, max_tokens: int) -> str:
@@ -525,7 +536,7 @@ def _asked(commission: Commission) -> tuple[str, str]:
     A request for approval says what is to be allowed with the answers on
     offer (``describe_permission``, in English; the command or the path the
     user decides by stays as it was written). The question is quoted
-    (``_quoted``) and fits ``UNDER_WAY_READ_QUESTION_MAX_TOKENS`` quoted:
+    (``quote_data``) and fits ``UNDER_WAY_READ_QUESTION_MAX_TOKENS`` quoted:
     what its escapes add is taken from what is shown of it (the command or
     the path gives way first, the answers on offer stay while they fit).
     """
@@ -545,8 +556,8 @@ def _asked(commission: Commission) -> tuple[str, str]:
 
     def quoted(room: int) -> str:
         if kind == "permission":
-            return _quoted(truncate_to_tokens(describe_permission(question, "en", max_tokens=room), room))
-        return _quoted(truncate_to_tokens(whole, room))
+            return quote_data(truncate_to_tokens(describe_permission(question, "en", max_tokens=room), room))
+        return quote_data(truncate_to_tokens(whole, room))
 
     limit = UNDER_WAY_READ_QUESTION_MAX_TOKENS
     # The two quotes, then what the escapes add: what is shown gives way
@@ -563,7 +574,7 @@ def _asked(commission: Commission) -> tuple[str, str]:
 def _item_line(number: int, commission: Commission, request: DecisionRequest, *, within: Commission | None = None) -> str:
     """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks.
 
-    What the host did not write is quoted (``_quoted``); what the user calls
+    What the host did not write is quoted (``quote_data``); what the user calls
     a familiar quotes its card's title already (``TaskBrain._familiars``).
     """
     from config.nekopower_settings import UNDER_WAY_READ_LINE_MAX_TOKENS
@@ -574,16 +585,16 @@ def _item_line(number: int, commission: Commission, request: DecisionRequest, *,
 
     about: list[str] = []
     if commission.project:
-        about.append(f"project {_quoted(commission.project)}")
+        about.append(f"project {quote_data(commission.project)}")
     if commission.route == "plugin" and commission.plugin_id:
-        about.append(f"by the plugin {_quoted(commission.plugin_id)}")
+        about.append(f"by the plugin {quote_data(commission.plugin_id)}")
     elif request.familiars.get(commission.session_id or ""):
         about.append(f"by {request.familiars[commission.session_id or '']}")
     if request.familiars.get(commission.handed_by or ""):
         about.append(f"handed on by {request.familiars[commission.handed_by or '']}")
     if within is not None:
-        about.append(f"within {_quoted(within.title)}")
-    line = f"{number}. [{status(commission)}] {_quoted(commission.title)}"
+        about.append(f"within {quote_data(within.title)}")
+    line = f"{number}. [{status(commission)}] {quote_data(commission.title)}"
     if about:
         line += f" ({'; '.join(about)})"
     members = [item for item in request.children if item.parent_id == commission.id]
@@ -591,13 +602,13 @@ def _item_line(number: int, commission: Commission, request: DecisionRequest, *,
     def member(item: Commission) -> str:
         familiar = request.familiars.get(item.session_id or "")
         said = f"{status(item)}; by {familiar}" if familiar else status(item)
-        return f"{_quoted(item.title)} ({said})"
+        return f"{quote_data(item.title)} ({said})"
 
     if members:
         line += "; its members: " + ", ".join(member(item) for item in members)
     ended = commission.result_summary or (commission.status_reason if commission.status == "failed" else "")
     if commission.status not in ACTIVE_STATUSES and ended:
-        line += f"; it ended with: {_quoted(ended)}"
+        line += f"; it ended with: {quote_data(ended)}"
     line = _cut(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
     if commission.status == "waiting_user" and commission.question():
         kind, asked = _asked(commission)
@@ -1077,13 +1088,24 @@ class LexicalDecisionModel:
             # It means one of these and cannot say which (an answer or an
             # addition is to one): which, the user is asked.
             return which([item.id for _place, item in picked])
-        if does in ("unsure", "stop") and reading.get("items") in (None, []) and len(everything) > 1:
+        if does in ("unsure", "stop") and reading.get("items") in (None, []):
             # Some of the work is meant, and none is named ("stop it" read with
-            # no items): which, the user is asked, among all that is under way.
-            # (Numbers it gave that are none of the items are no reading.)
-            if does == "unsure":
-                return which(everything)
-            return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            # no items). (Numbers it gave that are none of the items are no
+            # reading.) A stop is of her work under way, all of it, the list
+            # may have cut; one unsure of which may answer a question as well,
+            # so what waits within her work counts too.
+            if does == "stop":
+                if not everything:
+                    return Triage(kind="nothing_active", model_calls=1), 1, False
+                if len(everything) == 1:
+                    # One thing under way: stopped, as a stop that does not say
+                    # which is ("cancel the task").
+                    return Triage(kind="stop", targets=everything, model_calls=1), 1, False
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            candidates = [*everything, *(item_id for item_id in waiting if item_id not in everything)]
+            if candidates:
+                # Which, the user is asked (of the one there is, as of one it named).
+                return which(candidates)
         # Whether the sentence itself says which item it means (names its
         # work, project, familiar, command, file or an option it picks).
         said_which = reading.get("named") is True
