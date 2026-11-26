@@ -3521,6 +3521,8 @@ async def _ensure_valid_oauth_token(
                 break
             except asyncio.CancelledError:
                 cancelled = True
+                if commit_task.cancelled():
+                    raise
         if committed is None:
             revoke_task = asyncio.create_task(_revoke_oauth_token_best_effort(refreshed))
             while True:
@@ -3529,6 +3531,8 @@ async def _ensure_valid_oauth_token(
                     break
                 except asyncio.CancelledError:
                     cancelled = True
+                    if revoke_task.cancelled():
+                        raise
             if cancelled:
                 raise asyncio.CancelledError
             return None

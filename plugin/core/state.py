@@ -1337,8 +1337,8 @@ class GlobalState:
 
     def _resolve_plane_bridge(self) -> Any | None:
         # Resolve outside _bus_store_lock so package import locks never contend with bus mutations.
-        if "plugin.server.messaging.plane_bridge" in sys.modules:
-            return sys.modules["plugin.server.messaging.plane_bridge"]
+        # Always go through importlib.import_module so a partially initialized module in sys.modules
+        # waits on Python's module lock until attributes like publish_record exist.
         try:
             return importlib.import_module("plugin.server.messaging.plane_bridge")
         except Exception:

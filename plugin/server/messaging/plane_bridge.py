@@ -147,6 +147,10 @@ def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
 _FLUSH_HOOK_MIN_INTERVAL_SECONDS = 0.2
 
 
+def _monotonic() -> float:
+    return time.monotonic()
+
+
 def _is_reliable_snapshot(msg: object) -> bool:
     return (
         isinstance(msg, dict)
@@ -164,7 +168,8 @@ class _Bridge:
         self._thread: threading.Thread | None = None
         self._flush_hooks_lock = threading.Lock()
         self._flush_hooks: list[Callable[[], None]] = []
-        self._pending_snapshot_lock = threading.Lock()
+        self._pending_snapshot_lock = threading.RLock()
+        self._q_not_empty = threading.Condition(self._pending_snapshot_lock)
         self._pending_snapshots: deque[dict[str, object]] = deque()
         self._active_stop: threading.Event | None = None
 
@@ -205,6 +210,7 @@ class _Bridge:
         stop = self._stop
         with self._pending_snapshot_lock:
             self._active_stop = stop
+            self._q_not_empty.notify_all()
         t = threading.Thread(target=self._run, args=(stop,), daemon=True)
         self._thread = t
         t.start()
@@ -246,6 +252,11 @@ class _Bridge:
             # salvage and nothing to report -- the thread is a daemon and dies
             # with the process anyway; raising here would only turn a clean
             # shutdown into a traceback.
+            pass
+        try:
+            with self._pending_snapshot_lock:
+                self._q_not_empty.notify_all()
+        except _RUNTIME_ERRORS:
             pass
         t = self._thread
         self._thread = None
@@ -303,6 +314,8 @@ class _Bridge:
             self._q.put_nowait(msg)
         except queue.Full:
             return False
+        with self._pending_snapshot_lock:
+            self._q_not_empty.notify()
         return True
 
     def enqueue_snapshot(
@@ -329,6 +342,8 @@ class _Bridge:
             self._q.put_nowait(msg)
         except queue.Full:
             return False
+        with self._pending_snapshot_lock:
+            self._q_not_empty.notify()
         return True
 
     def _wait_tcp_ready(self, endpoint: str, stop: threading.Event) -> None:
@@ -376,31 +391,30 @@ class _Bridge:
                 msg: dict[str, object] | None = None
                 from_pending_slot = False
                 with self._pending_snapshot_lock:
-                    if self._active_stop is not None and self._active_stop is not stop:
+                    if stop.is_set() or (
+                        self._active_stop is not None and self._active_stop is not stop
+                    ):
                         return
                     if self._pending_snapshots:
                         msg = self._pending_snapshots[0]
                         from_pending_slot = True
-                if msg is None:
-                    try:
-                        msg = self._q.get(timeout=0.2)
-                    except queue.Empty:
-                        self._run_flush_hooks()
-                        last_flush_hook_ts = time.monotonic()
-                        continue
-                    except _RUNTIME_ERRORS:
-                        continue
-                    is_reliable = _is_reliable_snapshot(msg)
-                    with self._pending_snapshot_lock:
-                        if stop.is_set() or (
-                            self._active_stop is not None and self._active_stop is not stop
-                        ):
-                            if is_reliable:
-                                self._pending_snapshots.append(msg)
-                            return
-                        if is_reliable:
+                    else:
+                        try:
+                            msg = self._q.get_nowait()
+                        except queue.Empty:
+                            self._q_not_empty.wait(timeout=0.2)
+                        except _RUNTIME_ERRORS:
+                            pass
+                        if msg is not None and _is_reliable_snapshot(msg):
                             self._pending_snapshots.append(msg)
                             from_pending_slot = True
+                if msg is None:
+                    if stop.is_set():
+                        break
+                    if self._q.empty():
+                        self._run_flush_hooks()
+                        last_flush_hook_ts = _monotonic()
+                    continue
                 try:
                     raw = _dumps(msg)
                 except (RuntimeError, ValueError, TypeError, AttributeError):
@@ -409,25 +423,33 @@ class _Bridge:
                             if self._pending_snapshots and self._pending_snapshots[0] is msg:
                                 self._pending_snapshots.popleft()
                     continue
-                if stop.is_set():
-                    break
-                try:
-                    sock.send(raw, flags=zmq.NOBLOCK)
-                    if from_pending_slot:
-                        with self._pending_snapshot_lock:
-                            if self._pending_snapshots and self._pending_snapshots[0] is msg:
-                                self._pending_snapshots.popleft()
-                    now = time.monotonic()
-                    if self._q.empty() or (
-                        not self._q.full()
-                        and (now - last_flush_hook_ts) >= _FLUSH_HOOK_MIN_INTERVAL_SECONDS
+                send_failed = False
+                with self._pending_snapshot_lock:
+                    if stop.is_set() or (
+                        self._active_stop is not None and self._active_stop is not stop
                     ):
-                        self._run_flush_hooks()
-                        last_flush_hook_ts = time.monotonic()
-                except (OSError, zmq.ZMQError):
+                        return
+                    try:
+                        sock.send(raw, flags=zmq.NOBLOCK)
+                        if (
+                            from_pending_slot
+                            and self._pending_snapshots
+                            and self._pending_snapshots[0] is msg
+                        ):
+                            self._pending_snapshots.popleft()
+                    except (OSError, zmq.ZMQError):
+                        send_failed = True
+                if send_failed:
                     if from_pending_slot:
                         stop.wait(0.05)
                     continue
+                now = _monotonic()
+                if self._q.empty() or (
+                    not self._q.full()
+                    and (now - last_flush_hook_ts) >= _FLUSH_HOOK_MIN_INTERVAL_SECONDS
+                ):
+                    self._run_flush_hooks()
+                    last_flush_hook_ts = _monotonic()
         finally:
             try:
                 sock.close(0)

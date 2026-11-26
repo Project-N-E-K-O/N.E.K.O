@@ -788,14 +788,20 @@ def test_bridge_runs_flush_hooks_periodically_under_sustained_non_empty_queue(
     bridge = plane_bridge_mod._Bridge()
     bridge._enabled = True
     bridge._endpoint = f"inproc://busy_hook_bridge_{uuid.uuid4().hex}"
-    monkeypatch.setattr(plane_bridge_mod, "_FLUSH_HOOK_MIN_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(plane_bridge_mod, "_FLUSH_HOOK_MIN_INTERVAL_SECONDS", 0.2)
 
-    hook_ran_with_non_empty_queue = threading.Event()
+    clock = {"now": 100.0}
+    monkeypatch.setattr(plane_bridge_mod, "_monotonic", lambda: clock["now"])
+
+    hook_fire_times: list[float] = []
+    hooks_fired_twice = threading.Event()
     sent_count = 0
 
     def _hook() -> None:
         if not bridge._q.empty():
-            hook_ran_with_non_empty_queue.set()
+            hook_fire_times.append(clock["now"])
+            if len(hook_fire_times) >= 2:
+                hooks_fired_twice.set()
 
     bridge.register_flush_hook(_hook)
 
@@ -812,13 +818,15 @@ def test_bridge_runs_flush_hooks_periodically_under_sustained_non_empty_queue(
             nonlocal sent_count
             _ = ormsgpack.unpackb(raw)
             sent_count += 1
-            time.sleep(0.005)
-            # Keep the queue continuously non-empty until the flush hook runs.
-            if not hook_ran_with_non_empty_queue.is_set() and sent_count < 40 and bridge._q.empty():
+            # Advance controlled clock by 0.05s starting from the second message so the first
+            # non-empty fire happens at 100.0 and the second fires after crossing 100.20.
+            if sent_count > 1:
+                clock["now"] = round(clock["now"] + 0.05, 6)
+            while not hooks_fired_twice.is_set() and bridge._q.qsize() < 4:
                 bridge.enqueue_delta(
                     store="messages",
                     topic="all",
-                    payload={"message_id": f"keepalive-{sent_count}", "content": "busy"},
+                    payload={"message_id": f"keepalive-{sent_count}-{bridge._q.qsize()}", "content": "busy"},
                 )
 
     class _FakeCtx:
@@ -835,15 +843,38 @@ def test_bridge_runs_flush_hooks_periodically_under_sustained_non_empty_queue(
                 topic="all",
                 payload={"message_id": f"m-{idx}", "content": "busy"},
             ) is True
-        assert hook_ran_with_non_empty_queue.wait(timeout=3.0) is True
+        assert hooks_fired_twice.wait(timeout=3.0) is True
     finally:
         bridge.stop()
 
+    assert len(hook_fire_times) >= 2
+    assert hook_fire_times[0] == 100.0
+    assert hook_fire_times[1] >= 100.2
 
-def test_package_init_hook_registration_does_not_acquire_bus_store_lock() -> None:
+
+def test_package_init_hook_registration_does_not_acquire_bus_store_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from plugin.server.messaging import plane_bridge as plane_bridge_mod
 
+    real_register = plane_bridge_mod.register_pending_flush_hook
+
+    def _fail_register(_hook) -> None:
+        raise RuntimeError("deferred during construction")
+
+    monkeypatch.setattr(plane_bridge_mod, "register_pending_flush_hook", _fail_register)
     gs = _new_state()
+    assert gs._plane_bridge_flush_hook_registered is False
+
+    register_calls = 0
+
+    def _tracked_register(hook) -> None:
+        nonlocal register_calls
+        register_calls += 1
+        real_register(hook)
+
+    monkeypatch.setattr(plane_bridge_mod, "register_pending_flush_hook", _tracked_register)
+
     registered = {"ok": False}
     err_holder: list[BaseException] = []
 
@@ -863,4 +894,5 @@ def test_package_init_hook_registration_does_not_acquire_bus_store_lock() -> Non
 
     assert err_holder == []
     assert registered["ok"] is True
+    assert register_calls == 1
     assert gs._plane_bridge_flush_hook_registered is True

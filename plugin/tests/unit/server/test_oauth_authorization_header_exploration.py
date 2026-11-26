@@ -1153,3 +1153,77 @@ async def test_ensure_valid_oauth_token_revokes_refreshed_token_when_cancelled_a
     assert revoke_done.is_set() is True
     assert len(revoked_tokens) == 1
     assert revoked_tokens[0]["refresh_token"] == "rt-rotated"
+
+
+@pytest.mark.asyncio
+async def test_ensure_valid_oauth_token_exits_and_releases_lock_when_revoke_task_is_also_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "oauth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(
+        market_bridge_module, "NEKO_AUTH_URL", "https://auth.test", raising=False
+    )
+    current = {
+        "access_token": "at-old",
+        "refresh_token": "rt-old",
+        "expires_at": time.time() - 60,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "session_id": "sess-1",
+        "subject": "sub-1",
+        "subject_pending": False,
+        "refresh_generation": 0,
+        "state_revision": 0,
+        "scope": market_bridge_module._OAUTH_SCOPE,
+    }
+    market_bridge_module._write_private_json(token_file, current)
+
+    revoke_entered = asyncio.Event()
+    revoke_tasks: list[asyncio.Task[Any]] = []
+
+    async def _fake_refresh(_tok: dict[str, Any]) -> dict[str, Any]:
+        return dict(
+            current,
+            access_token="at-rotated",
+            refresh_token="rt-rotated",
+            expires_at=time.time() + 3600,
+            refresh_generation=1,
+        )
+
+    async def _stalled_revoke(_tok: dict[str, Any]) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        revoke_tasks.append(task)
+        revoke_entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(market_bridge_module, "_refresh_oauth_token", _fake_refresh)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_commit_refreshed_oauth_token_sync",
+        lambda _cur, _ref: None,
+    )
+    monkeypatch.setattr(
+        market_bridge_module, "_revoke_oauth_token_best_effort", _stalled_revoke
+    )
+
+    outer_task = asyncio.create_task(market_bridge_module._ensure_valid_oauth_token())
+    await asyncio.wait_for(revoke_entered.wait(), timeout=5.0)
+    assert len(revoke_tasks) == 1
+    assert market_bridge_module._OAUTH_REFRESH_LOCK.locked() is True
+
+    # Simulate asyncio.run shutdown cancelling both the outer coroutine and the child revoke task.
+    revoke_tasks[0].cancel()
+    outer_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(outer_task, timeout=2.0)
+
+    assert market_bridge_module._OAUTH_REFRESH_LOCK.locked() is False
