@@ -195,7 +195,9 @@
   //          recorded or previewed. (Static CSS: wallpaper brightness no longer
   //          overrides the fit / position / repeat controls, and compact /chat
   //          outer wrappers stay transparent with materials off.)
-  var SCRIPT_VERSION = '1.6.111';
+  //   1.6.112 Hover / press blur starts from the component's own blur, and the
+  //          surface lift honours the panel's animation / reduced-motion switches.
+  var SCRIPT_VERSION = '1.6.112';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -2667,9 +2669,17 @@ background-image: none !important;
       if (!el || !el.style) return;
       var hover = !!el.getAttribute('data-nts-hover');
       var press = !!el.getAttribute('data-nts-press');
-      if (!hover && !press) { el.style.removeProperty('--nts-mt-blur-c'); return; }
+      if (!hover && !press) {
+        el.style.removeProperty('--nts-mt-blur-c');
+        // Re-read on the next hover: the saved blur may have changed meanwhile.
+        el.__ntsBlurBase = 0;
+        return;
+      }
       if (!el.__ntsBlurBase) {
-        var raw = getComputedStyle(el).getPropertyValue('--nts-mt-blur').trim();
+        // Start from this component's resolved blur (its own override, or the
+        // global value it falls back to), read before any inline adjustment.
+        // A component configured with zero blur keeps zero blur.
+        var raw = getComputedStyle(el).getPropertyValue('--nts-mt-blur-c').trim();
         var px = parseFloat(raw);
         if (!(px > 0)) return;
         el.__ntsBlurBase = px;
@@ -2724,8 +2734,20 @@ background-image: none !important;
 
   var reduceMotionMQ = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
 
+  // The panel's "animation" off / "reduced motion" switches compile every
+  // material duration to 0ms (theme_studio/materials.py), so a zero hover
+  // duration on the root means the user turned material motion off.
+  function materialMotionOff() {
+    try {
+      var raw = getComputedStyle(document.documentElement).getPropertyValue('--nts-mt-hover-duration').trim();
+      return raw !== '' && parseFloat(raw) === 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function prefersReducedMotion() {
-    return !!(reduceMotionMQ && reduceMotionMQ.matches);
+    return !!(reduceMotionMQ && reduceMotionMQ.matches) || materialMotionOff();
   }
 
   function tweenSurface(el) {
@@ -2733,10 +2755,11 @@ background-image: none !important;
     if (!el.__ntsTf) el.__ntsTf = { s: 1, y: 0 };
     var to = surfaceTargetOf(el);
     if (prefersReducedMotion()) {
+      // Motion is off: no lift / scale at all, not just an instant jump.
       if (el.__ntsRaf && window.cancelAnimationFrame) window.cancelAnimationFrame(el.__ntsRaf);
       el.__ntsRaf = 0;
-      el.__ntsTf = { s: to.s, y: to.y };
-      writeSurfaceTransform(el, to.s, to.y);
+      el.__ntsTf = { s: 1, y: 0 };
+      writeSurfaceTransform(el, 1, 0);
       return;
     }
     var from = { s: el.__ntsTf.s, y: el.__ntsTf.y };
