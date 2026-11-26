@@ -36,9 +36,11 @@ class FormatLimits:
     json_depth: int = 64
     binary_records: int = 2000000
     binary_text_bytes: int = 1024 * 1024
+    hierarchy_depth: int = 1024
     # Bound bufferViews, private accessors and converted geometry independently of GLB size.
     vrm_accessor_bytes: int = 256 * 1024 * 1024
-    vrm_morph_bytes: int = 256 * 1024 * 1024
+    # Reserve worst-case row padding without rejecting ordinary multi-expression faces.
+    vrm_morph_bytes: int = 512 * 1024 * 1024
     vrm_instanced_vertices: int = 5000000
     live2d_physics_work: int = 3000000
     mmd_morph_bytes: int = 256 * 1024 * 1024
@@ -752,6 +754,7 @@ def _vrm(resources: _Resources) -> None:
             slots = max((slot for semantic, slot in (("POSITION", 1), ("NORMAL", 2), ("COLOR_0", 3))
                          if any(semantic in morph for morph in morphs)), default=0)
             if slots:
+                _require(any("POSITION" in morph for morph in morphs), entry)
                 _require("POSITION" in primitive["attributes"], entry)
                 position = accessors[primitive["attributes"]["POSITION"]]
                 for morph in morphs:
@@ -876,12 +879,14 @@ def _vrm(resources: _Resources) -> None:
             instanced_vertices += instances * mesh_draw_counts[node["mesh"]]
             _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
-    colors = [0] * len(nodes)
+    colors, heights = [0] * len(nodes), [1] * len(nodes)
     for start in range(len(nodes)):
         stack = [(start, False)]
         while stack:
             node, leaving = stack.pop()
             if leaving:
+                heights[node] = 1 + max((heights[child] for child in nodes[node].get("children", [])), default=0)
+                _require(heights[node] <= resources.limits.hierarchy_depth, entry, "model_accessor_budget_exceeded")
                 colors[node] = 2
             elif colors[node] != 2:
                 _require(colors[node] == 0, entry)
@@ -972,9 +977,9 @@ def _mmd_texture(resources: _Resources, value: str) -> None:
 
 def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int, int], *, strict_parents=False) -> None:
     """Count recursive matrix updates without recursively walking the bone graph."""
-    sizes, children = [1] * len(parents), [0] * len(parents)
+    sizes, children, heights = [1] * len(parents), [0] * len(parents), [1] * len(parents)
     for index, parent in enumerate(parents):
-        # buildBones leaves missing parents at the root; Object3D ignores self-add.
+        # PMX Object3D ignores self-add; PMD's ancestor conversion cannot.
         if 0 <= parent < len(parents) and (strict_parents or parent != index):
             children[parent] += 1
     leaves = [index for index, count in enumerate(children) if count == 0]
@@ -985,10 +990,13 @@ def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int,
         parent = parents[index]
         if 0 <= parent < len(parents) and (strict_parents or parent != index):
             sizes[parent] += sizes[index]
+            heights[parent] = max(heights[parent], heights[index] + 1)
             children[parent] -= 1
             if children[parent] == 0:
                 leaves.append(parent)
     _require(visited == len(parents), resources.bundle.entrypoint)
+    _require(max(heights, default=0) <= resources.limits.hierarchy_depth,
+             resources.bundle.entrypoint, "model_accessor_budget_exceeded")
     _require(sum(weight * sizes[index] for index, weight in weights.items()) <= resources.limits.mmd_ik_work,
              resources.bundle.entrypoint, "model_accessor_budget_exceeded")
 
