@@ -96,14 +96,15 @@
     "--nts-shell-radius": "26px",
     "--nts-status-bg": "rgba(115, 64, 191, 0.16)",
     "--nts-status-text": "#1f1d39",
+    "--nts-text-gradient": "linear-gradient(120deg, #2a2088 0%, #441f75 50%, #7a2786 100%)",
     "--nts-tool-bubble-bg": "rgba(252, 252, 253, 0.55)",
     "--nts-tool-bubble-text": "#636080",
     "--nts-topbar-bg": "rgba(252, 252, 253, 0.92)",
     "--nts-topbar-text": "#1f1d39",
-    "--nts-user-bubble-bg": "#7a4ebc",
+    "--nts-user-bubble-bg": "#cebee6",
     "--nts-user-bubble-border": "rgba(103, 57, 172, 0.55)",
-    "--nts-user-bubble-gradient": "linear-gradient(135deg, #845ac4 0%, #5c3399 100%)",
-    "--nts-user-bubble-text": "#ffffff"
+    "--nts-user-bubble-gradient": "linear-gradient(135deg, #d1c2e9 0%, #c1aae3 100%)",
+    "--nts-user-bubble-text": "#1f1d39"
   },
   "dark_vars": {
     "--nts-accent": "#9a78cf",
