@@ -3556,7 +3556,7 @@
     },
     "buttons": {
         "thoughtBubblePop": "戳破想法氣泡",
-        "voiceControl": "語音控製",
+        "voiceControl": "語音控制",
         "screenShare": "屏幕分享",
         "social": "喵宇宙",
         "socialCharging": "喵宇宙充能中 {{days}}天後再回來看看吧",
@@ -4347,7 +4347,7 @@
             "agentMaster": "喵能力",
             "showTaskHud": "顯示懸浮視窗",
             "taskHudHiddenByPowerSave": "省算力模式下不顯示懸浮視窗",
-            "keyboardControl": "鍵鼠控製",
+            "keyboardControl": "鍵鼠控制",
             "userPlugin": "用戶插件",
             "pluginConfigPage": "配置頁",
             "pluginManagementPanel": "管理面板",
