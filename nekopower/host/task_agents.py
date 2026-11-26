@@ -5484,21 +5484,29 @@ class TaskAgentManager(TreeWork):
         For the ends of ``_on_usage`` (the quota ran out partway through)
         and ``_wind_up_step`` (the usage the user allowed is used up): its
         own end is written by now, and the caller closes its session once
-        this returns. Each by itself: one that cannot be stopped this moment
-        (its stop not written, or its session not closed) does not leave the
-        others at work, nor keep the commission's own session open; nor does
-        a ledger that cannot say what it started. One whose stop is refused
-        because it ended meanwhile, some other way, is not closed: its
-        session is its own. Every failure is logged and none is raised:
-        neither caller has anyone to hand it to (the runtime that asks
-        ``_cb_budget`` takes a failure for room to go on, and would make the
-        request it asked about; ``_pump_events`` would only log it).
+        this returns. These ends come once, so the ledger is asked again
+        after a failure, as ``_end_what_it_started`` does (``_looked``).
+        Each by itself: one that cannot be stopped this moment does not
+        leave the others at work, nor keep the commission's own session
+        open; nor does a ledger that cannot say what it started. One whose
+        stop cannot be written, even asked again, is closed all the same,
+        as there: left open, it would go on working, and using requests,
+        for a commission that is over (on record it stays at work, and can
+        still be stopped). One whose stop is refused because it ended
+        meanwhile, some other way, is not closed: its session is its own.
+        Every failure is logged and none is raised: neither caller has
+        anyone to hand it to (the runtime that asks ``_cb_budget`` takes a
+        failure for room to go on, and would make the request it asked
+        about; ``_pump_events`` would only log it).
 
         Unlike ``_end_what_it_started``, one whose changes wait in its
         worktree for the user is stopped too, as these two ends always did.
         """
+        what = "for a commission that ended for what it used"
         try:
-            started = await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES)
+            started = await self._looked(
+                lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES), what=what
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - its own session is closed all the same
@@ -5506,11 +5514,21 @@ class TaskAgentManager(TreeWork):
             return
         for child in started:
             try:
-                moved = await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
-                if not moved.applied and (moved.commission is None or moved.commission.status != "cancelled"):
-                    # It ended meanwhile, some other way: its session is its own.
-                    continue
-                # Not closed unless its stop is written: closing is for a stopped one.
+                moved = await self._looked(
+                    lambda child=child: self._ledger.transition(child.id, "cancelled", reason="its parent finished"),
+                    what=what,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - it is closed all the same
+                logger.warning("writing that commission %s stopped with its parent failed", child.id, exc_info=True)
+                moved = None
+            if moved is not None and not moved.applied and (
+                moved.commission is None or moved.commission.status != "cancelled"
+            ):
+                # It ended meanwhile, some other way: its session is its own.
+                continue
+            try:
                 await self.abort(child.id)
             except asyncio.CancelledError:
                 raise

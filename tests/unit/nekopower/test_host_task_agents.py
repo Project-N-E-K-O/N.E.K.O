@@ -2758,20 +2758,30 @@ async def _no_quota_left(commission_id: str) -> bool:
 
 
 async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
-    """A commission at work, with its session, and four task agents it started, each stopped its own way.
+    """A commission at work, with its session, and six task agents it started, each stopped its own way.
 
-    One cannot be closed (its runtime does not answer), one cannot have its stop written (the
-    ledger is locked for it), one is stopped as ever; one was read at work and is done by the
-    time its stop is written, and one was read at work and is stopped (by the user) by then.
-    ``unreadable``: what the commission started cannot be read.
+    One cannot be closed (its runtime does not answer); one cannot have its stop written (the
+    ledger is locked for it, however often it is asked), one has it written when it is asked
+    again; one is stopped as ever; one was read at work and is done by the time its stop is
+    written, and one was read at work and is stopped (by the user) by then. What the commission
+    started is read at the second asking; ``read_failures``: how many times that fails first.
     """
     from nekopower.host.task_agents import _Session
 
     manager = host.task_agents
+    # Asked again a moment later, not after a while.
+    monkeypatch.setattr("config.nekopower_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
     parent = await _filed(host, "do the work")
     await host.ledger.transition(parent.id, "working", reason="test")
     members: dict[str, str] = {}
-    for name in ("cannot be closed", "cannot be written", "at work", "done meanwhile", "stopped meanwhile"):
+    for name in (
+        "cannot be closed",
+        "cannot be written",
+        "written when asked again",
+        "at work",
+        "done meanwhile",
+        "stopped meanwhile",
+    ):
         child = await _filed(host, name, parent_id=parent.id)
         await host.ledger.transition(child.id, "working", reason="test")
         members[name] = child.id
@@ -2782,19 +2792,22 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
     await host.ledger.transition(members["done meanwhile"], "done", reason="test")
     await host.ledger.transition(members["stopped meanwhile"], "cancelled", reason="test")
     team = SimpleNamespace(
-        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], unreadable=False
+        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], read_failures=1
     )
     select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
+    unwritten = {members["written when asked again"]}
 
     async def read(**criteria: Any) -> Any:
         if criteria.get("parent_id") == parent.id:
-            if team.unreadable:
+            if team.read_failures:
+                team.read_failures -= 1
                 raise RuntimeError("the ledger cannot be read")
             return seen
         return await select(**criteria)
 
     async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
-        if commission_id == members["cannot be written"]:
+        if commission_id == members["cannot be written"] or commission_id in unwritten:
+            unwritten.discard(commission_id)
             raise RuntimeError("the ledger is locked")
         return await transition(commission_id, status, **kwargs)
 
@@ -2853,21 +2866,25 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         # The run is told to stop all the same: a failure here would let it make the request.
         assert said == {"stop": True}
         assert (ended.status, ended.status_reason) == ("blocked", _USAGE_REASON)
-    # One that cannot be closed does not keep the next from being stopped. One whose stop cannot be
-    # written is not closed (on record it is at work), nor is one that ended meanwhile; one that was
-    # stopped meanwhile is closed all the same.
+    # What it started is read though the first reading failed. One that cannot be closed does not
+    # keep the next from being stopped. One whose stop cannot be written is closed all the same (on
+    # record it is at work), and one whose stop is written when asked again is stopped; one that
+    # ended meanwhile is not closed, one that was stopped meanwhile is closed all the same.
     members = team.members
-    closed = ("cannot be closed", "at work", "stopped meanwhile")
-    assert team.tried == [one for one in team.seen if one in [members[name] for name in closed]]
+    assert team.read_failures == 0
+    left = ("done meanwhile",)
+    assert team.tried == [members[name] for name in members if name not in left]
     after = {name: await host.ledger.get(one) for name, one in members.items()}
     assert {name: one.status for name, one in after.items()} == {
         "cannot be closed": "cancelled",
         "cannot be written": "working",
+        "written when asked again": "cancelled",
         "at work": "cancelled",
         "done meanwhile": "done",
         "stopped meanwhile": "cancelled",
     }
-    assert after["at work"].status_reason == after["cannot be closed"].status_reason == "its parent finished"
+    for name in ("cannot be closed", "written when asked again", "at work"):
+        assert after[name].status_reason == "its parent finished"
     assert after["stopped meanwhile"].status_reason == "test"
     # And the commission's own session is closed all the same.
     assert team.closed == [team.parent.id]
@@ -2879,11 +2896,14 @@ async def test_a_commission_that_ends_for_what_it_used_is_closed_though_what_it_
 ):
     host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
     team = await _a_team_at_work(host, monkeypatch)
-    team.unreadable = True
+    # Not even when asked again.
+    team.read_failures = 99
 
     said = await _ended_for_what_it_used(host.task_agents, team, end)
 
     assert said == (None if end == "quota" else {"stop": True})
+    # Asked as often as a reading at the end of a run is (``_looked``), and then given up on.
+    assert team.read_failures == 99 - 3
     assert (await host.ledger.get(team.parent.id)).status == ("failed" if end == "quota" else "blocked")
     assert team.tried == []
     assert team.closed == [team.parent.id]
