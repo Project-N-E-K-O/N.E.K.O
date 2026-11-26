@@ -388,6 +388,10 @@ const messages: PowerMessages = {
     },
   },
   colony: {
+    askLabel: '{name} 在問你',
+    say: '回話…',
+    more: '更多…',
+    sayPlaceholder: '回它一句…',
     catLabel: '{name}，{state}。按 Enter 開啟，方向鍵移動位置。',
     waitingBubble: '等你回話 ❗',
     answer: '回答…',
@@ -486,6 +490,12 @@ const messages: PowerMessages = {
     },
   },
   ask: {
+    notePlaceholder: '想補一句就寫在這裡，再點上面的按鈕',
+    noteLabel: '補一句給它',
+    addPlaceholder: '打字回答，或者補一句再點上面的選項',
+    confirm: { yes: '是，照做', no: '不要' },
+    stale: '沒送到：這個問題已經答過了，或者它換了個新問題。現在顯示的是它最新的情況。',
+    noteLost: '回答送到了，補的那句沒送到：它這會兒收不了話。',
     command: '完整的指令',
     path: '完整的路徑',
     copy: '複製',

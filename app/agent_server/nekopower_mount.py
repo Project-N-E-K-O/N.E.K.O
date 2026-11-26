@@ -39,7 +39,13 @@ What this process gives the host:
 What it takes from the host: every commission that is filed or changes its
 status becomes a ``task_update`` event, the one the task HUD has always been
 fed with. ``hud`` keeps this process's view of them, so the status snapshot
-and ``GET /tasks`` answer without touching the ledger.
+and ``GET /tasks`` answer without touching the ledger. A task that waits for
+the user carries what it asks (``question``), for the HUD to show with the
+ways to answer; what a task agent's own task agents ask is carried by the
+task shown above them (``sub_questions``), as they are not shown. A commission that stops waiting for the user, shown on the
+HUD or not, is told as a ``nekopower_question`` event with no question and
+the id of the one it asked (``question_id``): the card of that question is
+closed wherever it is shown.
 """
 
 import asyncio
@@ -130,28 +136,98 @@ def hud_task(commission: Any) -> Optional[Dict[str, Any]]:
         task["end_time"] = _iso(commission.ended_at or commission.updated_at)
     if status in ("failed", "blocked", "cancelled"):
         task["error"] = commission.status_reason or None
+    # What it asks while it waits for the user, with the answers on offer.
+    # Said as None otherwise: the page merges what it is sent into what it
+    # has, and a question left out would stay on the card once answered.
+    task["question"] = _page_question(commission) if status == "waiting_user" else None
     return task
 
 
+def _page_question(commission: Any) -> Optional[Dict[str, Any]]:
+    """Return what a commission asks as a card shows it, in the commission's language."""
+    from nekopower.host.reports import page_question
+
+    return page_question(commission.question(), commission.lang or "en")
+
+
 class HudTasks:
-    """This process's view of the host's commissions, for the task HUD."""
+    """This process's view of the host's commissions, for the task HUD.
+
+    A task agent's own task agents are not shown as tasks. What one of them
+    asks while it waits for the user is shown with the task it was started
+    for, the one the HUD shows (``sub_questions``, the one that asked first
+    first): it is the user who is asked, and the HUD has nothing else to say
+    that somebody there waits for her.
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._tasks: Dict[str, Dict[str, Any]] = {}
         self._ended_at: Dict[str, float] = {}
+        # The task agent each one that a task agent started was started by.
+        self._parents: Dict[str, str] = {}
+        # By the task shown: what the task agents under it ask, by their ids.
+        self._asked_below: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     def _prune(self) -> None:
         cutoff = self._clock() - HUD_RETENTION_SECONDS
-        for task_id in [task_id for task_id, ended in self._ended_at.items() if ended < cutoff]:
+        gone = {task_id for task_id, ended in self._ended_at.items() if ended < cutoff}
+        for task_id in gone:
             self._ended_at.pop(task_id, None)
             self._tasks.pop(task_id, None)
+            self._asked_below.pop(task_id, None)
+        if gone:
+            for child_id in [child_id for child_id in self._parents if self._top(child_id) in gone]:
+                self._parents.pop(child_id, None)
+
+    def _top(self, commission_id: str) -> str:
+        """Return the commission no task agent started that one descends from, as far as it is known here."""
+        seen = {commission_id}
+        while commission_id in self._parents:
+            commission_id = self._parents[commission_id]
+            if commission_id in seen:
+                break
+            seen.add(commission_id)
+        return commission_id
+
+    def _below(self, commission: Any) -> Optional[Dict[str, Any]]:
+        """Take in the state of a task agent's own task agent; returns the task shown above it if what it shows changed."""
+        self._parents[commission.id] = commission.parent_id
+        top = self._top(commission.id)
+        task = self._tasks.get(top)
+        if task is None:
+            # The task it was started for is not in view (let go of already): nothing to show
+            # it with, and nothing kept of it, which nothing would let go of.
+            self._parents.pop(commission.id, None)
+            return None
+        asked = self._asked_below.get(top, {})
+        question = _page_question(commission) if commission.status == "waiting_user" else None
+        if question is not None:
+            entry = {"id": commission.id, "name": commission.name or "", "title": commission.title or "", "question": question}
+            if asked.get(commission.id) == entry:
+                return None
+            asked[commission.id] = entry
+            self._asked_below[top] = asked
+        elif asked.pop(commission.id, None) is None:
+            return None
+        if not asked:
+            self._asked_below.pop(top, None)
+        task["sub_questions"] = list(asked.values())
+        return task
 
     def update(self, commission: Any) -> Optional[Dict[str, Any]]:
-        """Take in a commission's current state; returns its task, or None if it is not shown."""
+        """Take in a commission's current state; returns the task the HUD is to be told of, or None.
+
+        That is its own task; for a task agent's own task agent, the task
+        shown above it, when what that one shows of it changed.
+        """
+        if commission.parent_id is not None:
+            return self._below(commission)
         task = hud_task(commission)
         if task is None:
             return None
+        # Always said, if only as none: the page merges what it is sent into what it has.
+        task["sub_questions"] = list(self._asked_below.get(task["id"], {}).values())
         previous = self._tasks.get(task["id"])
         if previous is not None:
             # The plugin's display name was looked up once already.
@@ -192,11 +268,19 @@ class HudTasks:
     def clear(self) -> None:
         self._tasks.clear()
         self._ended_at.clear()
+        self._parents.clear()
+        self._asked_below.clear()
 
 
 hud = HudTasks()
 
-# task_update events go out one at a time, in the order the changes happened.
+# task_update events go out one at a time, in the order the changes happened;
+# that a commission stopped waiting for the user goes out among them.
+_QUESTION_CLOSED = "question_closed"
+# The id of what each commission that waits for the user asks. The ledger
+# lets go of the question as the commission stops waiting; which one that
+# was is said then, so that a card of the next one, shown already, stays.
+_asked: Dict[str, str] = {}
 _updates: Optional["asyncio.Queue[Dict[str, Any]]"] = None
 _updates_worker: Optional["asyncio.Task[None]"] = None
 
@@ -208,6 +292,15 @@ async def _send_updates() -> None:
     while True:
         task = await _updates.get()
         try:
+            if task.get("type") == _QUESTION_CLOSED:
+                await _emit_main_event(
+                    "nekopower_question",
+                    task.get("lanlan_name"),
+                    task_id=task.get("id"),
+                    question_id=task.get("question_id") or "",
+                    question=None,
+                )
+                continue
             params = task.get("params") or {}
             plugin_id = params.get("plugin_id")
             if task.get("type") == "user_plugin" and plugin_id and not params.get("plugin_name"):
@@ -244,11 +337,27 @@ def _queue_update(task: Dict[str, Any]) -> None:
 
 
 def _on_commission_change(commission: Any, previous: Optional[str]) -> None:
-    """A commission was filed or changed its status: the HUD is told."""
-    del previous
+    """A commission was filed or changed its status: the HUD is told.
+
+    One that waited for the user and does not any more (answered here or
+    elsewhere, stopped, over) has the card of its question closed: also one
+    the HUD does not show, a task agent's own task agent, whose question the
+    user is shown all the same.
+    """
     task = hud.update(commission)
     if task is not None:
         _queue_update(task)
+    if commission.status == "waiting_user":
+        _asked[commission.id] = str((commission.question() or {}).get("id") or "")
+    elif previous == "waiting_user":
+        _queue_update(
+            {
+                "type": _QUESTION_CLOSED,
+                "id": commission.id,
+                "question_id": _asked.pop(commission.id, ""),
+                "lanlan_name": commission.lanlan_name,
+            }
+        )
 
 
 def _on_progress(commission: Any, update: Dict[str, Any]) -> None:
@@ -293,6 +402,14 @@ async def send_report(item: Any) -> bool:
         "metadata": {"nekopower_kind": item.kind, "nekopower_reason": reason},
         "timestamp": _now_iso(),
     }
+    question = payload.get("card") or payload.get("question")
+    if item.kind == "question" and task_id and isinstance(question, dict):
+        # The parts of what is asked, for a card with the ways to answer; the
+        # sentence above is hers to pass on all the same.
+        event["question"] = question
+        event["title"] = str(payload.get("title") or "")
+        # Who does the work: a plugin called directly takes no sentence added to an approval.
+        event["route"] = payload.get("route")
     return await _send_main_event(event)
 
 
@@ -576,6 +693,7 @@ async def shutdown_nekopower_host() -> None:
     _filled_from = None
     _restore_failed_at = None
     hud.clear()
+    _asked.clear()
 
 
 _lingering: "set[asyncio.Future[Any]]" = set()

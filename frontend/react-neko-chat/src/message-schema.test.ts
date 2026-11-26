@@ -217,7 +217,7 @@ describe('message-schema', () => {
       return inner instanceof z.ZodFunction ? [[key, inner] as const] : [];
     });
     // 精确数量：新增 / 删除回调时同步更新，防止覆盖面静默缩水。
-    expect(callbacks.map(([key]) => key)).toHaveLength(22);
+    expect(callbacks.map(([key]) => key)).toHaveLength(23);
     for (const [key, fn] of callbacks) {
       const input = fn._zod.def.input as z.core.$ZodTuple;
       expect(input._zod.def.rest, key).toBeInstanceOf(z.ZodUnknown);

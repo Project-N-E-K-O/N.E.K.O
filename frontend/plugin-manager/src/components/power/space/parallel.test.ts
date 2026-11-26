@@ -735,7 +735,7 @@ describe('what is asked of opening another beside the one chosen, busy with some
 
     api.answerCommission.mockRejectedValueOnce(refusal('not_taken'))
     await click(choice('deny'))
-    expect(byTest('beside-error')?.textContent).toContain(words.errors.not_taken)
+    expect(byTest('beside-error')?.textContent).toContain(words.ask.stale)
 
     // On its way, its buttons wait; taken, the board and what is asked are read anew, and it is gone.
     let arrive: (value: unknown) => void = () => {}

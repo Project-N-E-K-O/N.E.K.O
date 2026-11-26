@@ -124,6 +124,28 @@ describe('log search compatibility', () => {
     expect(query.get('search_scope')).toBe('all')
   })
 
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not search anew at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const { root } = mountViewer()
+    latest().receive({ type: 'initial', logs: [] })
+    await nextTick()
+    const input = root.querySelector<HTMLInputElement>('[data-yui-guide-id="log-search"]')!
+    input.value = '就绪'
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    input.dispatchEvent(new KeyboardEvent('keydown', picking))
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13 }))
+    expect(Socket.instances).toHaveLength(1)
+    // Enter once more, with no word left to pick: now it searches.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13 }))
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13 }))
+    expect(Socket.instances).toHaveLength(2)
+    expect(new URL(latest().url).searchParams.get('search')).toBe('就绪')
+  })
+
   it('distinguishes filtered history from a genuinely empty log', async () => {
     const { root } = mountViewer()
     latest().receive({ type: 'initial', logs: [], total_lines: 5, returned_lines: 0 })

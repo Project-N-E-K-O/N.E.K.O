@@ -1,5 +1,6 @@
 import HtmlCardBlock from './HtmlCardBlock';
 import MusicRecommendationBlock from './MusicRecommendationBlock';
+import NekoPowerAskBlock from './NekoPowerAskBlock';
 import ProactiveRecommendationBlock from './ProactiveRecommendationBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
@@ -52,6 +53,9 @@ export default function MessageBlockView({
   }
   if (block.type === 'music_recommendation') {
     return <MusicRecommendationBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
+  }
+  if (block.type === 'nekopower_ask') {
+    return <NekoPowerAskBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
   }
   if (block.type === 'html_card') {
     return interactive ? <HtmlCardBlock block={block} /> : <div className="message-block message-block-text">{block.summary}</div>;

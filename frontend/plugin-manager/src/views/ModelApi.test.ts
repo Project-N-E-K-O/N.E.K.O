@@ -117,6 +117,50 @@ describe('Plugin API page', () => {
     expect(container.querySelector('.usage-summary strong')?.textContent).toBe('0')
     expect(container.querySelectorAll('.usage-summary strong')[2]?.textContent).toBe('—')
   })
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not filter usage at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const container = await mount()
+    const filter = container.querySelector('.usage-filters input') as HTMLInputElement
+    expect(filter).toBeTruthy()
+    const before = api.getModelUsage.mock.calls.length
+    filter.value = '示例'; filter.dispatchEvent(new Event('input', { bubbles: true })); await flush()
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before)
+    // Enter once more, with no word left to pick: now it filters.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before + 1)
+    expect(api.getModelUsage.mock.calls.at(-1)?.[0]).toMatchObject({ plugin_id: '示例' })
+  })
+  it.each([
+    ['openai_chat', 'https://api.openai.com/v1'],
+    ['anthropic_messages', 'https://api.anthropic.com'],
+  ] as const)('shows the usual address of a %s endpoint where none is typed', async (protocol, address) => {
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...structuredClone(saved), protocol, base_url: '' }] })
+    await mount(); await clickText('Edit')
+    expect(input('slot-endpoint').value).toBe('')
+    expect(input('slot-endpoint').placeholder).toBe(address)
+  })
+  it('shows the usual address of the other kind of endpoint once the protocol is changed in the editor', async () => {
+    await mount(); await clickText('Edit')
+    expect(input('slot-endpoint').placeholder).toBe('https://api.openai.com/v1')
+    // The protocol is the select that offers the two of them.
+    const protocol = [...document.querySelectorAll<HTMLElement>('.el-dialog .el-select')].find(select => select.textContent?.includes('OpenAI Chat Completions'))
+    expect(protocol, 'the protocol select').toBeTruthy()
+    protocol!.querySelector<HTMLElement>('.el-select__wrapper')!.click()
+    await flush()
+    const other = [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')].find(item => item.textContent?.trim() === 'Anthropic Messages')
+    expect(other, 'the Anthropic option').toBeTruthy()
+    other!.click()
+    await flush()
+    expect(input('slot-endpoint').placeholder).toBe('https://api.anthropic.com')
+  })
   it('renames the same slot while preserving the saved key and bindings', async () => {
     await mount(); await clickText('Edit')
     expect(input('slot-key').value).toBe('sk-abc......wxyz')

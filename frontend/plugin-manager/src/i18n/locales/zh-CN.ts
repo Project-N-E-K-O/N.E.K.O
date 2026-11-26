@@ -743,6 +743,13 @@ export default {
       controlError: '插件界面控件错误',
       hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。',
       parseDocumentConfirm: '是否允许插件“{plugin}”解析文档“{file}”？',
+      actionConfirmTitle: '确认插件“{plugin}”的操作',
+      actionConfirmDefault: '要执行这个操作吗？',
+      actionConfirmTimeout: '确认已超时，操作未执行。',
+      actionConfirmPending: '已有一个确认框尚未处理，请先完成它。',
+      openPathOutOfScope: '这个面板只能打开它自己的插件目录或数据目录里的文件。',
+      openPathNoBridge: '只有桌面应用里才能打开本地文件。',
+      openPathFailed: '无法打开该路径：{message}',
       unsafeTargetBlocked: '目标地址不安全，已拦截'
     }
   },
