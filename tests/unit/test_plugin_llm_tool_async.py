@@ -665,6 +665,27 @@ async def test_registration_that_came_back_reports_only_the_roles_it_holds():
 
 
 @pytest.mark.asyncio
+async def test_failed_follow_up_resolves_the_roles_it_removed_the_id_from():
+    """The targeted request for C removes it from R1 and fails on R2:
+    refused_roles keeps ("R2", "C") but not ("R1", "C")."""
+    plugin, _ = await _plugin_with_tool(role=None)
+    failed = {
+        "ok": False, "removed": True, "affected_roles": ["R1"],
+        "failed_roles": [{"role": "R2", "error": "RuntimeError: sync failed"}],
+        "refused_roles": [], "error": "partial_failure", "message": "some roles failed",
+    }
+    host = _ScriptedHost(_held_by(("R1", "C"), ("R2", "C")), failed)
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    held = [(r["role"], r["registration_id"]) for r in result["refused_roles"]]
+    assert held == [("R2", "C")]
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
 async def test_stale_removal_keeps_what_the_first_request_removed():
     """role=None: the first request removed the held registration on R1
     while R2 reported another one. If the follow-up fails, the result still

@@ -332,9 +332,8 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 the same name used up the budget, or the calling entry's
 #                 deadline ran out before the request was sent; nothing was
 #                 sent; also an unregister, or a register's cleanup, whose
-#                 requests
-#                 already sent left too little budget to remove a reported
-#                 stale registration: that removal was not sent),
+#                 requests already sent left too little budget to remove a
+#                 reported stale registration: that removal was not sent),
 #                 "not_registered"
 #                 (unregister: no local record and main_server removed
 #                 nothing of this plugin's under that name; with a local

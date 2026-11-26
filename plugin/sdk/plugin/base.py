@@ -1226,6 +1226,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
             # Also on a failed answer, so a holder that came back is still
             # listed in refused_roles.
             removed_ids.difference_update(reported)
+            # Roles this targeted request removed the id from, even on a
+            # failed answer; ones it reports as held are not resolved.
+            resolved.update((affected, rid) for affected in outcome["affected_roles"])
             resolved.difference_update(reported_pairs)
             if not outcome["ok"]:
                 error, message = outcome["error"] or "partial_failure", outcome["message"]
