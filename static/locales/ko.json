@@ -886,6 +886,7 @@
         "reactWindowCompactShort": "컴팩트",
         "reactWindowRestore": "채팅 창 복원",
         "reactWindowRestoreShort": "복원",
+        "nekoPowerAskWaitingBadge": "NekoPower가 답변을 기다리고 있어요. 공을 열어 답해 주세요.",
         "reactWindowMountFailed": "채팅 창 마운트에 실패했습니다",
         "reactWindowLoadFailed": "채팅 창 리소스를 불러오지 못했습니다",
         "reactWindowAriaLabel": "Neko 채팅 창",

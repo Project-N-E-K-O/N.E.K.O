@@ -886,6 +886,7 @@
         "reactWindowCompactShort": "Компактный",
         "reactWindowRestore": "Восстановить окно чата",
         "reactWindowRestoreShort": "Восстановить",
+        "nekoPowerAskWaitingBadge": "NekoPower ждёт вашего ответа. Откройте шарик, чтобы ответить.",
         "reactWindowMountFailed": "Не удалось встроить окно чата",
         "reactWindowLoadFailed": "Не удалось загрузить ресурсы окна чата",
         "reactWindowAriaLabel": "Окно чата Neko",

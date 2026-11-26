@@ -886,6 +886,7 @@
         "reactWindowCompactShort": "紧凑",
         "reactWindowRestore": "恢复聊天框",
         "reactWindowRestoreShort": "恢复",
+        "nekoPowerAskWaitingBadge": "喵能力在等你回话，点开小球就能回答",
         "reactWindowMountFailed": "聊天框挂载失败",
         "reactWindowLoadFailed": "聊天框资源加载失败",
         "reactWindowAriaLabel": "Neko 聊天窗口",

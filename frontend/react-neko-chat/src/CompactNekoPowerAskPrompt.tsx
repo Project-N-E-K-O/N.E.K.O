@@ -15,6 +15,26 @@ export function pendingNekoPowerAsk(messages: ChatMessage[]) {
 }
 
 /**
+ * Tells whoever holds the chat whether a question of a commission waits for an answer, among the
+ * messages the screen shows: folded into a ball, the chat shows none of them, and the ball is
+ * marked instead. What the screen hides is not counted, as the compact chat would not show it.
+ */
+export function NekoPowerAskWaitingReport({ messages, onChange }: {
+  messages: ChatMessage[];
+  onChange?: (waiting: boolean) => void;
+}) {
+  const { isMessageHidden } = useChatScreenVisibility();
+  const waiting = pendingNekoPowerAsk(messages.filter(message => !isMessageHidden(message))) !== null;
+  // The host's callback comes wrapped anew with every drawing: told once for each change, not each time.
+  const tell = useRef(onChange);
+  tell.current = onChange;
+  useEffect(() => {
+    tell.current?.(waiting);
+  }, [waiting]);
+  return null;
+}
+
+/**
  * What floats above the composer of the compact chat: what a commission asks comes before a
  * recommendation, since its work waits for the answer. A question whose message the screen hides
  * is not shown, and keeps no recommendation from being shown.

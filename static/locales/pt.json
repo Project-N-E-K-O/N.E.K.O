@@ -886,6 +886,7 @@
         "reactWindowCompactShort": "Compacto",
         "reactWindowRestore": "Restaurar janela de bate-papo",
         "reactWindowRestoreShort": "Restaurar",
+        "nekoPowerAskWaitingBadge": "O NekoPower está aguardando sua resposta. Abra a bola para responder.",
         "reactWindowMountFailed": "Falha ao montar a janela de bate-papo",
         "reactWindowLoadFailed": "Falha ao carregar recursos da janela de bate-papo",
         "reactWindowAriaLabel": "Janela de bate-papo Neko",
