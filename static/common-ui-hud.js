@@ -1455,6 +1455,19 @@ window.AgentHUD._syncTaskAsk = function (card, task) {
     const asks = window.NekoPowerAsk;
     const question = task.status === 'waiting_user' && task.question && typeof task.question === 'object' && asks ? task.question : null;
     const shown = card.querySelector('.task-ask');
+    // 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
+    if (!this._askNotices) this._askNotices = {};
+    const noticed = this._askNotices[task.id];
+    let notice = card.querySelector('.task-ask-notice');
+    if (noticed && !notice) {
+        notice = document.createElement('div');
+        notice.className = 'task-ask-notice';
+        notice.setAttribute('role', 'status');
+        Object.assign(notice.style, { marginTop: '4px', fontSize: '11px', lineHeight: '1.4', color: 'var(--neko-popup-error, #dc2626)' });
+        card.appendChild(notice);
+    }
+    if (notice && !noticed) notice.remove();
+    else if (notice && notice.textContent !== noticed) notice.textContent = noticed;
     if (!question) {
         if (shown) shown.remove();
         return;
@@ -1471,7 +1484,19 @@ window.AgentHUD._syncTaskAsk = function (card, task) {
         question: question,
         // 插件直接办的事没有使魔能收「补一句」。
         noNote: task.type === 'user_plugin',
-        settle: Boolean(shown) || (last !== undefined && last !== questionId)
+        settle: Boolean(shown) || (last !== undefined && last !== questionId),
+        onNoteLost: (said) => {
+            this._askNotices[task.id] = said;
+            // 留一会儿就撤；这件任务下一次更新时卡片照着画。
+            setTimeout(() => {
+                if (this._askNotices[task.id] !== said) return;
+                delete this._askNotices[task.id];
+                const here = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"] .task-ask-notice');
+                if (here) here.remove();
+            }, 15000);
+            const live = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"]');
+            if (live) this._syncTaskAsk(live, Object.assign({}, task, { status: 'running', question: null }));
+        }
     }));
 };
 

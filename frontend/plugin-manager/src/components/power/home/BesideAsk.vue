@@ -5,7 +5,7 @@
       <span class="name">{{ item.member || t('power.home.states.unborn') }}</span>
       <span class="state">{{ t('power.home.states.unborn') }}</span>
     </div>
-    <AskBox :ask="item.ask" :busy="busy" @answer="emit('answer', $event)" />
+    <AskBox :ask="item.ask" :busy="busy" :place="item.id" @answer="emit('answer', $event)" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="error" data-testid="beside-error" />
   </div>
 </template>

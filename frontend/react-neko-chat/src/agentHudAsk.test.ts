@@ -166,6 +166,32 @@ describe('the task HUD and what a task asks', () => {
     }
   });
 
+  it('says on the card of the task that a sentence added to an answer was not taken, after the question is gone', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, note_taken: false }) })));
+    try {
+      const waiting = task('c1', { status: 'waiting_user', question: permission() });
+      show([waiting]);
+      const input = card('c1').querySelector('.task-ask-input');
+      input.value = 'use pnpm';
+      card('c1').querySelector('[data-choice="deny"]').click();
+      // The task goes on at once, and its question is taken off the card before the answer is back.
+      show([task('c1', { status: 'running', question: null })]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(card('c1').querySelector('.task-ask')).toBeNull();
+      expect(card('c1').querySelector('.task-ask-notice')?.textContent).toBe('回答送到了，补的那句没送到。');
+      // Told again as it stands: still said. Not for good.
+      show([task('c1', { status: 'running', question: null, progress: 0.4 })]);
+      expect(card('c1').querySelector('.task-ask-notice')).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(card('c1').querySelector('.task-ask-notice')).toBeNull();
+      show([task('c1', { status: 'running', question: null, progress: 0.6 })]);
+      expect(card('c1').querySelector('.task-ask-notice')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('still puts the cards in their order when that changed', () => {
     show([task('p1', { type: 'user_plugin' }), task('c2')]);
     expect(order()).toEqual(['c2', 'p1']);

@@ -17,7 +17,7 @@
     </button>
     <!-- Pressing anywhere on the card opens the familiar; answering it does not. -->
     <div v-if="asked || error" class="answering" @click.stop>
-      <AskBox v-if="asked" :ask="asked" :busy="busy ?? ''" class="asked" @answer="emit('answer', $event)" />
+      <AskBox v-if="asked" :ask="asked" :busy="busy ?? ''" :place="card.commission?.id" class="asked" @answer="emit('answer', $event)" />
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="error" data-testid="familiar-card-error" />
     </div>
   </div>

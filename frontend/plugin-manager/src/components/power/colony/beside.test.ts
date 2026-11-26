@@ -362,6 +362,22 @@ describe('the question on the board', () => {
     expect(document.querySelector('[data-hive="loose"] [data-testid="beside-ask"]')).toBeNull()
   })
 
+  it('says on the card of the familiar that a sentence added to its answer was not taken, also once its commission is done', async () => {
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    api.getBoard.mockResolvedValue(board([waiting]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    const here = () => document.querySelector(`[data-familiar="${waiting.id}"]`)
+    // Answered, the sentence lost; and by the time the board is read again its commission is done.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await click(here()?.querySelector('[data-choice="deny"]'))
+    await flush()
+    expect(here()?.querySelector('[data-testid="familiar-ask"]')).toBeNull()
+    expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
+  })
+
   it('stands under the busy one, answered with a button', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarBoard)

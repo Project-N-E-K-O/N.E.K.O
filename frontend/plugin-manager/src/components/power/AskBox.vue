@@ -72,7 +72,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
 import {
-  SETTLE_MS, askFacts, askLines, askQuestions, askShape, askWarning, askWhole, besideHint, choiceLabel, confirmation, isBeside,
+  SETTLE_MS, askFacts, askLines, askQuestions, askShape, askWarning, askWhole, besideHint, choiceLabel, confirmation, isBeside, useTookPlace,
 } from './ask'
 import type { AskQuestion, GivenAnswer } from './ask'
 
@@ -82,7 +82,8 @@ import type { AskQuestion, GivenAnswer } from './ask'
  * for words beside them. Whoever shows it sends the answer.
  */
 /** `noNote`: nothing could take a sentence added to an approval (a plugin does the work, not a familiar): the line for one is left out. */
-const props = defineProps<{ ask: BoardAsk; busy: string; noNote?: boolean }>()
+/** `place`: the commission that asks, where the page keeps which question each showed last (`rememberAsks`). */
+const props = defineProps<{ ask: BoardAsk; busy: string; noNote?: boolean; place?: string | null }>()
 const emit = defineEmits<{ answer: [given: GivenAnswer] }>()
 const { t, te } = useI18n()
 const reply = ref('')
@@ -90,8 +91,10 @@ const reply = ref('')
 const picked = ref<Record<string, string[]>>({})
 // Another question took this one's place a moment ago: its buttons wait, so that a press on
 // its way to the last one does not answer it.
-const settling = ref(false)
-let settled: ReturnType<typeof setTimeout> | null = null
+const tookPlace = useTookPlace()
+// Drawn anew for a commission that showed another question a moment ago: held back as well.
+const settling = ref(tookPlace(props.place, props.ask.id))
+let settled: ReturnType<typeof setTimeout> | null = settling.value ? setTimeout(() => { settling.value = false }, SETTLE_MS) : null
 const held = computed(() => props.busy !== '' || settling.value)
 const copied = ref(false)
 const wholeText = ref<HTMLElement | null>(null)
@@ -159,6 +162,7 @@ watch(() => props.ask.id, () => {
   reply.value = ''
   picked.value = {}
   copied.value = false
+  tookPlace(props.place, props.ask.id)
   settling.value = true
   if (settled) clearTimeout(settled)
   settled = setTimeout(() => { settling.value = false }, SETTLE_MS)

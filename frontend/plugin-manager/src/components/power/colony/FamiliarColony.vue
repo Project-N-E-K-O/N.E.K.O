@@ -95,7 +95,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { archiveProject, getWaits } from '@/api/console'
 import type { BoardAsk, BoardCard } from '@/api/console'
-import { answeringAs, describeAnswerError, saysSomething } from '../ask'
+import { answeringAs, describeAnswerError, rememberAsks, saysSomething } from '../ask'
 import { askSummary } from '../ask'
 import type { GivenAnswer } from '../ask'
 import { sendAnswer, useAskAnswers } from '../useAskAnswers'
@@ -138,6 +138,7 @@ const asking = ref('')
 const parting = ref('')
 const busy = ref('')
 const actionError = ref('')
+rememberAsks()
 // What is said of an answer that was taken while the sentence added to it was not.
 const said = ref('')
 // Moves on every few seconds, so that what a familiar said a while ago leaves its head.

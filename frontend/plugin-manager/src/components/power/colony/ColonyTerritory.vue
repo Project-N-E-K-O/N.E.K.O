@@ -62,7 +62,7 @@
       <AskBubble
         v-if="cardOpen(member.id)"
         :ask="member.ask!" :name="member.name" :busy="answering?.[member.commission ?? ''] ?? ''" :error="failed?.[member.commission ?? ''] ?? ''"
-        :below="below(member.id)" :shift="shift(member.id)" :room="room"
+        :below="below(member.id)" :shift="shift(member.id)" :room="room" :place="member.commission"
         :style="below(member.id) ? { top: '40px' } : { bottom: member.leader ? '52px' : '44px' }"
         @answer="emit('answer', member.id, $event)" @more="emit('ask', member.id)"
       />

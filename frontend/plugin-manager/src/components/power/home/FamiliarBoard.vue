@@ -23,8 +23,8 @@
           <template v-for="card in hive.members" :key="card.id">
             <FamiliarCard
               :card="card" :class="{ sub: hive.led && !card.leader }" answers
-              :busy="card.commission ? busyOf(card.commission) : ''" :error="card.commission ? failedOf(card.commission) : ''"
-              @open="open(hive, $event)" @answer="card.commission && answer({ id: card.commission.id, ask: card.commission.ask }, $event)"
+              :busy="card.commission ? busyOf(card.commission) : ''" :error="lost[card.id] || (card.commission ? failedOf(card.commission) : '')"
+              @open="open(hive, $event)" @answer="answerCard(card, $event)"
             />
             <!-- Whether another is to do what waits for this one, busy with something else: drawn beside it, not there yet. -->
             <BesideAsk
@@ -48,6 +48,8 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { consoleErrorCode, getBoard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
+import { rememberAsks } from '../ask'
+import type { GivenAnswer } from '../ask'
 import { useBesideAnswers, useBesideAsks } from '../colony/useBesideAsks'
 import type { BesideAsk as Beside } from '../colony/useBesideAsks'
 import { describeConsoleError } from '../powerFormat'
@@ -62,6 +64,7 @@ const router = useRouter()
 const board = ref<Board | null>(null)
 const loaded = ref(false)
 const error = ref('')
+rememberAsks()
 // How often the board is asked for, in milliseconds: it answers "unchanged"
 // in a few milliseconds when nothing moved. Slower once it could not be read.
 const POLL_MS = 2000
@@ -70,7 +73,21 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let alive = true
 let turn = 0
 const { asks: besides, load: loadBesides } = useBesideAsks(board)
-const { busyOf, failedOf, answer } = useBesideAnswers(() => Promise.all([load(), loadBesides()]))
+// That a sentence added to an answer was not taken, by the familiar that was answered: its commission may be
+// done and gone from its card by the time that is known, and the card is still there to say it on.
+const lost = ref<Record<string, string>>({})
+const answeredFor = new Map<string, string>()
+const { busyOf, failedOf, answer } = useBesideAnswers(() => Promise.all([load(), loadBesides()]), (said, commissionId) => {
+  const cardId = answeredFor.get(commissionId)
+  if (cardId) lost.value = { ...lost.value, [cardId]: said }
+})
+function answerCard(card: BoardCard, given: GivenAnswer) {
+  if (!card.commission) return
+  answeredFor.set(card.commission.id, card.id)
+  // What was said of its last answer is not about this one.
+  lost.value = Object.fromEntries(Object.entries(lost.value).filter(([id]) => id !== card.id))
+  void answer({ id: card.commission.id, ask: card.commission.ask }, given)
+}
 
 const hives = computed<Hive[]>(() => {
   const now = board.value

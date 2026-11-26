@@ -33,7 +33,7 @@ export async function sendAnswer(commissionId: string, given: GivenAnswer, ask: 
  * not: where the question is shown is gone with the answer, so it is said elsewhere. Not given,
  * it is kept with why answers were not taken.
  */
-export function useAskAnswers(after: () => Promise<unknown>, noteLost?: (said: string) => void) {
+export function useAskAnswers(after: () => Promise<unknown>, noteLost?: (said: string, commissionId: string) => void) {
   const { t, te } = useI18n()
   // By its commission: with which button a question is being answered, and why an answer was not taken.
   const answering = ref<Record<string, string>>({})
@@ -47,7 +47,7 @@ export function useAskAnswers(after: () => Promise<unknown>, noteLost?: (said: s
     failed.value = without(failed.value, item.id)
     try {
       const lost = await sendAnswer(item.id, given, item.ask, t)
-      if (lost && noteLost) noteLost(lost)
+      if (lost && noteLost) noteLost(lost, item.id)
       else if (lost) failed.value = { ...failed.value, [item.id]: lost }
     } catch (failure) {
       failed.value = { ...failed.value, [item.id]: describeAnswerError(failure, t, te) }

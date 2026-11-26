@@ -555,6 +555,25 @@ describe('the cards of the chat window', () => {
     expect(messages).toEqual([]);
   });
 
+  it('puts a card back that was pushed out of the chat while its question still waits', async () => {
+    const w = window as unknown as Record<string, { getState?: () => unknown }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    asks.receive(frame(permission));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    // The chat keeps its latest messages only: many came since, and these two are gone from it.
+    messages = [];
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c2', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: confirmation }] } });
+    await asks.sync();
+    // The one that still waits is back, as it stood; the one that was answered is not.
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c2-q2', 'pending']]);
+    // Still there: not put in a second time.
+    await asks.sync();
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    expect(messages.length).toBe(1);
+  });
+
   it('keeps a question for a chat window that is not there yet', () => {
     vi.useFakeTimers();
     const w = window as unknown as Record<string, unknown>;

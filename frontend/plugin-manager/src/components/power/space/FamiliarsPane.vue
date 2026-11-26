@@ -80,7 +80,7 @@
       </div>
 
       <!-- What it asks is answered whichever view is open: the page may be opened at what was said in it. -->
-      <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
+      <AskBox v-if="ask" :ask="ask" :busy="busy" :place="selected.commission?.id" @answer="answer" />
       <!-- Said here and not in a view: the question is gone once it is answered, whichever view is open. -->
       <p v-if="answered?.id === selected.id" class="muted" role="status" data-testid="familiar-answer-note">{{ answered.said }}</p>
 
@@ -166,7 +166,7 @@ import { useI18n } from 'vue-i18n'
 import { getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
-import { answeringAs, describeAnswerError, saysSomething } from '../ask'
+import { answeringAs, describeAnswerError, rememberAsks, saysSomething } from '../ask'
 import type { GivenAnswer } from '../ask'
 import { useBesideAnswers, useBesideAsks } from '../colony/useBesideAsks'
 import BesideAsk from '../home/BesideAsk.vue'
@@ -200,6 +200,7 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
+rememberAsks()
 // What is said of an answer that was taken while the sentence added to it was not, and of which
 // familiar's: shown with that one only (the answer may come back after another was chosen).
 const answered = ref<{ id: string; said: string } | null>(null)

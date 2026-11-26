@@ -105,7 +105,7 @@ export function useBesideAsks(board: Ref<Board | null>) {
  * each apart: another can be answered while the answer to one is on its way. `after` is done once
  * an answer was taken or not: whoever shows them reads anew then.
  */
-export function useBesideAnswers(after: () => Promise<unknown>) {
+export function useBesideAnswers(after: () => Promise<unknown>, noteLost?: (said: string, commissionId: string) => void) {
   // The same as for what a familiar asks on its card: by the commission that asks.
-  return useAskAnswers(after)
+  return useAskAnswers(after, noteLost)
 }

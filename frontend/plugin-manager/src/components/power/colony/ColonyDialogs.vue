@@ -1,7 +1,7 @@
 <template>
   <el-dialog :model-value="Boolean(asking)" :title="asking?.name" width="600px" @update:model-value="(open: boolean) => { if (!open) emit('closeAsk') }">
     <p v-if="asking?.title" class="muted" data-testid="colony-ask-title">{{ asking.title }}</p>
-    <AskBox v-if="asking?.ask" :ask="asking.ask" :busy="busy" @answer="emit('answer', $event)" />
+    <AskBox v-if="asking?.ask" :ask="asking.ask" :busy="busy" :place="asking.commission" @answer="emit('answer', $event)" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="colony-ask-error" />
   </el-dialog>
 
@@ -33,7 +33,7 @@ import type { GivenAnswer } from '../ask'
  */
 defineProps<{
   /** Who or what asks, what about, and the question. */
-  asking: { name: string; title: string; ask: BoardAsk | null } | null
+  asking: { name: string; title: string; ask: BoardAsk | null; commission?: string } | null
   parting: string; busy: string; error: string
 }>()
 const emit = defineEmits<{

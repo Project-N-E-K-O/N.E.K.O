@@ -1,4 +1,6 @@
 /** What a familiar asks the user while it waits, as the pages word it. */
+import { inject, provide } from 'vue'
+import type { InjectionKey } from 'vue'
 import { consoleErrorCode } from '@/api/console'
 import type { BoardAsk, CommissionAnswer } from '@/api/console'
 import { describeConsoleError } from './powerFormat'
@@ -85,6 +87,27 @@ export const confirmation = (yes: boolean, added: string): GivenAnswer => ({ cho
  * milliseconds: a press meant for the one that was there a moment ago must not answer this one.
  */
 export const SETTLE_MS = 900
+
+/**
+ * Which question each commission was last shown asking, kept by the page that shows them
+ * (`rememberAsks`). The box of a question goes away once it is answered, and the next one of
+ * the same commission is drawn anew: by this it knows that it takes another's place, and holds
+ * its buttons back as one that changed where it stood does.
+ */
+const ASK_MEMORY: InjectionKey<Map<string, string>> = Symbol('asks shown')
+export function rememberAsks(): void {
+  provide(ASK_MEMORY, new Map())
+}
+/** For the box of a question: note that this one is shown for `place` (its commission); true if another was before. */
+export function useTookPlace(): (place: string | null | undefined, id: string | undefined) => boolean {
+  const memory = inject(ASK_MEMORY, null)
+  return (place, id) => {
+    if (!memory || !place) return false
+    const last = memory.get(place)
+    memory.set(place, id ?? '')
+    return last !== undefined && last !== (id ?? '')
+  }
+}
 
 /**
  * Why an answer was not taken, in the pages' words. One that came too late (the question was

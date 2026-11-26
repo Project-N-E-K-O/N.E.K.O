@@ -41,7 +41,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardAsk } from '@/api/console'
-import { SETTLE_MS, askLines, askQuestions, askShape, askSummary, askWhole, choiceLabel, confirmation } from '../ask'
+import { SETTLE_MS, askLines, askQuestions, askShape, askSummary, askWhole, choiceLabel, confirmation, useTookPlace } from '../ask'
 import type { GivenAnswer } from '../ask'
 
 /**
@@ -52,7 +52,8 @@ import type { GivenAnswer } from '../ask'
  */
 /** `below`: it stands under the familiar and not above it (one that stands near the top, where a card above would be cut off). */
 // `room`: how wide it may be, where the territory is narrower than it draws itself. `shift`: how far it is moved sideways from above the familiar, to stay within the territory; its pointer stays above the familiar.
-const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string; below?: boolean; shift?: number; room?: number }>()
+/** `place`: the commission that asks, where the page keeps which question each showed last (`rememberAsks`). */
+const props = defineProps<{ ask: BoardAsk; name: string; busy: string; error: string; below?: boolean; shift?: number; room?: number; place?: string | null }>()
 const emit = defineEmits<{ answer: [given: GivenAnswer]; more: [] }>()
 const { t, te } = useI18n()
 
@@ -77,8 +78,10 @@ const whole = computed(() => askWhole(props.ask)?.text ?? askLines(props.ask, t,
 
 // Another question took this one's place a moment ago: its buttons wait, so that a press on
 // its way to the last one does not answer it.
-const settling = ref(false)
-let settled: ReturnType<typeof setTimeout> | null = null
+const tookPlace = useTookPlace()
+// Drawn anew for a commission that showed another question a moment ago: held back as well.
+const settling = ref(tookPlace(props.place, props.ask.id))
+let settled: ReturnType<typeof setTimeout> | null = settling.value ? setTimeout(() => { settling.value = false }, SETTLE_MS) : null
 const held = computed(() => props.busy !== '' || settling.value)
 
 function give(given: GivenAnswer) {
@@ -96,6 +99,7 @@ watch(typing, async shown => {
 watch(() => props.ask.id, () => {
   reply.value = ''
   typing.value = shape.value === 'words'
+  tookPlace(props.place, props.ask.id)
   settling.value = true
   if (settled) clearTimeout(settled)
   settled = setTimeout(() => { settling.value = false }, SETTLE_MS)

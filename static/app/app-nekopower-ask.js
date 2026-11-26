@@ -295,8 +295,13 @@
             if (result.ok) {
                 done = true;
                 var said = shownAnswer(given);
-                status.textContent = (said ? word('answered', { answer: said }) : word('answeredPlain'))
-                    + (result.noteLost ? ' ' + word('noteLost') : '');
+                status.textContent = said ? word('answered', { answer: said }) : word('answeredPlain');
+                // Said by whoever shows this, outside it: the question is taken away the moment the
+                // task goes on, which may be before this is known.
+                if (result.noteLost) {
+                    if (typeof options.onNoteLost === 'function') options.onNoteLost(word('noteLost'));
+                    else status.textContent += ' ' + word('noteLost');
+                }
                 status.style.color = 'var(--neko-popup-success, #16a34a)';
             } else {
                 status.textContent = word(result.stale ? 'stale' : result.gone ? 'goneUnsure' : result.unsure ? 'unsure' : 'failed');
@@ -473,6 +478,16 @@
         var api = window.reactChatWindowHost;
         return api && typeof api.appendMessage === 'function' && typeof api.updateMessage === 'function' ? api : null;
     }
+    /** Whether the chat still has a message; true where that cannot be told. */
+    function inChat(api, messageId) {
+        try {
+            var state = typeof api.getState === 'function' ? api.getState() : null;
+            if (!state || !Array.isArray(state.messages)) return true;
+            return state.messages.some(function (message) { return message && message.id === messageId; });
+        } catch (_) {
+            return true;
+        }
+    }
     function patch(card, changes) {
         var api = host();
         card.message = Object.assign({}, card.message, {
@@ -508,7 +523,12 @@
         // Shown from here on: what waited for the window of this task is older, and is let go of.
         queued = queued.filter(function (args) { return args[0] !== taskId; });
         var card = open.get(taskId);
-        if (card && card.questionId === shown.id) return;
+        if (card && card.questionId === shown.id) {
+            // The chat keeps only its latest messages: a card that was pushed out while its
+            // question still waits is put back, as it stands.
+            if (!inChat(api, card.message.id)) api.appendMessage(card.message);
+            return;
+        }
         // Another question of the same task: the last one is over.
         if (card) close(taskId);
         var now = new Date();

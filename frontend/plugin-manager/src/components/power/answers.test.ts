@@ -7,7 +7,7 @@ import ElementPlus from 'element-plus'
 import words from '@/i18n/power/en-US'
 import type { BoardAsk, BoardCard } from '@/api/console'
 import AskBox from './AskBox.vue'
-import { SETTLE_MS, answerBody, askQuestions, askShape, describeAnswerError, saysSomething } from './ask'
+import { SETTLE_MS, answerBody, askQuestions, askShape, describeAnswerError, rememberAsks, saysSomething } from './ask'
 import AskBubble from './colony/AskBubble.vue'
 import ColonyTerritory from './colony/ColonyTerritory.vue'
 import type { ColonyMember } from './colony/ColonyTerritory.vue'
@@ -198,6 +198,54 @@ describe('the box a question is answered in', () => {
     expect(once().disabled).toBe(false)
     await press(once())
     expect(answers).toEqual([{ choice: 'once', note: undefined }])
+  })
+})
+
+describe('a box drawn anew for a commission that showed another question a moment ago', () => {
+  // A page that keeps which question each commission showed last, with one box (or bubble) at a time.
+  const page = (component: Component) => defineComponent({
+    props: { ask: { type: Object, default: null }, place: { type: String, default: 'c1' } },
+    setup(props) {
+      rememberAsks()
+      return () => (props.ask ? h(component, { ask: props.ask as BoardAsk, busy: '', name: 'Tabby', error: '', place: props.place }) : null)
+    },
+  })
+  const once = (container: Element) => container.querySelector('[data-choice="once"]') as HTMLButtonElement
+
+  it.each([['the box', AskBox], ['the card above a head', AskBubble]])('holds %s back too, though the last one was taken away in between', async (_, component) => {
+    vi.useFakeTimers()
+    const { container, state } = await mount(page(component as Component), { ask: permission() })
+    // The first one shown is answered at once.
+    expect(once(container).disabled).toBe(false)
+    // Answered: taken away. Then the commission asks the next thing, and its box is drawn anew.
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: permission({ id: 'q2', detail: { command: 'rm -rf dist' } }) }
+    await flush()
+    expect(once(container).disabled).toBe(true)
+    vi.advanceTimersByTime(SETTLE_MS)
+    await flush()
+    expect(once(container).disabled).toBe(false)
+    // The same question drawn again (the page read anew), or the first of another commission: not held back.
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: permission({ id: 'q2', detail: { command: 'rm -rf dist' } }) }
+    await flush()
+    expect(once(container).disabled).toBe(false)
+    state.props = { ask: null }
+    await flush()
+    state.props = { ask: permission({ id: 'q7' }), place: 'c9' }
+    await flush()
+    expect(once(container).disabled).toBe(false)
+  })
+
+  it('is not held back where no page keeps what was shown', async () => {
+    const { container } = await mount(AskBox, { ask: permission(), busy: '', place: 'c1' })
+    expect(once(container).disabled).toBe(false)
+    cleanup.forEach(done => done())
+    cleanup = []
+    const again = await mount(AskBox, { ask: permission({ id: 'q2' }), busy: '', place: 'c1' })
+    expect(once(again.container).disabled).toBe(false)
   })
 })
 

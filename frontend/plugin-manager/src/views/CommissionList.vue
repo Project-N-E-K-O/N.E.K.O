@@ -64,7 +64,7 @@
                 }) }}
                 <template v-if="usage.limit"> · {{ t('power.usage.ofLimit', { used: formatTokens(usage.used), limit: formatTokens(usage.limit) }) }}</template>
               </p>
-              <AskBox v-if="row.item.ask" :ask="row.item.ask" :busy="busy" :no-note="row.item.route === 'plugin'" @answer="answer(row.item, $event)" />
+              <AskBox v-if="row.item.ask" :ask="row.item.ask" :busy="busy" :no-note="row.item.route === 'plugin'" :place="row.item.id" @answer="answer(row.item, $event)" />
               <div v-if="row.item.status === 'working' && row.item.route === 'task_agent'" class="say">
                 <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="commission-say" @keyup.enter="tell(row.item)" />
                 <el-button type="primary" :loading="busy === 'tell'" :disabled="!sentence.trim() || busy !== ''" data-testid="commission-send" @click="tell(row.item)">
@@ -98,7 +98,7 @@ import { useRouter } from 'vue-router'
 import { getCommissionUsage, listCommissions, listProjects, stopCommission, tellCommission } from '@/api/console'
 import type { CommissionRow, CommissionUsage } from '@/api/console'
 import AskBox from '@/components/power/AskBox.vue'
-import { answeringAs, describeAnswerError, saysSomething } from '@/components/power/ask'
+import { answeringAs, describeAnswerError, rememberAsks, saysSomething } from '@/components/power/ask'
 import type { GivenAnswer } from '@/components/power/ask'
 import { sendAnswer } from '@/components/power/useAskAnswers'
 import { clockTime } from '@/components/power/colony/activity'
@@ -127,6 +127,7 @@ let draft = 0
 watch(sentence, () => { draft += 1 }, { flush: 'sync' })
 const busy = ref('')
 const note = ref('')
+rememberAsks()
 let timer: ReturnType<typeof setTimeout> | null = null
 let alive = true
 let turn = 0
