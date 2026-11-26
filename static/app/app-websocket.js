@@ -122,7 +122,13 @@
                         if (askedWith.get(id) !== task) return;
                         var askedNow = current.question && current.question.id;
                         var askedHere = task.question && task.question.id;
-                        if (current.status !== task.status || askedNow !== askedHere) {
+                        // 它派出去的使魔问的话（挂在它下面）也一样：哪几只在问、各问的是哪条。
+                        var askedBelow = function (one) {
+                            return (Array.isArray(one.sub_questions) ? one.sub_questions : []).map(function (item) {
+                                return item && typeof item === 'object' ? item.id + ':' + (item.question && item.question.id) : '';
+                            }).join('|');
+                        };
+                        if (current.status !== task.status || askedNow !== askedHere || askedBelow(current) !== askedBelow(task)) {
                             taskMap.set(id, Object.assign({}, task, current));
                             changed = true;
                         }
