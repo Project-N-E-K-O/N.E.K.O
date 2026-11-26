@@ -62,6 +62,14 @@ type HostedApi = {
   `document:parse` permission and must be called directly from a user event
   handler (change, click, drop) or right after a `useConfirm()` the user
   accepted; `userInitiated` does not apply here, later calls are rejected.
+  The host asks the user before uploading. For several files call it once
+  per file in the same handler: calls made while the confirmation is open
+  join one dialog; accept starts all, cancel rejects all with
+  `document_parse_permission_denied`; aborting one call's `signal` drops only
+  that file. More than 20 waiting files reject with `document_parse_busy`.
+  Confirmation time counts toward `timeoutMs` (default 30 s from the call);
+  pass a larger one if needed. Other codes: `document_parse_timeout`,
+  `document_too_large` (16 MiB), `unsupported_document`.
 - `refresh`: reloads `@ui.context` state and re-renders.
 - `display`: `getState()`, `requestMode("focus" | "fullscreen")`, `exit()`,
   `onStateChange(listener)` (returns an unsubscribe function). Requests

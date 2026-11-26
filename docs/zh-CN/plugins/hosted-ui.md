@@ -377,6 +377,12 @@ type HostedApi = {
   ```
 
   请在真实用户操作的事件处理器中直接调用，例如文件输入框的 `onChange`、点击或拖放。Hosted UI 运行时会把这些处理器内的同步调用标记为用户发起；先执行无关异步工作、再调用会被拒绝。
+
+  上传前，宿主会弹框询问用户是否允许插件解析该文件。要处理多个文件，请在同一个处理器里对每个文件各调用一次 `parseDocument()`：确认框打开期间到达的调用会并入这次确认，用户只会看到一个列出全部文件的对话框。点允许，这一批全部开始解析；点取消，这一批全部以 `document_parse_permission_denied` 拒绝。通过某次调用的 `signal` 中止时，只会把那一个文件从这一批中移除。同一次确认最多等待 20 个文件，超出的调用会以 `document_parse_busy` 拒绝，可以等当前这一批确认完再重试。
+
+  用户在确认框上花的时间计入超时（默认 30 秒，从调用时开始计算）。如果用户可能需要更久才能决定，或文档较大，请传入更大的 `timeoutMs`。
+
+  拒绝时的 `error.code` 可能是：`document_parse_permission_denied`（缺少权限、不是用户发起或用户取消）、`document_parse_busy`、`document_parse_timeout`、`document_too_large`（超过 16 MiB）、`unsupported_document`（不是 PDF 或 DOCX），或解析器返回的错误码。
 - `api.refresh()` 重新拉取 context 并重新渲染。
 - 如果 action 设置了 `refresh_context=false`，则不会自动刷新。
 

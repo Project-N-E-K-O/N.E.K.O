@@ -743,6 +743,8 @@ export default {
       controlError: '插件界面控件错误',
       hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。',
       parseDocumentConfirm: '是否允许插件“{plugin}”解析文档“{file}”？',
+      parseDocumentConfirmBatch: '是否允许插件“{plugin}”解析以下 {count} 个文档？',
+      parseDocumentConfirmMore: '……以及另外 {count} 个',
       unsafeTargetBlocked: '目标地址不安全，已拦截'
     }
   },

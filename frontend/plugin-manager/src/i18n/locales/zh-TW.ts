@@ -743,6 +743,8 @@ export default {
       controlError: '外掛介面控制項錯誤',
       hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。',
       parseDocumentConfirm: '是否允許外掛「{plugin}」解析文件「{file}」？',
+      parseDocumentConfirmBatch: '是否允許外掛「{plugin}」解析以下 {count} 份文件？',
+      parseDocumentConfirmMore: '……以及另外 {count} 份',
       unsafeTargetBlocked: '目標位址不安全，已攔截'
     }
   },

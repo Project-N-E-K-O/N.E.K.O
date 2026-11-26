@@ -743,6 +743,8 @@ export default {
       controlError: 'Error de control de la UI del plugin',
       hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.',
       parseDocumentConfirm: '¿Permitir que el plugin "{plugin}" analice el documento "{file}"?',
+      parseDocumentConfirmBatch: '¿Permitir que el plugin "{plugin}" analice los siguientes documentos ({count})?',
+      parseDocumentConfirmMore: '…y {count} más',
       unsafeTargetBlocked: 'Se bloqueó una dirección de destino no segura'
     }
   },

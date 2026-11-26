@@ -28,6 +28,12 @@ export type HostedAction = {
 export type HostedApi = {
   display: PluginDisplayApi
   call: (actionId: string, args?: Record<string, any>, options?: { timeoutMs?: number; signal?: AbortSignal; userInitiated?: boolean }) => Promise<any>
+  /**
+   * Parse a user-selected PDF/DOCX. The host asks the user first; calls made
+   * while that confirmation is open join it (one dialog per batch, up to 20
+   * files). The confirmation wait counts toward `timeoutMs` (default 30000).
+   * Rejections carry `code` (see `HostedDocumentErrorCode`).
+   */
   parseDocument: (file: File, options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<ParsedHostedDocument>
   refresh: () => Promise<any>
 }
@@ -48,6 +54,21 @@ export type PluginDisplayApi = {
   exit: () => Promise<PluginDisplayResult>
   onStateChange: (listener: (state: PluginDisplayState) => void) => () => void
 }
+
+/**
+ * `code` on an error rejected by `api.parseDocument()`. The parser may add
+ * its own codes.
+ * - `document_parse_permission_denied`: missing `document:parse`, not started
+ *   by a user action, or the user cancelled the confirmation.
+ * - `document_parse_busy`: 20 files are already waiting for one confirmation.
+ */
+export type HostedDocumentErrorCode =
+  | "document_parse_permission_denied"
+  | "document_parse_busy"
+  | "document_parse_timeout"
+  | "document_too_large"
+  | "unsupported_document"
+  | (string & {})
 
 export type ParsedHostedDocument = {
   name: string
