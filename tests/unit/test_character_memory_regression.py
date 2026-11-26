@@ -3007,11 +3007,22 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 },
             )
 
-            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
+            before = json.loads((await characters_router_module.get_current_catgirl()).body)
+            websocket = AsyncMock()
+            sessions = {"旧角色": SimpleNamespace(is_active=False, session=None, websocket=websocket)}
+            with (
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
+                patch.object(characters_router_module, "get_session_manager", return_value=sessions),
+            ):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
                 )
+            websocket.send_text.assert_awaited_once()
+            frame = json.loads(websocket.send_text.await_args.args[0])
+            after = json.loads((await characters_router_module.get_current_catgirl()).body)
+            assert before["switch_revision"] < frame["switch_revision"] == after["switch_revision"]
+            assert frame["new_catgirl"] == after["current_catgirl"] == "新角色"
 
             assert rename_result["success"] is True
             assert rename_result["memory_renamed"] is True

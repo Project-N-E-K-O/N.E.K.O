@@ -48,6 +48,7 @@ import asyncio
 import copy
 import errno
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -144,6 +145,30 @@ from services.theater.numeric_v2_maintenance import (
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
 from services.chat_sync import host as _chat_sync_host
+
+
+# Ordered at the same authority boundary as current-character publication.
+# Microseconds stay inside JavaScript's safe integer range; max() keeps
+# successive successful commits strictly increasing on coarse clocks.
+_catgirl_switch_revision = 0
+_catgirl_switch_revision_target = ''
+
+
+def _advance_current_catgirl_switch_revision(current_catgirl: str) -> int:
+    """Publish a durable current-character change while holding character_config_mutation_lock."""
+    global _catgirl_switch_revision, _catgirl_switch_revision_target
+    _catgirl_switch_revision = max(_catgirl_switch_revision + 1, time.time_ns() // 1_000)
+    _catgirl_switch_revision_target = current_catgirl
+    return _catgirl_switch_revision
+
+
+def ensure_current_catgirl_switch_revision(current_catgirl: str) -> int:
+    current_catgirl = str(current_catgirl or '').strip()
+    if not current_catgirl:
+        return 0
+    if current_catgirl != _catgirl_switch_revision_target or _catgirl_switch_revision <= 0:
+        return _advance_current_catgirl_switch_revision(current_catgirl)
+    return _catgirl_switch_revision
 
 
 def _get_new_catgirl_default_voice_id() -> str:
@@ -1530,16 +1555,10 @@ async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
     *, sync_commit=None,
 ):
-    rename_notification_ws = None
-    rename_notification_message = None
-    if is_current_catgirl and old_name in session_manager:
-        rename_notification_ws = session_manager[old_name].websocket
-        if rename_notification_ws:
-            rename_notification_message = json.dumps({
-                "type": "catgirl_switched",
-                "new_catgirl": new_name,
-                "old_catgirl": old_name
-            })
+    rename_notification_ws = (
+        session_manager[old_name].websocket if is_current_catgirl and old_name in session_manager else None
+    )
+    switch_revision = 0
 
     assert_cloudsave_writable(
         _config_manager,
@@ -1803,6 +1822,8 @@ async def _rename_catgirl_transaction(
                 if guard_cancelled:
                     raise asyncio.CancelledError
             rename_committed = True
+            if is_current_catgirl:
+                switch_revision = _advance_current_catgirl_switch_revision(new_name)
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_rename, memory_rename_result,
             )
@@ -1887,9 +1908,12 @@ async def _rename_catgirl_transaction(
             release_character_recent_transaction(recent_transaction)
 
     # Notify frontend only after data update, reload, and cover migration complete.
-    if memory_server_reloaded and rename_notification_ws and rename_notification_message:
+    if memory_server_reloaded and rename_notification_ws and switch_revision:
         try:
-            await rename_notification_ws.send_text(rename_notification_message)
+            await rename_notification_ws.send_text(json.dumps({
+                "type": "catgirl_switched", "new_catgirl": new_name,
+                "old_catgirl": old_name, "switch_revision": switch_revision,
+            }))
             logger.info(f"已向 {old_name} 发送重命名通知")
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
@@ -1916,13 +1940,22 @@ async def _rename_catgirl_transaction(
     return result
 
 
+async def current_catgirl_switch_snapshot(config_manager):
+    """Read the current identity and its ordering evidence as one snapshot."""
+    async with character_config_mutation_lock:
+        characters = await config_manager.aload_characters()
+        current_catgirl = characters.get('当前猫娘', '')
+        return current_catgirl, ensure_current_catgirl_switch_revision(current_catgirl)
+
+
 @router.get('/current_catgirl')
 async def get_current_catgirl():
     """Get the name of the currently active neko."""
-    _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
-    current_catgirl = characters.get('当前猫娘', '')
-    return _json_no_store_response({'current_catgirl': current_catgirl})
+    current_catgirl, switch_revision = await current_catgirl_switch_snapshot(get_config_manager())
+    return _json_no_store_response({
+        'current_catgirl': current_catgirl,
+        'switch_revision': switch_revision,
+    })
 
 
 @router.post('/current_catgirl')
@@ -1963,6 +1996,7 @@ async def set_current_catgirl(request: Request):
                     }, status_code=400)
         latest_characters['当前猫娘'] = catgirl_name
         await _config_manager.asave_characters(latest_characters)
+        switch_revision = _advance_current_catgirl_switch_revision(catgirl_name)
     # Fast path: switching changes only 当前猫娘; per-k prompt / voice_id / thread remain unchanged,
     # requiring only refreshed globals. With 20 nekos this reduces O(N) to O(1).
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
@@ -2005,7 +2039,8 @@ async def set_current_catgirl(request: Request):
     message = json.dumps({
         "type": "catgirl_switched",
         "new_catgirl": catgirl_name,
-        "old_catgirl": old_catgirl
+        "old_catgirl": old_catgirl,
+        "switch_revision": switch_revision,
     })
 
     # Notify all session_managers concurrently: send_text calls are independent and failures clear only that manager's ws;
@@ -2041,7 +2076,7 @@ async def set_current_catgirl(request: Request):
         logger.warning("⚠️ 没有找到任何活跃的WebSocket连接来通知猫娘切换")
         logger.warning("提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
 
-    return {"success": True}
+    return {"success": True, "switch_revision": switch_revision}
 
 
 @router.post('/reload')
@@ -2516,7 +2551,10 @@ async def _delete_synced_character(uid: str, before_delete):
                 except (Exception, asyncio.CancelledError):
                     logger.exception("Failed to restore current character after sync deletion")
         if success and switched:
-            frame = json.dumps({'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback})
+            frame = json.dumps({
+                'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback,
+                'switch_revision': _advance_current_catgirl_switch_revision(fallback),
+            })
             await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
                                  return_exceptions=True)
         return success

@@ -36,14 +36,22 @@
                     return;
                 }
 
-                // Deduplicate: same message arrives via both BC and postMessage
+                // Deduplicate: same message arrives via both BC and postMessage.
+                // Character switches already carry backend commit order; use that
+                // identity instead of Date.now(), where distinct commits can share
+                // the same millisecond and one would otherwise be dropped.
+                var dedupTimestamp = message.action === 'catgirl_switched'
+                    && Number.isSafeInteger(message.switch_revision)
+                    && message.switch_revision > 0
+                    ? message.switch_revision
+                    : message.timestamp;
                 if (
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
                     && I.isDuplicateMessage(
                         message.action,
-                        message.timestamp,
+                        dedupTimestamp,
                         message.lifecycleSequence
                     )
                 ) {
@@ -104,10 +112,15 @@
                         const newCatgirl = event.data.new_catgirl || '';
                         const oldCatgirl = event.data.old_catgirl || '';
                         if (!newCatgirl) break;
-                        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-                        if (newCatgirl === currentName) break;
+                        // Do not dedupe by character name here. The central switch handler also
+                        // owns in-flight last-intent capture and missing-model recovery, so an
+                        // entry-point name check can discard the very event needed to recover.
                         if (typeof window.handleCatgirlSwitch === 'function') {
-                            window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+                            window.handleCatgirlSwitch(newCatgirl, oldCatgirl, {
+                                switchRevision: Number.isSafeInteger(event.data.switch_revision)
+                                    ? event.data.switch_revision
+                                    : 0
+                            });
                         }
                         break;
                     }

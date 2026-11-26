@@ -157,6 +157,7 @@ from .crud import (  # noqa: F401
     get_characters,
     rename_catgirl,
     get_current_catgirl,
+    ensure_current_catgirl_switch_revision,
     set_current_catgirl,
     reload_character_config,
     update_master,

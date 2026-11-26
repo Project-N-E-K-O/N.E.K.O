@@ -74,8 +74,53 @@ function loadVRMPathsConfig() {
 // 同步设置默认值（不阻塞页面加载）
 loadVRMPathsConfig();
 
+function validPageSwitchRevision(value) {
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function latestPageSwitchRevision() {
+    return Math.max(validPageSwitchRevision(window.lanlan_config?.switch_revision),
+        validPageSwitchRevision(window.appState?._latestCatgirlSwitchRevision));
+}
+
+// Stamp checks happen before any model/DOM writes. If a live switch already owns
+// the runtime, use its existing pending/rollback path instead of racing its model load.
+function handoffPageSnapshotToSwitch(name, revision) {
+    const state = window.appState;
+    if (revision && name && typeof window.handleCatgirlSwitch === 'function'
+        && (state?.isSwitchingCatgirl
+            || (state?._latestCatgirlSwitchRevision && name !== window.lanlan_config?.lanlan_name))) {
+        return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
+            switchRevision: revision
+        }));
+    }
+    return null;
+}
+
+async function readPageSnapshot(url, bounded) {
+    const controller = bounded && typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const read = async () => {
+        const resp = await fetch(url, { cache: 'no-store', ...(controller ? { signal: controller.signal } : {}) });
+        if (resp.ok === false) throw new Error('Snapshot HTTP ' + resp.status);
+        return resp.json();
+    };
+    if (!bounded) return read();
+    // Legacy desktop IPC is already usable. Do not let a stalled header or body hold startup open.
+    let timer;
+    try {
+        return await Promise.race([read(), new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                controller?.abort();
+                reject(new Error('Snapshot deadline exceeded'));
+            }, 1500);
+        })]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 // 异步获取页面配置
-async function loadPageConfig() {
+async function loadPageConfig({ bounded = false } = {}) {
     try {
         // 优先从 URL 获取 lanlan_name
         const urlParams = new URLSearchParams(window.location.search);
@@ -94,14 +139,17 @@ async function loadPageConfig() {
             ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
             : '/api/config/page_config';
 
-        const response = await fetch(apiUrl, {
-            cache: 'no-store',
-        });
-        const data = await response.json();
+        const data = await readPageSnapshot(apiUrl, bounded);
 
         if (data.success) {
-            // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
-            lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+            // Check before applying any part of the snapshot, including paths, DOM and boot side effects.
+            const switchRevision = validPageSwitchRevision(data.switch_revision);
+            if (switchRevision < latestPageSwitchRevision()) return false;
+            const name = lanlanNameFromUrl || data.lanlan_name || "";
+            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision);
+            if (liveSwitch) { await liveSwitch; return true; }
+            lanlan_config.lanlan_name = name;
+            lanlan_config.switch_revision = switchRevision;
             const modelPath = data.model_path || "";
             // 使用API返回的model_type，并转换为小写以防后端/旧数据大小写不一致
             const modelType = (data.model_type || 'live2d').toLowerCase();
@@ -222,21 +270,13 @@ async function loadPageConfig() {
             document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
             return true;
-        } else {
-            console.error('获取页面配置失败:', data.error);
-            // 使用默认值
-            lanlan_config.lanlan_name = "";
-            lanlan_config.lighting = null;
-            cubism4Model = "";
-            vrmModel = "";
-            window.lanlan_config = lanlan_config;
-            window.cubism4Model = "";
-            window.vrmModel = "";
-            return false;
         }
+        console.error('获取页面配置失败:', data.error);
     } catch (error) {
         console.error('加载页面配置时出错:', error);
-        // 使用默认值
+    }
+    // A failed read cannot invalidate a switch or a prior successful bootstrap.
+    if (!lanlan_config.lanlan_name && !latestPageSwitchRevision()) {
         lanlan_config.lanlan_name = "";
         lanlan_config.lighting = null;
         cubism4Model = "";
@@ -244,8 +284,8 @@ async function loadPageConfig() {
         window.lanlan_config = lanlan_config;
         window.cubism4Model = "";
         window.vrmModel = "";
-        return false;
     }
+    return false;
 }
 
 // 暴露给模型初始化层做"模型路径缺失"时的有界自愈重取（live2d-init.js scheduleLive2DConfigRetry）。
@@ -287,7 +327,7 @@ function startMultiWindowPageConfigLoad() {
                 }
             }, typeof delay === 'number' ? delay : 0);
         }
-        function applyInjectedConfig(detail) {
+        async function applyInjectedConfig(detail) {
             if (settled) {
                 return;
             }
@@ -302,6 +342,37 @@ function startMultiWindowPageConfigLoad() {
                 emptyConfigRetryTimer = null;
             }
             window.removeEventListener('neko:config-injected', handler);
+            const explicitName = new URLSearchParams(window.location.search).get('lanlan_name');
+            if (explicitName && explicitName !== d.lanlan_name) {
+                resolve(await loadPageConfig({ bounded: true }));
+                return;
+            }
+            let switchRevision = validPageSwitchRevision(d.switch_revision);
+            if (!switchRevision) {
+                // Legacy desktop IPC includes the name but not its commit order. Pair it with
+                // the small current-character snapshot; never borrow another character's revision.
+                try {
+                    const current = await readPageSnapshot('/api/characters/current_catgirl', true);
+                    if (current.current_catgirl === d.lanlan_name) {
+                        switchRevision = validPageSwitchRevision(current.switch_revision);
+                    } else if (current.current_catgirl && !explicitName) {
+                        resolve(await loadPageConfig({ bounded: true }));
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[主页] Could not verify injected character revision:', error);
+                }
+            }
+            if (switchRevision < latestPageSwitchRevision()) {
+                resolve(false);
+                return;
+            }
+            const liveSwitch = handoffPageSnapshotToSwitch(d.lanlan_name, switchRevision);
+            if (liveSwitch) {
+                resolve(await liveSwitch.then(() => true, () => false));
+                return;
+            }
+            lanlan_config.switch_revision = switchRevision;
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();

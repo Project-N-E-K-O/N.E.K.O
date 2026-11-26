@@ -151,6 +151,393 @@ test('watchdog retires pending switch and late response cannot reclaim avatar id
     assert.deepEqual(calls, [['begin', 1], ['rollback', 1], ['begin', 2], ['commit', 2, { uid: UID_B, name: 'B' }]]);
 });
 
+
+
+test('same-current VRM event recovers when the configured VRM instance is missing', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    h.window.location.pathname = '/';
+    h.window.lanlan_config = {
+        lanlan_name: 'A',
+        model_type: 'live3d',
+        live3d_sub_type: 'vrm'
+    };
+    h.window.vrmManager = { currentModel: null };
+    h.context.fetch = async () => { throw new Error('stop after dedupe gate'); };
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('A', 'B');
+
+    assert.deepEqual(calls, [
+        ['begin', 1],
+        ['rollback', 1]
+    ], 'missing VRM must bypass same-current dedupe and enter recovery flow');
+});
+
+test('same-current VRM event remains deduped when the VRM instance is healthy', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    h.window.location.pathname = '/';
+    h.window.lanlan_config = {
+        lanlan_name: 'A',
+        model_type: 'live3d',
+        live3d_sub_type: 'vrm'
+    };
+    h.window.vrmManager = { currentModel: { vrm: {} } };
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('A', 'B');
+
+    assert.deepEqual(calls, [], 'healthy VRM duplicate must keep BC/WS dedupe behavior');
+});
+
+test('rapid switch back queues latest target and force-reloads it after the in-flight switch fails', async () => {
+    const h = harness(); const calls = avatarCalls(h); const firstFetch = deferred();
+    let fetchCount = 0;
+    h.context.fetch = async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstFetch.promise;
+        return { ok: true, json: async () => ({ '猫娘': {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A');
+    await Promise.resolve();
+    assert.equal(h.window.appState.isSwitchingCatgirl, true);
+
+    await h.window.handleCatgirlSwitch('A', 'B');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'A');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.oldCatgirl, 'B');
+
+    firstFetch.reject(new Error('B model/config unavailable'));
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.ok(fetchCount >= 2, 'queued switch-back must replay instead of being dropped');
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.appState.isSwitchingCatgirl, false);
+    assert.equal(h.window.appState._pendingCatgirlSwitch, null);
+    assert.deepEqual(calls, [
+        ['begin', 1],
+        ['rollback', 1],
+        ['begin', 2],
+        ['commit', 2, { uid: UID_A, name: 'A' }]
+    ]);
+});
+
+test('older switch revision cannot overwrite a newer pending target while a switch is active', async () => {
+    const h = harness(); const firstFetch = deferred();
+    let fetchCount = 0;
+    h.context.fetch = async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstFetch.promise;
+        return { ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 100 });
+    await Promise.resolve();
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 101 });
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'A');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.switchRevision, 101);
+
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 100 });
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'A',
+        'late older server commit must not replace newer A intent');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.switchRevision, 101);
+
+    firstFetch.reject(new Error('B load failed'));
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+});
+
+test('older switch revision stays ignored after a newer BC-only switch has completed', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 200 });
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 201 });
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 200 });
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.deepEqual(calls, [
+        ['begin', 1], ['commit', 1, { uid: UID_B, name: 'B' }],
+        ['begin', 2], ['commit', 2, { uid: UID_A, name: 'A' }]
+    ], 'late response-derived BC for revision 200 must not undo revision 201');
+});
+
+test('same revision duplicate queued during an active attempt becomes retry only if that attempt fails', async () => {
+    const h = harness(); const calls = avatarCalls(h); const firstFetch = deferred();
+    let fetchCount = 0;
+    h.context.fetch = async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstFetch.promise;
+        return { ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 250 });
+    await Promise.resolve();
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 250 });
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'B');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.switchRevision, 250);
+
+    firstFetch.reject(new Error('first B attempt failed'));
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.deepEqual(calls, [
+        ['begin', 1], ['rollback', 1],
+        ['begin', 2], ['commit', 2, { uid: UID_B, name: 'B' }]
+    ]);
+});
+
+test('same switch revision may retry after its previous frontend attempt failed', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    let failOnce = true;
+    h.context.fetch = async () => {
+        if (failOnce) {
+            failOnce = false;
+            throw new Error('temporary frontend config read failure');
+        }
+        return { ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 300 });
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 300 });
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.deepEqual(calls, [
+        ['begin', 1], ['rollback', 1],
+        ['begin', 2], ['commit', 2, { uid: UID_B, name: 'B' }]
+    ], 'same authoritative revision remains a valid recovery after a failed frontend attempt');
+});
+
+test('latest intent matching a successful in-flight target cancels an older pending target without replay', async () => {
+    const h = harness(); const calls = avatarCalls(h); const audioClear = deferred();
+    h.window.clearAudioQueue = () => audioClear.promise;
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.window.appState.isSwitchingCatgirl, true);
+
+    await h.window.handleCatgirlSwitch('C', 'B');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'C');
+    await h.window.handleCatgirlSwitch('B', 'C');
+    assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, 'B');
+
+    audioClear.resolve();
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.equal(h.window.appState._pendingCatgirlSwitch, null);
+    assert.deepEqual(calls, [
+        ['begin', 1],
+        ['commit', 1, { uid: UID_B, name: 'B' }]
+    ], 'successful in-flight B already satisfies the latest B intent without a second attempt');
+});
+
+test('BroadcastChannel dedupe distinguishes same-millisecond character commits by switch revision', async () => {
+    const h = harness(); const forwarded = [];
+    h.window.handleCatgirlSwitch = (next, previous, options) => {
+        forwarded.push([next, previous, options?.switchRevision || 0]);
+    };
+    h.load('static/app/app-interpage/bootstrap-resources-and-model-reload.js');
+    Object.assign(h.window.__appInterpageParts, {
+        isIcebreakerBridgeAction: () => false,
+        shouldBypassYuiGuideMessageDedup: () => false,
+        isYuiGuideLifecycleStartAction: () => false,
+        isYuiGuideLifecycleScopedAction: () => false,
+        isYuiGuideMessageForCurrentLifecycle: () => true,
+        isYuiGuidePcOverlayRunEnded: () => false,
+        clearYuiGuidePcOverlayBridgeState() {},
+        isHighVolumeBroadcastChannelAction: () => false,
+        drainPendingYuiGuideChatBridgeQueue() {}
+    });
+    h.context.BroadcastChannel = class {
+        constructor(name) { this.name = name; }
+        postMessage() {}
+        close() {}
+    };
+    h.load('static/app/app-interpage/guide-message-relay.js');
+
+    const parts = h.window.__appInterpageParts;
+    const timestamp = 1700000000000;
+    await parts.handleNekoBroadcastMessage({ data: {
+        action: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A',
+        switch_revision: 600, timestamp
+    } });
+    await parts.handleNekoBroadcastMessage({ data: {
+        action: 'catgirl_switched', new_catgirl: 'C', old_catgirl: 'B',
+        switch_revision: 601, timestamp
+    } });
+    assert.deepEqual(forwarded, [
+        ['B', 'A', 600],
+        ['C', 'B', 601]
+    ], 'distinct revisions sharing one millisecond must both pass; duplicate revision must be absorbed');
+});
+
+test('page-config switch revision seeds central ordering before any live switch event', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    h.window.location.pathname = '/';
+    h.window.lanlan_config = {
+        lanlan_name: 'C', model_type: 'live2d', switch_revision: 701
+    };
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 700 });
+
+    assert.deepEqual(calls, [], 'new page snapshot must reject an older delayed switch before starting an attempt');
+    assert.equal(h.window.lanlan_config.lanlan_name, 'C');
+    assert.equal(h.window.appState._latestCatgirlSwitchRevision, 701);
+});
+
+test('page bootstrap retains the authoritative positive switch revision from page_config', async () => {
+    const h = harness(); h.context.URLSearchParams = URLSearchParams;
+    h.context.fetch = async () => ({ json: async () => ({
+        success: true, lanlan_name: 'A', switch_revision: 701, model_type: 'live2d'
+    }) });
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    assert.equal(h.window.lanlan_config.switch_revision, 701);
+});
+
+test('BroadcastChannel catgirl_switched forwards same-name targets to the central switch handler', async () => {
+    const h = harness(); const forwarded = [];
+    h.window.handleCatgirlSwitch = (next, previous, options) => forwarded.push([next, previous, options?.switchRevision || 0]);
+    h.window.__appInterpageParts = {
+        isIcebreakerBridgeAction: () => false,
+        shouldBypassYuiGuideMessageDedup: () => false,
+        isDuplicateMessage: () => false,
+        isYuiGuideLifecycleStartAction: () => false,
+        isYuiGuideLifecycleScopedAction: () => false,
+        isYuiGuideMessageForCurrentLifecycle: () => true,
+        isYuiGuidePcOverlayRunEnded: () => false,
+        clearYuiGuidePcOverlayBridgeState() {},
+        isHighVolumeBroadcastChannelAction: () => false,
+        drainPendingYuiGuideChatBridgeQueue() {}
+    };
+    h.context.BroadcastChannel = class {
+        constructor(name) { this.name = name; }
+        postMessage() {}
+        close() {}
+    };
+    h.load('static/app/app-interpage/guide-message-relay.js');
+
+    const parts = h.window.__appInterpageParts;
+    await parts.handleNekoBroadcastMessage({ data: {
+        action: 'catgirl_switched',
+        new_catgirl: 'A',
+        old_catgirl: 'B',
+        switch_revision: 400,
+        timestamp: Date.now()
+    } });
+
+    h.window.lanlan_config.lanlan_name = 'B';
+    await parts.handleNekoBroadcastMessage({ data: {
+        action: 'catgirl_switched', new_catgirl: 'C', old_catgirl: 'B', switch_revision: 401, timestamp: Date.now() + 1
+    } });
+    await parts.handleNekoBroadcastMessage({ data: {
+        action: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'C', switch_revision: 402, timestamp: Date.now() + 2
+    } });
+
+    assert.deepEqual(forwarded, [['A', 'B', 400], ['C', 'B', 401], ['B', 'C', 402]],
+        'BC must forward same-name recovery and latest-target cancellation events to central arbitration');
+});
+
+test('WebSocket catgirl_switched forwards authoritative switch revision', () => {
+    const h = harness(); const forwarded = [];
+    h.window.t = key => key;
+    h.window.location.protocol = 'http:'; h.window.location.host = 'fixture.test';
+    h.window.appConst = { HEARTBEAT_INTERVAL: 30000 };
+    h.window.handleCatgirlSwitch = (next, previous, options) => {
+        forwarded.push([next, previous, options?.switchRevision || 0]);
+    };
+    h.context.Blob = Blob;
+    h.context.WebSocket = class {
+        static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+        constructor(url) { this.url = url; this.readyState = 0; }
+        send() {}
+        close() { this.readyState = 3; }
+    };
+    h.load('static/app/app-websocket.js');
+    h.window.connectWebSocket();
+    h.window.appState.socket.onmessage({ data: JSON.stringify({
+        type: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A', switch_revision: 500
+    }) });
+    assert.deepEqual(forwarded, [['B', 'A', 500]]);
+});
+
+for (const pathname of ['/chat', '/chat/', '/chat_full', '/chat_full/']) {
+    test(`${pathname} repeated same-current VRM WebSocket notifications stay deduped without model-side effects`, async () => {
+        const h = harness(); const calls = avatarCalls(h);
+        h.window.location.pathname = pathname;
+        h.window.location.protocol = 'http:';
+        h.window.location.host = 'fixture.test';
+        h.window.t = key => key;
+        h.window.appConst = { HEARTBEAT_INTERVAL: 30000 };
+        h.window.lanlan_config = {
+            lanlan_name: 'A',
+            model_type: 'live3d',
+            live3d_sub_type: 'vrm'
+        };
+        h.window.vrmManager = undefined;
+        let clearCount = 0;
+        h.window.clearAudioQueue = async () => { clearCount += 1; };
+        h.context.Blob = Blob;
+        let socketCount = 0;
+        h.context.WebSocket = class {
+            static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+            constructor(url) { this.url = url; this.readyState = 0; socketCount += 1; }
+            send() {}
+            close() { this.readyState = 3; }
+        };
+
+        h.load('static/app/app-character.js');
+        h.load('static/app/app-websocket.js');
+        h.window.connectWebSocket();
+        const socket = h.window.appState.socket;
+        const initialSocketCount = socketCount;
+        const message = JSON.stringify({ type: 'catgirl_switched', new_catgirl: 'A', old_catgirl: 'B' });
+        socket.onmessage({ data: message });
+        socket.onmessage({ data: message });
+        await new Promise(resolve => setImmediate(resolve));
+
+        assert.deepEqual(calls, [], 'chat-only surfaces must not interpret absent VRM runtime as model loss');
+        assert.equal(clearCount, 0, 'same-current WS notifications must not clear chat audio on chat-only surfaces');
+        assert.equal(socketCount, initialSocketCount, 'same-current WS notifications must not reconnect on chat-only surfaces');
+    });
+}
+
+test('character-card switch producer republishes the backend switch revision to local and BC paths', () => {
+    const source = fs.readFileSync(path.join(root,
+        'static/js/character_card_manager/card-form-and-actions.js'), 'utf8');
+    assert.match(source, /const switchRevision = Number\.isSafeInteger\(result\.switch_revision\)/);
+    assert.match(source, /handleCatgirlSwitch\(targetName, oldCatgirl, \{ switchRevision \}\)/);
+    assert.match(source, /_broadcastCatgirlSwitched\(targetName, oldCatgirl, switchRevision\)/);
+    assert.match(source, /message\.switch_revision = switchRevision/);
+});
+
 test('display update refreshes existing assistant avatars without changing user messages', () => {
     const h = harness(); const updates = [];
     let current = 'data:image/png;base64,CUSTOM';
@@ -613,4 +1000,149 @@ test('a background model capture keeps the upload cropper title and its status s
     core.closeUploadCropper(); assert.equal(await cropping, null);
     core.refreshDisplayedAvatar();
     assert.match(h.dom.chatAvatarPreviewStatus.textContent, /^chat\.avatarPreviewReady/);
+});
+
+for (const lateResult of ['older', 'http-error', 'network-error']) {
+    test('delayed page config cannot undo a completed character switch: ' + lateResult, async () => {
+        const h = harness(); const calls = avatarCalls(h);
+        h.context.URLSearchParams = URLSearchParams;
+        h.load('static/js/index.js');
+        h.load('static/app/app-character.js');
+        const originalFetch = h.context.fetch;
+        const getStarted = deferred(), reply = deferred();
+        h.context.fetch = (url, ...args) => {
+            if (String(url).startsWith('/api/config/page_config')) {
+                getStarted.resolve();
+                return reply.promise;
+            }
+            return originalFetch(url, ...args);
+        };
+        const loading = h.window.startPageConfigLoad();
+        await getStarted.promise;
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 902 });
+        assert.deepEqual(calls, [['begin', 1], ['commit', 1, { uid: UID_B, name: 'B' }]]);
+        const snapshot = () => [h.window.lanlan_config.lanlan_name, h.window.lanlan_config.switch_revision,
+            h.window.lanlan_config.model_type, h.window.cubism4Model, h.window.vrmModel];
+        const committed = snapshot();
+        assert.deepEqual(committed.slice(0, 2), ['B', 902]);
+        if (lateResult === 'network-error') reply.reject(new Error('late read failed'));
+        else if (lateResult === 'http-error') reply.resolve({ json: async () => ({ success: false }) });
+        else reply.resolve({ json: async () => ({
+            success: true, lanlan_name: 'A', switch_revision: 901,
+            model_type: 'live2d', model_path: '/A/A.model3.json'
+        }) });
+        await loading;
+        assert.deepEqual(snapshot(), committed);
+        assert.equal(h.window.appState._latestCatgirlSwitchRevision, 902);
+    });
+}
+
+test('page config still boots an explicit preview without a revision and refreshes an equal revision', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams;
+    h.window.location.pathname = '/preview-A';
+    h.load('static/js/index.js');
+    const fetchConfig = (name, revision, modelPath) => {
+        h.context.fetch = async () => ({ json: async () => ({
+            success: true, lanlan_name: name, switch_revision: revision, model_path: modelPath
+        }) });
+    };
+    fetchConfig('preview-A', 0, '/preview.model3.json');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'preview-A');
+    assert.equal(h.window.lanlan_config.switch_revision, 0);
+    assert.equal(h.window.cubism4Model, '/preview.model3.json');
+    h.window.location.pathname = '/';
+    fetchConfig('B', 902, '/B.model3.json');
+    assert.equal(await h.window.reloadPageConfig(), true);
+    fetchConfig('B', 902, '/updated-B.model3.json');
+    assert.equal(await h.window.reloadPageConfig(), true);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.equal(h.window.cubism4Model, '/updated-B.model3.json');
+});
+
+for (const versioned of [true, false]) {
+    test('IPC current-character bootstrap rejects an older BC receipt (' + (versioned ? 'paired' : 'legacy') + ')', async () => {
+        const h = harness(); const calls = avatarCalls(h);
+        h.context.URLSearchParams = URLSearchParams;
+        h.window.__NEKO_MULTI_WINDOW__ = true;
+        h.window.__nekoInjectedConfig = {
+            lanlan_name: 'A', model_type: 'live2d', ...(versioned ? { switch_revision: 923 } : {})
+        };
+        const originalFetch = h.context.fetch, lookups = [];
+        h.context.fetch = (url, ...args) => {
+            if (url !== '/api/characters/current_catgirl') return originalFetch(url, ...args);
+            lookups.push(url);
+            return Promise.resolve({ ok: true, json: async () => ({ current_catgirl: 'A', switch_revision: 923 }) });
+        };
+        h.load('static/js/index.js');
+        h.load('static/app/app-character.js');
+        assert.equal(await h.window.startPageConfigLoad(), true);
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 922 });
+        assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+        assert.equal(h.window.lanlan_config.switch_revision, 923);
+        assert.deepEqual(calls, []);
+        assert.equal(lookups.length, versioned ? 0 : 1);
+    });
+}
+
+for (const delay of ['headers', 'body']) {
+    test('desktop legacy IPC remains usable when the identity lookup stalls at ' + delay, async () => {
+        const h = harness(); const started = deferred(), slow = deferred();
+        h.context.URLSearchParams = URLSearchParams;
+        h.context.AbortController = AbortController;
+        h.window.__NEKO_MULTI_WINDOW__ = true;
+        h.window.__nekoInjectedConfig = { lanlan_name: 'A', model_type: 'live2d' };
+        const originalFetch = h.context.fetch;
+        h.context.fetch = async (url, ...args) => {
+            if (url !== '/api/characters/current_catgirl') return originalFetch(url, ...args);
+            if (delay === 'headers') { started.resolve(); await slow.promise; }
+            return { ok: true, json: async () => {
+                if (delay === 'body') { started.resolve(); await slow.promise; }
+                return { current_catgirl: 'A', switch_revision: 999 };
+            } };
+        };
+        h.load('static/js/index.js'); h.load('static/app/app-character.js');
+        const loading = h.window.startPageConfigLoad();
+        await started.promise;
+        let ready = false;
+        loading.then(() => { ready = true; });
+        for (const timer of [...h.timers.values()]) if (timer.delay <= 5000) timer.callback();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(ready, true, 'IPC identity must not wait indefinitely for a stalled snapshot');
+        assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 902 });
+        slow.resolve(); await new Promise(resolve => setImmediate(resolve));
+        assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+        assert.equal(h.window.lanlan_config.switch_revision, 902, 'abandoned reads must not mutate a later live switch');
+    });
+}
+
+test('a newer page snapshot supersedes an older switch already loading', async () => {
+    const h = harness(); const calls = avatarCalls(h);
+    h.context.URLSearchParams = URLSearchParams;
+    h.load('static/js/index.js'); h.load('static/app/app-character.js');
+    const originalFetch = h.context.fetch;
+    const pageStarted = deferred(), pageReply = deferred(), roleStarted = deferred(), roleReply = deferred();
+    let held = false;
+    h.context.fetch = async (url, ...args) => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            pageStarted.resolve(); return pageReply.promise;
+        }
+        if (!held) { held = true; roleStarted.resolve(); await roleReply.promise; }
+        return originalFetch(url, ...args);
+    };
+    const loading = h.window.startPageConfigLoad();
+    await pageStarted.promise;
+    const older = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 922 });
+    await roleStarted.promise;
+    pageReply.resolve({ json: async () => ({
+        success: true, lanlan_name: 'A', switch_revision: 923, model_type: 'live2d'
+    }) });
+    await loading;
+    roleReply.resolve(); await older;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.lanlan_config.switch_revision, 923);
+    assert.equal(calls.filter(x => x[0] === 'commit').at(-1)[2].name, 'A');
 });
