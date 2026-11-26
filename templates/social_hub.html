@@ -6,6 +6,10 @@
   <title data-i18n="visit.socialHub.windowTitle">喵宇宙串门</title>
   <link rel="stylesheet" href="/static/css/social-hub.css?v={{ static_asset_version }}">
   <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    {% if theme_loader_css_version is defined %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
+    {% endif %}
 </head>
 <body class="neko-social-hub-standalone">
   <main id="neko-social-hub-root"></main>

@@ -539,6 +539,10 @@
   }
   #tutorial-overlay.done { display: none; }
 </style>
+    {% if theme_loader_css_version is defined %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
+    {% endif %}
 </head>
 <body>
 <div id="badminton-loading" role="status" aria-live="polite" aria-atomic="true">
