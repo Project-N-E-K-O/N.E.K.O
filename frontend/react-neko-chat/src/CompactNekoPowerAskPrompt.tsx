@@ -25,8 +25,11 @@ export function CompactAskOrRecommendationPrompt({ messages, onAction }: {
 }) {
   const { isMessageHidden } = useChatScreenVisibility();
   const seen = messages.filter(message => !isMessageHidden(message));
+  // Which question floated last is kept here, where it outlasts the moments with none to show: one
+  // that comes after another was answered has its buttons wait as well.
+  const shown = useRef({ last: '', replaced: '' });
   return pendingNekoPowerAsk(seen)
-    ? <CompactNekoPowerAskPrompt messages={seen} onAction={onAction} />
+    ? <CompactNekoPowerAskPrompt messages={seen} onAction={onAction} shown={shown} />
     : <CompactMusicRecommendationPrompt messages={messages} onAction={onAction} />;
 }
 
@@ -34,14 +37,17 @@ export function CompactAskOrRecommendationPrompt({ messages, onAction }: {
  * In the compact chat, what a NekoPower commission asks floats above the composer, where the
  * recommendations do: a commission waits for the answer, so it comes before those.
  */
-export default function CompactNekoPowerAskPrompt({ messages, onAction }: {
+export default function CompactNekoPowerAskPrompt({ messages, onAction, shown: kept }: {
   messages: ChatMessage[];
   onAction?: (message: ChatMessage, action: MessageAction) => void;
+  /** Where whoever shows this keeps which question floated last, across the times it is not shown. */
+  shown?: { current: { last: string; replaced: string } };
 }) {
   const item = pendingNekoPowerAsk(messages);
   // Which question was shown last, and which one took another's place: that one has its
   // buttons wait a moment. Kept so that drawing it again says the same.
-  const shown = useRef({ last: '', replaced: '' });
+  const own = useRef({ last: '', replaced: '' });
+  const shown = kept ?? own;
   const key = item ? `${item.block.taskId}:${item.block.questionId}` : '';
   if (key && key !== shown.current.last) shown.current = { last: key, replaced: shown.current.last ? key : '' };
   const replaced = Boolean(key) && shown.current.replaced === key;

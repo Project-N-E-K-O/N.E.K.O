@@ -263,6 +263,27 @@ describe('a familiar up close', () => {
     expect(api.answerCommission).toHaveBeenCalledWith('c1', { choice: 'once', text: undefined, question_id: 'q1' })
   })
 
+  it('says that a sentence added to an answer was not taken with the familiar that was answered, and no other', async () => {
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'pip install openpyxl' }, options: ['once', 'deny'] }
+    const waits = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask } })
+    const other = card({ id: 's2', name: 'Look it up', kind: 'child', preset: 'scout', leader: false, parent: 's1', title: '' })
+    const { state } = await show([waits, other])
+    let taken = (_: unknown) => {}
+    api.answerCommission.mockReturnValue(new Promise(resolve => { taken = resolve }))
+    await click(byTest('familiar-ask')?.querySelector('[data-choice="deny"]'))
+    // Another familiar is chosen before the answer is back.
+    state.props = { ...state.props, selectedId: 's2' }
+    await flush()
+    api.getProjectBoard.mockResolvedValue(boardOf([card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } }), other], 'r2'))
+    taken({ success: true, note_taken: false })
+    await flush()
+    expect(byTest('familiar-answer-note')).toBeNull()
+    // Back with the one that was answered: said there, in whichever view.
+    state.props = { ...state.props, selectedId: 's1' }
+    await flush()
+    expect(byTest('familiar-answer-note')?.textContent).toBe(words.ask.noteLost)
+  })
+
   it('answers a question put in words with what the user typed', async () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Book the train', status: 'waiting_user', started_at: 0, ask: { id: 'q2', question: 'Which day?' } } })
     await show([asking])

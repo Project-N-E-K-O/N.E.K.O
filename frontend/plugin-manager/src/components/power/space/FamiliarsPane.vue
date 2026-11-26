@@ -82,7 +82,7 @@
       <!-- What it asks is answered whichever view is open: the page may be opened at what was said in it. -->
       <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
       <!-- Said here and not in a view: the question is gone once it is answered, whichever view is open. -->
-      <p v-if="answered" class="muted" role="status" data-testid="familiar-answer-note">{{ answered }}</p>
+      <p v-if="answered?.id === selected.id" class="muted" role="status" data-testid="familiar-answer-note">{{ answered.said }}</p>
 
       <div class="views" role="tablist">
         <button
@@ -200,8 +200,9 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
-// What is said of an answer that was taken while the sentence added to it was not.
-const answered = ref('')
+// What is said of an answer that was taken while the sentence added to it was not, and of which
+// familiar's: shown with that one only (the answer may come back after another was chosen).
+const answered = ref<{ id: string; said: string } | null>(null)
 // What came of the last thing done to its worktree: said after the worktree is gone from its card as well.
 const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
@@ -318,11 +319,12 @@ async function answer(given: GivenAnswer) {
   // One answer to a question: nothing more is sent while one is on its way.
   if (!commission || !saysSomething(given) || busy.value) return
   const asked = ask.value
+  const whose = selected.value?.id ?? ''
   let lost = ''
-  answered.value = ''
+  if (answered.value?.id === whose) answered.value = null
   const took = await act(answeringAs(given), async () => { lost = await sendAnswer(commission.id, given, asked, t) }, '', describeAnswerError)
   // The answer is in; the sentence that was to go with it was not taken.
-  if (took && lost) answered.value = lost
+  if (took && lost) answered.value = { id: whose, said: lost }
 }
 
 async function stop() {
@@ -385,7 +387,6 @@ watch(() => props.selectedId, () => {
   // The editor was opened for the one the user has left.
   editing.value = false
   note.value = ''
-  answered.value = ''
   treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
   view.value = startingView()

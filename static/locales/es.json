@@ -4780,6 +4780,7 @@
             "noteLost": "Tu respuesta se entregó, pero la frase que añadiste no.",
             "failed": "No se entregó. Inténtalo de nuevo.",
             "unsure": "Aún no se sabe si se entregó. Vuelve a mirar en un momento.",
+            "goneUnsure": "Esta pregunta ya terminó; no se sabe si esta respuesta fue la que contó.",
             "wideBlocked": "Aquí no se puede mostrar todo: concede los permisos más amplios en la ventana de NekoPower"
         },
         "taskHud": {

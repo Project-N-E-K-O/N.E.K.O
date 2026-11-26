@@ -208,6 +208,25 @@ describe('the question above the composer of the compact chat', () => {
     expect(pendingNekoPowerAsk([ask(permission, { state: 'sending' })])?.block.state).toBe('sending');
   });
 
+  it('holds the buttons of the next question back as well when there was a moment with none in between', () => {
+    vi.useFakeTimers();
+    const within = (messages: ChatMessage[]) => (
+      <ChatScreenVisibilityProvider messages={messages}>
+        <CompactAskOrRecommendationPrompt messages={messages} />
+      </ChatScreenVisibilityProvider>
+    );
+    const view = render(within([ask(permission)]));
+    const once = () => view.container.querySelector('[data-choice="once"]') as HTMLButtonElement;
+    expect(once().disabled).toBe(false);
+    // Answered: nothing floats. Then the task asks the next thing.
+    view.rerender(within([ask(permission, { state: 'answered' })]));
+    expect(view.container.querySelector('#compact-nekopower-ask-prompt')).toBeNull();
+    view.rerender(within([ask(permission, { state: 'answered' }), ask({ ...permission, id: 'q9' })]));
+    expect(once().disabled).toBe(true);
+    act(() => { vi.advanceTimersByTime(NEKOPOWER_ASK_SETTLE_MS); });
+    expect(once().disabled).toBe(false);
+  });
+
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {
     function Clear() {
       const { clearScreen } = useChatScreenVisibility();

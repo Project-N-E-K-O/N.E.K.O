@@ -18,6 +18,9 @@
     'use strict';
 
     var SETTLE_MS = 900;
+    // An answer whose fate is not known is looked into again this often, this many times at most.
+    var RECHECK_MS = 3000;
+    var RECHECKS = 20;
     var WIDE_CHOICES = ['always', 'session'];
     // A command or path longer than this is not read at a glance: it is shown whole before an
     // approval that holds for more than this once is offered.
@@ -58,6 +61,7 @@
         noteLost: ['agent.ask.noteLost', '回答送到了，补的那句没送到。'],
         failed: ['agent.ask.failed', '没送到，再试一次吧。'],
         unsure: ['agent.ask.unsure', '还不确定送到没有，过一会儿再看。'],
+        goneUnsure: ['agent.ask.goneUnsure', '这个问题已经结束了；这次的回答有没有算上，不确定。'],
         wideBlocked: ['agent.ask.wideBlocked', '这里看不到完整内容，「始终允许」这类选项请到喵能力界面里选']
     };
     function word(name, vars) { return tr(WORDS[name][0], WORDS[name][1], vars); }
@@ -161,14 +165,41 @@
         } catch (_) {
             return { ok: false, stale: false, noteLost: false };
         }
-        // The server gave up waiting after it had passed the answer on: it may be in. Whether the
-        // same question still waits says which; where that cannot be read, it is not known.
+        // The server gave up waiting after it had passed the answer on: it may be in. Where the
+        // same question still waits it was not, and can be sent again. Where it waits no more it is
+        // over, by this answer or by something else (answered elsewhere first, stopped): which is
+        // not known, and it is not said to be answered. Nor where what waits cannot be read.
+        var waits = await whetherWaits(taskId, questionId);
+        if (waits === null) return { ok: false, stale: false, noteLost: false, unsure: true };
+        return waits ? { ok: false, stale: false, noteLost: false } : { ok: false, stale: false, noteLost: false, gone: true };
+    }
+
+    /** Whether a task still waits with this very question: true, false, or null where that cannot be read. */
+    async function whetherWaits(taskId, questionId) {
         var rows = await waiting();
-        if (!rows) return { ok: false, stale: false, noteLost: false, unsure: true };
-        var still = rows.some(function (row) {
+        if (!rows) return null;
+        return rows.some(function (row) {
             return row && String(row.task_id) === String(taskId) && view(row.question).id === (questionId || '');
         });
-        return still ? { ok: false, stale: false, noteLost: false } : { ok: true, stale: false, noteLost: false };
+    }
+
+    /**
+     * Look into an answer whose fate is not known until it is: `settled(true)` once the same
+     * question is seen to wait still (the answer was not taken, and can be given again),
+     * `settled(false)` once it waits no more. Given up after a while; `wanted` says whether
+     * anyone still wants to know.
+     */
+    function lookInto(taskId, questionId, wanted, settled, left) {
+        var tries = left === undefined ? RECHECKS : left;
+        if (tries <= 0) return;
+        setTimeout(function () {
+            if (!wanted()) return;
+            whetherWaits(taskId, questionId).then(function (waits) {
+                if (!wanted()) return;
+                if (waits === null) lookInto(taskId, questionId, wanted, settled, tries - 1);
+                else settled(waits);
+            });
+        }, RECHECK_MS);
     }
 
     /** What commissions ask right now, read from the agent process: `[{task_id, title, question, route}]`. */
@@ -222,6 +253,8 @@
 
         var busy = false;
         var done = false;
+        // Whether an answer was taken is not known yet: nothing more is sent until it is.
+        var unknown = false;
         var settling = Boolean(options.settle);
         var wholeOpen = false;
         var picked = {};
@@ -230,7 +263,7 @@
 
         function refresh() {
             buttons.forEach(function (button) {
-                button.disabled = busy || done || settling;
+                button.disabled = busy || done || settling || unknown;
                 button.style.opacity = button.disabled ? '0.55' : '1';
                 button.style.cursor = button.disabled ? 'default' : 'pointer';
             });
@@ -240,7 +273,7 @@
                 // Cut, and nothing here to show it whole by: the wider approvals are given elsewhere.
                 hint.textContent = word(shown.whole ? 'wideHint' : 'wideBlocked');
             }
-            if (input) input.disabled = busy || done;
+            if (input) input.disabled = busy || done || unknown;
         }
         function button(label, style, press) {
             var node = el('button', Object.assign({}, BUTTON, style || {}), label);
@@ -251,7 +284,7 @@
             return node;
         }
         async function give(given) {
-            if (busy || done || settling) return;
+            if (busy || done || settling || unknown) return;
             busy = true;
             status.textContent = '';
             refresh();
@@ -264,10 +297,21 @@
                     + (result.noteLost ? ' ' + word('noteLost') : '');
                 status.style.color = 'var(--neko-popup-success, #16a34a)';
             } else {
-                status.textContent = word(result.stale ? 'stale' : result.unsure ? 'unsure' : 'failed');
+                status.textContent = word(result.stale ? 'stale' : result.gone ? 'goneUnsure' : result.unsure ? 'unsure' : 'failed');
                 status.style.color = 'var(--neko-popup-error, #dc2626)';
-                // Too late: the question is closed, and what waits now is read anew.
-                if (result.stale) { done = true; sync(); }
+                // Too late, or over: the question is closed, and what waits now is read anew.
+                if (result.stale || result.gone) { done = true; sync(); }
+                if (result.unsure) {
+                    // Sent again now it could be taken twice over; looked into until it is known.
+                    unknown = true;
+                    lookInto(options.taskId, shown.id, function () { return unknown && box.isConnected; }, function (waits) {
+                        unknown = false;
+                        done = !waits;
+                        status.textContent = word(waits ? 'failed' : 'goneUnsure');
+                        if (!waits) sync();
+                        refresh();
+                    });
+                }
             }
             refresh();
         }
@@ -446,6 +490,10 @@
         if (block.state === 'pending' || block.state === 'sending') patch(card, { state: 'closed' });
     }
     function show(taskId, title, question, route) {
+        var shown = view(question);
+        // Before anything is let go of for it: a late report of a question that is over must not
+        // take the place of the next one, which waits for the window.
+        if (isOver(shown.id)) return;
         var api = host();
         if (!api) {
             // Only the latest of a task: an earlier one is over by the time the window is there.
@@ -455,8 +503,6 @@
             setTimeout(drain, 500);
             return;
         }
-        var shown = view(question);
-        if (isOver(shown.id)) return;
         // Shown from here on: what waited for the window of this task is older, and is let go of.
         queued = queued.filter(function (args) { return args[0] !== taskId; });
         var card = open.get(taskId);
@@ -568,13 +614,27 @@
                 forget();
                 setOver(card.questionId);
                 patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
-            } else if (result.stale) {
+            } else if (result.stale || result.gone) {
                 forget();
                 setOver(card.questionId);
-                patch(card, { state: 'closed', notice: word('stale') });
+                patch(card, { state: 'closed', notice: word(result.stale ? 'stale' : 'goneUnsure') });
                 sync();
+            } else if (result.unsure) {
+                // Not to be sent again until it is known whether this was taken: the card stays as
+                // one whose answer is on its way, and is looked into until it is known.
+                patch(card, { state: 'sending', notice: word('unsure') });
+                lookInto(block.taskId, block.questionId, function () { return open.get(block.taskId) === card; }, function (waits) {
+                    if (waits) {
+                        patch(card, { state: 'pending', notice: word('failed') });
+                        return;
+                    }
+                    open.delete(block.taskId);
+                    setOver(card.questionId);
+                    patch(card, { state: 'closed', notice: word('goneUnsure') });
+                    sync();
+                });
             } else {
-                patch(card, { state: 'pending', notice: word(result.unsure ? 'unsure' : 'failed') });
+                patch(card, { state: 'pending', notice: word('failed') });
             }
         });
     });
@@ -594,6 +654,6 @@
 
     window.NekoPowerAsk = {
         view: view, answer: answer, waiting: waiting, render: render, receive: receive, sync: sync, shownAnswer: shownAnswer,
-        word: word, SETTLE_MS: SETTLE_MS
+        word: word, SETTLE_MS: SETTLE_MS, RECHECK_MS: RECHECK_MS
     };
 })();

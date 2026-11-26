@@ -148,12 +148,14 @@ describe('the question inside a card of the task HUD', () => {
 
   it('asks whether the question still waits when the server gave up waiting for the answer to be taken', async () => {
     const rows = (questions: unknown[]) => (url: string) => (url.includes('/answer') ? { status: 504, body: {} } : { status: 200, body: { questions } });
-    // It does not wait any more: the answer was taken.
+    // It does not wait any more: over, by this answer or by something else (answered elsewhere
+    // first, stopped). Not said to be answered, and not to be sent again.
     reply = rows([]);
     const taken = draw(permission);
     press(taken.querySelector('[data-choice="once"]'));
     await flush();
-    expect(taken.querySelector('.task-ask-status')?.textContent).toContain('已回答');
+    expect(taken.querySelector('.task-ask-status')?.textContent).toBe('这个问题已经结束了；这次的回答有没有算上，不确定。');
+    expect((taken.querySelector('[data-choice="once"]') as HTMLButtonElement).disabled).toBe(true);
     // The same question still waits: not taken, to be sent again.
     reply = rows([{ task_id: 'c1', question: permission }]);
     const waits = draw(permission);
@@ -161,18 +163,48 @@ describe('the question inside a card of the task HUD', () => {
     await flush();
     expect(waits.querySelector('.task-ask-status')?.textContent).toBe('没送到，再试一次吧。');
     expect((waits.querySelector('[data-choice="once"]') as HTMLButtonElement).disabled).toBe(false);
-    // Another question waits by now: this one was answered.
+    // Another question waits by now: this one is over just the same.
     reply = rows([{ task_id: 'c1', question: confirmation }]);
     const moved = draw(permission);
     press(moved.querySelector('[data-choice="once"]'));
     await flush();
-    expect(moved.querySelector('.task-ask-status')?.textContent).toContain('已回答');
-    // That cannot be read either: it is not known, and is not said to have failed.
+    expect(moved.querySelector('.task-ask-status')?.textContent).toContain('不确定');
+    expect(moved.querySelector('.task-ask-status')?.textContent).not.toContain('已回答');
+  });
+
+  it('sends nothing more while it is not known whether an answer was taken, and looks into it until it is', async () => {
+    vi.useFakeTimers();
+    const tick = async () => { await vi.advanceTimersByTimeAsync(asks.RECHECK_MS); };
+    // Neither the answer nor what waits can be read: not known, and not said to have failed.
     reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
     const unknown = draw(permission);
-    press(unknown.querySelector('[data-choice="once"]'));
-    await flush();
+    const once = unknown.querySelector('[data-choice="once"]') as HTMLButtonElement;
+    press(once);
+    await vi.advanceTimersByTimeAsync(0);
     expect(unknown.querySelector('.task-ask-status')?.textContent).toBe('还不确定送到没有，过一会儿再看。');
+    // Sent again now, it could be taken twice over.
+    expect(once.disabled).toBe(true);
+    press(once);
+    await tick();
+    expect(calls.filter(call => call.url.includes('/answer')).length).toBe(1);
+    expect(once.disabled).toBe(true);
+    // It can be read again, and the same question still waits: not taken, to be given again.
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', question: permission }] } });
+    await tick();
+    expect(unknown.querySelector('.task-ask-status')?.textContent).toBe('没送到，再试一次吧。');
+    expect(once.disabled).toBe(false);
+
+    // The same on a card of the chat, where it turns out the question is over.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    asks.receive({ type: 'nekopower_question', task_id: 'c5', title: 't', question: confirmation, question_id: '' });
+    window.dispatchEvent(new CustomEvent('react-chat-window:action', {
+      detail: { message: messages[0], action: { action: 'nekopower_ask_answer', payload: { taskId: 'c5', questionId: 'q2', choice: 'yes' } } },
+    }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(block()).toMatchObject({ state: 'sending', notice: '还不确定送到没有，过一会儿再看。' });
+    reply = () => ({ status: 200, body: { questions: [] } });
+    await tick();
+    expect(block()).toMatchObject({ state: 'closed', notice: '这个问题已经结束了；这次的回答有没有算上，不确定。' });
   });
 
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {
@@ -341,6 +373,29 @@ describe('the cards of the chat window', () => {
     // The next question of those tasks is shown as ever.
     asks.receive(frame({ ...permission, id: 'q8' }, { task_id: 'c3' }));
     expect(messages.length).toBe(3);
+  });
+
+  it('closes a card whose question is over after the server gave up waiting, without saying it was answered', async () => {
+    asks.receive(frame(permission));
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 200, body: { questions: [] } });
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    expect(block()).toMatchObject({ state: 'closed', notice: '这个问题已经结束了；这次的回答有没有算上，不确定。' });
+    expect(block().answer).toBeUndefined();
+  });
+
+  it('keeps the next question that waits for the chat window when a late report of the last one comes', () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    // Over before the window was there; then the next question; then the report of the first, late.
+    asks.receive(frame(null, { question_id: 'q1' }));
+    asks.receive(frame(confirmation));
+    asks.receive(frame(permission));
+    w.reactChatWindowHost = host;
+    vi.advanceTimersByTime(600);
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q2']);
   });
 
   it('does not open a card again that was closed while its answer was on its way', async () => {
