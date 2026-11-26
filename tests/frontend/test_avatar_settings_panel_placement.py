@@ -125,6 +125,50 @@ def test_settings_cascade_stacks_and_scrolls_when_side_has_no_room(page, cropped
 
 @pytest.mark.frontend
 @pytest.mark.parametrize("cropped", [False, True])
+@pytest.mark.parametrize("scale", [1, 1.25])
+@pytest.mark.parametrize("edge", ["left", "right"])
+@pytest.mark.parametrize("correction", ["side", "collision", "delayed"])
+def test_settings_side_width_changes_reclamp_wrapped_height(page, cropped, scale, edge, correction):
+    _install_settings_panel(page, prefix="live2d", scale=scale, cropped=cropped, edge=edge)
+    natural = page.evaluate("""({scale, edge, correction}) => {
+        const panel = document.getElementById('settings-panel');
+        panel.style.width = '280px';
+        const content = document.createElement('div');
+        content.style.flexShrink = '0';
+        content.textContent = 'Expanded settings content wraps across multiple lines. '.repeat(10);
+        panel.appendChild(content);
+        const before = panel.getBoundingClientRect();
+        Object.assign(panel._popupElement.style, {top:'600px', height:'220px'});
+        if (correction === 'side') {
+            panel._popupElement.style.left = (edge === 'right' ? 240 * scale + 40 : 1160 - 240 * scale) + 'px';
+        }
+        const position = () => {
+            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, correction === 'delayed');
+            AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        };
+        if (correction === 'delayed') position();
+        if (correction !== 'side') {
+            const button = document.createElement('button');
+            button.id = 'live2d-btn-height-collision';
+            button.style.cssText = `position:fixed;left:${edge === 'right' ? 240 * scale + 40 : 1352 - 240 * scale}px;top:650px;width:48px;height:48px`;
+            document.body.appendChild(button);
+        }
+        if (correction !== 'delayed') position();
+        return {width:before.width, height:before.height};
+    }""", dict(scale=scale, edge=edge, correction=correction))
+    page.wait_for_function("document.getElementById('settings-panel')._nekoPositionCheckTimer == null")
+    page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
+    result = _snapshot(page)
+    panel = result["panel"]
+    assert result["down"] == "false"
+    assert panel["width"] < natural["width"] - 5
+    assert panel["height"] > natural["height"] + 1
+    assert panel["left"] >= 7.5 and panel["right"] <= 1432.5
+    assert panel["top"] >= 7.5 and panel["bottom"] <= 840.5
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("cropped", [False, True])
 @pytest.mark.parametrize("delayed", [False, True])
 def test_settings_collision_correction_uses_screen_coordinates(page, cropped, delayed):
     _install_settings_panel(page, prefix="live2d", scale=1, cropped=cropped, edge="right")

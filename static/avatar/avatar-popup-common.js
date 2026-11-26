@@ -904,6 +904,15 @@
         const ownerPrefixMatch = popupId.match(/^(live2d|vrm|mmd|pngtuber)-/);
         const ownerPrefix = ownerPrefixMatch ? ownerPrefixMatch[1] : '';
 
+        function positionSidePanelVertically() {
+            // Width limits may wrap content; clamp with the rendered height.
+            panelH = container.offsetHeight * panelScale;
+            let topVal = anchorRect.top;
+            if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
+            if (topVal < edgeMargin) topVal = edgeMargin;
+            container.style.top = `${topVal}px`;
+        }
+
         function positionStackedPanel(buttonZone) {
             // Discard side-only constraints before measuring the stacked panel.
             container.style.maxWidth = viewportMaxWidth;
@@ -970,14 +979,7 @@
         applySidePanelTransform(container, entryMotion);
 
         // ── Step 3：垂直定位（对齐 anchor）── 非手机端执行
-        if (!goDown) {
-            let topVal = anchorRect.top;
-
-            // 边界钳制
-            if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
-            if (topVal < edgeMargin) topVal = edgeMargin;
-            container.style.top = `${topVal}px`;
-        }
+        if (!goDown) positionSidePanelVertically();
 
         if (isNiriPetPhysicalCrop) {
             container.dataset.niriPhysicalCropPositioned = 'true';
@@ -1011,6 +1013,7 @@
                     container.style.left = `${zone.right + gap}px`;
                     container.style.maxWidth = `${toPanelMaxWidth(screenW - edgeMargin - zone.right - gap)}px`;
                 }
+                if (!goDown) positionSidePanelVertically();
             }
         }
 
@@ -1053,9 +1056,11 @@
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${toPanelMaxWidth(z.left - _gap - _edgeMargin)}px`;
+                    positionSidePanelVertically();
                 } else {
                     _containerRef.style.left = `${z.right + _gap}px`;
                     _containerRef.style.maxWidth = `${toPanelMaxWidth(_screenW - _edgeMargin - z.right - _gap)}px`;
+                    positionSidePanelVertically();
                 }
                 applySidePanelTransform(_containerRef, 'none');
             }
