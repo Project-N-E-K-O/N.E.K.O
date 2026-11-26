@@ -138,6 +138,14 @@ describe('Plugin API page', () => {
     expect(api.getModelUsage.mock.calls.length).toBe(before + 1)
     expect(api.getModelUsage.mock.calls.at(-1)?.[0]).toMatchObject({ plugin_id: '示例' })
   })
+  it.each([
+    ['openai_chat', 'https://api.openai.com/v1'],
+    ['anthropic_messages', 'https://api.anthropic.com'],
+  ] as const)('shows the usual address of a %s endpoint where none is typed', async (protocol, address) => {
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...structuredClone(saved), protocol }] })
+    await mount(); await clickText('Edit')
+    expect(input('slot-endpoint').placeholder).toBe(address)
+  })
   it('renames the same slot while preserving the saved key and bindings', async () => {
     await mount(); await clickText('Edit')
     expect(input('slot-key').value).toBe('sk-abc......wxyz')
