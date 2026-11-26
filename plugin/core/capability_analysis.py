@@ -387,19 +387,43 @@ _NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
 _NAME_READERS = frozenset({"getattr"})
 
 
-def _constant_name_call(call: ast.Call) -> bool:
-    # setattr(obj, "name", ...), obj.__setattr__("name", ...),
-    # object.__setattr__(obj, "name", ...), getattr(obj, "name").
-    if any(isinstance(arg, ast.Starred) for arg in call.args[:2]):
-        return False
-    return any(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in call.args[:2])
+def _constant_attribute_name(call: ast.Call, name: str) -> str | None:
+    """The attribute name of a setattr-like call when it is a str constant.
+
+    setattr / delattr / getattr (obj, "name", ...) take it second. The
+    dunders take it first when bound (obj.__setattr__("name", value)) and
+    second when called on the class (object.__setattr__(obj, "name", value)),
+    told apart by the argument count; any other shape is not read.
+    """
+    if call.keywords or any(isinstance(arg, ast.Starred) for arg in call.args):
+        return None
+    count = len(call.args)
+    if name == "__setattr__":
+        index = {2: 0, 3: 1}.get(count)
+    elif name == "__delattr__":
+        index = {1: 0, 2: 1}.get(count)
+    else:
+        index = 1 if count >= 2 else None
+    if index is None:
+        return None
+    argument = call.args[index]
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value
+    return None
 
 
 def _super_call(node) -> bool:
-    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "super"
+    # Only the zero-argument form: super(cls, obj) may name another instance.
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "super"
+        and not node.args
+        and not node.keywords
+    )
 
 
-def _families_written(sources, walker) -> bool:
+def _families_written(sources, walker, written=None) -> bool:
     """The plugin's own code may rebind a socket family constant.
 
     A family name used as data counts, rather than a list of call shapes:
@@ -417,6 +441,11 @@ def _families_written(sources, walker) -> bool:
     Every file is parsed for this (names are compared after the parser's
     normalisation), before the main pass; one walk per file, honouring the
     stop event.
+
+    ``written`` (a set), if given, collects every attribute name the plugin
+    stores, deletes or sets by a constant name, in any file: a module-level
+    socket of that name may be replaced from another module (import main;
+    main.s = ...). Complete only when the result is False.
     """
     for relative, source in sources:
         walker.poll()
@@ -438,8 +467,11 @@ def _families_written(sources, walker) -> bool:
                     callee.attr if isinstance(callee, ast.Attribute) else None
                 )
                 if name in _NAMED_WRITERS or name in _NAME_READERS:
-                    if _constant_name_call(node):
+                    constant = _constant_attribute_name(node, name)
+                    if constant is not None:
                         static_callees.add(id(callee))
+                        if written is not None and name in _NAMED_WRITERS:
+                            written.add(constant)
                     elif name in _NAME_READERS:
                         return True
             elif isinstance(node, (ast.Name, ast.Attribute)):
@@ -450,12 +482,11 @@ def _families_written(sources, walker) -> bool:
                     # A socket re-initialised in place (main.s.__init__(AF_INET)
                     # from another file); super().__init__() is not one.
                     return True
-                if (
-                    isinstance(node, ast.Attribute)
-                    and node.attr in _FAMILY_NAMES
-                    and isinstance(node.ctx, (ast.Store, ast.Del))
-                ):
-                    return True
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    if node.attr in _FAMILY_NAMES:
+                        return True
+                    if written is not None:
+                        written.add(node.attr)
             elif isinstance(node, ast.Constant):
                 value = node.value
                 if isinstance(value, bytes):
@@ -739,7 +770,9 @@ def _resolved_references(tree, walker: _AnalysisWalker):
             yield reference.node, _legacy(reference.method, reference.external)
 
 
-def _references(tree, walker: _AnalysisWalker, families_trusted: bool = True):
+def _references(
+    tree, walker: _AnalysisWalker, families_trusted: bool = True, attributes_written=frozenset()
+):
     def scope(body, inherited, parameters=(), function="", outer_rebound=frozenset()):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
@@ -785,7 +818,8 @@ def _references(tree, walker: _AnalysisWalker, families_trusted: bool = True):
         _propagate_assignments(
             assignments, bindings, walker,
             rebound | shared | imported | comprehended | captured | set(parameters),
-            escaped=escaped,
+            # A module-level name may also be replaced from another module.
+            escaped=(escaped | attributes_written) if body is tree.body else escaped,
         )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
@@ -2287,8 +2321,9 @@ def analyze_capabilities(
     collector = _PermissionCollector()
     count = 0
     # The socket module is shared by every file of the plugin.
+    attributes_written: set[str] = set()
     try:
-        families_trusted = not _families_written(sources.files, walker)
+        families_trusted = not _families_written(sources.files, walker, attributes_written)
     except _AnalysisBudgetExceeded:
         families_trusted = False
     try:
@@ -2302,7 +2337,7 @@ def analyze_capabilities(
             count += 1
             walker.check()
             seen: set[tuple[str, int]] = set()
-            for reference in _references(tree, walker, families_trusted):
+            for reference in _references(tree, walker, families_trusted, frozenset(attributes_written)):
                 collector.scan(relative, reference)
                 if isinstance(reference.node, (ast.Import, ast.ImportFrom)):
                     continue
