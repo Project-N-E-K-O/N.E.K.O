@@ -182,7 +182,7 @@ def test_model_rejects_negative_bool_and_overflow_counters(bad_val):
 
 
 def test_model_enforces_cardinality_caps(monkeypatch):
-    """Expired days are stripped before enforcing daily_stats cardinality cap, and oversized buckets still fail."""
+    """Expired days are stripped before enforcing daily_stats cap, and excess buckets trim to MAX_DAILY_BUCKETS."""
     import models as telemetry_models
 
     today_date = date.today()
@@ -209,18 +209,53 @@ def test_model_enforces_cardinality_caps(monkeypatch):
         )
 
     today = today_date.isoformat()
-    too_many_models = {f"m{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS + 1)}
-    with pytest.raises(Exception, match="too many buckets"):
-        model_from_json(
-            TelemetryEvent,
-            json.dumps(_base_event_dict({today: _valid_day(by_model=too_many_models)})),
-        )
+    expected_total = MAX_DAILY_BUCKETS + 1
+    too_many_models = {f"m{i}": _valid_bucket(total_tokens=1) for i in range(expected_total)}
+    ev_models = model_from_json(
+        TelemetryEvent,
+        json.dumps(
+            _base_event_dict({
+                today: _valid_day(
+                    total_tokens=expected_total,
+                    call_count=expected_total,
+                    by_model=too_many_models,
+                )
+            })
+        ),
+    )
+    day_models = ev_models.daily_stats[today]
+    assert day_models.total_tokens == expected_total
+    assert day_models.call_count == expected_total
+    assert len(day_models.by_model) == MAX_DAILY_BUCKETS
+    assert "m0" in day_models.by_model
+    assert f"m{MAX_DAILY_BUCKETS}" not in day_models.by_model
 
-    too_many_call_types = {f"c{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS + 1)}
-    with pytest.raises(Exception, match="too many buckets"):
+    too_many_call_types = {f"c{i}": _valid_bucket(total_tokens=1) for i in range(expected_total)}
+    ev_call_types = model_from_json(
+        TelemetryEvent,
+        json.dumps(
+            _base_event_dict({
+                today: _valid_day(
+                    total_tokens=expected_total,
+                    call_count=expected_total,
+                    by_call_type=too_many_call_types,
+                )
+            })
+        ),
+    )
+    day_call_types = ev_call_types.daily_stats[today]
+    assert day_call_types.total_tokens == expected_total
+    assert day_call_types.call_count == expected_total
+    assert len(day_call_types.by_call_type) == MAX_DAILY_BUCKETS
+    assert "c0" in day_call_types.by_call_type
+    assert f"c{MAX_DAILY_BUCKETS}" not in day_call_types.by_call_type
+
+    invalid_after_cap = {f"m{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS)}
+    invalid_after_cap["_total"] = _valid_bucket()
+    with pytest.raises(Exception, match="invalid bucket key"):
         model_from_json(
             TelemetryEvent,
-            json.dumps(_base_event_dict({today: _valid_day(by_call_type=too_many_call_types)})),
+            json.dumps(_base_event_dict({today: _valid_day(by_model=invalid_after_cap)})),
         )
 
 
@@ -524,3 +559,51 @@ def test_http_submit_drops_overlong_model_bucket_and_acknowledges_batch(tmp_path
         (today, "_total", "chat", 70),
         (today, "short-model", "_total", 20),
     ]
+
+
+def test_http_submit_trims_over_100_model_buckets_and_acknowledges_batch(tmp_path, monkeypatch):
+    """HTTP /api/v1/telemetry must trim >MAX_DAILY_BUCKETS valid models, preserve totals, and return 200."""
+    from fastapi.testclient import TestClient
+    from security import compute_signature
+    import server as telemetry_server
+
+    test_store = TelemetryStorage(tmp_path / "http_over_100_models.db")
+    monkeypatch.setattr(telemetry_server, "storage", test_store)
+    monkeypatch.setattr(telemetry_server.rate_limiter, "is_allowed", lambda _dev: True)
+    client = TestClient(telemetry_server.app)
+
+    today = date.today().isoformat()
+    expected_total = MAX_DAILY_BUCKETS + 1
+    by_model = {f"m{i:03d}": _valid_bucket(total_tokens=1) for i in range(expected_total)}
+    payload = _base_event_dict({
+        today: _valid_day(
+            total_tokens=expected_total,
+            call_count=expected_total,
+            by_model=by_model,
+            by_call_type={"chat": _valid_bucket(total_tokens=expected_total)},
+        ),
+    })
+    ts = time.time()
+    payload_str = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    sig = compute_signature(payload_str, ts, telemetry_server.HMAC_SECRET)
+    resp = client.post(
+        "/api/v1/telemetry",
+        json={"timestamp": ts, "signature": sig, "batch_id": "batch-101-models", "payload": payload},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert test_store.is_duplicate_batch("batch-101-models") is True
+
+    rows = test_store._get_conn().execute(
+        "SELECT stat_date, model, call_type, total_tokens FROM daily_aggregates WHERE stat_date = ? ORDER BY model, call_type",
+        (today,),
+    ).fetchall()
+    total_rows = [(r["model"], r["call_type"], r["total_tokens"]) for r in rows if r["model"] == "_total"]
+    model_rows = [r["model"] for r in rows if r["model"] != "_total" and r["call_type"] == "_total"]
+    assert total_rows == [
+        ("_total", "_total", expected_total),
+        ("_total", "chat", expected_total),
+    ]
+    assert len(model_rows) == MAX_DAILY_BUCKETS
+    assert "m000" in model_rows
+    assert f"m{MAX_DAILY_BUCKETS:03d}" not in model_rows

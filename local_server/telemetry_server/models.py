@@ -50,8 +50,6 @@ def _reject_bool_int(v):
 
 
 def _validate_bucket_map(buckets: dict) -> dict:
-    if len(buckets) > MAX_DAILY_BUCKETS:
-        raise ValueError(f"too many buckets (max {MAX_DAILY_BUCKETS})")
     filtered = {}
     for key, bucket in buckets.items():
         if (
@@ -67,7 +65,11 @@ def _validate_bucket_map(buckets: dict) -> dict:
             # clients record upstream OpenAI-compatible model IDs verbatim and
             # retry failed numbered batches unchanged until HTTP 200.
             continue
-        filtered[key] = bucket
+        if len(filtered) < MAX_DAILY_BUCKETS:
+            # Trim excess valid buckets instead of failing the batch: client
+            # queues do not cap distinct models per day and retry unchanged
+            # until HTTP 200, while storage also caps at MAX_DAILY_BUCKETS.
+            filtered[key] = bucket
     return filtered
 
 
