@@ -2456,6 +2456,33 @@ def test_names_that_may_hold_another_socket_keep_direct_evidence(tmp_path, sourc
     assert not [issue for issue in compare_declarations(report) if issue.params["permission"] == LISTEN and issue.severity != "error"]
 
 
+
+_SELF_SOCKET = (
+    "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+    "    def go(self, many):\n        {}\n        self.sock.listen()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "self.sock, self.o = socket.socket(), 1",
+        "with socket.socket() as self.sock: pass",
+        "for self.sock in many: pass",
+        "self.sock += 1",
+        "def inner(): self.sock = socket.socket()",
+        "f = lambda: setattr(self, 'sock', socket.socket())",
+        "me = self; me.sock = socket.socket()",
+        "self.__dict__['sock'] = socket.socket()",
+    ],
+)
+def test_self_attributes_written_in_other_ways_are_not_local(tmp_path, write):
+    assert _scan(tmp_path, _SELF_SOCKET.format(write))["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+def test_a_self_attribute_set_only_to_a_unix_socket_is_local(tmp_path):
+    assert _scan(tmp_path, _SELF_SOCKET.format("pass"))["permissions"][LISTEN]["basis"] == "resolved_name"
+
 def test_followed_getattr_on_an_environment_value_adds_no_evidence(tmp_path):
     (tmp_path / "plain").mkdir()
     (tmp_path / "getattr").mkdir()

@@ -991,6 +991,7 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     # spelled like a family name is only kept out of the AF_UNIX check.
     parameters: set[str] = set()
     set_through: set[str] = set()
+    writes: dict[str, int] = {}
     for method in node.body:
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1005,19 +1006,15 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
             assignments.extend(
                 (key, value) for key, value in method_assignments if key.startswith("self.")
             )
-            # setattr(self, "x", ...) also sets self.x, out of the alias
-            # resolution's sight; a computed name may set any of them.
-            for call in nodes:
-                if (
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "setattr"
-                    and call.args
-                    and isinstance(call.args[0], ast.Name)
-                    and call.args[0].id == "self"
-                ):
-                    attribute = _literal_string(call.args[1]) if len(call.args) > 1 else None
-                    set_through.add(f"self.{attribute}" if attribute else "*")
+            _self_writes(method, writes, set_through, walker)
+    # self.x written in a way the alias resolution does not follow (a tuple,
+    # for / with / augmented target, a nested function, setattr): another
+    # value may be stored there. Cross-class writes (o.x = ..., a subclass)
+    # are not seen either; the local-socket downgrade accepts that.
+    plain: dict[str, int] = {}
+    for key, _value in assignments:
+        plain[key] = plain.get(key, 0) + 1
+    set_through.update(key for key, count in writes.items() if count > plain.get(key, 0))
     if "*" in set_through:
         set_through.update(key for key, _value in assignments)
     class_bindings = dict(bindings)
@@ -1029,6 +1026,34 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
         if not _untrusted(name, bindings):
             del class_bindings[_UNTRUSTED + name]
     return class_bindings
+
+
+def _self_writes(method, writes: dict[str, int], set_through: set[str], walker) -> None:
+    """Count every store to self.x in a method, nested scopes included, and
+    note setattr(self, ...) and aliases of self ("*": any attribute)."""
+    for node in ast.walk(method):
+        walker.poll()
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            key = f"self.{node.attr}"
+            writes[key] = writes.get(key, 0) + 1
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("setattr", "delattr"):
+            if node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "self":
+                attribute = _literal_string(node.args[1]) if len(node.args) > 1 else None
+                set_through.add(f"self.{attribute}" if attribute else "*")
+        elif isinstance(node, ast.Attribute) and node.attr == "__dict__" and isinstance(node.value, ast.Name) and node.value.id == "self":
+            set_through.add("*")
+        elif (
+            isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            # me = self; me.x = ...
+            set_through.add("*")
 
 
 def _qualified(function: str, name: str) -> str:
