@@ -1130,7 +1130,13 @@ class PluginLifecycleService:
 
         if refresh_registry:
             try:
-                refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
+                if operation_scope is not None:
+                    refresh_payload = await plugin_registry_service.refresh_plugin_under_lock(
+                        current_plugin_id,
+                        operation_scope=operation_scope,
+                    )
+                else:
+                    refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
                 refreshed_plugin_id = refresh_payload.get("plugin_id")
                 if isinstance(refreshed_plugin_id, str) and refreshed_plugin_id:
                     if refreshed_plugin_id != current_plugin_id:

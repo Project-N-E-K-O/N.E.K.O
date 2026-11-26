@@ -12,6 +12,7 @@ from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
 from ..core.build import _settle_staged_metadata
 from ..core.build_rules import walk_plugin_tree
 from ..core.metadata_probe import write_packaged_metadata
+from ..core.normalize import normalize_relative_posix
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
@@ -323,14 +324,17 @@ class PluginPacker:
 
     def export_package(self, staging_root: Path, package_path: Path) -> None:
         package_path.parent.mkdir(parents=True, exist_ok=True)
+        file_entries = [
+            (normalize_relative_posix(path, staging_root), path)
+            for path in staging_root.rglob("*")
+            if not path.is_dir()
+        ]
         with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(staging_root.rglob("*")):
-                if path.is_dir():
-                    continue
-                archive.write(path, arcname=path.relative_to(staging_root).as_posix())
+            for arcname, path in sorted(file_entries, key=lambda item: item[0]):
+                archive.write(path, arcname=arcname)
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
-        # Sort by the posix relative path (matches `compute_archive_payload_hash`).
+        # Sort by the NFC-normalized posix relative path (matches `compute_archive_payload_hash`).
         # `sorted(rglob(...))` sorts WindowsPath objects case-insensitively, which
         # diverges from the archive-side hash that sorts case-sensitively on the
         # posix path string and would yield a payload-hash mismatch on Windows.
@@ -338,7 +342,7 @@ class PluginPacker:
         for path in payload_dir.rglob("*"):
             if path.is_dir():
                 continue
-            entries.append((path.relative_to(payload_dir).as_posix(), path))
+            entries.append((normalize_relative_posix(path, payload_dir), path))
 
         digest = hashlib.sha256()
         for relative, path in sorted(entries, key=lambda item: item[0]):

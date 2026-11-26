@@ -1659,3 +1659,164 @@ async def test_install_stream_continues_past_cancel_requested_until_terminal_sta
         if line.startswith("data: ")
     ]
     assert [ev["status"] for ev in events] == ["cancel_requested", "completed"]
+
+
+def test_install_task_store_rejects_reserved_latest_task_id(
+    galgame_install_runtime_root: Path,
+) -> None:
+    del galgame_install_runtime_root
+    from plugin.server.routes._install_task_store import (
+        build_install_task_state,
+        install_task_state_path,
+        latest_install_task_path,
+        write_install_task_state,
+    )
+
+    for bad_id in ("latest", "Latest", "LATEST"):
+        with pytest.raises(ValueError, match="invalid task_id"):
+            install_task_state_path(bad_id, kind="textractor", plugin_id="galgame_plugin")
+        with pytest.raises(ValueError, match="invalid task_id"):
+            build_install_task_state(
+                kind="textractor",
+                plugin_id="galgame_plugin",
+                task_id=bad_id,
+                run_id="r1",
+            )
+        with pytest.raises(ValueError, match="invalid task_id"):
+            write_install_task_state(
+                bad_id,
+                {"task_id": bad_id},
+                kind="textractor",
+                plugin_id="galgame_plugin",
+            )
+
+    assert (
+        install_task_state_path("task-123", kind="textractor", plugin_id="galgame_plugin")
+        != latest_install_task_path(kind="textractor", plugin_id="galgame_plugin")
+    )
+
+
+@pytest.mark.asyncio
+async def test_install_task_routes_reject_latest_without_clobbering_latest_json(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes._install_task_store import (
+        build_install_task_state,
+        write_install_task_state,
+    )
+
+    del galgame_install_runtime_root
+    real_payload = build_install_task_state(
+        kind="textractor",
+        plugin_id="galgame_plugin",
+        task_id="real-task-1",
+        run_id="run-real",
+        status="completed",
+        phase="completed",
+        message="ok",
+        progress=1.0,
+    )
+    write_install_task_state(
+        "real-task-1",
+        real_payload,
+        kind="textractor",
+        plugin_id="galgame_plugin",
+    )
+
+    monkeypatch.setattr(
+        galgame_install_route_module.run_service,
+        "get_run",
+        lambda _run_id: (_ for _ in ()).throw(AssertionError("get_run must not be called for 'latest'")),
+    )
+
+    for url in (
+        "/plugin/galgame_plugin/ui-api/textractor/install/Latest",
+        "/plugin/galgame_plugin/ui-api/textractor/install/latest/stream",
+        "/plugin/galgame_plugin/ui-api/textractor/install/Latest/stream",
+        "/plugin/galgame_plugin/ui-api/rapidocr-models/Latest",
+        "/plugin/galgame_plugin/ui-api/rapidocr-models/latest/stream",
+        "/plugin/galgame_plugin/ui-api/rapidocr-models/Latest/stream",
+    ):
+        resp = await plugin_ui_async_client.get(url)
+        assert resp.status_code == 400
+
+    latest_resp = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/textractor/install/latest"
+    )
+    assert latest_resp.status_code == 200
+    assert latest_resp.json()["run_id"] == "run-real"
+    assert latest_resp.json()["task_id"] == "real-task-1"
+
+
+@pytest.mark.asyncio
+async def test_tutorial_progress_concurrent_saves_do_not_lose_updates(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import json
+
+    read_calls = 0
+    real_read = galgame_install_route_module._read_tutorial_progress
+
+    def _slow_read(*args, **kwargs):
+        nonlocal read_calls
+        read_calls += 1
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(galgame_install_route_module, "_read_tutorial_progress", _slow_read)
+
+    resp_a, resp_b = await asyncio.gather(
+        plugin_ui_async_client.post(
+            "/plugin/galgame_plugin/ui-api/tutorial/progress",
+            json={"completed": True, "completed_at": 123.0},
+        ),
+        plugin_ui_async_client.post(
+            "/plugin/galgame_plugin/ui-api/tutorial/progress",
+            json={"last_step_index": 4},
+        ),
+    )
+
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+    assert read_calls == 2
+    target = _galgame_tutorial_target(tutorial_runtime_root)
+    saved = json.loads(target.read_text(encoding="utf-8"))
+    assert saved["completed"] is True
+    assert saved["completed_at"] == 123.0
+    assert saved["last_step_index"] == 4
+    assert not list(target.parent.glob("*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_tutorial_progress_write_failure_preserves_existing_file(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    init_resp = await plugin_ui_async_client.post(
+        "/plugin/galgame_plugin/ui-api/tutorial/progress",
+        json={"completed": True, "completed_at": 50.0, "last_step_index": 2},
+    )
+    assert init_resp.status_code == 200
+    target = _galgame_tutorial_target(tutorial_runtime_root)
+    before_bytes = target.read_bytes()
+
+    def _fail_write(*args, **kwargs):
+        del args, kwargs
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module, "atomic_write_json", _fail_write)
+
+    fail_resp = await plugin_ui_async_client.post(
+        "/plugin/galgame_plugin/ui-api/tutorial/progress",
+        json={"last_step_index": 9},
+    )
+    assert fail_resp.status_code == 500
+    assert fail_resp.json()["ok"] is False
+    assert target.read_bytes() == before_bytes
+    assert not list(target.parent.glob("*.tmp"))

@@ -380,6 +380,34 @@ class MessagePlaneIngestServer:
                         pass
             return
 
+        if str(mode or "replace") == "delete":
+            if st.name == "events":
+                id_fields: tuple[str, ...] = ("event_id", "trace_id")
+            elif st.name == "lifecycle":
+                id_fields = ("lifecycle_id", "trace_id")
+            else:
+                id_fields = ("message_id", "id")
+            target_ids: set[str] = set()
+            for rec in records:
+                for field in id_fields:
+                    val = rec.get(field)
+                    if isinstance(val, str) and val:
+                        target_ids.add(val)
+                        break
+            try:
+                st.delete_records(topic, ids=target_ids, id_fields=id_fields)
+            except Exception as _exc:
+                self._record_drop(
+                    "publish_error", store=st.name, topic=topic,
+                    records=len(records),
+                    err=type(_exc).__name__,
+                )
+                return
+            self._stats_accepted += 1
+            self._stats_last_store = str(st.name)
+            self._stats_last_topic = str(topic)
+            return
+
         replaced = False
         try:
             if st.name == "conversations" and topic == "all":
