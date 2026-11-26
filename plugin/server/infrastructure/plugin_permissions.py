@@ -243,8 +243,12 @@ def _load_error(exc: Exception) -> ServerDomainError:
 
 
 def _had_decisions(record: dict) -> bool:
-    """Whether ``record`` holds anything a source change would drop."""
-    return bool(record.get("permissions")) or any(
+    """Whether ``record`` holds a decision a source change would drop (an
+    explicit "undecided" entry is none)."""
+    return any(
+        isinstance(entry, dict) and entry.get("state") in STATES
+        for entry in (record.get("permissions") or {}).values()
+    ) or any(
         record.get(marker) for marker in _PLUGIN_MARKERS if marker not in KEPT_ON_SOURCE_CHANGE
     )
 
@@ -799,9 +803,16 @@ class PluginPermissionStore:
             if _had_decisions(record):
                 _mark_reset(record, now)
             _drop_for_source_change(record)
-            if not any(record.get(marker) for marker in (*KEPT_ON_SOURCE_CHANGE, GRANTS_RESET)):
-                del document["plugins"][plugin_id]
-            elif record == cached:
+            if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
+                if not record.get(GRANTS_RESET):
+                    del document["plugins"][plugin_id]
+                    self._commit(manager, document)
+                    return copy.deepcopy(cached)
+                # Only the reset note is left. Like a removed record, it no
+                # longer claims the earlier source, so the next known source
+                # is a first binding and keeps decisions made meanwhile.
+                record["source"] = None
+            if record == cached:
                 return copy.deepcopy(cached)
             else:
                 record["updated_at"] = now

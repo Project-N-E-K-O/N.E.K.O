@@ -49,7 +49,10 @@ class Use:
     outcome: str
     origin_kind: str | None = None
     target: str | None = None
-    reason: str | None = None
+    # Plugins the judgement found lacking the permission.
+    blocked_by: tuple[str, ...] = ()
+    # Whether this use is also counted by its call's allow_summary.
+    summarized: bool = False
     count: int = 1
 
     def to_dict(self) -> dict:
@@ -101,8 +104,9 @@ class UsageIndex:
         # Last use that was not refused.
         self._last_effective: dict[tuple[str, str], Use] = {}
         self._daily: dict[tuple[str, str], dict[date, int]] = {}
-        # Uses judged "undecided" (the user has not decided the permission).
-        self._undecided: dict[tuple[str, str], tuple[datetime, int]] = {}
+        # Uses judged not allowed, keyed by the plugin that lacked the
+        # permission (for a call chain, each blocking member).
+        self._refused: dict[tuple[str, str], tuple[datetime, int]] = {}
         self._recent: dict[str, list[Use]] = {}
         self._origins: OrderedDict[str, str] = OrderedDict()
 
@@ -159,9 +163,18 @@ class UsageIndex:
         if kind == "decision" and "unattributed" in flags:
             origin = None
         target = _text(entry.get("target")) if permission == NETWORK_CONNECT else None
+        outcome = _outcome(entry)
+        blocked_by: tuple[str, ...] = ()
+        if outcome != OUTCOME_ALLOWED:
+            listed = entry.get("blocked_by") if kind == "decision" else None
+            blocked_by = tuple(item for item in listed if _text(item)) if isinstance(listed, list) else ()
+            blocked_by = blocked_by or (plugin_id,)
         yield Use(
-            at, plugin_id, permission, _outcome(entry), origin, target,
-            reason=_text(entry.get("reason")),
+            at, plugin_id, permission, outcome, origin, target,
+            blocked_by=blocked_by,
+            # An allowed decision inside a call (store unreadable, or
+            # possible laundering) is counted again by the call's summary.
+            summarized=kind == "decision" and outcome == OUTCOME_ALLOWED and bool(_text(entry.get("call_id"))),
         )
 
     def _index(self, use: Use) -> None:
@@ -174,12 +187,17 @@ class UsageIndex:
             last = self._last_effective.get(key)
             if last is None or use.at >= last.at:
                 self._last_effective[key] = use
-            days = self._daily.setdefault(key, {})
-            day = use.at.date()
-            days[day] = days.get(day, 0) + use.count
-        if use.reason == "undecided":
-            seen = self._undecided.get(key)
-            self._undecided[key] = (max(seen[0], use.at) if seen else use.at, (seen[1] if seen else 0) + use.count)
+            if not use.summarized:
+                days = self._daily.setdefault(key, {})
+                day = use.at.date()
+                days[day] = days.get(day, 0) + use.count
+        for blocked in use.blocked_by:
+            refused_key = (blocked, use.permission)
+            seen = self._refused.get(refused_key)
+            self._refused[refused_key] = (
+                max(seen[0], use.at) if seen else use.at,
+                (seen[1] if seen else 0) + use.count,
+            )
         recent = self._recent.setdefault(use.permission, [])
         recent.append(use)
         if len(recent) > RECENT_LIMIT * 2:
@@ -284,10 +302,12 @@ class UsageIndex:
         with self._lock:
             return {plugin_id for plugin_id, permission in self._last if permission in wanted}
 
-    def undecided_uses(self) -> dict[tuple[str, str], tuple[datetime, int]]:
+    def refused_uses(self) -> dict[tuple[str, str], tuple[datetime, int]]:
+        """``(plugin, permission) -> (last time, count)`` of uses judged not
+        allowed because that plugin lacked the permission."""
         self.ensure_seeded()
         with self._lock:
-            return dict(self._undecided)
+            return dict(self._refused)
 
     def recent(self, permissions, limit: int = RECENT_LIMIT) -> list[Use]:
         """Newest first."""

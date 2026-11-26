@@ -97,7 +97,11 @@ def _known_permission(permission: str) -> str:
 async def _decide(plugin_id: str, permission: str, decision: PermissionDecision) -> dict:
     await asyncio.to_thread(permission_panel.ensure_plugin_known, plugin_id)
     await asyncio.to_thread(
-        permission_panel.check_condition_allowed, plugin_id, permission, decision.condition
+        permission_panel.check_condition_allowed,
+        plugin_id,
+        permission,
+        decision.state,
+        decision.condition,
     )
     await asyncio.to_thread(
         decide_permission, plugin_id, permission, decision.state, condition=decision.condition

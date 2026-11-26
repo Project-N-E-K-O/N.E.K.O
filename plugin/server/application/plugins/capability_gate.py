@@ -231,8 +231,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
             if record is not None:
                 registry.note_use(record, capability)
             # An allowance based on the last record read (store unreadable)
-            # is also audited below, so it can be told apart.
-            if "consent_unavailable" not in flags:
+            # is also audited below, so it can be told apart. So is one
+            # outside any call (a timer, a background thread): no call
+            # summary carries it, and the panel's last use needs it.
+            if "consent_unavailable" not in flags and record is not None:
                 return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))

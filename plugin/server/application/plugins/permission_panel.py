@@ -258,10 +258,11 @@ def _rows(inputs: _PluginInputs, index: UsageIndex, checks_off: bool, now: datet
         findings = [row for row in item.get("findings") or [] if isinstance(row, dict)]
         resolved = states[permission]
         entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
-        if not (declared or findings or resolved.status != "undecided"):
+        last = index.last_use(inputs.plugin_id, permission)
+        # A row for what is declared, found by the scan, decided, or seen in use.
+        if not (declared or findings or resolved.status != "undecided" or last is not None):
             continue
         granted = resolved.status == "granted"
-        last = index.last_use(inputs.plugin_id, permission)
         rows.append(
             {
                 "permission": permission,
@@ -439,7 +440,8 @@ def _needs_decision(row: dict) -> bool:
 
 def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex) -> dict:
     to_confirm, upgraded, inferred, first_use = [], [], [], []
-    undecided_uses = index.undecided_uses()
+    refused = index.refused_uses()
+    checks_off = _checks_off()
     for inputs, rows in plugins:
         if inputs.declarations.status != "declared":
             # No declaration of its own: what the scan found are inferred
@@ -454,19 +456,21 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
             if items:
                 target = upgraded if _has_decision(inputs.record) else to_confirm
                 target.append({"plugin_id": inputs.plugin_id, "items": items})
-        for row in rows:
-            if row["state"] != "undecided":
+        # Used while the user has not decided: not asked in a dialog, listed
+        # here instead. Whatever the declaration and the scan say.
+        states = record_states(inputs.record, checks_off=checks_off)
+        for permission in PERMISSION_IDS:
+            seen = refused.get((inputs.plugin_id, permission))
+            if seen is None or states[permission].status != "undecided":
                 continue
-            seen = undecided_uses.get((inputs.plugin_id, row["permission"]))
-            if seen is not None:
-                first_use.append(
-                    {
-                        "plugin_id": inputs.plugin_id,
-                        "permission": row["permission"],
-                        "at": seen[0].isoformat(),
-                        "count": seen[1],
-                    }
-                )
+            first_use.append(
+                {
+                    "plugin_id": inputs.plugin_id,
+                    "permission": permission,
+                    "at": seen[0].isoformat(),
+                    "count": seen[1],
+                }
+            )
     return {"to_confirm": to_confirm, "upgraded": upgraded, "inferred": inferred, "first_use": first_use}
 
 
@@ -603,13 +607,13 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
     }
 
 
-def check_condition_allowed(plugin_id: str, permission: str, condition: str) -> None:
-    """Raise unless ``condition`` may be chosen for ``permission``.
+def check_condition_allowed(plugin_id: str, permission: str, state_value: str, condition: str) -> None:
+    """Raise unless ``condition`` may be chosen when granting ``permission``.
 
     "Any time" needs the plugin to declare background use of it, or to have
     no declaration at all (the item is then inferred from the scan).
     """
-    if condition != CONDITION_ANYTIME:
+    if state_value != "granted" or condition != CONDITION_ANYTIME:
         return
     meta = _plugin_metas().get(plugin_id)
     if meta is None:

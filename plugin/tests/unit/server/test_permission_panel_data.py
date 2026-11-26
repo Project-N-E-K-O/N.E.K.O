@@ -197,10 +197,14 @@ def test_drop_grants_of_an_empty_record_still_removes_it(store):
 # ---------------------------------------------------------------------------
 
 
-def _decision(plugin, capability, *, verdict="allow", enforcing=False, reason=None, ts=None, origin="ui_action", flags=()):
+def _decision(plugin, capability, *, verdict="allow", enforcing=False, reason=None, ts=None, origin="ui_action",
+              flags=(), blocked_by=None, call_id=None):
+    if verdict == "would_deny" and blocked_by is None:
+        blocked_by = [plugin]
     return {
         "ts": ts or _ts(), "kind": "decision", "plugin": plugin, "capability": capability,
         "verdict": verdict, "enforcing": enforcing, "reason": reason, "origin_kind": origin, "flags": list(flags),
+        "blocked_by": blocked_by or [], "chain": [plugin], "call_id": call_id,
     }
 
 
@@ -281,13 +285,31 @@ def test_files_are_read_once_and_only_for_entries_before_the_index(tmp_path):
     assert index.plugins_using([MEMORY]) == {"a"}  # not read again
 
 
-def test_undecided_uses_are_collected(tmp_path):
+def test_refused_uses_are_collected(tmp_path):
     index = _index(tmp_path)
     index.observe(_system_use("a", SPAWN, verdict="would_deny", reason="undecided", ts=_ts(timedelta(hours=1))))
     index.observe(_system_use("a", SPAWN, verdict="would_deny", reason="undecided"))
-    index.observe(_system_use("a", FS_WRITE, verdict="would_deny", reason="denied"))
+    index.observe(_system_use("a", FS_WRITE))
 
-    assert index.undecided_uses() == {("a", SPAWN): (NOW, 2)}
+    assert index.refused_uses() == {("a", SPAWN): (NOW, 2)}
+
+
+def test_a_chain_refusal_counts_for_the_caller_that_lacked_it(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("b", MEMORY, verdict="would_deny", reason="caller_chain", blocked_by=["a"]))
+
+    assert index.refused_uses() == {("a", MEMORY): (NOW, 1)}
+    assert index.last_use("b", MEMORY).outcome == "would_block"
+
+
+def test_allowed_decision_inside_a_call_is_not_counted_twice(tmp_path):
+    index = _index(tmp_path)
+    index.observe({"ts": _ts(), "kind": "forward", "call_id": "c1", "origin_kind": "chat_tool", "target": "a"})
+    index.observe(_decision("a", MEMORY, flags=["consent_unavailable"], call_id="c1"))
+    index.observe({"ts": _ts(), "kind": "allow_summary", "call_id": "c1", "target": "a", "counts": {MEMORY: 1}})
+    index.observe(_decision("a", MEMORY, flags=["unattributed"]))
+
+    assert index.count("a", MEMORY, 1) == 2
 
 
 def test_recent_keeps_the_newest_and_is_sorted(tmp_path):
@@ -721,3 +743,78 @@ def test_inferred_lists_only_undecided_items(env):
     ))
     env.store.decide("legacy", CONNECT, "granted")
     assert permission_panel.pending(index=env.index)["inferred"] == [{"plugin_id": "legacy", "permission": SPAWN}]
+
+
+def test_host_side_first_use_reaches_the_pending_list(env):
+    """A real gate entry: reason self_not_approved, never "undecided"."""
+    from plugin.server.application.plugins import call_audit, capability_gate
+
+    env.plugin("p", report=_report())
+    observed = []
+    call_audit.add_observer(observed.append)
+    try:
+        capability_gate._last_written.clear()
+        capability_gate.check("p", None, MEMORY, "MEMORY_QUERY")
+    finally:
+        call_audit.remove_observer(observed.append)
+    decisions = [entry for entry in observed if entry.get("kind") == "decision"]
+    assert decisions and decisions[0]["reason"] == "self_not_approved"
+    for entry in decisions:
+        env.index.observe(entry)
+
+    first_use = permission_panel.pending(index=env.index)["first_use"]
+    assert [(row["plugin_id"], row["permission"]) for row in first_use] == [("p", MEMORY)]
+
+
+def test_first_use_of_an_unseen_permission_is_listed_and_shown(env):
+    """Neither declared nor found by the scan (e.g. behind ctypes)."""
+    env.plugin("p", report=_report())
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided"))
+
+    assert [row["permission"] for row in permission_panel.pending(index=env.index)["first_use"]] == [SPAWN]
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("p", index=env.index)["rows"]}
+    assert rows[SPAWN]["reconcile"] is None and rows[SPAWN]["last_used"]["outcome"] == "would_block"
+
+
+def test_unattributed_allowed_use_is_audited(monkeypatch):
+    from plugin.server.application.plugins import call_audit, capability_gate
+
+    monkeypatch.setattr(capability_gate, "granted_capabilities", lambda _pid: (frozenset({MEMORY}), True))
+    observed = []
+    call_audit.add_observer(observed.append)
+    try:
+        capability_gate._last_written.clear()
+        decision = capability_gate.check("timer_plugin", None, MEMORY, "MEMORY_QUERY")
+        capability_gate.check("timer_plugin", None, MEMORY, "MEMORY_QUERY")  # deduplicated
+    finally:
+        call_audit.remove_observer(observed.append)
+    assert decision.allowed
+    entries = [entry for entry in observed if entry.get("kind") == "decision"]
+    assert len(entries) == 1
+    assert entries[0]["verdict"] == "allow" and "unattributed" in entries[0]["flags"]
+
+
+def test_reset_only_stub_drops_the_old_source(store):
+    store.decide("x", MEMORY, "granted", source=MARKET)
+    store.drop_grants("x")
+    assert store.read("x")["source"] is None
+    # A decision while the new source is unknown survives its first binding.
+    store.decide("x", CONNECT, "granted", source=None)
+    record = store.sync_source("x", MANUAL)
+    assert CONNECT in record["permissions"]
+
+
+def test_explicit_undecided_entries_are_no_reset(store):
+    store.apply_legacy_decision("x", "denied", source=MARKET)
+    store.clear("x", MEMORY)  # explicit undecided entry on a legacy_denied record
+    record = store.sync_source("x", MANUAL)
+    assert GRANTS_RESET not in record
+
+
+@pytest.mark.asyncio
+async def test_refusing_with_anytime_is_not_checked(env):
+    _weather(env)
+    response = await _call(
+        "PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "denied", "condition": "anytime"}
+    )
+    assert response.status_code == 200

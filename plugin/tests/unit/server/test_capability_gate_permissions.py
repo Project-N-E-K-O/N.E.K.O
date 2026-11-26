@@ -98,7 +98,7 @@ def _legacy(manager: Manager, plugins: dict) -> Path:
 
 
 def _verdict(plugin_id: str, capability: str = MEMORY) -> dict | None:
-    """The gate's audited decision for one use (``None``: allowed, not audited)."""
+    """The gate's audited decision for one use (``None``: not audited)."""
     capability_gate._last_written.clear()
     before = len(call_audit.entries())
     capability_gate.check(plugin_id, None, capability, "MEMORY_SEARCH")
@@ -148,7 +148,9 @@ def test_every_reader_agrees_on_the_stored_state(env, setup, gate, plugin, dialo
     }
     entry = _verdict("demo")
     if gate:
-        assert entry is None
+        # A use outside any call is audited even when allowed (last use).
+        assert (entry["verdict"], entry["reason"]) == ("allow", None)
+        assert "unattributed" in entry["flags"]
     else:
         assert (entry["verdict"], entry["reason"]) == ("would_deny", "self_not_approved")
         assert "consent_unavailable" not in entry["flags"]
