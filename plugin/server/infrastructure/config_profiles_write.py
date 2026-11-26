@@ -471,8 +471,6 @@ def update_profile_config(
         if profile_path is None:
             raise HTTPException(status_code=400, detail="Invalid profile path")
 
-        data["config_profiles"] = profiles_cfg
-
         existing_profile: dict[str, object] = {}
         if profile_path.exists():
             assert tomllib is not None
@@ -513,11 +511,6 @@ def update_profile_config(
             target_path=profile_path,
             payload=merged,
             prefix=".profile_",
-        )
-        _atomic_dump_toml(
-            target_path=profiles_path,
-            payload=data,
-            prefix=".profiles_",
         )
 
         active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)

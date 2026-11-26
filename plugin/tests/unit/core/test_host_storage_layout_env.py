@@ -1197,3 +1197,207 @@ async def test_config_update_replace_rollback_restores_uncertain_flag_and_deep_m
         {"section": {"obsolete": "__DELETE__", "enabled": True}},
     )
     assert merged == {"section": {"enabled": True}}
+
+
+@pytest.mark.plugin_unit
+def test_config_update_command_uses_plugin_context_ordered_publisher_and_rollback(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    from plugin.core.context import PluginContext
+
+    first_notify_entered = threading.Event()
+    release_first_notify = threading.Event()
+    second_waiting_on_notify_lock = threading.Event()
+
+    class _OrderedInstance:
+        def __init__(self) -> None:
+            self.refreshed: list[dict[str, object]] = []
+            self.pause_next = True
+
+        def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+            if self.pause_next:
+                self.pause_next = False
+                first_notify_entered.set()
+                release_first_notify.wait(timeout=2.0)
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_FakeLogger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _OrderedInstance()
+    ctx._instance = instance
+
+    inner_notify_lock = ctx._get_config_notify_lock()
+    cmd_thread_holder: list[threading.Thread] = []
+
+    class _HookedLock:
+        def acquire(self, *args: object, **kwargs: object) -> bool:
+            if cmd_thread_holder and threading.current_thread() is cmd_thread_holder[0]:
+                second_waiting_on_notify_lock.set()
+            return bool(inner_notify_lock.acquire(*args, **kwargs))
+
+        def release(self) -> None:
+            inner_notify_lock.release()
+
+        def __enter__(self) -> object:
+            if cmd_thread_holder and threading.current_thread() is cmd_thread_holder[0]:
+                second_waiting_on_notify_lock.set()
+            return inner_notify_lock.__enter__()
+
+        def __exit__(self, *exc: object) -> object:
+            return inner_notify_lock.__exit__(*exc)
+
+    ctx._config_notify_lock = _HookedLock()
+
+    sender = _FakeResponseSender()
+
+    def _run_cmd_update() -> None:
+        asyncio.run(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-ordered",
+                    "config": {"v": 2},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+
+    t_first = threading.Thread(target=ctx._set_effective_config_cache, args=({"v": 1},))
+    t_cmd = threading.Thread(target=_run_cmd_update)
+    cmd_thread_holder.append(t_cmd)
+
+    t_first.start()
+    assert first_notify_entered.wait(timeout=1.0)
+    t_cmd.start()
+    assert second_waiting_on_notify_lock.wait(timeout=1.0)
+    release_first_notify.set()
+    t_first.join(timeout=2.0)
+    t_cmd.join(timeout=2.0)
+    assert not t_first.is_alive()
+    assert not t_cmd.is_alive()
+    assert sender.payloads[-1]["success"] is True
+    assert ctx._effective_config == {"v": 2}
+    assert instance.refreshed == [{"v": 1}, {"v": 2}]
+
+    # Verify rollback on uncached PluginContext restores uncertain state and notifies old_config.
+    ctx_rb = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo_rb" / "plugin.toml",
+        logger=_FakeLogger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    rb_instance = _OrderedInstance()
+    rb_instance.pause_next = False
+    ctx_rb._instance = rb_instance
+    ctx_rb._effective_config = None
+    ctx_rb._effective_config_uncertain = True
+
+    async def _get_own_config() -> dict[str, object]:
+        return {"config": {"base": 1}}
+
+    ctx_rb.get_own_config = _get_own_config  # type: ignore[method-assign]
+
+    def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    rb_sender = _FakeResponseSender()
+    asyncio.run(
+        host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-rb-real",
+                "config": {"extra": 2},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_rb,
+            events_by_type={"lifecycle": {"config_change": _boom}},
+            plugin_id="demo",
+            res_sender=rb_sender,
+            logger=_FakeLogger(),
+        )
+    )
+    assert rb_sender.payloads[-1]["success"] is False
+    assert ctx_rb._effective_config is None
+    assert ctx_rb._effective_config_uncertain is True
+    assert rb_instance.refreshed == [{"base": 1, "extra": 2}, {"base": 1}]
+
+    # Verify rollback notification does not overwrite a newer snapshot published before notify drains.
+    race_first_entered = threading.Event()
+    race_release_first = threading.Event()
+    race_rollback_recorded = threading.Event()
+
+    class _RaceInstance:
+        def __init__(self) -> None:
+            self.refreshed: list[dict[str, object]] = []
+            self._first = True
+
+        def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+            if self._first:
+                self._first = False
+                race_first_entered.set()
+                race_release_first.wait(timeout=2.0)
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    ctx_race = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo_race" / "plugin.toml",
+        logger=_FakeLogger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    race_instance = _RaceInstance()
+    ctx_race._instance = race_instance
+
+    race_notify_lock = ctx_race._get_config_notify_lock()
+    rb_thread_holder: list[threading.Thread] = []
+
+    class _RaceHookLock:
+        def acquire(self, *args: object, **kwargs: object) -> bool:
+            if rb_thread_holder and threading.current_thread() is rb_thread_holder[0]:
+                race_rollback_recorded.set()
+            return bool(race_notify_lock.acquire(*args, **kwargs))
+
+        def release(self) -> None:
+            race_notify_lock.release()
+
+        def __enter__(self) -> object:
+            if rb_thread_holder and threading.current_thread() is rb_thread_holder[0]:
+                race_rollback_recorded.set()
+            return race_notify_lock.__enter__()
+
+        def __exit__(self, *exc: object) -> object:
+            return race_notify_lock.__exit__(*exc)
+
+    ctx_race._config_notify_lock = _RaceHookLock()
+
+    t_hold = threading.Thread(target=ctx_race._set_effective_config_cache, args=({"v": 10},))
+    t_rb = threading.Thread(
+        target=lambda: ctx_race._set_effective_config_cache(
+            None,
+            uncertain=True,
+            fallback_notify_config={"v": 0},
+        )
+    )
+    rb_thread_holder.append(t_rb)
+    t_hold.start()
+    assert race_first_entered.wait(timeout=1.0)
+    t_rb.start()
+    assert race_rollback_recorded.wait(timeout=1.0)
+    # Publish a newer config snapshot directly to state before releasing the notify lock.
+    with ctx_race._get_config_state_lock():
+        ctx_race._bump_effective_config_gen()
+        ctx_race._record_effective_config_locked({"v": 99}, uncertain=False)
+    race_release_first.set()
+    t_hold.join(timeout=2.0)
+    t_rb.join(timeout=2.0)
+    assert ctx_race._effective_config == {"v": 99}
+    assert race_instance.refreshed == [{"v": 10}, {"v": 99}]

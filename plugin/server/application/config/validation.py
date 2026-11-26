@@ -96,6 +96,29 @@ def _validate_plugin_sdk(plugin_section: Mapping[object, object]) -> None:
         )
 
 
+def _normalize_dependency_string_list(
+    raw_value: object,
+    *,
+    field: str,
+    allow_bool: bool = False,
+) -> object:
+    if raw_value is None:
+        return None
+    if allow_bool and isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        _ensure_string(raw_value, field=field)
+        stripped = raw_value.strip()
+        return [stripped] if stripped else None
+    if isinstance(raw_value, list):
+        for item in raw_value:
+            _ensure_string(item, field=f"{field} item")
+        return raw_value
+    if allow_bool:
+        _raise_invalid_config(f"{field} must be a list of strings, a string, or a boolean")
+    _raise_invalid_config(f"{field} must be a list of strings or a string")
+
+
 def _validate_plugin_dependency(plugin_section: Mapping[object, object]) -> None:
     dependency_obj = plugin_section.get("dependency")
     if dependency_obj is None:
@@ -107,32 +130,29 @@ def _validate_plugin_dependency(plugin_section: Mapping[object, object]) -> None
 
     for item in dependency_obj:
         dependency_item = _ensure_mapping(item, field="plugin.dependency items")
-        for key in ("id", "entry", "custom_event", "recommended", "supported", "untested"):
-            value = dependency_item.get(key)
-            if value is not None:
-                _ensure_string(value, field=f"plugin.dependency.{key}")
-
-        providers_obj = dependency_item.get("providers")
-        if providers_obj is not None:
-            if not isinstance(providers_obj, list):
-                _raise_invalid_config("plugin.dependency.providers must be a list")
-            for provider_item in providers_obj:
-                _ensure_string(provider_item, field="plugin.dependency.providers item")
-
-        conflicts_obj = dependency_item.get("conflicts")
-        if conflicts_obj is not None and not isinstance(conflicts_obj, bool):
-            if not isinstance(conflicts_obj, list):
-                _raise_invalid_config(
-                    "plugin.dependency.conflicts must be a list of strings or a boolean"
-                )
-            for conflict_item in conflicts_obj:
-                _ensure_string(conflict_item, field="plugin.dependency.conflicts item")
-
         normalized_item: dict[str, object] = {}
         for key_obj, item_val in dependency_item.items():
             if not isinstance(key_obj, str):
                 _raise_invalid_config("plugin.dependency item keys must be strings")
             normalized_item[key_obj] = item_val
+
+        for key in ("id", "entry", "custom_event", "recommended", "supported", "untested"):
+            value = normalized_item.get(key)
+            if value is not None:
+                _ensure_string(value, field=f"plugin.dependency.{key}")
+
+        if "providers" in normalized_item:
+            normalized_item["providers"] = _normalize_dependency_string_list(
+                normalized_item.get("providers"),
+                field="plugin.dependency.providers",
+            )
+
+        if "conflicts" in normalized_item:
+            normalized_item["conflicts"] = _normalize_dependency_string_list(
+                normalized_item.get("conflicts"),
+                field="plugin.dependency.conflicts",
+                allow_bool=True,
+            )
 
         try:
             PluginDependencySchema.model_validate(normalized_item)

@@ -2097,12 +2097,33 @@ def test_context_instance_runtime_refresh_preserves_publication_order_across_thr
     ctx._instance = instance
 
     # Part 1: Thread B publishes snap_new while Thread A is blocked notifying snap_old.
+    second_waiting_on_notify_lock = threading.Event()
+    inner_notify_lock = ctx._get_config_notify_lock()
+
+    class _HookedLock:
+        def acquire(self, *args: object, **kwargs: object) -> bool:
+            if threading.current_thread() is t_new:
+                second_waiting_on_notify_lock.set()
+            return bool(inner_notify_lock.acquire(*args, **kwargs))
+
+        def release(self) -> None:
+            inner_notify_lock.release()
+
+        def __enter__(self) -> object:
+            if threading.current_thread() is t_new:
+                second_waiting_on_notify_lock.set()
+            return inner_notify_lock.__enter__()
+
+        def __exit__(self, *exc: object) -> object:
+            return inner_notify_lock.__exit__(*exc)
+
     t_old = threading.Thread(target=ctx._set_effective_config_cache, args=({"v": 1},))
     t_new = threading.Thread(target=ctx._set_effective_config_cache, args=({"v": 2},))
+    ctx._config_notify_lock = _HookedLock()
     t_old.start()
     assert first_notify_entered.wait(timeout=1.0)
     t_new.start()
-    time.sleep(0.05)
+    assert second_waiting_on_notify_lock.wait(timeout=1.0)
     release_first_notify.set()
     t_old.join(timeout=2.0)
     t_new.join(timeout=2.0)
@@ -2118,6 +2139,63 @@ def test_context_instance_runtime_refresh_preserves_publication_order_across_thr
     ctx._flush_instance_runtime_config()
     assert ctx._effective_config == {"v": 4}
     assert instance.refreshed[-1] == {"v": 4}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_profile_refresh_failed_get_does_not_discard_concurrent_same_gen_get(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+
+    refresh_gen, refresh_epoch = ctx._invalidate_effective_config_for_profile_refresh()
+    concurrent_get_started = asyncio.Event()
+    release_concurrent_get = asyncio.Event()
+    refresh_get_started = asyncio.Event()
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _rpc_or_fail(**_kwargs: object) -> dict[str, object]:
+        if not concurrent_get_started.is_set():
+            concurrent_get_started.set()
+            await release_concurrent_get.wait()
+            return {"plugin_id": "demo", "config": {"profile": "new"}}
+        refresh_get_started.set()
+        await asyncio.sleep(0)
+        raise RuntimeError("transient profile refresh read failure")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _rpc_or_fail  # type: ignore[method-assign]
+
+    concurrent_task = asyncio.create_task(ctx.get_own_config(timeout=2.0))
+    await concurrent_get_started.wait()
+    assert ctx._current_effective_config_gen() == refresh_gen
+
+    refresh_task = asyncio.create_task(
+        ctx._refresh_effective_config_after_profile_change(
+            timeout=2.0,
+            refresh_gen=refresh_gen,
+            refresh_epoch=refresh_epoch,
+        )
+    )
+    await refresh_get_started.wait()
+    await refresh_task
+    assert ctx._current_effective_config_gen() == refresh_gen
+
+    release_concurrent_get.set()
+    loaded = await concurrent_task
+    assert loaded["config"] == {"profile": "new"}
+    assert ctx._effective_config == {"profile": "new"}
+    assert ctx._effective_config_uncertain is False
+    assert instance.refreshed[-1] == {"profile": "new"}
 
 
 @pytest.mark.plugin_unit

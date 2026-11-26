@@ -197,9 +197,7 @@ def test_update_profile_config_merges_updates_and_preserves_active_profile(
 
     persisted_work = tomllib.loads((profiles_dir / "work.toml").read_text(encoding="utf-8"))
     assert persisted_work == {"feature": {"keep": 1, "override": "new", "added": 3}}
-    persisted_profiles = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
-    assert persisted_profiles["config_profiles"]["active"] == "home"
-    assert set(persisted_profiles["config_profiles"]["files"]) == {"home", "work"}
+    assert not (plugin_dir / "profiles.toml").exists()
 
 
 @pytest.mark.plugin_unit
@@ -227,9 +225,62 @@ def test_update_profile_config_preserves_manifest_profiles_and_extra_keys_when_t
     )
     assert res["active_profile"] == "home"
     persisted_profiles = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
-    assert persisted_profiles["extra"] == {"note": "keep"}
-    assert persisted_profiles["config_profiles"]["active"] == "home"
-    assert set(persisted_profiles["config_profiles"]["files"]) == {"home", "work"}
+    assert persisted_profiles == {"extra": {"note": "keep"}}
+    assert tomllib.loads((profiles_dir / "work.toml").read_text(encoding="utf-8")) == {
+        "feature": {"x": 1}
+    }
+
+
+@pytest.mark.plugin_unit
+def test_update_profile_config_does_not_create_or_rewrite_profiles_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path as _Path
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+        "[plugin.config_profiles.files]\nhome='profiles/home.toml'\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    (profiles_dir / "work.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    dump_targets: list[_Path] = []
+    real_dump = module._atomic_dump_toml
+
+    def _spied_dump(*, target_path: _Path, payload: dict[str, object], prefix: str) -> None:
+        dump_targets.append(target_path)
+        real_dump(target_path=target_path, payload=payload, prefix=prefix)
+
+    monkeypatch.setattr(module, "_atomic_dump_toml", _spied_dump)
+
+    module.update_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        updates={"feature": {"x": 2}},
+    )
+    assert dump_targets == [profiles_dir / "work.toml"]
+    assert not (plugin_dir / "profiles.toml").exists()
+
+    profiles_path = plugin_dir / "profiles.toml"
+    original_profiles_text = (
+        "[config_profiles]\nactive = 'home'\n\n"
+        "[config_profiles.files]\nhome = 'profiles/home.toml'\nwork = 'profiles/work.toml'\n"
+    )
+    profiles_path.write_text(original_profiles_text, encoding="utf-8")
+    dump_targets.clear()
+
+    module.update_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        updates={"feature": {"y": 3}},
+    )
+    assert dump_targets == [profiles_dir / "work.toml"]
+    assert profiles_path.read_text(encoding="utf-8") == original_profiles_text
 
 
 @pytest.mark.plugin_unit

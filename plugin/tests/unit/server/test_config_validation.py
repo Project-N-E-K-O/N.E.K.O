@@ -93,6 +93,8 @@ def test_validate_config_updates_accepts_single_table_plugin_dependency() -> Non
         {"id": "dep_a"},
         {"entry": "a:b", "custom_event": "evt", "untested": ">=1.0.0"},
         {"conflicts": "true", "id": "dep_a"},
+        {"id": "dep_a", "providers": 123, "untested": ">=1.0.0"},
+        {"id": "dep_a", "conflicts": 123, "untested": ">=1.0.0"},
     ],
 )
 def test_validate_config_updates_rejects_schema_invalid_dependency_in_single_and_list_forms(
@@ -103,3 +105,21 @@ def test_validate_config_updates_rejects_schema_invalid_dependency_in_single_and
             validate_config_updates(updates={"plugin": {"dependency": shape}})
         assert exc_info.value.code == "INVALID_CONFIG_UPDATE"
         assert exc_info.value.status_code == 400
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "dependency_item",
+    [
+        {"id": "provider_a", "untested": ">=0", "conflicts": "<1.0.0"},
+        {"id": "dep_a", "providers": "search", "untested": ">=1.0.0"},
+        {"id": "dep_a", "providers": "  search  ", "conflicts": " >=1.0.0 ", "untested": ">=0"},
+        {"id": "dep_a", "providers": "   ", "conflicts": "   ", "untested": ">=0"},
+    ],
+)
+def test_validate_config_updates_accepts_scalar_string_dependency_providers_and_conflicts(
+    dependency_item: dict[str, object],
+) -> None:
+    for shape in (dependency_item, [dependency_item]):
+        normalized = validate_config_updates(updates={"plugin": {"dependency": shape}})
+        assert normalized["plugin"] == {"dependency": shape}

@@ -854,47 +854,92 @@ async def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
-        had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
+        set_cache = getattr(ctx, "_set_effective_config_cache", None)
+        replace_for_host = getattr(ctx, "_replace_effective_config_cache_for_host", None)
+        merge_for_host = getattr(ctx, "_merge_effective_config_cache_for_host", None)
+        uses_context_publisher = (
+            callable(set_cache)
+            and callable(replace_for_host)
+            and callable(merge_for_host)
+        )
         bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
-        if replace:
-            old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
-            ctx._effective_config = copy.deepcopy(new_config)
-            if callable(bump_gen):
-                bump_gen()
-            if hasattr(ctx, "_effective_config_uncertain"):
-                ctx._effective_config_uncertain = False
-            logger.debug("[Plugin Process] Config cache replaced")
-        elif had_cached_config:
-            old_config = copy.deepcopy(ctx._effective_config)
-            _deep_merge(ctx._effective_config, new_config)
-            if callable(bump_gen):
-                bump_gen()
-            logger.debug("[Plugin Process] Config cache updated")
-        else:
-            base_config: dict[str, Any] = {}
-            get_own_config = getattr(ctx, "get_own_config", None)
-            if callable(get_own_config):
-                try:
-                    loaded = get_own_config()
-                    if inspect.isawaitable(loaded):
-                        loaded = await loaded
-                    if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
-                        base_config = copy.deepcopy(dict(loaded["config"]))
-                except Exception:
-                    logger.debug(
-                        "[Plugin Process] Failed to hydrate base config before temporary update",
-                        exc_info=True,
-                    )
-            old_config = copy.deepcopy(base_config)
-            _deep_merge(base_config, new_config)
-            ctx._effective_config = base_config
-            if callable(bump_gen):
-                bump_gen()
-
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
-        if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
-            refresh_runtime_config(ctx._effective_config)
+        applied_config: dict[str, Any] | None = None
+
+        if uses_context_publisher:
+            if replace:
+                had_cached_config, had_uncertain_config, old_config, applied_config = replace_for_host(
+                    new_config
+                )
+                logger.debug("[Plugin Process] Config cache replaced")
+            else:
+                had_cached_config, had_uncertain_config, old_config, applied_config = merge_for_host(
+                    new_config,
+                    merge_fn=_deep_merge,
+                )
+                if had_cached_config:
+                    logger.debug("[Plugin Process] Config cache updated")
+                else:
+                    base_config: dict[str, Any] = {}
+                    get_own_config = getattr(ctx, "get_own_config", None)
+                    if callable(get_own_config):
+                        try:
+                            loaded = get_own_config()
+                            if inspect.isawaitable(loaded):
+                                loaded = await loaded
+                            if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                                base_config = copy.deepcopy(dict(loaded["config"]))
+                        except Exception:
+                            logger.debug(
+                                "[Plugin Process] Failed to hydrate base config before temporary update",
+                                exc_info=True,
+                            )
+                    old_config = copy.deepcopy(base_config)
+                    _deep_merge(base_config, new_config)
+                    post_hydrate_uncertain = bool(
+                        getattr(ctx, "_effective_config_uncertain", had_uncertain_config)
+                    )
+                    applied_config = set_cache(base_config, uncertain=post_hydrate_uncertain)
+        else:
+            had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
+            had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
+            if replace:
+                old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
+                ctx._effective_config = copy.deepcopy(new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                if hasattr(ctx, "_effective_config_uncertain"):
+                    ctx._effective_config_uncertain = False
+                logger.debug("[Plugin Process] Config cache replaced")
+            elif had_cached_config:
+                old_config = copy.deepcopy(ctx._effective_config)
+                _deep_merge(ctx._effective_config, new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                logger.debug("[Plugin Process] Config cache updated")
+            else:
+                base_config = {}
+                get_own_config = getattr(ctx, "get_own_config", None)
+                if callable(get_own_config):
+                    try:
+                        loaded = get_own_config()
+                        if inspect.isawaitable(loaded):
+                            loaded = await loaded
+                        if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                            base_config = copy.deepcopy(dict(loaded["config"]))
+                    except Exception:
+                        logger.debug(
+                            "[Plugin Process] Failed to hydrate base config before temporary update",
+                            exc_info=True,
+                        )
+                old_config = copy.deepcopy(base_config)
+                _deep_merge(base_config, new_config)
+                ctx._effective_config = base_config
+                if callable(bump_gen):
+                    bump_gen()
+            applied_config = ctx._effective_config
+            if callable(refresh_runtime_config) and isinstance(applied_config, dict):
+                refresh_runtime_config(applied_config)
         
         # Trigger config_change lifecycle callbacks when present.
         lifecycle_events = events_by_type.get("lifecycle", {})
@@ -906,7 +951,7 @@ async def _handle_config_update_command(
                 with ctx._handler_scope("lifecycle.config_change"):
                     result = config_change_handler(
                         old_config=old_config,
-                        new_config=ctx._effective_config,
+                        new_config=applied_config,
                         mode=mode,
                     )
                     if inspect.isawaitable(result):
@@ -915,13 +960,23 @@ async def _handle_config_update_command(
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
                 # Restore prechange configuration.
-                ctx._effective_config = old_config if had_cached_config else None
-                if callable(bump_gen):
-                    bump_gen()
-                if hasattr(ctx, "_effective_config_uncertain"):
-                    ctx._effective_config_uncertain = had_uncertain_config
-                if callable(refresh_runtime_config) and isinstance(old_config, dict):
-                    refresh_runtime_config(old_config)
+                if uses_context_publisher:
+                    if had_cached_config:
+                        set_cache(old_config, uncertain=had_uncertain_config)
+                    else:
+                        set_cache(
+                            None,
+                            uncertain=had_uncertain_config,
+                            fallback_notify_config=old_config if isinstance(old_config, dict) else None,
+                        )
+                else:
+                    ctx._effective_config = old_config if had_cached_config else None
+                    if callable(bump_gen):
+                        bump_gen()
+                    if hasattr(ctx, "_effective_config_uncertain"):
+                        ctx._effective_config_uncertain = had_uncertain_config
+                    if callable(refresh_runtime_config) and isinstance(old_config, dict):
+                        refresh_runtime_config(old_config)
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_sender.put(ret_payload, timeout=10.0)
