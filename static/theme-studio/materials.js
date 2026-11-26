@@ -35,6 +35,10 @@
   var SECTION_OF = {};      // key -> section id
   var CURRENT = null;       // editable copy
   var BASELINE = null;      // saved copy (dirty-check baseline)
+  // A saved-preset delete / rename / duplicate request is in flight. The custom preset
+  // buttons stay disabled until it settles: until then BASELINE does not know the new
+  // state, so a second action would misjudge which presets are saved.
+  var presetOpPending = false;
   var MODE = 'light';       // editing light / dark
   var BG_MODE = 'dark';     // preview wallpaper: dark wallpaper / light wallpaper
   var BG_TOUCHED = false;   // once the user flips the wallpaper, stop following the edit mode
@@ -749,7 +753,7 @@
 
   /** Delete a custom preset: a dedicated entry persists it immediately (apply's merge semantics would re-add it). */
   function deleteCustomPreset(name) {
-    if (!name) return;
+    if (!name || presetOpPending) return;
     // A preset that exists only in the draft (created but never applied) is not
     // on the server: remove it locally; the server call is for saved presets only.
     var saved = !!(BASELINE && BASELINE.custom_presets &&
@@ -771,6 +775,7 @@
     var wasSelected = CURRENT.preset === name;
     if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
     if (wasSelected) CURRENT.preset = 'custom';
+    setPresetOpPending(true);
     callEntry('delete_material_preset', { name: name }).then(function (data) {
       var materials = (data && data.materials) || null;
       // The saved baseline follows the server (the delete is persisted), so remaining unapplied edits still show as pending.
@@ -801,7 +806,13 @@
       toast(T('materials.toast.presetDeleteFailed', '删除预设失败：{{error}}', {
         error: error && error.message ? error.message : error
       }), 'warn');
-    });
+    }).then(function () { setPresetOpPending(false); });
+  }
+
+  function setPresetOpPending(on) {
+    presetOpPending = !!on;
+    renderPane();
+    renderHeadState();
   }
 
   /** Move (rename) or copy a custom preset inside the draft; other draft presets are untouched. */
@@ -838,7 +849,7 @@
   }
 
   function renameOrCopyPreset(name, keepSource) {
-    if (!name) return;
+    if (!name || presetOpPending) return;
     var suggestion = keepSource
       ? name + ' ' + T('materials.presets.copySuffix', '副本')
       : name;
@@ -852,6 +863,7 @@
   }
 
   function commitPresetName(name, answer, keepSource) {
+    if (presetOpPending) return;
     var target = String(answer).trim().slice(0, 40);
     if (!target) { toast(T('materials.toast.presetNameEmpty', '先给预设起个名字。'), 'warn'); return; }
     if (!keepSource && target === name) return;
@@ -878,6 +890,7 @@
     // Rename the draft before the request (like deleteCustomPreset): an Apply clicked
     // while the rename is in flight must not submit the old name, which the backend's
     // merge-by-name would write back next to the renamed preset. Rolled back on failure.
+    setPresetOpPending(true);
     if (!keepSource) {
       moveDraftPreset(name, target, false);
       // Redraw now so the old card (and its buttons) is not clickable with a name
@@ -911,7 +924,7 @@
       toast(T('materials.toast.presetRenameFailed', '操作预设失败：{{error}}', {
         error: error && error.message ? error.message : error
       }), 'warn');
-    });
+    }).then(function () { setPresetOpPending(false); });
   }
 
   function renderPresets(pane) {
@@ -944,6 +957,7 @@
           if (event && event.stopPropagation) event.stopPropagation();
           renameOrCopyPreset(id, true);
         });
+        del.disabled = rename.disabled = dup.disabled = presetOpPending;
         var actions = el('div', { class: 'mt-preset-actions' });
         actions.appendChild(rename);
         actions.appendChild(dup);
