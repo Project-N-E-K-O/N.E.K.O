@@ -2758,7 +2758,7 @@ async def _no_quota_left(commission_id: str) -> bool:
 
 
 async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> SimpleNamespace:
-    """A commission at work, with its session, and thirteen task agents it started, each stopped its own way.
+    """A commission at work, with its session, and fifteen task agents it started, each stopped its own way.
 
     One cannot be stopped (its runtime does not answer, however often it is asked), one is
     stopped when it is asked again (the ledger was locked as it was stopped); one cannot have
@@ -2767,7 +2767,9 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
     worktree for the user to have it landed (stuck over that alone); one was read at work and
     waits so by the time its stop is written; one is being landed at the user's word; one
     waits so and cannot have its stop written either; one waited so and was taken up again
-    (queued, its worktree on record as it was left). One is gone from the ledger by the time
+    (queued, its worktree on record as it was left). A landing writes how two end this moment: one
+    is being left for the user (its worktree on record as waiting, itself not stuck yet), the
+    other's landing gives way to more that was said to it. One is gone from the ledger by the time
     its stop is written; one was read at work and is done by then, and one was read at work
     and is stopped (by the user) by then. What the commission started is read at the second
     asking; ``read_failures``: how many times that fails first.
@@ -2792,6 +2794,8 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
         "being landed",
         "waits and cannot be written",
         "taken up again",
+        "on its way to wait",
+        "landing gave way",
         "gone meanwhile",
         "done meanwhile",
         "stopped meanwhile",
@@ -2800,9 +2804,7 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
         await host.ledger.transition(child.id, "working", reason="test")
         members[name] = child.id
 
-    async def waits(name: str, state: str) -> None:
-        # Done, and stuck over its worktree alone (``tree_work``).
-        await host.ledger.transition(members[name], "blocked", reason="test")
+    async def tree(name: str, state: str) -> None:
         path = tmp_path / f"the-worktree-of-{name.replace(' ', '-')}"
         path.mkdir()
         await host.ledger.add_tree(
@@ -2810,6 +2812,33 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
             workdir=str(path), state=state, commission_id=members[name],
         )
 
+    async def waits(name: str, state: str) -> None:
+        # Done, and stuck over its worktree alone (``tree_work``).
+        await host.ledger.transition(members[name], "blocked", reason="test")
+        await tree(name, state)
+
+    # A landing writes how two of them end this moment (``_landing_ends``). One's changes are being
+    # left for the user (``_left_for_the_user``): its worktree is on record as waiting, and it is not
+    # on record as stuck yet. The other's landing gives way to more that was said to it: at work.
+    await tree("on its way to wait", "unlanded")
+    await tree("landing gave way", "active")
+    landings = {members["on its way to wait"]: "blocked", members["landing gave way"]: None}
+    for one in landings:
+        manager._landing_ends[one] = asyncio.get_running_loop().create_future()
+    written = manager._landing_end_written
+
+    async def land(commission_id: str) -> None:
+        # The landing goes on while it is waited for, and is through.
+        if landings.get(commission_id) is not None:
+            await host.ledger.transition(commission_id, landings[commission_id], reason="test")
+        manager._landing_ends.pop(commission_id).set_result(None)
+
+    async def end_written(commission_id: str) -> None:
+        if commission_id in manager._landing_ends:
+            asyncio.ensure_future(land(commission_id))
+        await written(commission_id)
+
+    monkeypatch.setattr(manager, "_landing_end_written", end_written)
     await waits("waits in its worktree", "held")
     await waits("waits and cannot be written", "held")
     # More was said to it: queued for a place (``_requeue``), its worktree on record as it was left
@@ -2891,6 +2920,7 @@ async def _ended_for_what_it_used(manager: Any, team: SimpleNamespace, end: str)
     finally:
         for one in (team.parent.id, *team.members.values()):
             manager._sessions.pop(one, None)
+            manager._landing_ends.pop(one, None)
         manager._decided_for.pop("the-tree-of-being-landed", None)
 
 
@@ -2920,12 +2950,15 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
     # one that waits in its worktree for the user is left to wait, as when a commission ends
     # otherwise, and so is one that came to wait after it was read, one being landed at the
     # user's word, and one that waits and whose stop cannot be written; one taken up again since
-    # its worktree came to wait is stopped as any other; one gone from the ledger meanwhile is
-    # closed all the same; one that ended meanwhile is not closed, one that was stopped meanwhile
-    # is closed all the same.
+    # its worktree came to wait is stopped as any other. A landing that writes how one ends is
+    # waited for: one it leaves to wait for the user waits, one it gives way with is stopped. One
+    # gone from the ledger meanwhile is closed all the same; one that ended meanwhile is not
+    # closed, one that was stopped meanwhile is closed all the same.
     members = team.members
     assert team.read_failures == 0
-    waiting = ("waits in its worktree", "waits by then", "being landed", "waits and cannot be written")
+    waiting = (
+        "waits in its worktree", "waits by then", "being landed", "waits and cannot be written", "on its way to wait",
+    )
     left = (*waiting, "done meanwhile")
     asked = {"cannot be closed": 3, "closed when asked again": 2}
     assert team.tried == [members[name] for name in members if name not in left for _ in range(asked.get(name, 1))]
@@ -2938,22 +2971,28 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         "at work": "cancelled",
         **dict.fromkeys(waiting, "blocked"),
         "taken up again": "cancelled",
+        "landing gave way": "cancelled",
         "gone meanwhile": "working",
         "done meanwhile": "done",
         "stopped meanwhile": "cancelled",
     }
-    for name in ("cannot be closed", "closed when asked again", "written when asked again", "at work", "taken up again"):
+    stopped_with_it = (
+        "cannot be closed", "closed when asked again", "written when asked again", "at work", "taken up again",
+        "landing gave way",
+    )
+    for name in stopped_with_it:
         assert after[name].status_reason == "its parent finished"
     for name in (*waiting, "stopped meanwhile"):
         assert after[name].status_reason == "test"
     trees = {name: (await host.ledger.get_tree(f"the-tree-of-{name.replace(' ', '-')}")).state for name in waiting}
     assert trees == {
         "waits in its worktree": "held", "waits by then": "unlanded", "being landed": "landing",
-        "waits and cannot be written": "held",
+        "waits and cannot be written": "held", "on its way to wait": "unlanded",
     }
     # Nothing goes on their record for it: a stop refused over the worktree is not noted.
     for name in waiting:
         assert await _events(host, members[name], "transition_refused") == []
+    assert host.task_agents._landing_ends == {}
     # Their sessions are asked to close (the one whose stop cannot be written among them; not the
     # one that cannot be stopped, those that wait in their worktree, nor the one that ended
     # meanwhile), and the commission's own after.
@@ -2963,6 +3002,7 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         "written when asked again",
         "at work",
         "taken up again",
+        "landing gave way",
         "gone meanwhile",
         "stopped meanwhile",
     )

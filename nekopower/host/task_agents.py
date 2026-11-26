@@ -5563,7 +5563,17 @@ class TaskAgentManager(TreeWork):
         looked at each time this is asked, with nothing awaited before the
         write is asked for, and the user's decision is in hand
         (``_tree_in_hand``) before its worktree is written as being landed.
+        A landing that writes how it ends this moment (``_landing_ends``,
+        ``_nothing_more_said``) is waited for first, and it is looked at as
+        that leaves it: left for the user, its worktree is on record as
+        waiting before it is on record as stuck, and in between it is still
+        at work; put down as done, it is over; and should the landing give
+        way to more that was said to it, it is at work, and stopped. (What
+        that landing writes waits, as it tells the parent, only for a
+        landing of the parent's own; none of the ends this is asked from is
+        within one.)
         """
+        await self._landing_end_written(commission_id)
         if commission_id in self._decided_for.values():
             return None
         return await self._ledger.transition(
