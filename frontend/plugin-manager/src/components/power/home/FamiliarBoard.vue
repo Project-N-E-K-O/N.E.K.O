@@ -85,25 +85,29 @@ const lostElsewhere = ref('')
 // Said for a while, not for good: the familiar goes on with its work, and nothing takes the words away otherwise.
 const LOST_NOTE_MS = 15000
 const withoutCard = (cardId: string) => Object.fromEntries(Object.entries(lost.value).filter(([id]) => id !== cardId))
+// When the words of each place are taken away again, by the card ('' for above the board). Words put anew have
+// their own time: what was to take the last ones away does not take these (they may read the same).
+const fading = new Map<string, ReturnType<typeof setTimeout>>()
+function sayLost(cardId: string, said: string) {
+  const before = fading.get(cardId)
+  if (before) clearTimeout(before)
+  fading.delete(cardId)
+  if (cardId) lost.value = said ? { ...lost.value, [cardId]: said } : withoutCard(cardId)
+  else lostElsewhere.value = said
+  if (said) fading.set(cardId, setTimeout(() => sayLost(cardId, ''), LOST_NOTE_MS))
+}
 const { busyOf, failedOf, answer: answerOne } = useBesideAnswers(() => Promise.all([load(), loadBesides()]), (said, commissionId) => {
-  const cardId = answeredFor.get(commissionId)
-  if (cardId) {
-    lost.value = { ...lost.value, [cardId]: said }
-    setTimeout(() => { if (lost.value[cardId] === said) lost.value = withoutCard(cardId) }, LOST_NOTE_MS)
-  } else {
-    lostElsewhere.value = said
-    setTimeout(() => { if (lostElsewhere.value === said) lostElsewhere.value = '' }, LOST_NOTE_MS)
-  }
+  sayLost(answeredFor.get(commissionId) ?? '', said)
 })
 function answer(item: Beside, given: GivenAnswer) {
-  lostElsewhere.value = ''
+  sayLost('', '')
   void answerOne(item, given)
 }
 function answerCard(card: BoardCard, given: GivenAnswer) {
   if (!card.commission) return
   answeredFor.set(card.commission.id, card.id)
   // What was said of its last answer is not about this one.
-  lost.value = withoutCard(card.id)
+  sayLost(card.id, '')
   void answerOne({ id: card.commission.id, ask: card.commission.ask }, given)
 }
 
@@ -187,6 +191,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   alive = false
+  fading.forEach(timer => clearTimeout(timer))
   document.removeEventListener('visibilitychange', onVisibility)
   if (timer) clearTimeout(timer)
 })

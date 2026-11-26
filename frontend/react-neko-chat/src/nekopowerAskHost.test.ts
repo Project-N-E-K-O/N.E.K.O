@@ -710,6 +710,21 @@ describe('the cards of the chat window', () => {
     expect(messages.length).toBe(20);
   });
 
+  it('does not show what waited for the chat window once the page is with another character', () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    asks.receive(frame(confirmation, { task_id: 'c2', lanlan_name: 'Lan' }));
+    (w.lanlan_config as { lanlan_name: string }).lanlan_name = 'Mio';
+    // Hers comes while the window is still not there: shown, the other one's are not.
+    asks.receive(frame({ ...permission, id: 'q7' }, { task_id: 'c3', lanlan_name: 'Mio' }));
+    w.reactChatWindowHost = host;
+    vi.advanceTimersByTime(600);
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c3-q7']);
+  });
+
   it('keeps a question for a chat window that is not there yet', () => {
     vi.useFakeTimers();
     const w = window as unknown as Record<string, unknown>;

@@ -378,6 +378,39 @@ describe('the question on the board', () => {
     expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
   })
 
+  it('keeps the words of a later answer for their own while, though those of an earlier one read the same', async () => {
+    vi.useFakeTimers()
+    const ask = (id: string) => ({ id, kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] })
+    const waiting = (id: string) => card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask: ask(id) } })
+    api.getBoard.mockResolvedValue(board([waiting('q1')]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    // Answered, the sentence lost; it asks the next thing, which is answered just before those words would go.
+    api.getBoard.mockResolvedValue(board([waiting('q2')], 'r2'))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(14900)
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r3'))
+    let back: (value: unknown) => void = () => {}
+    api.answerCommission.mockReturnValue(new Promise(resolve => { back = resolve }))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(api.answerCommission).toHaveBeenCalledTimes(2)
+    // What was said of the last answer is not about this one, which is on its way.
+    expect(byTest('familiar-card-error')).toBeNull()
+    back({ success: true, note_taken: false })
+    await flush()
+    // The time of the first ones is up: these are not theirs to take away.
+    await vi.advanceTimersByTimeAsync(500)
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    await vi.advanceTimersByTimeAsync(14000)
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(byTest('familiar-card-error')).toBeNull()
+  })
+
   it('says it above the board where the familiar has no card on it any more by the time the board is read again', async () => {
     vi.useFakeTimers()
     const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }

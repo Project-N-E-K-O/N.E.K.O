@@ -542,6 +542,12 @@
         // Before anything is let go of for it: a late report of a question that is over must not
         // take the place of the next one, which waits for the window.
         if (isOver(shown.id)) return;
+        // Put while the page was with another character, and kept for the window since: hers,
+        // not shown here. (Her page shows it; turned back to her, it is read anew.)
+        if (ofAnother(character(), whose)) {
+            queued = queued.filter(function (args) { return args[0] !== taskId; });
+            return;
+        }
         var api = host();
         if (!api) {
             // Only the latest of a task: an earlier one is over by the time the window is there.
