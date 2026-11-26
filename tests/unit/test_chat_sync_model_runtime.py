@@ -578,13 +578,14 @@ async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('endpoint', ['capabilities', 'binding'])
-@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'failed', 'error', 'none'])
+@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'failed', 'error', 'selection', 'none'])
 async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, endpoint, work):
     paths = []
 
     runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     state = runtime.models.store.get(DOMAIN.key())
-    state['selection'] = (await adapter.read(UID))['selection']
+    if work != 'selection':
+        state['selection'] = (await adapter.read(UID))['selection']
     if work != 'upload':
         state.pop('pending')
     if work in {'candidate', 'revision', 'failed'}:
@@ -617,6 +618,32 @@ async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, en
         assert len(paths) == 1
         if endpoint == 'binding' and work == 'none':
             assert 'metadataOnly=true' in paths[0]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_model_completion_waits_for_local_selection_changed_after_receipt(tmp_path):
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+
+    async def change_selection(request):
+        if request.url.path.endswith('/model-binding') and request.method == 'PUT' and not service.puts:
+            adapter.path = '/C.model3.json'
+
+    service.hook = change_selection
+    try:
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 1
+        assert runtime.models.store.get(DOMAIN.key())['selection'] != (await adapter.read(UID))['selection']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 2
+        assert runtime.models.store.get(DOMAIN.key())['selection'] == (await adapter.read(UID))['selection']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
     finally:
         await runtime.close()
 

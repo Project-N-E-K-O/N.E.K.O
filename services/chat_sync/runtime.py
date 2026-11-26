@@ -665,24 +665,31 @@ class DesktopChatSyncRuntime:
                     # inspect local pending work under the same failure handling.
                     if getattr(step_error, "status_code", None) != 404:
                         raise
-                def record_model_status():
-                    # Resolve/retry and renderer admission use this writer gate too.
-                    # Keep the state snapshot and receipt update in one commit.
-                    try:
-                        model_state = self.models.store.get(domain)
-                    except OSError as read_error:
-                        # A failed read must not quarantine the writer gate.
-                        return read_error
-                    pending = bool(model_state and (
-                        any(model_state.get(field) for field in ('pending', 'candidate', 'conflict'))
-                        or self.models.has_unresolved_failure(model_state)
-                        or model_state.get('seen_revision', 0) > model_state.get('revision', 0)))
-                    self.scheduler.success(domain, 'model', pending=pending)
-
+                from utils.character_memory import character_config_mutation_lock
                 await self._same_session(presence)
-                read_error = await asyncio.to_thread(self._commit_bound, binding, record_model_status, fingerprint=presence)
-                if read_error is not None:
-                    raise read_error
+                # Keep the local selection stable through the completion receipt.
+                # Model edits and renderer admission use this configuration gate too.
+                async with character_config_mutation_lock:
+                    selection = (await self.models.adapter.read(uid))['selection']
+
+                    def record_model_status():
+                        # Resolve/retry and renderer admission use this writer gate too.
+                        # Keep the state snapshot and receipt update in one commit.
+                        try:
+                            model_state = self.models.store.get(domain)
+                        except OSError as read_error:
+                            # A failed read must not quarantine the writer gate.
+                            return read_error
+                        pending = bool(model_state and (
+                            any(model_state.get(field) for field in ('pending', 'candidate', 'conflict'))
+                            or self.models.has_unresolved_failure(model_state)
+                            or model_state.get('seen_revision', 0) > model_state.get('revision', 0)
+                            or model_state.get('selection') != selection))
+                        self.scheduler.success(domain, 'model', pending=pending)
+
+                    read_error = await asyncio.to_thread(self._commit_bound, binding, record_model_status, fingerprint=presence)
+                    if read_error is not None:
+                        raise read_error
             except AutomaticRoleInactive:
                 continue
             except Exception as exc:
