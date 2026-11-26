@@ -150,10 +150,15 @@ def test_connected_native_owner_reloads_and_continues_a_b_a_without_manual_save(
     launches = []
     installed = {}
 
-    def received(config, operation):
+    async def metadata(operation):
+        return operation.selection
+    monkeypatch.setattr(driver, '_metadata', metadata)
+
+    def received(config, operation, selected):
         # Only the Market byte source is substituted. Installs below, Main's
         # selection admission, edit witness, save, reload and GPU rendering are real.
         model_id, digest, size = operation.selection
+        assert selected == operation.selection
         package_size, result = installed[model_id]
         assert config is cfg and digest == result['package_sha256'] and size == package_size
         operation.result, operation.phase = result, 'installed'
