@@ -6977,8 +6977,23 @@ async function restoreTrashTheme(themeId, button) {
     if (scheduleState.loaded) await refreshSchedule();
     await refreshHealth({});
     if (trashModalEl) {
-      if (trashItemsFromStatus().length) renderTrashList();
-      else closeTrashModal();
+      if (trashItemsFromStatus().length) {
+        // The focused Restore button is rebuilt away: keep keyboard focus inside the
+        // dialog on the row that took its place (or the last row), else on Close.
+        var rows = trashModalEl.querySelectorAll('.trash-row');
+        var index = Array.prototype.findIndex.call(rows, function (row) {
+          return row.getAttribute('data-theme-id') === String(themeId);
+        });
+        renderTrashList();
+        var buttons = Array.prototype.filter.call(
+          trashModalEl.querySelectorAll('.trash-row .trash-action'),
+          function (node) { return !node.disabled; });
+        var next = buttons.length ? buttons[Math.min(Math.max(index, 0), buttons.length - 1)]
+          : trashModalEl.querySelector('.trash-head .trash-action');
+        if (next && typeof next.focus === 'function') next.focus();
+      } else {
+        closeTrashModal();
+      }
     }
   } catch (error) {
     if (button) button.disabled = false;

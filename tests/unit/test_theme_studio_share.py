@@ -133,3 +133,26 @@ def test_download_filename_keeps_png_extension():
     name = ts_service.ThemeStudioService._download_filename("樱花雾" * 20 + ".png")
     assert name.endswith(".png")
     assert len(name) <= 40 + len(".png")
+
+
+@pytest.mark.unit
+def test_named_and_hsl_colours_are_used_instead_of_the_fallback():
+    """Themes may keep CSS named colours or hsl(); the card must use them."""
+    fallback = (1, 2, 3, 255)
+    assert share_card._pick({"--nts-accent": "red"}, ("--nts-accent",), fallback) == (255, 0, 0, 255)
+    green = share_card._pick({"--nts-accent": "hsl(120, 100%, 25%)"}, ("--nts-accent",), fallback)
+    assert green[0] == 0 and green[2] == 0 and 120 <= green[1] <= 130
+    assert share_card._pick({"--nts-accent": "#00f"}, ("--nts-accent",), fallback) == (0, 0, 255, 255)
+    assert share_card._pick({"--nts-accent": "transparent"}, ("--nts-accent",), fallback) == fallback
+
+
+@pytest.mark.unit
+def test_light_theme_text_on_the_pale_card_switches_to_dark_ink():
+    """A dark-only theme's white text must not be drawn on the pale card."""
+    pale = (240, 244, 248, 255)
+    white = (255, 255, 255, 255)
+    ink = share_card._ink(white, pale)
+    assert ink != white
+    assert share_card.contrast(ink, pale) >= 7.0
+    readable = (20, 30, 40, 255)
+    assert share_card._ink(readable, pale) == readable

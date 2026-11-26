@@ -185,7 +185,9 @@
   //          outer wrappers stay transparent with materials off.)
   //   1.6.53 Removing the theme also clears data-nts-squircle; the upgrade
   //          reload also yields while images / screenshots are queued.
-  var SCRIPT_VERSION = '1.6.53';
+  //   1.6.54 Continuous corners follow each mode's own --nts-corner-style
+  //          (data-nts-squircle now lists the modes: "l", "d" or "l d").
+  var SCRIPT_VERSION = '1.6.54';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -1083,25 +1085,28 @@
     gateApplied = want;
   }
 
-  /** Switch attribute for continuous-curvature corners: set only when the palette
-   *  contains continuous. The CSS side (gen-css's @supports section) is gated on
-   *  `[data-nts-squircle]`, and the whole section is inert when the engine lacks
-   *  `corner-shape`, so the attribute can be set purely by value here. */
+  /** Switch attribute for continuous-curvature corners. Its value lists the modes
+   *  whose palette asks for `continuous` ("l", "d" or "l d"); the CSS side (the
+   *  @supports section) matches `~="l"` only outside dark mode and `~="d"` only in
+   *  dark mode, so each mode follows its own --nts-corner-style. The section is
+   *  inert when the engine lacks `corner-shape`, so the attribute is set by value. */
   var SQUIRCLE_ATTR = 'data-nts-squircle';
+
+  function wantsContinuous(group) {
+    if (!group || typeof group !== 'object') return false;
+    var raw = group['--nts-corner-style'];
+    return typeof raw === 'string' && raw.trim().toLowerCase() === 'continuous';
+  }
 
   function syncCornerStyle(light, dark) {
     var de = document.documentElement;
     if (!de) return;
-    var on = false;
-    var groups = [light, dark];
-    for (var i = 0; i < groups.length && !on; i += 1) {
-      var g = groups[i];
-      if (!g || typeof g !== 'object') continue;
-      var raw = g['--nts-corner-style'];
-      if (typeof raw === 'string' && raw.trim().toLowerCase() === 'continuous') on = true;
-    }
-    if (on) {
-      if (!de.hasAttribute(SQUIRCLE_ATTR)) de.setAttribute(SQUIRCLE_ATTR, '1');
+    var modes = [];
+    if (wantsContinuous(light)) modes.push('l');
+    if (wantsContinuous(dark)) modes.push('d');
+    var value = modes.join(' ');
+    if (value) {
+      if (de.getAttribute(SQUIRCLE_ATTR) !== value) de.setAttribute(SQUIRCLE_ATTR, value);
     } else if (de.hasAttribute(SQUIRCLE_ATTR)) {
       de.removeAttribute(SQUIRCLE_ATTR);
     }

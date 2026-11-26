@@ -2378,32 +2378,34 @@
 :root[data-theme="dark"][data-nts-d-line-height]:root:root body .chat-body { line-height: var(--nts-line-height) !important; }
 :root[data-theme="dark"][data-nts-d-line-height]:root:root body .message-markdown { line-height: var(--nts-line-height) !important; }
 
-/* ===== continuous corner curvature (corner-shape) ===== */
+/* ===== continuous corner curvature (corner-shape) =====
+ * data-nts-squircle lists the modes that asked for continuous corners ("l", "d"
+ * or "l d"), so each mode follows its own --nts-corner-style. */
 @supports (corner-shape: squircle) {
-  :root[data-nts-squircle]:root:root body .message-bubble-user { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .message-bubble-assistant { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .message-bubble-tool { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-message.is-user .compact-export-history-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-message.is-assistant .compact-export-history-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-message.is-system .compact-export-history-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-preview-message.is-user .compact-export-preview-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-preview-message.is-assistant .compact-export-preview-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-preview-message.is-system .compact-export-preview-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-preview-bubble { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body #react-chat-window-shell { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .composer-icon-button { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .composer-panel { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .composer-overflow-popover { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .composer-galgame-option { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .modal-dialog { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .proactive-recommendation-card { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .agent-plugin-view { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .message-block { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .chat-body { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-scroll { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .compact-export-history-scroll-content { corner-shape: squircle !important; }
-  :root[data-nts-squircle]:root:root body .message-list { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .message-bubble-user, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .message-bubble-user { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .message-bubble-assistant, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .message-bubble-assistant { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .message-bubble-tool, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .message-bubble-tool { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-message.is-user .compact-export-history-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-message.is-user .compact-export-history-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-message.is-assistant .compact-export-history-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-message.is-assistant .compact-export-history-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-message.is-system .compact-export-history-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-message.is-system .compact-export-history-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-preview-message.is-user .compact-export-preview-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-preview-message.is-user .compact-export-preview-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-preview-message.is-assistant .compact-export-preview-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-preview-message.is-assistant .compact-export-preview-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-preview-message.is-system .compact-export-preview-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-preview-message.is-system .compact-export-preview-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-preview-bubble, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-preview-bubble { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body #react-chat-window-shell, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body #react-chat-window-shell { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .composer-icon-button, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .composer-icon-button { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .composer-panel, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .composer-panel { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .composer-overflow-popover, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .composer-overflow-popover { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .composer-galgame-option, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .composer-galgame-option { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .modal-dialog, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .modal-dialog { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .proactive-recommendation-card, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .proactive-recommendation-card { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .agent-plugin-view, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .agent-plugin-view { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .message-block, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .message-block { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .chat-body, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .chat-body { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-scroll, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-scroll { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .compact-export-history-scroll-content, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .compact-export-history-scroll-content { corner-shape: squircle !important; }
+  :root:not([data-theme="dark"])[data-nts-squircle~="l"]:root:root body .message-list, :root[data-theme="dark"][data-nts-squircle~="d"]:root:root body .message-list { corner-shape: squircle !important; }
 }
 
 /* ===== chat top fade (background image top fog) ===== */

@@ -27,9 +27,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
-from .contrast import average_color
+from .contrast import average_color, contrast
 from .i18n import msg
 
 CARD_W = 1200
@@ -221,14 +221,50 @@ def _clamp8(value: float) -> int:
     return max(0, min(255, int(round(value))))
 
 
+def _parse_any_color(value: Any) -> tuple[int, int, int, int] | None:
+    """Parse the other plain colour forms the theme service accepts: CSS named
+    colours and ``hsl()`` / ``hsla()`` (hex and ``rgb()`` go through average_color).
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if not text or text in ("transparent", "currentcolor", "inherit", "none") or "gradient" in text:
+        return None
+    try:
+        got = ImageColor.getrgb(text)
+    except (ValueError, TypeError):
+        return None
+    if len(got) == 3:
+        return got[0], got[1], got[2], 255
+    return got[0], got[1], got[2], got[3]
+
+
 def _pick(vars_map: dict[str, Any], keys: Iterable[str], fallback: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     """First variable among ``keys`` that resolves to a colour (gradients use their mean stop)."""
     for key in keys:
-        got = average_color(vars_map.get(key))
+        raw = vars_map.get(key)
+        got = average_color(raw)
         if got is not None:
             r, g, b, alpha = got
             return _clamp8(r), _clamp8(g), _clamp8(b), _clamp8(255 * alpha)
+        named = _parse_any_color(raw)
+        if named is not None:
+            return named
     return fallback
+
+
+_DARK_INK = (24, 32, 44, 255)
+_LIGHT_INK = (255, 255, 255, 255)
+
+
+def _ink(preferred: tuple[int, int, int, int], background: tuple[int, int, int, int], need: float = 7.0) -> tuple[int, int, int, int]:
+    """Keep the theme's text colour when it reads well on ``background``;
+    otherwise use whichever of dark / white ink contrasts more. The high floor
+    leaves room for the softer label tints mixed from it.
+    """
+    if contrast(preferred, background) >= need:
+        return preferred
+    return max((_DARK_INK, _LIGHT_INK), key=lambda ink: contrast(ink, background))
 
 
 def _fit_font(draw: ImageDraw.ImageDraw, text: str, start: int, floor: int, max_w: int):
@@ -326,11 +362,14 @@ def _render(
         radius=3,
         fill=blend((255, 255, 255, 150), card_fill),
     )
+    # A dark-only theme brings light text; the card stays pale, so pick ink that reads on it.
+    card_ink = _ink(ai_text, card_fill)
+    foot_ink = _ink(ai_text, bottom)
 
     studio = msg("shareCard.title")
     title = _clip(name or studio, 16)
     title_font = _fit_font(draw, title, 54, 30, 540)
-    _draw_text(draw, (116, 152), title, title_font, ai_text)
+    _draw_text(draw, (116, 152), title, title_font, card_ink)
 
     bits = [studio]
     if preset_label:
@@ -339,7 +378,7 @@ def _render(
         bits.append(quality_label)
     subtitle = " · ".join(bits)
     sub_font = _fit_font(draw, subtitle, 22, 14, 560)
-    _draw_text(draw, (118, 224), subtitle, sub_font, mix(ai_text, card_fill, 0.35))
+    _draw_text(draw, (118, 224), subtitle, sub_font, mix(card_ink, card_fill, 0.35))
     draw.line([(116, 268), (676, 268)], fill=mix(blend(rim, card_fill), card_fill, 0.45), width=2)
 
     chips = [
@@ -353,10 +392,10 @@ def _render(
     x = 116
     y = 300
     for label, color in chips:
-        _rounded(draw, (x, y, x + 78, y + 78), 18, color, outline=mix(color, ai_text, 0.28), width=2)
+        _rounded(draw, (x, y, x + 78, y + 78), 18, color, outline=mix(color, card_ink, 0.28), width=2)
         chip_font = _fit_font(draw, label, 17, 9, 88)
         label_w = _text_w(draw, label, chip_font)
-        _draw_text(draw, (x + (78 - label_w) / 2, y + 88), label, chip_font, mix(ai_text, card_fill, 0.42))
+        _draw_text(draw, (x + (78 - label_w) / 2, y + 88), label, chip_font, mix(card_ink, card_fill, 0.42))
         x += 94
 
     cx, cy, r = 952, 300, 132
@@ -395,11 +434,11 @@ def _render(
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     footer = stamp + " · " + msg("shareCard.counts", light=len(vars_map or {}), dark=len(dark_map))
     foot_font = _font(16, footer)
-    _draw_text(draw, (74, 566), footer, foot_font, mix(ai_text, bottom, 0.45))
+    _draw_text(draw, (74, 566), footer, foot_font, mix(foot_ink, bottom, 0.45))
     mark = "N.E.K.O"
     mark_font = _font(16, mark)
     mark_w = _text_w(draw, mark, mark_font)
-    _draw_text(draw, (CARD_W - 74 - mark_w, 566), mark, mark_font, mix(ai_text, bottom, 0.30))
+    _draw_text(draw, (CARD_W - 74 - mark_w, 566), mark, mark_font, mix(foot_ink, bottom, 0.30))
 
     mask = Image.new("L", (CARD_W, CARD_H), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, CARD_W - 1, CARD_H - 1), radius=28, fill=255)
