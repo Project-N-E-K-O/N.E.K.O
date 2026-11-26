@@ -236,6 +236,34 @@ async def test_a_run_whose_wait_timed_out_is_cancelled_and_stays_known_until_its
     assert runner.active_runs("c1") == []
 
 
+async def test_a_run_whose_wait_failed_unexpectedly_is_cancelled_and_stays_known_until_its_cancel_is_accepted(
+    server, monkeypatch
+):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+
+    async def broken(_run_id: str, **_kwargs: Any) -> dict[str, Any]:
+        await asyncio.wait_for(started.wait(), 5)
+        raise RuntimeError("the client for polling could not be made")
+
+    monkeypatch.setattr(runner, "_await_completion", broken)
+
+    outcome = await asyncio.wait_for(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}), 5
+    )
+    await wait_until(lambda: faults.cancel_requests == 1, what="the first cancel request")
+    await runner.aclose()
+
+    # Nothing says it ended: it is cancelled, saying why, and stays known until that is taken.
+    assert (outcome.success, outcome.status) == (False, "unknown")
+    assert faults.cancel_reasons == ["waiting failed"]
+    assert runner.active_runs("c1") == [outcome.run_id]
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    assert runner.active_runs("c1") == []
+
+
 async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
     from nekopower.host import plugin_runs
 

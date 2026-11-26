@@ -1985,6 +1985,33 @@ async def test_stopping_without_naming_a_group_stops_both(wiring, builtins, monk
     assert (await host.ledger.get(booking)).status == "cancelled"
 
 
+async def test_a_commission_that_cannot_be_ended_does_not_keep_esc_from_stopping_the_other_group(
+    wiring, builtins, monkeypatch
+):
+    host = wiring.host_mount.get_host()
+    typing, booking = await _working(host, "填表"), await _working(host, "订票")
+    # Stopped before, its task agent could not be closed: it still holds the keyboard and mouse.
+    await host.ledger.transition(typing, "cancelled", reason="stopped")
+    builtins.module._in_use.update({KEYBOARD: typing, BROWSER: booking})
+    agents = host.brain._task_agents
+    close = agents.abort
+
+    async def abort(commission_id: str) -> None:
+        if commission_id == typing:
+            raise RuntimeError("the runtime did not answer")
+        await close(commission_id)
+
+    monkeypatch.setattr(agents, "abort", abort)
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    # Tried first and not ended: not said to be stopped; the browser's is stopped all the same.
+    assert aborted == [(typing, "Stopped with Esc"), (booking, "Stopped with Esc")]
+    assert answer == {"success": True, "stopped": [booking]}
+    assert (await host.ledger.get(booking)).status == "cancelled"
+
+
 async def test_a_commission_that_uses_both_groups_is_stopped_once(wiring, builtins, monkeypatch):
     host = wiring.host_mount.get_host()
     task_id = await _working(host, "订票")

@@ -1297,8 +1297,10 @@ async def test_stopping_again_closes_the_task_agent_a_stop_left_open_and_nothing
         return stale if commission_id == raced.id else await real_get(commission_id)
 
     monkeypatch.setattr(host.brain._ledger, "get", get_before_the_board)
-    _after, moved, failed = await host.brain._stop(raced.id, reason="through a dispatch", notify=False)
+    after, moved, failed = await host.brain._stop(raced.id, reason="through a dispatch", notify=False)
     assert (moved, failed, closed) == (False, None, [raced.id])
+    # And what is handed back is it as it is now (the board, Esc show that), not what was read before.
+    assert (after.status, after.status_reason) == ("cancelled", "from the board")
 
 
 async def test_what_a_stop_cannot_end_is_handed_back_and_the_rest_is_ended_all_the_same(server, hosts, tmp_path, monkeypatch):

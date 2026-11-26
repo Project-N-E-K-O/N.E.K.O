@@ -2744,6 +2744,51 @@ async def test_a_stopped_task_agent_is_closed_again_though_the_ledger_cannot_be_
     assert (await host.ledger.get(working_child.id)).status == "working"
 
 
+async def test_a_stop_ends_the_commission_itself_though_what_it_started_cannot_be_read_and_spares_one_that_ended(
+    hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    child = await _filed(host, "part one", parent_id=parent.id)
+    await host.ledger.transition(child.id, "working", reason="test")
+    # Read while it was at work, and done by the time its stop is written.
+    seen_at_work = await host.ledger.get(child.id)
+    await host.ledger.transition(child.id, "done", reason="test")
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    select = host.task_agents._ledger.select
+    unreadable = {"value": False}
+
+    async def read(**criteria: Any) -> Any:
+        if criteria.get("parent_id") == parent.id:
+            if unreadable["value"]:
+                raise RuntimeError("the ledger cannot be read")
+            return [seen_at_work]
+        return await select(**criteria)
+
+    tried: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents._ledger, "select", read)
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    # The child ended (done) between being read and its stop: its stop is refused, and its
+    # session is not closed.
+    await host.task_agents.abort(parent.id)
+    assert tried == [parent.id]
+    assert (await host.ledger.get(child.id)).status == "done"
+    # What it started cannot be read: the commission itself is ended all the same, and that is raised.
+    unreadable["value"] = True
+    host.task_agents._notes[parent.id] = ["also check the logs"]
+    with pytest.raises(RuntimeError, match="the ledger cannot be read"):
+        await host.task_agents.abort(parent.id)
+    assert parent.id not in host.task_agents._notes
+
+
 async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(

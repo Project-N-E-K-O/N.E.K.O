@@ -1341,7 +1341,9 @@ class TaskBrain:
             commission_id, "cancelled", reason=reason, report=report, deferred_until=None
         )
         if not moved.applied:
-            return commission, False, await self._end_what_is_left(moved.commission or commission, reason)
+            # As it is now, not as it was read before the stop was asked for.
+            ended = moved.commission or commission
+            return ended, False, await self._end_what_is_left(ended, reason)
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
             timer.cancel()

@@ -1145,7 +1145,13 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
             not_stopped.append({"group": name, "commission_id": commission_id})
             logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
             continue
-        commission = await host.abort(commission_id, reason="Stopped with Esc")
+        try:
+            commission = await host.abort(commission_id, reason="Stopped with Esc")
+        except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
+            # (Its task agent could not be closed, say: it is not said to be
+            # stopped, and the next Esc tries it again.)
+            logger.warning("[Agent] Esc could not end task %s (%s)", commission_id, name, exc_info=True)
+            continue
         if commission is not None and commission.status == "cancelled":
             stopped.append(commission_id)
             logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)

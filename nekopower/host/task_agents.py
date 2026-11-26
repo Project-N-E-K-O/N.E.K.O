@@ -6605,11 +6605,19 @@ class TaskAgentManager(TreeWork):
         first failure is raised once the rest is done.
         """
         failed: Exception | None = None
-        for child in await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES):
+        try:
+            children = await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES)
+        except Exception as exc:  # noqa: BLE001 - raised once this one is ended
+            logger.warning("finding what commission %s started failed", commission_id, exc_info=True)
+            children, failed = [], exc
+        for child in children:
             try:
                 if child.status != "cancelled":
                     # Not closed unless its stop is written: closing is for a stopped one.
-                    await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                    moved = await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                    if not moved.applied and (moved.commission is None or moved.commission.status != "cancelled"):
+                        # It ended meanwhile, some other way: its session is its own.
+                        continue
                 # One stopped already is closed again with nothing written: a
                 # ledger that cannot be written to does not keep it open.
                 await self.abort(child.id)

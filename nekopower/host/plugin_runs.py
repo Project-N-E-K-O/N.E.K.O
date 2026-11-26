@@ -770,7 +770,14 @@ class PluginRunner:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
-                completion = {"status": "unknown", "success": False, "data": None, "error": str(exc)}
+                # Nothing says it ended: it is given up on, as one whose polling failed.
+                completion = {
+                    "status": "unknown",
+                    "success": False,
+                    "data": None,
+                    "error": str(exc),
+                    "lost": "waiting failed",
+                }
             given_up = str(completion.pop("lost", "") or "")
             # One whose cancel the plugin server took already (the commission
             # was stopped while it was waited for) is left to the plugin
