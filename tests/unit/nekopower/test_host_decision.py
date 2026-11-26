@@ -1013,6 +1013,14 @@ async def test_an_answer_not_in_latin_letters_is_a_word_of_its_own_as_well():
     yes = {"kind": "question", "question": "¿Seguro?", "options": ["Sí", "No"]}
     post = _waiting("c1", "write a post", yes)
     card = _waiting("c2", "make a card", {**yes, "options": ["No", "Luego"]})
+    # One answer however its accent is written: offered by both, it names neither.
+    post = _waiting("c1", "write a post", {**yes, "options": ["Blue", "Si\u0301"]})
+    card = _waiting("c2", "make a card", {**yes, "options": ["Blue", "Sí"]})
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Sí", active=[post, card]))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2"])
+    post = _waiting("c1", "write a post", yes)
+    card = _waiting("c2", "make a card", {**yes, "options": ["No", "Luego"]})
     # "Sí" only the post offers: said, it names the post; "así" does not say it.
     for said, read in (("sí, está bien", ("answer", ["c1"])), ("así está bien", ("ambiguous", ["c1", "c2"]))):
         llm = _reading({"does": "answer", "items": [1], "named": True})

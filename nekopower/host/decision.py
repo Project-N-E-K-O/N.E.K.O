@@ -591,8 +591,12 @@ def _offered(question: dict[str, Any]) -> set[str]:
     def labels(options: Any) -> set[str]:
         if not isinstance(options, list):
             return set()
+        import unicodedata
+
         said = (str(option.get("label") or "") if isinstance(option, dict) else str(option) for option in options)
-        return {label.strip().casefold() for label in said if label.strip()}
+        # One answer however its accents are written ("Sí" or "Si" with a
+        # combining accent), as what was said is read (``_said``).
+        return {unicodedata.normalize("NFC", label.strip()).casefold() for label in said if label.strip()}
 
     found = labels(question.get("options"))
     for asked in question.get("questions") if isinstance(question.get("questions"), list) else []:
