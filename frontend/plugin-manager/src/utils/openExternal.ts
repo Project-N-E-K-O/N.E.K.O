@@ -192,7 +192,7 @@ function openLocalPathExact(raw: string): Promise<void> {
 
 export const NO_DESKTOP_BRIDGE = 'no_desktop_bridge'
 
-const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\s*\..*)?$/i
 
 type ScopedPathStyle = 'posix' | 'windows' | 'unc'
 type ScopedPath = {

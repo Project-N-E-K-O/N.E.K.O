@@ -1903,6 +1903,31 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     )
   })
 
+  it('shows a repeated host message once while it is still visible', async () => {
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    const onCloses: Array<() => void> = []
+    elementPlusMocks.ElMessage.mockImplementation((options: { onClose?: () => void }) => {
+      const close = vi.fn()
+      closes.push(close)
+      if (options.onClose) onCloses.push(options.onClose)
+      return { close }
+    })
+    const frame = await mountFrame()
+    for (let i = 0; i < 3; i++) {
+      frame.dispatchRequest(openPathMessage('/etc/passwd'))
+      await flushPromises()
+      await flushPromises()
+    }
+    expect(elementPlusMocks.ElMessage).toHaveBeenCalledTimes(1)
+
+    onCloses[0]!()
+    frame.dispatchRequest(openPathMessage('/etc/passwd'))
+    await flushPromises()
+    await flushPromises()
+    expect(elementPlusMocks.ElMessage).toHaveBeenCalledTimes(2)
+    expect(closes[0]).not.toHaveBeenCalled()
+  })
+
   it('mounts host messages inside the fullscreen element while fullscreen', async () => {
     const frame = await mountFrame()
     const displayTarget = frame.container.querySelector<HTMLElement>('.hosted-surface-frame')

@@ -217,10 +217,28 @@ const hostedConfirmAppendTarget = computed<string | HTMLElement>(() => {
   void pendingHostedConfirm.value
   return fullscreenOverlayTarget() ?? 'body'
 })
+type HostMessageEntry = { target: HTMLElement; handle: { close: () => void } | undefined }
+const openHostMessages = new Map<string, HostMessageEntry>()
 function showHostMessage(type: 'warning' | 'error', message: string) {
-  // No grouping: a grouped message is reused in place and would stay on
-  // its old mount target after entering or leaving fullscreen.
-  ElMessage({ type, message, appendTo: fullscreenOverlayTarget() ?? document.body })
+  // Element Plus grouping is not used: a grouped message is reused in place
+  // and would stay on its old mount target after entering or leaving
+  // fullscreen. Instead, a repeat of a message that is still visible on the
+  // same target is dropped, and one on another target is replaced.
+  const target = fullscreenOverlayTarget() ?? document.body
+  const key = `${type}\u0000${message}`
+  const existing = openHostMessages.get(key)
+  if (existing && existing.target === target) return
+  existing?.handle?.close()
+  const entry: HostMessageEntry = { target, handle: undefined }
+  openHostMessages.set(key, entry)
+  entry.handle = ElMessage({
+    type,
+    message,
+    appendTo: target,
+    onClose: () => {
+      if (openHostMessages.get(key) === entry) openHostMessages.delete(key)
+    },
+  })
 }
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()

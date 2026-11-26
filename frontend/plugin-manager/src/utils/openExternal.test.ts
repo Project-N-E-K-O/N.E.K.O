@@ -205,6 +205,8 @@ describe('resolvePathWithinRoots', () => {
     'C:\\Neko\\plugins\\plugin_a\\COM1.log',
     'C:\\Neko\\plugins\\plugin_a\\lpt9',
     'C:\\Neko\\plugins\\plugin_a\\conout$',
+    'C:\\Neko\\plugins\\plugin_a\\nul .txt',
+    'D:/NekoData/plugins/plugin_a/data/con  .log',
   ])('rejects the Windows device name in %j', (target) => {
     expect(resolvePathWithinRoots(target, windowsRoots)).toBeNull()
   })
