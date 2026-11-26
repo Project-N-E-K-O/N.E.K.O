@@ -77,6 +77,7 @@
       <el-dialog
         :model-value="true"
         :title="t('common.confirm')"
+        :append-to="parseDocumentConfirmAppendTarget"
         append-to-body
         :close-on-click-modal="false"
         width="min(440px, calc(100vw - 32px))"
@@ -111,6 +112,7 @@ import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
 import { ElMessageBox } from 'element-plus'
 import { usePluginDisplayFrame } from '@/composables/usePluginDisplay'
+import { displayRevision } from '@/composables/usePluginDisplayDialog'
 
 const props = withDefaults(defineProps<{
   pluginId: string
@@ -187,6 +189,20 @@ const pendingParseDocumentConfirm = shallowRef<PendingParseDocumentConfirm | nul
 const activeParseDocumentConfirmDialogs = computed(() => (
   pendingParseDocumentConfirm.value ? [pendingParseDocumentConfirm.value] : []
 ))
+const fullscreenRevision = ref(0)
+function handleFullscreenChange() {
+  fullscreenRevision.value += 1
+}
+const parseDocumentConfirmAppendTarget = computed<string | HTMLElement>(() => {
+  void displayRevision.value
+  void fullscreenRevision.value
+  void pendingParseDocumentConfirm.value
+  const target = displayTarget.value
+  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) {
+    return target
+  }
+  return 'body'
+})
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
@@ -816,12 +832,14 @@ async function refreshContext() {
 
 onMounted(() => {
   componentMounted = true
+  document.addEventListener('fullscreenchange', handleFullscreenChange)
   window.addEventListener('message', handleMessage)
   loadHostedTsx()
 })
 
 onBeforeUnmount(() => {
   componentMounted = false
+  document.removeEventListener('fullscreenchange', handleFullscreenChange)
   clearLoadDelay()
   loadPhase.value = 'idle'
   sourceController?.abort('surface-disposed')

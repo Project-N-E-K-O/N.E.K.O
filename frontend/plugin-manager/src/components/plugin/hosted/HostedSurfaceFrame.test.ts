@@ -7,7 +7,7 @@
 // 会让本文件里断言计时器数量的用例失效。）
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
+import { Teleport, createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
 import HostedSurfaceFrame from '../HostedSurfaceFrame.vue'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -174,33 +174,45 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     },
   }))
   app.component('el-dialog', defineComponent({
+    inheritAttrs: false,
     props: {
       modelValue: { type: Boolean, default: false },
       title: { type: String, default: '' },
+      appendTo: { type: [String, Object], default: 'body' },
+      appendToBody: { type: Boolean, default: false },
       beforeClose: { type: Function, default: undefined },
     },
     emits: ['update:modelValue', 'close'],
-    setup(props, { slots, emit }) {
+    setup(props, { slots, emit, attrs }) {
       return () => (props.modelValue
-        ? h('div', { role: 'dialog', 'aria-label': props.title }, [
-            h('button', {
-              type: 'button',
-              'data-testid': 'el-dialog-header-close',
-              onClick: () => {
-                if (typeof props.beforeClose === 'function') {
-                  props.beforeClose(() => {
+        ? h(
+            Teleport,
+            {
+              to: props.appendTo as string | HTMLElement,
+              disabled: props.appendTo !== 'body' ? false : !props.appendToBody,
+            },
+            [
+              h('div', { ...attrs, role: 'dialog', 'aria-label': props.title }, [
+                h('button', {
+                  type: 'button',
+                  'data-testid': 'el-dialog-header-close',
+                  onClick: () => {
+                    if (typeof props.beforeClose === 'function') {
+                      props.beforeClose(() => {
+                        emit('close')
+                        emit('update:modelValue', false)
+                      })
+                      return
+                    }
                     emit('close')
                     emit('update:modelValue', false)
-                  })
-                  return
-                }
-                emit('close')
-                emit('update:modelValue', false)
-              },
-            }, 'close'),
-            slots.default?.(),
-            slots.footer?.(),
-          ])
+                  },
+                }, 'close'),
+                slots.default?.(),
+                slots.footer?.(),
+              ]),
+            ],
+          )
         : null)
     },
   }))
@@ -242,21 +254,21 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     },
     postMessage,
     iframe: () => container.querySelector('iframe') as HTMLIFrameElement | null,
-    parseDocumentDialog: () => container.querySelector<HTMLElement>('[data-testid="parse-document-confirm-dialog"]'),
+    parseDocumentDialog: () => document.querySelector<HTMLElement>('[data-testid="parse-document-confirm-dialog"]'),
     async confirmParseDocument() {
-      const btn = container.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-ok"]')
+      const btn = document.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-ok"]')
       if (!btn) throw new Error('Expected parseDocument confirm button')
       btn.click()
       await flushPromises()
     },
     async cancelParseDocument() {
-      const btn = container.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-cancel"]')
+      const btn = document.querySelector<HTMLButtonElement>('[data-testid="parse-document-confirm-cancel"]')
       if (!btn) throw new Error('Expected parseDocument cancel button')
       btn.click()
       await flushPromises()
     },
     async closeParseDocumentDialog() {
-      const btn = container.querySelector<HTMLButtonElement>('[data-testid="el-dialog-header-close"]')
+      const btn = document.querySelector<HTMLButtonElement>('[data-testid="el-dialog-header-close"]')
       if (!btn) throw new Error('Expected el-dialog header close button')
       btn.click()
       await flushPromises()
@@ -917,7 +929,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     ))
     await flushPromises()
 
-    expect(frame.container.querySelectorAll('[data-testid="parse-document-confirm-dialog"]')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-testid="parse-document-confirm-dialog"]')).toHaveLength(1)
     expect(frame.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: 'parse-2',
@@ -1109,6 +1121,76 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       expect.objectContaining({ locale: 'en-US' }),
       expect.anything(),
     )
+  })
+
+  it('mounts the parseDocument confirmation dialog inside displayTarget while fullscreen and in body otherwise', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+    const displayTarget = frame.container.querySelector<HTMLElement>('.hosted-surface-frame')
+    expect(displayTarget).not.toBeNull()
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
+    let fullscreenEl: Element | null = null
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => fullscreenEl,
+    })
+
+    try {
+      frame.dispatchRequest(parseDocumentRequest(
+        new File(['normal'], 'normal.pdf', { type: 'application/pdf' }),
+        { requestId: 'parse-normal', userInitiated: true },
+      ))
+      await flushPromises()
+      const normalDialog = frame.parseDocumentDialog()
+      expect(normalDialog).not.toBeNull()
+      expect(normalDialog?.parentElement).toBe(document.body)
+      expect(displayTarget!.contains(normalDialog)).toBe(false)
+
+      fullscreenEl = displayTarget
+      document.dispatchEvent(new Event('fullscreenchange'))
+      await flushPromises()
+      const movedToFullscreen = frame.parseDocumentDialog()
+      expect(movedToFullscreen).not.toBeNull()
+      expect(movedToFullscreen?.parentElement).toBe(displayTarget)
+      expect(displayTarget!.contains(movedToFullscreen)).toBe(true)
+
+      await frame.cancelParseDocument()
+      expect(frame.parseDocumentDialog()).toBeNull()
+
+      apiMocks.parseHostedDocument.mockResolvedValueOnce({
+        ok: true,
+        document: { name: 'fullscreen.pdf', sourceType: 'pdf', content: 'ok' },
+      })
+      frame.dispatchRequest(parseDocumentRequest(
+        new File(['fullscreen'], 'fullscreen.pdf', { type: 'application/pdf' }),
+        { requestId: 'parse-fullscreen', userInitiated: true },
+      ))
+      await flushPromises()
+      const openedInFullscreen = frame.parseDocumentDialog()
+      expect(openedInFullscreen).not.toBeNull()
+      expect(openedInFullscreen?.parentElement).toBe(displayTarget)
+
+      fullscreenEl = null
+      document.dispatchEvent(new Event('fullscreenchange'))
+      await flushPromises()
+      const restoredToBody = frame.parseDocumentDialog()
+      expect(restoredToBody).not.toBeNull()
+      expect(restoredToBody?.parentElement).toBe(document.body)
+
+      await frame.confirmParseDocument()
+      expect(frame.parseDocumentDialog()).toBeNull()
+      expect(frame.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: 'parse-fullscreen', ok: true }),
+        '*',
+      )
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(document, 'fullscreenElement', originalDescriptor)
+      } else {
+        delete (document as { fullscreenElement?: Element | null }).fullscreenElement
+      }
+    }
   })
 
   it('aborts an in-flight upload when the surface changes', async () => {
