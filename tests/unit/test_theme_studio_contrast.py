@@ -93,10 +93,25 @@ def test_compact_history_bubbles_ignore_the_glass_tint():
     assert surface[:3] == (255, 255, 255)
 
 
-def test_recommendation_text_is_checked_on_its_own_card_background():
-    """The loader paints ``--nts-rec-text`` on a ``--nts-rec-bg`` card, not on the panel."""
+def test_recommendation_text_is_checked_on_the_compact_prompt():
+    """``--nts-rec-text`` only lands on the compact prompt, whose host background is fixed."""
     rows = {label: (bg_key, kind) for label, _, bg_key, kind, _ in contrast.PAIRS}
-    assert rows["recommendation-text"] == ("--nts-rec-bg", contrast.MESSAGE_LIST)
+    assert rows["recommendation-text"] == (None, contrast.COMPACT_PROMPT)
+    dark_text = {"--nts-rec-text": "#2D3033"}
+    light_text = {"--nts-rec-text": "#ffffff"}
+    by_pair = lambda vars_map, mode: {  # noqa: E731
+        row["pair"]: row for row in contrast.audit_vars(vars_map, mode) if not row.get("skip")
+    }
+    assert not by_pair(dark_text, "dark")["recommendation-text"]["ok"]
+    assert by_pair(light_text, "dark")["recommendation-text"]["ok"]
+    assert not by_pair(light_text, "light")["recommendation-text"]["ok"]
+
+
+def test_every_preset_recommendation_text_reads_on_the_compact_prompt():
+    themes = contrast.themes_from_dir(str(PRESETS))
+    fails, _ = contrast.failing(themes)
+    bad = [(t, m, r["ratio"]) for t, m, r in fails if r["pair"] == "recommendation-text"]
+    assert not bad, bad
 
 
 def test_contrast_extremes():

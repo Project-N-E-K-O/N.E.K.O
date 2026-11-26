@@ -38,10 +38,13 @@ paints them:
     stands in for it.
   - Popover (``.composer-overflow-popover``, ``--nts-popover-text``):
     ``--nts-popover-bg`` over the window (it floats above the composer).
-  - Recommendation (``--nts-rec-text``): ``--nts-rec-bg`` over the message
-    list. The full-chat card (``.proactive-recommendation-card``) sits in an
-    assistant bubble that the chat stylesheet makes transparent when the card
-    is its only child, so the message list is what shows through.
+  - Recommendation (``--nts-rec-text``): the loader only gives this colour
+    to the compact prompt (``.proactive-recommendation-bubble``), while
+    ``--nts-rec-bg`` only paints the full-chat card; the React chat renders
+    one presentation or the other, never both. The prompt sits in
+    ``.compact-music-recommendation-prompt``, whose background no theme
+    variable reaches, so the text is checked on that fixed host colour
+    (``COMPACT_PROMPT_BG``, from frontend/react-neko-chat/src/styles.css).
   - Chip (``.system-chip``, ``--nts-chip-text``): ``--nts-chip-bg`` over the
     message list, where system messages render. The same colours also paint
     composer chips (galgame options, visit bar badge) over the window.
@@ -81,9 +84,18 @@ COMPACT_USER_BUBBLE = "compact-user-bubble"
 COMPACT_AI_BUBBLE = "compact-ai-bubble"
 MODAL = "modal"
 AI_BUBBLE_BLOCK = "ai-bubble-block"
+COMPACT_PROMPT = "compact-prompt"
+
+# Background of .compact-music-recommendation-prompt in the React chat
+# stylesheet (light: rgba(255, 255, 255, .96); dark: #252d3d). Themes do not
+# restyle it, so it is a fixed surface per mode.
+COMPACT_PROMPT_BG = {
+    "light": (255, 255, 255, 0.96),
+    "dark": (37, 45, 61, 1.0),
+}
 
 # (label, text key, background key, surface kind, minimum contrast ratio)
-PAIRS: list[tuple[str, str, str, str, float]] = [
+PAIRS: list[tuple[str, str, str | None, str, float]] = [
     ("topbar", "--nts-topbar-text", "--nts-topbar-bg", WINDOW, 4.5),
     ("input", "--nts-input-text", "--nts-input-bg", WINDOW, 4.5),
     ("input-placeholder", "--nts-input-placeholder", "--nts-input-bg", WINDOW, 3.0),
@@ -99,7 +111,7 @@ PAIRS: list[tuple[str, str, str, str, float]] = [
     ("link", "--nts-link", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
     ("modal-text", "--nts-modal-text", "--nts-modal-bg", MODAL, 4.5),
     ("popover-text", "--nts-popover-text", "--nts-popover-bg", WINDOW, 4.5),
-    ("recommendation-text", "--nts-rec-text", "--nts-rec-bg", MESSAGE_LIST, 4.5),
+    ("recommendation-text", "--nts-rec-text", None, COMPACT_PROMPT, 4.5),
     ("chip-text", "--nts-chip-text", "--nts-chip-bg", MESSAGE_LIST, 4.5),
     ("status-text", "--nts-status-text", "--nts-status-bg", AI_BUBBLE_BLOCK, 3.0),
     ("tool-bubble", "--nts-tool-bubble-text", "--nts-tool-bubble-bg", MESSAGE_LIST, 4.5),
@@ -224,8 +236,11 @@ def message_list_base(vars_map):
     return _layer(vars_map, "--nts-chat-gradient", base)
 
 
-def resolve_surface(vars_map, kind, bg_key):
+def resolve_surface(vars_map, kind, bg_key, mode="light"):
     """Composite the full layer stack the text of a pair is painted on."""
+    if kind == COMPACT_PROMPT:
+        # The prompt floats over the page; its own near-opaque colour decides.
+        return over(COMPACT_PROMPT_BG.get(mode, COMPACT_PROMPT_BG["light"]), WHITE)
     if kind == WINDOW:
         return _layer(vars_map, bg_key, window_base(vars_map))
     if kind == MESSAGE_LIST:
@@ -245,21 +260,25 @@ def resolve_surface(vars_map, kind, bg_key):
     return _layer(vars_map, f"--nts-{role}-bubble-gradient", base)
 
 
-def audit_vars(vars_map):
-    """Check every pair in ``PAIRS`` against one resolved variable map."""
+def audit_vars(vars_map, mode="light"):
+    """Check every pair in ``PAIRS`` against one resolved variable map.
+
+    ``mode`` selects the fixed host surfaces (``COMPACT_PROMPT_BG``); pairs
+    with no background variable (``bg_key`` None) are always checked.
+    """
     rows = []
     for label, fg_key, bg_key, kind, floor in PAIRS:
         fg = average_color(vars_map.get(fg_key))
-        bg = average_color(vars_map.get(bg_key))
+        bg = average_color(vars_map.get(bg_key)) if bg_key else True
         if fg is None or bg is None:
             rows.append({"pair": label, "skip": True})
             continue
-        ratio = contrast(fg, resolve_surface(vars_map, kind, bg_key))
+        ratio = contrast(fg, resolve_surface(vars_map, kind, bg_key, mode))
         rows.append(
             {
                 "pair": label,
                 "fg": fg_key,
-                "bg": bg_key,
+                "bg": bg_key or kind,
                 "ratio": round(ratio, 2),
                 "floor": floor,
                 "ok": ratio + 1e-9 >= floor,
@@ -287,7 +306,7 @@ def failing(themes):
     pair_checks = 0
     for theme_id, doc in themes:
         for mode in ("light", "dark"):
-            for row in audit_vars(mode_vars(doc, mode)):
+            for row in audit_vars(mode_vars(doc, mode), mode):
                 if row.get("skip"):
                     continue
                 pair_checks += 1

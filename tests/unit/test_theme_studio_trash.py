@@ -53,6 +53,25 @@ async def test_restore_keeps_background_bytes_and_only_refills_free_slots(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_delete_still_works_when_schedule_json_is_corrupt(tmp_path):
+    studio = service.ThemeStudioService(data_dir=tmp_path)
+    theme = studio._save_library_item(name="A", vars_map={"--nts-accent": "#abcdef"}, dark_map={})
+    studio._schedule_path().write_text("{bad", encoding="utf-8")
+    assert success(await studio.delete_theme(id=theme["id"]))["undo"]
+    assert not (studio._library_dir() / (theme["id"] + ".json")).exists()
+    item, = studio._trash_stats()["items"]
+    assert item["theme_id"] == theme["id"] and item["schedule_zones"] == 0
+
+
+@pytest.mark.asyncio
+async def test_material_preset_apply_returns_the_revision_get_theme_reports(tmp_path):
+    studio = service.ThemeStudioService(data_dir=tmp_path)
+    studio._ensure_dirs()
+    applied = success(await studio.apply_theme(materials={"enabled": True, "preset": "liquid"}))
+    assert applied["revision"] == success(await studio.get_theme())["revision"]
+
+
+@pytest.mark.asyncio
 async def test_pruning_keeps_newest_and_survives_missing_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "TRASH_LIMIT", 2)
     studio = service.ThemeStudioService(data_dir=tmp_path)

@@ -2092,7 +2092,10 @@ class ThemeStudioService(NekoPluginBase):
                 palette["updated_at"] = _now_iso()
                 palette["schema"] = SCHEMA_VERSION
                 self._write_unlocked(palette)
-            palette["revision"] = self._palette_revision(palette)
+            # Hash what a later read will see: the in-memory draft can still hold
+            # un-normalized values (e.g. integer preset params that normalize to
+            # floats), and a mismatch would turn the next undo into a conflict.
+            palette["revision"] = self._palette_revision(self._normalize(palette))
             if name_warning:
                 palette["name_warning"] = name_warning
             palette["material_warnings"] = material_warnings
@@ -5021,11 +5024,18 @@ class ThemeStudioService(NekoPluginBase):
                 if path.is_symlink() or directory.is_symlink() or trash.is_symlink():
                     raise SdkError(_msg("library.delete.outsideDir"))
                 record = self._load_library_item(requested)
-                schedule = self._read_schedule(drop_missing=False, strict=True)
-                refs = {
-                    key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
-                    for key in ("zones", "weekend_zones")
-                }
+                # The schedule is only read to remember which zones used this
+                # theme (for restore); this path never writes it, so a corrupt or
+                # locked schedule.json must not block the delete.
+                try:
+                    schedule = self._read_schedule(drop_missing=False, strict=True)
+                    refs = {
+                        key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
+                        for key in ("zones", "weekend_zones")
+                    }
+                except (OSError, ValueError) as exc:
+                    self._log("warning", f"Schedule unreadable, deleting without zone refs: {exc}")
+                    refs = {"zones": {}, "weekend_zones": {}}
                 trash.mkdir(parents=True, exist_ok=True)
                 now = datetime.now()
                 base = requested + "__" + now.strftime("%Y%m%d-%H%M%S-%f")

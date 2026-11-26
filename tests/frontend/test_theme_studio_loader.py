@@ -137,6 +137,24 @@ def test_late_poll_cannot_overwrite_cross_window_storage_update(page: Page):
 
 
 @pytest.mark.frontend
+def test_boot_palette_first_frame_keeps_cached_materials(page: Page):
+    page.route(f"{ORIGIN}/", lambda route: route.fulfill(content_type="text/html", body="""
+        <html><head><style id="nts-boot">:root{--nts-accent:#000}</style></head><body></body></html>"""))
+    page.goto(f"{ORIGIN}/")
+    cached = dict(PALETTE, material_vars={"light": {"--nts-mt-opacity": "0.5"}, "dark": {"--nts-mt-opacity": "0.5"}},
+                  material_attrs={"data-nts-mt": "1"})
+    page.evaluate("""palette => {
+        localStorage.setItem('neko.themeStudio.palette', JSON.stringify(palette));
+        window.fetch = () => new Promise(() => {});
+    }""", cached)
+    page.add_script_tag(path=str(LOADER))
+    # Materials come from the cache while the boot style keeps the palette colours.
+    assert page.locator("html").get_attribute("data-nts-mt") == "1"
+    assert page.locator("#nts-boot").count() == 1
+    assert page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--nts-mt-opacity').trim()") == "0.5"
+
+
+@pytest.mark.frontend
 def test_server_native_appearance_wins_over_previous_cached_theme(page: Page):
     page.route(f"{ORIGIN}/", lambda route: route.fulfill(content_type="text/html", body="""
         <html data-nts-boot-ready><body></body></html>"""))

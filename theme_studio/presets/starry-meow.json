@@ -64,7 +64,7 @@
     "--nts-popover-border": "rgba(139, 123, 255, 0.32)",
     "--nts-overlay-bg": "rgba(3, 2, 10, 0.62)",
     "--nts-rec-bg": "rgba(18, 13, 42, 0.60)",
-    "--nts-rec-text": "#FFFFFF",
+    "--nts-rec-text": "#2E2A45",
     "--nts-rec-border": "rgba(0, 210, 255, 0.28)",
     "--nts-chip-bg": "rgba(139, 123, 255, 0.18)",
     "--nts-chip-text": "#CFC5FF",

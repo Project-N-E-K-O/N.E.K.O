@@ -197,7 +197,9 @@
   //          outer wrappers stay transparent with materials off.)
   //   1.6.112 Hover / press blur starts from the component's own blur, and the
   //          surface lift honours the panel's animation / reduced-motion switches.
-  var SCRIPT_VERSION = '1.6.112';
+  //   1.6.113 A throw inside one poll tick no longer stops polling; with a server
+  //          boot palette the cached materials are restored for the first frame.
+  var SCRIPT_VERSION = '1.6.113';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -4173,6 +4175,40 @@ background-image: none !important;
     }
   }
 
+  /**
+   * First paint with a server boot palette (#nts-boot): the boot style only
+   * carries palette variables, so restore just the material part of the cached
+   * palette (compiled variables + material attributes) next to it. The palette
+   * colours stay with the boot style, which is newer than any cache; the first
+   * fetch then replaces both with the live palette.
+   */
+  function restoreMaterialsFromCache() {
+    var raw = safeGet(CACHE_KEY);
+    if (!raw) return false;
+    try {
+      var p = JSON.parse(raw);
+      if (!p || p.schema !== 1 || p.enabled === false || (p.preview && p.preview.active)) return false;
+      var mtLight = materialVarsOf(p, 'light');
+      var mtDark = materialVarsOf(p, 'dark');
+      if (!(countVars(mtLight) + countVars(mtDark))) return false;
+      var css = '';
+      var ml = declBlock(mtLight);
+      if (ml) css += LIGHT_SCOPE + '{' + ml + '}';
+      var md = declBlock(mtDark);
+      if (md) css += ':root[data-theme="dark"]{' + md + '}';
+      css = PROBE_CSS + css + '\n' + GLASS_CSS + '\n' + MATERIAL_CSS + '\n' + SURFACE_CSS;
+      var el = styleEl();
+      if (el.textContent !== css) el.textContent = css;
+      // Not recorded as lastAppliedCss / currentVersion: the first fetch must
+      // still apply the full palette (and remove the boot style).
+      syncMaterialAttrs(p.material_attrs, true);
+      return true;
+    } catch (e) {
+      log('cached material restore failed', e);
+      return false;
+    }
+  }
+
   function restoreSavedTheme() {
     dropPreviewBadge();
     lastRaw = null;
@@ -4636,8 +4672,8 @@ background-image: none !important;
     if (timer !== null) { window.clearTimeout(timer); timer = null; }
     timer = window.setTimeout(function () {
       timer = null;
-      pollOnce();
-      schedulePollTick();
+      // A throw anywhere in one tick must not end the polling chain for good.
+      try { pollOnce(); } finally { schedulePollTick(); }
     }, pollIntervalMs());
   }
 
@@ -4655,7 +4691,9 @@ background-image: none !important;
     selfUpgradeIfNeeded();
     fetchPalette(false);
     syncMaterialPreferences();
-    if (window.NekoThemeStudio && window.NekoThemeStudio.report) window.NekoThemeStudio.report();
+    try {
+      if (window.NekoThemeStudio && window.NekoThemeStudio.report) window.NekoThemeStudio.report();
+    } catch (e) { /* diagnostics only */ }
   }
 
   function stopPolling() {
@@ -4668,6 +4706,12 @@ background-image: none !important;
   // The server's first-paint palette is newer than a previous page's cache.
   if (!document.getElementById('nts-boot') && !document.documentElement.hasAttribute('data-nts-boot-ready')) {
     restoreFromCache();
+  } else if (document.getElementById('nts-boot')) {
+    // The boot style has no materials; without this, material users would see
+    // a material-less first frame until the first fetch returns. A bare
+    // data-nts-boot-ready (no boot style) means the server wants the native
+    // look, so nothing is restored then.
+    restoreMaterialsFromCache();
   }
 
   // 2) Then ask the service for the latest version.
