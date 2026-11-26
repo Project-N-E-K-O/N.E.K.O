@@ -31,7 +31,9 @@ CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if
 # 8: blind spots split into user-facing (blind_spots, blind_spot_files),
 #    not_analyzed hints and developer-only context_loss; literal
 #    import_module("x") followed like an import.
-ANALYZER_VERSION = 8
+# 9: constant getattr on an external origin followed through names and call
+#    chains; AF_UNIX sockets and create_datagram_endpoint(local_addr=).
+ANALYZER_VERSION = 9
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -218,17 +220,15 @@ def _sdk_module(path: str) -> bool:
     return path == "plugin" or path.startswith("plugin.")
 
 
-def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | None:
-    """getattr(x, "name") — optionally called — reads like x.name.
+def _constant_getattr(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | None:
+    """(receiver, name) of the bare builtin getattr(x, "name") itself.
 
     Skipped when the plugin binds its own ``getattr`` (bindings given).
     """
-    if not isinstance(node, ast.Call):
-        return None
-    func = node.func
     if (
-        isinstance(func, ast.Name)
-        and func.id == "getattr"
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
         and (bindings is None or "getattr" not in bindings)
         and len(node.args) >= 2
         and isinstance(node.args[1], ast.Constant)
@@ -236,9 +236,74 @@ def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | No
         and node.args[1].value.isidentifier()
     ):
         return node.args[0], node.args[1].value
-    if isinstance(func, ast.Call):
-        return _getattr_reference(func, bindings)
     return None
+
+
+def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | None:
+    """getattr(x, "name") — optionally called — reads like x.name.
+
+    Skipped when the plugin binds its own ``getattr`` (bindings given).
+    """
+    if not isinstance(node, ast.Call):
+        return None
+    found = _constant_getattr(node, bindings)
+    if found is not None:
+        return found
+    if isinstance(node.func, ast.Call):
+        return _getattr_reference(node.func, bindings)
+    return None
+
+
+def _source_root(node: ast.AST) -> str:
+    """Root name as written, seeing through a constant getattr's receiver
+    (getattr(subprocess, "run")() is rooted in subprocess)."""
+    while True:
+        if _constant_getattr(node) is not None:
+            node = node.args[0]
+        elif isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return node.id if isinstance(node, ast.Name) else ""
+
+
+# A socket.socket(AF_UNIX) object in a resolved path. "[" never appears in a
+# name built by _name, so this cannot collide with source spelling; it is
+# turned back into "socket.socket()" before a reference is reported.
+_UNIX_SOCKET = "socket.socket[AF_UNIX]()"
+_UNIX_FAMILIES = frozenset({"socket.AF_UNIX", "socket.AddressFamily.AF_UNIX"})
+# asyncio loop.create_datagram_endpoint(); family= is keyword-only there.
+_DATAGRAM_ENDPOINTS = frozenset(
+    f"asyncio.{loop}().create_datagram_endpoint"
+    for loop in ("get_event_loop", "get_running_loop", "new_event_loop")
+)
+
+
+def _unix_family(call: ast.Call, index: int | None, bindings) -> bool:
+    """The family argument statically resolves to socket.AF_UNIX."""
+    argument = _call_argument(call, index, "family")
+    raw = _name(argument) if argument is not None else ""
+    # Cheap test first: this runs at every call level of every chain.
+    if not raw.endswith("AF_UNIX"):
+        return False
+    resolved, external, bound = _resolve_with_origin(raw, bindings)
+    return bool(external and bound) and resolved in _UNIX_FAMILIES
+
+
+def _unix_socket_call(node: ast.AST, bindings, walker) -> bool:
+    """socket.socket(socket.AF_UNIX, ...) or socket.socket(family=AF_UNIX)."""
+    if not isinstance(node, ast.Call) or not _unix_family(node, 0, bindings):
+        return False
+    func = _resolve_chain_root(node.func, bindings, walker)
+    resolved, external, bound = func[:3] if func else _resolve_with_origin(_name(node.func), bindings)
+    return bool(external and bound) and resolved == "socket.socket"
+
+
+def _unmark_local_socket(resolved: str) -> tuple[str, bool]:
+    if resolved.startswith(_UNIX_SOCKET):
+        return "socket.socket()" + resolved[len(_UNIX_SOCKET):], True
+    return resolved, False
 
 
 _MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
@@ -309,20 +374,58 @@ def _literal_import(node: ast.AST, bindings) -> tuple[str, str] | None:
     return None
 
 
-def _resolve_literal_imports(raw_node: ast.AST, bindings, walker) -> tuple[str, bool, bool] | None:
-    """Resolve an attribute / call chain rooted in a literal dynamic import
-    (importlib.import_module("os").system()) as if the module were imported."""
+def _external_getattr(node: ast.AST, bindings, walker) -> tuple[str, bool] | None:
+    """getattr(x, "name") itself, as x.name, when x has an external origin.
+
+    Only external origins are followed: the legacy capability scan reads
+    non-external references, and must not start seeing through getattr.
+    """
+    found = _constant_getattr(node, bindings)
+    if found is None:
+        return None
+    receiver, attribute = found
+    inner = _resolve_chain_root(receiver, bindings, walker)
+    resolved, external, bound = inner[:3] if inner else _resolve_with_origin(_name(receiver), bindings)
+    if not (external and bound and resolved):
+        return None
+    if len(resolved) + len(attribute) + 1 > MAX_REFERENCE_LENGTH:
+        raise _AnalysisBudgetExceeded
+    return resolved + "." + attribute, inner[3] if inner else False
+
+
+def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool, bool, bool] | None:
+    """Resolve an attribute / call chain rooted in something _name cannot
+    spell, as the equivalent plain spelling:
+
+    - a literal dynamic import (importlib.import_module("os").system()), as
+      if the module were imported;
+    - a constant getattr on an external origin (getattr(pathlib, "Path")()
+      .write_text()), as the attribute access;
+    - socket.socket(socket.AF_UNIX) (see _UNIX_SOCKET).
+
+    The fourth item tells whether the root is a getattr (whose written root
+    name is then its receiver's, see _source_root).
+    """
     parts = []
     node = raw_node
     while isinstance(node, (ast.Attribute, ast.Call)):
         walker.check()
+        root = None
         literal = _literal_import(node, bindings)
         if literal is not None:
-            module = literal[1]
-            resolved = module + "".join(reversed(parts))
+            root = literal[1], not _sdk_module(literal[1]), False
+        else:
+            reflected = _external_getattr(node, bindings, walker)
+            if reflected is not None:
+                root = reflected[0], True, True
+            elif _unix_socket_call(node, bindings, walker):
+                root = _UNIX_SOCKET, True, False
+        if root is not None:
+            prefix, external, via_getattr = root
+            resolved = prefix + "".join(reversed(parts))
             if len(resolved) > MAX_REFERENCE_LENGTH:
                 raise _AnalysisBudgetExceeded
-            return resolved, not _sdk_module(module), True
+            return resolved, external, True, via_getattr
         if isinstance(node, ast.Attribute):
             parts.extend((node.attr, "."))
             node = node.value
@@ -365,6 +468,9 @@ class _Reference:
     # A literal dynamic import (importlib.import_module("x")): the module,
     # reported like an import; the call itself is not a blind spot.
     imported: str = ""
+    # An AF_UNIX socket (or datagram endpoint): it only reaches local socket
+    # files, so its connect / listen evidence is possible, not definite.
+    local_socket: bool = False
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -550,7 +656,7 @@ def _derived_rebound(rebound: frozenset[str], assignments, walker) -> frozenset[
             walker.check()
             if "." in key or key in names:
                 continue
-            if _root_name(_name(value)) in names:
+            if _source_root(value) in names:
                 names.add(key)
                 changed = True
     return frozenset(names)
@@ -630,14 +736,22 @@ def _references_binding(value: str, key: str) -> bool:
 
 def _propagate_assignments(assignments, bindings, walker):
     """Resolve aliases until the final binding of each assignment stops changing."""
+    counts: dict[str, int] = {}
+    for key, _node in assignments:
+        counts[key] = counts.get(key, 0) + 1
     previous = None
     while True:
         resolved_bindings = {}
         for key, node in assignments:
             walker.check()
-            literal = _resolve_literal_imports(node, bindings, walker)
+            literal = _resolve_chain_root(node, bindings, walker)
             if literal is not None:
-                binding = literal[0], literal[1]
+                resolved = literal[0]
+                if counts[key] > 1:
+                    # Assigned more than once: the name may hold another
+                    # socket, so it is not known to be a local one.
+                    resolved = _unmark_local_socket(resolved)[0]
+                binding = resolved, literal[1]
                 resolved_bindings[key] = binding
                 bindings[key] = binding
                 continue
@@ -702,23 +816,26 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
                 raw = _name(receiver)
-                resolved, external, bound = _resolve_literal_imports(receiver, bindings, walker) or (
-                    _resolve_with_origin(raw, bindings)
-                )
+                inner = _resolve_chain_root(receiver, bindings, walker)
+                resolved, external, bound = inner[:3] if inner else _resolve_with_origin(raw, bindings)
+                method, local_socket = _unmark_local_socket(resolved + "." + attribute)
                 # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
                 yield _Reference(
-                    node, resolved + "." + attribute, external, bound, function,
+                    node, method, external, bound, function,
                     isinstance(node, ast.Call) and isinstance(node.func, ast.Call),
-                    raw_root=_root_name(raw),
+                    raw_root=_source_root(receiver) if inner and inner[3] else _root_name(raw),
+                    local_socket=local_socket,
                 )
             else:
                 target = node.func if isinstance(node, ast.Call) else node
                 raw = _name(target)
                 raw_root = _root_name(raw)
-                literal = _resolve_literal_imports(target, bindings, walker)
+                literal = _resolve_chain_root(target, bindings, walker)
                 if literal is not None:
-                    resolved, external, bound = literal
+                    resolved, external, bound, via_getattr = literal
                     via_call_result = False
+                    if via_getattr:
+                        raw_root = _source_root(target)
                 else:
                     resolved, external, bound = _resolve_with_origin(raw, bindings)
                     via_call_result = (
@@ -726,12 +843,24 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                         and raw_root != raw
                         and _is_data_read_result(_resolve(raw_root, bindings)[0])
                     )
+                resolved, local_socket = _unmark_local_socket(resolved)
+                if (
+                    not local_socket
+                    and isinstance(node, ast.Call)
+                    and external
+                    and bound
+                    and (resolved == "socket.socket" or resolved in _DATAGRAM_ENDPOINTS)
+                ):
+                    # The construction itself (family is keyword-only on
+                    # create_datagram_endpoint).
+                    local_socket = _unix_family(node, 0 if resolved == "socket.socket" else None, bindings)
                 yield _Reference(
                     node, resolved, external, bound, function,
                     isinstance(node, ast.Call),
                     raw_root=raw_root,
                     via_call_result=via_call_result,
                     imported=(_literal_import(node, bindings) or ("",))[0],
+                    local_socket=local_socket,
                 )
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             # A bare name bound to a data attribute (from os import environ)
@@ -1197,7 +1326,36 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
             elif _matches(name, _HINT_ONLY):
                 basis = named
             results.append((permission, basis, {}))
+    if reference.is_call and name in _DATAGRAM_ENDPOINTS:
+        results.extend((_LISTEN, basis, {}) for basis in _datagram_listen(reference.node, direct, named))
+    if reference.local_socket:
+        # Only local socket files are reached: possible use at most.
+        results = [
+            (
+                permission,
+                named if permission in (_NETWORK, _LISTEN) and _BASIS_RANK[basis] > _BASIS_RANK[named] else basis,
+                extra,
+            )
+            for permission, basis, extra in results
+        ]
     return results
+
+
+def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
+    """create_datagram_endpoint(factory, local_addr=...) binds a local
+    address others can send to; with only remote_addr= (or sock=) it does not."""
+    if not isinstance(node, ast.Call):
+        return ()
+    local = _call_argument(node, 1, "local_addr")
+    if local is None:
+        unpacked = any(item.arg is None for item in node.keywords) or any(
+            isinstance(item, ast.Starred) for item in node.args
+        )
+        # *args / **kwargs may carry local_addr.
+        return (named,) if unpacked else ()
+    if isinstance(local, ast.Constant) and local.value is None:
+        return ()
+    return (direct,)
 
 
 def _import_hints(node: ast.Import | ast.ImportFrom | str) -> dict[str, set[str]]:

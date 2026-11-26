@@ -2099,4 +2099,191 @@ def test_long_call_chains_are_charged_to_the_analysis_budget(tmp_path):
     stop.set()
     chain = ast.parse(source).body[0].value
     with pytest.raises(capability_analysis._AnalysisBudgetExceeded):
-        capability_analysis._resolve_literal_imports(chain, {}, capability_analysis._AnalysisWalker(stop))
+        capability_analysis._resolve_chain_root(chain, {}, capability_analysis._AnalysisWalker(stop))
+
+
+# --- constant getattr through names and call chains (#3951) ---------------------
+
+
+def _without_lines(report: dict) -> dict:
+    return {
+        permission: {
+            **item,
+            "findings": [{key: value for key, value in row.items() if key != "line"} for row in item["findings"]],
+        }
+        for permission, item in report["permissions"].items()
+    }
+
+
+@pytest.mark.parametrize(
+    "reflective,plain,before,after",
+    [
+        # (getattr spelling, attribute spelling, basis on main before this
+        # change, basis now; None: the permission was not reported at all).
+        (
+            "import pathlib\nP = getattr(pathlib, 'Path')\nP('/etc/x').write_text('a')\n",
+            "import pathlib\nP = pathlib.Path\nP('/etc/x').write_text('a')\n",
+            {},
+            {"system.fs:write": "resolved_call"},
+        ),
+        (
+            "import pathlib\ngetattr(pathlib, 'Path')('/etc/x').write_text('a')\n",
+            "import pathlib\npathlib.Path('/etc/x').write_text('a')\n",
+            {},
+            {"system.fs:write": "resolved_call"},
+        ),
+        (
+            "import multiprocessing\nctx = getattr(multiprocessing, 'get_context')('spawn')\nctx.Process(target=print).start()\n",
+            "import multiprocessing\nctx = multiprocessing.get_context('spawn')\nctx.Process(target=print).start()\n",
+            {"system.process:spawn": "import_only"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        (
+            "import subprocess\nrun = getattr(subprocess, 'run')\nrun(['ls'])\n",
+            "import subprocess\nrun = subprocess.run\nrun(['ls'])\n",
+            {"system.process:spawn": "resolved_name"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        # Nested getattr, and a default value.
+        (
+            "import multiprocessing\ngetattr(getattr(multiprocessing, 'get_context')('spawn'), 'Process')(target=print)\n",
+            "import multiprocessing\nmultiprocessing.get_context('spawn').Process(target=print)\n",
+            {"system.process:spawn": "import_only"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        (
+            "import subprocess\nrun = getattr(subprocess, 'run', None)\nrun(['ls'])\n",
+            "import subprocess\nrun = subprocess.run\nrun(['ls'])\n",
+            {"system.process:spawn": "resolved_name"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        # A rebound receiver stays uncertain, as with the attribute.
+        (
+            "import subprocess\nfor subprocess in items:\n    run = getattr(subprocess, 'run')\n    run([])\n",
+            "import subprocess\nfor subprocess in items:\n    run = subprocess.run\n    run([])\n",
+            {"system.process:spawn": "suffix_match"},
+            {"system.process:spawn": "suffix_match"},
+        ),
+    ],
+)
+def test_constant_getattr_results_are_followed_like_the_attribute(tmp_path, reflective, plain, before, after):
+    (tmp_path / "getattr").mkdir()
+    (tmp_path / "plain").mkdir()
+    report = _scan(tmp_path / "getattr", reflective)
+    expected = _scan(tmp_path / "plain", plain)
+    assert _bases(report) == after
+    # ``before`` documents the main result this changes; only the rebound
+    # case was already equivalent.
+    assert (after == before) is ("for subprocess" in reflective)
+    assert _without_lines(report) == _without_lines(expected)
+    assert report["blind_spots"] == expected["blind_spots"] == []
+    assert [(issue.severity, issue.code) for issue in compare_declarations(report)] == [
+        (issue.severity, issue.code) for issue in compare_declarations(expected)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source,capabilities,bases",
+    [
+        # Values as on main before getattr was followed: getattr on a plugin
+        # or SDK object is not followed, so the legacy capability scan (read
+        # by the old consent flow) sees exactly what it saw before.
+        (
+            "class P:\n    def go(self):\n        getattr(self.ctx, 'bus').memory.get('x')\n"
+            "        push = getattr(self.ctx, 'push_message')\n        push('hi')\n",
+            ["messages.push"],
+            {"plugin_sdk.main_agent.messages:push": "suffix_match"},
+        ),
+        (
+            "from plugin.sdk import bus\nm = getattr(bus, 'memory')\nm.get('x')\n",
+            [],
+            {},
+        ),
+        # External origins add permissions, never legacy capabilities.
+        ("import subprocess\nrun = getattr(subprocess, 'run')\nrun(['ls'])\n", [], {"system.process:spawn": "resolved_call"}),
+    ],
+)
+def test_getattr_following_leaves_legacy_capabilities_unchanged(tmp_path, source, capabilities, bases):
+    report = _scan(tmp_path, source)
+    assert report["capabilities"] == capabilities
+    assert _bases(report) == bases
+
+
+def test_aliased_getattr_with_a_constant_name_is_still_a_blind_spot(tmp_path):
+    report = _scan(tmp_path, "import subprocess\nga = getattr\nrun = ga(subprocess, 'run')\nrun(['ls'])\n")
+    assert "reflective_access" in {spot["type"] for spot in report["blind_spots"]}
+
+
+# --- AF_UNIX sockets and datagram endpoints (#3951) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind('/tmp/p.sock')\ns.listen()\nconn, _ = s.accept()\n",
+        "import socket\ns = socket.socket(family=socket.AF_UNIX, type=socket.SOCK_STREAM)\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AddressFamily.AF_UNIX)\ns.listen()\n",
+        "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
+        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
+        "import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+        "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n",
+    ],
+)
+def test_unix_socket_servers_are_only_possible_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    # On main: listen and connect were resolved_call (an error in check -r).
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+    assert [(issue.severity, issue.code) for issue in compare_declarations(report)] == [
+        ("warning", "used_undeclared_possible"),
+        ("warning", "used_undeclared_possible"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nsocket.socket(socket.AF_UNIX).connect('/p')\n",
+        "from socket import socket, AF_UNIX\nc = socket(family=AF_UNIX)\nc.connect('/p')\n",
+    ],
+)
+def test_unix_socket_clients_are_only_possible_connect_evidence(tmp_path, source):
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_INET)\ns.listen()\n",
+        # The family is not statically known.
+        "import socket\ndef f(family):\n    s = socket.socket(family)\n    s.listen()\n",
+        "import socket\ndef f(args):\n    s = socket.socket(*args)\n    s.listen()\n",
+        # A plugin-defined name spelled AF_UNIX is not the socket constant.
+        "import socket\nAF_UNIX = 2\ns = socket.socket(AF_UNIX)\ns.listen()\n",
+        # The name may hold another socket.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns = socket.socket()\ns.listen()\n",
+    ],
+)
+def test_sockets_not_known_to_be_unix_stay_direct_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert report["permissions"][CONNECT]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1))", "resolved_call"),
+        ("loop.create_datagram_endpoint(object, ('', 1))", "resolved_call"),
+        ("loop.create_datagram_endpoint(object, **options)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, local_addr='/p', family=socket.AF_UNIX)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, remote_addr=('a', 1))", None),
+        ("loop.create_datagram_endpoint(object, local_addr=None, remote_addr=('a', 1))", None),
+        ("loop.create_datagram_endpoint(object, sock=options)", None),
+    ],
+)
+def test_datagram_endpoints_listen_only_with_a_local_address(tmp_path, call, basis):
+    source = f"import asyncio, socket\nasync def f(options):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    report = _scan(tmp_path, source)
+    # On main none of these reported system.network:listen.
+    assert report["permissions"].get(LISTEN, {}).get("basis") == basis
+    assert report["capabilities"] == []
