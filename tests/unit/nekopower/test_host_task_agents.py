@@ -2753,6 +2753,139 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     assert bool(failed) == (ledger != "readable")
 
 
+async def _no_quota_left(commission_id: str) -> bool:
+    return False
+
+
+async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
+    """A commission at work, with its session, and four task agents it started, each stopped its own way.
+
+    One cannot be closed (its runtime does not answer), one cannot have its stop written (the
+    ledger is locked for it), one is stopped as ever; one was read at work and is done by the
+    time its stop is written, and one was read at work and is stopped (by the user) by then.
+    ``unreadable``: what the commission started cannot be read.
+    """
+    from nekopower.host.task_agents import _Session
+
+    manager = host.task_agents
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    members: dict[str, str] = {}
+    for name in ("cannot be closed", "cannot be written", "at work", "done meanwhile", "stopped meanwhile"):
+        child = await _filed(host, name, parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        members[name] = child.id
+    seen = await host.ledger.select(parent_id=parent.id)
+    await host.ledger.transition(members["done meanwhile"], "done", reason="test")
+    await host.ledger.transition(members["stopped meanwhile"], "cancelled", reason="test")
+    team = SimpleNamespace(
+        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], unreadable=False
+    )
+    select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
+
+    async def read(**criteria: Any) -> Any:
+        if criteria.get("parent_id") == parent.id:
+            if team.unreadable:
+                raise RuntimeError("the ledger cannot be read")
+            return seen
+        return await select(**criteria)
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id == members["cannot be written"]:
+            raise RuntimeError("the ledger is locked")
+        return await transition(commission_id, status, **kwargs)
+
+    async def recorded(commission_id: str) -> None:
+        team.tried.append(commission_id)
+        if commission_id == members["cannot be closed"]:
+            raise RuntimeError("the runtime did not answer")
+        await abort(commission_id)
+
+    async def close_session(session: Any) -> None:
+        team.closed.append(session.commission_id)
+
+    async def not_noted(*args: Any) -> None:
+        # (What the request used is not what this is about.)
+        return None
+
+    monkeypatch.setattr(manager._ledger, "select", read)
+    monkeypatch.setattr(manager._ledger, "transition", locked)
+    monkeypatch.setattr(manager, "abort", recorded)
+    monkeypatch.setattr(manager, "_close_session", close_session)
+    monkeypatch.setattr(manager, "_note_usage", not_noted)
+    team.session = _Session(parent.id, session_id="the-parents-session", free=True)
+    manager._sessions[parent.id] = team.session
+    return team
+
+
+async def _ended_for_what_it_used(manager: Any, team: SimpleNamespace, end: str) -> Any:
+    """End the commission as ``end`` says: its quota runs out partway through, or the usage the user allowed is used up."""
+    try:
+        if end == "quota":
+            # A request of its own that found no quota left.
+            return await manager._on_usage(team.session, {"type": "usage", "input": 100, "output": 10})
+        # The last of the requests it had for handing over what it has.
+        team.session.wind_up_left = 0
+        return await manager._wind_up_step(team.session)
+    finally:
+        del manager._sessions[team.parent.id]
+
+
+@pytest.mark.parametrize("end", ["quota", "usage"])
+async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_started_them_ends_for_what_it_used(
+    hosts, tmp_path, monkeypatch, end
+):
+    from nekopower.host.task_agents import _QUOTA_RUN_REASON, _USAGE_REASON
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
+    team = await _a_team_at_work(host, monkeypatch)
+
+    said = await _ended_for_what_it_used(host.task_agents, team, end)
+
+    ended = await host.ledger.get(team.parent.id)
+    if end == "quota":
+        assert said is None
+        assert (ended.status, ended.status_reason) == ("failed", _QUOTA_RUN_REASON)
+    else:
+        # The run is told to stop all the same: a failure here would let it make the request.
+        assert said == {"stop": True}
+        assert (ended.status, ended.status_reason) == ("blocked", _USAGE_REASON)
+    # One that cannot be closed does not keep the next from being stopped. One whose stop cannot be
+    # written is not closed (on record it is at work), nor is one that ended meanwhile; one that was
+    # stopped meanwhile is closed all the same.
+    members = team.members
+    closed = ("cannot be closed", "at work", "stopped meanwhile")
+    assert team.tried == [one for one in team.seen if one in [members[name] for name in closed]]
+    after = {name: await host.ledger.get(one) for name, one in members.items()}
+    assert {name: one.status for name, one in after.items()} == {
+        "cannot be closed": "cancelled",
+        "cannot be written": "working",
+        "at work": "cancelled",
+        "done meanwhile": "done",
+        "stopped meanwhile": "cancelled",
+    }
+    assert after["at work"].status_reason == after["cannot be closed"].status_reason == "its parent finished"
+    assert after["stopped meanwhile"].status_reason == "test"
+    # And the commission's own session is closed all the same.
+    assert team.closed == [team.parent.id]
+
+
+@pytest.mark.parametrize("end", ["quota", "usage"])
+async def test_a_commission_that_ends_for_what_it_used_is_closed_though_what_it_started_cannot_be_read(
+    hosts, tmp_path, monkeypatch, end
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
+    team = await _a_team_at_work(host, monkeypatch)
+    team.unreadable = True
+
+    said = await _ended_for_what_it_used(host.task_agents, team, end)
+
+    assert said == (None if end == "quota" else {"stop": True})
+    assert (await host.ledger.get(team.parent.id)).status == ("failed" if end == "quota" else "blocked")
+    assert team.tried == []
+    assert team.closed == [team.parent.id]
+
+
 async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(

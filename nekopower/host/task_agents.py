@@ -5478,6 +5478,45 @@ class TaskAgentManager(TreeWork):
                 except Exception:  # noqa: BLE001 - the other step, and the others, are still done
                     logger.warning("%s a task agent whose parent is over failed", what, exc_info=True)
 
+    async def _stop_what_it_started(self, commission_id: str) -> None:
+        """Stop the task agents a commission had started, now that it ended for what it used.
+
+        For the ends of ``_on_usage`` (the quota ran out partway through)
+        and ``_wind_up_step`` (the usage the user allowed is used up): its
+        own end is written by now, and the caller closes its session once
+        this returns. Each by itself: one that cannot be stopped this moment
+        (its stop not written, or its session not closed) does not leave the
+        others at work, nor keep the commission's own session open; nor does
+        a ledger that cannot say what it started. One whose stop is refused
+        because it ended meanwhile, some other way, is not closed: its
+        session is its own. Every failure is logged and none is raised:
+        neither caller has anyone to hand it to (the runtime that asks
+        ``_cb_budget`` takes a failure for room to go on, and would make the
+        request it asked about; ``_pump_events`` would only log it).
+
+        Unlike ``_end_what_it_started``, one whose changes wait in its
+        worktree for the user is stopped too, as these two ends always did.
+        """
+        try:
+            started = await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - its own session is closed all the same
+            logger.warning("finding what commission %s started failed", commission_id, exc_info=True)
+            return
+        for child in started:
+            try:
+                moved = await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
+                if not moved.applied and (moved.commission is None or moved.commission.status != "cancelled"):
+                    # It ended meanwhile, some other way: its session is its own.
+                    continue
+                # Not closed unless its stop is written: closing is for a stopped one.
+                await self.abort(child.id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the others are stopped all the same
+                logger.warning("stopping commission %s with its parent failed", child.id, exc_info=True)
+
     @staticmethod
     async def _looked(look: Callable[[], Awaitable[Any]], *, what: str = "at the end of a run") -> Any:
         """Read the ledger for what the end of a run means, asking again after a failure before giving up.
@@ -6199,9 +6238,7 @@ class TaskAgentManager(TreeWork):
             return
         # After requests of its own: some of the work may be done.
         await self._fail(commission_id, _QUOTA_RUN_REASON, said="quota_run")
-        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
-            await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
-            await self.abort(child.id)
+        await self._stop_what_it_started(commission_id)
         await self._close_session(session)
 
     async def _on_error(self, session: _Session, event: dict[str, Any], refused: list[int]) -> None:
@@ -10007,9 +10044,7 @@ class TaskAgentManager(TreeWork):
             # must not turn it into a stopped one.
             session.wound_up = True
             await self._end(commission_id, "blocked", reason=_USAGE_REASON, text=text, result_summary=self._summary(text))
-            for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
-                await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
-                await self.abort(child.id)
+            await self._stop_what_it_started(commission_id)
         await self._close_session(session)
         return {"stop": True}
 
