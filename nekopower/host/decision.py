@@ -602,10 +602,31 @@ def _offered(question: dict[str, Any]) -> set[str]:
 
 
 def _said(label: str, spoken: str) -> bool:
-    """Whether an answer offered was said: as a word of its own where it is written in Latin letters ("no" is not in "not" nor in "Noël")."""
-    if label.isascii():
-        return re.search(rf"(?<![^\W_]){re.escape(label)}(?![^\W_])", spoken) is not None
-    return label in spoken
+    """Whether an answer offered was said.
+
+    One written in Latin letters as a word of its own: "no" is not in "not"
+    nor in "Noël". Next to writing that has no spaces between its words
+    ("文章配图选Dogs") it is a word all the same.
+    """
+    if not label.isascii():
+        return label in spoken
+    for found in re.finditer(re.escape(label), spoken):
+        before = spoken[found.start() - 1] if found.start() else ""
+        after = spoken[found.end()] if found.end() < len(spoken) else ""
+        if not _joins(before) and not _joins(after):
+            return True
+    return False
+
+
+def _joins(char: str) -> bool:
+    """Whether a character next to a word makes it part of a longer one: a letter or digit of writing with spaces between words."""
+    import unicodedata
+
+    if not char:
+        # The start or the end of what was said.
+        return False
+    unspaced = unicodedata.name(char, "").startswith(("CJK", "HIRAGANA", "KATAKANA", "HANGUL"))
+    return char.isalnum() and not unspaced
 
 
 def _kin(one: Commission, other: Commission) -> bool:

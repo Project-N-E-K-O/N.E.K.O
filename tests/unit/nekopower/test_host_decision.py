@@ -1072,7 +1072,7 @@ async def test_an_answer_another_question_offers_too_names_neither():
     # A letter with an accent is a letter: "No" is not said in "Noël".
     post = _waiting("c1", "pick a colour", {"kind": "question", "question": "Blue?", "options": ["Blue", "No"]})
     card = _waiting("c2", "pick a card", {"kind": "question", "question": "Blue?", "options": ["Blue", "Yes"]})
-    for said, read in (("Blue, Noël", ("ambiguous", ["c1", "c2"])), ("No, please", ("answer", ["c1"]))):
+    for said, read in (("Blue, Noël", ("ambiguous", ["c1", "c2"])), ("No, please", ("answer", ["c1"])), ("颜色选No", ("answer", ["c1"]))):
         llm = _reading({"does": "answer", "items": [1], "named": True})
         triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
         assert (triage.kind, triage.targets) == read, said
