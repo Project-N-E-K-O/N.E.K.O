@@ -183,7 +183,9 @@
   //          recorded or previewed. (Static CSS: wallpaper brightness no longer
   //          overrides the fit / position / repeat controls, and compact /chat
   //          outer wrappers stay transparent with materials off.)
-  var SCRIPT_VERSION = '1.6.52';
+  //   1.6.53 Removing the theme also clears data-nts-squircle; the upgrade
+  //          reload also yields while images / screenshots are queued.
+  var SCRIPT_VERSION = '1.6.53';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -968,6 +970,9 @@
     if (el && el.parentNode) el.parentNode.removeChild(el);
     lastAppliedCss = '';
     clearGates();
+    // The continuous-corner rules match on this attribute alone and clearGates()
+    // does not track it, so drop it here or the corners outlive the theme.
+    document.documentElement.removeAttribute(SQUIRCLE_ATTR);
     // v1.6.0: the material layer is gated by data-nts-mt, so removing styles must
     // also remove the attributes; otherwise MATERIAL_CSS still matches with the
     // variables missing and degrades into a leftover "semi-transparent base" look.
@@ -2451,6 +2456,13 @@
         // audio composer and on the compact surface frame.
         if (document.querySelector('[data-audio-message-active="true"]')) {
           log('self-upgrade deferred: a voice message is being recorded or previewed');
+          return;
+        }
+        // Queued images / screenshots are kept in the legacy #screenshots-list
+        // (static/app/app-buttons.js addScreenshotToList) and mirrored to React as
+        // .composer-attachment-card, again without any textarea text.
+        if (document.querySelector('#screenshots-list > :not([data-removing="1"]), .composer-attachment-card')) {
+          log('self-upgrade deferred: the composer has pending attachments');
           return;
         }
       } catch (e8) { /* ignore */ }

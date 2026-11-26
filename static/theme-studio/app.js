@@ -7463,7 +7463,8 @@ function wireEvents() {
   $('btn-reload').addEventListener('click', function () {
     // "Reload" discards unapplied edits: count them and ask first, so one misclick does
     // not throw away half an hour of tuning (resetTheme already confirmed; this did not).
-    var pending = pendingChangeCount();
+    // Material drafts (edited params, unapplied new presets) are discarded too.
+    var pending = pendingChangeCount() + materialsDirtyCount();
     if (pending && !window.confirm(tsT('sync.reloadConfirm', '面板里有 {{count}} 项还没应用的改动。\n'
       + '「重新读取」会丢弃它们（不可恢复）。继续？', { count: pending }))) return;
     reloadPalette({ discardEdits: true }).then(function (palette) {
