@@ -224,7 +224,7 @@ def _loaded_sample(
     value = values.get(name)
     sample = _sample(value, limit, allow_zero=allow_zero)
     # None and 0 mean "not measured" and are not reported.
-    if sample is None and value is not None and value != 0:
+    if sample is None and value is not None and (isinstance(value, bool) or value != 0):
         logger.warning("ignoring corrupt {} of download route {}: {!r}", name, source_id, value)
     return sample
 
@@ -320,9 +320,9 @@ def route_generation() -> int:
 
 def _record(observation: RouteObservation, now: float) -> None:
     stats = _routes.setdefault(observation.source_id, RouteStats())
-    # Keyed on samples, not on the stamp: a history stamped 0 still decays.
-    if stats.samples:
-        stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
+    # Unconditional: a new route has no failures, and a history stamped 0 or
+    # carrying failures without samples still decays (to zero, via _decay).
+    stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
     stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY, allow_zero=True))
     stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
     stats.failures = min(_MAX_FAILURES, stats.failures + (1.0 if observation.failed else 0.0))

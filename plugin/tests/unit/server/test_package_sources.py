@@ -292,7 +292,7 @@ def _load_routes(monkeypatch, text):
     return warnings
 
 
-def test_corrupt_routes_are_dropped_one_by_one(monkeypatch):
+def test_corrupt_route_data_is_dropped_field_by_field_or_route_by_route(monkeypatch):
     now = time.time()
     good = {"latency": 0.05, "throughput": 8 * 1024 * 1024, "failures": 0, "samples": 5, "updated": now}
     # Raw JSON, because json.dumps cannot write an integer of this size as a float.
@@ -309,7 +309,8 @@ def test_corrupt_routes_are_dropped_one_by_one(monkeypatch):
     loaded_at = time.time()
     assert list(sources._routes) == ["cdn-gh-proxy-org", "gh-proxy-com", "gh-proxy-org", "edgeone-gh-proxy-org"]
     for source_id in ["gh-proxy-org", "edgeone-gh-proxy-org", "github-direct"]:
-        assert any(source_id in message for message in warnings.messages), source_id
+        # Matched with the delimiter: "gh-proxy-org" is a substring of other ids.
+        assert any(f"route {source_id}:" in message for message in warnings.messages), source_id
     # A corrupt measurement is ignored; the rest of that route's history stays.
     assert sources._routes["gh-proxy-org"].latency is None and sources._routes["gh-proxy-org"].failures == 2.0
     assert sources._routes["edgeone-gh-proxy-org"].throughput is None
@@ -334,7 +335,7 @@ def test_oversized_values_are_capped_or_dropped_and_retired_routes_skipped(monke
     )
     warnings = _load_routes(monkeypatch, text)
     assert list(sources._routes) == ["gh-proxy-com"]
-    assert len(warnings.messages) == 1 and "gh-proxy-org" in warnings.messages[0]
+    assert len(warnings.messages) == 1 and "route gh-proxy-org:" in warnings.messages[0]
     stats = sources._routes["gh-proxy-com"]
     assert stats.throughput == sources._MAX_THROUGHPUT and stats.samples == sources._MAX_SAMPLES
     assert sources.estimate_route("gh-proxy-com", now=now).confidence == 1.0
@@ -372,20 +373,29 @@ def test_one_failing_estimate_falls_back_to_the_prior_and_the_rest_still_rank(mo
     assert sources.estimate_route("gh-proxy-com") == sources._PRIOR_ESTIMATE
     candidates = [key for key, _ in sources.download_candidates(URL, sources.DownloadPreferences())]
     assert candidates[0] == "cdn-gh-proxy-org" and len(candidates) == 5
-    assert sum("gh-proxy-com" in message for message in warnings.messages) == 1
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 1
 
     # Once the route estimates again, a later breakage is reported anew.
     monkeypatch.setattr(sources, "_estimate_from", estimate_from)
     assert sources.estimate_route("gh-proxy-com").confidence > 0
     monkeypatch.setattr(sources, "_estimate_from", broken)
     sources.estimate_route("gh-proxy-com")
-    assert sum("gh-proxy-com" in message for message in warnings.messages) == 2
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 2
 
 
-def test_failures_of_a_history_stamped_zero_still_decay():
-    sources._routes["gh-proxy-com"] = sources.RouteStats(latency=0.2, failures=5.0, samples=3, updated=0.0)
+@pytest.mark.parametrize("samples", [3, 0])
+def test_failures_of_a_history_stamped_zero_still_decay(samples):
+    sources._routes["gh-proxy-com"] = sources.RouteStats(latency=0.2, failures=5.0, samples=samples, updated=0.0)
     record("gh-proxy-com", latency=0.2)
     assert sources._routes["gh-proxy-com"].failures == 0.0
+
+
+def test_a_boolean_measurement_is_reported_as_corrupt(monkeypatch):
+    now = time.time()
+    warnings = _load_routes(monkeypatch, (
+        f'{{"routes": {{"gh-proxy-com": {{"latency": false, "throughput": true, "samples": 1, "updated": {now}}}}}}}'))
+    assert sources._routes["gh-proxy-com"].latency is None
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 2
 
 
 def test_non_finite_observations_are_not_recorded():
