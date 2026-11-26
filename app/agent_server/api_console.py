@@ -845,7 +845,8 @@ def build_console_router(
         except asyncio.CancelledError:
             # The passing on was cancelled (the host is being shut down), not this request: the
             # answer is in all the same, and saying anything else would have it given again.
-            if not passing.cancelled():
+            request = asyncio.current_task()
+            if not passing.cancelled() or (request is not None and request.cancelling()):
                 raise
             taken = False
         except Exception:  # noqa: BLE001 - the answer was taken; only the note was not (logged as it ended)

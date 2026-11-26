@@ -341,6 +341,13 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(<Chat messages={[]} />);
     view.rerender(<Chat messages={[first]} />);
     expect(input().value).toBe('');
+    // But not of one whose answer is on its way as the chat is emptied: its card is put back, and
+    // where the answer is not taken the question waits again as it was left.
+    type('on its way');
+    view.rerender(<Chat messages={[ask(twoQuestions, { state: 'sending' }, 'e1')]} />);
+    view.rerender(<Chat messages={[]} />);
+    view.rerender(<Chat messages={[first]} />);
+    expect(input().value).toBe('on its way');
   });
 
   it('draws what an approval is asked for whole above the composer where nothing there opens all of it', () => {
@@ -354,6 +361,8 @@ describe('the question above the composer of the compact chat', () => {
     // Kept short where all of it can be opened first, and what is no approval.
     expect(line({ ...permission, detail: { command: 'x'.repeat(200) } })).not.toContain('nekopower-ask-line-whole');
     expect(line(confirmation)).not.toContain('nekopower-ask-line-whole');
+    // Cut by the host, with nothing here to open all of it by: what there is, is not cut again.
+    expect(line({ ...permission, detail: {}, line: 'run the command npm te…', line_cut: true })).toContain('nekopower-ask-line-whole');
   });
 
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {

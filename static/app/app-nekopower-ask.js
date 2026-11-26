@@ -372,10 +372,11 @@
                 box.appendChild(row);
             });
         } else {
-            // What an approval is asked for is drawn whole where nothing here opens all of it (the
-            // wider approvals are offered at once then): a narrow HUD cuts three lines of it short
-            // sooner than its length says. Anything else is kept to three lines.
-            var all = shown.shape === 'permission' && !shown.needsWhole;
+            // What an approval is asked for is drawn whole where nothing here opens all of it: a
+            // narrow HUD cuts three lines of it short sooner than its length says, and either the
+            // wider approvals are offered at once, or (cut by the host, with nothing to open) this
+            // is all there is to go by. Anything else is kept to three lines.
+            var all = shown.shape === 'permission' && !(shown.needsWhole && shown.whole);
             var line = el('div', all ? { overflowWrap: 'anywhere' } : {
                 overflow: 'hidden', display: '-webkit-box', webkitBoxOrient: 'vertical', webkitLineClamp: '3', overflowWrap: 'anywhere'
             }, shown.line);

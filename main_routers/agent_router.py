@@ -726,6 +726,7 @@ async def proxy_commission_answer(commission_id: str, payload: dict = Body(...))
     from urllib.parse import quote
 
     from config import AUTOSTART_CSRF_TOKEN
+    from utils.internal_http_client import InternalServiceSigningError
 
     try:
         client = _get_http_client()
@@ -747,8 +748,16 @@ async def proxy_commission_answer(commission_id: str, payload: dict = Body(...))
                 status_code=504 if unknown else 502,
             )
         return JSONResponse(content, status_code=r.status_code)
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
-        # It never reached the agent process: plainly not taken, and can be given again.
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.WriteError,
+        httpx.WriteTimeout,
+        httpx.LocalProtocolError,
+        InternalServiceSigningError,
+    ) as e:
+        # It never reached the agent process, or not all of it: plainly not taken, and can be given again.
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
     except Exception as e:
         # It was sent, and what came of it is not known (no answer in time, the connection

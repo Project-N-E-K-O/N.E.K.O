@@ -272,6 +272,9 @@ describe('the question inside a card of the task HUD', () => {
     const long = { ...permission, id: 'q8', detail: { command: 'x'.repeat(200) }, line: `run the command ${'x'.repeat(60)}…`, line_cut: true };
     expect((draw(long).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('hidden');
     expect((draw(confirmation).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('hidden');
+    // Cut by the host, with nothing here to open all of it by: what there is, is not cut again.
+    const bare = { ...permission, id: 'q9', detail: {}, key: '', line: 'run the command npm te…', line_cut: true };
+    expect((draw(bare).querySelector('.task-ask-line') as HTMLElement).style.overflow).toBe('');
   });
 
   it('has no line for a sentence where a plugin does the work, and holds back after taking another question\'s place', () => {

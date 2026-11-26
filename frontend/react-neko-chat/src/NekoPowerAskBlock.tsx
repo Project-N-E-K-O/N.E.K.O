@@ -25,7 +25,7 @@ const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
 // What the user typed and picked for a question that is not answered yet, by task and question.
 // Above the composer one question is shown at a time: one that gives way to another (of another
 // task) and comes back has what was put into it still there. Let go of once the question is over.
-const drafts = new Map<string, { reply: string; picked: Record<string, string[]> }>();
+const drafts = new Map<string, { reply: string; picked: Record<string, string[]>; sent: boolean }>();
 // One whose answer is on its way is not answered yet: where that fails it waits again, and what
 // was put into it is still its draft (its card may have given way to another's meanwhile).
 const unanswered = (state: AskBlock['state']) => state === 'pending' || state === 'sending';
@@ -39,9 +39,11 @@ const unanswered = (state: AskBlock['state']) => state === 'pending' || state ==
 export function useNekoPowerAskDrafts(messages: ChatMessage[]): void {
   useEffect(() => {
     if (!drafts.size) return;
-    // The chat was emptied: none of its questions is left.
+    // The chat was emptied: none of its questions is left, but those whose answers are on their
+    // way. Their cards are put back once what waits is read anew, and where the answer then is
+    // not taken the question waits again, with what was put into it.
     if (!messages.length) {
-      drafts.clear();
+      for (const [key, draft] of [...drafts]) if (!draft.sent) drafts.delete(key);
       return;
     }
     // Otherwise only those the messages say are answered or over. One whose card is not among
@@ -131,7 +133,9 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
     // left of it then, `useNekoPowerAskDrafts`.) Put in anew each time, so that the one let go of
     // when there are too many is the one left longest.
     drafts.delete(draftKey);
-    if (unanswered(block.state) && (reply || Object.values(picked).some(labels => labels.length))) drafts.set(draftKey, { reply, picked });
+    if (unanswered(block.state) && (reply || Object.values(picked).some(labels => labels.length))) {
+      drafts.set(draftKey, { reply, picked, sent: block.state === 'sending' });
+    }
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
   }, [draftKey, block.state, reply, picked]);
   const [wholeOpen, setWholeOpen] = useState(false);
@@ -212,7 +216,7 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
         </div>
       )) : (
         // What an approval is asked for is drawn whole where nothing here opens all of it.
-        <p className={`nekopower-ask-line${view.shape === 'permission' && !needsWhole ? ' nekopower-ask-line-whole' : ''}`}>{view.line}</p>
+        <p className={`nekopower-ask-line${view.shape === 'permission' && !(needsWhole && view.whole) ? ' nekopower-ask-line-whole' : ''}`}>{view.line}</p>
       )}
 
       {open && view.shape === 'permission' ? (

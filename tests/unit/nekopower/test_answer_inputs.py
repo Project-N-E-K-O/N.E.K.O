@@ -285,6 +285,27 @@ async def test_a_note_whose_passing_on_is_cancelled_leaves_the_answer_taken():
     assert host.told == [("c1", "careful")]
 
 
+async def test_a_request_that_is_itself_cancelled_with_the_passing_on_is_cancelled():
+    # Everything is shut down at once: the request does not go on to answer as if nothing was.
+    class _AllShutDown(_Host):
+        asked_in: Any = None
+
+        async def answer(self, commission_id: str, text: str, **given: Any) -> bool:
+            self.asked_in = asyncio.current_task()
+            return await super().answer(commission_id, text, **given)
+
+        async def tell(self, commission_id: str, text: str) -> bool:
+            self.asked_in.cancel()
+            raise asyncio.CancelledError()
+
+    host = _AllShutDown()
+    async with _client(host) as client:
+        with pytest.raises(asyncio.CancelledError):
+            await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+        # The test's own task ran the request: it goes on.
+        asyncio.current_task().uncancel()
+
+
 async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypatch):
     from app.agent_server import api_console
 

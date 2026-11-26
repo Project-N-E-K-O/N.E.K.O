@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
+from utils.internal_http_client import InternalServiceSigningError
 import pytest
 from starlette.websockets import WebSocketState
 
@@ -176,6 +177,10 @@ async def test_what_the_agent_process_answers_is_passed_back_as_it_is(router, mo
         (httpx.ConnectError("refused"), 200, None, 502),
         (httpx.ConnectTimeout("no route"), 200, None, 502),
         (httpx.PoolTimeout("busy"), 200, None, 502),
+        (httpx.WriteError("broken pipe"), 200, None, 502),
+        (httpx.WriteTimeout("stuck"), 200, None, 502),
+        (httpx.LocalProtocolError("bad header"), 200, None, 502),
+        (InternalServiceSigningError("no key"), 200, None, 502),
         (None, 404, ValueError("not json"), 502),
         # It was sent and nothing is known of what came of it: the page reads how things stand
         # first. Said to have failed, an approval that was taken would be given a second time.

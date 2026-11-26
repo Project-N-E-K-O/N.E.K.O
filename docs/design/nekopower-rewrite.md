@@ -3267,7 +3267,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 `GET /console/questions` 列出现在还在等的问话（同样经过 `page_question`）。页面打开得晚、或者连接断过，推送就错过了；连上时读一次，答晚了（409）以后也读一次。
 
-主服务器上加了两条转发：`POST /api/agent/commissions/{id}/answer`、`GET /api/agent/questions`。聊天窗和 HUD 是主服务器的页面，够不着 agent 进程；`/console` 要的本次启动口令由主服务器补上。agent 进程回什么就原样回什么（409 也是）。转发作答时：连不上（没送出去）回 502，页面说没送到、可以再答；送出去以后结果不明的（等不到回应、连接断开、对方回了不是 JSON 的 5xx）回 504，页面先查这条问话还在不在等，查清之前不让再发。都不回 409，免得页面把问话当成已经答过。
+主服务器上加了两条转发：`POST /api/agent/commissions/{id}/answer`、`GET /api/agent/questions`。聊天窗和 HUD 是主服务器的页面，够不着 agent 进程；`/console` 要的本次启动口令由主服务器补上。agent 进程回什么就原样回什么（409 也是）。转发作答时：没送出去的（连不上、请求没写完、签名没签上），以及对方用不是 JSON 的 4xx 拒掉的，回 502，页面说没送到、可以再答；送出去以后结果不明的（等不到回应、连接断开、对方回了不是 JSON 的其它状态）回 504，页面先查这条问话还在不在等，查清之前不让再发。都不回 409，免得页面把问话当成已经答过。
 
 **五处入口。**
 - 主对话窗口：消息流里一张问话卡（`nekopower_ask` block，`NekoPowerAskBlock`）；紧凑模式下最新一张没答的浮在输入框上方，排在推荐卡前面。答完留在原处，写「已回答：……」。卡片的状态由宿主脚本（`static/app/app-nekopower-ask.js`）管，React 只把点了什么交出去。
