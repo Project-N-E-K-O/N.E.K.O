@@ -1403,6 +1403,33 @@ def test_config_update_command_uses_plugin_context_ordered_publisher_and_rollbac
     assert race_instance.refreshed == [{"v": 10}, {"v": 99}]
 
 
+async def _wait_for_checkpoint_or_task_failure(
+    event: object,
+    task: object,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    import asyncio
+
+    waiter = asyncio.create_task(event.wait())  # type: ignore[attr-defined]
+    try:
+        done, _ = await asyncio.wait(
+            {waiter, task},  # type: ignore[arg-type]
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise TimeoutError("Timed out waiting for async checkpoint")
+        if task in done and not event.is_set():  # type: ignore[attr-defined]
+            await task  # type: ignore[misc]
+            raise AssertionError("Task finished before reaching checkpoint")
+        await waiter
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.plugin_unit
 def test_config_update_command_hydrated_merge_preserves_concurrent_save_and_guarded_rollback(
     tmp_path: Path,
@@ -1456,14 +1483,20 @@ def test_config_update_command_hydrated_merge_preserves_concurrent_save_and_guar
                 logger=_FakeLogger(),
             )
         )
-        await read_started.wait()
-        ctx._set_effective_config_cache({"base": 1, "timer": "saved"})
-        save_done.set()
-        await cmd_task
-        assert sender.payloads[-1]["success"] is True
-        assert ctx._effective_config == {"base": 1, "timer": "saved", "host": 2}
-        assert ctx._effective_config_uncertain is False
-        assert instance.refreshed[-1] == {"base": 1, "timer": "saved", "host": 2}
+        try:
+            await _wait_for_checkpoint_or_task_failure(read_started, cmd_task)
+            ctx._set_effective_config_cache({"base": 1, "timer": "saved"})
+            save_done.set()
+            await cmd_task
+            assert sender.payloads[-1]["success"] is True
+            assert ctx._effective_config == {"base": 1, "timer": "saved", "host": 2}
+            assert ctx._effective_config_uncertain is False
+            assert instance.refreshed[-1] == {"base": 1, "timer": "saved", "host": 2}
+        finally:
+            save_done.set()
+            if not cmd_task.done():
+                cmd_task.cancel()
+            await asyncio.gather(cmd_task, return_exceptions=True)
 
     asyncio.run(_case_hydrated_concurrent_save())
 
@@ -1509,13 +1542,19 @@ def test_config_update_command_hydrated_merge_preserves_concurrent_save_and_guar
                 logger=_FakeLogger(),
             )
         )
-        await handler_entered.wait()
-        ctx._set_effective_config_cache({"v": 99})
-        allow_fail.set()
-        await cmd_task
-        assert sender.payloads[-1]["success"] is False
-        assert ctx._effective_config == {"v": 99}
-        assert instance.refreshed[-1] == {"v": 99}
+        try:
+            await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
+            ctx._set_effective_config_cache({"v": 99})
+            allow_fail.set()
+            await cmd_task
+            assert sender.payloads[-1]["success"] is False
+            assert ctx._effective_config == {"v": 99}
+            assert instance.refreshed[-1] == {"v": 99}
+        finally:
+            allow_fail.set()
+            if not cmd_task.done():
+                cmd_task.cancel()
+            await asyncio.gather(cmd_task, return_exceptions=True)
 
     asyncio.run(_case_rollback_guarded_when_superseded(initial_cached=True))
     asyncio.run(_case_rollback_guarded_when_superseded(initial_cached=False))
@@ -1575,3 +1614,400 @@ def test_config_update_command_hydrated_merge_preserves_concurrent_save_and_guar
         assert instance.refreshed[-1] == {"only": "new"}
 
     asyncio.run(_case_replace_rollback_restores_last_runtime_snapshot())
+
+
+@pytest.mark.plugin_unit
+def test_config_update_command_coordinates_with_in_flight_writes_and_profile_switches(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    from plugin.core.context import PluginContext
+
+    class _RecordingInstance:
+        def __init__(self, *, fail_backend: str | None = None) -> None:
+            self.refreshed: list[dict[str, object]] = []
+            self.fail_backend = fail_backend
+
+        def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+            backend = (
+                effective_config.get("plugin", {}).get("state", {}).get("backend")
+                if isinstance(effective_config.get("plugin"), dict)
+                and isinstance(effective_config["plugin"].get("state"), dict)
+                else None
+            )
+            if self.fail_backend is not None and backend == self.fail_backend:
+                raise RuntimeError(f"failed refresh for {backend}")
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    # 1. Failed concurrent write rolling back to host's tentative config must NOT block host rollback.
+    async def _case_failed_concurrent_write_allows_host_rollback() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_failed_write_allows_host_rb" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        async def _no_local(**_kwargs: object) -> None:
+            return None
+
+        async def _reject_write(**_kwargs: object) -> dict[str, object]:
+            raise RuntimeError("timer write rejected")
+
+        ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _reject_write  # type: ignore[method-assign]
+
+        handler_entered = asyncio.Event()
+        allow_fail = asyncio.Event()
+
+        async def _config_change(**_kwargs: object) -> None:
+            handler_entered.set()
+            await allow_fail.wait()
+            raise RuntimeError("host update rejected")
+
+        sender = _FakeResponseSender()
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-failed-write-rb",
+                    "config": {"base": 1, "host": 2},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _config_change}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        try:
+            await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
+            with pytest.raises(RuntimeError, match="timer write rejected"):
+                await ctx.update_own_config({"timer": 3})
+            # Cache gen & seq advanced due to failed write's optimistic install + rollback,
+            # yet owner token stayed with host's tentative config, so host rollback still restores {"base": 1}.
+            allow_fail.set()
+            await cmd_task
+            assert sender.payloads[-1]["success"] is False
+            assert ctx._effective_config == {"base": 1}
+            assert instance.refreshed[-1] == {"base": 1}
+        finally:
+            allow_fail.set()
+            if not cmd_task.done():
+                cmd_task.cancel()
+            await asyncio.gather(cmd_task, return_exceptions=True)
+
+    asyncio.run(_case_failed_concurrent_write_allows_host_rollback())
+
+    # 2. Overlapping in-flight write when host config_change fails:
+    #    - If write also fails, rejected host config must NOT remain active.
+    #    - If write commits, committed result is preserved.
+    async def _case_host_and_overlapping_write_coordination(*, write_outcome: str) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_coord_{write_outcome}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"base": 1})
+
+        async def _no_local(**_kwargs: object) -> None:
+            return None
+
+        write_rpc_entered = asyncio.Event()
+        release_write_rpc = asyncio.Event()
+
+        async def _write_rpc(**_kwargs: object) -> dict[str, object]:
+            write_rpc_entered.set()
+            await release_write_rpc.wait()
+            if write_outcome == "fail":
+                raise RuntimeError("rpc failed")
+            if write_outcome == "persisted_false":
+                return {
+                    "success": False,
+                    "plugin_id": "demo",
+                    "config": {"base": 1, "host": 2, "timer": 3},
+                    "requires_reload": False,
+                    "persisted": False,
+                    "message": "persisted=False",
+                }
+            return {"success": True, "config": {"base": 1, "timer": 3}}
+
+        ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _write_rpc  # type: ignore[method-assign]
+
+        handler_entered = asyncio.Event()
+        allow_host_fail = asyncio.Event()
+
+        async def _config_change(**_kwargs: object) -> None:
+            handler_entered.set()
+            await allow_host_fail.wait()
+            raise RuntimeError("host rejected")
+
+        sender = _FakeResponseSender()
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-coord-{write_outcome}",
+                    "config": {"base": 1, "host": 2},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _config_change}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        write_task: asyncio.Task[dict[str, object]] | None = None
+        try:
+            await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
+            write_task = asyncio.create_task(ctx.update_own_config({"timer": 3}))
+            await _wait_for_checkpoint_or_task_failure(write_rpc_entered, write_task)
+            allow_host_fail.set()
+            await cmd_task
+            assert sender.payloads[-1]["success"] is False
+
+            release_write_rpc.set()
+            if write_outcome == "fail":
+                with pytest.raises(RuntimeError, match="rpc failed"):
+                    await write_task
+                assert ctx._effective_config == {"base": 1}
+                assert instance.refreshed[-1] == {"base": 1}
+            elif write_outcome == "persisted_false":
+                res_write = await write_task
+                assert res_write["config"] == {"base": 1, "timer": 3}
+                assert ctx._effective_config == {"base": 1, "timer": 3}
+                assert instance.refreshed[-1] == {"base": 1, "timer": 3}
+            else:
+                await write_task
+                assert ctx._effective_config == {"base": 1, "timer": 3}
+                assert instance.refreshed[-1] == {"base": 1, "timer": 3}
+        finally:
+            allow_host_fail.set()
+            release_write_rpc.set()
+            for pending in (write_task, cmd_task):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            await asyncio.gather(
+                *(t for t in (write_task, cmd_task) if t is not None),
+                return_exceptions=True,
+            )
+
+    asyncio.run(_case_host_and_overlapping_write_coordination(write_outcome="fail"))
+    asyncio.run(_case_host_and_overlapping_write_coordination(write_outcome="persisted_false"))
+    asyncio.run(_case_host_and_overlapping_write_coordination(write_outcome="commit"))
+
+    # 3. Host hydration waits for in-flight optimistic write instead of merging unconfirmed draft.
+    async def _case_host_waits_for_in_flight_draft(*, write_succeeds: bool) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_wait_draft_{write_succeeds}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+
+        async def _local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        read_started = asyncio.Event()
+        release_read = asyncio.Event()
+        write_rpc_started = asyncio.Event()
+        release_write_rpc = asyncio.Event()
+
+        async def _host_get_own_config() -> dict[str, object]:
+            read_started.set()
+            await release_read.wait()
+            return {"config": {"base": 1}}
+
+        async def _write_rpc(**_kwargs: object) -> dict[str, object]:
+            write_rpc_started.set()
+            await release_write_rpc.wait()
+            if not write_succeeds:
+                raise RuntimeError("draft rejected")
+            return {"success": True, "config": {"base": 1, "draft": 1}}
+
+        ctx._get_local_config_payload = _local_payload  # type: ignore[method-assign]
+        ctx._send_request_and_wait_async = _write_rpc  # type: ignore[method-assign]
+        ctx.get_own_config = _host_get_own_config  # type: ignore[method-assign]
+
+        # Seed local config cache read helper so update_own_config installs an optimistic draft.
+        ctx._install_effective_config_value({"base": 1})
+        write_task = asyncio.create_task(ctx.update_own_config({"draft": 1}))
+        cmd_task: asyncio.Task[None] | None = None
+        sender = _FakeResponseSender()
+        try:
+            await _wait_for_checkpoint_or_task_failure(write_rpc_started, write_task)
+            assert ctx._effective_config == {"base": 1, "draft": 1}
+
+            # Reset effective_config=None while write is still in progress? Simulate host hydration path:
+            with ctx._get_config_state_lock():
+                ctx._effective_config = None
+
+            cmd_task = asyncio.create_task(
+                host_module._handle_config_update_command(
+                    msg={
+                        "req_id": f"req-wait-draft-{write_succeeds}",
+                        "config": {"host": 2},
+                        "mode": "temporary",
+                        "replace": False,
+                    },
+                    ctx=ctx,
+                    events_by_type={},
+                    plugin_id="demo",
+                    res_sender=sender,
+                    logger=_FakeLogger(),
+                )
+            )
+            # Re-install optimistic draft so _config_write_in_progress holds it before host applies merge.
+            await asyncio.sleep(0)
+            assert not cmd_task.done()
+            release_read.set()
+            release_write_rpc.set()
+            if not write_succeeds:
+                with pytest.raises(RuntimeError, match="draft rejected"):
+                    await write_task
+                await cmd_task
+                assert sender.payloads[-1]["success"] is True
+                assert ctx._effective_config == {"base": 1, "host": 2}
+                assert "draft" not in ctx._effective_config
+                assert instance.refreshed[-1] == {"base": 1, "host": 2}
+            else:
+                await write_task
+                await cmd_task
+                assert sender.payloads[-1]["success"] is True
+                assert ctx._effective_config == {"base": 1, "draft": 1, "host": 2}
+                assert instance.refreshed[-1] == {"base": 1, "draft": 1, "host": 2}
+        finally:
+            release_read.set()
+            release_write_rpc.set()
+            for pending in (cmd_task, write_task):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            await asyncio.gather(
+                *(t for t in (cmd_task, write_task) if t is not None),
+                return_exceptions=True,
+            )
+
+    asyncio.run(_case_host_waits_for_in_flight_draft(write_succeeds=False))
+    asyncio.run(_case_host_waits_for_in_flight_draft(write_succeeds=True))
+
+    # 4. Stale hydration read rejected by read guard on profile switch must retry and not publish stale home.
+    async def _case_stale_hydrate_retried_after_profile_switch() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_switch_retry" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+
+        first_read_started = asyncio.Event()
+        release_first_read = asyncio.Event()
+        read_calls = 0
+
+        async def _switching_get_own_config() -> dict[str, object]:
+            nonlocal read_calls
+            read_calls += 1
+            gen_before, read_id = ctx._begin_config_read()
+            if read_calls == 1:
+                first_read_started.set()
+                await release_first_read.wait()
+                stale_cfg = {"profile": "home"}
+                ctx._cache_effective_config_from_read(
+                    stale_cfg,
+                    gen_before=gen_before,
+                    read_id=read_id,
+                )
+                return {"config": stale_cfg}
+            fresh_cfg = {"profile": "work"}
+            ctx._cache_effective_config_from_read(
+                fresh_cfg,
+                gen_before=gen_before,
+                read_id=read_id,
+            )
+            return {"config": fresh_cfg}
+
+        ctx.get_own_config = _switching_get_own_config  # type: ignore[method-assign]
+        sender = _FakeResponseSender()
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-switch-retry",
+                    "config": {"host": 2},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx,
+                events_by_type={},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        try:
+            await _wait_for_checkpoint_or_task_failure(first_read_started, cmd_task)
+            ctx._invalidate_effective_config_for_profile_refresh()
+            release_first_read.set()
+            await cmd_task
+            assert read_calls == 2
+            assert sender.payloads[-1]["success"] is True
+            assert ctx._effective_config == {"profile": "work", "host": 2}
+            assert not any(snap.get("profile") == "home" for snap in instance.refreshed)
+            assert instance.refreshed[-1] == {"profile": "work", "host": 2}
+        finally:
+            release_first_read.set()
+            if not cmd_task.done():
+                cmd_task.cancel()
+            await asyncio.gather(cmd_task, return_exceptions=True)
+
+    asyncio.run(_case_stale_hydrate_retried_after_profile_switch())
+
+    # 5. Failed refresh_runtime_config must not overwrite _last_runtime_config_snapshot.
+    async def _case_failed_runtime_refresh_preserves_last_good_snapshot() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_failed_rt_snap" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance(fail_backend="json")
+        ctx._instance = instance
+
+        ctx._set_effective_config_cache({"plugin": {"state": {"backend": "sqlite"}}})
+        ctx._set_effective_config_cache({"plugin": {"state": {"backend": "json"}}})
+        ctx._invalidate_effective_config_for_profile_refresh()
+        assert ctx._effective_config is None
+
+        def _reject(**_kwargs: object) -> None:
+            raise RuntimeError("rejected")
+
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-rt-snap-rb",
+                "config": {"plugin": {"state": {"backend": "file"}}},
+                "mode": "temporary",
+                "replace": True,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _reject}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is False
+        assert ctx._effective_config is None
+        assert instance.refreshed[-1] == {"plugin": {"state": {"backend": "sqlite"}}}
+
+    asyncio.run(_case_failed_runtime_refresh_preserves_last_good_snapshot())

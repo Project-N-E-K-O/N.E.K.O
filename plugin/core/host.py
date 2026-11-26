@@ -858,17 +858,18 @@ async def _handle_config_update_command(
         merge_for_host = getattr(ctx, "_merge_effective_config_cache_for_host", None)
         apply_hydrated_merge_for_host = getattr(ctx, "_apply_hydrated_merge_for_host", None)
         rollback_for_host = getattr(ctx, "_rollback_effective_config_cache_for_host", None)
+        wait_write_settled = getattr(ctx, "_wait_for_in_flight_config_write", None)
         uses_context_publisher = (
             callable(replace_for_host)
             and callable(merge_for_host)
             and callable(apply_hydrated_merge_for_host)
             and callable(rollback_for_host)
+            and callable(wait_write_settled)
         )
         bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
         applied_config: dict[str, Any] | None = None
-        applied_gen = 0
-        applied_publish_seq = 0
+        applied_owner_token = 0
         rollback_runtime_snapshot: dict[str, Any] | None = None
 
         if uses_context_publisher:
@@ -878,25 +879,38 @@ async def _handle_config_update_command(
                     had_uncertain_config,
                     old_config,
                     applied_config,
-                    applied_gen,
-                    applied_publish_seq,
+                    applied_owner_token,
                     rollback_runtime_snapshot,
                 ) = replace_for_host(new_config)
                 logger.debug("[Plugin Process] Config cache replaced")
             else:
-                (
-                    had_cached_config,
-                    had_uncertain_config,
-                    old_config,
-                    applied_config,
-                    applied_gen,
-                    applied_publish_seq,
-                    pre_runtime_snapshot,
-                ) = merge_for_host(new_config, merge_fn=_deep_merge)
-                if had_cached_config:
-                    rollback_runtime_snapshot = old_config
-                    logger.debug("[Plugin Process] Config cache updated")
-                else:
+                merge_deadline = time.monotonic() + 10.0
+                applied_ok = False
+                for _ in range(8):
+                    (
+                        merge_status,
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_owner_token,
+                        expected_gen,
+                        pre_runtime_snapshot,
+                    ) = merge_for_host(new_config, merge_fn=_deep_merge)
+                    if merge_status == "merged":
+                        rollback_runtime_snapshot = old_config
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if merge_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+
                     base_config: dict[str, Any] = {}
                     get_own_config = getattr(ctx, "get_own_config", None)
                     if callable(get_own_config):
@@ -912,21 +926,42 @@ async def _handle_config_update_command(
                                 exc_info=True,
                             )
                     (
+                        apply_status,
                         had_cached_config,
                         had_uncertain_config,
                         old_config,
                         applied_config,
-                        applied_gen,
-                        applied_publish_seq,
+                        applied_owner_token,
+                        _post_gen,
                         rollback_runtime_snapshot,
                     ) = apply_hydrated_merge_for_host(
                         base_config=base_config,
                         new_config=new_config,
                         merge_fn=_deep_merge,
-                        expected_gen=applied_gen,
+                        expected_gen=expected_gen,
                         fallback_uncertain=had_uncertain_config,
                         pre_runtime_snapshot=pre_runtime_snapshot,
                     )
+                    if apply_status == "merged":
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if apply_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+                    if time.monotonic() >= merge_deadline:
+                        break
+                if not applied_ok:
+                    ret_payload["error"] = (
+                        "Config cache changed concurrently; temporary update could not be applied"
+                    )
+                    res_sender.put(ret_payload, timeout=10.0)
+                    return
         else:
             had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
             had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
@@ -989,8 +1024,7 @@ async def _handle_config_update_command(
                 # Restore prechange configuration.
                 if uses_context_publisher:
                     rolled_back = rollback_for_host(
-                        expected_gen=applied_gen,
-                        expected_publish_seq=applied_publish_seq,
+                        expected_owner_token=applied_owner_token,
                         had_cached=had_cached_config,
                         old_config=old_config,
                         uncertain=had_uncertain_config,
