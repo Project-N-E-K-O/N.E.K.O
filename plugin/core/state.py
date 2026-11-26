@@ -4,8 +4,10 @@ Plugin runtime-state module
 Manage global runtime state for the plugin system.
 """
 import asyncio
+import importlib
 import itertools
 import math
+import sys
 import threading
 import time
 import uuid
@@ -256,7 +258,9 @@ class GlobalState:
         self._pending_lifecycle_deletes: Dict[str, Dict[str, Any]] = {}
         self._pending_event_overflow: bool = False
         self._pending_lifecycle_overflow: bool = False
-        self._register_plane_bridge_flush_hook()
+        self._plane_bridge_flush_hook_registered: bool = False
+        if sys.modules.get("plugin.server.messaging.plane_bridge") is not None:
+            self._ensure_plane_bridge_flush_hook_registered()
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
@@ -1314,23 +1318,35 @@ class GlobalState:
         except Exception:
             return 0
 
-    def _register_plane_bridge_flush_hook(self) -> None:
-        try:
-            from plugin.server.messaging import plane_bridge
+    def _ensure_plane_bridge_flush_hook_registered(self) -> bool:
+        if self._plane_bridge_flush_hook_registered:
+            return True
+        with self._bus_store_lock:
+            if self._plane_bridge_flush_hook_registered:
+                return True
+            try:
+                plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
+                if plane_bridge is None:
+                    plane_bridge = importlib.import_module("plugin.server.messaging.plane_bridge")
+                    if self._plane_bridge_flush_hook_registered:
+                        return True
 
-            self_ref = weakref.ref(self)
+                self_ref = weakref.ref(self)
 
-            def _hook() -> None:
-                gs = self_ref()
-                if gs is not None:
-                    gs.flush_pending_message_plane_deletes()
+                def _hook() -> None:
+                    gs = self_ref()
+                    if gs is not None:
+                        gs.flush_pending_message_plane_deletes()
 
-            plane_bridge.register_pending_flush_hook(_hook)
-            weakref.finalize(self, plane_bridge.unregister_pending_flush_hook, _hook)
-        except Exception:
-            pass
+                plane_bridge.register_pending_flush_hook(_hook)
+                weakref.finalize(self, plane_bridge.unregister_pending_flush_hook, _hook)
+                self._plane_bridge_flush_hook_registered = True
+                return True
+            except Exception:
+                return False
 
     def flush_pending_message_plane_deletes(self) -> None:
+        self._ensure_plane_bridge_flush_hook_registered()
         if (
             not self._pending_event_deletes
             and not self._pending_event_overflow
@@ -1365,6 +1381,7 @@ class GlobalState:
             self._pending_lifecycle_overflow = value
 
     def _flush_pending_message_plane_deletes_locked(self, store: str) -> bool:
+        self._ensure_plane_bridge_flush_hook_registered()
         pending = self._pending_deletes_for_store(store)
         overflow = self._is_pending_overflow(store)
         if not pending and not overflow:
@@ -1413,6 +1430,7 @@ class GlobalState:
         record_id: str | None = None,
     ) -> bool:
         with self._bus_store_lock:
+            self._ensure_plane_bridge_flush_hook_registered()
             pending = self._pending_deletes_for_store(store)
             if pending is None:
                 try:

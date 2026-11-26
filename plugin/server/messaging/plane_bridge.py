@@ -143,8 +143,12 @@ def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
     return host, port
 
 
-def _is_reliable_delete_snapshot(msg: object) -> bool:
-    return isinstance(msg, dict) and msg.get("kind") == "snapshot" and msg.get("mode") == "delete"
+def _is_reliable_snapshot(msg: object) -> bool:
+    return (
+        isinstance(msg, dict)
+        and msg.get("kind") == "snapshot"
+        and msg.get("mode") in ("delete", "replace")
+    )
 
 
 class _Bridge:
@@ -380,7 +384,7 @@ class _Bridge:
                     if self._q.empty():
                         self._run_flush_hooks()
                 except (OSError, zmq.ZMQError):
-                    if _is_reliable_delete_snapshot(msg):
+                    if _is_reliable_snapshot(msg):
                         pending_msg = msg
                         stop.wait(0.05)
                     else:
@@ -397,6 +401,12 @@ _bridge = _Bridge()
 
 
 def start_bridge() -> None:
+    try:
+        from plugin.core.state import state as _global_state
+
+        _global_state._ensure_plane_bridge_flush_hook_registered()
+    except Exception:
+        pass
     _bridge.start()
 
 
