@@ -16,6 +16,7 @@ network uses; nothing else from the entries.
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import re
@@ -38,6 +39,10 @@ OUTCOME_BLOCKED = "blocked"
 NETWORK_CONNECT = "system.network:connect"
 RECENT_LIMIT = 50
 DAYS_KEPT = 31
+# Refusals kept per plugin and permission, as (time, count) batches; past
+# this the two oldest are merged (under the later time), so counts after a
+# cut-off stay exact unless the cut-off falls inside a merged batch.
+REFUSED_BATCHES = 32
 _ORIGINS_KEPT = 1024
 _FILE_NAME = "call_audit.jsonl"
 # Written once per host start (see record_coverage_start). Since then every
@@ -130,7 +135,8 @@ class UsageIndex:
         self._daily: dict[tuple[str, str], dict[date, int]] = {}
         # Uses judged not allowed, keyed by the plugin that lacked the
         # permission (for a call chain, each blocking member).
-        self._refused: dict[tuple[str, str], tuple[datetime, int]] = {}
+        # (plugin, permission) -> [(time, count)] in time order
+        self._refused: dict[tuple[str, str], list[tuple[datetime, int]]] = {}
         self._recent: dict[str, list[Use]] = {}
         self._origins: OrderedDict[str, str] = OrderedDict()
 
@@ -231,11 +237,11 @@ class UsageIndex:
                         del days[stale]
         for blocked in use.blocked_by:
             refused_key = (blocked, use.permission)
-            seen = self._refused.get(refused_key)
-            self._refused[refused_key] = (
-                max(seen[0], use.at) if seen else use.at,
-                (seen[1] if seen else 0) + use.count,
-            )
+            batches = self._refused.setdefault(refused_key, [])
+            bisect.insort(batches, (use.at, use.count))
+            if len(batches) > REFUSED_BATCHES:
+                (_first, first_count), (second, second_count) = batches[0], batches[1]
+                batches[:2] = [(second, first_count + second_count)]
         recent = self._recent.setdefault(use.permission, [])
         recent.append(use)
         if len(recent) > RECENT_LIMIT * 2:
@@ -348,12 +354,20 @@ class UsageIndex:
         with self._lock:
             self._refused.pop((plugin_id, permission), None)
 
-    def refused_uses(self) -> dict[tuple[str, str], tuple[datetime, int]]:
+    def refused_uses(self, after=None) -> dict[tuple[str, str], tuple[datetime, int]]:
         """``(plugin, permission) -> (last time, count)`` of uses judged not
-        allowed because that plugin lacked the permission."""
+        allowed because that plugin lacked the permission. ``after(plugin,
+        permission)``: count only the refusals later than the time it returns."""
         self.ensure_seeded()
         with self._lock:
-            return dict(self._refused)
+            refused = {key: list(batches) for key, batches in self._refused.items()}
+        out = {}
+        for key, batches in refused.items():
+            cutoff = after(*key) if after is not None else None
+            kept = [(at, count) for at, count in batches if cutoff is None or at > cutoff]
+            if kept:
+                out[key] = (kept[-1][0], sum(count for _at, count in kept))
+        return out
 
     def recent(self, permissions, limit: int = RECENT_LIMIT) -> list[Use]:
         """Newest first."""

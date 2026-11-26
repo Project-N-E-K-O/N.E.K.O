@@ -224,10 +224,13 @@ def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None =
     is waited for as ``budget`` allows (none: no wait).
     While an operation keeps it, or the lock file cannot be opened, the copy
     read last for plugin ``version`` is served without touching the file.
-    Otherwise, and when the file exists but cannot be read, the manifest is
-    unavailable (``{}``, which callers must not read as "declares nothing").
-    A read that does not give a usable manifest drops the copy. The caller
-    gets its own copy.
+    Otherwise, and when the file exists but cannot be read now, the
+    manifest is unavailable (``{}``, which callers must not read as "declares
+    nothing"). A file that is not a usable manifest (not a regular file, over
+    the size limit, not valid UTF-8 TOML) is unusable: ``{}`` that callers
+    read as "no usable declaration". A read that does not give a manifest,
+    unavailable or unusable, drops the copy: the copy is only served while
+    no read since has failed. The caller gets its own copy.
     """
     if root is None:
         return {}, MANIFEST_READ
@@ -647,7 +650,19 @@ def _incomplete(plugins: list[tuple[_PluginInputs, list[dict]]]) -> list[str]:
 
 def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex) -> dict:
     to_confirm, upgraded, inferred, first_use = [], [], [], []
-    refused = index.refused_uses()
+    records = {inputs.plugin_id: inputs.record for inputs, _rows in plugins}
+
+    def answered(plugin_id: str, permission: str) -> datetime | None:
+        record = records.get(plugin_id)
+        if record is None:
+            return None
+        stored = record.get("permissions") or {}
+        entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
+        return _answered_at(record, permission, entry)
+
+    # Only refusals after the user last answered, or after the code changed
+    # source, ask anything (nor count).
+    refused = index.refused_uses(after=answered)
     checks_off = _checks_off()
     for inputs, rows in plugins:
         # An unread declaration reads as none here; its rows have no
@@ -678,14 +693,10 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
         # Used while the user has not decided: not asked in a dialog, listed
         # here instead. Whatever the declaration and the scan say.
         states = record_states(inputs.record, checks_off=checks_off)
-        stored = inputs.record.get("permissions") or {}
         for permission in PERMISSION_IDS:
             seen = refused.get((inputs.plugin_id, permission))
             if seen is None or states[permission].status != "undecided":
                 continue
-            entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
-            if seen[0] <= _answered_at(inputs.record, permission, entry):
-                continue  # refused before the user last answered, or by the code before an update
             first_use.append(
                 {
                     "plugin_id": inputs.plugin_id,
@@ -853,8 +864,10 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     """Raise unless ``condition`` may be chosen when granting ``permission``.
 
     "Any time" needs the plugin to declare background use of it, or to have
-    no usable declaration (none, or an invalid ``[permissions]`` table, as in
-    the pending list): the item is then inferred from the scan.
+    no declaration (no manifest file, no or an invalid ``[permissions]``
+    table, as in the pending list): the item is then inferred from the scan.
+    A manifest that could not be read now (503) or is not usable (422) is
+    refused: what it declares is not known.
     """
     if state_value != "granted" or condition != CONDITION_ANYTIME:
         return

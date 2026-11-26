@@ -1627,3 +1627,32 @@ def test_a_plugin_without_a_manifest_file_is_kept_under_its_registered_version(e
     assert permission_panel.plugin_panel("bare", index=env.index)["manifest"] == "read"
     with _operation_running_elsewhere():
         assert permission_panel.plugin_panel("bare", index=env.index)["manifest"] == "cached"
+
+
+def test_first_use_counts_only_refusals_after_the_last_answer(env):
+    env.plugin("legacy", manifest=None, report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    now = datetime.now(timezone.utc)
+    for minutes in (30, 20, 10):  # before the answer, as rebuilt from the audit files
+        env.index.observe(_system_use("legacy", SPAWN, verdict="would_deny", reason="undecided",
+                                      ts=(now - timedelta(minutes=minutes)).isoformat()))
+    env.store.decide("legacy", SPAWN, "granted")
+    env.store.clear("legacy", SPAWN)  # the user answered: back to undecided
+    env.index.observe(_system_use("legacy", SPAWN, verdict="would_deny", reason="undecided",
+                                  ts=(now + timedelta(minutes=1)).isoformat()))
+    rows = permission_panel.pending(index=env.index)["first_use"]
+    assert [(row["permission"], row["count"]) for row in rows] == [(SPAWN, 1)]
+
+
+def test_refusal_batches_stay_bounded_and_keep_the_total(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
+    index = _index(tmp_path)
+    for minutes in (50, 40, 30, 20, 10):
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
+    assert len(index._refused[("a", MEMORY)]) == 3
+    assert index.refused_uses() == {("a", MEMORY): (NOW - timedelta(minutes=10), 5)}
+    cutoff = NOW - timedelta(minutes=25)
+    assert index.refused_uses(after=lambda _p, _q: cutoff) == {("a", MEMORY): (NOW - timedelta(minutes=10), 2)}
