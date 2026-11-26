@@ -1260,7 +1260,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
             # its reported id, within the cleanup budget. If a handler is
             # back (a sync register_llm_tool, which does not take the name
             # lock, ran meanwhile), that registration may be the live one:
-            # leave it, and its refusal stays in the result.
+            # leave it, and its refusal stays in the result. Checked once:
+            # a sync register landing after this check is not seen.
             result = await self._remove_reported_llm_tool_registrations(
                 meta.name, meta.role, result, deadline, _LLM_TOOL_CLEANUP_TIMEOUT,
             )
