@@ -197,6 +197,17 @@ test('leaves a hover text it did not put there alone', () => {
     assert.equal(h.header.getAttribute('data-neko-tooltip'), 'someone else');
 });
 
+test('puts back a hover text it covered while the ball said what waits', () => {
+    const h = createHarness();
+    h.header.setAttribute('data-neko-tooltip', 'someone else');
+    h.parts.handleNekoPowerAskWaitingChange(true);
+    assert.equal(h.header.getAttribute('data-neko-tooltip'), 'A question waits');
+    // Said again (the language changed): what it covered is still the other one's.
+    h.changeLocale('喵能力在等你回话');
+    h.parts.handleNekoPowerAskWaitingChange(false);
+    assert.equal(h.header.getAttribute('data-neko-tooltip'), 'someone else');
+});
+
 test('the host hands the React chat the callback that tells it', () => {
     assert.match(
         GEOMETRY_SOURCE,

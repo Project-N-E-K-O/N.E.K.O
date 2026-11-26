@@ -25,7 +25,7 @@ function Clear() {
   return <button data-clear="true" onClick={clearScreen}>clear</button>;
 }
 
-function report(messages: ChatMessage[], onChange: (waiting: boolean) => void) {
+function report(messages: ChatMessage[], onChange?: (waiting: boolean) => void) {
   return (
     <ChatScreenVisibilityProvider messages={messages}>
       <Clear />
@@ -58,6 +58,15 @@ describe('whether the ball the chat folds into is marked', () => {
     expect(later).not.toHaveBeenCalled();
     view.rerender(report([other], later));
     expect(later.mock.calls).toEqual([[false]]);
+  });
+
+  it('is told once there is someone to tell, and that nothing waits when the chat is taken down', () => {
+    const onChange = vi.fn();
+    const view = render(report([ask()]));
+    view.rerender(report([ask()], onChange));
+    expect(onChange.mock.calls).toEqual([[true]]);
+    view.unmount();
+    expect(onChange.mock.calls).toEqual([[true], [false]]);
   });
 
   it('does not count a question the screen was cleared of, as the compact chat would not show it', () => {

@@ -25,12 +25,16 @@ export function NekoPowerAskWaitingReport({ messages, onChange }: {
 }) {
   const { isMessageHidden } = useChatScreenVisibility();
   const waiting = pendingNekoPowerAsk(messages.filter(message => !isMessageHidden(message))) !== null;
-  // The host's callback comes wrapped anew with every drawing: told once for each change, not each time.
+  // The host's callback comes wrapped anew with every drawing: told once for each change, not each
+  // time; and once more when there comes to be someone to tell.
   const tell = useRef(onChange);
   tell.current = onChange;
+  const listened = Boolean(onChange);
   useEffect(() => {
     tell.current?.(waiting);
-  }, [waiting]);
+  }, [waiting, listened]);
+  // Gone (the chat is taken down): nothing it shows waits any more.
+  useEffect(() => () => tell.current?.(false), []);
   return null;
 }
 

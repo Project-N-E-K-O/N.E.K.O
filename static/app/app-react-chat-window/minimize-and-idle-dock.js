@@ -1419,8 +1419,10 @@
     // react-chat-window:nekopower-ask-waiting-change 事件自己画。
     I.nekoPowerAskWaiting = false;
     var NEKOPOWER_ASK_BADGE_CLASS = 'react-chat-minimized-ask-badge';
-    // 本模块给小球加的悬停说明：只在小球态、有问话在等时挂上，别的时候拿掉。
+    // 本模块给小球加的悬停说明：只在小球态、有问话在等时挂上，别的时候拿掉。挂上前手柄上
+    // 若已有别人的说明，先记着，拿掉时还原（null 表示原来没有）。
     var nekoPowerAskBadgeTooltipShown = false;
+    var nekoPowerAskBadgeReplacedTooltip = null;
 
     function nekoPowerAskWaitingLabel() {
         return I.getI18nText('chat.nekoPowerAskWaitingBadge', '喵能力在等你回话');
@@ -1450,11 +1452,16 @@
         var handle = I.getHeader();
         if (!handle) return;
         if (waiting && I.minimized) {
+            if (!nekoPowerAskBadgeTooltipShown) {
+                nekoPowerAskBadgeReplacedTooltip = handle.getAttribute('data-neko-tooltip');
+            }
             handle.setAttribute('data-neko-tooltip', nekoPowerAskWaitingLabel());
             nekoPowerAskBadgeTooltipShown = true;
         } else if (nekoPowerAskBadgeTooltipShown) {
-            handle.removeAttribute('data-neko-tooltip');
+            if (nekoPowerAskBadgeReplacedTooltip === null) handle.removeAttribute('data-neko-tooltip');
+            else handle.setAttribute('data-neko-tooltip', nekoPowerAskBadgeReplacedTooltip);
             nekoPowerAskBadgeTooltipShown = false;
+            nekoPowerAskBadgeReplacedTooltip = null;
         }
     };
 
