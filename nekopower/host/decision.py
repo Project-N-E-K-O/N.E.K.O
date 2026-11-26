@@ -602,9 +602,11 @@ def _offered(question: dict[str, Any]) -> set[str]:
 
 
 def _kin(one: Commission, other: Commission) -> bool:
-    """Whether two commissions are of one project or one familiar's (its session)."""
+    """Whether two commissions are of one project, one familiar's (its session) or one plugin's."""
     return bool(
-        (one.project and one.project == other.project) or (one.session_id and one.session_id == other.session_id)
+        (one.project and one.project == other.project)
+        or (one.session_id and one.session_id == other.session_id)
+        or (one.plugin_id and one.plugin_id == other.plugin_id)
     )
 
 
@@ -906,13 +908,6 @@ class LexicalDecisionModel:
         picked = [numbered[number - 1] for number in _numbers(reading.get("items"), len(numbered))]
         if does == "new":
             return None, 1, False
-        if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
-            # It means one of these and cannot say which (an answer or an
-            # addition is to one): which, the user is asked.
-            return Triage(kind="ambiguous", targets=[item.id for _place, item in picked], model_calls=1), 1, False
-        # Whether the sentence itself says which item it means (names its
-        # work, project, familiar, command, file or an option it picks).
-        said_which = reading.get("named") is True
         # What waits for the user, all of it: the list may have left some out,
         # and those count as much when the user is to be asked which.
         all_waiting = {
@@ -920,6 +915,22 @@ class LexicalDecisionModel:
             if item.status == "waiting_user" and item.question()
         }
         waiting = list(all_waiting)
+        approvals = [item_id for item_id, item in all_waiting.items() if (item.question() or {}).get("kind") == "permission"]
+
+        def which(targets: list[str]) -> tuple[Triage | None, int, bool]:
+            # Which, the user is asked. Among several requests for approval,
+            # words would say no more when asked again: she is told the
+            # buttons on each question do.
+            by_buttons = sum(target in approvals for target in targets) > 1
+            return Triage(kind="ambiguous", targets=targets, by_buttons=by_buttons, model_calls=1), 1, False
+
+        if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
+            # It means one of these and cannot say which (an answer or an
+            # addition is to one): which, the user is asked.
+            return which([item.id for _place, item in picked])
+        # Whether the sentence itself says which item it means (names its
+        # work, project, familiar, command, file or an option it picks).
+        said_which = reading.get("named") is True
 
         def answered(target: Commission, choice: str | None, calls: int = 1) -> tuple[Triage | None, int, bool]:
             # (A choice is read for a request for approval alone.) Read from
@@ -929,10 +940,13 @@ class LexicalDecisionModel:
             # wrong, or steered, never opens more than that one request. The
             # receipt says the buttons do more.
             narrowed = choice in ("always", "session")
+            # Narrowed all the same where the question does not offer it
+            # (always asked: once or deny), with nothing said of buttons it has not.
+            offered_here = narrowed and choice in ((target.question() or {}).get("options") or [])
             return (
                 Triage(
                     kind="answer", targets=[target.id], choice="once" if narrowed else choice,
-                    narrowed=narrowed, model_calls=calls,
+                    narrowed=offered_here, model_calls=calls,
                 ),
                 calls,
                 False,
@@ -942,25 +956,23 @@ class LexicalDecisionModel:
         if does == "answer" and picked:
             _place, target = picked[0]
             if target.status == "waiting_user" and target.question():
-                # An answer the target offers that another question waiting
-                # offers too ("Cats" to two that offer Cats / Dogs) names
-                # neither, whatever the model makes of it.
+                # The answers of the target that were said, when another
+                # question waiting offers each of them too ("Cats" to two that
+                # offer Cats / Dogs), name neither, whatever the model makes of
+                # it. One only the target offers ("Dogs for the post") names it.
                 offered = _offered(target.question() or {})
-                shared = (target.question() or {}).get("kind") != "permission" and any(
-                    offered & _offered(other.question() or {})
-                    for other_id, other in all_waiting.items()
-                    if other_id != target.id
-                )
+                elsewhere: set[str] = set()
+                for other_id, other in all_waiting.items():
+                    if other_id != target.id:
+                        elsewhere |= _offered(other.question() or {})
+                spoken = f"{request.user_text} {request.dispatch_text}".casefold()
+                mentioned = {label for label in offered if label in spoken}
+                shared = bool(mentioned) and mentioned <= elsewhere
                 if (not said_which or shared) and len(waiting) > 1:
                     # A plain "yes" with several questions waiting: which, the
                     # user is asked, and none of them is answered on a guess.
-                    return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
+                    return which(waiting)
                 if (target.question() or {}).get("kind") == "permission":
-                    approvals = [
-                        item_id
-                        for item_id, item in all_waiting.items()
-                        if (item.question() or {}).get("kind") == "permission"
-                    ]
                     if len(approvals) > 1:
                         # Several requests for approval wait: which this allows
                         # or refuses, the user is asked, however plainly the
@@ -969,11 +981,7 @@ class LexicalDecisionModel:
                         # decided by a reading words a task agent wrote could
                         # steer.) Asked again, the words would say no more:
                         # she is told the buttons on each question do.
-                        return (
-                            Triage(kind="ambiguous", targets=approvals, by_buttons=True, model_calls=1),
-                            1,
-                            False,
-                        )
+                        return which(approvals)
                     # What it chose is read apart, from the user's words alone.
                     return answered(target, await self._read_choice(request, target), calls=2)
                 return answered(target, None)
@@ -1018,8 +1026,15 @@ class LexicalDecisionModel:
             # A plugin run takes no addition, and what a task agent of hers
             # started is that one's business: work of its own.
             return None, 1, False
-        # (What the model wrote is not logged: it may repeat what was said.)
-        logger.warning("what a request does with the work under way could not be read: %s", "unknown reading" if does else "nothing said")
+        # (What the model wrote is not logged: it may repeat what was said. A
+        # label it gave is one of those known, and is.)
+        if not does:
+            why = "nothing said"
+        elif does in ("answer", "stop", "add", "unsure"):
+            why = f"{does} names nothing it can be"
+        else:
+            why = "unknown reading"
+        logger.warning("what a request does with the work under way could not be read: %s", why)
         return None, 1, True
 
     async def _read_choice(self, request: DecisionRequest, target: Commission) -> str | None:
@@ -1029,8 +1044,9 @@ class LexicalDecisionModel:
         has read the sentence as its answer: asked within that longer
         request, the small model read a plain yes as "always" more often.
         It is shown what kind of thing is asked in the host's own words
-        (``reports.permission_kind``), the answers on offer and what was
-        said, and nothing a task agent wrote: not the command, the path or
+        (``reports.permission_kind``), the answers on offer and what the
+        user said (her words only where the user's are not there), and
+        nothing a task agent wrote: not the command, the path or
         the title of what asks, which could otherwise say what to choose.
         The choice comes from the user's words alone. One that says it is no answer after
         all, names no choice, fails or comes too late is an answer not
@@ -1048,9 +1064,11 @@ class LexicalDecisionModel:
         question = target.question() or {}
         names = PERMISSION_OPTION_NAMES["en"]
         offered = [names[option] for option in question.get("options") or [] if option in names]
-        asked = build_choice_request(
-            asks=permission_kind(question), offered=offered, task=request.dispatch_text, user_said=request.user_text
-        )
+        # The user's own words where they are there: hers retell them, and
+        # what is allowed is read from what the user said. (Without them, as
+        # for words not taken down in this turn, from hers.)
+        said = request.user_text.strip() or request.dispatch_text
+        asked = build_choice_request(asks=permission_kind(question), offered=offered, said=said)
         messages = [{"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT}, {"role": "user", "content": asked}]
         try:
             raw = await asyncio.wait_for(self._llm.complete(TIER_ANSWER_CHOICE, messages), UNDER_WAY_READ_SECONDS)

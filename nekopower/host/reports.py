@@ -454,20 +454,24 @@ class Reporter:
         }
         return await self._add(commission, KIND_CORRECTION, payload)
 
-    async def receipt(self, lanlan_name: str, *, kind: str, text: str, commission: Commission | None = None) -> int:
+    async def receipt(
+        self, lanlan_name: str, *, kind: str, text: str, commission: Commission | None = None, urgent: bool = False
+    ) -> int:
         """Report the conclusion of a first round that outlasted its budget.
 
         She answered "received" meanwhile. A conclusion that agrees with that
         (accepted, passed on, stopped) comes along with her next turn; one
         she has to act on (nothing can do it, it repeats something, it is
-        unclear which task is meant) wakes her.
+        unclear which task is meant) wakes her, and so does one that is
+        ``urgent`` (what the sentence did with the work could not be told:
+        taken for new work, a question it may have answered still waits).
         """
         payload = {
             "lanlan_name": lanlan_name,
             "task_id": commission.id if commission else None,
             "receipt": kind,
             "text": text,
-            "delivery_mode": "passive" if kind in QUIET_RECEIPTS else "proactive",
+            "delivery_mode": "passive" if kind in QUIET_RECEIPTS and not urgent else "proactive",
         }
         return await self._add(commission, KIND_RECEIPT, payload)
 

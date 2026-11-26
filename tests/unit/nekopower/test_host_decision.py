@@ -976,10 +976,15 @@ async def test_with_several_requests_for_approval_waiting_the_user_is_asked_whic
     llm = _reading({"does": "answer", "items": [3], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[build, delete, asks]))
     assert (triage.kind, triage.targets, triage.by_buttons) == ("answer", ["c3"], False)
-    # A plain "yes" with several waiting is asked about as before, with nothing said of the buttons.
-    llm = _reading({"does": "answer", "items": [3], "named": False})
-    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
-    assert (triage.kind, triage.by_buttons) == ("ambiguous", False)
+    # A plain "yes", or one the model reads as both: asked which, and told of the buttons as well.
+    for reading in ({"does": "answer", "items": [3], "named": False}, {"does": "answer", "items": [1, 2]}):
+        llm = _reading(reading)
+        triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
+        assert (triage.kind, triage.by_buttons) == ("ambiguous", True), reading
+    # With one request for approval among them, words can say which: nothing is said of the buttons.
+    llm = _reading({"does": "answer", "items": [1], "named": False})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, asks]))
+    assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c3"], False)
 
 
 async def test_a_request_for_approval_left_out_of_the_list_counts_all_the_same(monkeypatch):
@@ -1014,8 +1019,14 @@ async def test_an_answer_another_question_offers_too_names_neither():
     llm = _reading({"does": "answer", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
     assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2"])
-    # One no other question offers is answered.
+    # An answer only the one it names offers names it ("Dogs" when the card offers Cats / Birds).
     post = _waiting("c1", "write a post", pets)
+    card = _waiting("c2", "make a card", {"kind": "question", "question": "Which one?", "options": ["Cats", "Birds"]})
+    for said, read in (("the post picture: Dogs", ("answer", ["c1"])), ("Cats", ("ambiguous", ["c1", "c2"]))):
+        llm = _reading({"does": "answer", "items": [1], "named": True})
+        triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
+        assert (triage.kind, triage.targets) == read, said
+    # One no other question offers is answered.
     card = _waiting("c2", "make a card", {"kind": "question", "question": "Which colour?", "options": ["Red", "Blue"]})
     llm = _reading({"does": "answer", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
@@ -1038,6 +1049,11 @@ async def test_a_stop_of_several_while_some_work_was_not_shown_asks_which(monkey
     scout = [commission(f"c{n}", f"look up page {n}", route="task_agent", session_id="s-scout") for n in (1, 2, 3)]
     llm = _reading({"does": "stop", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop page 1", active=scout))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c3"])
+    # So for what one plugin runs ("stop the weather lookups").
+    weather = [commission(f"c{n}", f"weather in city {n}", route="plugin", plugin_id="weather") for n in (1, 2, 3)]
+    llm = _reading({"does": "stop", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("stop city 1", active=weather))
     assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c3"])
     # One it names, of which nothing was left out, is stopped.
     mixed = [*shop[:2], commission("c3", "write the cat food post", route="task_agent", project="Blog")]
@@ -1099,10 +1115,11 @@ async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choo
         request("yes, build it", user_text="yes, build it please", active=[build, other])
     )
 
-    # Read from words, "always" and "session" allow the one request: the buttons alone do more.
+    # Read from words, "always" and "session" allow the one request: the buttons alone do more. This
+    # question offers once and deny only, so nothing is said of buttons it has not.
     narrowed = chose in ("always", "session")
     assert (triage.kind, triage.targets, triage.choice, triage.narrowed, triage.model_calls, calls) == (
-        "answer", ["c1"], "once" if narrowed else chose, narrowed, 2, 2,
+        "answer", ["c1"], "once" if narrowed else chose, False, 2, 2,
     )
     # Shown what kind of thing is asked in the host's words, the answers on
     # offer and what was said, and nothing a task agent wrote.
@@ -1111,8 +1128,8 @@ async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choo
     assert user["content"].splitlines() == [
         "QUESTIONS:",
         "1. (asks for approval) It asks to run the command. The answers on offer: allow this once / deny",
-        "REQUEST: yes, build it",
-        "WHAT THE USER SAID: yes, build it please",
+        # What is allowed is read from the user's own words, not hers that retell them.
+        "REQUEST: yes, build it please",
     ]
 
 
@@ -1152,13 +1169,15 @@ def test_what_a_request_for_approval_asks_is_put_in_the_hosts_words_alone(questi
     assert permission_kind({"kind": "permission", **question}) == words
 
 
-async def test_what_the_user_said_is_shown_to_the_reading_of_a_choice_only_where_it_differs():
-    llm = _reading({"does": "answer", "items": [1]})
+async def test_what_an_answer_chose_is_read_from_her_words_only_where_the_users_are_not_there():
     build = _waiting("c1", "build the shop site", _BUILD)
+    for user_text, read in (("no, do not run it", "REQUEST: no, do not run it"), ("", "REQUEST: yes, run it")):
+        llm = _reading({"does": "answer", "items": [1]})
 
-    await LexicalDecisionModel(llm).read_under_way(request("yes", user_text="yes", active=[build]))
+        await LexicalDecisionModel(llm).read_under_way(request("yes, run it", user_text=user_text, active=[build]))
 
-    assert "WHAT THE USER SAID" not in llm.choice_calls[-1][-1]["content"]
+        shown = llm.choice_calls[-1][-1]["content"]
+        assert read in shown.splitlines() and "WHAT THE USER SAID" not in shown, user_text
 
 
 async def test_what_an_answer_chose_that_is_not_read_in_time_is_not_understood(monkeypatch, caplog):

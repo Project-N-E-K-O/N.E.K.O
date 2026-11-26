@@ -114,8 +114,11 @@ class Receipt:
     # For "ambiguous" among several requests for approval (``Triage.by_buttons``):
     # the receipt says the buttons on each question tell which.
     by_buttons: bool = False
-    # For "stop_failed" (the commissions it could not stop): those it did stop.
+    # For "stop_failed" (the commissions it could not stop): those it did stop,
+    # and those it stopped though what they were running could not all be told
+    # to end.
     stopped: list[Commission] = field(default_factory=list)
+    unconfirmed: list[Commission] = field(default_factory=list)
 
     @property
     def commission_id(self) -> str | None:
@@ -277,11 +280,15 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
         said = templates["ambiguous"].format(candidates=candidates)
         return f"{said} {templates['by_buttons']}" if receipt.by_buttons else said
     if receipt.kind == "stop_failed":
-        said = templates["stop_failed"].format(title=templates["joined"].join(item.title for item in receipt.commissions))
-        if receipt.stopped:
-            done = templates["stopped"].format(title=templates["joined"].join(item.title for item in receipt.stopped))
-            said = f"{done} {said}"
-        return said
+        said = []
+        for key, items in (
+            ("stopped", receipt.stopped),
+            ("stop_unconfirmed", receipt.unconfirmed),
+            ("stop_failed", receipt.commissions),
+        ):
+            if items:
+                said.append(templates[key].format(title=templates["joined"].join(item.title for item in items)))
+        return " ".join(said)
     if receipt.kind == "stopped" and len(receipt.commissions) > 1:
         title = templates["joined"].join(commission.title for commission in receipt.commissions)
     template = templates.get(receipt.kind)
@@ -595,6 +602,9 @@ class TaskBrain:
                     kind=receipt.kind,
                     text=receipt.text(lang),
                     commission=receipt.commissions[0] if receipt.commissions else None,
+                    # Not told in time what it did with the work: she says so
+                    # now, as a question it may have answered still waits.
+                    urgent=receipt.unread,
                 )
             )
 
@@ -648,6 +658,8 @@ class TaskBrain:
             # one that ended meanwhile or was stopped from the board, nor one
             # that is gone); one it could not stop is said to be so.
             stopped: list[Commission] = []
+            # Stopped, though what was running could not all be told to end.
+            unconfirmed: list[Commission] = []
             not_stopped: list[Commission] = []
             for target in targets:
                 if self._closed:
@@ -655,26 +667,22 @@ class TaskBrain:
                     # more is begun after it.
                     break
                 try:
-                    after, moved = await self._stop(target.id, reason="stopped through a dispatch", notify=False)
+                    after, moved, failed = await self._stop(target.id, reason="stopped through a dispatch", notify=False)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - the others are stopped all the same
+                    # Its status was not written: it goes on as it was.
                     logger.warning("stopping commission %s through a dispatch failed", target.id, exc_info=True)
-                    # Stopped once its status is written (nothing running can
-                    # change it then), though what followed failed.
-                    try:
-                        after = await self._ledger.get(target.id)
-                    except Exception:  # noqa: BLE001 - not known: not said to be stopped
-                        after = None
-                    if after is not None and after.status == "cancelled":
-                        stopped.append(after)
-                    else:
-                        not_stopped.append(target)
+                    not_stopped.append(target)
                     continue
+                if failed is not None:
+                    logger.warning("ending what commission %s was running failed", target.id, exc_info=failed)
                 if moved and after is not None:
-                    stopped.append(after)
-            if not_stopped:
-                return Receipt(kind="stop_failed", commissions=not_stopped, stopped=stopped, model_calls=calls)
+                    (stopped if failed is None else unconfirmed).append(after)
+            if not_stopped or unconfirmed:
+                return Receipt(
+                    kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed, model_calls=calls
+                )
             if not stopped:
                 return Receipt(kind="nothing_active", model_calls=calls)
             return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
@@ -683,6 +691,13 @@ class TaskBrain:
             is_permission = (target.question() or {}).get("kind") == "permission"
             if is_permission and triage.choice is None:
                 return Receipt(kind="unclear_answer", commissions=[target], model_calls=calls)
+            # Not when NekoPower was switched off, or everything stopped, while
+            # the answer was read (two requests to a model): what it allows
+            # would start the work again.
+            if not self._is_enabled():
+                return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+            if generation != self._dispatch_generation:
+                return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
             # As the answer to the question it was read against: that one
             # may be answered, or gone, by now, with another in its place.
             delivered = await self.answer(
@@ -1254,10 +1269,15 @@ class TaskBrain:
         that goes away once the status is written does not leave the plugin
         run or the task agent going.
         """
-        return (await self._stop(commission_id, reason=reason, notify=notify))[0]
+        after, _moved, failed = await self._stop(commission_id, reason=reason, notify=notify)
+        if failed is not None:
+            raise failed
+        return after
 
-    async def _stop(self, commission_id: str, *, reason: str, notify: bool) -> tuple[Commission | None, bool]:
-        """``abort``, and whether this call is what stopped it (not one that was over already)."""
+    async def _stop(
+        self, commission_id: str, *, reason: str, notify: bool
+    ) -> tuple[Commission | None, bool, Exception | None]:
+        """``abort``, whether this call is what stopped it (not one that was over already), and what failed after its status was written."""
         caller = asyncio.current_task()
         stopping = asyncio.ensure_future(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
         self._stopping.add(stopping)
@@ -1266,10 +1286,10 @@ class TaskBrain:
 
     async def _abort(
         self, commission_id: str, *, reason: str, notify: bool, caller: asyncio.Task[Any] | None
-    ) -> tuple[Commission | None, bool]:
+    ) -> tuple[Commission | None, bool, Exception | None]:
         commission = await self._ledger.get(commission_id)
         if commission is None:
-            return None, False
+            return None, False, None
         report = None
         if notify:
             report = self._reporter.task_result_report(
@@ -1292,17 +1312,30 @@ class TaskBrain:
             # Already ended, yet a plugin run whose cancel did not get through
             # may still be going: a stop asks for that cancel again.
             if self._runner.active_runs(commission_id):
-                await self._runner.cancel_commission(commission_id, reason)
-            return commission, False
+                try:
+                    await self._runner.cancel_commission(commission_id, reason)
+                except Exception as exc:  # noqa: BLE001 - handed back to the caller
+                    return commission, False, exc
+            return commission, False, None
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
             timer.cancel()
-        await self._runner.cancel_commission(commission_id, reason)
+        # What runs is told to end, each part on its own: one that fails does
+        # not leave the others going. The first failure is handed back with
+        # the commission, stopped all the same (its status is written).
+        failed: Exception | None = None
+        try:
+            await self._runner.cancel_commission(commission_id, reason)
+        except Exception as exc:  # noqa: BLE001 - the task agent is closed all the same
+            failed = exc
         work = self._work.get(commission_id)
         if work is not None and work is not caller:
             work.cancel()
         if self._task_agents is not None:
-            await self._task_agents.abort(commission_id)
+            try:
+                await self._task_agents.abort(commission_id)
+            except Exception as exc:  # noqa: BLE001 - handed back, as the one above
+                failed = failed or exc
         target = (
             # Without an entry id the plugin alone names it, not "<plugin>.None".
             (f"{commission.plugin_id}.{commission.entry_id}" if commission.entry_id else str(commission.plugin_id))
@@ -1311,14 +1344,17 @@ class TaskBrain:
         )
         if commission.route == "plugin" and commission.plugin_id and commission.parent_id is None:
             # Being stopped hints at how such things should not be done.
-            await self._preferences.observe(
-                describe_stop(commission.title, target),
-                kind="capability",
-                lanlan_name=commission.lanlan_name,
-                source_commission=commission.id,
-                same_tendency_prefix=stop_tendency_prefix(target),
-            )
-        return moved.commission, True
+            try:
+                await self._preferences.observe(
+                    describe_stop(commission.title, target),
+                    kind="capability",
+                    lanlan_name=commission.lanlan_name,
+                    source_commission=commission.id,
+                    same_tendency_prefix=stop_tendency_prefix(target),
+                )
+            except Exception:  # noqa: BLE001 - a hint, and nothing of the stop
+                logger.warning("noting the stop of commission %s as a preference failed", commission_id, exc_info=True)
+        return moved.commission, True, failed
 
     async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
         """Pass a sentence on to a commission. Only a task agent can take one.
