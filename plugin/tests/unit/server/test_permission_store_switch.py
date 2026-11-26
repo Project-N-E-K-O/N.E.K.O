@@ -643,3 +643,39 @@ async def test_a_switch_change_is_logged(switch_env, monkeypatch):
     monkeypatch.setattr(plugin_permission_switch, "logger", log)
     await _request("PUT", {"disabled": True}, TOKEN)
     assert log.lines == [("warning", "permission master switch host setting set: checks_disabled=True")]
+
+
+@pytest.mark.parametrize("value", ["imported", 3, ["absent"]])
+def test_a_malformed_legacy_import_entry_does_not_break_the_store(manager, logged, monkeypatch, value):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    _legacy(manager)
+    manager.root.joinpath("plugin_permissions.json").write_text(
+        json.dumps({"schema_version": 1, "legacy_import": value, "plugins": {}}), encoding="utf-8"
+    )
+    store = PluginPermissionStore(manager)
+
+    assert store.read("a") == {}
+    store.decide("a", MEMORY, "granted")
+    assert store.legacy_import()["imported_at"] is None
+    assert _marker(manager).is_file()  # treated as unknown: the legacy file is marked
+    errors = [line for level, line in logged.lines if level == "error"]
+    assert errors == [f"plugin permission store has a malformed legacy_import entry (ignored): type={type(value).__name__}"]
+
+
+def test_listeners_with_the_same_name_are_tracked_apart(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+
+    def make(fail):
+        def listener(_ids):
+            if fail["now"]:
+                raise RuntimeError("boom")
+        return listener
+
+    failing, working = {"now": True}, {"now": False}
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [make(failing), make(working)])
+    store = PluginPermissionStore(manager)
+    store.decide("a", MEMORY, "granted")
+    store.decide("a", MEMORY, "denied")
+
+    assert not any(level == "info" for level, _ in logged.lines)  # the working one recovers nothing
+    assert sum(1 for level, _ in logged.lines if level == "error") == 1  # still rate-limited

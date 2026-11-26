@@ -184,7 +184,9 @@ def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
     for listener in listeners:
         # Tracked per listener, so one working listener does not report
         # another one as recovered.
-        operation = "listener:" + str(getattr(listener, "__qualname__", type(listener).__name__))
+        # By identity: two callbacks can share a name (same factory, or
+        # methods of two instances of one class).
+        operation = f"listener:{getattr(listener, '__qualname__', type(listener).__name__)}:{id(listener)}"
         try:
             listener(plugin_ids)
         except Exception as exc:
@@ -238,6 +240,21 @@ CORRUPT = "PLUGIN_PERMISSIONS_CORRUPT"  # content is not a valid store
 UNSUPPORTED_VERSION = "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"  # written by a newer version
 READ_ERROR_CODES = frozenset({READ_FAILED, CORRUPT, UNSUPPORTED_VERSION})
 WRITE_FAILED = "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+
+def _legacy_import_info(document: dict) -> dict:
+    """The document's ``legacy_import`` summary; ``{}`` when it is missing or
+    not a table (a hand-edited or damaged file), so loading never fails on it."""
+    value = document.get("legacy_import")
+    if value is None or isinstance(value, dict):
+        return value or {}
+    _errors.failed(
+        "legacy_import_shape",
+        type(value).__name__,
+        "plugin permission store has a malformed legacy_import entry (ignored): type={}",
+        type(value).__name__,
+    )
+    return {}
 
 
 def _marker_present(path) -> bool:
@@ -414,7 +431,7 @@ class PluginPermissionStore:
         holding the import is on disk. Best effort: a failed write is retried
         on the next load."""
         legacy = path.with_name(LEGACY_FILENAME)
-        if (document.get("legacy_import") or {}).get("status") == "absent":
+        if _legacy_import_info(document).get("status") == "absent":
             # The store was created without a legacy file: there was nothing
             # to import, so a file that appeared since is not marked.
             return
@@ -593,7 +610,7 @@ class PluginPermissionStore:
             self._load()
             return {
                 "imported_at": self._document.get("imported_at"),
-                **copy.deepcopy(self._document.get("legacy_import") or {}),
+                **copy.deepcopy(_legacy_import_info(self._document)),
             }
 
     def read(self, plugin_id: str) -> dict:

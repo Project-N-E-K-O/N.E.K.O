@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from plugin import settings
 from plugin.core.call_registry import CallLink, CallRegistry, Origin, delivery_link
 from plugin.core.capability_policy import decide
+from plugin.core import capability_policy
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.core.rpc import RpcDispatcher, owns_deadline
 from plugin.sdk.shared.core.call_chain_view import call_chain_scope, current_call_chain
@@ -36,6 +37,9 @@ def granted(plugin_id):
 def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
+    # The host setting is a process-wide cached store: pin it, so only the
+    # environment sources set by a test count.
+    monkeypatch.setattr(capability_policy, "_host_config_disabled", lambda: False)
     monkeypatch.setattr(capability_gate, "registry", CallRegistry())
     monkeypatch.setattr(capability_gate, "_last_written", {})
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (granted(p), True))
