@@ -36,8 +36,12 @@
                     return;
                 }
 
-                // Deduplicate: same message arrives via both BC and postMessage
+                // Only the switch handler knows whether a stamped receipt is already satisfied
+                // or must retry a failed load. Keep legacy and other message dedupe unchanged.
+                var stampedSwitch = message.action === 'catgirl_switched'
+                    && Number.isSafeInteger(message.switch_revision) && message.switch_revision > 0;
                 if (
+                    !stampedSwitch &&
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
@@ -104,10 +108,15 @@
                         const newCatgirl = event.data.new_catgirl || '';
                         const oldCatgirl = event.data.old_catgirl || '';
                         if (!newCatgirl) break;
-                        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-                        if (newCatgirl === currentName) break;
+                        // Do not dedupe by character name here. The central switch handler also
+                        // owns in-flight last-intent capture and missing-model recovery, so an
+                        // entry-point name check can discard the very event needed to recover.
                         if (typeof window.handleCatgirlSwitch === 'function') {
-                            window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+                            window.handleCatgirlSwitch(newCatgirl, oldCatgirl, {
+                                switchRevision: Number.isSafeInteger(event.data.switch_revision)
+                                    ? event.data.switch_revision
+                                    : 0
+                            });
                         }
                         break;
                     }
