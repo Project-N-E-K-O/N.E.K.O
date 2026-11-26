@@ -756,10 +756,11 @@ def _vrm(resources: _Resources) -> None:
             if slots:
                 _require(any("POSITION" in morph for morph in morphs), entry)
                 _require("POSITION" in primitive["attributes"], entry)
+                position = accessors[primitive["attributes"]["POSITION"]]
                 for semantic in ("NORMAL", "COLOR_0"):
                     if any(semantic in morph for morph in morphs) and not all(semantic in morph for morph in morphs):
-                        _require(semantic in primitive["attributes"], entry)
-                position = accessors[primitive["attributes"]["POSITION"]]
+                        fallback = primitive["attributes"].get(semantic)
+                        _require(fallback is not None and accessors[fallback]["count"] == position["count"], entry)
                 for morph in morphs:
                     for semantic in ("POSITION", "NORMAL", "COLOR_0"):
                         if semantic in morph:
@@ -1004,6 +1005,20 @@ def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int,
              resources.bundle.entrypoint, "model_accessor_budget_exceeded")
 
 
+def _mmd_grant_depth(resources: _Resources, grants: dict[int, int]) -> None:
+    grant_children = {index: [] for index in grants}
+    for index, parent in grants.items():
+        if parent in grants:
+            grant_children[parent].append(index)
+    # buildGrants only walks roots; cyclic components and their children are ignored.
+    pending = [(index, 1) for index, parent in grants.items() if parent not in grants]
+    while pending:
+        index, depth = pending.pop()
+        _require(depth <= resources.limits.hierarchy_depth, resources.bundle.entrypoint,
+                 "model_accessor_budget_exceeded")
+        pending.extend((child, depth + 1) for child in grant_children[index])
+
+
 def _pmx(resources: _Resources, reader: _MmdReader) -> None:
     """Walk the PMX layout used by the bundled PmxReader, without rewriting it."""
     path = reader.path
@@ -1099,16 +1114,7 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
                 if limited:
                     reader.skip(24)
     _mmd_ik_budget(resources, parents, ik_weights)
-    grant_children = {index: [] for index in grants}
-    for index, parent in grants.items():
-        if parent in grants:
-            grant_children[parent].append(index)
-    # buildGrants only walks roots; cyclic components and their children are ignored.
-    pending = [(index, 1) for index, parent in grants.items() if parent not in grants]
-    while pending:
-        index, depth = pending.pop()
-        _require(depth <= resources.limits.hierarchy_depth, path, "model_accessor_budget_exceeded")
-        pending.extend((child, depth + 1) for child in grant_children[index])
+    _mmd_grant_depth(resources, grants)
     # Each entry contains its typed index followed by the loader's fixed payload.
     morph_sizes = {0: morph + 4, 1: vertex + 12, 2: bone + 28,
                    3: vertex + 16, 4: vertex + 16, 5: vertex + 16,
@@ -1226,11 +1232,14 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     _require(covered == indices, path)
     # The remaining sections are still consumed so truncation cannot hide after textures.
     bones = reader.count("H", 39)
-    parents, ik_weights, ik_owners = [], {}, {}
-    for _ in range(bones):
+    parents, ik_weights, ik_owners, grants = [], {}, {}, {}
+    for index in range(bones):
         reader.skip(20)
         parents.append(reader.scalar("h"))
-        reader.skip(17)
+        tail, kind = reader.scalar("h"), reader.scalar("B")
+        if kind == 5:  # PmdReader turns RotateEffect into a non-local rotation grant.
+            grants[index] = tail
+        reader.skip(14)
     ik_work = 0
     for _ in range(reader.count("H", 11)):
         owner = reader.scalar("H")
@@ -1251,8 +1260,14 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     # PmdReader appends duplicate IK children in original bone order. Its later
     # reordering remaps both parents and links by identity, preserving subtree
     # sizes and weights; calculate in that identity space before the permutation.
-    parents.extend(owner for owner in sorted(ik_owners) for _ in range(ik_owners[owner] - 1))
+    for owner, count in sorted(ik_owners.items()):
+        for _ in range(count - 1):
+            if owner in grants:
+                grants[len(parents)] = grants[owner]
+            parents.append(owner)
+    _require(all(0 <= parent < len(parents) for parent in grants.values()), path)
     _mmd_ik_budget(resources, parents, ik_weights, strict_parents=True)
+    _mmd_grant_depth(resources, grants)
     morphs = reader.count("H", 25)
     # PmdReader removes its base morph, then converts the rest to vertex morphs.
     _require(vertices * max(0, morphs - 1) * 12 <= resources.limits.mmd_morph_bytes,
