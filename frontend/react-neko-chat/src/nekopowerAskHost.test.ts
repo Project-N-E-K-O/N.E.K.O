@@ -172,6 +172,38 @@ describe('the question inside a card of the task HUD', () => {
     expect(moved.querySelector('.task-ask-status')?.textContent).not.toContain('已回答');
   });
 
+  it('goes on looking into it however long the server is away, less often after a while, and stops once the card is gone', async () => {
+    vi.useFakeTimers();
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    const box = draw(permission);
+    const once = box.querySelector('[data-choice="once"]') as HTMLButtonElement;
+    press(once);
+    await vi.advanceTimersByTimeAsync(0);
+    const reads = () => calls.filter(call => call.url === '/api/agent/questions').length;
+    // The first looks, close together; none of them could read anything.
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS * asks.RECHECKS);
+    const early = reads();
+    expect(early).toBeGreaterThanOrEqual(asks.RECHECKS);
+    expect(once.disabled).toBe(true);
+    // Further apart from here on, and not given up.
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_SLOW_MS * 3);
+    expect(reads() - early).toBe(3);
+    // The server is back, the question still waits: the card can be answered again.
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', question: permission }] } });
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_SLOW_MS);
+    expect(once.disabled).toBe(false);
+
+    // A card that is gone from the page is not looked into any more.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    const gone = draw(confirmation);
+    press(gone.querySelector('[data-confirm="yes"]'));
+    await vi.advanceTimersByTimeAsync(0);
+    gone.remove();
+    const before = reads();
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS * 5);
+    expect(reads()).toBe(before);
+  });
+
   it('sends nothing more while it is not known whether an answer was taken, and looks into it until it is', async () => {
     vi.useFakeTimers();
     const tick = async () => { await vi.advanceTimersByTimeAsync(asks.RECHECK_MS); };

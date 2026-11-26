@@ -18,9 +18,12 @@
     'use strict';
 
     var SETTLE_MS = 900;
-    // An answer whose fate is not known is looked into again this often, this many times at most.
+    // An answer whose fate is not known is looked into again this often; after this many times
+    // less often, for as long as its card is there (the server may be away for a while, and the
+    // card must not stay shut once it is back).
     var RECHECK_MS = 3000;
     var RECHECKS = 20;
+    var RECHECK_SLOW_MS = 15000;
     var WIDE_CHOICES = ['always', 'session'];
     // A command or path longer than this is not read at a glance: it is shown whole before an
     // approval that holds for more than this once is offered.
@@ -186,20 +189,19 @@
     /**
      * Look into an answer whose fate is not known until it is: `settled(true)` once the same
      * question is seen to wait still (the answer was not taken, and can be given again),
-     * `settled(false)` once it waits no more. Given up after a while; `wanted` says whether
-     * anyone still wants to know.
+     * `settled(false)` once it waits no more. Not given up while `wanted` says somebody still
+     * wants to know (the card is there), only looked into less often after a while.
      */
-    function lookInto(taskId, questionId, wanted, settled, left) {
-        var tries = left === undefined ? RECHECKS : left;
-        if (tries <= 0) return;
+    function lookInto(taskId, questionId, wanted, settled, tried) {
+        var looks = tried || 0;
         setTimeout(function () {
             if (!wanted()) return;
             whetherWaits(taskId, questionId).then(function (waits) {
                 if (!wanted()) return;
-                if (waits === null) lookInto(taskId, questionId, wanted, settled, tries - 1);
+                if (waits === null) lookInto(taskId, questionId, wanted, settled, looks + 1);
                 else settled(waits);
             });
-        }, RECHECK_MS);
+        }, looks < RECHECKS ? RECHECK_MS : RECHECK_SLOW_MS);
     }
 
     /** What commissions ask right now, read from the agent process: `[{task_id, title, question, route}]`. */
@@ -654,6 +656,6 @@
 
     window.NekoPowerAsk = {
         view: view, answer: answer, waiting: waiting, render: render, receive: receive, sync: sync, shownAnswer: shownAnswer,
-        word: word, SETTLE_MS: SETTLE_MS, RECHECK_MS: RECHECK_MS
+        word: word, SETTLE_MS: SETTLE_MS, RECHECK_MS: RECHECK_MS, RECHECKS: RECHECKS, RECHECK_SLOW_MS: RECHECK_SLOW_MS
     };
 })();
