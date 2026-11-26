@@ -1180,11 +1180,15 @@ class LexicalDecisionModel:
             hidden = [item for item in request.active if item.id not in under_way]
             # How much it means: "these" (the items it names), "project" (all
             # of a project's, a familiar's or a plugin's work, however much of
-            # it was shown) or "all" (all the work under way). Not said, or
-            # said otherwise, it may be either of the first two. Which items
-            # are stopped is still what it names, and whether it says which:
-            # a bare "stop it" is read as all of it as often as "cancel all of
-            # it" is (measured), so "all" is no naming of its own.
+            # it was shown) or "all" (all the work under way). "These" is not
+            # taken at its word where the list left some out: the model has
+            # read "stop all the shop site work" as "these" (measured), and a
+            # stop that leaves the rest of a project running says nothing of
+            # it. So "these", like a stop that does not say, may be either of
+            # the first two. Which items are stopped is still what it names,
+            # and whether it says which: a bare "stop it" is read as all of it
+            # as often as "cancel all of it" is (measured), so "all" is no
+            # naming of its own.
             scope = str(reading.get("scope") or "").strip().lower()
             if not said_which and len(under_way) > 1:
                 # "Stop it" with several under way: which, the user is asked,
@@ -1193,21 +1197,19 @@ class LexicalDecisionModel:
                 # prompt has it; a stop is a stop.) Among all of her work, the
                 # list may have cut.
                 return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
-            if scope != "these":
-                if hidden and (scope == "all" or (len(stopped) > 1 and scope != "project")):
-                    # All of it, or a stop of several of what is not said, while
-                    # some of her work was left out of the list: it may mean
-                    # those as well, which were not shown. Which, the user is
-                    # asked, among all (for "all", though one item was named).
-                    return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
-                shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
-                kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
-                if kin:
-                    # A project's or a familiar's work is stopped while more of
-                    # it was left out ("stop the shop site work", one of it
-                    # shown): which, the user is asked, among those. A stop of
-                    # the items it names alone ("these") stops those.
-                    return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
+            if hidden and (scope == "all" or (len(stopped) > 1 and scope != "project")):
+                # All of it, or a stop of several that is not a project's, while
+                # some of her work was left out of the list: it may mean those
+                # as well, which were not shown. Which, the user is asked, among
+                # all (for "all", though one item was named).
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
+            kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
+            if kin:
+                # A project's or a familiar's work is stopped while more of it
+                # was left out ("stop the shop site work", one of it shown, or
+                # "the footer one" of it): which, the user is asked, among those.
+                return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
                 return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:

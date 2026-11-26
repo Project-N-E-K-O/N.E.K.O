@@ -1319,10 +1319,12 @@ async def test_how_much_a_stop_means_decides_what_is_asked_about_what_was_left_o
         assert not unread
         return triage.kind, triage.targets
 
-    # The one it names, though more of its project was left out: that one.
-    assert await read({"does": "stop", "items": [1], "named": True, "scope": "these"}, shop) == ("stop", ["c1"])
-    # Several it names, while other work was left out: those.
-    assert await read({"does": "stop", "items": [1, 2], "named": True, "scope": "these"}, mixed) == ("stop", ["c1", "c2"])
+    # "These" is not taken at its word where some was left out (the model has read "stop all the shop
+    # site work" as "these"): asked as a stop that does not say how much is, so nothing is left running.
+    assert await read({"does": "stop", "items": [1], "named": True, "scope": "these"}, shop) == ("ambiguous", ["c1", "c3"])
+    assert await read({"does": "stop", "items": [1, 2], "named": True, "scope": "these"}, mixed) == (
+        "ambiguous", ["c1", "c2", "c3"]
+    )
     # All of a project's, of which more was left out: which, the user is asked, among its work.
     assert await read({"does": "stop", "items": [1], "named": True, "scope": "project"}, shop) == ("ambiguous", ["c1", "c3"])
     # All of a project's, while other work was left out that is none of it: those it names.
