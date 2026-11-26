@@ -1805,7 +1805,7 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
     asyncio.run(_case_host_and_overlapping_write_coordination(write_outcome="persisted_false"))
     asyncio.run(_case_host_and_overlapping_write_coordination(write_outcome="commit"))
 
-    # 3. Host hydration waits for in-flight optimistic write instead of merging unconfirmed draft.
+    # 3. Host hydration waits for in-flight optimistic write appearing mid-read instead of merging unconfirmed draft.
     async def _case_host_waits_for_in_flight_draft(*, write_succeeds: bool) -> None:
         ctx = PluginContext(
             plugin_id="demo",
@@ -1840,38 +1840,38 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         ctx._send_request_and_wait_async = _write_rpc  # type: ignore[method-assign]
         ctx.get_own_config = _host_get_own_config  # type: ignore[method-assign]
 
-        # Seed local config cache read helper so update_own_config installs an optimistic draft.
-        ctx._install_effective_config_value({"base": 1})
-        write_task = asyncio.create_task(ctx.update_own_config({"draft": 1}))
-        cmd_task: asyncio.Task[None] | None = None
         sender = _FakeResponseSender()
+        # Start host temporary update while effective cache is empty so hydration starts first.
+        cmd_task = asyncio.create_task(
+            host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-wait-draft-{write_succeeds}",
+                    "config": {"host": 2},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx,
+                events_by_type={},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        )
+        write_task: asyncio.Task[dict[str, object]] | None = None
         try:
+            await _wait_for_checkpoint_or_task_failure(read_started, cmd_task)
+            # Start an overlapping plugin config write while host hydration is in flight.
+            ctx._install_effective_config_value({"base": 1})
+            write_task = asyncio.create_task(ctx.update_own_config({"draft": 1}))
             await _wait_for_checkpoint_or_task_failure(write_rpc_started, write_task)
             assert ctx._effective_config == {"base": 1, "draft": 1}
 
-            # Reset effective_config=None while write is still in progress? Simulate host hydration path:
-            with ctx._get_config_state_lock():
-                ctx._effective_config = None
-
-            cmd_task = asyncio.create_task(
-                host_module._handle_config_update_command(
-                    msg={
-                        "req_id": f"req-wait-draft-{write_succeeds}",
-                        "config": {"host": 2},
-                        "mode": "temporary",
-                        "replace": False,
-                    },
-                    ctx=ctx,
-                    events_by_type={},
-                    plugin_id="demo",
-                    res_sender=sender,
-                    logger=_FakeLogger(),
-                )
-            )
-            # Re-install optimistic draft so _config_write_in_progress holds it before host applies merge.
-            await asyncio.sleep(0)
-            assert not cmd_task.done()
+            # Release host hydration read -> _apply_hydrated_merge_for_host must see _config_write_in_progress
+            # and wait for the in-flight write to settle before publishing host merge.
             release_read.set()
+            await asyncio.sleep(0.01)
+            assert not cmd_task.done()
+
             release_write_rpc.set()
             if not write_succeeds:
                 with pytest.raises(RuntimeError, match="draft rejected"):
@@ -2011,3 +2011,127 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
         assert instance.refreshed[-1] == {"plugin": {"state": {"backend": "sqlite"}}}
 
     asyncio.run(_case_failed_runtime_refresh_preserves_last_good_snapshot())
+
+    # 6. Host hydration shares the 8s merge deadline and aborts without applying if timed out.
+    async def _case_host_hydration_shares_deadline_and_aborts_on_timeout() -> None:
+        from unittest.mock import patch
+
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_host_deadline" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        handler_calls = 0
+
+        def _should_not_run(**_kwargs: object) -> None:
+            nonlocal handler_calls
+            handler_calls += 1
+
+        clock = {"now": 100.0}
+        received_timeouts: list[float] = []
+
+        async def _slow_hydrating_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            received_timeouts.append(timeout)
+            clock["now"] = 109.0  # Exceed 8.0s deadline before returning.
+            return {"config": {"base": 1}}
+
+        ctx.get_own_config = _slow_hydrating_get_own_config  # type: ignore[method-assign]
+        sender = _FakeResponseSender()
+        with patch.object(host_module.time, "monotonic", side_effect=lambda: clock["now"]):
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-deadline-expired",
+                    "config": {"host": 2},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _should_not_run}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+        assert len(received_timeouts) == 1
+        assert received_timeouts[0] == pytest.approx(8.0)
+        assert sender.payloads[-1]["success"] is False
+        assert "Timed out" in str(sender.payloads[-1]["error"])
+        assert ctx._effective_config is None
+        assert handler_calls == 0
+
+        async def _timeout_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+            received_timeouts.append(timeout)
+            raise TimeoutError("hydrated get timed out")
+
+        ctx.get_own_config = _timeout_get_own_config  # type: ignore[method-assign]
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-hydrate-timeout-err",
+                "config": {"host": 3},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _should_not_run}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert len(received_timeouts) == 2
+        assert 0.0 < received_timeouts[1] <= 8.0
+        assert sender.payloads[-1]["success"] is False
+        assert "Timed out" in str(sender.payloads[-1]["error"])
+        assert ctx._effective_config is None
+        assert handler_calls == 0
+
+    asyncio.run(_case_host_hydration_shares_deadline_and_aborts_on_timeout())
+
+    # 7. Mutating old_config inside a failing config_change handler must not corrupt rollback snapshot.
+    async def _case_failing_config_change_mutating_old_config_preserves_rollback() -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mutated_old_cfg" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"keep": "orig", "nested": {"x": 1}})
+
+        def _mutate_and_reject(
+            *,
+            old_config: dict[str, object],
+            new_config: dict[str, object],
+            mode: str,
+        ) -> None:
+            del mode
+            old_config["keep"] = "CORRUPTED"
+            nested = old_config["nested"]
+            assert isinstance(nested, dict)
+            nested["x"] = 999
+            new_nested = new_config["nested"]
+            assert isinstance(new_nested, dict)
+            new_nested["x"] = 888
+            raise RuntimeError("handler failed after mutating inputs")
+
+        sender = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mutate-rb",
+                "config": {"nested": {"x": 2}},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx,
+            events_by_type={"lifecycle": {"config_change": _mutate_and_reject}},
+            plugin_id="demo",
+            res_sender=sender,
+            logger=_FakeLogger(),
+        )
+        assert sender.payloads[-1]["success"] is False
+        assert ctx._effective_config == {"keep": "orig", "nested": {"x": 1}}
+        assert instance.refreshed[-1] == {"keep": "orig", "nested": {"x": 1}}
+
+    asyncio.run(_case_failing_config_change_mutating_old_config_preserves_rollback())

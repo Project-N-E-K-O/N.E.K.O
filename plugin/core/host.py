@@ -884,9 +884,11 @@ async def _handle_config_update_command(
                 ) = replace_for_host(new_config)
                 logger.debug("[Plugin Process] Config cache replaced")
             else:
-                merge_deadline = time.monotonic() + 10.0
+                merge_deadline = time.monotonic() + 8.0
                 applied_ok = False
                 for _ in range(8):
+                    if time.monotonic() >= merge_deadline:
+                        break
                     (
                         merge_status,
                         had_cached_config,
@@ -898,7 +900,11 @@ async def _handle_config_update_command(
                         pre_runtime_snapshot,
                     ) = merge_for_host(new_config, merge_fn=_deep_merge)
                     if merge_status == "merged":
-                        rollback_runtime_snapshot = old_config
+                        rollback_runtime_snapshot = (
+                            pre_runtime_snapshot
+                            if isinstance(pre_runtime_snapshot, dict)
+                            else copy.deepcopy(old_config)
+                        )
                         applied_ok = True
                         logger.debug("[Plugin Process] Config cache updated")
                         break
@@ -911,20 +917,52 @@ async def _handle_config_update_command(
                             return
                         continue
 
+                    remaining_budget = merge_deadline - time.monotonic()
+                    if remaining_budget <= 0.0:
+                        ret_payload["error"] = (
+                            "Timed out waiting to hydrate config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
                     base_config: dict[str, Any] = {}
                     get_own_config = getattr(ctx, "get_own_config", None)
                     if callable(get_own_config):
                         try:
-                            loaded = get_own_config()
+                            accepts_timeout = False
+                            try:
+                                sig = inspect.signature(get_own_config)
+                                accepts_timeout = "timeout" in sig.parameters or any(
+                                    param.kind == inspect.Parameter.VAR_KEYWORD
+                                    for param in sig.parameters.values()
+                                )
+                            except (TypeError, ValueError):
+                                accepts_timeout = False
+                            loaded = (
+                                get_own_config(timeout=remaining_budget)
+                                if accepts_timeout
+                                else get_own_config()
+                            )
                             if inspect.isawaitable(loaded):
-                                loaded = await loaded
+                                loaded = await asyncio.wait_for(loaded, timeout=remaining_budget)
                             if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
                                 base_config = copy.deepcopy(dict(loaded["config"]))
+                        except TimeoutError:
+                            ret_payload["error"] = (
+                                "Timed out hydrating config before temporary update"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
                         except Exception:
                             logger.debug(
                                 "[Plugin Process] Failed to hydrate base config before temporary update",
                                 exc_info=True,
                             )
+                    if time.monotonic() >= merge_deadline:
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
                     (
                         apply_status,
                         had_cached_config,
@@ -955,10 +993,16 @@ async def _handle_config_update_command(
                             return
                         continue
                     if time.monotonic() >= merge_deadline:
-                        break
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
                 if not applied_ok:
                     ret_payload["error"] = (
-                        "Config cache changed concurrently; temporary update could not be applied"
+                        "Timed out hydrating config before temporary update"
+                        if time.monotonic() >= merge_deadline
+                        else "Config cache changed concurrently; temporary update could not be applied"
                     )
                     res_sender.put(ret_payload, timeout=10.0)
                     return
@@ -1012,8 +1056,8 @@ async def _handle_config_update_command(
             try:
                 with ctx._handler_scope("lifecycle.config_change"):
                     result = config_change_handler(
-                        old_config=old_config,
-                        new_config=applied_config,
+                        old_config=copy.deepcopy(old_config),
+                        new_config=copy.deepcopy(applied_config),
                         mode=mode,
                     )
                     if inspect.isawaitable(result):

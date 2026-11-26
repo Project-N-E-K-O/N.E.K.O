@@ -2254,6 +2254,16 @@ async def test_context_get_own_config_shares_deadline_across_local_and_rpc_fallb
         await ctx.get_own_config(timeout=0.05)
     assert rpc_timeouts == []
 
+    class _ImmediateTimeoutQueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            assert plugin_id == "demo"
+            raise TimeoutError("simulated early timer wakeup")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _ImmediateTimeoutQueryService)
+    with pytest.raises(TimeoutError):
+        await ctx.get_own_config(timeout=0.5)
+    assert rpc_timeouts == []
+
     class _SlowFailQueryService:
         async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
             assert plugin_id == "demo"

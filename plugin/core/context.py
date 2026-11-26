@@ -2293,6 +2293,8 @@ class PluginContext:
                     ),
                     timeout=timeout,
                 )
+        except TimeoutError:
+            raise
         except Exception as exc:
             try:
                 self.logger.debug(
@@ -2311,10 +2313,13 @@ class PluginContext:
         request_deadline = time.monotonic() + request_timeout
         if request_timeout <= 0.0:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s")
-        local_payload = await self._get_local_config_payload(
-            payload_type="config",
-            timeout=request_timeout,
-        )
+        try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="config",
+                timeout=request_timeout,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
         if isinstance(local_payload, dict):
             return local_payload
         remaining_timeout = request_deadline - time.monotonic()
@@ -2343,10 +2348,10 @@ class PluginContext:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
     async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        local_payload = await self._get_local_config_payload(payload_type="base", timeout=timeout)
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(payload_type="base", timeout=timeout)
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_base_config",
                 request_type="PLUGIN_CONFIG_BASE_GET",
@@ -2358,10 +2363,10 @@ class PluginContext:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
 
     async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
-        local_payload = await self._get_local_config_payload(payload_type="profiles", timeout=timeout)
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(payload_type="profiles", timeout=timeout)
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_profiles_state",
                 request_type="PLUGIN_CONFIG_PROFILES_GET",
@@ -2375,14 +2380,14 @@ class PluginContext:
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
-        local_payload = await self._get_local_config_payload(
-            payload_type="profile",
-            profile_name=profile_name,
-            timeout=timeout,
-        )
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="profile",
+                profile_name=profile_name,
+                timeout=timeout,
+            )
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_profile_config",
                 request_type="PLUGIN_CONFIG_PROFILE_GET",
@@ -2414,22 +2419,22 @@ class PluginContext:
             request_data["profile_name"] = profile_name.strip()
 
         gen_before, read_id = self._begin_config_read()
-        local_payload = await self._get_local_config_payload(
-            payload_type="effective",
-            profile_name=profile_name,
-            timeout=timeout,
-        )
-        if isinstance(local_payload, dict):
-            effective_obj = local_payload.get("config")
-            if profile_name is None:
-                self._cache_effective_config_from_read(
-                    effective_obj,
-                    gen_before=gen_before,
-                    read_id=read_id,
-                )
-            return local_payload
-
         try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="effective",
+                profile_name=profile_name,
+                timeout=timeout,
+            )
+            if isinstance(local_payload, dict):
+                effective_obj = local_payload.get("config")
+                if profile_name is None:
+                    self._cache_effective_config_from_read(
+                        effective_obj,
+                        gen_before=gen_before,
+                        read_id=read_id,
+                    )
+                return local_payload
+
             return await self._send_request_and_wait_async(
                 method_name="get_own_effective_config",
                 request_type="PLUGIN_CONFIG_EFFECTIVE_GET",
@@ -2604,10 +2609,13 @@ class PluginContext:
                     dict,
                 )
             if needs_baseline_hydration:
-                await self._get_local_config_payload(
-                    payload_type="config",
-                    timeout=min(remaining_timeout, 0.5),
-                )
+                try:
+                    await self._get_local_config_payload(
+                        payload_type="config",
+                        timeout=min(remaining_timeout, 0.5),
+                    )
+                except TimeoutError:
+                    pass
                 remaining_timeout = request_deadline - time.monotonic()
                 if remaining_timeout <= 0.0:
                     return self._build_queued_update_timeout_payload()
@@ -2930,8 +2938,6 @@ class PluginContext:
                     if isinstance(self._effective_config, dict):
                         return
                     if bool(getattr(self, "_effective_config_uncertain", False)):
-                        return
-                    if self._current_effective_config_gen() == attempt_gen:
                         return
                 continue
             with self._get_config_state_lock():
