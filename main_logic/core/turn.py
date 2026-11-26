@@ -400,7 +400,12 @@ class TurnMixin:
 
         # Reset streaming resampler; new-round audio must not continue the old round's state.
         self.audio_resampler.clear()
-        await self._clear_tts_pipeline()
+        if still_owned is None:
+            await self._clear_tts_pipeline()
+        else:
+            # Rechecked inside the clear too, so a user who takes over during
+            # its wait keeps the audio and text already queued for them.
+            await self._clear_tts_pipeline(still_owned=still_owned)
         if still_owned is not None and not still_owned():
             return
         # _clear_tts_pipeline already authoritatively resets _tts_done_queued_for_turn at entry,

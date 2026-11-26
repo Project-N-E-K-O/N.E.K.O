@@ -817,8 +817,12 @@ async def test_phase2_block_keeps_innocent_card_out_of_blocked_links(monkeypatch
 
 _SELECTED = {
     "web": {"title": "[新闻] 某公司大规模裁员", "url": "https://example.com/a"},
-    "music": {"title": "裁员之歌", "artist": "某歌手", "url": "https://example.com/m"},
+    "music": {"title": "裁员之歌", "artist": "某歌手", "url": "https://example.com/m",
+              "source": "音乐推荐"},
     "meme": {"title": "裁员表情包", "url": "https://example.com/meme.png"},
+    # An extra track appended next to the selected one, with its own card.
+    "music_b": {"title": "裁员进行曲", "artist": "另一位歌手", "url": "https://example.com/b",
+                "source": "音乐推荐"},
 }
 
 
@@ -833,13 +837,33 @@ async def _record_blocked(monkeypatch, blocked_kinds, *, web_link=_SELECTED["web
         selected_web_link=web_link,
         selected_web_topic_key="web-key",
         web_parsed={"title": "[新闻] 某公司大规模裁员"},
-        selected_music_link=_SELECTED["music"],
-        selected_music_topic_key="music-key",
         selected_meme_link=_SELECTED["meme"],
         selected_meme_topic_key="meme-key",
         memory_dir="/tmp/unused",
     )
     return [call.kwargs["kind"] for call in recorded.await_args_list], recorded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("blocked", "titles"),
+    [(["music_b"], ["裁员进行曲 - 另一位歌手"]),
+     (["music", "music_b"], ["裁员之歌 - 某歌手", "裁员进行曲 - 另一位歌手"])],
+    ids=["appended-only", "selected-and-appended"],
+)
+async def test_blocked_music_cards_recorded_by_their_own_track(monkeypatch, blocked, titles):
+    # The key music selection checks: source_hash("", "name - artist").
+    _kinds, recorded = await _record_blocked(monkeypatch, blocked)
+    music = [c.kwargs for c in recorded.await_args_list if c.kwargs["kind"] == "music"]
+    assert [(c["url"], c["title"]) for c in music] == [("", t) for t in titles]
+
+
+@pytest.mark.asyncio
+async def test_unblocked_selected_track_not_recorded_for_blocked_neighbour(monkeypatch):
+    # Only the appended track's card hit: the selected track stays available.
+    _kinds, recorded = await _record_blocked(monkeypatch, ["music_b"])
+    titles = [c.kwargs["title"] for c in recorded.await_args_list]
+    assert "裁员之歌 - 某歌手" not in titles
 
 
 @pytest.mark.asyncio
@@ -880,6 +904,7 @@ def test_service_records_blocked_cards_on_the_pass_branch():
     assert len(calls) == 1
     kwargs = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords if kw.arg}
     assert kwargs["blocked_links"] == "delivery_commit.blocked_links"
-    for kind in ("web", "music", "meme"):
+    # Music is recorded per blocked card, so only web and meme need selection.
+    for kind in ("web", "meme"):
         assert kwargs[f"selected_{kind}_link"] == f"selected_{kind}_link"
         assert kwargs[f"selected_{kind}_topic_key"] == f"selected_{kind}_topic_key"

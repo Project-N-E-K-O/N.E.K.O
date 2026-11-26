@@ -36,6 +36,7 @@ from .contracts import (
 )
 from .decisions import build_proactive_response
 from .directive_gate import (
+    _MUSIC_SOURCE_MARKER,
     _proactive_delivery_directive_block,
     _proactive_delivery_directive_hit_count,
 )
@@ -493,6 +494,28 @@ async def _record_commitment_offer(
     return isinstance(body, dict) and body.get("commitments_recorded") is True
 
 
+async def _record_music_link_used(
+    music_link: dict[str, Any],
+    *,
+    memory_dir: str | Path | None = None,
+) -> None:
+    """Record one track by song identity, the key music selection checks."""
+    state_storage_kwargs = (
+        {"memory_dir": memory_dir} if memory_dir is not None else {}
+    )
+    music_title = (
+        f"{music_link.get('title', '')} - {music_link.get('artist', '')}"
+    ).strip(" -")
+    await _record_source_used(
+        # Persist song identity, not an expiring/provider-specific playback URL.
+        # Selection still checks old URL records for rolling compatibility.
+        url="" if music_title else music_link.get("url", "") or "",
+        kind="music",
+        title=music_title,
+        **state_storage_kwargs,
+    )
+
+
 async def _record_selected_sources_used(
     *,
     lanlan_name: str,
@@ -536,17 +559,8 @@ async def _record_selected_sources_used(
     if selected_music_topic_key and (
         is_music_used or _is_link_selected(selected_music_link, source_links)
     ):
-        music_link = selected_music_link or {}
-        music_title = (
-            f"{music_link.get('title', '')} - {music_link.get('artist', '')}"
-        ).strip(" -")
-        await _record_source_used(
-            # Persist song identity, not an expiring/provider-specific playback URL.
-            # Selection still checks old URL records for rolling compatibility.
-            url="" if music_title else music_link.get("url", "") or "",
-            kind="music",
-            title=music_title,
-            **state_storage_kwargs,
+        await _record_music_link_used(
+            selected_music_link or {}, **state_storage_kwargs,
         )
         print(
             f"[{lanlan_name}] 已记录音乐 source 衰减历史: "
@@ -576,8 +590,6 @@ async def _record_blocked_sources_used(
     selected_web_link: dict[str, Any] | None,
     selected_web_topic_key: str | None,
     web_parsed: dict[str, Any] | None,
-    selected_music_link: dict[str, Any] | None,
-    selected_music_topic_key: str | None,
     selected_meme_link: dict[str, Any] | None,
     selected_meme_topic_key: str | None,
     memory_dir: str | Path | None = None,
@@ -586,11 +598,20 @@ async def _record_blocked_sources_used(
 
     Only cards whose own text hit are passed in; a card blocked because the
     line hit stays available. A title-only web topic has no card, so it is
-    recorded only when delivered.
+    recorded only when delivered. Music is recorded per blocked track card:
+    the extra tracks appended next to the selected one are cards of their
+    own, and a banned one would otherwise be picked and blocked again.
     """
     blocked_links = list(blocked_links)
     if not blocked_links:
         return
+    blocked_music = [
+        link for link in blocked_links if link.get("source") == _MUSIC_SOURCE_MARKER
+    ]
+    for music_link in blocked_music:
+        await _record_music_link_used(music_link, memory_dir=memory_dir)
+    if blocked_music:
+        print(f"[{lanlan_name}] 已记录被拦音乐卡 source 衰减历史: {len(blocked_music)} 张")
     await _record_selected_sources_used(
         lanlan_name=lanlan_name,
         source_links=blocked_links,
@@ -600,8 +621,9 @@ async def _record_blocked_sources_used(
             selected_web_topic_key if selected_web_link is not None else None
         ),
         web_parsed=web_parsed,
-        selected_music_link=selected_music_link,
-        selected_music_topic_key=selected_music_topic_key,
+        # Recorded per card above.
+        selected_music_link=None,
+        selected_music_topic_key=None,
         selected_meme_link=selected_meme_link,
         selected_meme_topic_key=selected_meme_topic_key,
         memory_dir=memory_dir,

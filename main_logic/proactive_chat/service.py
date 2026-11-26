@@ -2802,8 +2802,6 @@ async def handle_proactive_chat(
                 selected_web_link=selected_web_link,
                 selected_web_topic_key=selected_web_topic_key,
                 web_parsed=web_parsed,
-                selected_music_link=selected_music_link,
-                selected_music_topic_key=selected_music_topic_key,
                 selected_meme_link=selected_meme_link,
                 selected_meme_topic_key=selected_meme_topic_key,
                 **state_storage_kwargs,

@@ -140,6 +140,7 @@ async def _proactive_delivery_directive_block(
 
 
 __all__ = (
+    "_MUSIC_SOURCE_MARKER",
     "_proactive_delivery_directive_block",
     "_proactive_delivery_directive_hit_count",
 )
