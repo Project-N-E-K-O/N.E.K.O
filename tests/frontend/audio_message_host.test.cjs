@@ -399,7 +399,7 @@ test('a queued voice transcript for a switched character is dropped, not retried
   queue.window.lanlan_config.lanlan_name = 'Other'; // switched while the avatar interaction ran
   queue.flushDeferredTextSubmissions();
   await settleQueue();
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 0, 'a void voice message never enters the send path');
   assert.deepEqual(settled, [false]);
   assert.equal(queue.state.deferredTextSubmissions.length, 0);
   assert.equal(queue.state.drainingDeferredTextSubmissions, false);
@@ -495,4 +495,87 @@ test('chat-window host: a deferred hide applies the moment the draft ends', () =
   assert.equal(sandbox.I.state.audioMessageTarget, '');
   assert.equal(sandbox.I.state.deferredAudioMessageTarget, null);
   assert.equal(renders, 1);
+});
+
+test('a voice transcript that lands after a theater started is not submitted as a theater line', () => {
+  // Same character, so both target checks pass; the theater branch must
+  // refuse voice messages before handing text to the theater runtime.
+  assert.match(glue, /audioMessage: true/);
+  const start = source.indexOf("            if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {");
+  const branch = source.slice(start, source.indexOf('return theaterRuntime.handleComposerSubmit(text);', start));
+  assert.ok(start > 0 && branch.length > 0);
+  // The refusal is the branch's first check, ahead of any theater dispatch;
+  // ordinary typed theater input still reaches handleComposerSubmit.
+  const refusal = branch.indexOf('if (options.audioMessage === true) return false;');
+  assert.ok(refusal >= 0 && refusal < branch.indexOf("options.source !== 'react-chat-window'"));
+});
+
+test('a queued voice transcript is dropped when a theater started meanwhile; queued text is not', async () => {
+  const sent = [];
+  const queue = deferredQueueHarness(async (text) => { sent.push(text); return true; });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', { expectedLanlanName: 'Neko', audioMessage: true }, (ok) => settled.push(ok));
+  queue.queueDeferredTextSubmission('打字', { source: 'react-chat-window' });
+  queue.window.nekoTheaterRuntime = { isActive: () => true };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(settled, [false]);
+  assert.deepEqual(sent, ['打字']);
+});
+
+test('the shared text send re-checks the theater for voice messages right before sending', () => {
+  const sendStart = source.indexOf('            // Send message\n            if (S.socket && S.socket.readyState === WebSocket.OPEN)');
+  const sessionStart = source.indexOf('await mod._textSessionStartPromise;');
+  const guard = source.indexOf('if (options.audioMessage === true && isTheaterOwningChat()) {', sessionStart);
+  assert.ok(sessionStart > 0 && guard > sessionStart && guard < sendStart);
+});
+
+test('a queued voice transcript whose visit started meanwhile is handed to the send path to reroute', async () => {
+  // Visits are not refused here: the send path answers AUDIO_MESSAGE_VISIT_REROUTE
+  // and the host sends the transcript as a visit line instead.
+  const seen = [];
+  const queue = deferredQueueHarness(async (text, options) => {
+    seen.push(text);
+    return options.rerouteToVisit === true ? 'visit_reroute' : true;
+  });
+  const settled = [];
+  queue.queueDeferredTextSubmission('语音', {
+    expectedLanlanName: 'Neko', audioMessage: true, rerouteToVisit: true,
+  }, (result) => settled.push(result));
+  queue.window.nekoVisitChat = { isActive: () => true, submitAudioTranscript() {} };
+  queue.flushDeferredTextSubmissions();
+  await settleQueue();
+  assert.deepEqual(seen, ['语音']);
+  assert.deepEqual(settled, ['visit_reroute']);
+});
+
+test('voice messages are refused at the send entry only while a theater owns the chat', () => {
+  const entry = source.indexOf('        async function sendTextPayload(rawText, options) {');
+  const body = source.slice(entry, source.indexOf('var theaterRuntime = window.nekoTheaterRuntime;', entry));
+  assert.match(body, /if \(options\.audioMessage === true && isTheaterOwningChat\(\)\) return false;/);
+  const helper = source.slice(source.indexOf('    function isTheaterOwningChat() {'), source.indexOf('    // 带 expectedLanlanName 的提交'));
+  const sandbox = { window: {} };
+  vm.runInNewContext(`${helper}
+this.check = isTheaterOwningChat;`, sandbox);
+  assert.equal(sandbox.check(), false);
+  sandbox.window.nekoVisitChat = { isActive: () => true };
+  assert.equal(sandbox.check(), false, 'visits are rerouted, not refused');
+  sandbox.window.nekoTheaterRuntime = { isActive: () => true };
+  assert.equal(sandbox.check(), true);
+});
+
+test('a voice message refused after the session wait stops counting as awaiting a reply', () => {
+  const start = source.indexOf('            function forgetRefusedSubmission() {');
+  const helper = source.slice(start, source.indexOf('\n            }\n', start) + 15);
+  const window = { _lastSubmittedText: '语音', _lastSubmittedRequestId: 'r1' };
+  const sandbox = { window, requestId: 'r1' };
+  vm.runInNewContext(`${helper}\nforgetRefusedSubmission();`, sandbox);
+  assert.deepEqual([window._lastSubmittedText, window._lastSubmittedRequestId], ['', '']);
+  // Another request's tracking is left alone.
+  const other = { _lastSubmittedText: '别的', _lastSubmittedRequestId: 'r2' };
+  vm.runInNewContext(`${helper}\nforgetRefusedSubmission();`, { window: other, requestId: 'r1' });
+  assert.deepEqual([other._lastSubmittedText, other._lastSubmittedRequestId], ['别的', 'r2']);
+  // Both refusals (character switched, theater started) run it before failing.
+  const guards = source.slice(start, source.indexOf('            // Send message\n', start));
+  assert.equal(guards.match(/forgetRefusedSubmission\(\);\s*updateReactOptimisticMessageStatus\('failed'\);\s*return false;/g).length, 2);
 });
