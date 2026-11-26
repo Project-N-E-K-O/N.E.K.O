@@ -4648,3 +4648,150 @@ def test_uncached_persisted_false_write_overtaken_by_rejected_host_replace_clear
 
     for order in ("rpc_first", "handler_first"):
         asyncio.run(_run_order(order))
+
+
+@pytest.mark.plugin_unit
+def test_profile_refresh_waits_for_in_flight_write_across_temporary_host_rollback_uncertainty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Profile refresh must wait for an in-flight write despite temporary host-rollback uncertainty."""
+    import asyncio
+    import copy
+    from plugin.core.context import PluginContext
+    from plugin.server.application import config as config_application
+
+    class _UnavailableQueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            raise RuntimeError(f"local config query unavailable for {plugin_id}")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _UnavailableQueryService)
+
+    class _RecordingInstance:
+        def __init__(self) -> None:
+            self.refreshed: list[dict[str, object]] = []
+
+        def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+            self.refreshed.append(copy.deepcopy(effective_config))
+
+    async def _run_case(first_get_outcome: str, write_outcome: str) -> None:
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_pr_wait_{first_get_outcome}_{write_outcome}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"profile": "home"})
+
+        first_get_started = asyncio.Event()
+        release_first_get = asyncio.Event()
+        write_rpc_started = asyncio.Event()
+        release_write_rpc = asyncio.Event()
+        get_calls = 0
+
+        async def _fake_rpc(
+            *,
+            method_name: str = "",
+            request_type: str = "",
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            nonlocal get_calls
+            if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+                return {"config_profiles": {"active": "work"}}
+            if request_type == "PLUGIN_CONFIG_GET" or method_name == "get_own_config":
+                get_calls += 1
+                if get_calls == 1:
+                    first_get_started.set()
+                    await release_first_get.wait()
+                    if first_get_outcome == "fails":
+                        raise RuntimeError("transient profile refresh read failure")
+                return {"plugin_id": "demo", "config": {"profile": "work"}}
+            if request_type == "PLUGIN_CONFIG_UPDATE":
+                write_rpc_started.set()
+                await release_write_rpc.wait()
+                if write_outcome == "persisted_false":
+                    return {"success": False, "persisted": False, "config": {}}
+                if write_outcome == "committed":
+                    return {
+                        "success": True,
+                        "persisted": True,
+                        "plugin_id": "demo",
+                        "config": {"profile": "work", "k": "committed"},
+                    }
+                raise TimeoutError("write rpc timed out")
+            raise AssertionError(f"Unexpected RPC {request_type or method_name}")
+
+        ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+        profile_task = asyncio.create_task(ctx.set_own_active_profile("work", timeout=5.0))
+        write_task: asyncio.Task[dict[str, object]] | None = None
+        try:
+            await _wait_for_checkpoint_or_task_failure(first_get_started, profile_task)
+            assert ctx._effective_config is None
+
+            write_task = asyncio.create_task(ctx.update_own_config({"k": "draft"}))
+            await _wait_for_checkpoint_or_task_failure(write_rpc_started, write_task)
+
+            async def _reject_host(**_kwargs: object) -> None:
+                raise RuntimeError("host replace rejected")
+
+            sender = _FakeResponseSender()
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-pr-wait-{first_get_outcome}-{write_outcome}",
+                    "config": {"profile": "host_tmp"},
+                    "mode": "temporary",
+                    "replace": True,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _reject_host}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+            assert sender.payloads[-1]["success"] is False
+            assert ctx._effective_config is None
+            assert ctx._effective_config_uncertain is True
+            assert ctx._config_write_in_progress is True
+
+            release_first_get.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert not profile_task.done()
+
+            release_write_rpc.set()
+            res = await write_task
+            await profile_task
+
+            if write_outcome == "persisted_false":
+                assert res["persisted"] is False
+                assert get_calls == 2
+                assert ctx._effective_config == {"profile": "work"}
+                assert ctx._effective_config_uncertain is False
+                assert instance.refreshed[-1] == {"profile": "work"}
+            elif write_outcome == "committed":
+                assert res["persisted"] is True
+                assert get_calls == 1
+                assert ctx._effective_config == {"profile": "work", "k": "committed"}
+                assert instance.refreshed[-1] == {"profile": "work", "k": "committed"}
+            else:
+                assert res["persisted"] is None
+                assert get_calls == 1
+                assert ctx._effective_config is None
+                assert ctx._effective_config_uncertain is True
+        finally:
+            release_first_get.set()
+            release_write_rpc.set()
+            for t in (write_task, profile_task):
+                if t is not None and not t.done():
+                    t.cancel()
+            await asyncio.gather(
+                *(t for t in (write_task, profile_task) if t is not None),
+                return_exceptions=True,
+            )
+
+    for first_get_outcome in ("returns", "fails"):
+        for write_outcome in ("persisted_false", "committed", "timed_out"):
+            asyncio.run(_run_case(first_get_outcome, write_outcome))

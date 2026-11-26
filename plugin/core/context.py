@@ -3393,9 +3393,11 @@ class PluginContext:
                     return
                 if isinstance(self._effective_config, dict):
                     return
-                if bool(getattr(self, "_effective_config_uncertain", False)):
-                    return
                 write_in_progress = bool(getattr(self, "_config_write_in_progress", False))
+                if not write_in_progress and bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                ):
+                    return
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
                 return
@@ -3422,7 +3424,9 @@ class PluginContext:
                         return
                     if isinstance(self._effective_config, dict):
                         return
-                    if bool(getattr(self, "_effective_config_uncertain", False)):
+                    if not bool(getattr(self, "_config_write_in_progress", False)) and bool(
+                        getattr(self, "_effective_config_uncertain", False)
+                    ):
                         return
                 continue
             with self._get_config_state_lock():
@@ -3430,7 +3434,9 @@ class PluginContext:
                     return
                 if isinstance(self._effective_config, dict):
                     return
-                if bool(getattr(self, "_effective_config_uncertain", False)):
+                if not bool(getattr(self, "_config_write_in_progress", False)) and bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                ):
                     return
                 if self._current_effective_config_gen() == attempt_gen:
                     return
