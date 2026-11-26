@@ -269,6 +269,19 @@ class _Bridge:
                 # retired thread holds its own stop event and cannot be recalled.
                 pass
 
+    def can_enqueue_snapshot(self, *, reserve_slots: int = 0) -> bool:
+        if not self._enabled:
+            return False
+        with self._pending_snapshot_lock:
+            maxsize = int(getattr(self._q, "maxsize", 0) or 0)
+            if maxsize <= 0:
+                return True
+            needed = 1 + max(0, int(reserve_slots))
+            try:
+                return (self._q.qsize() + needed) <= maxsize
+            except NotImplementedError:
+                return not self._q.full()
+
     def enqueue_delta(
         self,
         *,
@@ -287,15 +300,6 @@ class _Bridge:
         """
         if not self._enabled:
             return False
-        if max_queue_depth is not None:
-            try:
-                if self._q.qsize() >= int(max_queue_depth):
-                    return False
-            except NotImplementedError:
-                # qsize() is documented as unreliable/absent on some platforms.
-                # Losing the ceiling degrades to the old behaviour; refusing the
-                # record instead would be worse.
-                pass
         msg = {
             "v": 1,
             "kind": "delta_batch",
@@ -310,11 +314,20 @@ class _Bridge:
                 }
             ],
         }
-        try:
-            self._q.put_nowait(msg)
-        except queue.Full:
-            return False
         with self._pending_snapshot_lock:
+            if max_queue_depth is not None:
+                try:
+                    if self._q.qsize() >= int(max_queue_depth):
+                        return False
+                except NotImplementedError:
+                    # qsize() is documented as unreliable/absent on some platforms.
+                    # Losing the ceiling degrades to the old behaviour; refusing the
+                    # record instead would be worse.
+                    pass
+            try:
+                self._q.put_nowait(msg)
+            except queue.Full:
+                return False
             self._q_not_empty.notify()
         return True
 
@@ -325,6 +338,7 @@ class _Bridge:
         topic: str,
         items: list[dict[str, object]],
         mode: str = "replace",
+        reserve_slots: int = 0,
     ) -> bool:
         if not self._enabled:
             return False
@@ -338,11 +352,13 @@ class _Bridge:
             "mode": str(mode),
             "items": list(items) if isinstance(items, list) else [],
         }
-        try:
-            self._q.put_nowait(msg)
-        except queue.Full:
-            return False
         with self._pending_snapshot_lock:
+            if reserve_slots > 0 and not self.can_enqueue_snapshot(reserve_slots=reserve_slots):
+                return False
+            try:
+                self._q.put_nowait(msg)
+            except queue.Full:
+                return False
             self._q_not_empty.notify()
         return True
 
@@ -484,9 +500,9 @@ def is_bridge_enabled() -> bool:
     return bool(_bridge._enabled)
 
 
-def can_enqueue_snapshot() -> bool:
+def can_enqueue_snapshot(*, reserve_slots: int = 0) -> bool:
     """Whether the bridge is enabled and its outbound queue can accept a snapshot."""
-    return bool(_bridge._enabled) and not _bridge._q.full()
+    return _bridge.can_enqueue_snapshot(reserve_slots=reserve_slots)
 
 
 def refresh_ingest_endpoint() -> str:
@@ -545,8 +561,17 @@ def publish_snapshot(
     records: list[dict[str, object]],
     topic: str = "all",
     mode: str = "replace",
+    reserve_slots: int = 0,
 ) -> bool:
-    return bool(_bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode))
+    return bool(
+        _bridge.enqueue_snapshot(
+            store=store,
+            topic=topic,
+            items=records,
+            mode=mode,
+            reserve_slots=reserve_slots,
+        )
+    )
 
 
 # ── Provider frames ────────────────────────────────────────────────────

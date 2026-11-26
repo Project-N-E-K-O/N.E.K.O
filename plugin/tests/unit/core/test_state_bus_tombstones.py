@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -30,6 +31,8 @@ def _new_state() -> GlobalState:
     gs._deleted_lifecycle_ids_order.clear()
     gs._pending_event_deletes.clear()
     gs._pending_lifecycle_deletes.clear()
+    gs._unpublished_event_ids.clear()
+    gs._unpublished_lifecycle_ids.clear()
     return gs
 
 
@@ -689,20 +692,20 @@ def test_pending_delete_overflow_uses_bounded_chunked_deletes_preserving_unrelat
             bridge_ready["ok"] = True
             gs.append_event_record({"event_id": "ev-keep", "type": "keep"})
             gs.append_lifecycle_record({"lifecycle_id": "lc-keep", "type": "keep"})
-
-            bridge_ready["ok"] = False
             for idx in range(5):
                 rec = {"event_id": f"ov-ev-{idx}", "type": "ov"}
                 gs.append_event_record(rec)
-                events_store.publish("all", rec)
+            for idx in range(4):
+                rec = {"lifecycle_id": f"ov-lc-{idx}", "type": "ov"}
+                gs.append_lifecycle_record(rec)
+
+            bridge_ready["ok"] = False
+            for idx in range(5):
                 gs._pending_delete_retry_after["events"] = 0.0
                 assert gs.delete_event(f"ov-ev-{idx}") is True
             assert list(gs._pending_event_deletes) == ["ov-ev-2", "ov-ev-3", "ov-ev-4"]
 
             for idx in range(4):
-                rec = {"lifecycle_id": f"ov-lc-{idx}", "type": "ov"}
-                gs.append_lifecycle_record(rec)
-                lifecycle_store.publish("all", rec)
                 gs._pending_delete_retry_after["lifecycle"] = 0.0
                 assert gs.delete_lifecycle(f"ov-lc-{idx}") is True
             assert list(gs._pending_lifecycle_deletes) == ["ov-lc-1", "ov-lc-2", "ov-lc-3"]
@@ -976,3 +979,249 @@ def test_package_init_hook_registration_does_not_acquire_bus_store_lock(
     assert registered["ok"] is True
     assert register_calls == 1
     assert gs._plane_bridge_flush_hook_registered is True
+
+
+def test_unpublished_outage_deletes_do_not_evict_pre_outage_pending_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    state_module = sys.modules["plugin.core.state"]
+    gs = _new_state()
+    monkeypatch.setattr(state_module, "MAX_DELETED_BUS_IDS", 3)
+
+    snap_calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": True}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        return bridge_ready["ok"]
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        snap_calls.append((store, mode, [dict(r) for r in records]))
+        return bridge_ready["ok"]
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+    ):
+        gs.append_event_record({"event_id": "ev-pre-outage", "type": "pre"})
+        gs.append_lifecycle_record({"lifecycle_id": "lc-pre-outage", "type": "pre"})
+
+        # Bridge outage begins: pre-outage records enter pending deletes, while outage-born
+        # unpublished records must NOT crowd out pre-outage pending deletes.
+        bridge_ready["ok"] = False
+        assert gs.delete_event("ev-pre-outage") is True
+        assert gs.delete_lifecycle("lc-pre-outage") is True
+
+        for idx in range(10):
+            gs.append_event_record({"event_id": f"tmp-ev-{idx}", "type": "tmp"})
+            gs.append_lifecycle_record({"lifecycle_id": f"tmp-lc-{idx}", "type": "tmp"})
+            assert gs.delete_event(f"tmp-ev-{idx}") is True
+            assert gs.delete_lifecycle(f"tmp-lc-{idx}") is True
+
+        assert list(gs._pending_event_deletes) == ["ev-pre-outage"]
+        assert list(gs._pending_lifecycle_deletes) == ["lc-pre-outage"]
+        assert gs._unpublished_event_ids == set()
+        assert gs._unpublished_lifecycle_ids == set()
+
+        # Also verify _unpublished_*_ids stays bounded when _event_store / _lifecycle_store evicts oldest.
+        gs._event_store = type(gs._event_store)(maxlen=2)
+        gs.append_event_record({"event_id": "ev-ring-0", "type": "r"})
+        gs.append_event_record({"event_id": "ev-ring-1", "type": "r"})
+        gs.append_event_record({"event_id": "ev-ring-2", "type": "r"})
+        assert gs._unpublished_event_ids == {"ev-ring-1", "ev-ring-2"}
+
+        bridge_ready["ok"] = True
+        snap_calls.clear()
+        plane_bridge_mod._bridge._run_flush_hooks()
+        assert gs._pending_event_deletes == {}
+        assert gs._pending_lifecycle_deletes == {}
+        assert ("events", "delete", [{"event_id": "ev-pre-outage", "trace_id": "ev-pre-outage"}]) in snap_calls
+        assert (
+            "lifecycle",
+            "delete",
+            [{"lifecycle_id": "lc-pre-outage", "trace_id": "lc-pre-outage"}],
+        ) in snap_calls
+        assert all(mode == "delete" for _, mode, _ in snap_calls)
+
+
+def test_pending_delete_capacity_flushes_recovered_bridge_before_evicting_oldest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_module = sys.modules["plugin.core.state"]
+    gs = _new_state()
+    monkeypatch.setattr(state_module, "MAX_DELETED_BUS_IDS", 3)
+
+    snap_calls: list[tuple[str, str, list[dict]]] = []
+    bridge_ready = {"ok": True}
+
+    def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
+        return bridge_ready["ok"]
+
+    def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        snap_calls.append((store, mode, [dict(r) for r in records]))
+        return bridge_ready["ok"]
+
+    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+    ):
+        for idx in range(4):
+            gs.append_event_record({"event_id": f"e{idx}", "type": "a"})
+
+        # Fill pending deletes up to MAX_DELETED_BUS_IDS=3 while bridge is down.
+        bridge_ready["ok"] = False
+        for idx in range(3):
+            gs._pending_delete_retry_after["events"] = 0.0
+            assert gs.delete_event(f"e{idx}") is True
+        assert list(gs._pending_event_deletes) == ["e0", "e1", "e2"]
+
+        # Bridge recovers before flush hook fires; deleting e3 must flush e0..e2 BEFORE evicting e0.
+        bridge_ready["ok"] = True
+        snap_calls.clear()
+        gs._pending_delete_retry_after["events"] = 0.0
+        assert gs.delete_event("e3") is True
+        assert gs._pending_event_deletes == {}
+        assert snap_calls == [
+            (
+                "events",
+                "delete",
+                [
+                    {"event_id": "e0", "trace_id": "e0"},
+                    {"event_id": "e1", "trace_id": "e1"},
+                    {"event_id": "e2", "trace_id": "e2"},
+                ],
+            ),
+            ("events", "delete", [{"event_id": "e3", "trace_id": "e3"}]),
+        ]
+
+
+def test_delete_backfill_reserves_last_bridge_queue_slot_for_new_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
+    state_module = sys.modules["plugin.core.state"]
+    monkeypatch.setattr(state_module, "_PENDING_DELETE_FLUSH_BATCH_SIZE", 2)
+
+    sent_msgs: list[dict] = []
+
+    class _FakeSocket:
+        linger = 0
+
+        def connect(self, _ep: str) -> None:
+            pass
+
+        def close(self, _linger: int = 0) -> None:
+            pass
+
+        def send(self, raw: bytes, flags: int = 0) -> None:
+            sent_msgs.append(ormsgpack.unpackb(raw))
+
+    class _FakeCtx:
+        def socket(self, _kind: int) -> _FakeSocket:
+            return _FakeSocket()
+
+    monkeypatch.setattr(plane_bridge_mod.zmq.Context, "instance", staticmethod(lambda: _FakeCtx()))
+
+    bridge = plane_bridge_mod._Bridge()
+    bridge._enabled = True
+    bridge._endpoint = f"inproc://reserve_slot_bridge_{uuid.uuid4().hex}"
+    bridge._q = queue.Queue(maxsize=2)
+    monkeypatch.setattr(plane_bridge_mod, "_bridge", bridge)
+
+    gs = _new_state()
+    try:
+        # Publish 4 events using real bridge queue before outage, draining queue between publishes.
+        for idx in range(4):
+            gs.append_event_record({"event_id": f"d{idx}", "type": "del"})
+            while not bridge._q.empty():
+                bridge._q.get_nowait()
+
+        # Simulate full queue while deleting d0, d1, d2 (3 deletes = 2 batches at batch_size=2).
+        bridge._q.put_nowait({"kind": "blocker"})
+        bridge._q.put_nowait({"kind": "blocker"})
+        for idx in range(3):
+            assert gs.delete_event(f"d{idx}") is True
+        assert list(gs._pending_event_deletes) == ["d0", "d1", "d2"]
+
+        # Drain queue so capacity is 2 free slots, sender thread not started yet.
+        while not bridge._q.empty():
+            bridge._q.get_nowait()
+        gs._pending_delete_retry_after["events"] = 0.0
+
+        # Appending ev-live-1 reserves 1 slot: batch 1 (d0, d1) takes slot 1, batch 2 (d2) defers,
+        # and ev-live-1 reliably lands in slot 2.
+        gs.append_event_record({"event_id": "ev-live-1", "type": "live"})
+        assert list(gs._pending_event_deletes) == ["d2"]
+        assert "ev-live-1" not in gs._unpublished_event_ids
+        assert bridge._q.qsize() == 2
+
+        # Start real bridge sender -> transmits [d0, d1], ev-live-1, and flush hook drains d2.
+        bridge.start()
+        deadline = time.monotonic() + 3.0
+        while (
+            gs._pending_event_deletes
+            or len(sent_msgs) < 3
+            or not any(
+                m.get("kind") == "snapshot"
+                and m.get("mode") == "delete"
+                and [it.get("event_id") for it in m.get("items", [])] == ["d2"]
+                for m in sent_msgs
+            )
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert gs._pending_event_deletes == {}
+        assert any(
+            m.get("kind") == "snapshot"
+            and m.get("mode") == "delete"
+            and [it.get("event_id") for it in m.get("items", [])] == ["d0", "d1"]
+            for m in sent_msgs
+        )
+        assert any(
+            m.get("kind") == "delta_batch"
+            and m.get("items", [{}])[0].get("payload", {}).get("event_id") == "ev-live-1"
+            for m in sent_msgs
+        )
+        assert any(
+            m.get("kind") == "snapshot"
+            and m.get("mode") == "delete"
+            and [it.get("event_id") for it in m.get("items", [])] == ["d2"]
+            for m in sent_msgs
+        )
+
+        # Also verify when only 1 free slot exists (qsize=1, maxsize=2): backfill defers completely
+        # so ev-live-2 uses the last slot cleanly instead of being dropped.
+        bridge.stop()
+        sent_msgs.clear()
+        bridge._q.put_nowait({"kind": "blocker"})
+        bridge._q.put_nowait({"kind": "blocker"})
+        assert gs.delete_event("d3") is True
+        assert list(gs._pending_event_deletes) == ["d3"]
+
+        bridge._q.get_nowait()  # Leave 1 blocker -> exactly 1 free slot left (qsize=1, maxsize=2).
+        gs._pending_delete_retry_after["events"] = 0.0
+        gs.append_event_record({"event_id": "ev-live-2", "type": "live"})
+        assert list(gs._pending_event_deletes) == ["d3"]
+        assert "ev-live-2" not in gs._unpublished_event_ids
+        assert bridge._q.qsize() == 2
+
+        bridge.start()
+        deadline = time.monotonic() + 3.0
+        while (gs._pending_event_deletes or len(sent_msgs) < 3) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert gs._pending_event_deletes == {}
+        assert any(
+            m.get("kind") == "delta_batch"
+            and m.get("items", [{}])[0].get("payload", {}).get("event_id") == "ev-live-2"
+            for m in sent_msgs
+        )
+        assert any(
+            m.get("kind") == "snapshot"
+            and m.get("mode") == "delete"
+            and [it.get("event_id") for it in m.get("items", [])] == ["d3"]
+            for m in sent_msgs
+        )
+    finally:
+        bridge.stop()
