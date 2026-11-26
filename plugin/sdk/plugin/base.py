@@ -1011,8 +1011,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
             declared permissions.
 
         Returns ``True`` on success. Raises ``ValueError`` for invalid
-        names (including names made only of dots), ``EntryConflictError`` for duplicates and
-        ``PermissionDeniedError`` for a narrowing outside the declarations.
+        names (including names made only of dots), ``EntryConflictError``
+        for duplicates and ``PermissionDeniedError`` for a narrowing outside
+        the declarations.
         """
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
@@ -1026,7 +1027,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
         Removes the dynamic entry locally and notifies the host so the
         registration is also dropped from main_server. Returns ``True``
-        if the tool existed and was removed, ``False`` otherwise.
+        if the tool existed and was removed, ``False`` for a valid name
+        that is not registered (an invalid name raises, see below).
 
         Fire-and-forget like :meth:`register_llm_tool`; use
         :meth:`unregister_llm_tool_async` to get the real outcome.
