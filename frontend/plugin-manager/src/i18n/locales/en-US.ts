@@ -743,6 +743,13 @@ export default {
       controlError: 'Plugin UI control error',
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.',
       parseDocumentConfirm: 'Allow plugin "{plugin}" to parse document "{file}"?',
+      actionConfirmTitle: 'Confirm action from plugin "{plugin}"',
+      actionConfirmDefault: 'Run this action?',
+      actionConfirmTimeout: 'The confirmation timed out, so the action was not run.',
+      actionConfirmPending: 'Another confirmation is already open. Finish it first.',
+      openPathOutOfScope: 'This panel can only open files inside its own plugin folder or data folder.',
+      openPathNoBridge: 'Opening local files is only available in the desktop app.',
+      openPathFailed: 'Could not open the path: {message}',
       unsafeTargetBlocked: 'Blocked unsafe target URL'
     }
   },

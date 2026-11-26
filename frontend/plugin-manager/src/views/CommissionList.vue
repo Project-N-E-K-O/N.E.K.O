@@ -68,7 +68,7 @@
               </p>
               <AskBox v-if="row.item.ask" :ask="row.item.ask" :busy="busy" :no-note="row.item.route === 'plugin'" :place="row.item.id" @answer="answer(row.item, $event)" />
               <div v-if="row.item.status === 'working' && row.item.route === 'task_agent'" class="say">
-                <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="commission-say" @keyup.enter="tell(row.item)" />
+                <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="commission-say" @keydown="enterKey.down" @keyup.enter="enterKey.up(() => tell(row.item))" />
                 <el-button type="primary" :loading="busy === 'tell'" :disabled="!sentence.trim() || busy !== ''" data-testid="commission-send" @click="tell(row.item)">
                   {{ t('power.space.familiars.send') }}
                 </el-button>
@@ -105,6 +105,7 @@ import type { GivenAnswer } from '@/components/power/ask'
 import { sendAnswer } from '@/components/power/useAskAnswers'
 import { clockTime } from '@/components/power/colony/activity'
 import { describeConsoleError, formatDuration, formatTokens } from '@/components/power/powerFormat'
+import { useEnterKey } from '@/utils/enterKey'
 
 /** Everything she commissioned: what is under way, and what ended lately. */
 const STATUSES = ['working', 'waiting_user', 'queued', 'resting', 'done', 'failed', 'cancelled', 'blocked']
@@ -124,6 +125,8 @@ const projects = ref<string[]>([])
 const opened = ref('')
 const usage = ref<CommissionUsage | null>(null)
 const sentence = ref('')
+// Enter that picks a word of an input method is not Enter that sends.
+const enterKey = useEnterKey()
 // Which draft it is: another one with every change, also when the same words are typed again.
 let draft = 0
 watch(sentence, () => { draft += 1 }, { flush: 'sync' })

@@ -117,6 +117,27 @@ describe('Plugin API page', () => {
     expect(container.querySelector('.usage-summary strong')?.textContent).toBe('0')
     expect(container.querySelectorAll('.usage-summary strong')[2]?.textContent).toBe('—')
   })
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not filter usage at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const container = await mount()
+    const filter = container.querySelector('.usage-filters input') as HTMLInputElement
+    expect(filter).toBeTruthy()
+    const before = api.getModelUsage.mock.calls.length
+    filter.value = '示例'; filter.dispatchEvent(new Event('input', { bubbles: true })); await flush()
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before)
+    // Enter once more, with no word left to pick: now it filters.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before + 1)
+    expect(api.getModelUsage.mock.calls.at(-1)?.[0]).toMatchObject({ plugin_id: '示例' })
+  })
   it('renames the same slot while preserving the saved key and bindings', async () => {
     await mount(); await clickText('Edit')
     expect(input('slot-key').value).toBe('sk-abc......wxyz')

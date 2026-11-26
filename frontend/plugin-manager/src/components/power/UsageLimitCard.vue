@@ -6,7 +6,7 @@
     <div v-if="view" class="line">
       <input
         v-model="amount" type="number" class="amount" :min="view.min / unit" :max="view.max / unit" step="any"
-        :aria-label="t('power.limit.title')" data-testid="limit-amount" @keyup.enter="save(false)"
+        :aria-label="t('power.limit.title')" data-testid="limit-amount" @keydown="enterKey.down" @keyup.enter="enterKey.up(() => save(false))"
       >
       <span>{{ t('power.limit.unit') }}</span>
       <el-button type="primary" :loading="saving" :disabled="!changed" data-testid="limit-save" @click="save(false)">{{ t('power.limit.save') }}</el-button>
@@ -25,12 +25,15 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getUsageLimit, setUsageLimit } from '@/api/console'
 import type { UsageLimit } from '@/api/console'
+import { useEnterKey } from '@/utils/enterKey'
 import { describeConsoleError } from './powerFormat'
 
 /** How many tokens the work on one commission may use before it stops to ask the user. */
 const { t, te } = useI18n()
 const view = ref<UsageLimit | null>(null)
 const amount = ref('')
+// Enter that picks a word of an input method is not Enter that saves.
+const enterKey = useEnterKey()
 const saving = ref(false)
 const error = ref('')
 const note = ref('')

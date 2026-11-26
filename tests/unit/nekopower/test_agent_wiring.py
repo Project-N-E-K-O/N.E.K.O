@@ -936,6 +936,7 @@ def _commission(**values: Any) -> Any:
         "plugin_id": None,
         "entry_id": None,
         "parent_id": None,
+        "name": None,
         "created_at": 1_700_000_000.0,
         "started_at": 1_700_000_005.0,
         "ended_at": None,
@@ -1005,6 +1006,8 @@ def test_a_task_that_waits_for_the_user_carries_what_it_asks_and_no_other_does()
     # As a card shows it: the question, and what is to be allowed in one line.
     assert {key: waiting["question"][key] for key in PERMISSION} == PERMISSION
     assert "npm run build" in waiting["question"]["line"] and waiting["question"]["line_cut"] is False
+    # In each language of the interface too: every page it is sent to shows the one of its own.
+    assert waiting["question"]["lines"]["ja"] == {"line": "コマンド npm run build の実行", "line_cut": False}
     # Said as None once it does not wait: the page merges what it is sent into what it has.
     for status in ("queued", "working", "done", "blocked", "failed", "cancelled"):
         task = hud_task(_commission(status=status, asked=dict(PERMISSION), ended_at=1_700_000_050.0))
@@ -1027,7 +1030,10 @@ async def test_a_commission_that_stops_waiting_has_the_card_of_its_question_clos
     # In the order things happened: the task is back at work on the HUD before its card closes.
     kinds = [event["event_type"] for event in wiring.events]
     assert kinds.index("nekopower_question") > kinds.index("task_update")
-    assert [task["status"] for task in wiring.updates("c1")] == ["waiting_user", "running"]
+    # The task agent's own one is not shown: what it asks is, with the task shown above it, until it asks no more.
+    assert [(task["status"], _asked_below(task)) for task in wiring.updates("c1")] == [
+        ("waiting_user", []), ("running", []), ("running", [("c2", "q-c2")]), ("running", []),
+    ]
     assert wiring.updates("c2") == []
 
 
@@ -1051,6 +1057,90 @@ def test_a_task_agents_own_task_agent_is_not_shown():
     view = HudTasks()
     assert view.update(child) is None
     assert view.all() == []
+
+
+def _below(commission_id: str, parent: str, question_id: str | None = None, **values: Any) -> Any:
+    """A task agent's own task agent: waiting for the user with an approval if ``question_id`` is given."""
+    if question_id is not None:
+        values.setdefault("status", "waiting_user")
+        values.setdefault("asked", {**PERMISSION, "id": question_id})
+    return _commission(id=commission_id, parent_id=parent, name=f"agent-{commission_id}", title=f"job {commission_id}", **values)
+
+
+def _asked_below(task: dict[str, Any]) -> list[tuple[str, str]]:
+    return [(item["id"], item["question"]["id"]) for item in task["sub_questions"]]
+
+
+def test_what_a_task_agents_own_task_agents_ask_is_shown_with_the_task_above_them():
+    from app.agent_server.nekopower_mount import HudTasks
+
+    view = HudTasks()
+    top = view.update(_commission(id="c1"))
+    # Said as none, for the page merges what it is sent into what it has.
+    assert top["sub_questions"] == []
+
+    shown = view.update(_below("c2", "c1", "q2"))
+    # The task shown above it, with who asks and what, as a card shows it (the line of an approval included).
+    assert shown["id"] == "c1" and shown["status"] == "running"
+    [item] = shown["sub_questions"]
+    assert {key: item[key] for key in ("id", "name", "title")} == {"id": "c2", "name": "agent-c2", "title": "job c2"}
+    assert item["question"]["id"] == "q2" and "npm run build" in item["question"]["line"]
+    # One that one started asks as well: shown with the same task, after the one that asked first.
+    assert _asked_below(view.update(_below("c3", "c2", "q3"))) == [("c2", "q2"), ("c3", "q3")]
+    # Written again as it waits: nothing new to tell.
+    assert view.update(_below("c2", "c1", "q2")) is None
+    # A new question takes the place of the one it asked, where that one stood.
+    assert _asked_below(view.update(_below("c2", "c1", "q4"))) == [("c2", "q4"), ("c3", "q3")]
+    # The task shown, told of again as it moves on, keeps them.
+    assert _asked_below(view.update(_commission(id="c1"))) == [("c2", "q4"), ("c3", "q3")]
+    assert _asked_below(view.get("c1")) == [("c2", "q4"), ("c3", "q3")]
+
+    # Answered: back at work, and taken off (whatever its row still reads of the question).
+    assert _asked_below(view.update(_below("c2", "c1", "q4", status="working"))) == [("c3", "q3")]
+    assert view.update(_below("c3", "c2", status="cancelled"))["sub_questions"] == []
+    # One that did not wait goes on without the task being told again.
+    assert view.update(_below("c2", "c1", status="done")) is None
+    assert view.get("c1")["sub_questions"] == []
+    # Never shown as tasks of their own.
+    assert [task["id"] for task in view.all()] == ["c1"]
+
+
+def test_nothing_is_kept_of_what_is_asked_under_a_task_not_in_view():
+    from app.agent_server.nekopower_mount import HudTasks
+
+    view = HudTasks()
+    # The task it was started for let go of already (or never seen): nothing to show it with, nothing kept.
+    assert view.update(_below("c2", "c1", "q2")) is None
+    assert view.update(_below("c3", "c2", "q3")) is None
+    assert (view._parents, view._asked_below) == ({}, {})
+    assert view.update(_commission(id="c1"))["sub_questions"] == []
+    # Waiting with nothing on record that a card could show: not one to be answered there, and nothing kept.
+    assert view.update(_below("c5", "c1", status="waiting_user")) is None
+    assert view._asked_below == {}
+
+
+def test_who_is_under_a_task_is_let_go_of_with_the_task():
+    from app.agent_server.nekopower_mount import HUD_RETENTION_SECONDS, HudTasks
+
+    now = [100.0]
+    view = HudTasks(clock=lambda: now[0])
+    view.update(_commission(id="c1"))
+    view.update(_below("c2", "c1", "q2"))
+    view.update(_commission(id="other"))
+    view.update(_below("c9", "other", "q9"))
+    view.update(_below("c9", "other", status="working"))
+    # Ended with one under it still asking (stopped, and the word of that one not in yet).
+    view.update(_commission(id="c1", status="cancelled", ended_at=1_700_000_050.0))
+
+    now[0] += HUD_RETENTION_SECONDS + 1
+    view.update(_commission(id="other"))
+    assert [task["id"] for task in view.all()] == ["other"]
+    # Who is under the task still shown is kept, for one it starts may ask; nothing is kept of what is not asked.
+    assert view._parents == {"c9": "other"}
+    assert view._asked_below == {}
+    view.update(_below("c9", "other", "q10"))
+    view.clear()
+    assert (view._parents, view._asked_below) == ({}, {})
 
 
 def test_ended_tasks_stay_in_view_for_a_while_and_then_go():

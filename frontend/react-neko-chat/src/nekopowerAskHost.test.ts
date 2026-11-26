@@ -154,6 +154,27 @@ describe('the question inside a card of the task HUD', () => {
     expect(bare.textContent).toContain('请到喵能力界面里选');
   });
 
+  it('says what is to be allowed in the language of the page, and asks it opened first where that very line is cut', () => {
+    // Asked in Chinese, of a page in English: and here the English line is the one cut.
+    const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
+      detail: { tool: 'hand_over', title: 'a long title' }, line: '交给另一只使魔：a long title', line_cut: false,
+      lines: { 'zh-CN': { line: '交给另一只使魔：a long title', line_cut: false }, en: { line: 'start another familiar: a long … title', line_cut: true } } };
+    const seen = (language: string | undefined, taskId: string) => {
+      vi.stubGlobal('i18next', language === undefined ? undefined : { language });
+      const box = draw(handed, { taskId });
+      return [box.querySelector('.task-ask-line')?.textContent, shownChoices(box)];
+    };
+    expect(seen('en', 'c1')).toEqual(['start another familiar: a long … title', ['once', 'deny']]);
+    expect(seen('en-US', 'c2')).toEqual(['start another familiar: a long … title', ['once', 'deny']]);
+    expect(seen('zh-CN', 'c3')).toEqual(['交给另一只使魔：a long title', ['always', 'session', 'once', 'deny']]);
+    // A language it has no line in, or none that can be read: the commission's.
+    expect(seen('fr', 'c4')).toEqual(['交给另一只使魔：a long title', ['always', 'session', 'once', 'deny']]);
+    expect(seen(undefined, 'c5')).toEqual(['交给另一只使魔：a long title', ['always', 'session', 'once', 'deny']]);
+    vi.stubGlobal('i18next', { language: 'en' });
+    const empty = draw({ ...handed, lines: { en: { line: '', line_cut: true } } }, { taskId: 'c6' });
+    expect(empty.querySelector('.task-ask-line')?.textContent).toBe('交给另一只使魔：a long title');
+  });
+
   it('asks whether the question still waits when the server gave up waiting for the answer to be taken', async () => {
     const rows = (questions: unknown[]) => (url: string) => (url.includes('/answer') ? { status: 504, body: {} } : { status: 200, body: { questions } });
     // It does not wait any more: over, by this answer or by something else (answered elsewhere
@@ -321,6 +342,27 @@ describe('the question inside a card of the task HUD', () => {
     expect(once.disabled).toBe(true);
     vi.advanceTimersByTime(asks.SETTLE_MS);
     expect(once.disabled).toBe(false);
+  });
+
+  it('holds back anew when one drawn earlier is put in the place of another, the keyboard as well', async () => {
+    vi.useFakeTimers();
+    const words = draw({ kind: 'report', id: 'q5', question: 'Which file?' }, { settle: true });
+    const send = words.querySelector('[data-ask-send]') as HTMLButtonElement;
+    const input = words.querySelector('.task-ask-input') as HTMLInputElement;
+    // Put up again before the first wait is over: it waits the whole time from then.
+    vi.advanceTimersByTime(asks.SETTLE_MS - 100);
+    (words as HTMLElement & { settle: () => void }).settle();
+    vi.advanceTimersByTime(200);
+    expect(send.disabled).toBe(true);
+    input.value = 'the newest';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(asks.SETTLE_MS);
+    expect(send.disabled).toBe(false);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map(call => call.body)).toEqual([{ question_id: 'q5', text: 'the newest' }]);
   });
 
   it('answers yes or no, what was picked, or words; not while a word is being composed', async () => {

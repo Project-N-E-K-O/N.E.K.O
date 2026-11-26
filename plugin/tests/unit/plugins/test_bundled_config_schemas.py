@@ -59,15 +59,6 @@ def test_schema_covers_every_editable_manifest_and_example_field(plugin_id: str)
     # editable configuration (see test_builtin_plugin_permissions.py).
     manifest = strip_reserved_sections(manifest)
     schema = _schema(plugin_id)
-    # Claude companion consumes an optional section not shipped in plugin.toml.
-    # Keep those existing runtime defaults documented without changing the manifest.
-    if plugin_id == "claude_companion":
-        assert "claude_companion" not in manifest
-        manifest["claude_companion"] = {
-            "port": 48920,
-            "cooldown_seconds": 60,
-            "api_token": "",
-        }
     _check_fields(schema, manifest)
     example = plugin_dir / "config.example.toml"
     if example.is_file():
@@ -110,11 +101,6 @@ def test_packaged_metadata_stays_valid_after_schema_migration(plugin_id: str) ->
 
 
 def test_schema_keeps_zero_sentinels_and_runtime_limits() -> None:
-    game = _schema("game_agent_minecraft")["properties"]["game_agent"]["properties"]
-    for key in ("screenshot_max_bytes", "screenshot_max_edge_px"):
-        assert game[key]["minimum"] == 0
-    assert game["task_timeout_seconds"]["maximum"] == 295
-    assert game["screenshot_jpeg_quality"]["maximum"] == 95
     search = _schema("web_search")["properties"]["search"]["properties"]
     assert search["retry_attempts"]["minimum"] == 1
     assert search["retry_attempts"]["maximum"] == 3
@@ -144,13 +130,6 @@ def test_remaining_schemas_preserve_open_maps_and_zero_sentinels() -> None:
     memo = _schema("memo_reminder")["properties"]["memo"]["properties"]
     assert memo["max_reminders"]["minimum"] == 0
     assert "enum" not in memo["timezone"]  # Any installed IANA zone is supported.
-    netease = _schema("netease_music")["properties"]["plugin_runtime"]["properties"]
-    assert netease["enabled"]["default"] is False
-    claude = _schema("claude_companion")["properties"]["claude_companion"]["properties"]
-    assert claude["api_token"]["default"] == ""
-    assert claude["api_token"]["writeOnly"] is True
-    assert claude["cooldown_seconds"]["minimum"] == 0
-    assert (claude["port"]["minimum"], claude["port"]["maximum"]) == (1, 65535)
 
 
 def test_remaining_schemas_match_runtime_mode_choices() -> None:

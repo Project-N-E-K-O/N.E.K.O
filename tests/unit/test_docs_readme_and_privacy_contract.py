@@ -45,7 +45,11 @@ def test_readme_mirrors_do_not_claim_wechat_builtin_plugin(readme_path: Path):
     assert not (REPO_ROOT / "plugin/plugins/wechat_integration").exists()
 
     text = readme_path.read_text(encoding="utf-8")
-    plugin_lines = [line for line in text.splitlines() if "Minecraft" in line and "MCP" in line]
+    plugin_lines = [
+        line
+        for line in text.splitlines()
+        if "MCP" in line and any(word in line.lower() for word in ("reminder", "提醒", "リマインダー", "напоминани"))
+    ]
     assert len(plugin_lines) == 1, f"Expected built-in plugins bullet in {readme_path}"
     bullet = plugin_lines[0]
     assert "wechat" not in bullet.lower()

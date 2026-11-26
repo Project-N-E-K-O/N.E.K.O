@@ -886,6 +886,7 @@
         "reactWindowCompactShort": "コンパクト",
         "reactWindowRestore": "チャットウィンドウを復元",
         "reactWindowRestoreShort": "復元",
+        "nekoPowerAskWaitingBadge": "NekoPower があなたの返事を待っています",
         "reactWindowMountFailed": "チャットウィンドウのマウントに失敗しました",
         "reactWindowLoadFailed": "チャットウィンドウのリソース読み込みに失敗しました",
         "reactWindowAriaLabel": "Neko チャットウィンドウ",

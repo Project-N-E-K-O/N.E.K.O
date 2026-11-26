@@ -336,6 +336,9 @@ export const chatWindowPropsSchema = z.object({
   // 录音、试听或发送中为 true。迷你窗折叠后录音控件会卸载但草稿仍在，宿主据此判断，不能看 DOM。
   // 第二个参数是阶段（starting / recording / preview / sending / idle）：宿主据此只停掉占用麦克风的录音。
   onAudioMessageActiveChange: hostCallback([z.boolean(), z.string()]).optional(),
+  // 喵能力有没有问话在等回话（按屏幕上还看得见的消息算）：聊天窗缩成小球时宿主据此给小球加角标。
+  // 小球不归 React 画，最小化后紧凑界面也卸载了，所以由根组件上报，宿主不看 DOM。
+  onNekoPowerAskWaitingChange: hostCallback([z.boolean()]).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

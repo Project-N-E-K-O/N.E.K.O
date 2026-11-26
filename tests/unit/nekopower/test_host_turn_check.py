@@ -87,6 +87,15 @@ async def _check(host: Any, user_text: str, reply_text: str, **kwargs: Any) -> A
     return await host.check_turn(user_text=user_text, reply_text=reply_text, **kwargs)
 
 
+def _spoken_answers(lang: str) -> str:
+    """How a line she reads out ends for a request for approval: what words can give, then the buttons for the rest."""
+    from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT, PERMISSION_OPTION_NAMES
+
+    names = PERMISSION_OPTION_NAMES[lang]
+    rest = PERMISSION_BUTTONS_ONLY_TEXT[lang].format(options=f"{names['always']} / {names['session']}")
+    return f" ({names['once']} / {names['deny']}){rest}"
+
+
 async def _notices(host: Any) -> list[tuple[str, str, str]]:
     return [
         (item.payload["reason"], item.payload["delivery_mode"], item.payload["text"])
@@ -332,6 +341,8 @@ async def test_a_promise_nothing_can_keep_wakes_her_to_take_it_back(server, host
 async def test_a_promise_to_stop_something_stops_it(server, hosts, tmp_path):
     _weather(server)
     llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "别查天气了"}])
+    # What the sentence filed for her does with the work there is: the model reads it as that stop.
+    llm.under_way = [{"does": "stop", "items": [1], "named": True}]
     host = _host(hosts, tmp_path, server, llm)
     commission, _created = await host.ledger.create(
         lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
@@ -343,6 +354,30 @@ async def test_a_promise_to_stop_something_stops_it(server, hosts, tmp_path):
     assert result.receipt.kind == "stopped"
     assert (await host.ledger.get(commission.id)).status == "cancelled"
     assert await _notices(host) == [("filed", "passive", "你刚才答应的事已经替你派发了。已叫停：查上海明天的天气")]
+
+
+async def test_a_promised_stop_that_could_not_confirm_its_end_is_told_of_that_commission(server, hosts, tmp_path, monkeypatch):
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "别查天气了"}])
+    llm.under_way = [{"does": "stop", "items": [1], "named": True}]
+    host = _host(hosts, tmp_path, server, llm)
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
+    )
+    await host.ledger.transition(commission.id, "working", route="plugin", plugin_id="weather", entry_id="today")
+
+    async def stop(*_args: Any, **_kwargs: Any) -> Any:
+        after = await host.ledger.get(commission.id)
+        return after, True, RuntimeError("the plugin server is down")
+
+    monkeypatch.setattr(host.brain, "_stop", stop)
+
+    result = await _check(host, "算了别查天气了", "好，我让它停下", external_intent=0.8)
+
+    # Stopped, though what it ran could not be told to end: she is told, about that commission.
+    assert result.receipt.kind == "stop_failed"
+    (notice,) = [item for item in await outbox(host, "correction")]
+    assert (notice.payload["reason"], notice.commission_id) == ("promised_failed", commission.id)
 
 
 async def test_she_said_it_is_done_but_no_task_says_so(server, hosts, tmp_path):
@@ -639,7 +674,7 @@ async def test_a_permission_question_is_told_with_what_it_asks_to_allow(server, 
     answer = await host.query("", lanlan_name="Lan", lang="zh")
 
     # The command itself, not the name of its category.
-    expected = "在等用户回答：运行命令 Remove-Item old.txt (始终允许 / 仅本会话允许 / 本次允许 / 拒绝)"
+    expected = "在等用户回答：运行命令 Remove-Item old.txt (本次允许 / 拒绝)（始终允许 / 仅本会话允许请点问话上的按钮）"
     assert lines == [f"- [等用户回话] 清理旧文件 {expected}"]
     assert expected in answer.text and "run_command" not in answer.text
 
@@ -686,10 +721,11 @@ async def test_a_long_command_gives_way_in_a_line_and_the_answers_stay(server, h
         # command begins and how it ends are both still there.
         assert PERMISSION_DETAIL_CUT_MARK[lang] in line
         assert "Remove-Item C:/Users" in line and "-Recurse -Force" in line
-        # Every answer on offer is still there, after the command.
+        # Every answer on offer is still there, after the command: those words can give, and the
+        # buttons for always and this session.
         for name in PERMISSION_OPTION_NAMES[lang].values():
             assert name in line
-        assert line.rstrip().endswith(")")
+        assert line.endswith(_spoken_answers(lang))
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
@@ -730,8 +766,7 @@ def test_every_kind_of_permission_keeps_its_answers_in_a_line_of_full_length(lan
             line = waiting_row(head, commission, frame, lang)
             assert count_tokens(line) <= QUERY_PERMISSION_ROW_MAX_TOKENS, (category, head)
             assert line.startswith(head), (category, head)
-            names = " / ".join(PERMISSION_OPTION_NAMES[lang].values())
-            assert line.endswith(f"({names})"), (category, head)
+            assert line.endswith(_spoken_answers(lang)), (category, head)
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
@@ -764,7 +799,7 @@ async def test_a_query_answer_lists_whole_lines_and_says_how_many_it_left_out(se
     for row in rows:
         for name in PERMISSION_OPTION_NAMES[lang].values():
             assert name in row
-        assert row.rstrip().endswith(")")
+        assert row.endswith(_spoken_answers(lang))
     assert lines[-1] == QUERY_TEXTS[lang]["more"].format(count=6 - len(rows))
 
 
@@ -948,7 +983,8 @@ def test_a_permission_question_names_what_is_asked_and_the_answers():
 
     assert render_question("整理下载文件夹", question, "zh") == (
         "「整理下载文件夹」要先得到用户批准才能继续：运行命令 Remove-Item old.txt。请转告用户，可以回答："
-        "始终允许 / 仅本会话允许 / 本次允许 / 拒绝。用户回答后，用任务派发工具把回答交回来。"
+        # Typed or said, an answer allows once at most: always and this session are the buttons'.
+        "本次允许 / 拒绝（始终允许 / 仅本会话允许请点问话上的按钮）。用户回答后，用任务派发工具把回答交回来。"
     )
 
 

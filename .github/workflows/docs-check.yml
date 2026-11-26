@@ -1,0 +1,73 @@
+name: Docs Build Check
+
+# Builds the VitePress docs site on pull requests that touch docs/, so a page
+# that breaks the build is caught before merge instead of on main.
+#
+# Before this check, the site was only ever built by docs.yml ("Deploy
+# Documentation"), which runs after merge (push to main) or on demand. In
+# #4103 a design doc gained a bare `<member>` outside code; it passed review,
+# and the deploy stayed red on main for over a day until #4135. VitePress hands
+# Markdown to Vue's template compiler, so an HTML-like tag outside backticks
+# fails the build with "Element is missing end tag", which GitHub's Markdown
+# preview never shows.
+#
+# It only builds: no Pages, no deploy, no IndexNow, and a read-only token. It
+# is a separate file rather than a pull_request trigger on docs.yml because
+# docs.yml's workflow-level settings are for deploying, namely the
+# `pages: write` / `id-token: write` permissions and the `pages` concurrency
+# group. A PR run must never join that group, where it would queue behind a
+# real deploy or hold one up. Runs here are grouped per PR instead, and a new
+# push cancels the previous run.
+#
+# The steps mirror docs.yml's build job, minus configure-pages and the Pages
+# artifact upload. Keep the two in step when either changes.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs site
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history, as in docs.yml: `lastUpdated` reads each page's git log.
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Test documentation integrations
+        run: npm test
+        working-directory: docs
+
+      - name: Build VitePress
+        run: npm run build
+        working-directory: docs
+
+      - name: Validate SEO output
+        run: npm run check:seo
+        working-directory: docs

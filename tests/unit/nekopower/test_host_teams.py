@@ -170,6 +170,14 @@ async def test_a_leader_starts_a_team_once_the_user_allowed_it_and_reports_once(
     cards = (await host.board())["projects"][0]["members"]
     assert {card["team"] for card in cards} == {receipt.commission_id} and len(cards) == 4
     assert [card["leader"] for card in cards] == [True, False, False, False]
+    # What a sentence said now is read against: the leader's commission, with what each member is at and
+    # who it is, by the names the user calls them.
+    from nekopower.host.decision import _shown
+
+    sections, _numbered = _shown(await host.brain._request("stop the links one", "", "Lan", "en"))
+    (line,) = dict(sections)["UNDER WAY:"]
+    assert line.startswith(f'1. [working] "{TEAM}" (project "Shop site"; by Boss cat); its members: ')
+    assert all(f'"{part["description"]}" (working; by ' in line for part in PARTS) and "by Scout cat" in line
 
     go.set()
     done = await wait_status(host, receipt.commission_id, "done")
@@ -237,9 +245,9 @@ async def test_new_work_said_while_the_user_is_asked_about_a_team_is_not_taken_f
     question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
     assert question["detail"]["tool"] == "start_team"
 
-    # What is asked quotes what each member is to do (the links, the styles). New work that shares those words
-    # and says no answer, or says a no or a yes in passing, is new work: not an answer that was not understood,
-    # and no answer that refuses (or allows) the team.
+    # What is asked quotes what each member is to do (the links, the styles). New work that shares those words,
+    # or says a no or a yes in passing, which the model reading answers takes for no answer (``host_fakes``), is
+    # new work: not an answer that was not understood, and no answer that refuses (or allows) the team.
     for said in (
         "go through the links of the contact page and repair the broken ones",
         "no rush, but rename the images folder of the shop site",
@@ -252,6 +260,8 @@ async def test_new_work_said_while_the_user_is_asked_about_a_team_is_not_taken_f
         assert (still.status, still.question()["id"]) == ("waiting_user", question["id"]), said
         await host.abort(more.commission_id)
     assert await host.ledger.select(parent_id=receipt.commission_id) == [] and trees.made == []
+    # Shown to the model with who it is with: the leader, by the name the user calls it.
+    assert '(project "Shop site"; by Boss cat' in host._decision_llm.under_way_calls[-1][-1]["content"]
 
     # What answers it is read as the answer still.
     answered = await _dispatch(host, "yes, go ahead")

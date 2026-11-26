@@ -1,5 +1,5 @@
 """Traditional Chinese must survive the trip from the global locale to the
-prompt table (issue #2500, step 2 — scattered call sites + plugins).
+prompt table (issue #2500, step 2 — scattered call sites).
 
 Every test here sets the process locale to Traditional Chinese with the real
 ``language_context`` and then asserts on the *rendered* prompt, not on a
@@ -133,58 +133,3 @@ def test_activity_guess_traditional_locale_selects_traditional_template():
     assert simplified == ACTIVITY_GUESS_PROMPTS["zh"]
     assert traditional != simplified
     assert traditional != ACTIVITY_GUESS_PROMPTS["en"]
-
-
-# ---------------------------------------------------------------------------
-# plugin/plugins/game_agent_minecraft — user_lang() + PROMPTS tables
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("ui_locale", "expected"),
-    [("zh-TW", "zh-TW"), ("zh-CN", "zh"), ("zh", "zh"), ("ja", "ja"), ("en", "en")],
-)
-def test_minecraft_user_lang_resolves_to_table_key(ui_locale, expected):
-    """``user_lang`` must land on a key of this module's own tables.
-
-    Traditional keeps its own key; Simplified collapses to ``zh`` rather
-    than leaking ``zh-CN`` — which is not a key here, so the
-    ``in SUPPORTED_LANGS`` guard would have bounced every Simplified user
-    to English.
-    """
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    with language_context(ui_locale):
-        assert prompts.user_lang() == expected
-    assert expected in prompts.SUPPORTED_LANGS
-
-
-def test_minecraft_prompts_render_traditional_not_simplified_or_english():
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    with language_context("zh-TW"):
-        cue = prompts.t("TASK_NOT_CONNECTED", lang=prompts.user_lang())
-    assert cue == prompts.PROMPTS["TASK_NOT_CONNECTED"]["zh-TW"]
-    assert cue != prompts.PROMPTS["TASK_NOT_CONNECTED"]["zh"]
-    assert cue != prompts.PROMPTS["TASK_NOT_CONNECTED"]["en"]
-
-
-def test_minecraft_t_degrades_chinese_variants_to_simplified_not_english():
-    """A future table that forgets ``zh-TW`` must fall back to Simplified.
-
-    English mid-conversation is a language switch; Simplified is merely the
-    wrong script. Same rule as ``prompts_sys._loc``.
-    """
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    incomplete = {"zh": "简体", "en": "English"}
-    original = prompts.PROMPTS.get("__TEST_ONLY__")
-    prompts.PROMPTS["__TEST_ONLY__"] = incomplete
-    try:
-        assert prompts.t("__TEST_ONLY__", lang="zh-TW") == "简体"
-        assert prompts.t("__TEST_ONLY__", lang="ko") == "English"
-    finally:
-        if original is None:
-            prompts.PROMPTS.pop("__TEST_ONLY__", None)
-        else:  # pragma: no cover - defensive
-            prompts.PROMPTS["__TEST_ONLY__"] = original
