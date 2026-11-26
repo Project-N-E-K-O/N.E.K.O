@@ -384,7 +384,7 @@ async def _commit_proactive_delivery(
         )
         if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] buffered delivery failed after user takeover; skip TTS cleanup",
+                "[%s] buffered delivery failed; turn not released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return DeliveryCommit(

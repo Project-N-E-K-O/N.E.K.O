@@ -1308,7 +1308,7 @@ async def _generate_phase2_stream(
             )
         else:
             active_logger.info(
-                "[%s] Phase 2 abort 但用户已接管 (state preempted)，"
+                "[%s] Phase 2 abort，回合未交还 (released=False)，"
                 "跳过 TTS 清理避免误伤正常回复",
                 lanlan_name,
             )
@@ -1328,8 +1328,8 @@ async def _generate_phase2_stream(
     if not response_text:
         if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] cleaned proactive output is empty but user already "
-                "took over; skip TTS cleanup",
+                "[%s] cleaned proactive output is empty; turn not "
+                "released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return Phase2Generation(
@@ -1546,7 +1546,7 @@ async def _guard_phase2_output(
         )
         if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] repeat guard hit but user already took over; skip TTS cleanup",
+                "[%s] repeat guard hit; turn not released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return _output(
@@ -2034,7 +2034,7 @@ async def _guard_phase2_output(
         source_tag = "PASS"
         if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] 降级拦截 abort 但用户已接管 (state preempted)，跳过 TTS 清理",
+                "[%s] 降级拦截 abort，回合未交还 (released=False)，跳过 TTS 清理",
                 lanlan_name,
             )
         return _output(
