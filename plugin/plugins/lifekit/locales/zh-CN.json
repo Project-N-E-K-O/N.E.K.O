@@ -170,7 +170,6 @@
     "duplicate": "地点标签已存在：{label}",
     "not_found": "找不到地点：{label}",
     "save_failed": "保存失败，请检查插件存储是否启用。",
-    "load_failed": "读取保存地点失败，为避免覆盖已保留原有数据。",
     "removed": "已删除地点：{label}",
     "default_set": "已将 {label} 设为默认地点"
   },

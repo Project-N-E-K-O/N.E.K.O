@@ -30,8 +30,6 @@ def _new_state() -> GlobalState:
     gs._deleted_lifecycle_ids_order.clear()
     gs._pending_event_deletes.clear()
     gs._pending_lifecycle_deletes.clear()
-    gs._pending_event_overflow = False
-    gs._pending_lifecycle_overflow = False
     return gs
 
 
@@ -386,7 +384,7 @@ def test_idle_flush_hook_and_overflow_fallback_recover_without_subsequent_writes
         assert gs._pending_event_deletes == {}
         assert calls[-1] == ("events", "delete", [{"event_id": "e1", "trace_id": "e1"}])
 
-        # Sustained outage past MAX_DELETED_BUS_IDS marks overflow and falls back to full replace.
+        # Sustained outage past MAX_DELETED_BUS_IDS evicts oldest FIFO and recovers via delete only.
         calls.clear()
         bridge_ready["ok"] = False
         state_module = sys.modules["plugin.core.state"]
@@ -396,13 +394,22 @@ def test_idle_flush_hook_and_overflow_fallback_recover_without_subsequent_writes
         for idx in range(4):
             gs.append_event_record({"event_id": f"ov-{idx}", "type": "ov"})
             assert gs.delete_event(f"ov-{idx}") is True
-        assert gs._pending_event_overflow is True
+        assert list(gs._pending_event_deletes) == ["ov-1", "ov-2", "ov-3"]
 
         bridge_ready["ok"] = True
+        calls.clear()
         plane_bridge_mod._bridge._run_flush_hooks()
-        assert gs._pending_event_overflow is False
         assert gs._pending_event_deletes == {}
-        assert calls[-1] == ("events", "replace", [{"event_id": "keep", "type": "alive"}])
+        assert all(mode == "delete" for _, mode, _ in calls)
+        assert calls[-1] == (
+            "events",
+            "delete",
+            [
+                {"event_id": "ov-1", "trace_id": "ov-1"},
+                {"event_id": "ov-2", "trace_id": "ov-2"},
+                {"event_id": "ov-3", "trace_id": "ov-3"},
+            ],
+        )
 
 
 def test_startup_import_order_registers_plane_bridge_flush_hook_without_circular_import() -> None:
@@ -623,91 +630,164 @@ def test_full_bridge_queue_skips_pending_delete_copies_on_append(
         assert gs._pending_event_deletes == {}
 
 
-def test_overflow_replace_during_append_skips_duplicate_delta_publish(
+def test_pending_delete_overflow_uses_bounded_chunked_deletes_preserving_unrelated_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from plugin.server.messaging import plane_bridge as plane_bridge_mod
+
     state_module = sys.modules["plugin.core.state"]
     gs = _new_state()
     monkeypatch.setattr(state_module, "MAX_DELETED_BUS_IDS", 3)
+    monkeypatch.setattr(state_module, "_PENDING_DELETE_FLUSH_BATCH_SIZE", 2)
+
+    registry = build_default_store_registry(maxlen=200, frames_maxlen=10)
+    srv = MessagePlaneIngestServer(
+        endpoint=f"inproc://overflow_chunked_delete_{uuid.uuid4().hex}",
+        stores=registry,
+        pub_server=None,
+        auth_token="test-token",
+    )
+    events_store = registry.get("events")
+    lifecycle_store = registry.get("lifecycle")
+    assert events_store is not None and lifecycle_store is not None
+
+    # Seed remote/older records in message_plane that are NOT in local _event_store / _lifecycle_store.
+    events_store.publish("all", {"event_id": "ev-older-remote", "type": "remote"})
+    lifecycle_store.publish("all", {"lifecycle_id": "lc-older-remote", "type": "remote"})
 
     rec_calls: list[tuple[str, dict]] = []
     snap_calls: list[tuple[str, str, list[dict]]] = []
     bridge_ready = {"ok": False}
+    enqueue_budget = {"remaining": 100}
+
+    def _can_enqueue() -> bool:
+        return enqueue_budget["remaining"] > 0
 
     def _rec(*, store: str, record: dict, topic: str = "all") -> bool:
         rec_calls.append((store, dict(record)))
+        if bridge_ready["ok"]:
+            st = registry.get(store)
+            assert st is not None
+            st.publish(topic=topic, payload=dict(record))
         return bridge_ready["ok"]
 
     def _snap(*, store: str, records: list, topic: str = "all", mode: str = "replace") -> bool:
+        if bridge_ready["ok"] and enqueue_budget["remaining"] > 0:
+            enqueue_budget["remaining"] -= 1
         snap_calls.append((store, mode, [dict(r) for r in records]))
+        if bridge_ready["ok"]:
+            srv._ingest_snapshot(
+                {"store": store, "topic": topic, "mode": mode, "items": [dict(r) for r in records]}
+            )
         return bridge_ready["ok"]
 
-    with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
-        "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
-    ):
-        gs.append_event_record({"event_id": "ev-keep", "type": "keep"})
-        for idx in range(4):
-            gs.append_event_record({"event_id": f"ov-ev-{idx}", "type": "ov"})
-            assert gs.delete_event(f"ov-ev-{idx}") is True
-        assert gs._pending_event_overflow is True
+    try:
+        monkeypatch.setattr(plane_bridge_mod, "can_enqueue_snapshot", _can_enqueue)
+        with patch("plugin.server.messaging.plane_bridge.publish_record", side_effect=_rec), patch(
+            "plugin.server.messaging.plane_bridge.publish_snapshot", side_effect=_snap
+        ):
+            bridge_ready["ok"] = True
+            gs.append_event_record({"event_id": "ev-keep", "type": "keep"})
+            gs.append_lifecycle_record({"lifecycle_id": "lc-keep", "type": "keep"})
 
-        gs.append_lifecycle_record({"lifecycle_id": "lc-keep", "type": "keep"})
-        for idx in range(4):
-            gs.append_lifecycle_record({"lifecycle_id": f"ov-lc-{idx}", "type": "ov"})
-            assert gs.delete_lifecycle(f"ov-lc-{idx}") is True
-        assert gs._pending_lifecycle_overflow is True
+            bridge_ready["ok"] = False
+            for idx in range(5):
+                rec = {"event_id": f"ov-ev-{idx}", "type": "ov"}
+                gs.append_event_record(rec)
+                events_store.publish("all", rec)
+                gs._pending_delete_retry_after["events"] = 0.0
+                assert gs.delete_event(f"ov-ev-{idx}") is True
+            assert list(gs._pending_event_deletes) == ["ov-ev-2", "ov-ev-3", "ov-ev-4"]
 
-        bridge_ready["ok"] = True
-        rec_calls.clear()
-        snap_calls.clear()
-        gs._pending_delete_retry_after["events"] = 0.0
-        gs._pending_delete_retry_after["lifecycle"] = 0.0
+            for idx in range(4):
+                rec = {"lifecycle_id": f"ov-lc-{idx}", "type": "ov"}
+                gs.append_lifecycle_record(rec)
+                lifecycle_store.publish("all", rec)
+                gs._pending_delete_retry_after["lifecycle"] = 0.0
+                assert gs.delete_lifecycle(f"ov-lc-{idx}") is True
+            assert list(gs._pending_lifecycle_deletes) == ["ov-lc-1", "ov-lc-2", "ov-lc-3"]
 
-        # Single append triggers overflow replace containing ev-new-1; must NOT also publish delta.
-        gs.append_event_record({"event_id": "ev-new-1", "type": "new"})
-        assert gs._pending_event_overflow is False
-        assert gs._pending_event_deletes == {}
-        assert snap_calls == [
-            (
-                "events",
-                "replace",
-                [
-                    {"event_id": "ev-keep", "type": "keep"},
-                    {"event_id": "ev-new-1", "type": "new"},
-                ],
+            # Recover with space for ONLY 1 snapshot batch -> drains 2 of 3 event deletes, preserves last key.
+            bridge_ready["ok"] = True
+            rec_calls.clear()
+            snap_calls.clear()
+            gs._pending_delete_retry_after["events"] = 0.0
+            gs._pending_delete_retry_after["lifecycle"] = 0.0
+            enqueue_budget["remaining"] = 1
+
+            gs.append_event_record({"event_id": "ev-new-1", "type": "new"})
+            assert list(gs._pending_event_deletes) == ["ov-ev-4"]
+            assert snap_calls == [
+                (
+                    "events",
+                    "delete",
+                    [
+                        {"event_id": "ov-ev-2", "trace_id": "ov-ev-2"},
+                        {"event_id": "ov-ev-3", "trace_id": "ov-ev-3"},
+                    ],
+                )
+            ]
+            assert rec_calls == [("events", {"event_id": "ev-new-1", "type": "new"})]
+
+            # Queue space opens up -> drains remaining event delete in second chunk and publishes new delta.
+            rec_calls.clear()
+            snap_calls.clear()
+            enqueue_budget["remaining"] = 10
+            gs.append_event_record({"event_id": "ev-new-2", "type": "new"})
+            assert gs._pending_event_deletes == {}
+            assert snap_calls == [
+                ("events", "delete", [{"event_id": "ov-ev-4", "trace_id": "ov-ev-4"}])
+            ]
+            assert rec_calls == [("events", {"event_id": "ev-new-2", "type": "new"})]
+
+            # Batch extend for lifecycle also flushes chunked deletes (2 + 1) and emits new deltas.
+            rec_calls.clear()
+            snap_calls.clear()
+            assert (
+                gs.extend_lifecycle_records(
+                    [
+                        {"lifecycle_id": "lc-new-1", "type": "new"},
+                        {"lifecycle_id": "lc-new-2", "type": "new"},
+                    ]
+                )
+                == 2
             )
-        ]
-        assert rec_calls == []
+            assert gs._pending_lifecycle_deletes == {}
+            assert snap_calls == [
+                (
+                    "lifecycle",
+                    "delete",
+                    [
+                        {"lifecycle_id": "ov-lc-1", "trace_id": "ov-lc-1"},
+                        {"lifecycle_id": "ov-lc-2", "trace_id": "ov-lc-2"},
+                    ],
+                ),
+                (
+                    "lifecycle",
+                    "delete",
+                    [{"lifecycle_id": "ov-lc-3", "trace_id": "ov-lc-3"}],
+                ),
+            ]
+            assert rec_calls == [
+                ("lifecycle", {"lifecycle_id": "lc-new-1", "type": "new"}),
+                ("lifecycle", {"lifecycle_id": "lc-new-2", "type": "new"}),
+            ]
 
-        # Subsequent non-overflow append resumes delta publishing.
-        gs.append_event_record({"event_id": "ev-new-2", "type": "new"})
-        assert rec_calls == [("events", {"event_id": "ev-new-2", "type": "new"})]
+        event_ids_in_plane = {
+            item["payload"]["event_id"] for item in events_store.get_recent("all", 50)
+        }
+        assert {"ev-older-remote", "ev-keep", "ev-new-1", "ev-new-2"}.issubset(event_ids_in_plane)
+        assert {"ov-ev-2", "ov-ev-3", "ov-ev-4"}.isdisjoint(event_ids_in_plane)
 
-        # Batch extend for lifecycle overflow replace must also skip duplicate deltas.
-        rec_calls.clear()
-        snap_calls.clear()
-        assert (
-            gs.extend_lifecycle_records(
-                [
-                    {"lifecycle_id": "lc-new-1", "type": "new"},
-                    {"lifecycle_id": "lc-new-2", "type": "new"},
-                ]
-            )
-            == 2
+        lifecycle_ids_in_plane = {
+            item["payload"]["lifecycle_id"] for item in lifecycle_store.get_recent("all", 50)
+        }
+        assert {"lc-older-remote", "lc-keep", "lc-new-1", "lc-new-2"}.issubset(
+            lifecycle_ids_in_plane
         )
-        assert gs._pending_lifecycle_overflow is False
-        assert snap_calls == [
-            (
-                "lifecycle",
-                "replace",
-                [
-                    {"lifecycle_id": "lc-keep", "type": "keep"},
-                    {"lifecycle_id": "lc-new-1", "type": "new"},
-                    {"lifecycle_id": "lc-new-2", "type": "new"},
-                ],
-            )
-        ]
-        assert rec_calls == []
+        assert {"ov-lc-1", "ov-lc-2", "ov-lc-3"}.isdisjoint(lifecycle_ids_in_plane)
+    finally:
+        srv.close()
 
 
 def test_bridge_retains_and_retries_failed_snapshot_across_stop_and_start(

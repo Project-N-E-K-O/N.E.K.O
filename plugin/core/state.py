@@ -42,6 +42,7 @@ MAX_DELETED_BUS_IDS = 20000
 MAX_CONVERSATION_SUBSCRIPTIONS = 4096
 MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS = 128
 _PENDING_DELETE_RETRY_BACKOFF_SECONDS = 1.0
+_PENDING_DELETE_FLUSH_BATCH_SIZE = 500
 
 # Default lock timeout in seconds.
 DEFAULT_LOCK_TIMEOUT = 10.0
@@ -257,8 +258,6 @@ class GlobalState:
         self._deleted_lifecycle_ids_order: Deque[str] = deque()
         self._pending_event_deletes: Dict[str, Dict[str, Any]] = {}
         self._pending_lifecycle_deletes: Dict[str, Dict[str, Any]] = {}
-        self._pending_event_overflow: bool = False
-        self._pending_lifecycle_overflow: bool = False
         self._pending_delete_retry_after: Dict[str, float] = {
             "events": 0.0,
             "lifecycle": 0.0,
@@ -915,10 +914,10 @@ class GlobalState:
             if isinstance(eid, str) and eid in self._deleted_event_ids:
                 return
             self._event_store.append(record)
-            flush_status = self._flush_pending_message_plane_deletes_locked(
+            self._flush_pending_message_plane_deletes_locked(
                 "events", plane_bridge=plane_bridge
             )
-            if flush_status != "flushed_replace" and plane_bridge is not None:
+            if plane_bridge is not None:
                 try:
                     plane_bridge.publish_record(store="events", record=dict(record), topic="all")
                 except Exception:
@@ -949,10 +948,10 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
-            flush_status = self._flush_pending_message_plane_deletes_locked(
+            self._flush_pending_message_plane_deletes_locked(
                 "events", plane_bridge=plane_bridge
             )
-            if flush_status != "flushed_replace" and plane_bridge is not None:
+            if plane_bridge is not None:
                 try:
                     for rec in kept:
                         if isinstance(rec, dict):
@@ -976,10 +975,10 @@ class GlobalState:
             if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
                 return
             self._lifecycle_store.append(record)
-            flush_status = self._flush_pending_message_plane_deletes_locked(
+            self._flush_pending_message_plane_deletes_locked(
                 "lifecycle", plane_bridge=plane_bridge
             )
-            if flush_status != "flushed_replace" and plane_bridge is not None:
+            if plane_bridge is not None:
                 try:
                     plane_bridge.publish_record(store="lifecycle", record=dict(record), topic="all")
                 except Exception:
@@ -1010,10 +1009,10 @@ class GlobalState:
                 kept.append(rec)
             if not kept:
                 return 0
-            flush_status = self._flush_pending_message_plane_deletes_locked(
+            self._flush_pending_message_plane_deletes_locked(
                 "lifecycle", plane_bridge=plane_bridge
             )
-            if flush_status != "flushed_replace" and plane_bridge is not None:
+            if plane_bridge is not None:
                 try:
                     for rec in kept:
                         if isinstance(rec, dict):
@@ -1309,7 +1308,6 @@ class GlobalState:
                 )
                 if result is not False:
                     self._pending_event_deletes.clear()
-                    self._pending_event_overflow = False
                     self._pending_delete_retry_after["events"] = 0.0
                 return int(len(items))
         except Exception:
@@ -1329,7 +1327,6 @@ class GlobalState:
                 )
                 if result is not False:
                     self._pending_lifecycle_deletes.clear()
-                    self._pending_lifecycle_overflow = False
                     self._pending_delete_retry_after["lifecycle"] = 0.0
                 return int(len(items))
         except Exception:
@@ -1372,21 +1369,16 @@ class GlobalState:
                 return False
 
     def flush_pending_message_plane_deletes(self) -> None:
-        if (
-            not self._pending_event_deletes
-            and not self._pending_event_overflow
-            and not self._pending_lifecycle_deletes
-            and not self._pending_lifecycle_overflow
-        ):
+        if not self._pending_event_deletes and not self._pending_lifecycle_deletes:
             return
         plane_bridge = self._resolve_plane_bridge()
         self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
-            if self._pending_event_deletes or self._pending_event_overflow:
+            if self._pending_event_deletes:
                 self._flush_pending_message_plane_deletes_locked(
                     "events", force=True, plane_bridge=plane_bridge
                 )
-            if self._pending_lifecycle_deletes or self._pending_lifecycle_overflow:
+            if self._pending_lifecycle_deletes:
                 self._flush_pending_message_plane_deletes_locked(
                     "lifecycle", force=True, plane_bridge=plane_bridge
                 )
@@ -1398,19 +1390,6 @@ class GlobalState:
             return self._pending_lifecycle_deletes
         return None
 
-    def _is_pending_overflow(self, store: str) -> bool:
-        if store == "events":
-            return self._pending_event_overflow
-        if store == "lifecycle":
-            return self._pending_lifecycle_overflow
-        return False
-
-    def _set_pending_overflow(self, store: str, value: bool) -> None:
-        if store == "events":
-            self._pending_event_overflow = value
-        elif store == "lifecycle":
-            self._pending_lifecycle_overflow = value
-
     def _flush_pending_message_plane_deletes_locked(
         self,
         store: str,
@@ -1419,8 +1398,7 @@ class GlobalState:
         plane_bridge: Any | None = None,
     ) -> str:
         pending = self._pending_deletes_for_store(store)
-        overflow = self._is_pending_overflow(store)
-        if not pending and not overflow:
+        if not pending:
             return "noop"
         if plane_bridge is None:
             plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
@@ -1429,54 +1407,32 @@ class GlobalState:
         try:
             is_enabled_fn = getattr(plane_bridge, "is_bridge_enabled", None)
             if callable(is_enabled_fn) and not is_enabled_fn():
-                if pending is not None:
-                    pending.clear()
-                self._set_pending_overflow(store, False)
+                pending.clear()
                 self._pending_delete_retry_after[store] = 0.0
                 return "noop"
             can_enqueue_fn = getattr(plane_bridge, "can_enqueue_snapshot", None)
-            if callable(can_enqueue_fn) and not can_enqueue_fn():
-                return "deferred"
             if not force and time.monotonic() < self._pending_delete_retry_after.get(store, 0.0):
                 return "deferred"
 
             publish_snapshot = plane_bridge.publish_snapshot
-            if overflow:
-                source_items = (
-                    list(self._event_store)
-                    if store == "events"
-                    else list(self._lifecycle_store)
-                )
+            batch_limit = max(1, int(_PENDING_DELETE_FLUSH_BATCH_SIZE))
+            while pending:
+                if callable(can_enqueue_fn) and not can_enqueue_fn():
+                    return "deferred"
+                batch_keys = list(itertools.islice(pending.keys(), batch_limit))
                 result = publish_snapshot(
                     store=store,
-                    records=[dict(x) for x in source_items if isinstance(x, dict)],
+                    records=[dict(pending[k]) for k in batch_keys],
                     topic="all",
-                    mode="replace",
+                    mode="delete",
                 )
                 if result is False:
                     self._pending_delete_retry_after[store] = (
                         time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
                     )
                     return "deferred"
-                if pending is not None:
-                    pending.clear()
-                self._set_pending_overflow(store, False)
-                self._pending_delete_retry_after[store] = 0.0
-                return "flushed_replace"
-
-            assert pending is not None
-            result = publish_snapshot(
-                store=store,
-                records=[dict(r) for r in pending.values()],
-                topic="all",
-                mode="delete",
-            )
-            if result is False:
-                self._pending_delete_retry_after[store] = (
-                    time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
-                )
-                return "deferred"
-            pending.clear()
+                for k in batch_keys:
+                    pending.pop(k, None)
             self._pending_delete_retry_after[store] = 0.0
             return "flushed_delete"
         except Exception:
@@ -1525,14 +1481,26 @@ class GlobalState:
                         break
             if isinstance(key, str) and key:
                 if key not in pending:
+                    evicted = 0
                     while len(pending) >= MAX_DELETED_BUS_IDS:
-                        self._set_pending_overflow(store, True)
                         oldest = next(iter(pending))
                         pending.pop(oldest, None)
+                        evicted += 1
+                    if evicted:
+                        logger.warning(
+                            "Pending message-plane deletes for store '{}' exceeded MAX_DELETED_BUS_IDS ({}); "
+                            "evicted {} oldest pending delete(s) FIFO instead of issuing full replace",
+                            store,
+                            MAX_DELETED_BUS_IDS,
+                            evicted,
+                        )
                 pending[key] = dict(record)
-            return self._flush_pending_message_plane_deletes_locked(
-                store, plane_bridge=plane_bridge
-            ) in ("flushed_delete", "flushed_replace")
+            return (
+                self._flush_pending_message_plane_deletes_locked(
+                    store, plane_bridge=plane_bridge
+                )
+                == "flushed_delete"
+            )
 
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
@@ -1626,7 +1594,7 @@ class GlobalState:
                     record_id=event_id,
                     plane_bridge=plane_bridge,
                 )
-            elif self._pending_event_deletes or self._pending_event_overflow:
+            elif self._pending_event_deletes:
                 self._flush_pending_message_plane_deletes_locked(
                     "events", plane_bridge=plane_bridge
                 )
@@ -1666,7 +1634,7 @@ class GlobalState:
                     record_id=lifecycle_id,
                     plane_bridge=plane_bridge,
                 )
-            elif self._pending_lifecycle_deletes or self._pending_lifecycle_overflow:
+            elif self._pending_lifecycle_deletes:
                 self._flush_pending_message_plane_deletes_locked(
                     "lifecycle", plane_bridge=plane_bridge
                 )

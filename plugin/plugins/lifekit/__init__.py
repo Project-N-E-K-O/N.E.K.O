@@ -407,15 +407,7 @@ class LifeKitPlugin(NekoPluginBase):
             return []
         try:
             result = await self.store.get("saved_locations", [])
-            if hasattr(result, "is_ok") and callable(result.is_ok):
-                if not result.is_ok():
-                    self.logger.warning("store.get failed for UI locations: {}", result.error)
-                    return []
-                locations = result.value
-            elif hasattr(result, "value"):
-                locations = result.value
-            else:
-                locations = result
+            locations = result.value if hasattr(result, "value") else result
             return [dict(item) for item in locations if isinstance(item, dict)] if isinstance(locations, list) else []
         except Exception:
             self.logger.debug("Failed to read saved locations for UI", exc_info=True)

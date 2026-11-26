@@ -108,12 +108,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
         # preserve it when present as already configured; apply default only when absent.
         # This avoids another persistent initialized flag and behaves correctly after reinstall/migration.
         current = await self._fetch_settings()
-        if current is None:
-            self.logger.warning(
-                "Skipping first-run default-{}: failed to fetch existing settings",
-                default_mode,
-            )
-        elif "proactiveChatEnabled" not in current:
+        if "proactiveChatEnabled" not in current:
             result = await self._apply_mode(default_mode)
             if not result.get("success"):
                 self.logger.warning("first-run default-{} failed: {}", default_mode, result)
@@ -259,16 +254,10 @@ class ProactiveControllerPlugin(NekoPluginBase):
     async def _apply_mode(self, mode: str) -> dict[str, Any]:
         return await self._post_json("/api/proactive/mode", {"mode": mode})
 
-    async def _fetch_settings(self) -> dict[str, Any] | None:
+    async def _fetch_settings(self) -> dict[str, Any]:
         result = await self._get_json("/api/proactive/settings")
-        if not isinstance(result, dict) or result.get("success") is not True:
-            self.logger.warning("Failed to fetch proactive settings: {}", result)
-            return None
-        settings = result.get("settings")
-        if not isinstance(settings, dict):
-            self.logger.warning("Invalid proactive settings payload: {}", result)
-            return None
-        return settings
+        settings = result.get("settings") if isinstance(result, dict) else None
+        return settings if isinstance(settings, dict) else {}
 
     def _url(self, path: str) -> str:
         return f"{self._api_base}:{self._api_port}{path}"
@@ -285,10 +274,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
                 resp = await client.get(self._url(path))
                 if resp.status_code >= 400:
                     return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": f"Unexpected JSON type: {type(data).__name__}"}
-                return data
+                return resp.json()
         except Exception as exc:
             self.logger.warning("GET {} failed: {}", path, exc)
             return {"success": False, "error": str(exc)}
@@ -305,10 +291,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
                 resp = await client.post(self._url(path), json=dict(body))
                 if resp.status_code >= 400:
                     return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": f"Unexpected JSON type: {type(data).__name__}"}
-                return data
+                return resp.json()
         except Exception as exc:
             self.logger.warning("POST {} failed: {}", path, exc)
             return {"success": False, "error": str(exc)}

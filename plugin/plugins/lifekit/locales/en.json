@@ -158,7 +158,6 @@
     "duplicate": "Location label already exists: {label}",
     "not_found": "Location not found: {label}",
     "save_failed": "Save failed. Check whether plugin storage is enabled.",
-    "load_failed": "Failed to read saved locations. Existing data was left untouched.",
     "removed": "Removed location: {label}",
     "default_set": "Default location set: {label}"
   },

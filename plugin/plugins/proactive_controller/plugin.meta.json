@@ -540,7 +540,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 27531,
+  "source_bytes": 26720,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -554,5 +554,5 @@
     "i18n/zh-TW.json",
     "plugin.toml"
   ],
-  "source_sha256": "f3ad742dd07b38b450488cc9a01d41d2e8f5c1abedf38935855b4c1ce43b2201"
+  "source_sha256": "c403f47f9529be957bd542d862013cfab8c93c6c483db14a2ae9ec99589eb42e"
 }

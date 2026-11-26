@@ -142,7 +142,7 @@
     "no_currencies": "請指定源貨幣和目標貨幣",
     "convert_failed": "匯率查詢失敗：{from} → {to}"
   },
-  "locations": {"label_required": "地點標籤不能為空", "city_required": "城市不能為空", "confirm_add": "請確認是否新增地點「{label}（{city}）」。", "confirm_remove": "請確認是否刪除儲存地點「{label}」。", "confirm_default": "請確認是否將「{label}」設為預設地點。", "confirm": "確認", "cancel": "取消", "duplicate": "地點標籤已存在：{label}", "not_found": "找不到地點：{label}", "save_failed": "儲存失敗，請檢查外掛儲存是否啟用。", "load_failed": "讀取已儲存地點失敗，為避免覆蓋已保留原有資料。", "removed": "已刪除地點：{label}", "default_set": "已將 {label} 設為預設地點"},
+  "locations": {"label_required": "地點標籤不能為空", "city_required": "城市不能為空", "confirm_add": "請確認是否新增地點「{label}（{city}）」。", "confirm_remove": "請確認是否刪除儲存地點「{label}」。", "confirm_default": "請確認是否將「{label}」設為預設地點。", "confirm": "確認", "cancel": "取消", "duplicate": "地點標籤已存在：{label}", "not_found": "找不到地點：{label}", "save_failed": "儲存失敗，請檢查外掛儲存是否啟用。", "removed": "已刪除地點：{label}", "default_set": "已將 {label} 設為預設地點"},
   "unit": {"unsupported": "不支援的單位「{unit}」", "invalid_value": "數值無效", "same": "{value} {source} = {value} {target}（相同單位）", "unsupported_pair": "不支援 {source} → {target} 的換算"},
   "date": {"target_required": "請指定目標日期", "invalid": "無法識別日期「{value}」", "future": "距離 {event} 還有 {days} 天 ({date})", "today": "🎉 今天就是 {event}！", "past": "{event} 已經過去 {days} 天 ({date})", "weeks": "約 {weeks} 週 | {weekday}", "invalid_start": "無法識別開始日期「{value}」", "invalid_end": "無法識別結束日期「{value}」", "between": "{start} → {end}：共 {days} 天", "years": "{value} 年", "months": "{value} 個月", "days": "{value} 天", "holiday_alternatives": "{event}（暫按 {country}；其他可能：{alternatives}）", "weekdays": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]},
   "panel.title": "生活助手",
