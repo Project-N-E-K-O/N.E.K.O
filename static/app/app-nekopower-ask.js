@@ -478,6 +478,11 @@
     // The ids of questions whose cards were closed or answered here (the latest few hundred): a
     // report of one of them that arrives late (it was on its way as the answer came) shows no card.
     var over = [];
+    // The cards whose answers are on their way, by task and question, whatever became of the
+    // card meanwhile (taken out of the chat as the page was turned to another character, and
+    // turned back): a question shown again while its answer is on its way is that card, as it
+    // stands, and not a new one to be answered a second time.
+    var flying = new Map();
     function isOver(questionId) { return Boolean(questionId) && over.indexOf(questionId) !== -1; }
     function setOver(questionId) {
         if (!questionId || isOver(questionId)) return;
@@ -577,6 +582,12 @@
         }
         // Another question of the same task: the last one is over.
         if (card) close(taskId);
+        var sent = flying.get(taskId + ':' + shown.id);
+        if (sent) {
+            open.set(taskId, sent);
+            if (!inChat(api, sent.message.id)) api.appendMessage(sent.message);
+            return;
+        }
         var now = new Date();
         var message = {
             id: PREFIX + taskId + '-' + (shown.id || now.getTime()),
@@ -706,7 +717,10 @@
         if (block.state !== 'pending') return;
         var given = { choice: payload.choice, text: payload.text, note: payload.note, selected: payload.selected };
         patch(card, { state: 'sending', notice: '' });
+        var flight = block.taskId + ':' + block.questionId;
+        flying.set(flight, card);
         answer(block.taskId, block.questionId, given).then(function (result) {
+            flying.delete(flight);
             // The task may ask its next question before this is back: that card is the one kept.
             var mine = open.get(block.taskId) === card;
             var forget = function () { if (mine) open.delete(block.taskId); };

@@ -710,6 +710,41 @@ describe('the cards of the chat window', () => {
     expect(block().state).toBe('answered');
   });
 
+  it('does not offer a question anew whose answer is on its way as the page is turned to another character and back', async () => {
+    let back = () => {};
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      if (url.includes('/answer')) {
+        return new Promise(resolve => { back = () => resolve({ ok: true, status: 200, json: async () => ({ success: true }) }); });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ questions: rows }) });
+    }));
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    // To the other one: her chat has none of it.
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(messages).toEqual([]);
+    // And back, the answer still on its way and the question still waiting: the card as it stood.
+    w.lanlan_config.lanlan_name = 'Lan';
+    await asks.sync();
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q1', 'sending']]);
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'deny' });
+    await flush();
+    expect(calls.filter(call => call.url.includes('/answer')).length).toBe(1);
+    back();
+    await flush();
+    expect(block().state).toBe('answered');
+    // Once the answer is back the card is not kept for it any more: the same question is not put back.
+    messages = [];
+    await asks.sync();
+    expect(messages).toEqual([]);
+  });
+
   it('reads once more when it was asked to while a read was on its way, or the character changed meanwhile', async () => {
     let release = () => {};
     hold = new Promise(resolve => { release = resolve; });
