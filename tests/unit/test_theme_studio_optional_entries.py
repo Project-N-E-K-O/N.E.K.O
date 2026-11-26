@@ -100,9 +100,23 @@ def test_delete_themes_moves_each_entry_to_the_trash_and_reports_failures(studio
 def test_delete_themes_validates_the_list(studio):
     assert not asyncio.run(studio.delete_themes(theme_ids=[])).ok
     assert not asyncio.run(studio.delete_themes(theme_ids="abc")).ok
-    too_many = asyncio.run(studio.delete_themes(theme_ids=["x"] * (service.LIBRARY_MAX_ITEMS + 1)))
+    too_many = asyncio.run(studio.delete_themes(theme_ids=["x"] * (service.TRASH_LIMIT + 1)))
     assert not too_many.ok
-    assert str(too_many.error) == msg("library.deleteMany.tooMany", limit=service.LIBRARY_MAX_ITEMS)
+    assert str(too_many.error) == msg("library.deleteMany.tooMany", limit=service.TRASH_LIMIT)
+
+
+@pytest.mark.unit
+def test_a_full_batch_stays_restorable_even_with_an_existing_trash(studio):
+    """Every entry of an accepted batch must still be in the trash afterwards."""
+    for index in range(5):
+        _ok(asyncio.run(studio.delete_theme(id=_library_entry(studio, f"Old {index}"))))
+    batch = [_library_entry(studio, f"Batch {index}") for index in range(service.TRASH_LIMIT)]
+    result = _ok(asyncio.run(studio.delete_themes(theme_ids=batch)))
+    assert result["deleted"] == batch and not result["failed"]
+    in_trash = {item["theme_id"] for item in studio._trash_stats()["items"]}
+    assert set(batch) <= in_trash
+    for theme_id in batch:
+        assert _ok(asyncio.run(studio.restore_theme(id=theme_id)))
 
 
 @pytest.mark.unit

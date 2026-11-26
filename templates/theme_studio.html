@@ -8,6 +8,8 @@
   <meta name="nts-panel-version" content="1.0.6">
   <!-- i18next loader (shared host i18n: data-i18n* attributes + window.t) -->
   <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+  <!-- Shared async dialogs (showPrompt): window.prompt() is not available in Electron. -->
+  <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
   <link rel="stylesheet" href="/static/theme-studio/style.css?v={{ static_asset_version }}">
   <link rel="stylesheet" href="/static/theme-studio/materials.css?v={{ static_asset_version }}">
   <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">

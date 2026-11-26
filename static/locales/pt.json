@@ -8788,6 +8788,7 @@
                 "batchPartial": "{{deleted}} temas foram para a lixeira; {{failed}} não puderam ser excluídos: {{error}}",
                 "batchDone": "{{count}} temas foram para a lixeira; restaure-os pelo cartão \"Status\".",
                 "batchSelectAria": "Selecionar o tema {{name}}",
+                "batchTooMany": "Você pode excluir no máximo {{limit}} de uma vez (a lixeira guarda só os últimos {{limit}}); selecione menos.",
                 "clickAgain": "Clique em \"Confirmar exclusão\" de novo para excluir",
                 "busy": "Excluindo…",
                 "done": "Excluído",

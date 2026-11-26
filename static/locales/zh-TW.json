@@ -8788,6 +8788,7 @@
                 "batchPartial": "已將 {{deleted}} 個主題移入資源回收筒，{{failed}} 個沒刪掉：{{error}}",
                 "batchDone": "已將 {{count}} 個主題移入資源回收筒，可在「執行狀態」的資源回收筒裡還原。",
                 "batchSelectAria": "選取主題 {{name}}",
+                "batchTooMany": "一次最多刪除 {{limit}} 個（資源回收筒只保留最近 {{limit}} 個），請少選一些。",
                 "clickAgain": "再點一次「確認刪除」才會刪除",
                 "busy": "正在刪除…",
                 "done": "已刪除",

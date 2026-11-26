@@ -8788,6 +8788,7 @@
                 "batchPartial": "테마 {{deleted}}개를 휴지통으로 옮겼고 {{failed}}개는 삭제하지 못했습니다: {{error}}",
                 "batchDone": "테마 {{count}}개를 휴지통으로 옮겼습니다. '실행 상태'의 휴지통에서 복원할 수 있습니다.",
                 "batchSelectAria": "테마 {{name}} 선택",
+                "batchTooMany": "한 번에 최대 {{limit}}개까지 삭제할 수 있습니다(휴지통에는 최근 {{limit}}개만 남습니다). 선택을 줄여 주세요.",
                 "clickAgain": "'삭제 확인'을 한 번 더 누르면 삭제됩니다",
                 "busy": "삭제 중…",
                 "done": "삭제했습니다",

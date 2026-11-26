@@ -8788,6 +8788,7 @@
                 "batchPartial": "已将 {{deleted}} 个主题移入回收站，{{failed}} 个没删掉：{{error}}",
                 "batchDone": "已将 {{count}} 个主题移入回收站，可在「运行状态」的回收站里恢复。",
                 "batchSelectAria": "选择主题 {{name}}",
+                "batchTooMany": "一次最多删除 {{limit}} 个（回收站只保留最近 {{limit}} 个），请少选一些。",
                 "clickAgain": "再点一次「确认删除」才会删掉",
                 "busy": "正在删除…",
                 "done": "已删除",

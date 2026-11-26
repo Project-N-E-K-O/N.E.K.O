@@ -822,15 +822,36 @@
    * through rename_material_preset / duplicate_material_preset, which persist
    * immediately (apply's merge-by-name would otherwise keep the old name).
    */
+  /** Ask for a name with the shared in-page dialog (window.prompt does not work in
+   *  Electron). Resolves to the entered text, or null when cancelled. */
+  function askPresetName(message, defaultValue) {
+    if (typeof window.showPrompt === 'function') {
+      return Promise.resolve(window.showPrompt(message, defaultValue, null, {
+        inputAttributes: { maxlength: '40' }
+      }));
+    }
+    try {
+      return Promise.resolve(window.prompt(message, defaultValue));
+    } catch (error) {
+      return Promise.resolve(null);
+    }
+  }
+
   function renameOrCopyPreset(name, keepSource) {
     if (!name) return;
     var suggestion = keepSource
       ? name + ' ' + T('materials.presets.copySuffix', '副本')
       : name;
-    var answer = window.prompt(keepSource
+    askPresetName(keepSource
       ? T('materials.presets.duplicatePrompt', '复制「{{name}}」为：', { name: name })
-      : T('materials.presets.renamePrompt', '把「{{name}}」改名为：', { name: name }), suggestion.slice(0, 40));
-    if (answer === null) return;
+      : T('materials.presets.renamePrompt', '把「{{name}}」改名为：', { name: name }), suggestion.slice(0, 40))
+      .then(function (answer) {
+        if (answer === null || answer === undefined) return;
+        commitPresetName(name, String(answer), keepSource);
+      });
+  }
+
+  function commitPresetName(name, answer, keepSource) {
     var target = String(answer).trim().slice(0, 40);
     if (!target) { toast(T('materials.toast.presetNameEmpty', '先给预设起个名字。'), 'warn'); return; }
     if (!keepSource && target === name) return;
@@ -854,12 +875,17 @@
       toast(doneText, 'ok');
       return;
     }
+    // Rename the draft before the request (like deleteCustomPreset): an Apply clicked
+    // while the rename is in flight must not submit the old name, which the backend's
+    // merge-by-name would write back next to the renamed preset. Rolled back on failure.
+    var wasSelected = CURRENT.preset === name;
+    if (!keepSource) moveDraftPreset(name, target, false);
     callEntry(keepSource ? 'duplicate_material_preset' : 'rename_material_preset',
       { name: name, new_name: target }).then(function (data) {
       var materials = (data && data.materials) || null;
       var finalName = (data && data.name) || target;
-      // The draft keeps its unapplied edits: move this preset's draft params under the new name.
-      moveDraftPreset(name, finalName, keepSource);
+      // The draft keeps its unapplied edits: a duplicate copies this preset's draft params.
+      if (keepSource) moveDraftPreset(name, finalName, true);
       if (BASELINE && materials) {
         BASELINE.custom_presets = clone(materials.custom_presets || {});
         BASELINE.preset = materials.preset || 'custom';
@@ -869,6 +895,13 @@
       renderHeadState();
       toast(doneText, 'ok');
     }).catch(function (error) {
+      if (!keepSource && CURRENT.custom_presets && HAS.call(CURRENT.custom_presets, target) &&
+          !HAS.call(CURRENT.custom_presets, name)) {
+        moveDraftPreset(target, name, false);
+        if (wasSelected) CURRENT.preset = name;
+        renderPane();
+        renderHeadState();
+      }
       toast(T('materials.toast.presetRenameFailed', '操作预设失败：{{error}}', {
         error: error && error.message ? error.message : error
       }), 'warn');

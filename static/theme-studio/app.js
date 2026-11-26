@@ -5587,6 +5587,14 @@ async function deleteLibraryItem(item, button) {
 
 /* ---- Batch delete: a selection mode on user library cards (built-ins are never selectable). */
 
+/** How many entries one batch delete may move: the trash keeps this many batches,
+ *  so a larger batch could not all be restored (the backend refuses it too). */
+function batchDeleteLimit() {
+  var trash = state.status && state.status.trash;
+  var limit = trash && Number(trash.limit);
+  return limit > 0 ? limit : 30;
+}
+
 function selectedLibraryIds() {
   var ids = [];
   libraryState.items.forEach(function (item) {
@@ -5605,9 +5613,13 @@ function syncLibrarySelectionControls() {
     toggle.classList.toggle('is-active', libraryState.selecting);
   }
   if (del) {
+    var limit = batchDeleteLimit();
     del.hidden = !libraryState.selecting;
-    del.disabled = !count;
+    del.disabled = !count || count > limit;
     del.textContent = tsT('library.delete.batchCount', '删除所选（{{count}}）', { count: count });
+    del.title = count > limit
+      ? tsT('library.delete.batchTooMany', '一次最多删除 {{limit}} 个（回收站只保留最近 {{limit}} 个），请少选一些。', { limit: limit })
+      : '';
   }
 }
 
@@ -5622,6 +5634,11 @@ async function deleteSelectedLibraryItems() {
   if (state.busy) return;
   var ids = selectedLibraryIds();
   if (!ids.length) return;
+  var limit = batchDeleteLimit();
+  if (ids.length > limit) {
+    showToast(tsT('library.delete.batchTooMany', '一次最多删除 {{limit}} 个（回收站只保留最近 {{limit}} 个），请少选一些。', { limit: limit }), 'warn');
+    return;
+  }
   if (!window.confirm(tsT('library.delete.batchConfirm',
     '把选中的 {{count}} 个主题移进回收站？之后可以在「运行状态」的回收站里恢复。', { count: ids.length }))) return;
   setBusy(true, tsT('library.delete.busy', '正在删除…'));

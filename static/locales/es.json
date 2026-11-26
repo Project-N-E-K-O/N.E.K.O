@@ -8788,6 +8788,7 @@
                 "batchPartial": "Se movieron {{deleted}} temas a la papelera; {{failed}} no se pudieron eliminar: {{error}}",
                 "batchDone": "Se movieron {{count}} temas a la papelera; puedes restaurarlos desde la tarjeta «Estado».",
                 "batchSelectAria": "Seleccionar el tema {{name}}",
+                "batchTooMany": "Puedes eliminar como máximo {{limit}} a la vez (la papelera solo guarda los últimos {{limit}}); selecciona menos.",
                 "clickAgain": "Pulsa «Confirmar» otra vez para eliminarlo",
                 "busy": "Eliminando…",
                 "done": "Eliminado",

@@ -8788,6 +8788,7 @@
                 "batchPartial": "Moved {{deleted}} themes to the Trash; {{failed}} could not be deleted: {{error}}",
                 "batchDone": "Moved {{count}} themes to the Trash; restore them from the Trash on the Status card.",
                 "batchSelectAria": "Select theme {{name}}",
+                "batchTooMany": "You can delete at most {{limit}} at once (the Trash keeps only the latest {{limit}}); select fewer.",
                 "clickAgain": "Click \"Confirm delete\" again to delete it",
                 "busy": "Deleting…",
                 "done": "Deleted",

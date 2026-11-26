@@ -4851,7 +4851,7 @@ class ThemeStudioService(NekoPluginBase):
                 "theme_ids": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
-                    "maxItems": LIBRARY_MAX_ITEMS,
+                    "maxItems": TRASH_LIMIT,
                 },
             },
             "required": ["theme_ids"],
@@ -4865,8 +4865,10 @@ class ThemeStudioService(NekoPluginBase):
         """
         if not isinstance(theme_ids, list) or not theme_ids:
             return Err(SdkError(_msg("library.deleteMany.invalid")))
-        if len(theme_ids) > LIBRARY_MAX_ITEMS:
-            return Err(SdkError(_msg("library.deleteMany.tooMany", limit=LIBRARY_MAX_ITEMS)))
+        # The trash keeps TRASH_LIMIT batches: a larger request would prune part of
+        # itself while the panel promises every entry can be restored, so refuse it.
+        if len(theme_ids) > TRASH_LIMIT:
+            return Err(SdkError(_msg("library.deleteMany.tooMany", limit=TRASH_LIMIT)))
         deleted: list[str] = []
         failed: list[dict[str, str]] = []
         seen: set[str] = set()

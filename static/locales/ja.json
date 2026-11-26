@@ -8788,6 +8788,7 @@
                 "batchPartial": "{{deleted}} 個のテーマをごみ箱に移動しました。{{failed}} 個は削除できませんでした：{{error}}",
                 "batchDone": "{{count}} 個のテーマをごみ箱に移動しました。「動作状況」のごみ箱から元に戻せます。",
                 "batchSelectAria": "テーマ {{name}} を選択",
+                "batchTooMany": "一度に削除できるのは {{limit}} 個までです（ごみ箱には最新の {{limit}} 個だけが残ります）。選択を減らしてください。",
                 "clickAgain": "もう一度「削除を確定」を押すと削除されます",
                 "busy": "削除中…",
                 "done": "削除しました",
