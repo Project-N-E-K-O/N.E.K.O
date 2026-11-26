@@ -883,9 +883,8 @@ class LexicalDecisionModel:
         waiting = [item.id for _place, item in numbered if item.status == "waiting_user" and item.question()]
 
         def answered(target: Commission, choice: str | None, calls: int = 1) -> tuple[Triage | None, int, bool]:
-            if (target.question() or {}).get("kind") != "permission":
-                choice = None
-            # Read from what was typed or said, an answer allows the one
+            # (A choice is read for a request for approval alone.) Read from
+            # what was typed or said, an answer allows the one
             # request at most: "always" (written to the settings) and
             # "session" come from the buttons alone, so that a reading gone
             # wrong, or steered, never opens more than that one request. The
