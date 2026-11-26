@@ -24,6 +24,9 @@
     var RECHECK_MS = 3000;
     var RECHECKS = 20;
     var RECHECK_SLOW_MS = 15000;
+    // How long what waits is read for, in milliseconds, the body of the answer included: a read
+    // that never ends would keep every later one waiting on it, and nothing looked into.
+    var READ_MS = 8000;
     var WIDE_CHOICES = ['always', 'session'];
     // A command or path longer than this is not read at a glance: it is shown whole before an
     // approval that holds for more than this once is offered.
@@ -225,14 +228,28 @@
 
     /** What commissions ask right now, read from the agent process: `[{task_id, title, question, route}]`. */
     async function waiting() {
-        try {
-            var response = await fetch('/api/agent/questions', { cache: 'no-store' });
-            if (!response.ok) return null;
-            var result = await response.json();
-            return Array.isArray(result && result.questions) ? result.questions : [];
-        } catch (_) {
-            return null;
-        }
+        var gate = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer = null;
+        // Given up on after a while: not read, which is not the same as nothing waiting.
+        var deadline = new Promise(function (resolve) {
+            timer = setTimeout(function () {
+                if (gate) gate.abort();
+                resolve(null);
+            }, READ_MS);
+        });
+        var read = (async function () {
+            try {
+                var response = await fetch('/api/agent/questions', gate ? { cache: 'no-store', signal: gate.signal } : { cache: 'no-store' });
+                if (!response.ok) return null;
+                var result = await response.json();
+                return Array.isArray(result && result.questions) ? result.questions : [];
+            } catch (_) {
+                return null;
+            }
+        })();
+        var rows = await Promise.race([read, deadline]);
+        clearTimeout(timer);
+        return rows;
     }
 
     // ------------------------------------------------------------------------------------
@@ -539,6 +556,14 @@
         if (questionId) {
             setOver(questionId);
             flying.delete(taskId + ':' + questionId);
+        } else {
+            // Whatever the task asked is over: also what its card was taken out of the chat
+            // with (an answer on its way, or one nothing is known of), which is not put back.
+            Array.from(flying.keys()).forEach(function (key) {
+                if (key.indexOf(taskId + ':') !== 0) return;
+                setOver(flying.get(key).questionId);
+                flying.delete(key);
+            });
         }
         var card = open.get(taskId);
         if (!card || (questionId && card.questionId !== questionId)) return;
@@ -703,7 +728,10 @@
                 queued = queued.filter(function (args) {
                     var row = asked.get(args[0]);
                     if (ofAnother(mine, (row && row.lanlan_name) || args[4])) return false;
-                    return fresh(args[0]) || Boolean(row && view(row.question).id === view(args[2]).id);
+                    if (fresh(args[0]) || (row && view(row.question).id === view(args[2]).id)) return true;
+                    // The read lists it no more: it is over, and a late report of it is not shown.
+                    setOver(view(args[2]).id);
+                    return false;
                 });
                 asked.forEach(function (row, taskId) {
                     // Of another character than the one this page is with: its page shows it, as
@@ -844,6 +872,6 @@
 
     window.NekoPowerAsk = {
         view: view, answer: answer, waiting: waiting, render: render, receive: receive, sync: sync, shownAnswer: shownAnswer,
-        word: word, SETTLE_MS: SETTLE_MS, RECHECK_MS: RECHECK_MS, RECHECKS: RECHECKS, RECHECK_SLOW_MS: RECHECK_SLOW_MS
+        word: word, SETTLE_MS: SETTLE_MS, RECHECK_MS: RECHECK_MS, RECHECKS: RECHECKS, RECHECK_SLOW_MS: RECHECK_SLOW_MS, READ_MS: READ_MS
     };
 })();

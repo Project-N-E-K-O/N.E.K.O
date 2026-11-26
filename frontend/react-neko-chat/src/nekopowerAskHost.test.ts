@@ -20,6 +20,8 @@ type Asks = {
   RECHECK_MS: number;
   RECHECKS: number;
   RECHECK_SLOW_MS: number;
+  READ_MS: number;
+  waiting: () => Promise<unknown[] | null>;
 };
 type Message = { id: string; blocks: Array<Record<string, unknown>> };
 
@@ -899,6 +901,63 @@ describe('the cards of the chat window', () => {
     back();
     await flush();
     expect(block().state).toBe('closed');
+  });
+
+  it('gives up on a read of what waits that never ends, as not read and not as nothing waiting', async () => {
+    vi.useFakeTimers();
+    // The answer begins and its body never ends.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => new Promise(() => {}) })));
+    asks.receive(frame(permission));
+    let rows: unknown = 'still reading';
+    void asks.waiting().then(read => { rows = read; });
+    const reading = asks.sync();
+    await vi.advanceTimersByTimeAsync(asks.READ_MS - 1);
+    expect(rows).toBe('still reading');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rows).toBeNull();
+    await reading;
+    // Not read: the card that was there is not closed for it. And the next read is a new one.
+    expect(block().state).toBe('pending');
+    reply = () => ({ status: 200, body: { questions: [] } });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => reply(url).body })));
+    await asks.sync();
+    expect(block().state).toBe('closed');
+  });
+
+  it('does not show a question again that waited for the window when the read listed it no more', async () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, unknown>;
+    const host = w.reactChatWindowHost;
+    w.reactChatWindowHost = null;
+    asks.receive(frame(permission));
+    reply = () => ({ status: 200, body: { questions: [] } });
+    await asks.sync();
+    // Its report comes once more, late; then the window is there.
+    asks.receive(frame(permission));
+    w.reactChatWindowHost = host;
+    await vi.advanceTimersByTimeAsync(600);
+    expect(messages).toEqual([]);
+  });
+
+  it('does not put back a card that was out of the chat when whatever its task asked is said to be over', async () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await vi.advanceTimersByTimeAsync(0);
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    reply = () => ({ status: 200, body: { questions: rows } });
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(messages).toEqual([]);
+    // Of the task as a whole, with no question named.
+    asks.receive(frame(null, { lanlan_name: 'Lan' }));
+    // Back, and a read that is older than that still lists the question.
+    w.lanlan_config.lanlan_name = 'Lan';
+    await asks.sync();
+    expect(messages).toEqual([]);
   });
 
   it('closes a card the read does not list though the connection said meanwhile that another question of its task is over', async () => {
