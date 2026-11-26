@@ -3017,3 +3017,117 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
 
     asyncio.run(_case_superseded_stale_write_timeout_preserves_host_ownership(raises_in_cb=False))
     asyncio.run(_case_superseded_stale_write_timeout_preserves_host_ownership(raises_in_cb=True))
+
+    # 16. Host publish paths must register read protection atomically before flushing/returning,
+    #     across replace, cached merge, and uncached hydrated merge, without leaking when no handler runs.
+    async def _case_host_publish_registers_read_guard_before_flush() -> None:
+        class _ProbingInstance(_RecordingInstance):
+            def __init__(self, target_ctx: PluginContext, probe: dict[str, object]) -> None:
+                super().__init__()
+                self._target_ctx = target_ctx
+                self._probe = probe
+
+            def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
+                super().refresh_runtime_config(effective_config)
+                if effective_config.get("host") == 9 and not self._probe["probed"]:
+                    self._probe["probed"] = True
+                    self._probe["owner_during_flush"] = self._target_ctx._effective_config_owner_token
+                    self._probe["pending_during_flush"] = dict(
+                        getattr(self._target_ctx, "_pending_host_config_owner_tokens", {})
+                    )
+                    gen_before, read_id = self._target_ctx._begin_config_read()
+                    self._probe["read_installed_during_flush"] = (
+                        self._target_ctx._cache_effective_config_from_read(
+                            {"base": 1, "stale_disk": True},
+                            gen_before=gen_before,
+                            read_id=read_id,
+                        )
+                    )
+
+        for mode_label in ("replace", "cached_merge", "hydrated_merge"):
+            probe: dict[str, object] = {"probed": False}
+            ctx = PluginContext(
+                plugin_id="demo",
+                config_path=tmp_path / f"demo_atomic_guard_{mode_label}" / "plugin.toml",
+                logger=_FakeLogger(),  # type: ignore[arg-type]
+                status_queue=None,
+            )
+            instance = _ProbingInstance(ctx, probe)
+            ctx._instance = instance
+            if mode_label == "hydrated_merge":
+                ctx._set_effective_config_cache({"base": 1})
+                ctx._invalidate_effective_config_for_profile_refresh()
+
+                async def _hydrate_get_own_config(*, timeout: float = 5.0) -> dict[str, object]:
+                    del timeout
+                    return {"config": {"base": 1}}
+
+                ctx.get_own_config = _hydrate_get_own_config  # type: ignore[method-assign]
+            else:
+                ctx._set_effective_config_cache({"base": 1})
+
+            def _reject(**_kwargs: object) -> None:
+                raise RuntimeError("reject after atomic guard")
+
+            sender = _FakeResponseSender()
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-atomic-{mode_label}",
+                    "config": {"host": 9},
+                    "mode": "temporary",
+                    "replace": mode_label == "replace",
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _reject}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+            assert probe["probed"] is True
+            assert probe["read_installed_during_flush"] is False
+            owner_during_flush = probe["owner_during_flush"]
+            pending_during_flush = probe["pending_during_flush"]
+            assert isinstance(pending_during_flush, dict)
+            assert pending_during_flush.get(owner_during_flush) == 1
+            assert sender.payloads[-1]["success"] is False
+            if mode_label == "hydrated_merge":
+                assert ctx._effective_config is None
+            else:
+                assert ctx._effective_config == {"base": 1}
+            assert instance.refreshed[-1] == {"base": 1}
+            assert ctx._host_config_change_pending == 0
+            assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
+            assert not getattr(ctx, "_owner_token_host_change_root", {})
+
+        # Control: without config_change handler, no pending guard is registered or leaked.
+        probe_no_cb: dict[str, object] = {"probed": False}
+        ctx_no_cb = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_atomic_guard_no_cb" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        ctx_no_cb._instance = _ProbingInstance(ctx_no_cb, probe_no_cb)
+        ctx_no_cb._set_effective_config_cache({"base": 1})
+        sender_no_cb = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-atomic-no-cb",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_no_cb,
+            events_by_type={},
+            plugin_id="demo",
+            res_sender=sender_no_cb,
+            logger=_FakeLogger(),
+        )
+        assert probe_no_cb["probed"] is True
+        assert probe_no_cb["pending_during_flush"] == {}
+        assert probe_no_cb["read_installed_during_flush"] is True
+        assert sender_no_cb.payloads[-1]["success"] is True
+        assert int(getattr(ctx_no_cb, "_host_config_change_pending", 0) or 0) == 0
+        assert not getattr(ctx_no_cb, "_pending_host_config_owner_tokens", {})
+
+    asyncio.run(_case_host_publish_registers_read_guard_before_flush())

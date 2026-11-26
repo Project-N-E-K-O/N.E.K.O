@@ -868,6 +868,10 @@ async def _handle_config_update_command(
         )
         bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
+        lifecycle_events = events_by_type.get("lifecycle", {})
+        config_change_handler = lifecycle_events.get("config_change")
+        register_pending_on_publish = bool(uses_context_publisher and config_change_handler)
+        pending_host_change_registered = False
         applied_config: dict[str, Any] | None = None
         applied_owner_token = 0
         rollback_runtime_snapshot: dict[str, Any] | None = None
@@ -881,7 +885,11 @@ async def _handle_config_update_command(
                     applied_config,
                     applied_owner_token,
                     rollback_runtime_snapshot,
-                ) = replace_for_host(new_config)
+                ) = replace_for_host(
+                    new_config,
+                    register_pending_change=register_pending_on_publish,
+                )
+                pending_host_change_registered = register_pending_on_publish
                 logger.debug("[Plugin Process] Config cache replaced")
             else:
                 merge_budget = 8.0
@@ -906,8 +914,13 @@ async def _handle_config_update_command(
                         applied_owner_token,
                         expected_gen,
                         pre_runtime_snapshot,
-                    ) = merge_for_host(new_config, merge_fn=_deep_merge)
+                    ) = merge_for_host(
+                        new_config,
+                        merge_fn=_deep_merge,
+                        register_pending_change=register_pending_on_publish,
+                    )
                     if merge_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
                         rollback_runtime_snapshot = (
                             pre_runtime_snapshot
                             if isinstance(pre_runtime_snapshot, dict)
@@ -987,8 +1000,10 @@ async def _handle_config_update_command(
                         expected_gen=expected_gen,
                         fallback_uncertain=had_uncertain_config,
                         pre_runtime_snapshot=pre_runtime_snapshot,
+                        register_pending_change=register_pending_on_publish,
                     )
                     if apply_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
                         applied_ok = True
                         logger.debug("[Plugin Process] Config cache updated")
                         break
@@ -1070,20 +1085,18 @@ async def _handle_config_update_command(
                 refresh_runtime_config(applied_config)
         
         # Trigger config_change lifecycle callbacks when present.
-        lifecycle_events = events_by_type.get("lifecycle", {})
-        config_change_handler = lifecycle_events.get("config_change")
-        
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
             begin_host_change = getattr(ctx, "_begin_host_config_change", None)
             end_host_change = getattr(ctx, "_end_host_config_change", None)
             host_change_owner_token = applied_owner_token if uses_context_publisher else None
             try:
-                if callable(begin_host_change):
+                if not pending_host_change_registered and callable(begin_host_change):
                     if host_change_owner_token is not None:
                         begin_host_change(host_change_owner_token)
                     else:
                         begin_host_change()
+                    pending_host_change_registered = True
                 try:
                     with ctx._handler_scope("lifecycle.config_change"):
                         result = config_change_handler(
@@ -1094,7 +1107,8 @@ async def _handle_config_update_command(
                         if inspect.isawaitable(result):
                             await result
                 finally:
-                    if callable(end_host_change):
+                    if pending_host_change_registered and callable(end_host_change):
+                        pending_host_change_registered = False
                         if host_change_owner_token is not None:
                             end_host_change(host_change_owner_token)
                         else:

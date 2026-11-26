@@ -838,6 +838,8 @@ class PluginContext:
     def _replace_effective_config_cache_for_host(
         self,
         new_config: Mapping[str, Any],
+        *,
+        register_pending_change: bool = False,
     ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any], int, Dict[str, Any]]:
         with self._get_config_state_lock():
             had_cached = isinstance(self._effective_config, dict)
@@ -852,7 +854,14 @@ class PluginContext:
             applied = copy.deepcopy(dict(new_config))
             self._bump_effective_config_gen()
             applied_owner_token = self._record_effective_config_locked(applied, uncertain=False)
-        self._flush_instance_runtime_config()
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
         return (
             had_cached,
             had_uncertain,
@@ -867,6 +876,7 @@ class PluginContext:
         new_config: Mapping[str, Any],
         *,
         merge_fn: Any,
+        register_pending_change: bool = False,
     ) -> tuple[str, bool, bool, Dict[str, Any], Dict[str, Any] | None, int, int, Dict[str, Any] | None]:
         with self._get_config_state_lock():
             if bool(getattr(self, "_config_write_in_progress", False)):
@@ -902,7 +912,14 @@ class PluginContext:
                 merged,
                 uncertain=had_uncertain,
             )
-        self._flush_instance_runtime_config()
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
         return (
             "merged",
             True,
@@ -923,6 +940,7 @@ class PluginContext:
         expected_gen: int,
         fallback_uncertain: bool,
         pre_runtime_snapshot: Dict[str, Any] | None,
+        register_pending_change: bool = False,
     ) -> tuple[str, bool, bool, Dict[str, Any], Dict[str, Any] | None, int, int, Dict[str, Any] | None]:
         with self._get_config_state_lock():
             if bool(getattr(self, "_config_write_in_progress", False)):
@@ -990,7 +1008,14 @@ class PluginContext:
                 merged,
                 uncertain=applied_uncertain,
             )
-        self._flush_instance_runtime_config()
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
         return (
             "merged",
             had_cached_for_rollback,
@@ -1056,21 +1081,24 @@ class PluginContext:
             self._flush_instance_runtime_config()
         return True
 
+    def _begin_host_config_change_locked(self, owner_token: int | None = None) -> None:
+        self._host_config_change_pending = (
+            int(getattr(self, "_host_config_change_pending", 0) or 0) + 1
+        )
+        if owner_token is None:
+            self._host_config_change_unscoped_pending = (
+                int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) + 1
+            )
+        else:
+            pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+            if not isinstance(pending_tokens, dict):
+                pending_tokens = {}
+                self._pending_host_config_owner_tokens = pending_tokens
+            pending_tokens[owner_token] = int(pending_tokens.get(owner_token, 0) or 0) + 1
+
     def _begin_host_config_change(self, owner_token: int | None = None) -> None:
         with self._get_config_state_lock():
-            self._host_config_change_pending = (
-                int(getattr(self, "_host_config_change_pending", 0) or 0) + 1
-            )
-            if owner_token is None:
-                self._host_config_change_unscoped_pending = (
-                    int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) + 1
-                )
-            else:
-                pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
-                if not isinstance(pending_tokens, dict):
-                    pending_tokens = {}
-                    self._pending_host_config_owner_tokens = pending_tokens
-                pending_tokens[owner_token] = int(pending_tokens.get(owner_token, 0) or 0) + 1
+            self._begin_host_config_change_locked(owner_token)
 
     def _end_host_config_change(self, owner_token: int | None = None) -> None:
         with self._get_config_state_lock():
