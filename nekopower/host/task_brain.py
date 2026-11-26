@@ -121,8 +121,16 @@ class Receipt:
     unconfirmed: list[Commission] = field(default_factory=list)
 
     @property
+    def first(self) -> Commission | None:
+        """The commission the receipt is about first: one it names, else one it stopped."""
+        for items in (self.commissions, self.unconfirmed, self.stopped):
+            if items:
+                return items[0]
+        return None
+
+    @property
     def commission_id(self) -> str | None:
-        return self.commissions[0].id if self.commissions else None
+        return self.first.id if self.first else None
 
     def text(self, lang: str = "en") -> str:
         """Return the receipt as the line the main dialogue model reads."""
@@ -295,6 +303,10 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
     if template is None:
         return receipt.kind
     return template.format(title=title) + note
+
+
+class _CancelNotTaken(RuntimeError):
+    """The plugin server did not take the cancel of every run of a stopped commission (the next stop asks again)."""
 
 
 class TaskBrain:
@@ -596,12 +608,16 @@ class TaskBrain:
                 logger.error("the first round of a dispatch failed after the early receipt", exc_info=error)
                 return
             receipt = task.result()
+            if generation != self._dispatch_generation:
+                # Everything was stopped since: what this round came to is
+                # over with it, and nothing of it is told now.
+                return
             self._spawn(
                 self._reporter.receipt(
                     lanlan_name,
                     kind=receipt.kind,
                     text=receipt.text(lang),
-                    commission=receipt.commissions[0] if receipt.commissions else None,
+                    commission=receipt.first,
                     # Not told in time what it did with the work: she says so
                     # now, as a question it may have answered still waits.
                     urgent=receipt.unread,
@@ -679,6 +695,10 @@ class TaskBrain:
                     logger.warning("ending what commission %s was running failed", target.id, exc_info=failed)
                 if moved and after is not None:
                     (stopped if failed is None else unconfirmed).append(after)
+                elif failed is not None and after is not None:
+                    # Over already, and what it ran could not be told to end
+                    # again: not said to be nothing.
+                    unconfirmed.append(after)
             if not_stopped or unconfirmed:
                 return Receipt(
                     kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed, model_calls=calls
@@ -1270,7 +1290,9 @@ class TaskBrain:
         run or the task agent going.
         """
         after, _moved, failed = await self._stop(commission_id, reason=reason, notify=notify)
-        if failed is not None:
+        # (A cancel the plugin server did not take is asked again by the next
+        # stop, as before; the board shows the status as it is.)
+        if failed is not None and not isinstance(failed, _CancelNotTaken):
             raise failed
         return after
 
@@ -1316,6 +1338,8 @@ class TaskBrain:
                     await self._runner.cancel_commission(commission_id, reason)
                 except Exception as exc:  # noqa: BLE001 - handed back to the caller
                     return commission, False, exc
+                if self._runner.cancels_not_taken(commission_id):
+                    return commission, False, _CancelNotTaken("the plugin server did not take the cancel of every run")
             return commission, False, None
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
@@ -1328,6 +1352,10 @@ class TaskBrain:
             await self._runner.cancel_commission(commission_id, reason)
         except Exception as exc:  # noqa: BLE001 - the task agent is closed all the same
             failed = exc
+        else:
+            if self._runner.cancels_not_taken(commission_id):
+                # Asked, and not taken (no connection, an error answer): the run may go on.
+                failed = _CancelNotTaken("the plugin server did not take the cancel of every run")
         work = self._work.get(commission_id)
         if work is not None and work is not caller:
             work.cancel()

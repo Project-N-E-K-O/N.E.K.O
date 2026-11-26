@@ -298,6 +298,25 @@ async def test_a_run_whose_caller_went_away_stays_known_until_its_cancel_is_acce
     assert runner.active_runs("c1") == []
 
 
+async def test_a_cancel_the_server_did_not_take_is_known_until_one_is_taken(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+    calling, run_id = await _started_run(server, runner, started)
+
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    # Asked, and not taken: the run may go on, and the next stop asks again.
+    assert runner.cancels_not_taken("c1") == [run_id]
+
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    assert runner.cancels_not_taken("c1") == []
+    assert server.cancelled == [("weather", run_id)]
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+    await runner.aclose()
+
+
 async def test_a_run_whose_caller_went_away_is_dropped_once_its_cancel_is_accepted(server):
     started = _slow_weather(server)
     faults = Faults()

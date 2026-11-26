@@ -1607,15 +1607,16 @@ TASK_BRAIN_ANSWER_PROMPT = (
     'choice for a question that asks for approval: {"answers": 1, "choice": "once"}.'
 )
 
-def build_choice_request(*, asks: str, offered: list[str], said: str) -> str:
-    """Return the user message of that question: the request for approval in the host's words (``reports.permission_kind``, nothing a task agent wrote) with the answers on offer, and what was said (the user's own words where they are there)."""
-    return "\n".join(
-        [
-            "QUESTIONS:",
-            f"1. (asks for approval) It asks to {asks}. The answers on offer: {' / '.join(offered)}",
-            f"REQUEST: {said}",
-        ]
-    )
+def build_choice_request(*, asks: str, offered: list[str], task: str, user_said: str) -> str:
+    """Return the user message of that question: the request for approval in the host's words (``reports.permission_kind``, nothing a task agent wrote) with the answers on offer, the request, and the user's own words when they differ."""
+    lines = [
+        "QUESTIONS:",
+        f"1. (asks for approval) It asks to {asks}. The answers on offer: {' / '.join(offered)}",
+        f"REQUEST: {task}",
+    ]
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"WHAT THE USER SAID: {user_said}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

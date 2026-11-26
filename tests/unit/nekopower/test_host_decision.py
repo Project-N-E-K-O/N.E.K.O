@@ -976,11 +976,18 @@ async def test_with_several_requests_for_approval_waiting_the_user_is_asked_whic
     llm = _reading({"does": "answer", "items": [3], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[build, delete, asks]))
     assert (triage.kind, triage.targets, triage.by_buttons) == ("answer", ["c3"], False)
-    # A plain "yes", or one the model reads as both: asked which, and told of the buttons as well.
-    for reading in ({"does": "answer", "items": [3], "named": False}, {"does": "answer", "items": [1, 2]}):
-        llm = _reading(reading)
-        triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
-        assert (triage.kind, triage.by_buttons) == ("ambiguous", True), reading
+    # One the model reads as both requests for approval: asked which, and told of the buttons as well.
+    llm = _reading({"does": "answer", "items": [1, 2]})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
+    assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c2"], True)
+    # A plain "yes" with requests for approval alone waiting: told of the buttons as well.
+    llm = _reading({"does": "answer", "items": [1], "named": False})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete]))
+    assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c2"], True)
+    # A plain "yes" with the open question among them: words can say that one, nothing of the buttons.
+    llm = _reading({"does": "answer", "items": [3], "named": False})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, delete, asks]))
+    assert (triage.kind, triage.by_buttons) == ("ambiguous", False)
     # With one request for approval among them, words can say which: nothing is said of the buttons.
     llm = _reading({"does": "answer", "items": [1], "named": False})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("yes", active=[build, asks]))
@@ -1022,7 +1029,14 @@ async def test_an_answer_another_question_offers_too_names_neither():
     # An answer only the one it names offers names it ("Dogs" when the card offers Cats / Birds).
     post = _waiting("c1", "write a post", pets)
     card = _waiting("c2", "make a card", {"kind": "question", "question": "Which one?", "options": ["Cats", "Birds"]})
-    for said, read in (("the post picture: Dogs", ("answer", ["c1"])), ("Cats", ("ambiguous", ["c1", "c2"]))):
+    for said, read in (
+        ("the post picture: Dogs", ("answer", ["c1"])),
+        ("Cats", ("ambiguous", ["c1", "c2"])),
+        # Said another way, it names no answer of its own: which, the user is asked.
+        ("the dog one", ("ambiguous", ["c1", "c2"])),
+        # A word that holds an answer ("dogsled") is not that answer.
+        ("the dogsled one", ("ambiguous", ["c1", "c2"])),
+    ):
         llm = _reading({"does": "answer", "items": [1], "named": True})
         triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
         assert (triage.kind, triage.targets) == read, said
@@ -1128,8 +1142,8 @@ async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choo
     assert user["content"].splitlines() == [
         "QUESTIONS:",
         "1. (asks for approval) It asks to run the command. The answers on offer: allow this once / deny",
-        # What is allowed is read from the user's own words, not hers that retell them.
-        "REQUEST: yes, build it please",
+        "REQUEST: yes, build it",
+        "WHAT THE USER SAID: yes, build it please",
     ]
 
 
@@ -1169,15 +1183,20 @@ def test_what_a_request_for_approval_asks_is_put_in_the_hosts_words_alone(questi
     assert permission_kind({"kind": "permission", **question}) == words
 
 
-async def test_what_an_answer_chose_is_read_from_her_words_only_where_the_users_are_not_there():
+async def test_what_an_answer_chose_is_read_with_the_users_own_words_beside_hers_where_they_differ():
+    # Hers is the part of the turn that answers ("ok" of "ok, and check the weather"); the user's own
+    # words are shown beside it, which the prompt reads what was meant by.
     build = _waiting("c1", "build the shop site", _BUILD)
-    for user_text, read in (("no, do not run it", "REQUEST: no, do not run it"), ("", "REQUEST: yes, run it")):
+    for user_text, shown in (
+        ("ok, and check the weather too", ["REQUEST: ok", "WHAT THE USER SAID: ok, and check the weather too"]),
+        ("ok", ["REQUEST: ok"]),
+        ("", ["REQUEST: ok"]),
+    ):
         llm = _reading({"does": "answer", "items": [1]})
 
-        await LexicalDecisionModel(llm).read_under_way(request("yes, run it", user_text=user_text, active=[build]))
+        await LexicalDecisionModel(llm).read_under_way(request("ok", user_text=user_text, active=[build]))
 
-        shown = llm.choice_calls[-1][-1]["content"]
-        assert read in shown.splitlines() and "WHAT THE USER SAID" not in shown, user_text
+        assert llm.choice_calls[-1][-1]["content"].splitlines()[2:] == shown, user_text
 
 
 async def test_what_an_answer_chose_that_is_not_read_in_time_is_not_understood(monkeypatch, caplog):

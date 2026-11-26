@@ -601,6 +601,13 @@ def _offered(question: dict[str, Any]) -> set[str]:
     return found
 
 
+def _said(label: str, spoken: str) -> bool:
+    """Whether an answer offered was said: as a word of its own where it is written in Latin letters ("no" is not in "not")."""
+    if label.isascii():
+        return re.search(rf"(?<![0-9a-z]){re.escape(label)}(?![0-9a-z])", spoken) is not None
+    return label in spoken
+
+
 def _kin(one: Commission, other: Commission) -> bool:
     """Whether two commissions are of one project, one familiar's (its session) or one plugin's."""
     return bool(
@@ -921,7 +928,7 @@ class LexicalDecisionModel:
             # Which, the user is asked. Among several requests for approval,
             # words would say no more when asked again: she is told the
             # buttons on each question do.
-            by_buttons = sum(target in approvals for target in targets) > 1
+            by_buttons = len(targets) > 1 and all(target in approvals for target in targets)
             return Triage(kind="ambiguous", targets=targets, by_buttons=by_buttons, model_calls=1), 1, False
 
         if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
@@ -956,18 +963,25 @@ class LexicalDecisionModel:
         if does == "answer" and picked:
             _place, target = picked[0]
             if target.status == "waiting_user" and target.question():
-                # The answers of the target that were said, when another
-                # question waiting offers each of them too ("Cats" to two that
-                # offer Cats / Dogs), name neither, whatever the model makes of
-                # it. One only the target offers ("Dogs for the post") names it.
+                # When another question waiting offers an answer the target
+                # offers too ("Cats" to two that offer Cats / Dogs, or "the dog
+                # one"), the answer names neither, whatever the model makes of
+                # it, unless what was said holds one only the target offers
+                # ("Dogs for the post" when the other offers Cats / Birds).
                 offered = _offered(target.question() or {})
                 elsewhere: set[str] = set()
                 for other_id, other in all_waiting.items():
                     if other_id != target.id:
                         elsewhere |= _offered(other.question() or {})
                 spoken = f"{request.user_text} {request.dispatch_text}".casefold()
-                mentioned = {label for label in offered if label in spoken}
-                shared = bool(mentioned) and mentioned <= elsewhere
+                mentioned = {label for label in offered if _said(label, spoken)}
+                # (Requests for approval all offer the same answers: which of
+                # them, the rule for several of those below asks.)
+                shared = (
+                    (target.question() or {}).get("kind") != "permission"
+                    and bool(offered & elsewhere)
+                    and not (mentioned - elsewhere)
+                )
                 if (not said_which or shared) and len(waiting) > 1:
                     # A plain "yes" with several questions waiting: which, the
                     # user is asked, and none of them is answered on a guess.
@@ -1064,11 +1078,12 @@ class LexicalDecisionModel:
         question = target.question() or {}
         names = PERMISSION_OPTION_NAMES["en"]
         offered = [names[option] for option in question.get("options") or [] if option in names]
-        # The user's own words where they are there: hers retell them, and
-        # what is allowed is read from what the user said. (Without them, as
-        # for words not taken down in this turn, from hers.)
-        said = request.user_text.strip() or request.dispatch_text
-        asked = build_choice_request(asks=permission_kind(question), offered=offered, said=said)
+        # Hers is the REQUEST (the part of the turn that answers: "ok" of "ok,
+        # and check the weather"), with the user's own words beside it when
+        # they differ, which the prompt reads what was meant by.
+        asked = build_choice_request(
+            asks=permission_kind(question), offered=offered, task=request.dispatch_text, user_said=request.user_text
+        )
         messages = [{"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT}, {"role": "user", "content": asked}]
         try:
             raw = await asyncio.wait_for(self._llm.complete(TIER_ANSWER_CHOICE, messages), UNDER_WAY_READ_SECONDS)
