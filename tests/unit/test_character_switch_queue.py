@@ -12,6 +12,20 @@ import pytest
 from main_routers.characters_router import crud
 
 
+async def _wait_for_test_start(started: asyncio.Event, task: asyncio.Task, timeout: float = 1.0):
+    try:
+        await asyncio.wait_for(started.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if task.done():
+            await task
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        raise
+
+
 @pytest.mark.asyncio
 async def test_queued_switches_use_latest_outgoing_character(monkeypatch):
     characters = {'当前猫娘': 'A', '猫娘': {'A': {}, 'B': {}, 'C': {}}}
@@ -192,7 +206,7 @@ async def test_slow_read_cannot_republish_superseded_role(monkeypatch):
         await finish.wait()
         return {'当前猫娘': 'A'}
     in_flight = asyncio.create_task(crud.current_catgirl_switch_snapshot(SimpleNamespace(aload_characters=read)))
-    await started.wait()
+    await _wait_for_test_start(started, in_flight)
     async with lock:
         b_revision = crud._advance_current_catgirl_switch_revision('B')
     finish.set()
@@ -218,7 +232,7 @@ async def test_aborted_lifecycle_snapshot_cannot_publish_a_provisional_role(monk
     if reader_starts_locked:
         await lock.acquire()
     job = asyncio.create_task(crud.read_current_catgirl_snapshot(read, lambda data: data['当前猫娘']))
-    await started.wait()
+    await _wait_for_test_start(started, job)
     if not reader_starts_locked:
         await lock.acquire()
     snapshot.set()
@@ -285,6 +299,137 @@ async def test_affected_page_finishes_same_read_after_rename_settles(monkeypatch
     finally:
         release_unrelated.set()
         await unrelated
+
+
+@pytest.mark.asyncio
+async def test_page_snapshot_rereads_config_after_revision_changes_during_read(monkeypatch):
+    page_config = importlib.import_module('main_routers.config_router.page_config')
+    lock = asyncio.Lock()
+    first_started, release_first = asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    def payload(path):
+        role = {
+            'model_type': 'live3d',
+            'live3d_sub_type': 'mmd',
+            '_reserved': {'avatar': {'model_type': 'live3d', 'live3d_sub_type': 'mmd', 'mmd': {'model_path': path}}},
+        }
+        return ('master', 'B', {}, {'B': role}, {}, {}, {}, {}, {})
+
+    async def character_data():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            first_started.set()
+            await release_first.wait()
+            return payload('/old-B.pmx')
+        return payload('/new-B.pmx')
+
+    manager = SimpleNamespace(aget_character_data=character_data)
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    monkeypatch.setattr(page_config, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(page_config, '_resolve_mmd_path', lambda path, *_args: path)
+
+    job = asyncio.create_task(page_config.get_page_config(SimpleNamespace(headers={})))
+    await _wait_for_test_start(first_started, job)
+    async with lock:
+        revision = crud._advance_current_catgirl_switch_revision('B')
+        release_first.set()
+        await asyncio.sleep(0)
+    page = await job
+
+    assert reads >= 2
+    assert (page['lanlan_name'], page['switch_revision'], page['model_path']) == ('B', revision, '/new-B.pmx')
+
+
+@pytest.mark.asyncio
+async def test_snapshot_settlement_does_not_wait_for_a_later_unrelated_writer(monkeypatch):
+    from utils.character_memory import character_config_mutation_lock
+
+    lock = type(character_config_mutation_lock)()
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
+
+    await lock.acquire()
+    observed_generation = lock.generation
+    lock.release()
+    await lock.acquire()  # unrelated writer acquired after the observed mutation settled
+    try:
+        await asyncio.wait_for(
+            crud.wait_for_current_catgirl_snapshot_settlement(observed_generation),
+            timeout=0.1,
+        )
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_current_page_does_not_stamp_default_model_when_second_read_loses_character(monkeypatch):
+    page_config = importlib.import_module('main_routers.config_router.page_config')
+    state = {'name': 'A'}
+
+    async def character_data():
+        active = state['name']
+        return ('master', active, {}, {active: {'model_type': 'live2d'}}, {}, {}, {}, {}, {})
+
+    manager = SimpleNamespace(aget_character_data=character_data)
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', asyncio.Lock())
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    monkeypatch.setattr(page_config, 'get_config_manager', lambda: manager)
+
+    async def fallback_model(_name, _item):
+        state['name'] = 'B'
+        return SimpleNamespace(body=json.dumps({
+            'model_info': {'path': '/default.model3.json', 'is_fallback': True},
+        }).encode())
+
+    monkeypatch.setattr(page_config, 'get_current_live2d_model', fallback_model)
+    page = await page_config.get_page_config(SimpleNamespace(headers={}))
+
+    assert page['success'] is False
+    assert page['lanlan_name'] == 'A'
+    assert page['switch_revision'] == 71
+
+
+@pytest.mark.asyncio
+async def test_synced_delete_notifies_fallback_even_when_cancelled_after_commit(monkeypatch):
+    uid = 'a' * 32
+    chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
+    websocket = AsyncMock()
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(chars)))
+
+    async def save(updated):
+        chars.clear()
+        chars.update(copy.deepcopy(updated))
+
+    async def committed_delete(name):
+        chars['猫娘'].pop(name, None)
+        observer = crud._delete_commit_observer.get()
+        if observer is not None:
+            observer()
+        raise asyncio.CancelledError
+
+    manager.asave_characters = save
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {'A': SimpleNamespace(websocket=websocket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', committed_delete)
+
+    with pytest.raises(asyncio.CancelledError):
+        await crud._delete_synced_character(uid, AsyncMock())
+
+    assert chars['当前猫娘'] == 'B'
+    assert 'A' not in chars['猫娘']
+    websocket.send_text.assert_awaited_once()
+    frame = json.loads(websocket.send_text.await_args.args[0])
+    assert frame['new_catgirl'] == 'B'
+    assert frame['switch_revision'] == crud._catgirl_switch_revision
+    assert crud._catgirl_switch_revision_target == 'B'
 
 
 @pytest.mark.asyncio

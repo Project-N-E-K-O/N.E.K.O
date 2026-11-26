@@ -26,7 +26,11 @@ import urllib.parse
 from fastapi import Response
 from ..shared_state import get_config_manager
 from ..characters_router import get_current_live2d_model
-from ..characters_router.crud import read_current_catgirl_snapshot, wait_for_current_catgirl_snapshot_settlement
+from ..characters_router.crud import (
+    current_catgirl_snapshot_generation,
+    read_current_catgirl_snapshot,
+    wait_for_current_catgirl_snapshot_settlement,
+)
 from utils.config_manager import get_reserved
 from config import (
     AUTOSTART_CSRF_TOKEN,
@@ -244,17 +248,20 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         # The heavy lifecycle lock can span a remote memory reload. Pair each
         # read with the committed identity without waiting for that operation.
         for attempt in range(3):
+            snapshot_generation = current_catgirl_snapshot_generation()
             data, her_name, current_switch_revision = await read_current_catgirl_snapshot(
                 _config_manager.aget_character_data, lambda value: value[1],
             )
+            if data is None:
+                continue
             master_name, observed_name, master_basic_config, lanlan_basic_config = data[:4]
             if (lanlan_name and lanlan_name != her_name) or her_name == observed_name or her_name in lanlan_basic_config:
                 break
             if attempt == 1:
                 # A rename may temporarily remove the committed entry from the
-                # file. Stay on this request until it settles so a rollback
-                # needs no extra switch event to finish the original boot.
-                await wait_for_current_catgirl_snapshot_settlement()
+                # file. Stay on this request until that exact mutation settles;
+                # a later unrelated writer must not extend this boot request.
+                await wait_for_current_catgirl_snapshot_settlement(snapshot_generation)
         else:
             # A provisional rename may have already removed A from disk. Do not
             # present another character's assets as A before it actually commits.
@@ -341,6 +348,51 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             model_data = model_response.body.decode('utf-8')
             model_json = json.loads(model_data)
             model_info = model_json.get('model_info') or {}
+
+            # get_current_live2d_model performs its own config read. If that
+            # second read raced a rename/delete and fell back to the default
+            # model, do not stamp the fallback with the committed character's
+            # revision. Re-verify the authoritative snapshot and retry once;
+            # if the committed character is not present, report a changing
+            # configuration instead of publishing mismatched model data.
+            if target_name == her_name and model_info.get('is_fallback'):
+                verify_data, verify_name, verify_revision = await read_current_catgirl_snapshot(
+                    _config_manager.aget_character_data, lambda value: value[1],
+                )
+                verify_registry = verify_data[3] if verify_data is not None and len(verify_data) > 3 else {}
+                if (
+                    verify_data is None
+                    or verify_name != her_name
+                    or verify_revision != current_switch_revision
+                    or target_name not in verify_registry
+                ):
+                    return {
+                        "success": False,
+                        "lanlan_name": her_name,
+                        "switch_revision": current_switch_revision,
+                        "error": "Current character configuration is changing",
+                    }
+                model_response = await get_current_live2d_model(target_name, live2d_item_id)
+                model_data = model_response.body.decode('utf-8')
+                model_json = json.loads(model_data)
+                model_info = model_json.get('model_info') or {}
+                final_data, final_name, final_revision = await read_current_catgirl_snapshot(
+                    _config_manager.aget_character_data, lambda value: value[1],
+                )
+                final_registry = final_data[3] if final_data is not None and len(final_data) > 3 else {}
+                if (
+                    final_data is None
+                    or final_name != her_name
+                    or final_revision != current_switch_revision
+                    or target_name not in final_registry
+                ):
+                    return {
+                        "success": False,
+                        "lanlan_name": her_name,
+                        "switch_revision": current_switch_revision,
+                        "error": "Current character configuration is changing",
+                    }
+
             model_path = model_info.get('path', '')
         
         result = {

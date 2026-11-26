@@ -193,11 +193,15 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
         if (data.success) {
             // Check before applying any part of the snapshot, including paths, DOM and boot side effects.
             const switchRevision = validPageSwitchRevision(data.switch_revision);
-            if (switchRevision < latestPageSwitchRevision()) {
+            const expected = window.__nekoPageModelConfigPending;
+            // A pinned preview is intentionally outside current-character
+            // ordering and therefore carries revision 0. Its name check below
+            // is the authority; only unpinned snapshots participate in the
+            // current-character high-water mark.
+            if (!expected?.pinned && switchRevision < latestPageSwitchRevision()) {
                 if (modelBoot) modelBoot.retryable = true;
                 return false;
             }
-            const expected = window.__nekoPageModelConfigPending;
             if (expected && (
                 !data.lanlan_name || typeof data.model_type !== 'string' || !data.model_type.trim()
                 || typeof data.model_path !== 'string'

@@ -320,6 +320,41 @@ test('older switch revision stays ignored after a newer BC-only switch has compl
     ], 'late response-derived BC for revision 200 must not undo revision 201');
 });
 
+test('legacy receipt cannot replace a newer versioned pending target', async () => {
+    const h = harness(); const firstFetch = deferred();
+    let fetchCount = 0;
+    h.context.fetch = async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstFetch.promise;
+        return { ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 11 });
+    await Promise.resolve();
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 12 });
+    assert.deepEqual(
+        [h.window.appState._pendingCatgirlSwitch?.newCatgirl, h.window.appState._pendingCatgirlSwitch?.switchRevision],
+        ['A', 12]
+    );
+
+    await h.window.handleCatgirlSwitch('B', 'A');
+    assert.deepEqual(
+        [h.window.appState._pendingCatgirlSwitch?.newCatgirl, h.window.appState._pendingCatgirlSwitch?.switchRevision],
+        ['A', 12],
+        'an unversioned compatibility receipt must not downgrade the queued committed intent'
+    );
+
+    firstFetch.reject(new Error('B load failed'));
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+});
+
 test('same revision duplicate queued during an active attempt becomes retry only if that attempt fails', async () => {
     const h = harness(); const calls = avatarCalls(h); const firstFetch = deferred();
     let fetchCount = 0;
@@ -1339,6 +1374,21 @@ test('pinned multi-window preview rejects a successful config response for anoth
     assert.ok(!h.window.mmdModel);
 });
 
+test('pinned preview accepts revision zero despite the current-character high-water mark', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/';
+    h.window.location.search = '?lanlan_name=Preview';
+    h.window.lanlan_config = { lanlan_name: 'C', switch_revision: 83, model_type: 'live2d' };
+    h.window.__nekoInjectedConfig = { lanlan_name: 'Preview' };
+    h.context.fetch = async () => ({ json: async () => desktopAvatarConfig('Preview', 'mmd', 0, '/Preview/model.pmx') });
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
+    assert.equal(h.window.lanlan_config.switch_revision, 0);
+    assert.equal(h.window.mmdModel, '/Preview/model.pmx');
+});
+
 test('failed model bootstrap preserves identity and a real same-revision receipt recovers it', async () => {
     const h = harness();
     const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
@@ -1595,6 +1645,18 @@ test('pre-index Live2D startup does not refetch or reload after C has committed'
     assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
 });
 
+test('initial Live2D startup rechecks ownership immediately before delayed model load', () => {
+    const source = fs.readFileSync(path.join(root, 'static/live2d/live2d-init.js'), 'utf8');
+    assert.match(source, /const stillOwnsInitialLive2DStartup = \(\) => \{/);
+    assert.match(source, /switch_revision[\s\S]*?currentPath === targetModelPath[\s\S]*?!hasMountedLive2D\(\)/);
+    assert.match(source, /const ownsInitialLive2DStartupAfterSwitchSettlement = async \(\) => \{[\s\S]*?isSwitchingCatgirl[\s\S]*?setTimeout\(resolve, 50\)/);
+    assert.match(
+        source,
+        /if \(!await ownsInitialLive2DStartupAfterSwitchSettlement\(\)\) \{[\s\S]{0,500}?return;[\s\S]{0,500}?live2dManager\.loadModel\(targetModelPath/,
+        'the settlement-aware ownership check must stay between delayed preference work and loadModel'
+    );
+});
+
 test('Live2D loaded ahead of index waits past the old 5-second local fallback for the shared retry', async () => {
     const h = harness(), delayed = deferred(), domReady = [];
     h.context.document.addEventListener = (event, listener) => {
@@ -1626,6 +1688,55 @@ test('Live2D loaded ahead of index waits past the old 5-second local fallback fo
     await startup.vrmBoot; await new Promise(setImmediate);
     assert.deepEqual(startup.loads, [path]);
     assert.equal(reads, 2);
+});
+
+test('MMD startup waits for an in-flight switch to settle and resumes when takeover fails', async () => {
+    const h = harness(), settings = deferred(), settingsStarted = deferred();
+    const heldRoles = deferred(), rolesStarted = deferred();
+    const canvas = { style: {}, dataset: {} };
+    h.context.document.getElementById = id => id === 'mmd-canvas' ? canvas : null;
+    const pathB = '/static/mmd/B/B.pmx';
+    const modelB = desktopAvatarConfig('B', 'mmd', 82, pathB);
+    let holdSwitchRead = false;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' }, async url => {
+        if (url === '/api/config/page_config') return { json: async () => modelB };
+        if (url.endsWith('/B/mmd_settings')) {
+            settingsStarted.resolve();
+            await settings.promise;
+            return { ok: true, json: async () => ({ success: false }) };
+        }
+        if (url === '/api/characters' && holdSwitchRead) {
+            rolesStarted.resolve();
+            return heldRoles.promise;
+        }
+        if (url === '/api/characters') return { ok: true, json: async () => ({ ['\u732b\u5a18']: { B: modelB } }) };
+        return { ok: true, json: async () => ({}) };
+    });
+    assert.equal(await startup.ready, true);
+
+    await settingsStarted.promise;
+    holdSwitchRead = true;
+    const switching = h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 });
+    await rolesStarted.promise;
+
+    settings.resolve();
+    let settleTimer;
+    for (let turn = 0; turn < 8 && !settleTimer; turn++) {
+        await new Promise(setImmediate);
+        settleTimer = [...h.timers.entries()].find(([, timer]) => timer.delay === 50);
+    }
+    assert.ok(settleTimer, 'MMD startup should wait instead of abandoning A/B ownership while switch is active');
+
+    heldRoles.resolve({ ok: false, status: 503, json: async () => ({}) });
+    assert.equal(await switching, false);
+    h.timers.delete(settleTimer[0]);
+    settleTimer[1].callback();
+    for (let turn = 0; turn < 8 && canvas.style.visibility !== 'visible'; turn++) {
+        await new Promise(setImmediate);
+    }
+
+    assert.ok(startup.loads.includes(pathB), 'failed takeover leaves B current, so its startup must resume');
+    assert.equal(canvas.style.visibility, 'visible');
 });
 
 for (const rejectBeforeTakeover of [false, true]) {
@@ -1764,6 +1875,30 @@ for (const renderer of ['live2d', 'mmd']) {
         assert.equal(calls[before]?.[0], 'begin', 'the real lost model requires recovery');
     });
 }
+
+test('PNGTuber rollback makes a same-current authoritative receipt recover the hidden avatar', async () => {
+    const h = harness(), calls = avatarCalls(h);
+    h.window.location.pathname = '/';
+    h.window.lanlan_config = { lanlan_name: 'A', model_type: 'pngtuber', pngtuber: { idle_image: '/A.png' } };
+    h.window.pngtuberManager = { image: {}, hidden: false, hide() { this.hidden = true; }, show() { this.hidden = false; } };
+    h.window.PNGTuberManager = function PNGTuberManager() {};
+    h.window.loadPNGTuberAvatar = async () => h.window.pngtuberManager;
+    h.context.fetch = async () => ({ ok: true, json: async () => ({ ['\u732b\u5a18']: {
+        A: { model_type: 'pngtuber', pngtuber: { idle_image: '/A.png' }, _reserved: { character_uid: UID_A } },
+        B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+    } }) });
+    h.window.connectWebSocket = () => { throw new Error('disconnect after PNGTuber teardown'); };
+    h.load('static/app/app-character.js');
+
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 31 });
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.pngtuberManager.hidden, true);
+    const before = calls.length;
+
+    h.window.connectWebSocket = () => {};
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 32 });
+    assert.equal(calls[before]?.[0], 'begin', 'rollback evidence must bypass same-name dedupe for PNGTuber');
+});
 
 for (const path of ['cached', 'event']) {
     test('IPC ' + path + ' avatar error settles both readiness promises', async () => {

@@ -499,11 +499,20 @@ async function autoInitMMDOnMainPage() {
     let loadStarted = false;
     const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
         && window.lanlan_config?.lanlan_name === catgirlName
+        && (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d'
+        && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd'
         && (!manager || (window.mmdManager === manager && !manager._isDisposed))
         && (loadStarted
             ? manager._activeLoadToken === loadToken
             : (window.appState?._switchAttemptCounter || 0) === startupAttempt
                 || !window.mmdManager?.currentModel?.mesh);
+    const ownsStartupAfterSwitchSettlement = async () => {
+        const deadline = Date.now() + 46000;
+        while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return stillOwnsStartup();
+    };
 
     const loadingSessionId = window._createMMDLoadingSessionId('mmd-main');
     window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
@@ -532,9 +541,9 @@ async function autoInitMMDOnMainPage() {
 
     try {
         await window._waitForMMDModules(10000);
-        if (!stillOwnsStartup()) return;
+        if (!await ownsStartupAfterSwitchSettlement()) return;
         manager = await initMMDModel();
-        if (!stillOwnsStartup()) return;
+        if (!await ownsStartupAfterSwitchSettlement()) return;
         if (!manager) {
             const detail = (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败';
             window.MMDLoadingOverlay.fail(loadingSessionId, { detail });
@@ -549,7 +558,7 @@ async function autoInitMMDOnMainPage() {
                     const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName) + '/mmd_settings');
                     if (settingsRes.ok) {
                         const settingsData = await settingsRes.json();
-                        if (!stillOwnsStartup()) return;
+                        if (!await ownsStartupAfterSwitchSettlement()) return;
                         if (settingsData.success && settingsData.settings) {
                             savedSettings = settingsData.settings;
                             // 预置物理开关和强度，避免 loadModel 时不必要的 Ammo 初始化，
@@ -567,7 +576,7 @@ async function autoInitMMDOnMainPage() {
                 }
             }
 
-            if (!stillOwnsStartup()) return;
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
             // Once this load starts, its own resulting mesh is not evidence of
@@ -576,7 +585,7 @@ async function autoInitMMDOnMainPage() {
             loadToken = manager._activeLoadToken;
             loadStarted = true;
             await loading;
-            if (!stillOwnsStartup()) return;
+            if (!await ownsStartupAfterSwitchSettlement()) return;
 
             // 加载完成后应用外观设置（光照/渲染/鼠标跟踪）
             // physics 已在 loadModel 前预置，不在此重复应用
@@ -592,7 +601,7 @@ async function autoInitMMDOnMainPage() {
                     const charRes = await fetch('/api/characters');
                     if (charRes.ok) {
                         const charData = await charRes.json();
-                        if (!stillOwnsStartup()) return;
+                        if (!await ownsStartupAfterSwitchSettlement()) return;
                         const catData = charData?.['猫娘']?.[catgirlName];
                         // 优先取列表，向前兼容单字符串
                         let idleList = catData?.mmd_idle_animations;
@@ -604,7 +613,7 @@ async function autoInitMMDOnMainPage() {
                             try {
                                 window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
                                 await manager.loadAnimation(idleList[0]);
-                                if (!stillOwnsStartup()) return;
+                                if (!await ownsStartupAfterSwitchSettlement()) return;
                                 manager.playAnimation();
                                 console.log('[MMD Init] 已播放待机动作:', idleList[0]);
                                 // 多于 1 个时启动轮换
@@ -619,10 +628,10 @@ async function autoInitMMDOnMainPage() {
                 }
             }
 
-            if (!stillOwnsStartup()) return;
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
             await window._waitForMMDRenderFrame(manager);
-            if (!stillOwnsStartup()) return;
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             window.MMDLoadingOverlay.end(loadingSessionId);
             if (mmdCanvas) {
                 mmdCanvas.style.visibility = 'visible';

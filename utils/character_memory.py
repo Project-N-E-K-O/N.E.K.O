@@ -281,12 +281,20 @@ class _CharacterConfigMutationLock(asyncio.Lock):
     generation = 0
     _settled: asyncio.Event | None = None
 
-    async def wait_for_release(self):
+    async def wait_for_release(self, expected_generation: int | None = None):
+        # A reader that observed generation N only needs to wait for that
+        # mutation. If N has already settled and another writer acquired the
+        # lock, do not make the reader join the unrelated writer's lifetime.
+        if expected_generation is not None and self.generation != expected_generation:
+            return
         if not self.locked():
             return
         if self._settled is None:
             self._settled = asyncio.Event()
-        await self._settled.wait()
+        settled = self._settled
+        if expected_generation is not None and self.generation != expected_generation:
+            return
+        await settled.wait()
 
     def release(self):
         super().release()

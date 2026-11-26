@@ -50,6 +50,7 @@ import errno
 import tempfile
 import time
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,6 +153,7 @@ from services.chat_sync import host as _chat_sync_host
 # successive successful commits strictly increasing on coarse clocks.
 _catgirl_switch_revision = 0
 _catgirl_switch_revision_target = ''
+_delete_commit_observer = ContextVar('_delete_commit_observer', default=None)
 
 
 def _advance_current_catgirl_switch_revision(current_catgirl: str) -> int:
@@ -171,31 +173,65 @@ def ensure_current_catgirl_switch_revision(current_catgirl: str) -> int:
     return _catgirl_switch_revision
 
 
-async def read_current_catgirl_snapshot(read, name_from):
-    """Read without waiting behind a lifecycle transaction's memory/IO work.
+def current_catgirl_snapshot_generation() -> int:
+    return int(getattr(character_config_mutation_lock, 'generation', 0))
 
-    A committed switch may run while the configuration read is suspended. An
-    active rename/delete may also have written a tentative name it can roll
-    back. In either case the already published identity/revision wins; never
-    mint a new revision for an old or provisional read. There is no await
-    between sampling the publication and returning the paired result.
+
+async def read_current_catgirl_snapshot(read, name_from):
+    """Read config paired with the committed current-character revision.
+
+    Readers never wait behind a long lifecycle transaction. If a committed
+    switch lands while the underlying config read is suspended, discard that
+    stale payload and read again so a newer revision is never paired with data
+    captured before it. A read that only crossed a provisional mutation keeps
+    the published identity/revision; the caller can then decide whether the
+    payload contains that committed identity or must wait for settlement.
     """
     lock = character_config_mutation_lock
-    before, generation = _catgirl_switch_revision, getattr(lock, 'generation', 0)
-    started_locked = lock.locked()
-    data = await read()
-    crossed_mutation = started_locked or lock.locked() or generation != getattr(lock, 'generation', 0)
-    if _catgirl_switch_revision and (before != _catgirl_switch_revision or crossed_mutation):
-        return data, _catgirl_switch_revision_target, _catgirl_switch_revision
-    name = name_from(data)
-    return data, name, ensure_current_catgirl_switch_revision(name)
+    data = None
+    saw_newer_publication = False
+    for _ in range(3):
+        before = _catgirl_switch_revision
+        generation = getattr(lock, 'generation', 0)
+        started_locked = lock.locked()
+        data = await read()
+        after = _catgirl_switch_revision
+        crossed_mutation = (
+            started_locked
+            or lock.locked()
+            or generation != getattr(lock, 'generation', 0)
+        )
+        if after and before != after:
+            # The payload may predate the newly published target. Re-read after
+            # observing that publication instead of stamping old data with it.
+            saw_newer_publication = True
+            continue
+        if after and crossed_mutation:
+            return data, _catgirl_switch_revision_target, after
+        name = name_from(data)
+        if saw_newer_publication and after and name != _catgirl_switch_revision_target:
+            # This request already observed a newer commit. A subsequent stable
+            # read that still exposes the old name is lagging storage/cache data,
+            # not authority to mint yet another revision.
+            return data, _catgirl_switch_revision_target, after
+        return data, name, ensure_current_catgirl_switch_revision(name)
+
+    # Continuous commits kept overtaking this request. Identity callers can
+    # still use the latest publication, while payload callers treat None as an
+    # unstable snapshot and retry/fail rather than serving mismatched config.
+    return None, _catgirl_switch_revision_target, _catgirl_switch_revision
 
 
-async def wait_for_current_catgirl_snapshot_settlement():
+async def wait_for_current_catgirl_snapshot_settlement(expected_generation: int | None = None):
     # Only the startup reader missing its committed profile uses this barrier.
-    # It observes completion without joining the writers' lock queue.
+    # It observes completion without joining the writers' lock queue. When the
+    # invalidating mutation already released, a later unrelated writer must not
+    # extend this request's wait.
     try:
-        await asyncio.wait_for(character_config_mutation_lock.wait_for_release(), timeout=30)
+        await asyncio.wait_for(
+            character_config_mutation_lock.wait_for_release(expected_generation),
+            timeout=30,
+        )
     except asyncio.TimeoutError:
         pass  # One final read can still succeed; a stuck mutation cannot hang boot forever.
 
@@ -2548,6 +2584,13 @@ async def _delete_synced_character(uid: str, before_delete):
         fallback = None
         created_fallback = False
         success = False
+        committed_switch_revision = 0
+
+        def mark_delete_committed():
+            nonlocal committed_switch_revision
+            if switched and fallback and not committed_switch_revision:
+                committed_switch_revision = _advance_current_catgirl_switch_revision(fallback)
+
         try:
             if switched:
                 fallback = next((key for key in characters['猫娘'] if key != name), None)
@@ -2567,11 +2610,17 @@ async def _delete_synced_character(uid: str, before_delete):
                 await get_switch_current_catgirl_fast()()
                 await force_disable_agent_for_character_switch(fallback, name)
             await before_delete()
-            result = await _delete_catgirl_by_name_serialized(name)
+            observer_token = _delete_commit_observer.set(mark_delete_committed if switched else None)
+            try:
+                result = await _delete_catgirl_by_name_serialized(name)
+            finally:
+                _delete_commit_observer.reset(observer_token)
             success = isinstance(result, dict) and result.get('success') is True
+            if success and switched and not committed_switch_revision:
+                mark_delete_committed()
         finally:
             end_character_mutation(name)
-            if switched and not success:
+            if switched and not success and not committed_switch_revision:
                 async def restore_previous_character():
                     latest = await cm.aload_characters()
                     if name in latest.get('猫娘', {}):
@@ -2586,13 +2635,22 @@ async def _delete_synced_character(uid: str, before_delete):
                     await _await_cleanup_to_completion(restore_previous_character())
                 except (Exception, asyncio.CancelledError):
                     logger.exception("Failed to restore current character after sync deletion")
-        if success and switched:
-            frame = json.dumps({
-                'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback,
-                'switch_revision': _advance_current_catgirl_switch_revision(fallback),
-            })
-            await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
-                                 return_exceptions=True)
+            if switched and committed_switch_revision:
+                async def notify_committed_switch():
+                    frame = json.dumps({
+                        'type': 'catgirl_switched',
+                        'old_catgirl': name,
+                        'new_catgirl': fallback,
+                        'switch_revision': committed_switch_revision,
+                    })
+                    await asyncio.gather(
+                        *(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
+                        return_exceptions=True,
+                    )
+                try:
+                    await _await_cleanup_to_completion(notify_committed_switch())
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to notify committed fallback after sync deletion")
         return success
 
 
@@ -3011,6 +3069,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 except Exception as exc:
                     logger.warning("记录本会话工坊删除标记失败: %s", exc)
             delete_committed = True
+            delete_commit_observer = _delete_commit_observer.get()
+            if delete_commit_observer is not None:
+                delete_commit_observer()
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_delete, recent_delete_result,
             )

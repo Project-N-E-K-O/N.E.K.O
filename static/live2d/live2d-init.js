@@ -578,6 +578,25 @@ async function _initLive2DModelInner() {
 
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+    const startupName = window.lanlan_config?.lanlan_name || '';
+    const startupRevision = Number(window.lanlan_config?.switch_revision) || 0;
+    const stillOwnsInitialLive2DStartup = () => {
+        if (isModelManagerPage) return true;
+        const currentPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+        return !window.appState?.isSwitchingCatgirl
+            && (window.lanlan_config?.lanlan_name || '') === startupName
+            && (Number(window.lanlan_config?.switch_revision) || 0) === startupRevision
+            && (window.lanlan_config?.model_type || 'live2d').toLowerCase() === 'live2d'
+            && currentPath === targetModelPath
+            && !hasMountedLive2D();
+    };
+    const ownsInitialLive2DStartupAfterSwitchSettlement = async () => {
+        const deadline = Date.now() + 46000;
+        while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return stillOwnsInitialLive2DStartup();
+    };
 
     // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
     const modelManagerAvatarType = window.location.pathname.includes('model_manager')
@@ -815,6 +834,14 @@ async function _initLive2DModelInner() {
 
         // 只有在非模型管理界面且有模型路径时才自动加载模型
         if (!isModelManagerPage && targetModelPath) {
+            // Preferences/display restoration above can take long enough for a
+            // committed character switch to mount its successor. Never let the
+            // old startup call become the newest load merely because it resumed
+            // later.
+            if (!await ownsInitialLive2DStartupAfterSwitchSettlement()) {
+                console.log('[Live2D Init] 初始加载已被角色切换或新配置取代，跳过旧模型:', targetModelPath);
+                return;
+            }
             // 加载模型（使用事件驱动方式，在常驻表情应用完成后应用参数）
             await window.live2dManager.loadModel(targetModelPath, {
                 preferences: modelPreferences,

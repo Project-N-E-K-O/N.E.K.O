@@ -273,6 +273,7 @@
     // Rollback restores config, not necessarily its renderer. Keep weak evidence of the
     // original mounted object: a timed-out attempt may have already mounted a different mesh.
     let rolledBackRenderer = null;
+    let rolledBackPngtuberName = null;
     let committedRenderer = null;
     function getMountedRenderer(type) {
         if (type === 'vrm') return window.vrmManager?.currentModel?.vrm;
@@ -310,6 +311,7 @@
             && (!bootstrap.revision || switchRevision >= bootstrap.revision)) return true;
         const renderer = configuredRenderer(config);
         const mounted = getMountedRenderer(renderer);
+        if (renderer === 'pngtuber' && rolledBackPngtuberName === name) return true;
         if (rolledBackRenderer?.name === name) return !rolledBackRenderer.original.has(mounted);
         // A cold snapshot supplies the original boot's path. Only a previously
         // committed VRM that has genuinely gone missing needs the switch loader
@@ -482,6 +484,11 @@
 
         if (S.isSwitchingCatgirl) {
             if (newCatgirl) {
+                const queuedSwitch = S._pendingCatgirlSwitch;
+                if (!switchRevision && queuedSwitch?.switchRevision > 0) {
+                    console.log('[猫娘切换] 保留已排队的带版本目标，忽略无版本回执:', newCatgirl);
+                    return false;
+                }
                 // 快速 A→B→A 时，旧逻辑会把第二次请求直接丢掉；而第一轮已经开始清理
                 // A 的模型，最终就可能出现“后端已回到 A、前端模型为空”。这里只保留最新
                 // 目标（last intent wins），等当前 attempt 收尾后强制重放一次。
@@ -507,6 +514,7 @@
         const renderer = configuredRenderer(currentConfig);
         const localModelPage = ownsLocalRenderer();
         let coldTarget = null;
+        let pngtuberHiddenByAttempt = false;
         let previousRenderer = rolledBackRenderer?.name === currentConfig?.lanlan_name ? rolledBackRenderer : null;
         // The backend's old and new names can match even if our last attempt rolled back.
         // 确认切换到不同角色后，清空上一任的搜歌任务
@@ -535,6 +543,9 @@
                 window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
                 window.lanlan_config.model_type = previousLanlanConfig.model_type;
                 window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+            }
+            if (pngtuberHiddenByAttempt && configuredRenderer(previousLanlanConfig) === 'pngtuber') {
+                rolledBackPngtuberName = previousLanlanConfig.lanlan_name;
             }
             window.appChatAvatarState?.rollbackCharacterSwitch(myAttemptId);
         };
@@ -1077,6 +1088,9 @@
             }
 
             try {
+                if (renderer === 'pngtuber' && previousLanlanConfig.lanlan_name) {
+                    pngtuberHiddenByAttempt = true;
+                }
                 if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
                     window.pngtuberManager.hide();
                 }
@@ -2144,6 +2158,7 @@
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
             rolledBackRenderer = null;
+            rolledBackPngtuberName = null;
             const mountedType = configuredRenderer(window.lanlan_config);
             const mounted = getMountedRenderer(mountedType);
             committedRenderer = mounted
