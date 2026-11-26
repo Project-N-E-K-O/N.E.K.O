@@ -2653,6 +2653,9 @@ async def test_stopping_again_reaches_the_task_agents_it_started_that_were_stopp
         "working": "cancelled", "blocked": "cancelled", "cancelled": "cancelled", "done": "done", "failed": "failed",
     }
     assert after["cancelled"].status_reason == "test"
+    # Not even asked to be stopped: nothing goes on their record.
+    for status in ("done", "failed"):
+        assert await _events(host, after[status].id, "transition_refused") == []
 
 
 async def test_a_task_agent_that_cannot_be_stopped_does_not_keep_the_others_going(hosts, tmp_path, monkeypatch):
