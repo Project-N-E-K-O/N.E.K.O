@@ -3044,7 +3044,9 @@ async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_the
         "cannot be written",
         "waits in its worktree",
         "waits and cannot be written",
+        "taken up again",
         "landed meanwhile",
+        "landed while being landed",
         "waits by then",
         "being landed",
     ):
@@ -3066,8 +3068,16 @@ async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_the
             commission_id=members[name],
         )
 
-    for name in ("waits in its worktree", "waits and cannot be written", "landed meanwhile"):
+    for name in ("waits in its worktree", "waits and cannot be written", "landed meanwhile", "taken up again"):
         await waits(name, "held")
+    # More was said to it: queued for a place (``_requeue``), its worktree on record as it was left
+    # until it is at work in it (``_tree_at_work``).
+    await host.ledger.transition(members["taken up again"], "queued", reason="test")
+    # The user had it landed as the end begins: in hand (``_tree_in_hand``), on record as being
+    # landed, and at work again on its way to being done (``_landed_at_the_users_word``).
+    await waits("landed while being landed", "landing")
+    await host.ledger.transition(members["landed while being landed"], "working", reason="landing")
+    manager._decided_for[tree_of("landed while being landed")] = members["landed while being landed"]
     if reading == "unreadable":
         # The worktrees that wait for the user cannot be read as the end begins: none, as far as
         # that reading goes (``_waits_in_tree``).
@@ -3084,13 +3094,16 @@ async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_the
             after_reading.append("done")
             # After what it started is read, before their ends are written: one comes to wait
             # for the user, one is being landed at the user's word (on record as being landed,
-            # and in hand), and one is landed and done.
+            # and in hand), one is landed and done, and the one that was being landed is done.
             await waits("waits by then", "unlanded")
             await waits("being landed", "landing")
             manager._decided_for[tree_of("being landed")] = members["being landed"]
             await transition(members["landed meanwhile"], "working", reason="landed")
             await transition(members["landed meanwhile"], "done", reason="landed")
             await host.ledger.update_tree(tree_of("landed meanwhile"), state="discarding")
+            await transition(members["landed while being landed"], "done", reason="landed")
+            await host.ledger.update_tree(tree_of("landed while being landed"), state="discarding")
+            manager._decided_for.pop(tree_of("landed while being landed"), None)
         return found
 
     async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
@@ -3111,12 +3124,14 @@ async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_the
         await manager._end_what_it_started(parent.id)
     finally:
         manager._decided_for.pop(tree_of("being landed"), None)
+        manager._decided_for.pop(tree_of("landed while being landed"), None)
 
     # Those that wait for the user are left to wait: as read before (where that could be read),
-    # as looked at again when their end is written, or as the user's decision is carried out;
-    # one that is stuck and whose end cannot be written is left as it is. The one at work is
-    # ended and stopped; one whose end cannot be written is stopped all the same, as ever.
-    stopped = ["at work", "cannot be written"]
+    # as looked at again when their end is written, or as the user's decision is carried out
+    # (also one landed and done since); one that is stuck and whose end cannot be written is left
+    # as it is. The one at work is ended and stopped, and so is one taken up again since its
+    # worktree came to wait; one whose end cannot be written is stopped all the same, as ever.
+    stopped = ["at work", "cannot be written", "taken up again"]
     if reading == "unreadable":
         # Not read before, the one landed and done meanwhile is stopped as one that ended, as
         # it was where that reading failed before.
@@ -3128,12 +3143,16 @@ async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_the
         "at work": "cancelled",
         "cannot be written": "working",
         **dict.fromkeys(waiting, "blocked"),
+        "taken up again": "cancelled",
         "landed meanwhile": "done",
+        "landed while being landed": "done",
     }
-    assert after["at work"].status_reason == "its parent finished"
+    for name in ("at work", "taken up again"):
+        assert after[name].status_reason == "its parent finished"
     for name in waiting:
         assert after[name].status_reason == "test"
         assert await _events(host, members[name], "transition_refused") == []
+    assert await _events(host, members["landed while being landed"], "transition_refused") == []
     refused = await _events(host, members["landed meanwhile"], "transition_refused")
     assert len(refused) == (1 if reading == "unreadable" else 0)
     trees = {name: (await host.ledger.get_tree(tree_of(name))).state for name in (*waiting, "landed meanwhile")}

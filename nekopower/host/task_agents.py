@@ -5457,13 +5457,19 @@ class TaskAgentManager(TreeWork):
         looked at again as each one's end is written
         (``_stopped_with_parent``): one that comes to wait after the
         reading, or that a reading which failed missed, is left to wait all
-        the same. Where its end cannot be written at all, one that is stuck
-        may be such a one, and is left as it is (it is not at work).
+        the same. Only one that is stuck waits so: one taken up again since
+        (queued, or at work) keeps its worktree on record as it was left
+        until it is at work in it, and is ended as any other. Where its end
+        cannot be written at all, one that is stuck may be such a one, and
+        is left as it is (it is not at work).
         """
         # (Read before those it started are: one the user has landed this moment is still among
         # these, or is over by the time those are read. And one landed and done after this is
         # read, before its end is written, is passed by here, not stopped as one that ended.)
         waiting = await self._waits_in_tree()
+        # Those whose worktree the user's decision is being carried out on, apart: whatever they
+        # stand at, and though the worktrees could not be read (nothing is awaited since).
+        deciding = set(self._decided_for.values())
         try:
             started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
         except asyncio.CancelledError:
@@ -5472,7 +5478,7 @@ class TaskAgentManager(TreeWork):
             logger.warning("ending what a commission that is over had started failed", exc_info=True)
             started = []
         for child in started:
-            if child.id in waiting:
+            if child.id in deciding or (child.id in waiting and child.status == "blocked"):
                 continue
             # Each by itself, and each step of it: one that cannot be ended
             # this moment does not leave the others at work, and one whose
