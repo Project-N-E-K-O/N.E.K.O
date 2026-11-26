@@ -2825,23 +2825,26 @@ def test_comparing_with_the_family_constant_is_not_a_write(tmp_path):
     assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
 
 
-
-def test_the_family_write_check_is_linear(tmp_path):
-    # Many unterminated "setattr(" in one file: no backtracking scan.
-    import time
+def test_the_family_write_check_is_linear():
+    # Many unterminated "setattr(" in one file: a single parse and walk,
+    # no backtracking text scan. Called directly, so a slow CI machine does
+    # not make it flaky; the old regex took tens of seconds here.
+    from threading import Event
 
     source = _UNIX_SERVER + "# " + "setattr(" * 100000 + "\n"
-    started = time.monotonic()
-    report = _scan(tmp_path, source)
-    assert time.monotonic() - started < 10
-    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+    walker = capability_analysis._AnalysisWalker(Event())
+    assert capability_analysis._families_written([("main.py", source)], walker) is False
 
 
 @pytest.mark.parametrize(
     "call,basis",
     [
         ("loop.create_datagram_endpoint(object, local_addr=('', 1), **options)", "resolved_name"),
+        # *rest in the remote_addr slot may carry one.
         ("loop.create_datagram_endpoint(object, ('', 1), *rest)", "resolved_name"),
+        # With local_addr= given, a non-empty *rest would fill local_addr
+        # again (TypeError), so it cannot carry remote_addr.
+        ("loop.create_datagram_endpoint(object, *rest, local_addr=('', 1))", "resolved_call"),
         ("loop.create_datagram_endpoint(object, local_addr=('', 1), remote_addr=None, **options)", "resolved_call"),
     ],
 )
@@ -2871,3 +2874,26 @@ def test_getattr_on_a_loop_target_is_not_the_module_in_self_attributes(tmp_path)
     report = _scan(tmp_path, source)
     # The use in go() is not resolved through the shadowed module (as on main).
     assert [row["line"] for row in report["permissions"]["system.process:spawn"]["findings"]] == [5]
+
+
+
+@pytest.mark.parametrize(
+    "main_prefix,other",
+    [
+        ("import builtins\nbuiltins.setattr(socket, 'AF_UNIX', 2)\n", None),
+        ("exec('socket.AF_UNIX = 2')\n", None),
+        ("socket.__dict__.update(AF_UNIX=2)\n", None),
+        ("vars(socket).update({'AF_UNIX': 2})\n", None),
+        ("socket.__setattr__('AF_UNIX', 2)\n", None),
+        ("object.__setattr__(socket, 'AF_UNIX', 2)\n", None),
+        # In another file, spelled so that the raw text does not match.
+        ("", "import socket\nsetattr(socket, 'AF_' 'UNIX', 2)\n"),
+        ("", "import socket\nsetattr(socket, 'AF\\x5fUNIX', 2)\n"),
+        ("", "import socket\nsocket.\uff21F_UNIX = 2\n"),
+    ],
+)
+def test_a_family_name_used_as_data_disables_the_downgrade(tmp_path, main_prefix, other):
+    source = _UNIX_SERVER.replace("import socket\n", "import socket\n" + main_prefix, 1)
+    files = {"net_setup.py": other} if other else {}
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}

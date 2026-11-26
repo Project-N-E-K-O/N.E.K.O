@@ -373,44 +373,37 @@ _FAMILY_NAMES = ("AF_UNIX", "AddressFamily")
 
 
 def _families_written(sources, walker) -> bool:
-    """The plugin's own code may rebind a socket family constant: a store or
-    del of .AF_UNIX / .AddressFamily (plain, annotated, augmented, unpacked,
-    loop / with target) or of a ["AF_UNIX"] / ["AddressFamily"] item
-    (vars(socket), socket.__dict__), or setattr / delattr with that name.
+    """The plugin's own code may rebind a socket family constant.
 
-    Only files that mention the names are parsed for this (again, before
-    the main pass); one walk per file, honouring the stop event.
+    A family name used as data counts, rather than a list of call shapes:
+    a store or del of the .AF_UNIX / .AddressFamily attribute, any string
+    constant that contains a family name (setattr / delattr / __setattr__
+    in any spelling, vars(...)[...], .update({...}), exec("...")), or a
+    keyword argument of that name (.update(AF_UNIX=...)). This errs on the
+    strict side: a plugin that merely mentions "AF_UNIX" in a string gets
+    the same result as without the AF_UNIX rule.
+
+    Every file is parsed for this (names are compared after the parser's
+    normalisation), before the main pass; one walk per file, honouring the
+    stop event.
     """
     for relative, source in sources:
-        if not any(name in source for name in _FAMILY_NAMES):
-            continue
+        walker.poll()
         try:
             tree = ast.parse(source, filename=relative)
         except (SyntaxError, ValueError, RecursionError):
             continue  # reported by the main pass
         for node in ast.walk(tree):
             walker.poll()
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr in _FAMILY_NAMES
-                and isinstance(node.ctx, (ast.Store, ast.Del))
-            ):
-                return True
-            if (
-                # vars(socket)["AF_UNIX"] = ..., socket.__dict__["AF_UNIX"] = ...
-                isinstance(node, ast.Subscript)
-                and isinstance(node.ctx, (ast.Store, ast.Del))
-                and _literal_string(node.slice) in _FAMILY_NAMES
-            ):
-                return True
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in ("setattr", "delattr")
-                and len(node.args) >= 2
-                and _literal_string(node.args[1]) in _FAMILY_NAMES
-            ):
-                return True
+            if isinstance(node, ast.Attribute):
+                if node.attr in _FAMILY_NAMES and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    return True
+            elif isinstance(node, ast.Constant):
+                if isinstance(node.value, str) and any(name in node.value for name in _FAMILY_NAMES):
+                    return True
+            elif isinstance(node, ast.keyword):
+                if node.arg in _FAMILY_NAMES:
+                    return True
     return False
 
 
@@ -1753,11 +1746,9 @@ def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
     if isinstance(local, ast.Constant) and local.value is None:
         return ()
     remote = _call_argument(node, 2, "remote_addr")
-    if remote is None and (
-        any(item.arg is None for item in node.keywords)
-        or any(isinstance(item, ast.Starred) for item in node.args[2:])
-    ):
-        # **options / *rest may carry remote_addr.
+    # A *rest in the remote_addr slot is returned as remote itself (below);
+    # only **options can still carry remote_addr.
+    if remote is None and any(item.arg is None for item in node.keywords):
         return (named,)
     if remote is not None and not (isinstance(remote, ast.Constant) and remote.value is None):
         # A client with a fixed source address (local_addr=("0.0.0.0", 0),
