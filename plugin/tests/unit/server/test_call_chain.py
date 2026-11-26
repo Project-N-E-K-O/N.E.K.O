@@ -368,7 +368,7 @@ async def test_audit_route_keeps_entries_and_names_the_switch_source(gate, monke
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
         body = (await http.get("/plugin-audit/call-chain")).json()
     assert body["mode"] == "observe" and len(body["entries"]) == 1
-    assert body["checks_disabled_sources"] == ["host_config", "legacy_env"]
+    assert body["checks_disabled_sources"] == ["env", "legacy_env"]
 
 
 def test_audit_keeps_only_identifier_shaped_event_names(gate):

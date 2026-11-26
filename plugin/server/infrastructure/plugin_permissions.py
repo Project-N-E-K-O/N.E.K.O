@@ -39,13 +39,21 @@ plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
 approval does not).
 
 On the first load the decisions recorded in the legacy ``plugin_consents.json``
-are imported once. The legacy file is only ever read here, never written.
+are imported once. Once that import is saved, a marker file next to it
+(``MARKER_FILENAME``) records it, and the legacy file is not imported again.
+The legacy file itself is only ever read here, never written.
+
+Storage errors are logged rate-limited: the first one of a kind right away,
+repeats at most once per ``ERROR_LOG_WINDOW`` seconds with a count, and one
+line when that kind of operation works again.
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
@@ -62,6 +70,57 @@ SCHEMA_VERSION = 1
 
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
+# Written once the import of LEGACY_FILENAME is saved; its presence alone
+# means "already imported".
+MARKER_FILENAME = "plugin_consents.imported.json"
+MARKER_SCHEMA_VERSION = 1
+IMPORT_ALREADY_DONE = "already_imported"
+
+ERROR_LOG_WINDOW = 60.0
+
+
+class _ErrorLog:
+    """Rate-limited logging of repeated storage errors.
+
+    Keyed by ``(operation, error type)``. Messages carry error type names
+    and plugin ids only.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        # key -> [last logged at, suppressed since then, failures in a row]
+        self._seen: dict[tuple[str, str], list] = {}
+
+    def failed(self, operation: str, error: str, message: str, *args) -> None:
+        now = self._clock()
+        with self._lock:
+            state = self._seen.get((operation, error))
+            if state is None:
+                if len(self._seen) > 256:
+                    self._seen.clear()
+                state = self._seen[(operation, error)] = [now, 0, 1]
+                suppressed = None
+            else:
+                state[2] += 1
+                if now - state[0] < ERROR_LOG_WINDOW:
+                    state[1] += 1
+                    return
+                suppressed, state[0], state[1] = state[1], now, 0
+        if suppressed:
+            logger.error(message + " (repeated; {} more since the last report)", *args, suppressed)
+        else:
+            logger.error(message, *args)
+
+    def recovered(self, operation: str, message: str) -> None:
+        with self._lock:
+            keys = [key for key in self._seen if key[0] == operation]
+            failures = sum(self._seen.pop(key)[2] for key in keys)
+        if failures:
+            logger.info(message + " (after {} failure(s))", failures)
+
+
+_errors = _ErrorLog()
 
 
 STATE_GRANTED = "granted"
@@ -126,10 +185,18 @@ def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
         try:
             listener(plugin_ids)
         except Exception as exc:
-            logger.error(
+            _errors.failed(
+                "listener",
+                type(exc).__name__,
                 "plugin permission change listener failed: error={}",
                 type(exc).__name__,
             )
+
+
+def notify_all_changed() -> None:
+    """Tell the listeners that every plugin's resolved states may differ
+    (e.g. the master switch changed)."""
+    _notify_change(None)
 
 
 def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
@@ -172,6 +239,22 @@ CORRUPT = "PLUGIN_PERMISSIONS_CORRUPT"  # content is not a valid store
 UNSUPPORTED_VERSION = "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"  # written by a newer version
 READ_ERROR_CODES = frozenset({READ_FAILED, CORRUPT, UNSUPPORTED_VERSION})
 WRITE_FAILED = "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+
+def _marker_present(path) -> bool:
+    """Whether the legacy import was marked done next to the store ``path``.
+
+    A marker that cannot be checked raises a read failure, so nothing is
+    imported or created on an unknown answer."""
+    try:
+        os.stat(path.with_name(MARKER_FILENAME))
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise _read_failed(
+            "Plugin permission storage is unavailable", file=MARKER_FILENAME
+        ) from exc
+    return True
 
 
 def _read_failed(message: str, *, file: str = FILENAME) -> ServerDomainError:
@@ -278,22 +361,31 @@ class PluginPermissionStore:
         except (OSError, ValueError, UnicodeError) as exc:
             # The file is left untouched: overwriting it would drop every
             # grant on disk. Nothing is cached, so the next call reads again.
-            logger.error(
+            _errors.failed(
+                "read",
+                type(exc).__name__,
                 "plugin permission store could not be read: error={}",
                 type(exc).__name__,
             )
             raise _load_error(exc) from exc
+        _errors.recovered("read", "plugin permission store can be read again")
         unsaved = False
         if document is None:
-            document = self._initial_document(path.with_name(LEGACY_FILENAME))
+            document = self._initial_document(path)
             try:
                 self._save(manager, document)
             except ServerDomainError:
                 # Reads are served from memory; every write first persists the
                 # import (see _load_for_write). Until then a restart simply
                 # imports the unchanged legacy file again.
-                logger.error("imported plugin permissions are held in memory until the next save")
+                _errors.failed(
+                    "pending_import",
+                    "unsaved",
+                    "imported plugin permissions are held in memory until the next save",
+                )
                 unsaved = True
+        if not unsaved:
+            self._mark_imported(manager, path, document)
         self._path, self._document = path, document
         self._unsaved = unsaved
         # Anything read before (or under another path) may differ now.
@@ -307,10 +399,40 @@ class PluginPermissionStore:
         if self._unsaved:
             self._save(manager, self._document)
             self._unsaved = False
+            self._mark_imported(manager, self._path, self._document)
         return manager
 
-    def _initial_document(self, legacy_path) -> dict:
-        plugins, summary = self._import_legacy(legacy_path)
+    def _mark_imported(self, manager, path, document: dict) -> None:
+        """Record that the legacy file has been imported, once the store
+        holding the import is on disk. Best effort: a failed write is retried
+        on the next load."""
+        legacy = path.with_name(LEGACY_FILENAME)
+        try:
+            if not os.path.isfile(legacy) or _marker_present(path):
+                return
+            manager.save_json_config(
+                MARKER_FILENAME,
+                {
+                    "schema_version": MARKER_SCHEMA_VERSION,
+                    "imported_at": document.get("imported_at") or _now(),
+                    "into": FILENAME,
+                },
+            )
+        except Exception as exc:
+            _errors.failed(
+                "mark_import",
+                type(exc).__name__,
+                "legacy plugin consent import could not be marked: error={}",
+                type(exc).__name__,
+            )
+        else:
+            _errors.recovered("mark_import", "legacy plugin consent import is marked")
+
+    def _initial_document(self, path) -> dict:
+        if _marker_present(path):
+            plugins, summary = {}, {"status": IMPORT_ALREADY_DONE, "plugins": 0, "skipped": 0}
+        else:
+            plugins, summary = self._import_legacy(path.with_name(LEGACY_FILENAME))
         return {
             "schema_version": SCHEMA_VERSION,
             "imported_at": _now(),
@@ -327,7 +449,9 @@ class PluginPermissionStore:
         except OSError as exc:
             # Possibly transient: do not create the new file, so the import is
             # attempted again on the next load instead of being lost.
-            logger.error(
+            _errors.failed(
+                "legacy_read",
+                type(exc).__name__,
                 "legacy plugin consents could not be read: error={}",
                 type(exc).__name__,
             )
@@ -422,7 +546,9 @@ class PluginPermissionStore:
         try:
             manager.save_json_config(FILENAME, document)
         except Exception as exc:
-            logger.error(
+            _errors.failed(
+                "save",
+                type(exc).__name__,
                 "plugin permission store could not be saved: error={}",
                 type(exc).__name__,
             )
@@ -431,6 +557,8 @@ class PluginPermissionStore:
                 "Plugin permission records could not be saved",
                 503,
             ) from exc
+        _errors.recovered("save", "plugin permission store can be saved again")
+        _errors.recovered("pending_import", "imported plugin permissions are saved")
 
     def _commit(self, manager, document: dict) -> None:
         # Persist first; the cache only moves once the disk has the change.
@@ -504,9 +632,12 @@ class PluginPermissionStore:
                 try:
                     manager = self._load_for_write()
                     self._commit(manager, document)
-                except ServerDomainError:
-                    logger.error(
-                        "plugin source binding was not saved: plugin_id={}", plugin_id
+                except ServerDomainError as exc:
+                    _errors.failed(
+                        "bind",
+                        exc.code,
+                        "plugin source binding was not saved: plugin_id={}",
+                        plugin_id,
                     )
                 return copy.deepcopy(record)
             manager = self._load_for_write()
