@@ -253,9 +253,13 @@ const below = (id: string) => at(id).y * size.value.height < CARD_ROOM
  * all of it is within the territory: what reaches beyond is cut off by what the territories stand in.
  */
 function shift(id: string): number {
-  const middle = at(id).x * size.value.width
+  // As wide as the territory is drawn: narrower than it asks to be where the page has less room.
+  const width = drawn.value || size.value.width
+  const middle = at(id).x * width
   const half = CARD_WIDTH / 2
-  return Math.round(Math.min(Math.max(middle, half), Math.max(half, size.value.width - half)) - middle)
+  // In one narrower than the card, the card is put in its middle.
+  if (width <= CARD_WIDTH) return Math.round(width / 2 - middle)
+  return Math.round(Math.min(Math.max(middle, half), width - half) - middle)
 }
 function stateWord(look: CatLook): string {
   const key = `power.home.states.${look}`
@@ -393,11 +397,21 @@ watch(() => props.tidy, () => {
   keep()
 })
 
-onMounted(() => { timer = setInterval(strollOn, STROLL_MS) })
+// How wide the territory is drawn, kept up with the page: 0 until it is known.
+const drawn = ref(0)
+let watching: ResizeObserver | null = null
+onMounted(() => {
+  timer = setInterval(strollOn, STROLL_MS)
+  if (!land.value || typeof ResizeObserver === 'undefined') return
+  watching = new ResizeObserver(() => { drawn.value = land.value?.clientWidth ?? 0 })
+  watching.observe(land.value)
+  drawn.value = land.value.clientWidth
+})
 // The one that is held went away (its project was put away elsewhere): the drag is over, and whoever was told of it is told.
 watch(shown, members => { if (held.value && !members.some(member => member.id === held.value)) cancel() })
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  watching?.disconnect()
   cancel()
 })
 </script>

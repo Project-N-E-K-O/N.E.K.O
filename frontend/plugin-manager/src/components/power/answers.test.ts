@@ -319,6 +319,37 @@ describe('where the cards are shown', () => {
     localStorage.removeItem('neko-power-colony-spots')
   })
 
+  it('goes by how wide the territory is drawn where the page gives it less room than it asks for', async () => {
+    // What tells of the territory's size: kept here, to be told of a narrower page.
+    const told: Array<() => void> = []
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { told.push(callback) } observe() {} disconnect() {} })
+    localStorage.setItem('neko-power-colony-spots', JSON.stringify({ 'project:wide': { s1: { x: 0.2, y: 0.6 } } }))
+    // Seven of them: the territory asks for far more room than a card is wide.
+    const members = [member({ ask: permission(), commission: 'c1' }), ...['a', 'b', 'c', 'd', 'e', 'f'].map(id => member({ id, name: id, look: 'idle' }))]
+    const { container } = await mount(ColonyTerritory, { territory: { key: 'project:wide', name: 'wide', loose: false, members } })
+    await vi.dynamicImportSettled()
+    await flush()
+    const territory = container.querySelector('[data-territory]') as HTMLElement
+    const shift = () => parseFloat((container.querySelector('[data-ask-of="s1"] [data-ask-bubble]') as HTMLElement).style.getPropertyValue('--shift'))
+    const left = parseFloat((container.querySelector('[data-ask-of="s1"]') as HTMLElement).style.left) / 100
+    // With all the room it asks for, a card a fifth of the way in fits where it is.
+    expect(left * parseFloat(territory.style.width)).toBeGreaterThan(108)
+    expect(shift()).toBe(0)
+    // The page is narrower: it is drawn 390 wide, and the card would reach out of it on the left.
+    Object.defineProperty(territory, 'clientWidth', { configurable: true, value: 390 })
+    told.forEach(tell => tell())
+    await flush()
+    expect(shift()).toBe(Math.round(108 - left * 390))
+    expect(shift()).toBeGreaterThan(0)
+    // Narrower than the card itself: the card is put in its middle.
+    Object.defineProperty(territory, 'clientWidth', { configurable: true, value: 200 })
+    told.forEach(tell => tell())
+    await flush()
+    expect(shift()).toBe(Math.round(100 - left * 200))
+    localStorage.removeItem('neko-power-colony-spots')
+    vi.unstubAllGlobals()
+  })
+
   it('tells whoever shows the questions that a sentence was not taken, where it asks to be told', async () => {
     const told: string[] = []
     let answers!: ReturnType<typeof useAskAnswers>
