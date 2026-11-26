@@ -997,6 +997,108 @@ async def test_keep_old_does_not_append_rejected_new_text_when_retired_duplicate
 
 
 @pytest.mark.asyncio
+async def test_keep_new_then_keep_old_with_retired_duplicate_stays_idempotent_on_queue_write_retry(tmp_path, monkeypatch):
+    """When persona save succeeds before queue write fails, replay must still skip the suppressed keep_old row."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "喜欢喝茶", id="live_tea_1")
+    await _seed_master_fact(
+        pm, "小天", "喜欢喝茶",
+        id="retired_tea_1",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("redundant", "2026-11-01T00:00:00", issue="redundant")},
+    )
+    await pm._aqueue_correction("小天", "喜欢喝茶", "喜欢喝咖啡", "master")
+    await pm._aqueue_correction("小天", "喜欢喝茶", "讨厌喝茶", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1, cid2 = queued[0]["correction_id"], queued[1]["correction_id"]
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_old"},
+    ]
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 2
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    retired = [e for e in facts if e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert [e["text"] for e in live] == ["喜欢喝咖啡"]
+    assert cid1 in (live[0].get("applied_correction_ids") or [])
+    assert cid2 in (live[0].get("applied_correction_ids") or [])
+    assert [e["id"] for e in retired] == ["retired_tea_1"]
+    assert "applied_correction_id" not in retired[0]
+
+
+@pytest.mark.asyncio
+async def test_chained_keep_new_redirects_replaced_entry_for_subsequent_keep_old_retry(tmp_path, monkeypatch):
+    """Chained keep_new A->B and B->D must redirect the recorded cid for A->C keep_old onto surviving D."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "A", id="live_a")
+    await _seed_master_fact(
+        pm, "小天", "A",
+        id="retired_a",
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("redundant", "2026-11-01T00:00:00", issue="redundant")},
+    )
+    await pm._aqueue_correction("小天", "A", "B", "master")
+    await pm._aqueue_correction("小天", "B", "D", "master")
+    await pm._aqueue_correction("小天", "A", "C", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    cid1, cid2, cid3 = (row["correction_id"] for row in queued)
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    payload = [
+        {"index": 0, "action": "keep_new"},
+        {"index": 1, "action": "keep_new"},
+        {"index": 2, "action": "keep_old"},
+    ]
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 3
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    retired = [e for e in facts if e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert [e["text"] for e in live] == ["D"]
+    cids = live[0].get("applied_correction_ids") or []
+    assert cid1 in cids and cid2 in cids and cid3 in cids
+    assert [e["id"] for e in retired] == ["retired_a"]
+    assert "applied_correction_id" not in retired[0]
+
+
+@pytest.mark.asyncio
 async def test_same_batch_replaced_old_text_tracking_is_scoped_by_entity_and_subject(tmp_path):
     """Replacing old_text in one entity or scope must not suppress keep_old fallback in another entity or scope."""
     from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression

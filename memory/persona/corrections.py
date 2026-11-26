@@ -718,7 +718,16 @@ class CorrectionsMixin:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
         resolved_indices: set[int] = set()
-        replaced_old_texts: set[tuple[str, tuple[str, str, str] | None, str]] = set()
+        replaced_old_entries: dict[
+            tuple[str, tuple[str, str, str] | None, str], dict
+        ] = {}
+
+        def _redirect_replaced_entries(old_ids: set[int], new_entry: object) -> None:
+            if not isinstance(new_entry, dict) or not old_ids:
+                return
+            for key, tracked in list(replaced_old_entries.items()):
+                if id(tracked) in old_ids:
+                    replaced_old_entries[key] = new_entry
         fresh_by_identity = None
         ambiguous_fresh_identities: set[tuple[str, ...]] = set()
         if fresh_corrections is not None:
@@ -1010,6 +1019,7 @@ class CorrectionsMixin:
                 include_old_source: bool = False,
                 inherited_cids: list[str] | None = None,
             ) -> dict:
+                prev_live_id = id(live_entry)
                 if not isinstance(live_entry, dict):
                     live_entry = self._normalize_entry_for_section(
                         persona, entity, live_entry,
@@ -1045,6 +1055,7 @@ class CorrectionsMixin:
                         _record_applied_cid(live_entry, inherited_cid)
                     _record_applied_cid(live_entry, item_cid)
                 section_facts[live_idx] = live_entry
+                _redirect_replaced_entries({prev_live_id}, live_entry)
                 return live_entry
 
             def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
@@ -1095,6 +1106,7 @@ class CorrectionsMixin:
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing):
                         matched = True
+                        prev_existing_id = id(existing)
                         if merged_text != old_text and _is_blocked_by_retirement(merged_text):
                             if not isinstance(existing, dict):
                                 existing = self._normalize_entry_for_section(
@@ -1106,6 +1118,9 @@ class CorrectionsMixin:
                                 if isinstance(existing, dict):
                                     _ensure_entry_id(existing)
                                 section_facts[j] = existing
+                                _redirect_replaced_entries(
+                                    {prev_existing_id}, existing,
+                                )
                             if isinstance(existing, dict):
                                 _record_applied_cid(existing, item_cid)
                             live_new = _find_live_entry(new_text)
@@ -1194,10 +1209,12 @@ class CorrectionsMixin:
                                 new_entry['version_history'] = [history_entry]
                             _record_applied_cid(new_entry, item_cid)
                             section_facts[j] = new_entry
-                        if merged_text != old_text:
-                            replaced_old_texts.add(
+                        updated_entry = section_facts[j]
+                        _redirect_replaced_entries({prev_existing_id}, updated_entry)
+                        if merged_text != old_text and isinstance(updated_entry, dict):
+                            replaced_old_entries[
                                 (entity, item_scope_key, old_text)
-                            )
+                            ] = updated_entry
                         break
                 if not matched:
                     live_merged = _find_live_entry(merged_text)
@@ -1260,8 +1277,6 @@ class CorrectionsMixin:
                     or not _entry_in_scope(e)
                     or is_permanently_suppressed(e)
                 ]
-                if old_entries and new_text != old_text:
-                    replaced_old_texts.add((entity, item_scope_key, old_text))
                 live_new_match = _find_live_entry(new_text)
                 if live_new_match is None:
                     replacement = _stamped_new_entry(new_text)
@@ -1286,6 +1301,7 @@ class CorrectionsMixin:
                         _record_applied_cid(replacement, inherited_cid)
                     _record_applied_cid(replacement, item_cid)
                     section_facts.append(replacement)
+                    target_entry = replacement
                 else:
                     existing_idx, existing = live_new_match
                     if not isinstance(existing, dict):
@@ -1310,12 +1326,24 @@ class CorrectionsMixin:
                                 )
                             ]
                         )[-_VH_MAX:]
-                    _fold_into_live_entry(
+                    target_entry = _fold_into_live_entry(
                         existing_idx,
                         existing,
                         include_old_source=False,
                         inherited_cids=inherited_cids,
                     )
+                redirected_ids = {id(e) for e in old_entries}
+                if live_new_match is not None:
+                    redirected_ids.add(id(live_new_match[1]))
+                _redirect_replaced_entries(redirected_ids, target_entry)
+                if (
+                    old_entries
+                    and new_text != old_text
+                    and isinstance(target_entry, dict)
+                ):
+                    replaced_old_entries[
+                        (entity, item_scope_key, old_text)
+                    ] = target_entry
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.
@@ -1367,22 +1395,24 @@ class CorrectionsMixin:
                                 )[-_VH_MAX:]
                         _record_applied_cid(existing, item_cid)
                         break
-                if (
-                    not matched
-                    and (entity, item_scope_key, old_text) not in replaced_old_texts
-                    and _is_blocked_by_retirement(old_text)
-                ):
-                    live_new = _find_live_entry(new_text)
-                    if live_new is not None:
-                        _fold_into_live_entry(
-                            live_new[0],
-                            live_new[1],
-                            include_old_source=False,
-                        )
-                    elif not _is_blocked_by_retirement(new_text):
-                        new_entry = _stamped_new_entry(new_text)
-                        _record_applied_cid(new_entry, item_cid)
-                        section_facts.append(new_entry)
+                if not matched:
+                    replaced_target = replaced_old_entries.get(
+                        (entity, item_scope_key, old_text)
+                    )
+                    if replaced_target is not None:
+                        _record_applied_cid(replaced_target, item_cid)
+                    elif _is_blocked_by_retirement(old_text):
+                        live_new = _find_live_entry(new_text)
+                        if live_new is not None:
+                            _fold_into_live_entry(
+                                live_new[0],
+                                live_new[1],
+                                include_old_source=False,
+                            )
+                        elif not _is_blocked_by_retirement(new_text):
+                            new_entry = _stamped_new_entry(new_text)
+                            _record_applied_cid(new_entry, item_cid)
+                            section_facts.append(new_entry)
             else:  # keep_both
                 live_new = _find_live_entry(new_text)
                 if live_new is None:
