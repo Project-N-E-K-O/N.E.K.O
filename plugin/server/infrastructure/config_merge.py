@@ -52,16 +52,15 @@ def deep_merge(
                 continue
 
             current_obj = result.get(key)
-            current_mapping = (
-                _to_string_key_mapping(current_obj)
-                if isinstance(current_obj, Mapping)
-                else {}
-            )
-            result[key] = (
-                deep_merge(current_mapping, value_mapping)
-                if value_mapping
-                else {}
-            )
+            if isinstance(current_obj, Mapping):
+                current_mapping = _to_string_key_mapping(current_obj)
+                if len(value_mapping) == 0:
+                    result[key] = value_mapping
+                else:
+                    result[key] = deep_merge(current_mapping, value_mapping)
+                continue
+
+            result[key] = value_mapping
             continue
 
         result[key] = value
