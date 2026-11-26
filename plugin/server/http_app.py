@@ -380,6 +380,11 @@ def build_plugin_server_app(
     )
 
     app.include_router(plugin_permissions_router)
+    from plugin.server.routes.plugin_permission_switch import (
+        router as plugin_permission_switch_router,
+    )
+
+    app.include_router(plugin_permission_switch_router)
     from plugin.server.routes.plugin_audit import router as plugin_audit_router
 
     app.include_router(plugin_audit_router)

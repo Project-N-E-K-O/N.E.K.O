@@ -1,7 +1,7 @@
 {
   "build_env": {
-    "arch": "AMD64",
-    "os": "win32",
+    "arch": "arm64",
+    "os": "darwin",
     "python": "3.11"
   },
   "entries": [
@@ -709,7 +709,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 40306,
+  "source_bytes": 44498,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -723,5 +723,5 @@
     "i18n/zh-TW.json",
     "plugin.toml"
   ],
-  "source_sha256": "09eaa171a1c415f5f4b8a22a60abfa1ce00374d17dfe02f5beb6052d6aa465af"
+  "source_sha256": "a092cb2d8acc7f0977d72da03a4abf545540428be705b6dd9ddb5b5cad9303fc"
 }

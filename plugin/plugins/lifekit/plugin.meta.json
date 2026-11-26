@@ -1,7 +1,7 @@
 {
   "build_env": {
-    "arch": "AMD64",
-    "os": "win32",
+    "arch": "arm64",
+    "os": "darwin",
     "python": "3.11"
   },
   "entries": [
@@ -8833,7 +8833,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 716812,
+  "source_bytes": 719219,
   "source_files": [
     ".github/workflows/release.yml",
     ".github/workflows/verify.yml",
@@ -8911,5 +8911,5 @@
     "tests/test_smoke.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "482b961b489aa2d8a41863e96f1ff63bd328773bb995c8afb453d533343cf369"
+  "source_sha256": "6593c9c4222f49ccc3791f82f0c911cbe8f13bdfa2213d2e8c995c6487ae7239"
 }
