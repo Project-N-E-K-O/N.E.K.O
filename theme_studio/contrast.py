@@ -1,9 +1,9 @@
 """Offline WCAG contrast audit for the built-in theme presets.
 
-Each entry in ``PAIRS`` names a text colour and the surface it is actually
-painted on. The surface is rebuilt by compositing (CSS source-over) the same
-layers, in the same order, that ``static/theme-studio/loader/neko-theme-studio.css``
-paints them:
+Each entry in ``PAIRS`` (and ``TEXT_GRADIENT_PAIRS``) names a text colour
+and the surface it is actually painted on. The surface is rebuilt by
+compositing (CSS source-over) the same layers, in the same order, that
+``static/theme-studio/loader/neko-theme-studio.css`` paints them:
 
 * Window surfaces (top bar, input, buttons, panels, code): the element's own
   background colour over ``--nts-chat-bg`` (``.chat-window`` /
@@ -56,15 +56,28 @@ paints them:
     ``--nts-status-bg`` over the assistant bubble, since status blocks render
     inside message bubbles.
 
-Gradients are reduced to the mean of their colour stops, because text runs
-across the whole gradient. This is an approximation: background images, the
-bubble veil, backdrop filters and the material (liquid glass) layers are not
-modelled, and a translucent ``--nts-chat-bg`` is treated as if nothing were
-behind it.
+* Text gradient (``--nts-text-gradient``): the loader clips this gradient to
+  the glyphs of ``.message-block-text``, ``.message-block-text-plain`` and
+  ``.message-block-markdown`` (``background-clip: text`` with a transparent
+  text fill; ``pre`` / ``code`` inside them keep their solid colour). Those
+  blocks render in every message container, so the gradient replaces the
+  solid text colour on the user and assistant bubbles, the compact history
+  bubbles, tool bubbles and system chips. Each of those surfaces is checked
+  in ``TEXT_GRADIENT_PAIRS`` against every colour stop of the gradient (a
+  translucent stop is composited over the surface first), and the row
+  reports the worst stop: any part of a line can land on any stop.
+
+Background gradients are reduced to the mean of their colour stops, because
+text runs across the whole gradient. This is an approximation: background
+images, the bubble veil, backdrop filters and the material (liquid glass)
+layers are not modelled, and a translucent ``--nts-chat-bg`` is treated as if
+nothing were behind it.
 
 A pair is skipped when its text or background variable is unset: the loader
 then leaves the host stylesheet's own colour in place, which this audit cannot
-see.
+see. Text gradient pairs are likewise skipped when ``--nts-text-gradient`` is
+unset (the solid text pairs above then apply) or when their surface's
+background variable is unset.
 """
 
 from __future__ import annotations
@@ -136,6 +149,19 @@ PAIRS: list[tuple[str, str | None, str | None, str, float]] = [
 # Host text colours for pairs whose text key is None, keyed by pair label.
 FIXED_TEXT = {"recommendation-card": REC_CARD_TEXT}
 
+TEXT_GRADIENT = "--nts-text-gradient"
+
+# Surfaces the text gradient is painted on: (label, background key, surface
+# kind, minimum contrast ratio). Every colour stop is checked separately.
+TEXT_GRADIENT_PAIRS: list[tuple[str, str, str, float]] = [
+    ("text-gradient-user", "--nts-user-bubble-bg", USER_BUBBLE, 4.5),
+    ("text-gradient-ai", "--nts-ai-bubble-bg", AI_BUBBLE, 4.5),
+    ("text-gradient-compact-user", "--nts-user-bubble-bg", COMPACT_USER_BUBBLE, 4.5),
+    ("text-gradient-compact-ai", "--nts-ai-bubble-bg", COMPACT_AI_BUBBLE, 4.5),
+    ("text-gradient-tool", "--nts-tool-bubble-bg", MESSAGE_LIST, 4.5),
+    ("text-gradient-chip", "--nts-chip-bg", MESSAGE_LIST, 4.5),
+]
+
 
 def parse_color(value):
     """Parse ``#rgb[a]`` / ``#rrggbb[aa]`` / ``rgb[a](...)`` into ``(r, g, b, a)``.
@@ -179,11 +205,18 @@ def parse_color(value):
     return None
 
 
+def color_stops(value):
+    """Return every concrete colour stop in ``value``; non-colour tokens are ignored."""
+    if not value or not isinstance(value, str):
+        return []
+    return [p for p in (parse_color(tok) for tok in COLOR_RE.findall(value)) if p]
+
+
 def average_color(value):
     """Return a single colour, or the mean of all colour stops of a gradient."""
     if not value or not isinstance(value, str):
         return None
-    parsed = [p for p in (parse_color(tok) for tok in COLOR_RE.findall(value)) if p]
+    parsed = color_stops(value)
     if not parsed:
         return None
     if len(parsed) == 1 and "gradient" not in value:
@@ -282,7 +315,9 @@ def audit_vars(vars_map, mode="light"):
     """Check every pair in ``PAIRS`` against one resolved variable map.
 
     ``mode`` selects the fixed host surfaces (``COMPACT_PROMPT_BG``); pairs
-    with no background variable (``bg_key`` None) are always checked.
+    with no background variable (``bg_key`` None) are always checked. The
+    ``TEXT_GRADIENT_PAIRS`` rows follow, in the same shape, with the worst
+    colour stop's ratio.
     """
     rows = []
     for label, fg_key, bg_key, kind, floor in PAIRS:
@@ -296,21 +331,30 @@ def audit_vars(vars_map, mode="light"):
             rows.append({"pair": label, "skip": True})
             continue
         surface = resolve_surface(vars_map, kind, bg_key, mode)
-        ratio = contrast(fg, surface)
-        rows.append(
-            {
-                "pair": label,
-                "fg": fg_key,
-                "bg": bg_key,
-                # Hex of the resolved surface, so callers can show a swatch
-                # even for fixed host surfaces that have no variable.
-                "surface": "#%02x%02x%02x" % tuple(surface[:3]),
-                "ratio": round(ratio, 2),
-                "floor": floor,
-                "ok": ratio + 1e-9 >= floor,
-            }
-        )
+        rows.append(_row(label, fg_key, bg_key, surface, contrast(fg, surface), floor))
+    stops = color_stops(vars_map.get(TEXT_GRADIENT))
+    for label, bg_key, kind, floor in TEXT_GRADIENT_PAIRS:
+        if not stops or average_color(vars_map.get(bg_key)) is None:
+            rows.append({"pair": label, "skip": True})
+            continue
+        surface = resolve_surface(vars_map, kind, bg_key, mode)
+        ratio = min(contrast(over(stop, surface), surface) for stop in stops)
+        rows.append(_row(label, TEXT_GRADIENT, bg_key, surface, ratio, floor))
     return rows
+
+
+def _row(label, fg_key, bg_key, surface, ratio, floor):
+    return {
+        "pair": label,
+        "fg": fg_key,
+        "bg": bg_key,
+        # Hex of the resolved surface, so callers can show a swatch
+        # even for fixed host surfaces that have no variable.
+        "surface": "#%02x%02x%02x" % tuple(surface[:3]),
+        "ratio": round(ratio, 2),
+        "floor": floor,
+        "ok": ratio + 1e-9 >= floor,
+    }
 
 
 def themes_from_dir(path, limit=None):

@@ -85,7 +85,7 @@
     "--nts-panel-border-color": "rgba(168, 216, 240, 0.7)",
     "--nts-panel-glass-tint": "rgba(255, 255, 255, 0.30)",
     "--nts-panel-glass-blur": "blur(22px)",
-    "--nts-text-gradient": "linear-gradient(120deg, #5FB8E8 0%, #8FE3F0 100%)",
+    "--nts-text-gradient": "linear-gradient(120deg, #1771A1 0%, #127483 100%)",
     "--nts-glass-filter": "blur(22px) saturate(165%)",
     "--nts-glass-tint": "rgba(255, 255, 255, 0.30)",
     "--nts-glass-highlight": "rgba(255, 255, 255, 0.7)",

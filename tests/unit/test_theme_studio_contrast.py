@@ -2,13 +2,16 @@
 
 A badly tuned palette never raises an error or drops a frame; the only symptom
 is a user quietly switching back to the default theme. ``theme_studio/contrast.py``
-defines 19 text/surface pairs, each composited the way the chat window paints
-it, and this module turns "every preset x light/dark x every pair" into a
+defines the text/surface pairs (``PAIRS``, plus ``TEXT_GRADIENT_PAIRS`` for
+``--nts-text-gradient``), each composited the way the chat window paints it,
+and this module turns "every preset x light/dark x every pair" into a
 regression check that every change has to pass.
 
 When a pair fails, the usual cause is a text colour that was not adjusted
 together with its background: fix the text key in
-``theme_studio/presets/<id>.json`` (and its ``<id>-material.json`` twin).
+``theme_studio/presets/<id>.json`` (and its ``<id>-material.json`` twin). For
+a ``text-gradient-*`` row, adjust the gradient's colour stops (every stop must
+read on every bubble), or drop the gradient from that mode.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ def test_presets_dir_exists():
 
 
 def test_all_presets_meet_contrast_floors():
-    """Every preset, in both light and dark mode, passes every pair in ``contrast.PAIRS``."""
+    """Every preset, in both modes, passes every pair (``PAIRS`` and ``TEXT_GRADIENT_PAIRS``)."""
     themes, fails, pair_checks = contrast.audit_dir(str(PRESETS))
     assert pair_checks > 3000, f"too few pair checks ({pair_checks}); presets may not have loaded"
     if fails:
@@ -121,6 +124,46 @@ def test_every_preset_recommendation_text_reads_on_the_compact_prompt():
     fails, _ = contrast.failing(themes)
     bad = [(t, m, r["ratio"]) for t, m, r in fails if r["pair"] == "recommendation-text"]
     assert not bad, bad
+
+
+def test_pale_text_gradient_stop_on_a_light_bubble_is_reported():
+    """``--nts-text-gradient`` replaces the text fill, so each stop must read on the bubble."""
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-ai-bubble-bg": "#ffffff",
+        # The solid text colours pass; only the gradient's pale stop does not.
+        "--nts-user-bubble-text": "#222222",
+        "--nts-ai-bubble-text": "#222222",
+        "--nts-text-gradient": "linear-gradient(120deg, #1f3a5f 0%, #cfe8ff 100%)",
+    }
+    rows = {row["pair"]: row for row in contrast.audit_vars(vars_map, "light") if not row.get("skip")}
+    assert rows["user-bubble"]["ok"] and rows["ai-bubble"]["ok"]
+    for label in ("text-gradient-user", "text-gradient-ai",
+                  "text-gradient-compact-user", "text-gradient-compact-ai"):
+        row = rows[label]
+        assert not row["ok"], f"{label}: a pale gradient stop on a white bubble was not reported"
+        assert row["fg"] == "--nts-text-gradient"
+        # The worst stop decides: the pale one, not the mean of both stops.
+        assert row["ratio"] < 1.5
+
+    vars_map["--nts-text-gradient"] = "linear-gradient(120deg, #1f3a5f 0%, #3b2a6b 100%)"
+    rows = {row["pair"]: row for row in contrast.audit_vars(vars_map, "light") if not row.get("skip")}
+    assert rows["text-gradient-user"]["ok"] and rows["text-gradient-ai"]["ok"]
+
+
+def test_text_gradient_pairs_are_skipped_without_the_variable():
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-ai-bubble-bg": "#ffffff",
+        "--nts-tool-bubble-bg": "#ffffff",
+        "--nts-chip-bg": "#ffffff",
+    }
+    labels = {label for label, _, _, _ in contrast.TEXT_GRADIENT_PAIRS}
+    rows = [row for row in contrast.audit_vars(vars_map, "light") if row["pair"] in labels]
+    assert len(rows) == len(labels)
+    assert all(row.get("skip") for row in rows)
 
 
 def test_contrast_extremes():
