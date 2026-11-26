@@ -61,6 +61,48 @@ describe('recording draft submission', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recording');
   });
 
+  it('reports draft activity to the host even while the compact surface is folded', async () => {
+    const onAudioMessageActiveChange = vi.fn();
+    const props = { audioMessageTarget: 'YUI', onComposerAudioMessage: vi.fn(), onAudioMessageActiveChange };
+    const view = render(<App {...props} chatSurfaceMode="compact" />);
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(false, 'idle');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' })); });
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true, 'recording');
+    view.rerender(<App {...props} chatSurfaceMode="minimized" />);
+    // The control is gone, but the recording is still held by the root.
+    expect(screen.queryByRole('button', { name: 'Stop and send' })).toBeNull();
+    expect(onAudioMessageActiveChange).toHaveBeenLastCalledWith(true, 'recording');
+  });
+
+  it('keeps a recorded draft while the composer is disabled', async () => {
+    const send = vi.fn();
+    const props = { target: 'YUI', send, onBusyChange: () => {} };
+    const view = render(<AudioMessageComposer {...props} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
+    await screen.findByRole('button', { name: 'Stop and send' });
+    await act(async () => { vi.mocked(recordAudio).mock.lastCall?.[0](); });
+    await screen.findByRole('button', { name: 'Send recording' });
+    // Realtime voice hides the composer: the preview draft must survive.
+    view.rerender(<AudioMessageComposer {...props} disabled />);
+    expect(screen.getByRole('button', { name: 'Send recording' })).toBeDisabled();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    view.rerender(<AudioMessageComposer {...props} disabled={false} />);
+    expect(screen.getByRole('button', { name: 'Send recording' })).toBeEnabled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('stops a recording in progress when the composer is disabled', async () => {
+    const cancel = vi.fn();
+    vi.mocked(recordAudio).mockResolvedValue({ stop: vi.fn(async () => new Int16Array(16000)), cancel });
+    const props = { target: 'YUI', send: vi.fn(), onBusyChange: () => {} };
+    const view = render(<AudioMessageComposer {...props} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
+    await screen.findByRole('button', { name: 'Stop and send' });
+    view.rerender(<AudioMessageComposer {...props} disabled />);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Stop and send' })).toBeNull();
+  });
+
   it('discards a draft when its character changes', async () => {
     const send = vi.fn();
     const props = { disabled: false, send, onBusyChange: () => {} };

@@ -39,14 +39,15 @@ code, so callers never parse exception text.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
-import math
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
 
 import httpx
+import numpy as np
 
 from . import (
     _CORE_ASR_ROUTES,
@@ -199,22 +200,59 @@ async def _close_client(client: Any) -> None:
             return
 
 
+# A segment is sent only if it has some speech-level energy. Model-audio
+# providers (Gemini in live tests) invent text for silence, e.g. two seconds
+# of digital silence came back as an English sentence, so an empty or
+# noise-only voice message must never reach them. 20 ms frames; speech peaks
+# around 7,000-14,000 RMS, a quiet room stays well below 200 (about -44 dBFS).
+_SILENCE_FRAME_SAMPLES = 320
+_SILENCE_FRAME_RMS = 200.0
+_MIN_VOICED_FRAMES = 5  # 100 ms
+
+
+def _voiced_frame_mask(pcm16: bytes) -> np.ndarray:
+    """Per 20 ms frame of 16 kHz PCM16: whether it is above the speech floor."""
+
+    samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
+    usable = len(samples) - len(samples) % _SILENCE_FRAME_SAMPLES
+    if usable == 0:
+        return np.zeros(0, dtype=bool)
+    frames = samples[:usable].reshape(-1, _SILENCE_FRAME_SAMPLES)
+    return np.sqrt(np.mean(frames * frames, axis=1)) >= _SILENCE_FRAME_RMS
+
+
+def voiced_frame_count(pcm16: bytes) -> int:
+    """Number of 20 ms frames of 16 kHz PCM16 above the speech floor."""
+
+    return int(np.count_nonzero(_voiced_frame_mask(pcm16)))
+
+
+def is_silent_pcm16(pcm16: bytes) -> bool:
+    """Whether 16 kHz PCM16 holds less than 100 ms above the speech floor."""
+
+    return voiced_frame_count(pcm16) < _MIN_VOICED_FRAMES
+
+
 def split_pcm16_segments(pcm16: bytes, max_segment_ms: int) -> list[bytes]:
     """Split 16 kHz PCM16 into the fewest equal segments within the limit.
 
     Equal parts avoid a near-empty trailing request (a 27.1 s recording with a
-    27 s limit becomes two 13.55 s segments, not 27 s plus 0.1 s).
+    27 s limit becomes two 13.55 s segments, not 27 s plus 0.1 s). Split
+    points fall on the 20 ms silence-gate frame grid, so every frame belongs
+    to exactly one segment and the gate never credits a segment with sound
+    that lies on the other side of its boundary.
     """
 
-    max_bytes = (max_segment_ms * PCM16_SAMPLE_RATE_HZ * PCM16_SAMPLE_WIDTH_BYTES // 1000) & ~1
-    if max_bytes <= 0:
+    max_frames = max_segment_ms * PCM16_SAMPLE_RATE_HZ // 1000 // _SILENCE_FRAME_SAMPLES
+    if max_frames <= 0:
         raise ValueError("max_segment_ms is too small")
-    count = max(1, math.ceil(len(pcm16) / max_bytes))
     samples = len(pcm16) // PCM16_SAMPLE_WIDTH_BYTES
+    total_frames = -(-samples // _SILENCE_FRAME_SAMPLES)  # a partial tail counts
+    count = max(1, -(-total_frames // max_frames))
     segments: list[bytes] = []
     for index in range(count):
-        start = samples * index // count
-        end = samples * (index + 1) // count
+        start = min(samples, total_frames * index // count * _SILENCE_FRAME_SAMPLES)
+        end = min(samples, total_frames * (index + 1) // count * _SILENCE_FRAME_SAMPLES)
         segments.append(
             pcm16[start * PCM16_SAMPLE_WIDTH_BYTES : end * PCM16_SAMPLE_WIDTH_BYTES]
         )
@@ -315,12 +353,12 @@ async def _request_grok(
 async def _request_gemini(
     transcriber: "OfflineAsrTranscriber", pcm16: bytes, language: str, client: Any
 ) -> str:
-    _ = language  # The shared prompt preserves the spoken language.
     return await _gemini_worker.request_gemini_transcript(
         client,
         encode_pcm16_wav(pcm16),
         model=transcriber.spec.model or _gemini_worker._GEMINI_MODEL,
         timeout_seconds=transcriber.spec.request_timeout_ms / 1000,
+        language=language,
     )
 
 
@@ -378,6 +416,19 @@ class OfflineAsrTranscriber:
     def _api_key(self) -> str:
         return self._selection._api_key
 
+    @property
+    def credential_fingerprint(self) -> str:
+        """A short one-way digest of provider + credential ("" without one).
+
+        Lets callers remember that a credential was rejected (and notice when
+        it is replaced) without ever holding the key itself.
+        """
+
+        if not self._api_key:
+            return ""
+        digest = hashlib.sha256(f"{self.provider_key}:{self._api_key}".encode())
+        return digest.hexdigest()[:16]
+
     async def transcribe(
         self,
         pcm16: bytes,
@@ -389,7 +440,8 @@ class OfflineAsrTranscriber:
 
         ``language`` is a hint ("zh", "en-US", "auto", ...); values the
         provider cannot take fall back to automatic detection, exactly like
-        realtime sessions. Silence yields ``""``.
+        realtime sessions. Silence yields ``""`` without contacting the
+        provider; silent segments of a longer recording are skipped.
         """
 
         if not isinstance(pcm16, (bytes, bytearray, memoryview)):
@@ -412,7 +464,24 @@ class OfflineAsrTranscriber:
                 provider_key=self.provider_key,
             )
         assert self.spec.max_segment_ms is not None
-        segments = split_pcm16_segments(audio, self.spec.max_segment_ms)
+        # The speech threshold applies to the whole recording: a short word
+        # split across a segment boundary must not fall below it twice. Once
+        # the recording holds speech, only segments with no speech-level frame
+        # at all are skipped.
+        voiced = _voiced_frame_mask(audio)
+        if int(np.count_nonzero(voiced)) < _MIN_VOICED_FRAMES:
+            return ""
+        # Judge segments on the recording's frame grid. Split points lie on
+        # that grid, so a frame never straddles two segments.
+        segments: list[bytes] = []
+        start_sample = 0
+        for segment in split_pcm16_segments(audio, self.spec.max_segment_ms):
+            end_sample = start_sample + len(segment) // PCM16_SAMPLE_WIDTH_BYTES
+            first = start_sample // _SILENCE_FRAME_SAMPLES
+            last = -(-end_sample // _SILENCE_FRAME_SAMPLES)  # ceil
+            if bool(voiced[first:last].any()):
+                segments.append(segment)
+            start_sample = end_sample
         session_language = _resolve_session_language(self.provider_key, language)
         if self.spec.mode == "session":
             texts = await self._transcribe_with_session(segments, session_language)

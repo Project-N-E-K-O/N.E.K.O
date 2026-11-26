@@ -32,7 +32,13 @@ BYTES_PER_SECOND = SAMPLE_RATE * 2
 
 
 def _pcm(seconds: float) -> bytes:
-    return b"\x01\x00" * int(SAMPLE_RATE * seconds)
+    # A +/-3000 square wave: well above the offline silence gate.
+    samples = int(SAMPLE_RATE * seconds)
+    return (b"\xb8\x0b\x48\xf4" * (samples // 2 + 1))[: samples * 2]
+
+
+def _silence(seconds: float) -> bytes:
+    return b"\x00\x00" * int(SAMPLE_RATE * seconds)
 
 
 def _selection(provider_key: str, *, api_key: str = "key", worker_fn: Any = None):
@@ -192,7 +198,7 @@ def test_split_keeps_short_recordings_whole() -> None:
 
 
 def test_split_long_recording_into_equal_segments_without_losing_samples() -> None:
-    audio = _pcm(30) + b"\x02\x00"  # one extra sample: uneven total
+    audio = _pcm(30) + b"\xb8\x0b"  # one extra sample: uneven total
     segments = offline.split_pcm16_segments(audio, 27_000)
     assert len(segments) == 2
     assert b"".join(segments) == audio
@@ -223,6 +229,53 @@ async def test_invalid_audio_is_rejected_before_any_request(http_client, audio, 
         await _transcriber("glm").transcribe(audio, sample_rate_hz=rate)
     assert caught.value.code == "ASR_OFFLINE_INVALID_AUDIO"
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------
+# Silence gate
+
+
+def test_silence_gate() -> None:
+    assert offline.is_silent_pcm16(_silence(2))
+    assert offline.is_silent_pcm16(b"")
+    # Low room noise (+/-100, about -50 dBFS) stays below the speech floor.
+    assert offline.is_silent_pcm16(b"\x64\x00\x9c\xff" * 16_000)
+    # 60 ms of speech-level signal is a click, not speech; 120 ms counts.
+    assert offline.is_silent_pcm16(_silence(1) + _pcm(0.06) + _silence(1))
+    assert not offline.is_silent_pcm16(_silence(1) + _pcm(0.12) + _silence(1))
+
+
+async def test_silent_recording_returns_empty_without_a_request(http_client) -> None:
+    client = http_client()
+    assert await _transcriber("glm").transcribe(_silence(5)) == ""
+    assert client.calls == []
+
+
+async def test_silent_segments_of_a_long_recording_are_skipped(http_client) -> None:
+    client = http_client(_FakeResponse({"text": "后半"}))
+    assert await _transcriber("glm").transcribe(_silence(15) + _pcm(15)) == "后半"
+    assert len(client.calls) == 1
+
+
+async def test_short_speech_split_across_a_segment_boundary_is_kept(http_client) -> None:
+    # 120 ms of speech straddling the 15 s split point: each segment holds only
+    # 60 ms, below the 100 ms threshold on its own, yet the recording has speech.
+    client = http_client(_FakeResponse({"text": "嗯"}), _FakeResponse({"text": ""}))
+    audio = _silence(14.94) + _pcm(0.12) + _silence(14.94)
+    assert not offline.is_silent_pcm16(audio)
+    assert all(
+        offline.is_silent_pcm16(segment)
+        for segment in offline.split_pcm16_segments(audio, 27_000)
+    )
+    assert await _transcriber("glm").transcribe(audio) == "嗯"
+    assert len(client.calls) == 2
+
+
+async def test_session_route_skips_silence_too() -> None:
+    seen: list[Any] = []
+    transcriber = _transcriber("qwen", worker_fn=_fake_stream_worker(seen=seen))
+    assert await transcriber.transcribe(_silence(3)) == ""
+    assert seen == []  # no session was opened
 
 
 # --------------------------------------------------------------------------
@@ -257,7 +310,8 @@ async def test_glm_splits_thirty_seconds_and_joins_in_order(http_client) -> None
         (_FakeResponse({}, status_code=401), "ASR_CREDENTIALS_REJECTED", "ASR_CREDENTIALS_REJECTED"),
         (_FakeResponse({}, status_code=429), "ASR_RATE_LIMITED", "ASR_GLM_ERROR"),
         (_FakeResponse({}, status_code=400), "ASR_OFFLINE_PROVIDER_REJECTED", "ASR_GLM_ERROR"),
-        (_FakeResponse({}, status_code=503), "ASR_OFFLINE_PROVIDER_FAILED", "ASR_GLM_ERROR"),
+        (_FakeResponse({}, status_code=503), "ASR_RATE_LIMITED", "ASR_GLM_ERROR"),
+        (_FakeResponse({}, status_code=500), "ASR_OFFLINE_PROVIDER_FAILED", "ASR_GLM_ERROR"),
         (httpx.ReadTimeout("slow"), "ASR_OFFLINE_TIMEOUT", "ASR_GLM_TIMEOUT"),
         (_FakeResponse({"no_text": 1}), "ASR_OFFLINE_INVALID_RESPONSE", "ASR_GLM_PROTOCOL_ERROR"),
         (_FakeResponse(ValueError("not json")), "ASR_OFFLINE_INVALID_RESPONSE", "ASR_GLM_PROTOCOL_ERROR"),
@@ -316,12 +370,14 @@ class _SlowHttpClient:
 
 
 async def test_long_recording_bounds_concurrent_requests(monkeypatch) -> None:
-    client = _SlowHttpClient(delay=0.05)
+    client = _SlowHttpClient(delay=0.4)
     monkeypatch.setattr(offline, "_create_http_client", lambda _timeout: client)
     # Six 27 s segments, each well within its own budget, but the whole
     # recording takes about three request rounds: waiting for a slot must not
-    # count against a segment's budget.
-    transcriber = _transcriber("glm", request_timeout_ms=80)
+    # count against a segment's budget. (Counted against it, the last round
+    # would end at about 1.2 s, past the 1 s budget. Each request leaves 0.6 s
+    # to spare, for a busy machine: with 30 ms to spare this went red on CI.)
+    transcriber = _transcriber("glm", request_timeout_ms=1000)
     text = await transcriber.transcribe(_pcm(6 * 27))
     assert client.calls == 6
     assert client.max_in_flight == offline._MAX_CONCURRENT_SEGMENT_REQUESTS
@@ -408,6 +464,10 @@ class _GeminiAuthError(Exception):
     code = 401
 
 
+class _GeminiOverloaded(Exception):
+    code = 503
+
+
 async def test_gemini_success_and_split(monkeypatch) -> None:
     client = _FakeGeminiClient("第一段", "第二段")
     monkeypatch.setattr(offline, "_create_gemini_client", lambda key: client)
@@ -425,6 +485,7 @@ async def test_gemini_success_and_split(monkeypatch) -> None:
     [
         (_GeminiAuthError("bad key"), "ASR_CREDENTIALS_REJECTED"),
         (RuntimeError("boom"), "ASR_OFFLINE_PROVIDER_FAILED"),
+        (_GeminiOverloaded("high demand"), "ASR_RATE_LIMITED"),
         (ValueError("bad json"), "ASR_OFFLINE_INVALID_RESPONSE"),
     ],
 )
@@ -861,3 +922,47 @@ async def test_dev_dummy_override_runs_through_session(core_config, monkeypatch)
     transcriber = offline.resolve_offline_transcriber("glm")
     assert transcriber.provider_key == "dummy"
     assert isinstance(await transcriber.transcribe(_pcm(1)), str)
+
+
+async def test_segments_are_judged_on_the_recordings_own_frame_grid(http_client) -> None:
+    # Short pulses near a split point: each pulse lies in one 20 ms frame of
+    # the recording, and the split never cuts a frame, so the second segment
+    # sees exactly the voiced frames the whole recording has there.
+    import numpy as np
+
+    samples = np.zeros(464_160, dtype="<i2")
+    for frame in (730, 732, 734, 736, 738):
+        start = frame * 320 + 40
+        samples[start:start + 80] = 400
+    audio = samples.tobytes()
+    first, second = offline.split_pcm16_segments(audio, 27_000)
+    assert offline.voiced_frame_count(audio) == 5
+    assert offline.voiced_frame_count(first) == 0
+    assert offline.voiced_frame_count(second) == 5
+    client = http_client(_FakeResponse({"text": "嗯"}))
+    assert await _transcriber("glm").transcribe(audio) == "嗯"
+    assert len(client.calls) == 1  # the voiceless first half is skipped
+    assert _wav_frames(client.calls[0]["files"]["file"][1])[3] == len(second) // 2
+
+
+@pytest.mark.parametrize("seconds", [10, 27.01, 30, 30.01, 54.3])
+def test_split_points_fall_on_the_20ms_frame_grid(seconds) -> None:
+    audio = _pcm(seconds)
+    segments = offline.split_pcm16_segments(audio, 27_000)
+    assert b"".join(segments) == audio
+    offset = 0
+    for segment in segments[:-1]:
+        offset += len(segment) // 2
+        assert offset % 320 == 0
+    assert all(len(segment) <= 27 * BYTES_PER_SECOND for segment in segments)
+
+
+async def test_speech_ending_at_the_split_does_not_send_the_silent_half(http_client) -> None:
+    # 30.01 s: the split lands at 15.0 s on the frame grid. Speech stops right
+    # there; the second half is silent and must not reach the provider.
+    split_samples = 15 * SAMPLE_RATE
+    audio = _pcm(15) + _silence(15.01)
+    assert len(offline.split_pcm16_segments(audio, 27_000)[0]) // 2 == split_samples
+    client = http_client(_FakeResponse({"text": "前半"}))
+    assert await _transcriber("glm").transcribe(audio) == "前半"
+    assert len(client.calls) == 1

@@ -205,6 +205,8 @@ jobs:
         run: |
           node --test static/voice-identity.test.cjs static/voice-readiness.test.cjs
           node --test tests/frontend/asr_input_delivery_status.test.cjs
+          node --test tests/frontend/audio_message_host.test.cjs
+          node --test tests/frontend/audio_message_visit.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
           node --test tests/frontend/feedback_devices.test.cjs tests/frontend/feedback_information.test.cjs

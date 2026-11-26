@@ -579,6 +579,31 @@
         I.dispatchHostEvent('import-image', {});
     }
 
+    // 语音消息：聊天窗等待这个 Promise；拒绝时 Error.name 为 AudioMessageRejected，
+    // message 为 'busy' 表示会话忙，其余视为一般失败（草稿保留，可用同一 requestId 重试）
+    I.handleComposerAudioMessage = function handleComposerAudioMessage(payload) {
+        var handler = I.state.onComposerAudioMessage;
+        if (typeof handler !== 'function') {
+            var unavailable = new Error('unavailable');
+            unavailable.name = 'AudioMessageRejected';
+            return Promise.reject(unavailable);
+        }
+        return Promise.resolve().then(function () {
+            return handler(payload);
+        });
+    };
+
+    I.handleAudioMessageActiveChange = function handleAudioMessageActiveChange(active, phase) {
+        I.state.audioMessageActive = active === true;
+        I.state.audioMessagePhase = typeof phase === 'string' ? phase : (active === true ? 'active' : 'idle');
+        if (!I.state.audioMessageActive && typeof I.state.deferredAudioMessageTarget === 'string') {
+            // 草稿刚结束：被推迟的收起马上生效，不留可以再点麦克风的空档
+            I.state.audioMessageTarget = I.state.deferredAudioMessageTarget;
+            I.state.deferredAudioMessageTarget = null;
+            I.renderWindow();
+        }
+    };
+
     I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {
