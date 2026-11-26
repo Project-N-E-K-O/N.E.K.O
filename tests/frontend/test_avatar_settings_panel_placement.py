@@ -174,7 +174,7 @@ def test_settings_collision_stacks_when_buttons_leave_no_side_space(page, croppe
         if (!delayed) position();
     }""", delayed)
     if delayed:
-        page.wait_for_timeout(350)
+        page.wait_for_function("document.getElementById('settings-panel')._nekoPositionCheckTimer == null")
     result = _snapshot(page)
     panel, owner = result["panel"], result["popup"]
     assert result["down"] == "true"
@@ -199,7 +199,7 @@ def test_pending_settings_check_repositions_after_crop_mode_changes(page):
         document.getElementById('live2d-btn-settings').style.left = '450px';
         return revision;
     }""")
-    page.wait_for_timeout(350)
+    page.wait_for_function("document.getElementById('settings-panel')._nekoPositionCheckTimer == null")
     page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
     result = _snapshot(page)
     assert page.evaluate("document.getElementById('settings-panel')._nekoPositionRevision") > revision
