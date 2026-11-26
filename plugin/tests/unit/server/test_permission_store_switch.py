@@ -308,9 +308,15 @@ def switch_env(monkeypatch, manager):
     monkeypatch.setattr(permission_switch, "switch_store", store)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
+    from plugin.server.application.plugins import permission_push
+
     notified = []
-    monkeypatch.setattr(plugin_permissions, "_notify_change", notified.append)
-    return store, notified
+    monkeypatch.setattr(permission_push.permission_push_service, "notify", notified.append)
+    store_changes = []
+    monkeypatch.setattr(plugin_permissions, "_notify_change", store_changes.append)
+    yield store, notified
+    # The grants did not change: no store change notification.
+    assert store_changes == []
 
 
 async def _request(method, body=None, headers=None):
@@ -414,3 +420,55 @@ def test_a_write_replaces_the_cached_value(manager):
     assert store.disabled() is False  # cached
     store.set_disabled(True)
     assert store.disabled() is True
+
+
+def test_a_read_that_started_before_a_write_does_not_undo_it(manager, monkeypatch):
+    store = permission_switch.PermissionSwitchStore(manager)
+    manager.root.mkdir(parents=True)
+    (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": False}), encoding="utf-8")
+    real_read = permission_switch.read_json_tolerating_replace
+
+    def read_then_write(path):
+        value = real_read(path)
+        store.set_disabled(True)  # lands while the read is in flight
+        return value
+
+    monkeypatch.setattr(permission_switch, "read_json_tolerating_replace", read_then_write)
+    store.disabled()
+    assert store.disabled() is True
+
+
+def test_uncheckable_marker_is_logged(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    _legacy(manager)
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path).endswith(MARKER_FILENAME):
+            raise PermissionError("denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(plugin_permissions.os, "stat", stat)
+    for _ in range(3):
+        with pytest.raises(ServerDomainError):
+            PluginPermissionStore(manager).read("a")
+    assert logged.lines == [
+        ("error", "legacy plugin consent import marker could not be checked: error=PermissionError")
+    ]
+
+
+def test_a_concurrent_reader_does_not_read_the_file_again(manager, monkeypatch):
+    store = permission_switch.PermissionSwitchStore(manager)
+    manager.root.mkdir(parents=True)
+    (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
+    real_read = permission_switch.read_json_tolerating_replace
+    reads, seen_meanwhile = [], []
+
+    def slow_read(path):
+        reads.append(path)
+        seen_meanwhile.append(store.disabled())  # another caller while reading
+        return real_read(path)
+
+    monkeypatch.setattr(permission_switch, "read_json_tolerating_replace", slow_read)
+    assert store.disabled() is True
+    assert len(reads) == 1 and seen_meanwhile == [False]

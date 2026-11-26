@@ -193,12 +193,6 @@ def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
             )
 
 
-def notify_all_changed() -> None:
-    """Tell the listeners that every plugin's resolved states may differ
-    (e.g. the master switch changed)."""
-    _notify_change(None)
-
-
 def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
     old = (before or {}).get("plugins") or {}
     new = after.get("plugins") or {}
@@ -251,6 +245,12 @@ def _marker_present(path) -> bool:
     except FileNotFoundError:
         return False
     except OSError as exc:
+        _errors.failed(
+            "marker_check",
+            type(exc).__name__,
+            "legacy plugin consent import marker could not be checked: error={}",
+            type(exc).__name__,
+        )
         raise _read_failed(
             "Plugin permission storage is unavailable", file=MARKER_FILENAME
         ) from exc

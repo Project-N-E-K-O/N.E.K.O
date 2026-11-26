@@ -41,12 +41,13 @@ def switch_view() -> dict:
 
 
 def _write(disabled: bool) -> dict:
+    from plugin.server.application.plugins.permission_push import permission_push_service
     from plugin.server.infrastructure.permission_switch import switch_store
-    from plugin.server.infrastructure.plugin_permissions import notify_all_changed
 
     switch_store.set_disabled(disabled)
-    # Every plugin's resolved states carry ``enforced``: push them again.
-    notify_all_changed()
+    # Every plugin's resolved states carry ``enforced``: send them again. The
+    # grants did not change, so this is not a store change notification.
+    permission_push_service.notify(None)
     return switch_view()
 
 
