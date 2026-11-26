@@ -84,6 +84,9 @@ const iframeGeneration = ref(0)
 const pendingSurfaceMessages: unknown[] = []
 const maxPendingSurfaceMessages = 100
 let currentRequestId = 0
+// Legacy static plugin pages rely on same-origin `/runs`, `/security/csrf-token`,
+// `/plugin/{id}/ui-api/*`, ES modules, and `localStorage`, so keep same-origin
+// until static plugins move to a dedicated origin (tracked separately).
 const expectedOrigin = window.location.origin
 const displayTarget = ref<HTMLElement | null>(null)
 const display = usePluginDisplayFrame({
