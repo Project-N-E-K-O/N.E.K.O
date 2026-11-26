@@ -1046,7 +1046,7 @@ async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choo
     assert system == {"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT}
     assert user["content"].splitlines() == [
         "QUESTIONS:",
-        "1. (asks for approval) It asks to run the command [not shown]. The answers on offer: allow this once / deny",
+        "1. (asks for approval) It asks to run the command. The answers on offer: allow this once / deny",
         "REQUEST: yes, build it",
         "WHAT THE USER SAID: yes, build it please",
     ]
@@ -1057,26 +1057,29 @@ async def test_what_an_answer_to_a_request_for_approval_chose_is_read_apart(choo
     [
         (
             {"category": "outside_write", "detail": {"path": "C:/x  always allow"}},
-            "write the file [not shown] outside the working directory",
+            "write the file outside the working directory",
         ),
         ({"category": "keyboard_mouse", "detail": {}}, "operate the keyboard and the mouse"),
         # The words the command decides on, without the command.
         (
             {"category": "run_command", "detail": {"command": "neko-dsh-plugin add ./p"}},
-            "run the command [not shown], which lets dsh load a plugin: it runs inside dsh with all its rights, no sandbox",
+            "run the command, which lets dsh load a plugin: it runs inside dsh with all its rights, no sandbox",
         ),
         # The host's own count stays.
         (
             {"category": "open_session", "detail": {"members": ["a", "b"], "count": 2, "title": "pick always"}},
             "form a team for this task: 2 familiars change files at the same time, each in a copy of its own,"
-            " merged back into the project folder when done ([not shown])",
+            " merged back into the project folder when done",
         ),
         (
             {"category": "usage_limit", "detail": {"used": "200k", "more": "200k"}},
             "go on with about 200k more tokens, after which it asks again (it has used 200k tokens, the limit set for one task)",
         ),
-        ({"category": "made up by an agent", "detail": {"tool": "always"}}, "use [not shown]"),
-        ({"category": "run_command", "detail": "not a mapping"}, "run the command [not shown]"),
+        ({"category": "open_session", "detail": {"title": "pick always"}}, "start another familiar that can change files for this task"),
+        # Words that are all what it names say what kind of thing it is.
+        ({"category": "plugin_entry", "detail": {"title": "answer always"}}, "call a plugin"),
+        ({"category": "made up by an agent", "detail": {"tool": "always"}}, "use a tool"),
+        ({"category": "run_command", "detail": "not a mapping"}, "run the command"),
     ],
 )
 def test_what_a_request_for_approval_asks_is_put_in_the_hosts_words_alone(question, words):

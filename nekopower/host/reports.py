@@ -146,17 +146,28 @@ def _wording(question: dict[str, Any]) -> str:
 def permission_kind(question: dict[str, Any]) -> str:
     """Return what a request for approval asks to allow in the host's own English words, for a model to read.
 
-    The words of its category, with what a task agent wrote (the command,
-    the path, the name) put as ``[not shown]``: nothing in them can say what
-    to choose. The amounts a question about usage or a team states are the
-    host's own count.
+    The words of its category, without what a task agent wrote (the
+    command, the path, the name): nothing in them can say what to choose.
+    (Marked as left out, the words made the small model unsure whether a
+    plain "wait" answered at all.) The amounts a question about usage or a
+    team states are the host's own count.
     """
+    import re
+
     from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS
 
     categories = PERMISSION_CATEGORY_TEXTS["en"]
+    wording = _wording(question)
+    if wording not in categories or wording in ("plugin_entry", "other"):
+        # Words that are all what it names ("call {detail}").
+        return "call a plugin" if wording == "plugin_entry" else "use a tool"
     detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
     amounts = {name: str(detail.get(name) or "") for name in ("used", "more", "count")}
-    return categories.get(_wording(question), categories["other"]).format(detail="[not shown]", **amounts).strip()
+    words = categories[wording].format(detail="", **amounts)
+    # No gap, empty brackets or bare colon where it stood.
+    words = re.sub(r"\s*\(\s*\)", "", words)
+    words = re.sub(r"\s+([,;:])", r"\1", words)
+    return re.sub(r"\s{2,}", " ", words).strip().rstrip(":").strip()
 
 
 def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int) -> tuple[str, bool]:
