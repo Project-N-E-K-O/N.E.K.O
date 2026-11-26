@@ -357,6 +357,41 @@ test('latest intent matching a successful in-flight target cancels an older pend
     ], 'successful in-flight B already satisfies the latest B intent without a second attempt');
 });
 
+test('legacy receipt cannot replace a newer versioned pending target', async () => {
+    const h = harness(); const firstFetch = deferred();
+    let fetchCount = 0;
+    h.context.fetch = async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstFetch.promise;
+        return { ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+        } }) };
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 11 });
+    await Promise.resolve();
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 12 });
+    assert.deepEqual(
+        [h.window.appState._pendingCatgirlSwitch?.newCatgirl, h.window.appState._pendingCatgirlSwitch?.switchRevision],
+        ['A', 12]
+    );
+
+    await h.window.handleCatgirlSwitch('B', 'A');
+    assert.deepEqual(
+        [h.window.appState._pendingCatgirlSwitch?.newCatgirl, h.window.appState._pendingCatgirlSwitch?.switchRevision],
+        ['A', 12],
+        'an unversioned compatibility receipt must not downgrade the queued committed intent'
+    );
+
+    firstFetch.reject(new Error('B load failed'));
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+});
+
 test('BroadcastChannel dedupe distinguishes same-millisecond character commits by switch revision', async () => {
     const h = harness(); const forwarded = [];
     h.window.handleCatgirlSwitch = (next, previous, options) => {
