@@ -821,6 +821,22 @@ class CorrectionsMixin:
         ambiguous_replay_identities = (
             ambiguous_fresh_identities | ambiguous_batch_identities
         )
+        # Protect every still-pending queue token up front so an out-of-order
+        # retry cannot evict an inherited token from a prior failed save
+        # before its own queued result is revisited later in the same batch.
+        for pending_item in corrections:
+            pending_cid = _correction_replay_token(
+                pending_item, ambiguous_replay_identities,
+            )
+            if pending_cid:
+                batch_recorded_cids.add(pending_cid)
+        if fresh_corrections is not None:
+            for fresh_item in fresh_corrections:
+                fresh_cid = _correction_replay_token(
+                    fresh_item, ambiguous_replay_identities,
+                )
+                if fresh_cid:
+                    batch_recorded_cids.add(fresh_cid)
         for result in results:
             if not isinstance(result, dict):
                 continue
