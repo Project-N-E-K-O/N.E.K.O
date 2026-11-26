@@ -719,6 +719,38 @@ class SdkBusList(Generic[TRecord]):
             return True
         return "strict" in accepted and all(key in accepted for key in kwargs)
 
+    def _filter_raw(
+        self,
+        raw_filter: Callable[..., object],
+        *,
+        strict: bool,
+        kwargs: dict[str, Any],
+    ) -> "SdkBusList[TRecord]":
+        for key, value in kwargs.items():
+            if key.endswith("_re") and value is not None:
+                try:
+                    re.compile(value)
+                except (re.error, TypeError):
+                    if not strict:
+                        return SdkBusList(
+                            [],
+                            namespace=self._namespace,
+                            record_factory=self._record_factory,
+                            host_ctx=self._host_ctx,
+                        )
+                    raise
+        try:
+            return self._wrap_raw(raw_filter(strict=strict, **kwargs))
+        except re.error:
+            if not strict:
+                return SdkBusList(
+                    [],
+                    namespace=self._namespace,
+                    record_factory=self._record_factory,
+                    host_ctx=self._host_ctx,
+                )
+            raise
+
     def filter(self, flt: object | None = None, *, strict: bool = True, **kwargs: Any) -> "SdkBusList[TRecord]":
         if flt is not None and not callable(flt):
             raise TypeError("filter predicate must be callable")
@@ -735,14 +767,14 @@ class SdkBusList(Generic[TRecord]):
         base_filtered: SdkBusList[TRecord]
         if callable(raw_filter) and (flt is None or kwargs):
             if self._raw_filter_accepts_kwargs(raw_filter, kwargs):
-                base_filtered = self._wrap_raw(raw_filter(strict=strict, **kwargs))
+                base_filtered = self._filter_raw(raw_filter, strict=strict, kwargs=kwargs)
             else:
                 bounded = self._raw_filter_bounded_kwargs(raw_filter)
                 if bounded is not None:
                     host_kwargs = {key: value for key, value in kwargs.items() if key in bounded}
                     local_kwargs = {key: value for key, value in kwargs.items() if key not in bounded}
                     if host_kwargs and self._raw_filter_accepts_kwargs(raw_filter, host_kwargs):
-                        host_filtered = self._wrap_raw(raw_filter(strict=strict, **host_kwargs))
+                        host_filtered = self._filter_raw(raw_filter, strict=strict, kwargs=host_kwargs)
                         base_filtered = host_filtered._local_filter(local_kwargs, strict=strict)
                     else:
                         base_filtered = self._local_filter(kwargs, strict=strict)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import re
 import threading
 from types import SimpleNamespace
 from typing import get_args
@@ -1122,6 +1123,33 @@ def test_sdk_bus_list_filter_splits_host_bus_filter_and_sdk_record_fields() -> N
     with pytest.raises(Exception):
         chained.filter(source_re="[unclosed", strict=True)
     assert len(chained.filter(source_re="[unclosed", strict=False)) == 0
+
+    with pytest.raises(re.error):
+        sdk_events.filter(source_re="[", strict=True)
+    host_invalid_re = sdk_events.filter(source_re="[", strict=False)
+    assert len(host_invalid_re) == 0
+    with pytest.raises(TypeError, match=r"watch\(\) is not available"):
+        host_invalid_re.watch()
+
+    with pytest.raises(re.error):
+        sdk_events.filter(source_re="[", event_id="evt-1", strict=True)
+    mixed_invalid_re = sdk_events.filter(source_re="[", event_id="evt-1", strict=False)
+    assert len(mixed_invalid_re) == 0
+    with pytest.raises(TypeError, match=r"watch\(\) is not available"):
+        mixed_invalid_re.watch()
+
+    with pytest.raises(TypeError):
+        sdk_events.filter(source_re=123, strict=True)  # type: ignore[arg-type]
+    assert len(sdk_events.filter(source_re=123, strict=False)) == 0  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError):
+        sdk_events.filter(source_re=123, event_id="evt-1", strict=True)  # type: ignore[arg-type]
+    assert len(sdk_events.filter(source_re=123, event_id="evt-1", strict=False)) == 0  # type: ignore[arg-type]
+
+    valid_mixed = sdk_events.filter(source_re="^a", event_id="evt-1", strict=False)
+    assert len(valid_mixed) == 1
+    assert valid_mixed[0].event_id == "evt-1"
+    assert valid_mixed[0].source == "alpha"
 
 
 def test_sdk_bus_list_preserves_record_kind_across_local_and_chained_filters() -> None:
