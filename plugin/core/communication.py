@@ -1087,6 +1087,7 @@ class PluginCommunicationResourceManager:
         """
         try:
             from plugin.server.messaging.llm_tool_registry import (
+                RemoteToolError,
                 parse_register_request,
                 register_remote_tool,
             )
@@ -1104,7 +1105,17 @@ class PluginCommunicationResourceManager:
                 self.logger.warning("LLM_TOOL_REGISTER missing or invalid name: {}", msg.get("name"))
                 return
 
-            await register_remote_tool(plugin_id=self.plugin_id, **fields)
+            try:
+                await register_remote_tool(plugin_id=self.plugin_id, **fields)
+            except RemoteToolError as exc:
+                if exc.code != "plugin_stopped":
+                    raise
+                # Expected race with plugin stop; the host already withdrew it.
+                self.logger.info(
+                    "LLM tool register dropped, plugin stopped meanwhile: plugin={} name={}",
+                    self.plugin_id, fields["name"],
+                )
+                return
             self.logger.info(
                 "LLM tool registered with main_server: plugin={} name={}",
                 self.plugin_id, fields["name"],

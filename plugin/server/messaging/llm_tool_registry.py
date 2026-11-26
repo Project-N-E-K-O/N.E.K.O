@@ -613,7 +613,14 @@ async def _remove_registration(
     *, plugin_id: str, name: str, role: Optional[str], registration_id: str, why: str,
 ) -> bool:
     """Best-effort removal of one registration by id (caller holds the
-    per-name lock). Returns whether main_server confirmed it is gone."""
+    per-name lock). Returns whether main_server confirmed it is gone.
+
+    Residual risk, accepted: when the register being withdrawn was
+    cancelled mid-request, main_server may process that register after this
+    removal (``removed: false``) and keep it. Both travel over loopback and
+    the register was sent first, so this needs main_server to reorder two
+    requests; the plugin-stop cleanup still removes it then.
+    """
     try:
         await _unregister_remote_tool_locked(
             plugin_id=plugin_id, name=name, role=role,
@@ -650,9 +657,11 @@ async def _reconcile_cancelled_register(
     # main_server may still hold the tool. The callback route answers model
     # calls for untracked tools with "not registered", so while the plugin
     # runs, track it: calls still reach the plugin, and a later unregister
-    # or the plugin-stop cleanup removes both sides.
+    # or the plugin-stop cleanup removes both sides. An existing entry (an
+    # earlier registration of the name) already routes calls and may be the
+    # one main_server still holds, so it is left as it is.
     async with _lock:
-        if not stopped():
+        if not stopped() and name not in _plugin_tools.get(plugin_id, {}):
             _plugin_tools[plugin_id][name] = {
                 "timeout_seconds": float(timeout_seconds),
                 "registration_id": registration_id,

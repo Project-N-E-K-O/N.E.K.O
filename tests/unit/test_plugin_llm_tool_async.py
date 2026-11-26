@@ -2556,6 +2556,16 @@ async def test_host_name_lock_is_released_when_the_call_is_cancelled(monkeypatch
 # ---------------------------------------------------------------------------
 
 
+async def _until_name_has_waiters(registry, count: int, name: str = "tool_a") -> None:
+    """Yield until ``count`` calls hold or wait for the name lock."""
+    for _ in range(1000):
+        entry = registry._name_locks.get((PLUGIN_ID, name))
+        if entry is not None and entry[1] >= count:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"name lock never reached {count} holders/waiters")
+
+
 class _HeldMainServer:
     """main_server that holds the first request of each kind listed in
     ``hold`` until ``release`` is set. Register echoes the registration id
@@ -2633,8 +2643,7 @@ async def test_register_waiting_for_its_name_when_the_plugin_stops_is_not_sent(m
     held = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
     await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
     queued = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST)))
-    for _ in range(10):  # let the register reach the name lock and wait there
-        await asyncio.sleep(0)
+    await _until_name_has_waiters(registry, 2)  # the register waits for the name lock
 
     await registry.clear_plugin_tools(PLUGIN_ID)
     server.release.set()
@@ -2761,7 +2770,8 @@ async def test_reconcile_finishes_under_the_name_lock_despite_a_second_cancel(mo
     await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)  # the withdrawal is held at main_server
     task.cancel()
     later = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-2")))
-    for _ in range(10):
+    await _until_name_has_waiters(registry, 2)
+    for _ in range(10):  # the later register stays queued while the withdrawal runs
         await asyncio.sleep(0)
     assert server.ops() == ["register", "unregister"]  # the later register waits for the name
     assert not task.done()
@@ -2772,3 +2782,22 @@ async def test_reconcile_finishes_under_the_name_lock_despite_a_second_cancel(mo
     assert (await asyncio.wait_for(later, timeout=2.0))["ok"] is True
     assert server.ops() == ["register", "unregister", "register"]
     assert registry._plugin_tools[PLUGIN_ID]["tool_a"]["registration_id"] == "reg-2"
+
+
+@pytest.mark.asyncio
+async def test_failed_withdrawal_keeps_an_earlier_registration_tracked(monkeypatch, registry):
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    server.unregister_exc = httpx.ReadTimeout("no answer")
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 5.0, "registration_id": "reg-0"}
