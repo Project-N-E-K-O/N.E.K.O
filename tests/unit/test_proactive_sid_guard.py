@@ -1141,7 +1141,8 @@ async def test_proactive_release_keeps_user_sid_after_mid_cleanup_takeover(takeo
     from main_logic.proactive_chat.state import _release_proactive_turn
 
     mgr = _release_mgr(takeover_at)
-    assert await _release_proactive_turn(mgr, "s_proactive") is True
+    # Nothing was rotated, so callers log "user took over", not "interrupted".
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
     # The user's turn keeps its sid, so its reply audio is not dropped, and
     # the proactive cleanup fires no second USER_INPUT for it.
     assert mgr.current_speech_id == "s_user"
@@ -1163,10 +1164,20 @@ async def test_proactive_release_skips_cleanup_when_not_owned_at_entry():
     assert mgr.current_speech_id == "s_user"
 
 
+async def test_proactive_release_reports_no_rotation_under_session_takeover():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    mgr._takeover_active = True
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
+    assert mgr.current_speech_id == "s_proactive"
+    mgr.state.fire.assert_not_awaited()
+
+
 async def test_user_input_new_message_rotates_regardless_of_proactive_ownership():
     """Without ``still_owned`` (user input) the rotation stays unconditional."""
     mgr = _release_mgr("clear")
-    await LLMSessionManager.handle_new_message(mgr)
+    assert await LLMSessionManager.handle_new_message(mgr) is True
     assert mgr.current_speech_id not in ("s_proactive", "s_user")
     mgr.state.fire.assert_awaited_once()
 
@@ -1245,7 +1256,7 @@ async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover(m
     mgr.tts_response_queue.put(("s_user", b"user-audio"))
     mgr.tts_pending_chunks.append(("s_user", "用户回复"))
     takeover_done.set()
-    assert await asyncio.wait_for(release, timeout=1) is True
+    assert await asyncio.wait_for(release, timeout=1) is False
 
     assert mgr.current_speech_id == "s_user"
     assert mgr.tts_response_queue.get_nowait() == ("s_user", b"user-audio")
