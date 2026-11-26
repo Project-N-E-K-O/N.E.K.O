@@ -57,6 +57,7 @@ beforeEach(() => {
   w.reactChatWindowHost = {
     appendMessage: (message: Message) => { messages.push(message); },
     updateMessage: (id: string, patch: Partial<Message>) => { Object.assign(messages.find(each => each.id === id)!, patch); },
+    removeMessage: (id: string) => { messages = messages.filter(each => each.id !== id); },
   };
   w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'token' }) };
   vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { body?: string; headers?: Record<string, string> }) => {
@@ -534,6 +535,68 @@ describe('the cards of the chat window', () => {
     window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
     await flush();
     expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c8-q2']);
+  });
+
+  it('takes the last character\'s cards out again where the chat was emptied before the page knew whom it is with', async () => {
+    const rows = [
+      { task_id: 'c1', title: 'build the site', route: 'task_agent', lanlan_name: 'Lan', question: permission },
+      { task_id: 'c8', title: 'for another', route: 'task_agent', lanlan_name: 'Mio', question: confirmation },
+    ];
+    reply = () => ({ status: 200, body: { questions: rows } });
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    // As the page is turned to another character: the chat is emptied first, and what waits is
+    // read while the page is still with the last one. Her question is back in the emptied chat.
+    messages = [];
+    window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared'));
+    await flush();
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q1']);
+    // Then the page is with the new one, and reads again as its connection opens.
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c8-q2']);
+    // Not over for that: turned back, the first one's question is shown again.
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Lan';
+    await asks.sync();
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([['nekopower-ask-c1-q1', 'pending']]);
+
+    // The same of one the connection tells of meanwhile, and of one that waited for the window.
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Mio';
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    expect(messages).toEqual([]);
+  });
+
+  it('takes such a card out as well where its question is over by the time the page reads again', async () => {
+    reply = () => ({ status: 200, body: { questions: [] } });
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    (window as unknown as Record<string, { lanlan_name: string }>).lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    // Not left in the other one's chat as a question of hers that is over.
+    expect(messages).toEqual([]);
+  });
+
+  it('asks for the page\'s token anew, once, where an answer was turned away for it', async () => {
+    const w = window as unknown as Record<string, unknown>;
+    let token = '';
+    let asked = 0;
+    w.nekoLocalMutationSecurity = {
+      getMutationHeaders: async () => (token ? { 'X-CSRF-Token': token } : {}),
+      refreshToken: async () => { asked += 1; token = 'fresh'; },
+    };
+    // The first read of it failed: the answer goes out without one and is turned away.
+    reply = () => (calls[calls.length - 1].headers['X-CSRF-Token'] === 'fresh'
+      ? { status: 200, body: { success: true } }
+      : { status: 403, body: { success: false, error_code: 'csrf_validation_failed' } });
+    expect(await asks.answer('c1', 'q1', { choice: 'once' })).toEqual({ ok: true, stale: false, noteLost: false });
+    expect([asked, calls.length]).toEqual([1, 2]);
+    // Turned away again with the new one: that is the answer, it is not sent a third time.
+    token = '';
+    w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({}), refreshToken: async () => { asked += 1; } };
+    expect((await asks.answer('c1', 'q1', { choice: 'once' })).ok).toBe(false);
+    expect([asked, calls.length]).toEqual([2, 4]);
+    // Any other refusal is not sent again at all.
+    reply = () => ({ status: 403, body: { detail: 'forbidden' } });
+    expect((await asks.answer('c1', 'q1', { choice: 'once' })).ok).toBe(false);
+    expect([asked, calls.length]).toEqual([2, 5]);
   });
 
   it('does not go by a read that is older than what the connection said meanwhile', async () => {

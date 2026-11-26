@@ -131,10 +131,15 @@
         return parts.join(' · ');
     }
 
-    async function mutationHeaders() {
+    async function mutationHeaders(anew) {
         var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        // The page reads its token once and keeps it: asked for anew where the server turned
+        // that one down (the read failed, or it is of an earlier launch).
+        if (anew && security && typeof security.refreshToken === 'function') {
+            try { await security.refreshToken(); } catch (_) { /* Sent with what there is. */ }
+        }
         try {
-            var security = window.nekoLocalMutationSecurity;
             if (security && typeof security.getMutationHeaders === 'function') {
                 Object.assign(headers, await security.getMutationHeaders());
             }
@@ -157,12 +162,21 @@
             if (given.selected[key] && given.selected[key].length) selected[key] = given.selected[key];
         });
         if (Object.keys(selected).length) body.selected = selected;
-        try {
-            var response = await fetch('/api/agent/commissions/' + encodeURIComponent(taskId) + '/answer', {
-                method: 'POST', headers: await mutationHeaders(), body: JSON.stringify(body)
+        var send = async function (anew) {
+            var sent = await fetch('/api/agent/commissions/' + encodeURIComponent(taskId) + '/answer', {
+                method: 'POST', headers: await mutationHeaders(anew), body: JSON.stringify(body)
             });
-            var result = null;
-            try { result = await response.json(); } catch (_) { result = null; }
+            var said = null;
+            try { said = await sent.json(); } catch (_) { said = null; }
+            return { response: sent, result: said };
+        };
+        try {
+            var got = await send(false);
+            // Turned away for the page's token alone: nothing was passed on, so it is sent once
+            // more, with a token asked for anew. Any other refusal is what it is.
+            if (got.response.status === 403 && got.result && got.result.error_code === 'csrf_validation_failed') got = await send(true);
+            var response = got.response;
+            var result = got.result;
             if (response.ok) return { ok: true, stale: false, noteLost: Boolean(result && result.note_taken === false) };
             if (response.status !== 504) return { ok: false, stale: response.status === 409, noteLost: false };
         } catch (_) {
@@ -507,7 +521,23 @@
         var block = card.message.blocks[0];
         if (block.state === 'pending' || block.state === 'sending') patch(card, { state: 'closed' });
     }
-    function show(taskId, title, question, route) {
+    /** Whether something is of another character than `mine`, the one this page is with. */
+    function ofAnother(mine, name) {
+        return Boolean(mine && name && name !== mine);
+    }
+    /**
+     * Take the card of a task out of the chat without its question being over: it is another
+     * character's, and waits on her page (it got here while the page was being turned to this one).
+     */
+    function takeAway(taskId) {
+        var card = open.get(taskId);
+        if (!card) return;
+        open.delete(taskId);
+        var api = host();
+        if (api && typeof api.removeMessage === 'function') api.removeMessage(card.message.id);
+        else if (card.message.blocks[0].state === 'pending' || card.message.blocks[0].state === 'sending') patch(card, { state: 'closed' });
+    }
+    function show(taskId, title, question, route, whose) {
         var shown = view(question);
         // Before anything is let go of for it: a late report of a question that is over must not
         // take the place of the next one, which waits for the window.
@@ -516,7 +546,7 @@
         if (!api) {
             // Only the latest of a task: an earlier one is over by the time the window is there.
             queued = queued.filter(function (args) { return args[0] !== taskId; });
-            queued.push([taskId, title, question, route]);
+            queued.push([taskId, title, question, route, whose]);
             tries = 0;
             // One look at a time, for all that waits: each question starting its own would use up
             // the looks between them before the window is there.
@@ -546,7 +576,7 @@
                 state: 'pending', noNote: route === 'plugin'
             }]
         };
-        open.set(taskId, { message: message, questionId: shown.id });
+        open.set(taskId, { message: message, questionId: shown.id, whose: text(whose) });
         api.appendMessage(message);
     }
 
@@ -560,9 +590,11 @@
         }
         // Of another character than the one this page is with (sent to every page, its own not
         // being open): not shown here, as what is read on connecting is not (`sync`).
-        var mine = character();
-        if (mine && frame.lanlan_name && frame.lanlan_name !== mine) return;
-        show(String(frame.task_id), frame.title, frame.question, frame.route);
+        if (ofAnother(character(), frame.lanlan_name)) {
+            takeAway(String(frame.task_id));
+            return;
+        }
+        show(String(frame.task_id), frame.title, frame.question, frame.route, frame.lanlan_name);
     }
 
     var syncing = null;
@@ -593,19 +625,27 @@
                 var fresh = function (taskId) { return (told.get(taskId) || 0) > since; };
                 Array.from(open.keys()).forEach(function (taskId) {
                     var row = asked.get(taskId);
+                    // A card of another character's question: a read that came back while the page
+                    // was being turned to this one (the chat is emptied some moments before the
+                    // page knows whom it is with) put it here. Taken out, whatever was said since.
+                    if (ofAnother(mine, (row && row.lanlan_name) || open.get(taskId).whose)) {
+                        takeAway(taskId);
+                        return;
+                    }
                     if (fresh(taskId)) return;
                     if (!row || view(row.question).id !== open.get(taskId).questionId) close(taskId);
                 });
                 // What waits for the chat window to be there, likewise: one that is over is not shown then.
                 queued = queued.filter(function (args) {
                     var row = asked.get(args[0]);
+                    if (ofAnother(mine, (row && row.lanlan_name) || args[4])) return false;
                     return fresh(args[0]) || Boolean(row && view(row.question).id === view(args[2]).id);
                 });
                 asked.forEach(function (row, taskId) {
                     // Of another character than the one this page is with: its page shows it, as
                     // the connection would have sent it there.
-                    if (fresh(taskId) || (mine && row.lanlan_name && row.lanlan_name !== mine)) return;
-                    show(taskId, row.title, row.question, row.route);
+                    if (fresh(taskId) || ofAnother(mine, row.lanlan_name)) return;
+                    show(taskId, row.title, row.question, row.route, row.lanlan_name);
                 });
             }
             if (rerun) return sync();
