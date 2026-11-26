@@ -577,6 +577,28 @@ async def test_a_move_unless_its_changes_wait_in_a_worktree_is_refused_while_the
         assert (await ledger.get(commission.id)).status == "cancelled"
 
 
+@pytest.mark.parametrize("taken_up", ["queued", "working"])
+async def test_a_move_unless_its_changes_wait_in_a_worktree_is_not_refused_for_one_taken_up_again(
+    ledger, tmp_path, taken_up
+):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "working")
+    await ledger.transition(commission.id, "blocked", reason="stuck over its worktree")
+    await ledger.add_tree(
+        id="t1", project_dir=str(tmp_path), path=str(tmp_path / "t1"), workdir=str(tmp_path / "t1"),
+        state="held", commission_id=commission.id,
+    )
+    # Taken up again (more was said to it): queued for a place, or at work before it is at work in
+    # its worktree, which stays on record as it was left until then.
+    await ledger.transition(commission.id, taken_up, reason="taken up again")
+
+    moved = await ledger.transition(commission.id, "cancelled", reason="its parent finished", unless_waiting_in_tree=True)
+
+    # It does not wait for the user any more: it is stopped as any other.
+    assert moved.applied
+    assert (await ledger.get(commission.id)).status == "cancelled"
+
+
 async def test_reopening_in_the_same_process_object_is_refused(ledger):
     commission = await _file(ledger)
     await _walk(ledger, commission.id, "working")

@@ -5531,7 +5531,8 @@ class TaskAgentManager(TreeWork):
                     # Stuck, so not at work: it may be one whose changes wait in its worktree for
                     # the user, which cannot be told with the ledger as it is. It is left as it is.
                     continue
-                # Else it is closed all the same.
+                # Else it is closed all the same. (As it was read: one that came to be stuck
+                # over its worktree since is closed too, the ledger being of no help to tell.)
             else:
                 if moved is None:
                     # The user's decision on its worktree is being carried out this moment.

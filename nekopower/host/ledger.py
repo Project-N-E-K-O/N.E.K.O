@@ -934,8 +934,10 @@ TREE_STATES_PENDING: frozenset[str] = frozenset(TREE_STATES) - {"kept", "discard
 TREE_STATES_LEFT: frozenset[str] = frozenset({"held", "unlanded", "kept"})
 # Those whose commission is done and stuck over them alone: it waits for the
 # user to have what it changed landed (``Ledger.transition``'s
-# ``unless_waiting_in_tree``). Not one the user sees to personally (``kept``):
-# its commission may be at work in another.
+# ``unless_waiting_in_tree``). That is so only while the commission is stuck
+# (``blocked``): taken up again, it is queued or at work while its worktree
+# stays on record as it was left until it is at work in it. Not one the user
+# sees to personally (``kept``): its commission may be at work in another.
 TREE_STATES_WAITING: frozenset[str] = frozenset({"held", "unlanded"})
 # Why a move is refused for that.
 WAITS_IN_TREE_REFUSAL = "its changes wait in a worktree for the user"
@@ -1756,7 +1758,7 @@ class Ledger:
             return Transition(False, current, current.status, f"already {status}")
         if only_from is not None and current.status not in only_from:
             return Transition(False, current, current.status, f"{current.status}, not {sorted(only_from)}")
-        if unless_waiting_in_tree:
+        if unless_waiting_in_tree and current.status == "blocked":
             marks = ", ".join("?" for _ in TREE_STATES_WAITING)
             waiting = conn.execute(
                 f"SELECT 1 FROM worktrees WHERE commission_id = ? AND state IN ({marks}) LIMIT 1",
@@ -1857,11 +1859,14 @@ class Ledger:
 
         With ``only_from``, the move is also refused unless the commission is
         in one of those statuses, checked in the same transaction. With
-        ``unless_waiting_in_tree``, it is also refused while a git worktree
-        of the commission's waits for the user to have it landed
-        (``TREE_STATES_WAITING``), checked in the same transaction: a
-        worktree that comes to wait a moment before cannot be missed. Neither
-        refusal is noted as an event.
+        ``unless_waiting_in_tree``, it is also refused while the commission
+        is stuck (``blocked``) and a git worktree of its waits for the user
+        to have it landed (``TREE_STATES_WAITING``), checked in the same
+        transaction: a worktree that comes to wait a moment before cannot be
+        missed. Only while it is stuck: one taken up again (queued, or at
+        work) keeps its worktree on record as it was left until it is at
+        work in it, and does not wait for the user. Neither refusal is
+        noted as an event.
 
         This is the only way a status changes. A refused move changes nothing
         and is recorded as a ``transition_refused`` event; in particular a
