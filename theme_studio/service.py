@@ -5103,7 +5103,7 @@ class ThemeStudioService(NekoPluginBase):
         so a long name can never turn ``.json`` into ``.j``.
         """
         raw_stem, raw_suffix = os.path.splitext(str(filename or ""))
-        suffix = raw_suffix.lower() if raw_suffix.lower() in (".zip", ".json") else ""
+        suffix = raw_suffix.lower() if raw_suffix.lower() in (".zip", ".json", ".png") else ""
         stem = _safe_archive_name(raw_stem if suffix else str(filename or ""))
         stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "-", stem).strip("-") or "theme"
         return stem + suffix
@@ -5394,6 +5394,92 @@ class ThemeStudioService(NekoPluginBase):
                 "bytes": len(payload),
                 "kind": kind,
                 "images": len(self._image_refs(vars_map)) + len(self._image_refs(dark_map)),
+            }
+        )
+
+    @staticmethod
+    def _share_card_png(name: str, vars_map: dict, dark_map: dict, materials: Any) -> bytes:
+        """Render the share card PNG; the material badge shows only when materials are on."""
+        # Imported lazily so Pillow is only loaded when a card is actually requested.
+        from .share_card import render_share_card
+
+        material: dict = {}
+        if isinstance(materials, dict) and materials:
+            clean = _materials.normalize_materials(materials)[0]
+            if clean.get("enabled"):
+                material = clean
+        return render_share_card(
+            name,
+            vars_map,
+            dark_map,
+            preset_label=_materials.preset_label(material["preset"]) if material.get("preset") else "",
+            quality_label=_materials.quality_label(material["quality"]) if material.get("quality") else "",
+        )
+
+    @plugin_entry(
+        id="export_share_card",
+        name=tr("entries.export_share_card.name", default="下载主题预览图"),
+        description=tr(
+            "entries.export_share_card.description",
+            default="把当前主题或仓库 / 内置条目渲染成 PNG 预览图，以 base64 返回，由面板触发浏览器下载；服务端不写导出文件。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "theme_id": {"type": "string", "maxLength": 64},
+                "id": {"type": "string", "maxLength": 64},
+                "name": {"type": "string", "maxLength": 60},
+            },
+        },
+    )
+    async def export_share_card(
+        self,
+        theme_id: Any = "",
+        id: Any = "",
+        name: str = "",
+        **_,
+    ):
+        # Same browser-download contract as export_to_file: bytes go back to the panel,
+        # nothing is written to the desktop / Downloads / home directory.
+        if name is not None and not isinstance(name, str):
+            return Err(
+                SdkError(
+                    _msg(
+                        "library.exportFile.paramNotString",
+                        param="name",
+                        type=type(name).__name__,
+                    )
+                )
+            )
+        theme_id = str(theme_id or id or "").strip()
+        try:
+            theme_name, vars_map, dark_map, materials_map = self._current_or_saved(theme_id)
+        except SdkError as exc:
+            return Err(exc)
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("library.exportFile.readFailed", error=exc)))
+        if name and name.strip():
+            theme_name = _clip_name(name.strip(), theme_name)
+
+        try:
+            from .share_card import CARD_H, CARD_W
+
+            payload = self._share_card_png(theme_name, vars_map, dark_map, materials_map)
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("shareCard.renderFailed", error=exc)))
+
+        filename = self._download_filename(f"{_safe_archive_name(theme_name)}.png")
+        self._log("info", f"已生成主题预览图 {filename}（{len(payload)} 字节）")
+        return Ok(
+            {
+                "filename": filename,
+                "data": base64.b64encode(payload).decode("ascii"),
+                "mime": "image/png",
+                "bytes": len(payload),
+                "kind": "png",
+                "width": CARD_W,
+                "height": CARD_H,
+                "theme": theme_name,
             }
         )
 

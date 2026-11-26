@@ -8637,6 +8637,13 @@
                 "failedNotice": "Export failed: {{error}}",
                 "failed": "Export failed"
             },
+            "shareCard": {
+                "pendingConfirm": "You have {{count}} unapplied change(s).\nThe preview image is drawn from the saved theme (without these changes). Download anyway?",
+                "busy": "Rendering preview image…",
+                "done": "Preview image downloaded",
+                "failedNotice": "Preview image failed: {{error}}",
+                "failed": "Preview image failed"
+            },
             "import": {
                 "title": "Import theme",
                 "hint": "Paste palette JSON text. Importing replaces everything; invalid entries are dropped by the backend.",
@@ -9346,6 +9353,8 @@
                 "resetTitle": "Restore the built-in default theme and clear all custom colors",
                 "reset": "Reset",
                 "export": "Export",
+                "shareCard": "Download preview image",
+                "shareCardTitle": "Render the saved current theme as a PNG preview image and download it",
                 "import": "Import",
                 "reload": "Reload",
                 "applyHint": "Apply"

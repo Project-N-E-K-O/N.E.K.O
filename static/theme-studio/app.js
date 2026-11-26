@@ -3912,7 +3912,7 @@ function updateButtons() {
     : tsT('editor.apply.label', '应用');
   applyBtn.disabled = state.busy;
   applyBtn.dataset.busy = state.busy ? 'true' : 'false';
-  ['btn-reset', 'btn-export', 'btn-import', 'btn-reload', 'btn-revert-mode'].forEach(function (id) {
+  ['btn-reset', 'btn-export', 'btn-share-card', 'btn-import', 'btn-reload', 'btn-revert-mode'].forEach(function (id) {
     var node = $(id);
     if (node) node.disabled = state.busy;
   });
@@ -4274,9 +4274,10 @@ async function resetTheme() {
  * Let the backend package the file content, then trigger a browser download from the panel.
  * Since being built in, the panel is a normal top-level page (no longer a sandboxed
  * iframe without allow-downloads), so the backend no longer writes to Desktop / Downloads.
+ * entryId defaults to export_to_file; export_share_card returns the same download fields.
  */
-async function saveThemeFile(args) {
-  var result = await callPlugin('export_to_file', args);
+async function saveThemeFile(args, entryId) {
+  var result = await callPlugin(entryId || 'export_to_file', args);
   var data = result && result.data ? String(result.data) : '';
   if (!data || !result.filename) throw new Error(tsT('actions.export.noFileContent', '后端没有返回文件内容'));
   downloadBlob(base64ToBytes(data), result.filename, result.mime || 'application/octet-stream');
@@ -4325,6 +4326,35 @@ async function exportTheme() {
     showNotice('error', tsT('actions.export.failedNotice', '导出失败：{{error}}', { error: pluginErrorMessage(error) }));
     showToast(tsT('actions.export.failed', '导出失败'), 'error');
     setStatus(tsT('actions.export.failed', '导出失败'), 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+/**
+ * Render the saved current theme as a PNG share card on the backend and download it
+ * through the same browser-download path as the file exports (saveThemeFile).
+ */
+async function exportShareCard() {
+  if (state.busy) return;
+  // The card is drawn from the theme saved on disk, like the JSON export, so unapplied
+  // colour or material edits would be missing from it: say so before rendering.
+  var pending = pendingChangeCount() + materialsDirtyCount();
+  if (pending && !window.confirm(tsT('actions.shareCard.pendingConfirm',
+    '有 {{count}} 项未应用的改动。\n预览图按已保存的主题生成（不含这些改动）。继续下载？',
+    { count: pending }))) {
+    return;
+  }
+  setBusy(true, tsT('actions.shareCard.busy', '正在生成预览图…'));
+  try {
+    var result = await saveThemeFile({}, 'export_share_card');
+    showNotice('ok', savedHint(result));
+    showToast(tsT('actions.shareCard.done', '预览图已下载'), 'ok');
+    setStatus(tsT('actions.shareCard.done', '预览图已下载'), 'ok');
+  } catch (error) {
+    showNotice('error', tsT('actions.shareCard.failedNotice', '生成预览图失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('actions.shareCard.failed', '生成预览图失败'), 'error');
+    setStatus(tsT('actions.shareCard.failed', '生成预览图失败'), 'error');
   } finally {
     setBusy(false);
   }
@@ -7655,6 +7685,7 @@ function wireEvents() {
   $('btn-apply').addEventListener('click', applyTheme);
   $('btn-reset').addEventListener('click', resetTheme);
   $('btn-export').addEventListener('click', exportTheme);
+  $('btn-share-card').addEventListener('click', exportShareCard);
   $('btn-import').addEventListener('click', openImport);
   $('btn-reload').addEventListener('click', function () {
     // "Reload" discards unapplied edits: count them and ask first, so one misclick does

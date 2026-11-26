@@ -8637,6 +8637,13 @@
                 "failedNotice": "导出失败：{{error}}",
                 "failed": "导出失败"
             },
+            "shareCard": {
+                "pendingConfirm": "有 {{count}} 项未应用的改动。\n预览图按已保存的主题生成（不含这些改动）。继续下载？",
+                "busy": "正在生成预览图…",
+                "done": "预览图已下载",
+                "failedNotice": "生成预览图失败：{{error}}",
+                "failed": "生成预览图失败"
+            },
             "import": {
                 "title": "导入主题",
                 "hint": "粘贴调色板 JSON 文本。导入为整体替换；非法条目会被后端丢弃。",
@@ -9346,6 +9353,8 @@
                 "resetTitle": "恢复内置默认主题，清空所有自定义颜色",
                 "reset": "重置",
                 "export": "导出",
+                "shareCard": "下载预览图",
+                "shareCardTitle": "把已保存的当前主题生成一张 PNG 预览图并下载",
                 "import": "导入",
                 "reload": "重新读取",
                 "applyHint": "应用"

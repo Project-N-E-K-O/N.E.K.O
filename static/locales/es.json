@@ -8637,6 +8637,13 @@
                 "failedNotice": "No se pudo exportar: {{error}}",
                 "failed": "No se pudo exportar"
             },
+            "shareCard": {
+                "pendingConfirm": "Tienes {{count}} cambio(s) sin aplicar.\nLa imagen se genera a partir del tema guardado (sin esos cambios). ¿Descargarla de todos modos?",
+                "busy": "Generando imagen de vista previa…",
+                "done": "Imagen de vista previa descargada",
+                "failedNotice": "No se pudo generar la imagen: {{error}}",
+                "failed": "No se pudo generar la imagen"
+            },
             "import": {
                 "title": "Importar tema",
                 "hint": "Pega el texto JSON de la paleta. La importación reemplaza todo; el backend descarta las entradas no válidas.",
@@ -9346,6 +9353,8 @@
                 "resetTitle": "Restaurar el tema predeterminado integrado y borrar todos los colores personalizados",
                 "reset": "Restablecer",
                 "export": "Exportar",
+                "shareCard": "Descargar imagen de vista previa",
+                "shareCardTitle": "Genera una imagen PNG de vista previa del tema actual guardado y la descarga",
                 "import": "Importar",
                 "reload": "Recargar",
                 "applyHint": "Aplicar"

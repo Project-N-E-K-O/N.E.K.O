@@ -8637,6 +8637,13 @@
                 "failedNotice": "Falha ao exportar: {{error}}",
                 "failed": "Falha ao exportar"
             },
+            "shareCard": {
+                "pendingConfirm": "Você tem {{count}} alteração(ões) não aplicada(s).\nA imagem é gerada a partir do tema salvo (sem essas alterações). Baixar mesmo assim?",
+                "busy": "Gerando prévia em imagem…",
+                "done": "Prévia em imagem baixada",
+                "failedNotice": "Falha ao gerar a imagem: {{error}}",
+                "failed": "Falha ao gerar a imagem"
+            },
             "import": {
                 "title": "Importar tema",
                 "hint": "Cole o texto JSON da paleta. A importação substitui tudo; itens inválidos são descartados pelo backend.",
@@ -9346,6 +9353,8 @@
                 "resetTitle": "Restaurar o tema padrão embutido e limpar todas as cores personalizadas",
                 "reset": "Redefinir",
                 "export": "Exportar",
+                "shareCard": "Baixar prévia em imagem",
+                "shareCardTitle": "Gera uma prévia em PNG do tema atual salvo e faz o download",
                 "import": "Importar",
                 "reload": "Recarregar",
                 "applyHint": "Aplicar"

@@ -8637,6 +8637,13 @@
                 "failedNotice": "匯出失敗：{{error}}",
                 "failed": "匯出失敗"
             },
+            "shareCard": {
+                "pendingConfirm": "有 {{count}} 項未套用的變更。\n預覽圖依已儲存的主題產生（不含這些變更）。繼續下載？",
+                "busy": "正在產生預覽圖…",
+                "done": "預覽圖已下載",
+                "failedNotice": "產生預覽圖失敗：{{error}}",
+                "failed": "產生預覽圖失敗"
+            },
             "import": {
                 "title": "匯入主題",
                 "hint": "貼上調色盤 JSON 文字。匯入為整體取代；不合法的項目會被後端捨棄。",
@@ -9346,6 +9353,8 @@
                 "resetTitle": "恢復內建預設主題，清除所有自訂顏色",
                 "reset": "重設",
                 "export": "匯出",
+                "shareCard": "下載預覽圖",
+                "shareCardTitle": "將已儲存的目前主題產生一張 PNG 預覽圖並下載",
                 "import": "匯入",
                 "reload": "重新讀取",
                 "applyHint": "套用"
