@@ -2765,3 +2765,27 @@ def test_reflected_constructor_on_an_untrusted_root_is_not_local(tmp_path, use, 
 def test_reflected_constructor_on_a_trusted_import_is_local(tmp_path):
     source = "import socket\ngetattr(socket, 'socket')(socket.AF_UNIX).listen()\n"
     assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        # A client with a fixed source address: binds, but need not listen.
+        ("loop.create_datagram_endpoint(object, local_addr=('0.0.0.0', 0), remote_addr=('8.8.8.8', 53))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, ('0.0.0.0', 0), ('8.8.8.8', 53))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), remote_addr=None)", "resolved_call"),
+    ],
+)
+def test_datagram_endpoints_with_a_remote_address_are_possible_listen(tmp_path, call, basis):
+    source = f"import asyncio\nasync def f():\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+def test_resolved_references_keep_the_legacy_spelling():
+    import ast
+    from threading import Event
+
+    tree = ast.parse("import extlib\ngetattr(extlib, 'get_ctx')().push_message('a')\n")
+    walker = capability_analysis._AnalysisWalker(Event())
+    methods = {method for _node, (method, external) in capability_analysis._resolved_references(tree, walker) if not external}
+    assert "getattr()().push_message" in methods

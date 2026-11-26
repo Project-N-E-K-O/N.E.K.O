@@ -629,7 +629,8 @@ def _resolved_references(tree, walker: _AnalysisWalker):
     """Yield ``(node, (method, external))`` like before; see _references."""
     for reference in _references(tree, walker):
         if not isinstance(reference.node, (ast.Import, ast.ImportFrom)):
-            yield reference.node, (reference.method, reference.external)
+            # Legacy spelling, as before getattr was followed.
+            yield reference.node, _legacy(reference.method, reference.external)
 
 
 def _references(tree, walker: _AnalysisWalker):
@@ -1683,7 +1684,8 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
 
 def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
     """create_datagram_endpoint(factory, local_addr=...) binds a local
-    address others can send to; with only remote_addr= (or sock=) it does not."""
+    address others can send to; with only remote_addr= (or sock=) it does not,
+    and with both it is likely a client choosing its source address."""
     if not isinstance(node, ast.Call):
         return ()
     if not any(item.arg == "local_addr" for item in node.keywords) and any(
@@ -1700,6 +1702,11 @@ def _datagram_listen(node: ast.AST, direct: str, named: str) -> tuple[str, ...]:
         return (named,) if unpacked else ()
     if isinstance(local, ast.Constant) and local.value is None:
         return ()
+    remote = _call_argument(node, 2, "remote_addr")
+    if remote is not None and not (isinstance(remote, ast.Constant) and remote.value is None):
+        # A client with a fixed source address (local_addr=("0.0.0.0", 0),
+        # remote_addr=peer) binds too, but need not be listening: possible.
+        return (named,)
     return (direct,)
 
 
