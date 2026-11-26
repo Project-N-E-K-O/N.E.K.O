@@ -236,6 +236,27 @@ async def test_a_run_whose_wait_timed_out_is_cancelled_and_stays_known_until_its
     assert runner.active_runs("c1") == []
 
 
+async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
+    from nekopower.host import plugin_runs
+
+    started = _slow_weather(server)
+    faults = Faults()
+    runner = _runner(server, faults)
+    monkeypatch.setattr(plugin_runs, "run_wait_timeout", lambda _entry_timeout: 0.5)
+    calling, run_id = await _started_run(server, runner, started)
+    # Stopped while it is waited for: the plugin server takes the cancel, the run does not end.
+    assert await runner.cancel_commission("c1", "stopped") == 1
+
+    outcome = await asyncio.wait_for(calling, 5)
+    await runner.aclose()
+
+    assert outcome.status == "timeout"
+    # Not asked again, and not kept as a run that may still be going.
+    assert faults.cancel_requests == 1
+    assert runner.active_runs("c1") == []
+    assert runner._lost == {}
+
+
 async def test_closing_waits_for_the_cancel_of_a_run_created_while_closing(server):
     started = _slow_weather(server)
     faults = Faults()

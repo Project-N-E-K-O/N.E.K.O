@@ -2575,7 +2575,7 @@ async def test_stopping_a_commission_stops_its_child_task_agents(hosts, tmp_path
     assert (await host.ledger.get(sub.id)).status == "cancelled"
 
 
-async def test_a_task_agent_a_stop_could_not_close_is_closed_when_it_is_stopped_again(hosts, tmp_path, monkeypatch):
+async def test_a_task_agent_that_cannot_be_closed_does_not_keep_its_parent_open(hosts, tmp_path, monkeypatch):
     release, wait = _gate()
     parent = ScriptedLLM(
         [
@@ -2600,14 +2600,14 @@ async def test_a_task_agent_a_stop_could_not_close_is_closed_when_it_is_stopped_
 
     monkeypatch.setattr(host.task_agents, "_close_session", close_session)
 
-    # The child's session could not be closed, and the stop says so; both are stopped all the same.
-    # What failed came before the parent's own session was closed: that one is left open.
+    # The child's session could not be closed, and the stop says so; both are stopped all the same,
+    # and the parent's own session is closed all the same.
     with pytest.raises(RuntimeError, match="the runtime did not answer"):
         await host.abort(receipt.commission_id)
     assert [(await host.ledger.get(one)).status for one in (receipt.commission_id, sub.id)] == ["cancelled"] * 2
-    assert receipt.commission_id in host.task_agents.running
+    await wait_until(lambda: receipt.commission_id not in host.task_agents.running, what="the parent's session being closed")
 
-    # Stopped again: what is still open of it is closed.
+    # Stopped again: nothing fails any more.
     again = await host.abort(receipt.commission_id)
 
     assert (again.status, again.status_reason) == ("cancelled", "stopped")
@@ -2653,6 +2653,60 @@ async def test_stopping_again_reaches_the_task_agents_it_started_that_were_stopp
         "working": "cancelled", "blocked": "cancelled", "cancelled": "cancelled", "done": "done", "failed": "failed",
     }
     assert after["cancelled"].status_reason == "test"
+
+
+async def test_a_task_agent_that_cannot_be_stopped_does_not_keep_the_others_going(hosts, tmp_path, monkeypatch):
+    from nekopower.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    children = []
+    for number in range(3):
+        child = await _filed(host, f"part {number}", parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        children.append(child.id)
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    tried: list[str] = []
+    abort = host.task_agents.abort
+    failing: dict[str, str] = {}
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        if commission_id in failing:
+            raise RuntimeError(failing[commission_id])
+        await abort(commission_id)
+
+    closed: list[str] = []
+
+    async def close_session(session: Any) -> None:
+        closed.append(session.commission_id)
+        raise RuntimeError("the parent's runtime did not answer")
+
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+    monkeypatch.setattr(host.task_agents, "_close_session", close_session)
+    # The parent's own session (no runtime of its own here), whose closing fails as well.
+    host.task_agents._sessions[parent.id] = _Session(parent.id)
+    host.task_agents._notes[parent.id] = ["also check the logs"]
+    order = [child.id for child in await host.ledger.select(parent_id=parent.id)]
+    failing.update({order[0]: "the first one failed", order[1]: "the second one failed"})
+
+    # Two children fail: the third is stopped all the same, and so is the parent itself (what is
+    # kept for it is let go, its session is asked to close). The first failure is what is raised.
+    with pytest.raises(RuntimeError, match="the first one failed"):
+        await host.task_agents.abort(parent.id)
+
+    assert tried[1:] == order
+    assert (await host.ledger.get(order[2])).status == "cancelled"
+    assert parent.id not in host.task_agents._notes
+    assert closed == [parent.id]
+    # Only its own closing failing: that is raised.
+    failing.clear()
+    closed.clear()
+    with pytest.raises(RuntimeError, match="the parent's runtime did not answer"):
+        await host.task_agents.abort(parent.id)
+    assert closed == [parent.id]
+    del host.task_agents._sessions[parent.id]
 
 
 async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):

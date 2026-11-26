@@ -6599,11 +6599,32 @@ class TaskAgentManager(TreeWork):
         of it: one whose closing failed at the stop is closed then. So are
         the task agents it started that were stopped already (with it, or
         before it): one whose own closing failed is closed this way too.
+
+        One of those that cannot be stopped or closed does not keep the
+        others, nor this commission's own session, from being ended: the
+        first failure is raised once the rest is done.
         """
+        failed: Exception | None = None
         for child in await self._ledger.select(parent_id=commission_id, statuses=_STOPPABLE_CHILD_STATUSES):
-            # (Refused, writing nothing, for one that was stopped already.)
-            await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
-            await self.abort(child.id)
+            try:
+                # (Refused, writing nothing, for one that was stopped already.)
+                await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                await self.abort(child.id)
+            except Exception as exc:  # noqa: BLE001 - raised once the rest is ended
+                logger.warning("stopping commission %s with its parent failed", child.id, exc_info=True)
+                if failed is None:
+                    failed = exc
+        try:
+            await self._abort_own(commission_id)
+        except Exception:
+            if failed is None:
+                raise
+            logger.warning("closing stopped commission %s failed", commission_id, exc_info=True)
+        if failed is not None:
+            raise failed
+
+    async def _abort_own(self, commission_id: str) -> None:
+        """``abort`` for the commission itself, once the task agents it started are seen to."""
         if commission_id in self._queue:
             self._queue.remove(commission_id)
         # Asked whether another member is to do it: nobody answers that any more.

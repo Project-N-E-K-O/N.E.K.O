@@ -772,7 +772,10 @@ class PluginRunner:
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 completion = {"status": "unknown", "success": False, "data": None, "error": str(exc)}
             given_up = str(completion.pop("lost", "") or "")
-            lost = bool(given_up)
+            # One whose cancel the plugin server took already (the commission
+            # was stopped while it was waited for) is left to the plugin
+            # server, as when its caller goes away: nothing more is asked.
+            lost = bool(given_up) and run_id not in self._cancel_sent
         except asyncio.CancelledError:
             # Whoever waited for this run is gone, at whichever point after
             # the run came to exist; the run must not go on. Until the plugin
