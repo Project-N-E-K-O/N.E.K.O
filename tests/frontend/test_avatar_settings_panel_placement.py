@@ -14,7 +14,8 @@ def _install_settings_panel(page: Page, *, prefix, scale, cropped, edge, width=1
     page.set_content("<style>body{margin:0;font-family:Arial}</style>")
     page.evaluate("""({prefix, scale, cropped, edge, width}) => {
         const x = edge === 'right' ? width - 340 : 72;
-        const offset = cropped ? {x: Math.max(0, x - 80), y: 100} : {x: 0, y: 0};
+        const nativeWidth = window.innerWidth;
+        const offset = cropped ? {x: Math.max(32, x - 80), y: 100} : {x: 0, y: 0};
         Object.assign(document.body.style, {
             width: width + 'px', height: '900px',
             transform: cropped ? `translate(${-offset.x}px, ${-offset.y}px)` : 'none',
@@ -43,7 +44,7 @@ def _install_settings_panel(page: Page, *, prefix, scale, cropped, edge, width=1
         popup.style.cssText = `position:fixed;left:${x}px;top:300px;width:240px;height:450px;background:#ddd`;
         popup.innerHTML = '<div id="anchor" style="margin-top:50px;height:32px">动画设置</div>';
         document.body.appendChild(popup);
-        window.__settingsCase = {prefix, offset};
+        window.__settingsCase = {prefix, offset, nativeWidth};
     }""", dict(prefix=prefix, scale=scale, cropped=cropped, edge=edge, width=width))
     for name in ("avatar-popup-common.js", "avatar-ui-popup.js"):
         page.add_script_tag(path=str(ROOT / "static/avatar" / name))
@@ -127,10 +128,10 @@ def test_settings_cascade_stacks_and_scrolls_when_side_has_no_room(page, cropped
 @pytest.mark.parametrize("delayed", [False, True])
 def test_settings_collision_correction_uses_screen_coordinates(page, cropped, delayed):
     _install_settings_panel(page, prefix="live2d", scale=1, cropped=cropped, edge="right")
-    page.evaluate("""delayed => {
+    initial = page.evaluate("""delayed => {
         const panel = document.getElementById('settings-panel');
         const position = () => {
-            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement);
+            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, delayed);
             AvatarPopupUI.applySidePanelTransform(panel, 'none');
         };
         // Arm a fresh 300ms check before introducing a new floating button.
@@ -140,9 +141,66 @@ def test_settings_collision_correction_uses_screen_coordinates(page, cropped, de
         button.style.cssText = 'position:fixed;left:850px;top:350px;width:48px;height:48px';
         document.body.appendChild(button);
         if (!delayed) position();
+        return {left:panel.style.left, hasTimer:panel._nekoPositionCheckTimer != null};
     }""", delayed)
-    page.wait_for_function("document.getElementById('settings-panel').style.left === '8px'")
+    assert initial["hasTimer"] is delayed
+    if delayed:
+        assert initial["left"] != "8px"
+        page.wait_for_function("document.getElementById('settings-panel').style.left === '8px'")
+    else:
+        assert initial["left"] == "8px"
     result = _snapshot(page)
     assert result["panel"]["left"] == pytest.approx(8, abs=0.5)
     assert result["panel"]["width"] >= 225
     assert result["panel"]["right"] <= 838.5
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("cropped", [False, True])
+@pytest.mark.parametrize("delayed", [False, True])
+def test_settings_collision_stacks_when_buttons_leave_no_side_space(page, cropped, delayed):
+    _install_settings_panel(page, prefix="live2d", scale=1, cropped=cropped, edge="right")
+    page.evaluate("""delayed => {
+        const panel = document.getElementById('settings-panel');
+        const position = () => {
+            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, delayed);
+            AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        };
+        if (delayed) position();
+        const button = document.createElement('button');
+        button.id = 'live2d-btn-edge';
+        button.style.cssText = 'position:fixed;left:8px;top:350px;width:48px;height:48px';
+        document.body.appendChild(button);
+        if (!delayed) position();
+    }""", delayed)
+    if delayed:
+        page.wait_for_timeout(350)
+    result = _snapshot(page)
+    panel, owner = result["panel"], result["popup"]
+    assert result["down"] == "true"
+    assert panel["width"] >= 225
+    assert panel["left"] >= 7.5 and panel["right"] <= 1432.5
+    assert panel["bottom"] <= owner["top"] or panel["top"] >= owner["bottom"]
+
+
+@pytest.mark.frontend
+def test_pending_settings_check_repositions_after_crop_mode_changes(page):
+    _install_settings_panel(page, prefix="live2d", scale=1, cropped=True, edge="right")
+    revision = page.evaluate("""() => {
+        const panel = document.getElementById('settings-panel');
+        AvatarPopupUI.positionSidePanel(panel, panel._anchorElement);
+        AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        const revision = panel._nekoPositionRevision;
+        delete window.__nekoNiriPetPhysicalCrop;
+        Object.defineProperty(window, 'innerWidth', {configurable:true, value:window.__settingsCase.nativeWidth});
+        Object.assign(window.__settingsCase.offset, {x:0, y:0});
+        Object.assign(document.body.style, {transform:'none', width:innerWidth + 'px'});
+        panel._popupElement.style.left = '200px';
+        document.getElementById('live2d-btn-settings').style.left = '450px';
+        return revision;
+    }""")
+    page.wait_for_timeout(350)
+    result = _snapshot(page)
+    assert page.evaluate("document.getElementById('settings-panel')._nekoPositionRevision") > revision
+    assert result["panel"]["width"] >= 225
+    assert result["panel"]["left"] >= 7.5 and result["panel"]["right"] <= 552.5

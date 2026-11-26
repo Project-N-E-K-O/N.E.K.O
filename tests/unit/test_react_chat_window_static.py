@@ -2874,7 +2874,8 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "const popupRect = toPlacementRect" in position_sidepanel_block
     assert "placementApi)" in position_sidepanel_block
     niri_early_return_block = position_sidepanel_block.split("if (isNiriPetPhysicalCrop) {", 1)[1].split("}", 1)[0]
-    assert "return;" in niri_early_return_block
+    assert "if (preserveCropPlacement) return;" in niri_early_return_block
+    assert "const preserveCropPlacement = isNiriPetPhysicalCrop && !niriViewport.isPowerSave;" in position_sidepanel_block
 
     ui_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     assert "container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles" in ui_source

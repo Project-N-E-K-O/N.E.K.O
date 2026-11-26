@@ -265,6 +265,7 @@
             const width = Number(bounds && bounds.width);
             const height = Number(bounds && bounds.height);
             if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+            // Host contract: N.E.K.O.-PC/src/preload/shared/pet-power-save-crop.js, toCropState().
             return { width, height, isPowerSave: String(state.source || '').startsWith('power-save:') };
         } catch (_) {
             return null;
@@ -989,7 +990,11 @@
 
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
-                if (goDown) {
+                const availableSideWidth = goLeft ? zone.left - gap - edgeMargin
+                    : screenW - edgeMargin - zone.right - gap;
+                if (goDown || availableSideWidth < Math.min(240 * panelScale, panelW)) {
+                    goDown = true;
+                    container.dataset.goDown = 'true';
                     positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
@@ -1016,13 +1021,25 @@
             if (_containerRef._nekoPositionRevision !== positionRevision) return;
             _containerRef._nekoPositionCheckTimer = null;
             if (!_containerRef.isConnected || _containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
+            // Crop activation and display changes can invalidate the captured
+            // coordinate space. Remeasure once with the current host state.
+            const currentCropApi = getNiriPetPhysicalCropPlacementApi();
+            const currentViewport = getNiriPetPhysicalCropViewport(currentCropApi);
+            if ((currentViewport ? currentCropApi : null) !== placementApi
+                || (currentViewport ? currentViewport.width : window.innerWidth) !== screenW
+                || (currentViewport ? currentViewport.height : window.innerHeight) !== screenH) {
+                positionSidePanel(_containerRef, anchor, options, false);
+                return;
+            }
             const z = getButtonZone(_ownerPrefix, placementApi);
             if (!z.hasButtons) return;
             const r = toPlacementRect(_containerRef.getBoundingClientRect(), placementApi);
             const oH = r.right > z.left && r.left < z.right;
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
-                if (_goDown) {
+                const availableSideWidth = _goLeft ? z.left - _gap - _edgeMargin
+                    : _screenW - _edgeMargin - z.right - _gap;
+                if (_goDown || availableSideWidth < Math.min(240 * panelScale, panelW)) {
                     positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
