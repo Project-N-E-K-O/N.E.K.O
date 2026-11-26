@@ -1222,6 +1222,7 @@ async def test_what_a_stop_cannot_end_is_handed_back_and_the_rest_is_ended_all_t
     second = await _dispatch(host, "查一下北京的天气")
     third = await _dispatch(host, "查一下广州的天气")
     fourth = await _dispatch(host, "查一下深圳的天气")
+    fifth = await _dispatch(host, "查一下杭州的天气")
     closed: list[str] = []
 
     agent_down = {"value": False}
@@ -1271,12 +1272,17 @@ async def test_what_a_stop_cannot_end_is_handed_back_and_the_rest_is_ended_all_t
     assert (moved, str(failed)) == (True, "the task agent did not close")
     # Its cancel asked and not taken by the plugin server (no exception): stopped, not confirmed; the
     # board's stop shows it stopped, as before, and the next stop asks again.
-    not_taken = (third.commission_id, fourth.commission_id)
+    not_taken = (third.commission_id, fourth.commission_id, fifth.commission_id)
     monkeypatch.setattr(host.brain._runner, "cancels_not_taken", lambda commission_id: ["run"] if commission_id in not_taken else [])
     agent_down["value"] = False
     _after, moved, failed = await host.brain._stop(third.commission_id, reason="through a dispatch", notify=False)
     assert (moved, type(failed).__name__) == (True, "_CancelNotTaken")
     assert (await host.brain.abort(fourth.commission_id, reason="from the board")).status == "cancelled"
+    # Its cancel not taken and its task agent left open: the task agent is what is handed back (the
+    # board passes over a cancel not taken, and would not say the task agent was left open).
+    agent_down["value"] = True
+    _after, moved, failed = await host.brain._stop(fifth.commission_id, reason="through a dispatch", notify=False)
+    assert (moved, str(failed)) == (True, "the task agent did not close")
     # The board's stop says it failed, as it did.
 
     async def stop_with_a_failure(*_args: Any, **_kwargs: Any) -> Any:
@@ -1543,6 +1549,17 @@ async def test_a_late_receipt_is_not_told_once_everything_was_stopped(server, ho
 
     # What the round came to is over with the stop of everything: nothing of it is told now.
     assert await outbox(host, KIND_RECEIPT) == []
+
+    # Not a stop that could not confirm what it ran ended: stopping everything does not take that
+    # one up again, and she says so.
+    async def stop_not_confirmed(*_args: Any, **_kwargs: Any) -> Any:
+        return working, True, RuntimeError("the plugin server is down")
+
+    monkeypatch.setattr(host.brain, "_stop", stop_not_confirmed)
+    assert (await host.brain.dispatch("stop it", lanlan_name="Lan", lang="en")).kind == "received"
+    await host.brain.settle()
+    (late,) = await outbox(host, KIND_RECEIPT)
+    assert (late.payload["receipt"], late.payload["delivery_mode"]) == ("stop_failed", "proactive")
 
 
 async def test_an_answer_read_while_everything_was_stopped_is_not_given(server, hosts, tmp_path, monkeypatch):

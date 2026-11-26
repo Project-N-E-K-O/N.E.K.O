@@ -608,9 +608,11 @@ class TaskBrain:
                 logger.error("the first round of a dispatch failed after the early receipt", exc_info=error)
                 return
             receipt = task.result()
-            if generation != self._dispatch_generation:
+            if generation != self._dispatch_generation and receipt.kind != "stop_failed":
                 # Everything was stopped since: what this round came to is
-                # over with it, and nothing of it is told now.
+                # over with it, and nothing of it is told now. Not what a
+                # stop it made could not end: stopping everything does not
+                # take up what is stopped already.
                 return
             self._spawn(
                 self._reporter.receipt(
@@ -1363,7 +1365,9 @@ class TaskBrain:
             try:
                 await self._task_agents.abort(commission_id)
             except Exception as exc:  # noqa: BLE001 - handed back, as the one above
-                failed = failed or exc
+                # Before a cancel not taken, which the board passes over: a
+                # task agent left open is said.
+                failed = exc if failed is None or isinstance(failed, _CancelNotTaken) else failed
         target = (
             # Without an entry id the plugin alone names it, not "<plugin>.None".
             (f"{commission.plugin_id}.{commission.entry_id}" if commission.entry_id else str(commission.plugin_id))
