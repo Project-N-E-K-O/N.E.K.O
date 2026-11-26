@@ -87,6 +87,15 @@ async def _check(host: Any, user_text: str, reply_text: str, **kwargs: Any) -> A
     return await host.check_turn(user_text=user_text, reply_text=reply_text, **kwargs)
 
 
+def _spoken_answers(lang: str) -> str:
+    """How a line she reads out ends for a request for approval: what words can give, then the buttons for the rest."""
+    from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT, PERMISSION_OPTION_NAMES
+
+    names = PERMISSION_OPTION_NAMES[lang]
+    rest = PERMISSION_BUTTONS_ONLY_TEXT[lang].format(options=f"{names['always']} / {names['session']}")
+    return f" ({names['once']} / {names['deny']}){rest}"
+
+
 async def _notices(host: Any) -> list[tuple[str, str, str]]:
     return [
         (item.payload["reason"], item.payload["delivery_mode"], item.payload["text"])
@@ -665,7 +674,7 @@ async def test_a_permission_question_is_told_with_what_it_asks_to_allow(server, 
     answer = await host.query("", lanlan_name="Lan", lang="zh")
 
     # The command itself, not the name of its category.
-    expected = "在等用户回答：运行命令 Remove-Item old.txt (始终允许 / 仅本会话允许 / 本次允许 / 拒绝)"
+    expected = "在等用户回答：运行命令 Remove-Item old.txt (本次允许 / 拒绝)（始终允许 / 仅本会话允许请点问话上的按钮）"
     assert lines == [f"- [等用户回话] 清理旧文件 {expected}"]
     assert expected in answer.text and "run_command" not in answer.text
 
@@ -712,10 +721,11 @@ async def test_a_long_command_gives_way_in_a_line_and_the_answers_stay(server, h
         # command begins and how it ends are both still there.
         assert PERMISSION_DETAIL_CUT_MARK[lang] in line
         assert "Remove-Item C:/Users" in line and "-Recurse -Force" in line
-        # Every answer on offer is still there, after the command.
+        # Every answer on offer is still there, after the command: those words can give, and the
+        # buttons for always and this session.
         for name in PERMISSION_OPTION_NAMES[lang].values():
             assert name in line
-        assert line.rstrip().endswith(")")
+        assert line.endswith(_spoken_answers(lang))
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
@@ -756,8 +766,7 @@ def test_every_kind_of_permission_keeps_its_answers_in_a_line_of_full_length(lan
             line = waiting_row(head, commission, frame, lang)
             assert count_tokens(line) <= QUERY_PERMISSION_ROW_MAX_TOKENS, (category, head)
             assert line.startswith(head), (category, head)
-            names = " / ".join(PERMISSION_OPTION_NAMES[lang].values())
-            assert line.endswith(f"({names})"), (category, head)
+            assert line.endswith(_spoken_answers(lang)), (category, head)
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
@@ -790,7 +799,7 @@ async def test_a_query_answer_lists_whole_lines_and_says_how_many_it_left_out(se
     for row in rows:
         for name in PERMISSION_OPTION_NAMES[lang].values():
             assert name in row
-        assert row.rstrip().endswith(")")
+        assert row.endswith(_spoken_answers(lang))
     assert lines[-1] == QUERY_TEXTS[lang]["more"].format(count=6 - len(rows))
 
 

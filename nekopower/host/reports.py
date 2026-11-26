@@ -75,7 +75,9 @@ def _question_lines(questions: Any, words: dict[str, str]) -> str:
     return lines[0] if lines else ""
 
 
-def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int | None = None) -> str:
+def describe_permission(
+    question: dict[str, Any], lang: str, *, max_tokens: int | None = None, spoken: bool = False
+) -> str:
     """Return what a permission question asks to allow, with the answers on offer, in one line.
 
     With ``max_tokens`` the line is made to fit: the command or path gives
@@ -91,6 +93,17 @@ def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int 
     names = _loc(PERMISSION_OPTION_NAMES, lang)
     offered = [names[option] for option in question.get("options") or [] if option in names]
     answers = f" ({' / '.join(offered)})" if offered else ""
+    if spoken and offered:
+        # Read out to the user (what waits): the answers words can give, and
+        # the buttons for always and this session, as ``render_question`` says.
+        from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT
+
+        options = [option for option in question.get("options") or [] if option in names]
+        said = [names[option] for option in options if option in ("once", "deny")]
+        rest = [names[option] for option in options if option in ("always", "session")]
+        answers = f" ({' / '.join(said)})" if said else ""
+        if rest:
+            answers += _loc(PERMISSION_BUTTONS_ONLY_TEXT, lang).format(options=" / ".join(rest))
     room = PERMISSION_SUBJECT_MAX_TOKENS
     if max_tokens is not None:
         if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):

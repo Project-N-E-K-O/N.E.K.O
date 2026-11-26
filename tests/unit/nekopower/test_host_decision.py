@@ -1009,6 +1009,17 @@ async def test_questions_that_offer_the_same_answers_say_the_buttons_tell_which(
     assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c2"], True)
 
 
+async def test_an_answer_not_in_latin_letters_is_a_word_of_its_own_as_well():
+    yes = {"kind": "question", "question": "¿Seguro?", "options": ["Sí", "No"]}
+    post = _waiting("c1", "write a post", yes)
+    card = _waiting("c2", "make a card", {**yes, "options": ["No", "Luego"]})
+    # "Sí" only the post offers: said, it names the post; "así" does not say it.
+    for said, read in (("sí, está bien", ("answer", ["c1"])), ("así está bien", ("ambiguous", ["c1", "c2"]))):
+        llm = _reading({"does": "answer", "items": [1], "named": True})
+        triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
+        assert (triage.kind, triage.targets) == read, said
+
+
 async def test_one_commission_on_two_rows_is_one():
     # It ended while the lists were read: it is under way and ended at once. Picked on both rows, it is
     # one, and what goes on with it takes the row of it that ended.
@@ -1021,6 +1032,12 @@ async def test_one_commission_on_two_rows_is_one():
     )
 
     assert (triage.kind, triage.targets) == ("continue", ["c1"])
+    # Unsure between its two rows: that one, the user is asked of.
+    llm = _reading({"does": "unsure", "items": [1, 2]})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("also by month", active=[working], recent=[ended], task_agent_available=True)
+    )
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1"])
 
 
 async def test_a_request_for_approval_left_out_of_the_list_counts_all_the_same(monkeypatch):
@@ -1072,7 +1089,14 @@ async def test_an_answer_another_question_offers_too_names_neither():
     # A letter with an accent is a letter: "No" is not said in "Noël".
     post = _waiting("c1", "pick a colour", {"kind": "question", "question": "Blue?", "options": ["Blue", "No"]})
     card = _waiting("c2", "pick a card", {"kind": "question", "question": "Blue?", "options": ["Blue", "Yes"]})
-    for said, read in (("Blue, Noël", ("ambiguous", ["c1", "c2"])), ("No, please", ("answer", ["c1"])), ("颜色选No", ("answer", ["c1"]))):
+    for said, read in (
+        ("Blue, Noël", ("ambiguous", ["c1", "c2"])),
+        # (An accent written apart, a combining mark after the letter, is the same letter.)
+        ("Blue, No\u0308el", ("ambiguous", ["c1", "c2"])),
+        ("No, please", ("answer", ["c1"])),
+        ("颜色选No", ("answer", ["c1"])),
+        ("ｶﾗｰNo", ("answer", ["c1"])),
+    ):
         llm = _reading({"does": "answer", "items": [1], "named": True})
         triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
         assert (triage.kind, triage.targets) == read, said

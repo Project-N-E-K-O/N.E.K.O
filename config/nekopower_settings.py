@@ -146,10 +146,12 @@ QUERY_ROW_MAX_TOKENS = 100
 """Cap on one commission line in a query answer: its title, where it stands,
 what it used so far (``QUERY_USAGE_MAX_TOKENS``) and what came of it."""
 
-QUERY_PERMISSION_ROW_MAX_TOKENS = 140
+QUERY_PERMISSION_ROW_MAX_TOKENS = 150
 """Cap on the line of a commission that waits for a permission. It names what
 is to be allowed and lists the answers on offer, which in some languages do
-not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
+not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length. (Raised
+by 10 when the answers words can give came to be listed apart from those the
+buttons give: about that much longer in every language.)"""
 
 QUERY_USAGE_MAX_TOKENS = 16
 """Room in a commission line for what the commission used so far (a number

@@ -670,19 +670,6 @@ QUERY_TEXTS = {
 # How the answers to a permission prompt are named when the question is put to
 # her, and (in English) to the small model that reads what an answer chose
 # (``TASK_BRAIN_ANSWER_PROMPT``, ``decision._read_choice``).
-# After the answers words can give in the question she passes on: the ones
-# the buttons alone give (``reports.render_question``).
-PERMISSION_BUTTONS_ONLY_TEXT = {
-    'zh': "（{options}请点问话上的按钮）",
-    'zh-TW': "（{options}請點問話上的按鈕）",
-    'en': " ({options}: with the buttons on the question)",
-    'ja': "（{options}は確認のボタンで）",
-    'ko': " ({options}은(는) 질문의 버튼으로)",
-    'ru': " ({options} — кнопками в вопросе)",
-    'es': " ({options}: con los botones de la pregunta)",
-    'pt': " ({options}: com os botões da pergunta)",
-}
-
 PERMISSION_OPTION_NAMES = {
     'zh': {"always": "始终允许", "session": "仅本会话允许", "once": "本次允许", "deny": "拒绝"},
     'zh-TW': {"always": "始終允許", "session": "僅本會話允許", "once": "本次允許", "deny": "拒絕"},
@@ -695,6 +682,19 @@ PERMISSION_OPTION_NAMES = {
            "deny": "denegar"},
     'pt': {"always": "permitir sempre", "session": "permitir nesta sessão", "once": "permitir só desta vez",
            "deny": "negar"},
+}
+
+# After the answers words can give in the question she passes on: the ones
+# the buttons alone give (``reports.render_question``).
+PERMISSION_BUTTONS_ONLY_TEXT = {
+    'zh': "（{options}请点问话上的按钮）",
+    'zh-TW': "（{options}請點問話上的按鈕）",
+    'en': " ({options}: with the buttons on the question)",
+    'ja': "（{options}は確認のボタンで）",
+    'ko': " ({options}은(는) 질문의 버튼으로)",
+    'ru': " ({options} — кнопками в вопросе)",
+    'es': " ({options}: con los botones de la pregunta)",
+    'pt': " ({options}: com os botões da pergunta)",
 }
 
 # What she is told, along with her next turn, about a commission that was

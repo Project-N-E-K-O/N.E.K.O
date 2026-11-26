@@ -209,7 +209,7 @@ def pending_question_text(commission: Commission, lang: str = "en") -> str:
         # ("run_command") tells the user nothing to decide by.
         from nekopower.host.reports import describe_permission
 
-        return describe_permission(question, lang)
+        return describe_permission(question, lang, spoken=True)
     asked = question.get("question") or question.get("category") or ""
     if not asked and isinstance(question.get("questions"), list) and question["questions"]:
         first = question["questions"][0]
@@ -235,7 +235,7 @@ def waiting_row(head: str, commission: Commission, frame: str, lang: str) -> str
     # What is to be allowed gives way, not the answers on offer after it: the
     # line is fitted before the cap is applied, so the cap takes nothing.
     room = QUERY_PERMISSION_ROW_MAX_TOKENS - count_tokens(f"{head} {frame.format(question='')}") - 2
-    asked = describe_permission(question, lang, max_tokens=room)
+    asked = describe_permission(question, lang, max_tokens=room, spoken=True)
     return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_PERMISSION_ROW_MAX_TOKENS)
 
 

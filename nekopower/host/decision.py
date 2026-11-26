@@ -604,11 +604,17 @@ def _offered(question: dict[str, Any]) -> set[str]:
 def _said(label: str, spoken: str) -> bool:
     """Whether an answer offered was said.
 
-    One written in Latin letters as a word of its own: "no" is not in "not"
-    nor in "Noël". Next to writing that has no spaces between its words
-    (Chinese, Japanese, Korean) it is a word all the same.
+    As a word of its own where words are written with spaces between them:
+    "no" is not in "not" nor in "Noël", "sí" is not in "así". Next to
+    writing that has no spaces between its words (Chinese, Japanese,
+    Korean) it is a word all the same, and an answer written that way is
+    looked for as it is.
     """
-    if not label.isascii():
+    import unicodedata
+
+    label = unicodedata.normalize("NFC", label)
+    spoken = unicodedata.normalize("NFC", spoken)
+    if any(_unspaced(char) for char in label):
         return label in spoken
     for found in re.finditer(re.escape(label), spoken):
         before = spoken[found.start() - 1] if found.start() else ""
@@ -620,13 +626,17 @@ def _said(label: str, spoken: str) -> bool:
 
 def _joins(char: str) -> bool:
     """Whether a character next to a word makes it part of a longer one: a letter or digit of writing with spaces between words."""
+    # (The start or the end of what was said, empty, is no letter.)
+    return char.isalnum() and not _unspaced(char)
+
+
+def _unspaced(char: str) -> bool:
+    """Whether a character is of writing with no spaces between its words (Chinese, Japanese, Korean)."""
     import unicodedata
 
-    if not char:
-        # The start or the end of what was said.
-        return False
-    unspaced = unicodedata.name(char, "").startswith(("CJK", "HIRAGANA", "KATAKANA", "HANGUL"))
-    return char.isalnum() and not unspaced
+    return unicodedata.name(char, "").startswith(
+        ("CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC", "HANGUL", "HALFWIDTH HANGUL")
+    )
 
 
 def _kin(one: Commission, other: Commission) -> bool:
@@ -959,7 +969,11 @@ class LexicalDecisionModel:
         for place, item in picked:
             if item.id not in by_id or (does == "add" and place == _ENDED):
                 by_id[item.id] = (place, item)
+        rows = len(picked)
         picked = list(by_id.values())
+        if does == "unsure" and rows > 1 and len(picked) == 1:
+            # Unsure between the two rows of one: that one, the user is asked of.
+            return which([picked[0][1].id])
         if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
             # It means one of these and cannot say which (an answer or an
             # addition is to one): which, the user is asked.

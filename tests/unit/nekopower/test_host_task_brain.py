@@ -1638,6 +1638,26 @@ async def test_an_answer_read_while_everything_was_stopped_is_not_given(server, 
         on["value"] = True
 
 
+def test_what_waits_for_approval_is_read_out_with_the_answers_words_can_give():
+    import json as _json
+
+    from config.prompts.prompts_nekopower_brain import PERMISSION_OPTION_NAMES
+    from nekopower.host.reports import describe_permission
+    from nekopower.host.task_brain import pending_question_text, waiting_row
+    from tests.unit.nekopower.test_host_decision import commission
+
+    question = {"kind": "permission", "category": "run_command", "detail": {"command": "npm test"},
+                "options": ["always", "session", "once", "deny"], "id": "q1"}
+    waiting = commission("c1", "run the tests", route="task_agent", status="waiting_user", pending_question=_json.dumps(question))
+    names = PERMISSION_OPTION_NAMES["zh"]
+    # What she reads out to the user: once and deny, and the buttons for the rest (typed, those allow once).
+    for said in (pending_question_text(waiting, "zh"), waiting_row("-", waiting, "{question}", "zh")):
+        assert f"（{names['once']} / {names['deny']}）" in said or f"({names['once']} / {names['deny']})" in said, said
+        assert f"{names['always']} / {names['session']}请点问话上的按钮" in said, said
+    # What the model reads (the first request) still has every answer on offer.
+    assert describe_permission(question, "en").endswith("(always allow / allow for this session / allow this once / deny)")
+
+
 def test_a_receipt_says_when_what_the_sentence_does_with_the_work_could_not_be_told():
     import types
 
@@ -2112,7 +2132,7 @@ async def test_query_view_has_at_most_eight_rows_and_520_tokens(server, hosts, t
     assert (QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS) == (8, 520)
     # A line was given the room for what its commission used when that was added to it (80 and 120
     # before), and the whole answer the room for that in every line.
-    assert (QUERY_ROW_MAX_TOKENS, QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_USAGE_MAX_TOKENS) == (100, 140, 16)
+    assert (QUERY_ROW_MAX_TOKENS, QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_USAGE_MAX_TOKENS) == (100, 150, 16)
     assert QUERY_RESULT_MAX_TOKENS - 400 <= QUERY_LEDGER_ROWS * QUERY_USAGE_MAX_TOKENS
     host = _host(hosts, tmp_path, server, FakeDecisionLLM())
     long = "很长很长的结果 " * 300
