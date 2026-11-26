@@ -138,7 +138,9 @@ _LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
 # "busy" with nothing applied, instead of an almost certain "timeout"
 # whose outcome would be unknown. The stale-removal follow-ups use the same
 # threshold and also report "busy" when one is not sent; the requests sent
-# before it may have applied changes, which the result reports.
+# before it may have applied changes, which the result reports. A request the
+# RPC layer did not send because the calling entry's deadline had passed
+# reports "busy" too.
 _LLM_TOOL_MIN_SEND_BUDGET = 5.0
 # How often one reported registration id is targeted when it keeps showing up.
 _LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
@@ -927,7 +929,19 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 timeout=request_timeout,
                 wrap_result=False,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
+            if getattr(exc, "sent", True) is False:
+                # The calling entry's deadline ran out before the request was
+                # handed to the transport: the host never got it, so the
+                # outcome is known (nothing applied), as for a call whose
+                # lock wait used up its budget.
+                return build_result(
+                    {}, ok=False, error="busy",
+                    message=(
+                        "the calling entry's remaining time ran out before the request "
+                        "could be sent; nothing was sent to the host"
+                    ),
+                )
             return build_result(
                 {}, ok=False, error="timeout",
                 message=(
@@ -1151,6 +1165,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         def held(result: LlmToolUnregisterResult) -> list[dict[str, str]]:
             return [r for r in result["refused_roles"] if r.get("reason") == "different registration"]
 
+        def pairs(result: LlmToolUnregisterResult) -> list[tuple[Any, str]]:
+            return [(r.get("role"), r.get("registration_id") or "") for r in held(result)]
+
         outcomes: list[LlmToolUnregisterResult] = []
         queue = list(dict.fromkeys(r.get("registration_id") or "" for r in held(first)))
         # A registration that is still being written to roles (a timed-out
@@ -1158,6 +1175,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # removal: it then gets one more targeted attempt, never more.
         attempts: dict[str, int] = {}
         removed_ids: set[str] = set()
+        # Resolution is reported per (role, id): a registration that comes
+        # back on one role must not make the roles it was already removed
+        # from look unresolved again.
+        seen: list[tuple[Any, str]] = pairs(first)
+        resolved: set[tuple[Any, str]] = set()
         error: str | None = None
         message: str | None = None
         no_id = (
@@ -1197,24 +1219,34 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 build_result=build_unregister_result,
             )
             outcomes.append(outcome)
-            reported = [r.get("registration_id") or "" for r in held(outcome)]
+            reported_pairs = pairs(outcome)
+            reported = [pair[1] for pair in reported_pairs]
             # Holders this answer reports: new ones, other roles, or ones
             # removed earlier that are back (no longer counted as removed).
             # Also on a failed answer, so a holder that came back is still
             # listed in refused_roles.
             removed_ids.difference_update(reported)
+            # Roles this targeted request removed the id from, even on a
+            # failed answer; ones it reports as held are not resolved.
+            resolved.update((affected, rid) for affected in outcome["affected_roles"])
+            resolved.difference_update(reported_pairs)
             if not outcome["ok"]:
                 error, message = outcome["error"] or "partial_failure", outcome["message"]
                 break
             if rid not in reported:
                 removed_ids.add(rid)
+                # This targeted request left the id on none of the roles it
+                # visited: every (role, id) seen for it so far is gone. Roles
+                # where it shows up in a later answer are holders again.
+                resolved.update(pair for pair in seen if pair[1] == rid)
+            seen.extend(reported_pairs)
             queue.extend(reported)
 
         everything = [first, *outcomes]
         unresolved = {
             (r.get("role"), r.get("registration_id")): r
             for result in everything for r in held(result)
-            if (r.get("registration_id") or "") not in removed_ids
+            if (r.get("role"), r.get("registration_id") or "") not in resolved
         }
         if unresolved and error is None:
             error, message = "partial_failure", (

@@ -81,6 +81,13 @@ class RpcDeadlineExceededError(TimeoutError):
     code = "DEADLINE_EXCEEDED"
 
 
+class RpcDeadlineExpiredBeforeSendError(RpcDeadlineExceededError):
+    """The budget expired before the request was handed to the transport:
+    the peer never received it, so nothing was applied there."""
+
+    sent = False
+
+
 class RpcTransportError(RuntimeError):
     code = "TRANSPORT_ERROR"
 
@@ -362,6 +369,10 @@ class RpcPeer:
             request["_request_deadline_monotonic"] = deadline
         loop = asyncio.get_running_loop()
         future = loop.create_future()
+        # Set just before the send starts, so a request whose send was started
+        # but not finished counts as sent (the safe side); while it is False a
+        # deadline means the peer never saw the request.
+        send_started = False
         with self._lock:
             if self._closed:
                 raise RpcClosedError("Plugin RPC connection is closed")
@@ -370,12 +381,14 @@ class RpcPeer:
             self._pending[request_id] = loop, future
 
         async def exchange():
+            nonlocal send_started
             if future.done():
                 return future.result()
             budget = remaining_budget(timeout, deadline)
             if budget is not None and budget <= 0:
-                raise RpcDeadlineExceededError("Request deadline expired before send")
+                raise RpcDeadlineExpiredBeforeSendError("Request deadline expired before send")
             request["timeout"] = budget
+            send_started = True
             send_task = asyncio.create_task(self._send(request, budget))
             try:
                 await asyncio.wait(
@@ -421,6 +434,15 @@ class RpcPeer:
                         "code": "TRANSPORT_TIMEOUT",
                         "message": f"{operation} transport timed out",
                     }
+                ) from None
+            if not send_started:
+                # The peer never saw this request: nothing to cancel there.
+                self._logger.warning(
+                    f"RPC not sent, deadline expired: operation={operation}, request_id={request_id}, "
+                    f"trace_id={request['_rpc_trace_id']}"
+                )
+                raise RpcDeadlineExpiredBeforeSendError(
+                    f"{operation} not sent: the request deadline expired before send"
                 ) from None
             self._logger.error(
                 f"RPC timed out: operation={operation}, request_id={request_id}, "

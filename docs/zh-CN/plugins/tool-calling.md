@@ -484,7 +484,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
 `main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
-`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`。注销或 `cleanup` 已经发出的请求用掉了预算、剩下的不够再删它们报告的过期注册（见下文）时也是 `busy`：那次删除没有发出，这个注册仍列在 `refused_roles` 里）、`not_registered`（注销：插件本地没有这个名字的记录，
+`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，或者入口的剩余时间在发出前就用完了，这次来不及发出；什么都没发，`cleanup` 为 `None`。补发的注销因为入口时间用完而没发出时，`cleanup` 里也是 `busy`。注销或 `cleanup` 已经发出的请求用掉了预算、剩下的不够再删它们报告的过期注册（见下文）时也是 `busy`：那次删除没有发出，这个注册仍列在 `refused_roles` 里）、`not_registered`（注销：插件本地没有这个名字的记录，
 `main_server` 上也没删到本插件的这个名字；本地有记录时同样的答复是 `ok=True, removed=False`，并删掉本地 handler）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：
@@ -517,7 +517,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   这里只保证顺序：每个调用的结果要各自检查（注销返回 `ok=False` 时本地 handler 会保留）。
   不同名字之间互不等待。`request_timeout` 管整次调用，包括排在同名前面调用后面等待的时间；剩下的不够发请求时（少于 5 秒，预算很小时少于一半），返回 `busy`，这时什么都没发给 host。
   从有截止时间的入口里调用时，每个请求（包括补发的注销）实际可用的时间取它自己的预算和入口剩余时间中较小的那个；
-  入口时间用完时补发的注销发不出去（`cleanup` 里是 `timeout`）。
+  入口时间用完、请求根本没发出去时返回 `busy`（什么都没送到 host；补发的注销没发出时 `cleanup` 里是 `busy`）；已经发出、但没在时限内拿到回复的仍是 `timeout`。请求已送到 host、但在 host 的队列里排队时就过了期限的，也报 `timeout`：host 对它的回复和其他超时一样。
 
 参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
 另外在 `request_timeout` 不在 (0, 60] 内（host 的上限）、名字全是点、或注册时 `timeout` 不在 (0, 300]
