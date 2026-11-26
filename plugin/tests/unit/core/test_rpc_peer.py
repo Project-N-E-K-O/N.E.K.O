@@ -13,6 +13,7 @@ from plugin.core.rpc import (
     RpcClosedError,
     RpcDispatcher,
     RpcDeadlineExceededError,
+    RpcDeadlineExpiredBeforeSendError,
     RpcPeer,
     RpcRemoteError,
     RpcTransportError,
@@ -202,6 +203,47 @@ async def test_request_already_started_keeps_its_budget_when_parent_scope_ends()
             await sent.wait()
         with pytest.raises(RpcDeadlineExceededError):
             await request
+    finally:
+        await peer.aclose()
+
+
+@pytest.mark.parametrize("delta", [-1.0, 0.0])
+async def test_request_not_sent_because_the_parent_deadline_passed_says_so(delta):
+    """The caller can tell "never reached the peer" from "sent, no answer":
+    same type and code as before, plus ``sent=False``."""
+    sent = []
+
+    async def send(request, timeout):
+        sent.append(request)
+
+    peer = RpcPeer(send)
+    try:
+        with request_scope({
+            "request_id": "entry", "_request_deadline_monotonic": time.monotonic() + delta,
+        }):
+            with pytest.raises(RpcDeadlineExpiredBeforeSendError) as caught:
+                await peer.request("lookup", {}, timeout=1)
+        assert sent == []
+        assert isinstance(caught.value, RpcDeadlineExceededError)
+        assert caught.value.code == "DEADLINE_EXCEEDED"
+        assert caught.value.sent is False
+    finally:
+        await peer.aclose()
+
+
+async def test_request_sent_then_timed_out_is_not_reported_as_not_sent():
+    sent = []
+
+    async def send(request, timeout):
+        sent.append(request)
+
+    peer = RpcPeer(send)
+    try:
+        with pytest.raises(RpcDeadlineExceededError) as caught:
+            await peer.request("lookup", {}, timeout=0.02)
+        assert len(sent) == 1
+        assert not isinstance(caught.value, RpcDeadlineExpiredBeforeSendError)
+        assert getattr(caught.value, "sent", True) is not False
     finally:
         await peer.aclose()
 

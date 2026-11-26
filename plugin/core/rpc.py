@@ -81,6 +81,13 @@ class RpcDeadlineExceededError(TimeoutError):
     code = "DEADLINE_EXCEEDED"
 
 
+class RpcDeadlineExpiredBeforeSendError(RpcDeadlineExceededError):
+    """The budget expired before the request was handed to the transport:
+    the peer never received it, so nothing was applied there."""
+
+    sent = False
+
+
 class RpcTransportError(RuntimeError):
     code = "TRANSPORT_ERROR"
 
@@ -362,6 +369,9 @@ class RpcPeer:
             request["_request_deadline_monotonic"] = deadline
         loop = asyncio.get_running_loop()
         future = loop.create_future()
+        # Set once the request is handed to the transport; until then a
+        # deadline means the peer never saw it.
+        send_started = False
         with self._lock:
             if self._closed:
                 raise RpcClosedError("Plugin RPC connection is closed")
@@ -370,12 +380,14 @@ class RpcPeer:
             self._pending[request_id] = loop, future
 
         async def exchange():
+            nonlocal send_started
             if future.done():
                 return future.result()
             budget = remaining_budget(timeout, deadline)
             if budget is not None and budget <= 0:
-                raise RpcDeadlineExceededError("Request deadline expired before send")
+                raise RpcDeadlineExpiredBeforeSendError("Request deadline expired before send")
             request["timeout"] = budget
+            send_started = True
             send_task = asyncio.create_task(self._send(request, budget))
             try:
                 await asyncio.wait(
@@ -427,9 +439,12 @@ class RpcPeer:
                 f"trace_id={request['_rpc_trace_id']}, elapsed={time.monotonic() - started:.3f}s"
             )
             self._send_cancel(request)
-            raise RpcDeadlineExceededError(
-                f"{operation} timed out after {timeout}s"
-            ) from None
+            error = (
+                RpcDeadlineExceededError
+                if send_started
+                else RpcDeadlineExpiredBeforeSendError
+            )
+            raise error(f"{operation} timed out after {timeout}s") from None
         except asyncio.CancelledError:
             self._send_cancel(request)
             raise

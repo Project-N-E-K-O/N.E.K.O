@@ -532,7 +532,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
 `main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（使える応答がなかった：`request_timeout` 内にホストが応答しなかった、
 リクエスト送信後に `main_server` が応答しなかった、または応答が JSON オブジェクトでなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
-`busy`（同じ名前の先行呼び出しが予算を使い切り、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`。解除または `cleanup` で送信済みのリクエストが予算を使い、それらが報告した古い登録（後述）を削除するだけの予算が残っていない場合も `busy`：その削除は送られておらず、その登録は `refused_roles` に残ります）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
+`busy`（同じ名前の先行呼び出しが予算を使い切った、またはエントリの残り時間が送信前に尽きたため、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`。エントリの時間切れで後片付けの解除が送られなかった場合も `cleanup` は `busy`。解除または `cleanup` で送信済みのリクエストが予算を使い、それらが報告した古い登録（後述）を削除するだけの予算が残っていない場合も `busy`：その削除は送られておらず、その登録は `refused_roles` に残ります）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
 ツールが何も削除されなかった。ローカルに記録がある場合、同じ応答は `ok=True, removed=False` となりローカルのハンドラを外します）、
 `invalid_request`。
 
@@ -575,7 +575,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
   適用され、同じ名前の先行呼び出しを待つ時間も含みます。リクエストを送るのに残りが足りない場合（5 秒未満、
   予算が小さいときはその半分未満）は `busy` となり、ホストには何も送られていません。期限のあるエントリから
   呼んだ場合、各リクエスト（後片付けの解除を含む）の実際の予算は自身の予算とエントリの残り時間の短い方です。
-  エントリの時間を使い切ると後片付けの解除は送られません（`cleanup` は `timeout`）。
+  エントリの時間を使い切ってリクエストが送られなかった場合は `busy` です（ホストには何も届いていません。後片付けの解除が送られなかった場合 `cleanup` は `busy`）。送信済みで時間内に応答がなかった場合は従来どおり `timeout` です。
 
 引数エラーは同期版と同じく例外になります（`ValueError`、`TypeError`、`EntryConflictError`）。
 async 版はさらに、`request_timeout` が (0, 60] の範囲外（ホストの上限）、名前が点だけ、登録時の `timeout`

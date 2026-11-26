@@ -635,6 +635,32 @@ async def test_failed_follow_up_still_reports_a_registration_that_came_back():
     assert result["ok"] is False and result["error"] == "partial_failure"
     held = {(r["role"], r["registration_id"]) for r in result["refused_roles"]}
     assert ("R3", "C") in held
+    # R1 was removed by the targeted request for C; only R3 still holds it.
+    assert ("R1", "C") not in held
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
+async def test_registration_that_came_back_reports_only_the_roles_it_holds():
+    """C is removed from R1, then reported on R3 again, and keeps coming
+    back after its second (last) targeted attempt. refused_roles lists
+    ("R3", "C") only, not ("R1", "C") where its removal succeeded."""
+    plugin, _ = await _plugin_with_tool(role=None)
+    host = _ScriptedHost(
+        _held_by(("R1", "C"), ("R2", "D")),
+        _held_by(("R2", "D"), removed=True, affected=["R1"]),   # C removed from R1
+        _held_by(("R3", "C"), removed=True, affected=["R2"]),   # D removed, C back on R3
+        _held_by(("R4", "E"), removed=True, affected=["R3"]),   # C removed from R3, E on R4
+        _held_by(("R3", "C"), removed=True, affected=["R4"]),   # E removed, C back on R3
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["C", "D", "C", "E"]
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    held = [(r["role"], r["registration_id"]) for r in result["refused_roles"]]
+    assert held == [("R3", "C")]
     assert _local_names(plugin) == {"tool_a"}
 
 
@@ -992,6 +1018,51 @@ async def test_register_async_host_timeout_rolls_back(exc):
     assert result["error"] == "timeout"
     assert plugin.list_llm_tools() == []
     assert not _entry_registered(plugin, "tool_a")
+
+
+@pytest.mark.asyncio
+async def test_register_not_sent_because_the_entry_deadline_passed_is_busy():
+    """Nothing reached the host, so the outcome is known: busy, and no
+    cleanup is sent for a register that was never sent."""
+    from plugin.core.rpc import RpcDeadlineExpiredBeforeSendError
+
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(RpcDeadlineExpiredBeforeSendError("not sent"))
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "busy"
+    assert result["cleanup"] is None
+    assert len(host.calls) == 1
+    assert plugin.list_llm_tools() == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_not_sent_because_the_entry_deadline_passed_is_busy():
+    from plugin.core.rpc import RpcDeadlineExceededError, RpcDeadlineExpiredBeforeSendError
+
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(RpcDeadlineExceededError("sent, no answer"), RpcDeadlineExpiredBeforeSendError("not sent"))
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "timeout"
+    assert result["cleanup"]["ok"] is False and result["cleanup"]["error"] == "busy"
+
+
+@pytest.mark.asyncio
+async def test_unregister_not_sent_because_the_entry_deadline_passed_is_busy():
+    from plugin.core.rpc import RpcDeadlineExpiredBeforeSendError
+
+    plugin, _ = await _plugin_with_tool()
+    _install_host(plugin, _ScriptedHost(RpcDeadlineExpiredBeforeSendError("not sent")))
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False and result["error"] == "busy"
+    assert _local_names(plugin) == {"tool_a"}
 
 
 @pytest.mark.asyncio
@@ -2198,6 +2269,37 @@ async def test_end_to_end_host_timeout_rolls_back_both_sides(monkeypatch, regist
         # The host gave up too; it never recorded the tool.
         await asyncio.sleep(0.05)
         assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    finally:
+        await dispatcher.close()
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_cleanup_after_the_entry_deadline_is_busy_not_timeout(monkeypatch, registry):
+    """Inside an entry with a deadline: the register is sent and times out
+    at the entry's deadline ("timeout", outcome unknown); the cleanup is then
+    never sent ("busy", nothing reached the host)."""
+    import time
+
+    from plugin.core.rpc import request_scope
+
+    plugin, ctx = _make_plugin()
+    dispatcher = _wire_rpc(ctx)
+
+    class _Hangs(_FakeMainServer):
+        async def post(self, url, json=None, **_):
+            self.posts.append((url, json))
+            await asyncio.sleep(5.0)
+            return _FakeResp({"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []})
+
+    server = _use_main_server(monkeypatch, registry, _Hangs())
+    try:
+        with request_scope({"request_id": "entry", "_request_deadline_monotonic": time.monotonic() + 0.2}):
+            result = await asyncio.wait_for(plugin.register_llm_tool_async(**_register_kwargs()), timeout=3.0)
+        assert result["ok"] is False and result["error"] == "timeout"
+        assert result["cleanup"]["ok"] is False and result["cleanup"]["error"] == "busy"
+        await asyncio.sleep(0.05)
+        assert [url.rsplit("/", 1)[-1] for url, _ in server.posts] == ["register"]
+        assert plugin.list_llm_tools() == []
     finally:
         await dispatcher.close()
 

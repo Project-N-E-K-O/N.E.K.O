@@ -329,8 +329,10 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 outcome on main_server is unknown).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
-#                 the same name used up the budget; nothing was sent; also
-#                 an unregister, or a register's cleanup, whose requests
+#                 the same name used up the budget, or the calling entry's
+#                 deadline ran out before the request was sent; nothing was
+#                 sent; also an unregister, or a register's cleanup, whose
+#                 requests
 #                 already sent left too little budget to remove a reported
 #                 stale registration: that removal was not sent),
 #                 "not_registered"
