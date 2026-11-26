@@ -785,3 +785,101 @@ def test_every_proactive_feed_is_preceded_by_the_gate():
         "mini_game_invite.py:_attempt_mini_game_invite_delivery",
         "postgame.py:_deliver_postgame_text_bubble",
     } <= set(checked)
+
+
+# ---------------------------------------------------------------------------
+# Blocked cards decay like delivered ones
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "tag", "links"), _PHASE2_CASES)
+async def test_phase2_block_reports_only_cards_that_hit(monkeypatch, text, tag, links):
+    _install_directives(monkeypatch, ["裁员"])
+    commit = await _commit(_phase2_mgr(), response_text=text, source_tag=tag, **links)
+
+    # The "line" case hits in the line only: its card list is empty.
+    assert [link.get("title") for link in commit.blocked_links] == [
+        link["title"] for link in links.values()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phase2_block_keeps_innocent_card_out_of_blocked_links(monkeypatch):
+    _install_directives(monkeypatch, ["裁员"])
+    web = {"title": "今日天气", "url": "https://example.com/w", "source": "新闻"}
+    commit = await _commit(
+        _phase2_mgr(), response_text="裁员的事先不说，看这个", source_tag="WEB", web=web,
+    )
+    assert commit.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
+    assert commit.blocked_links == ()
+
+
+_SELECTED = {
+    "web": {"title": "[新闻] 某公司大规模裁员", "url": "https://example.com/a"},
+    "music": {"title": "裁员之歌", "artist": "某歌手", "url": "https://example.com/m"},
+    "meme": {"title": "裁员表情包", "url": "https://example.com/meme.png"},
+}
+
+
+async def _record_blocked(monkeypatch, blocked_kinds, *, web_link=_SELECTED["web"]):
+    from main_logic.proactive_chat import delivery
+
+    recorded = AsyncMock()
+    monkeypatch.setattr(delivery, "_record_source_used", recorded)
+    await delivery._record_blocked_sources_used(
+        lanlan_name="Neko",
+        blocked_links=[dict(_SELECTED[kind]) for kind in blocked_kinds],
+        selected_web_link=web_link,
+        selected_web_topic_key="web-key",
+        web_parsed={"title": "[新闻] 某公司大规模裁员"},
+        selected_music_link=_SELECTED["music"],
+        selected_music_topic_key="music-key",
+        selected_meme_link=_SELECTED["meme"],
+        selected_meme_topic_key="meme-key",
+        memory_dir="/tmp/unused",
+    )
+    return [call.kwargs["kind"] for call in recorded.await_args_list], recorded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("blocked", "kinds"),
+    [(["web"], ["web"]), (["music"], ["music"]), (["meme"], ["image"]),
+     (["web", "meme"], ["web", "image"])],
+)
+async def test_blocked_cards_are_recorded_in_source_history(monkeypatch, blocked, kinds):
+    recorded_kinds, recorded = await _record_blocked(monkeypatch, blocked)
+    assert recorded_kinds == kinds
+    # Same identity the delivered path writes, so selection sees the decay.
+    assert all(call.kwargs["memory_dir"] == "/tmp/unused" for call in recorded.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_no_blocked_card_records_nothing(monkeypatch):
+    # A line-only hit, and a title-only web topic (no card) both stay out.
+    assert (await _record_blocked(monkeypatch, []))[0] == []
+    assert (await _record_blocked(monkeypatch, [], web_link=None))[0] == []
+    # A blocked meme must not drag the cardless web topic along with it.
+    assert (await _record_blocked(monkeypatch, ["meme"], web_link=None))[0] == ["image"]
+
+
+def test_service_records_blocked_cards_on_the_pass_branch():
+    """The delivery pass branch hands the blocked cards to source history."""
+    tree = ast.parse(inspect.getsource(service))
+    branches = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "delivery_commit.result is not None"
+    ]
+    assert len(branches) == 1
+    calls = [
+        sub for stmt in branches[0].body for sub in ast.walk(stmt)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        and sub.func.id == "_record_blocked_sources_used"
+    ]
+    assert len(calls) == 1
+    kwargs = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords if kw.arg}
+    assert kwargs["blocked_links"] == "delivery_commit.blocked_links"
+    for kind in ("web", "music", "meme"):
+        assert kwargs[f"selected_{kind}_link"] == f"selected_{kind}_link"
+        assert kwargs[f"selected_{kind}_topic_key"] == f"selected_{kind}_topic_key"

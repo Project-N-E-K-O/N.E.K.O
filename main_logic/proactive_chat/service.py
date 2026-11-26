@@ -86,6 +86,7 @@ from main_logic.proactive_chat.delivery import (
     DeliveryCommit,
     ProactiveLifecycle,
     _commit_proactive_delivery,
+    _record_blocked_sources_used,
     _record_committed_delivery,
 )
 from main_logic.proactive_chat.candidate_selection import (
@@ -2795,6 +2796,18 @@ async def handle_proactive_chat(
             vision_consent_epoch=vision_consent_epoch,
         )
         if delivery_commit.result is not None:
+            await _record_blocked_sources_used(
+                lanlan_name=lanlan_name,
+                blocked_links=delivery_commit.blocked_links,
+                selected_web_link=selected_web_link,
+                selected_web_topic_key=selected_web_topic_key,
+                web_parsed=web_parsed,
+                selected_music_link=selected_music_link,
+                selected_music_topic_key=selected_music_topic_key,
+                selected_meme_link=selected_meme_link,
+                selected_meme_topic_key=selected_meme_topic_key,
+                **state_storage_kwargs,
+            )
             return await _end_proactive(
                 ProactiveChatResult(body=delivery_commit.result.body)
             )
