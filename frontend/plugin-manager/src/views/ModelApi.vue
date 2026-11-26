@@ -49,7 +49,7 @@
 
       <el-tab-pane :label="t('modelApi.usage')" name="usage">
         <div class="usage-filters">
-          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keyup.enter="loadUsage" />
+          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keydown="enterKey.down" @keyup.enter="enterKey.up(loadUsage)" />
           <el-select v-model="slotFilter" clearable :placeholder="t('modelApi.allSlots')" :aria-label="t('modelApi.allSlots')"><el-option v-for="slot in slots" :key="slot.id" :label="slot.name" :value="slot.id" /></el-select>
           <el-button :loading="loadingUsage" @click="loadUsage">{{ t('common.refresh') }}</el-button>
         </div>
@@ -136,6 +136,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, listModelSlots, testModelSlot, updateModelSlot } from '@/api/models'
+import { useEnterKey } from '@/utils/enterKey'
 import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
@@ -151,6 +152,8 @@ const usage = ref<ModelUsageResult | null>(null)
 const loadingUsage = ref(false)
 const usageError = ref('')
 const pluginFilter = ref(typeof route.query.plugin_id === 'string' ? route.query.plugin_id : '')
+// Enter that picks a word of an input method is not Enter that filters.
+const enterKey = useEnterKey()
 const slotFilter = ref(typeof route.query.slot_id === 'string' ? route.query.slot_id : '')
 const editorOpen = ref(false)
 const editingSlot = ref<ModelSlot | null>(null)

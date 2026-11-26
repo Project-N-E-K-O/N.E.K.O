@@ -116,7 +116,7 @@
         </p>
 
         <div v-if="selected.state === 'working'" class="say">
-          <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keyup.enter="tell" />
+          <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keydown="enterKey.down" @keyup.enter="enterKey.up(tell)" />
           <el-button type="primary" :loading="busy === 'tell'" :disabled="!sentence.trim() || busy !== ''" data-testid="familiar-send" @click="tell">
             {{ t('power.space.familiars.send') }}
           </el-button>
@@ -178,6 +178,7 @@ import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
 import TreeActions from './TreeActions.vue'
 import UsagePane from './UsagePane.vue'
+import { useEnterKey } from '@/utils/enterKey'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
 const props = withDefaults(defineProps<{
@@ -208,6 +209,8 @@ const answered = ref<{ id: string; said: string } | null>(null)
 const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
 const sentence = ref('')
+// Enter that picks a word of an input method is not Enter that sends.
+const enterKey = useEnterKey()
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
 const VIEWS = ['doing', 'talk', 'usage'] as const
 const startingView = (): (typeof VIEWS)[number] => (props.startView === 'talk' ? 'talk' : 'doing')
