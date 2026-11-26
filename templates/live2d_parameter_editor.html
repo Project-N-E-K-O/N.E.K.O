@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN"{{ theme_boot_attributes | default({}) | xmlattr }}>
 
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
@@ -12,7 +12,9 @@
     <link rel="stylesheet" href="/static/css/live2d_parameter_editor.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <!-- 主题工坊（本体内置）：界面主题加载器。只读 /api/theme_studio/theme.json。 -->
-    {% if theme_loader_css_version is defined %}<link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    {% if theme_loader_css_version is defined %}
+    {% if theme_critical_css %}<style id="nts-boot">{{ theme_critical_css | safe }}</style>{% endif %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
     <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>{% endif %}
     <script src="/static/theme-manager.js"></script>
     <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version|default('0', true) }}">

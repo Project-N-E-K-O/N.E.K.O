@@ -51,7 +51,9 @@ from ._sdk_compat import (
 )
 
 from . import assets as _assets
+from . import contrast as _contrast
 from . import materials as _materials
+from . import trash as _trash
 from .i18n import msg as _msg
 
 # ---------------------------------------------------------------------------- paths
@@ -602,28 +604,9 @@ LIBRARY_ARCHIVE_MAX_ENTRIES = LIBRARY_MAX_ITEMS * 3 + 2
 #: obtained elsewhere silently lost its `--nts-shadow` on apply, with nobody telling the user why. Uniformly allow up to 4 layers.
 SHADOW_MAX_LAYERS = 4
 
-#: Readme inside the share bundle (plain text, so whoever receives the zip knows how to use it).
-ARCHIVE_README = (
-    "N.E.K.O 主题工坊 · 主题分享包\n"
-    "\n"
-    "theme.json 是调色板；images/ 里是与它配套的背景图。\n"
-    "用法：在 N.E.K.O 里打开 主题工坊 → 主题仓库 → 导入压缩包，选择本文件即可。\n"
-    "导入只会把主题存进仓库，不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
-)
-
 #: Format marker for theme library backup bundles (zip). Unlike a single-theme share bundle, one bundle holds
 #: multiple ``themes/*.json`` + a shared ``images/`` + ``manifest.json``.
 LIBRARY_ARCHIVE_FORMAT = "neko-theme-studio-library/1"
-
-#: Readme inside the library backup bundle.
-LIBRARY_ARCHIVE_README = (
-    "N.E.K.O 主题工坊 · 主题库备份包\n"
-    "\n"
-    "themes/ 里是你保存过的每一套主题（每套一个 json），images/ 是它们共用的背景图。\n"
-    "用法：在 N.E.K.O 里打开 主题工坊 → 主题仓库 → 恢复备份，选择本文件即可。\n"
-    "恢复只会往仓库里「新增」主题，不会覆盖或删除现有的任何一套；同名不同 id 会各存一份。\n"
-    "恢复不会立刻改动你当前的配色；在仓库里点「应用」才切换。\n"
-)
 
 #: Theme library entry id: generated server-side, never taken from the uploaded file name (that would be a path traversal entry point).
 RE_THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -687,6 +670,59 @@ def _clip_name(value: Any, fallback: str) -> str:
     return fallback
 
 
+NAME_MAX_CHARS = 40
+TRASH_LIMIT = 30
+
+
+def _fold_name(value: str) -> str:
+    # Fold line breaks before stripping controls so adjacent words stay distinct.
+    return " ".join(_strip_controls(" ".join(value.split())).split())
+
+
+def normalize_display_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise SdkError(_msg("theme.apply.nameNotString", type=type(value).__name__))
+    name = _fold_name(value)
+    if not name:
+        raise SdkError(_msg("library.name.empty"))
+    if len(name) > NAME_MAX_CHARS:
+        raise SdkError(_msg("library.name.tooLong", limit=NAME_MAX_CHARS))
+    return name
+
+
+def canonical_live_name(value: str) -> tuple[str, str]:
+    name = _fold_name(value)
+    if not name:
+        return DEFAULT_THEME_NAME, _msg("theme.name.reset")
+    if len(name) > NAME_MAX_CHARS:
+        return name[:NAME_MAX_CHARS], _msg("theme.name.truncated", limit=NAME_MAX_CHARS)
+    return name, _msg("theme.name.normalized") if name != value.strip() else ""
+
+
+def _library_names(directory: Path, *, exclude_id: str = "") -> set[str]:
+    taken = set()
+    for path in directory.glob("*.json"):
+        if path.stem == exclude_id:
+            continue
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            taken.add(item["name"])
+    return taken
+
+
+def _dedupe_name(name: str, taken: set[str]) -> str:
+    candidate = name
+    counter = 2
+    while candidate in taken:
+        suffix = f" ({counter})"
+        candidate = name[:NAME_MAX_CHARS - len(suffix)].rstrip() + suffix
+        counter += 1
+    return candidate
+
+
 #: Which variables the panel's theme card thumbnails use (v0.1.12).
 #:
 #: The panel must not fetch all 82 variables just to draw a thumbnail (a library screen shows a dozen or so
@@ -701,6 +737,25 @@ PREVIEW_VARS = (
     ("ai", "--nts-ai-bubble-bg"),
     ("panel", "--nts-panel-glass-tint"),
 )
+
+
+def _resolve_material_draft(stored: dict, raw: dict) -> tuple[dict, list[str]]:
+    """Resolve the same set of parameters for both live preview and persistent apply."""
+    patch = {"enabled": stored["enabled"], **raw}
+    incoming = patch.pop("custom_presets", None)
+    library = {**stored["custom_presets"], **(incoming if isinstance(incoming, dict) else {})}
+    if set(patch) <= {"preset", "quality", "enabled", "lock", "version", "custom_presets"}:
+        # An API client can change a switch or select a preset without resending its parameters.
+        warnings = []
+        if incoming:
+            presets, warnings = _materials.normalize_materials({"custom_presets": library})
+            stored = {**stored, "custom_presets": presets["custom_presets"]}
+        clean, changed = _materials.apply_materials(stored, patch)
+        return clean, [*warnings, *changed]
+    # The editor sends a complete parameter tree. Empty sections remove older
+    # overrides, but the preset collection is a separate user-owned library.
+    patch["custom_presets"] = library
+    return _materials.normalize_materials(patch)
 
 
 def _material_badge(raw: Any) -> dict[str, Any] | None:
@@ -726,6 +781,32 @@ def _material_badge(raw: Any) -> dict[str, Any] | None:
         "quality": quality,
         "quality_label": _materials.quality_label(quality),
     }
+
+def _contrast_rows(light: dict, dark: dict) -> list[dict]:
+    doc = {"vars": light, "dark_vars": dark}
+    return [
+        {"mode": mode, **row}
+        for mode in ("light", "dark")
+        for row in _contrast.audit_vars(_contrast.mode_vars(doc, mode))
+        if not row.get("skip")
+    ]
+
+
+def _contrast_summary(light: dict, dark: dict) -> dict | None:
+    rows = _contrast_rows(light, dark)
+    if not rows:
+        return None
+    worst = min(rows, key=lambda row: row["ratio"] / row["floor"])
+    return {
+        "min": worst["ratio"],
+        "floor": worst["floor"],
+        "margin": round(worst["ratio"] / worst["floor"], 2),
+        "pair": worst["pair"],
+        "mode": worst["mode"],
+        "fails": sum(not row["ok"] for row in rows),
+        "checks": len(rows),
+    }
+
 
 def _preset_preview(light: dict, dark: dict) -> dict:
     """Thumbnail swatch for the panel: 7 validated values each for light / dark."""
@@ -843,7 +924,7 @@ def _fmt_saved_at(value: Any) -> str:
 def _safe_archive_name(name: str) -> str:
     """Turn a theme name into a safe download file name (drop path separators and Windows-illegal chars)."""
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "-", name or "").strip("-")
-    return cleaned[:40] or "theme"
+    return re.sub(r"-{2,}", "-", cleaned)[:40].strip("-") or "theme"
 
 
 def _parse_theme_json(payload: bytes) -> dict:
@@ -1438,6 +1519,12 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+class _ThemeConflict(Exception):
+    def __init__(self, base: str, disk: str, stamp: str):
+        super().__init__(base, disk, stamp)
+        self.details = {"base_revision": base, "disk_revision": disk, "disk_updated_at": stamp}
+
+
 class _ThemeUnreadable(RuntimeError):
     """theme.json exists but cannot be read (permissions / locked / corrupt JSON).
 
@@ -1483,6 +1570,17 @@ def _clean_attrs(attrs: Any) -> dict[str, str]:
         if isinstance(key, str):
             clean[key[:40]] = str(val)[:200]
     return clean
+
+
+def _clean_surface_list(value: Any) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    surfaces = {"chatWindow", "chatShell", "composer", "capsule", "topbar", "assistantBubble", "userBubble"}
+    return [
+        {"k": item["k"], **{flag: int(item.get(flag) in (True, 1)) for flag in ("r", "b", "f")}}
+        for item in value[:24]
+        if isinstance(item, dict) and isinstance(item.get("k"), str) and item["k"] in surfaces
+    ]
 
 
 def _clean_list(value: Any, limit: int, count: int) -> list[str]:
@@ -1557,6 +1655,10 @@ class ThemeStudioService(NekoPluginBase):
         #: Writable data directory: theme.json / themes / backgrounds / presets cache / exports.
         self.data_dir = Path(data_dir) if data_dir else _default_data_dir()
         self.theme_path = self.data_dir / "theme.json"
+        self._preview: dict | None = None
+        self._preview_seq = 0
+        self._theme_recovery: dict | None = None
+        self._diagnostics_lock = threading.Lock()
         #: State of the background thread that switches themes by time of day.
         self._schedule_lock = threading.Lock()
         self._schedule_stop_event = threading.Event()
@@ -1587,7 +1689,7 @@ class ThemeStudioService(NekoPluginBase):
         # Old theme.json files may have a "version" counter field: deliberately ignored here, it simply
         # disappears on the next write (the schema is unchanged, so reading old files does not error).
         name = raw.get("name")
-        name = str(name) if isinstance(name, str) and name.strip() else base["name"]
+        name = canonical_live_name(name)[0] if isinstance(name, str) else base["name"]
 
         updated_at = raw.get("updated_at")
         updated_at = (
@@ -1627,6 +1729,24 @@ class ThemeStudioService(NekoPluginBase):
             "materials": clean_materials,
         }
 
+    def _quarantine_theme_json(self, exc: Exception, size: int) -> bool:
+        """Preserve an unreadable document before considering it a first run. Caller holds the write lock."""
+        backup = self.theme_path.with_name(f"{self.theme_path.name}.corrupt-{time.time_ns()}")
+        try:
+            self.theme_path.rename(backup)
+        except OSError:
+            return False
+        self._theme_recovery = {
+            "at": _now_iso(), "file": backup.name, "bytes": size, "error": type(exc).__name__,
+        }
+        try:
+            backups = sorted(self.data_dir.glob("theme.json.corrupt-*"))
+            for path in backups[:-5]:
+                path.unlink()
+        except OSError as prune_exc:
+            self._log("warning", f"Could not prune a theme recovery backup: {prune_exc}")
+        return True
+
     def _read_unlocked(self, *, strict: bool = False) -> dict[str, Any]:
         """Read from disk. Missing / corrupt / permission error -> defaults; never raises.
 
@@ -1649,8 +1769,24 @@ class ThemeStudioService(NekoPluginBase):
             self._log("warning", f"读取 theme.json 失败，使用默认值：{exc}")
             return default_palette()
         try:
-            return self._normalize(json.loads(text.decode("utf-8")))
+            document = json.loads(text.decode("utf-8"))
+            if not isinstance(document, dict):
+                raise ValueError("Expected a JSON object")
+            return self._normalize(document)
         except (ValueError, TypeError) as exc:
+            with _WRITE_LOCK:
+                # A reader may have parsed an old file while a different request
+                # was replacing it. Never quarantine a newly saved document.
+                try:
+                    current = self.theme_path.read_bytes()
+                    if current != text:
+                        return self._read_unlocked(strict=strict)
+                    if self._quarantine_theme_json(exc, len(current)):
+                        return default_palette()
+                except FileNotFoundError:
+                    return default_palette()
+                except OSError:
+                    pass
             if strict:
                 raise _ThemeUnreadable(_msg("theme.themeJson.parseFailed", error=exc)) from exc
             self._log("warning", f"theme.json 解析失败，使用默认值：{exc}")
@@ -1685,6 +1821,43 @@ class ThemeStudioService(NekoPluginBase):
             payload["loader_version"] = meta["loader_version"]
         return payload
 
+    @staticmethod
+    def _palette_revision(palette: dict) -> str:
+        fields = ("name", "enabled", "vars", "dark_vars", "materials")
+        data = json.dumps({key: palette[key] for key in fields}, sort_keys=True,
+                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(data).hexdigest()[:16]
+
+    def preview_snapshot(self) -> dict | None:
+        with _WRITE_LOCK:
+            if self._preview and self._preview["expires_at"] <= time.time():
+                self._preview = None
+            return dict(self._preview) if self._preview else None
+
+    def clear_preview(self) -> bool:
+        with _WRITE_LOCK:
+            active = self.preview_snapshot() is not None
+            self._preview = None
+            return active
+
+    def _with_preview(self, palette: dict) -> dict:
+        preview = self.preview_snapshot()
+        if not preview:
+            return palette
+        payload = dict(palette)
+        payload["revision"] = self._palette_revision(palette)
+        for field in ("vars", "dark_vars"):
+            if field in preview:
+                layer = {**palette[field], **preview[field]}
+                payload[field] = {key: value for key, value in layer.items() if value}
+        if "materials" in preview:
+            payload["materials"] = preview["materials"]
+        payload["preview"] = {
+            "active": True, "id": preview["id"], "expires_at": preview["expires_at"],
+            "fields": [key for key in ("vars", "dark_vars", "materials") if key in preview],
+        }
+        return payload
+
     def _with_material_vars(self, palette: dict[str, Any]) -> dict[str, Any]:
         """Copy the palette and attach the **compiled material variables** (not persisted, purely derived).
 
@@ -1701,6 +1874,8 @@ class ThemeStudioService(NekoPluginBase):
         """
         payload = dict(palette)
         raw_materials = payload.get("materials")
+        if "revision" not in payload:
+            payload["revision"] = self._palette_revision(palette)
         clean, _warnings = _materials.normalize_materials(raw_materials)
         payload["materials"] = clean
         if clean.get("enabled"):
@@ -1749,6 +1924,10 @@ class ThemeStudioService(NekoPluginBase):
         # Material mirror (v0.15.1): the static route does not go through an entry, so the compiled result must be on disk.
         payload = self._with_asset_meta(self._with_material_cache(palette))
         _write_json_atomic(self.theme_path, payload)
+        self._theme_recovery = None
+        # Every successful persistent change supersedes a draft overlay, including
+        # imports, scheduled theme changes and reset. Failed writes leave it intact.
+        self._preview = None
 
     def _ensure_file(self) -> None:
         """Ensure ``static/theme.json`` exists at startup (invalid content is backed up, then reset to defaults)."""
@@ -1758,13 +1937,15 @@ class ThemeStudioService(NekoPluginBase):
                 self._log("info", f"已创建默认调色板：{self.theme_path}")
                 return
             try:
-                text = self.theme_path.read_text(encoding="utf-8")
-                parsed = json.loads(text)
+                raw = self.theme_path.read_bytes()
+                parsed = json.loads(raw.decode("utf-8"))
+                if not isinstance(parsed, dict):
+                    raise ValueError("Expected a JSON object")
                 # v0.7.0: fill in missing asset fingerprints once. install.ps1 restores the user palette by writing
                 # the backup file straight back, without css_sha8 / loader_version -- without this the loader would
                 # only get fingerprints the next time the user applies a theme, and would keep downloading the full
                 # CSS/JS until then. Only fingerprints are filled; variables and name are left untouched.
-                if '"css_sha8"' not in text and isinstance(parsed, dict):
+                if "css_sha8" not in parsed:
                     self._write_unlocked(self._normalize(parsed))
                     self._log("info", "已为 theme.json 补上资源指纹（css_sha8 / loader_version）")
                 elif isinstance(parsed, dict):
@@ -1803,20 +1984,10 @@ class ThemeStudioService(NekoPluginBase):
                 self._log("warning", f"theme.json 暂时不可读（{exc}），保持原样")
                 return
             except ValueError as exc:
-                # The content really is corrupt: archive the original file before writing defaults; never silently destroy user data.
-                backup = self.theme_path.with_name(self.theme_path.name + ".corrupt")
-                try:
-                    os.replace(self.theme_path, backup)
-                    self._log(
-                        "warning",
-                        f"theme.json 解析失败（{exc}），原文件已备份为 {backup.name}",
-                    )
-                except OSError as move_exc:  # pragma: no cover - a failed backup does not block recovery
-                    self._log(
-                        "warning",
-                        f"theme.json 解析失败（{exc}），备份失败（{move_exc}）",
-                    )
-                self._write_unlocked(default_palette())
+                if self._quarantine_theme_json(exc, len(raw)):
+                    recovery = self._theme_recovery
+                    self._write_unlocked(default_palette())
+                    self._theme_recovery = recovery
 
     def _apply_and_store(
         self,
@@ -1826,6 +1997,8 @@ class ThemeStudioService(NekoPluginBase):
         name: Any = None,
         enabled: Any = None,
         materials_in: Any = None,
+        base_revision: Any = None,
+        base_updated_at: Any = None,
     ) -> tuple[dict[str, Any], list[str], int]:
         """Merge -> validate -> atomic write. Returns (new palette, rejection reasons, accepted input field count).
 
@@ -1837,6 +2010,17 @@ class ThemeStudioService(NekoPluginBase):
         with _WRITE_LOCK:
             # strict: abort if the real baseline is unavailable; never overwrite the user's saved palette with defaults.
             palette = self._read_unlocked(strict=True)
+
+            base_revision = base_revision if isinstance(base_revision, str) else ""
+            base_updated_at = base_updated_at if isinstance(base_updated_at, str) else ""
+            if (base_revision or base_updated_at) and self.theme_path.is_file():
+                disk_revision = self._palette_revision(palette)
+                baseline = base_revision or base_updated_at
+                expected = disk_revision if base_revision else palette["updated_at"]
+                if baseline != expected:
+                    raise _ThemeConflict(baseline, disk_revision, palette["updated_at"])
+            name_warning = ""
+            material_warnings = []
 
             merged_vars = dict(palette["vars"])
             merged_dark = dict(palette["dark_vars"])
@@ -1875,7 +2059,7 @@ class ThemeStudioService(NekoPluginBase):
 
             if isinstance(name, str):
                 # Empty / whitespace-only = restore the default name (the panel takes this path when the input is cleared), not an error.
-                palette["name"] = _clip_name(name, DEFAULT_THEME_NAME)
+                palette["name"], name_warning = canonical_live_name(name)
                 accepted += 1
             elif name is not None:
                 errors.append(_msg("theme.apply.nameNotString", type=type(name).__name__))
@@ -1892,27 +2076,7 @@ class ThemeStudioService(NekoPluginBase):
             # submits all of it on every save; per-key merging would make "reset a param to default" impossible
             # to express (missing key = keep unchanged, which collides semantically with "reset to default").
             if isinstance(materials_in, dict):
-                clean_materials, material_warnings = _materials.normalize_materials(
-                    materials_in
-                )
-                # custom_presets is the user's asset library, unlike the five param sections: those are "the current
-                # set", so wholesale replacement is right; if the preset library were replaced wholesale too, one save
-                # where the panel omits it would wipe all the user's saved presets. So merge by name -- deletion goes
-                # through the separate delete_material_preset path.
-                stored_materials = _materials.normalize_materials(
-                    palette.get("materials")
-                )[0]
-                merged_custom = dict(stored_materials.get("custom_presets") or {})
-                merged_custom.update(clean_materials.get("custom_presets") or {})
-                clean_materials["custom_presets"] = merged_custom
-                # When a custom preset name is sent without the library (an old panel re-importing an export), restore the label from the merged result.
-                raw_preset = str((materials_in or {}).get("preset") or "").strip()
-                if (
-                    raw_preset
-                    and raw_preset not in _materials.PRESET_IDS
-                    and raw_preset in merged_custom
-                ):
-                    clean_materials["preset"] = raw_preset
+                clean_materials, material_warnings = _resolve_material_draft(palette["materials"], materials_in)
                 palette["materials"] = clean_materials
                 # Material warnings mean "clamped and applied", not "rejected" -- they must not go into errors,
                 # or the panel would report "N rejected" for a successful save.
@@ -1924,10 +2088,14 @@ class ThemeStudioService(NekoPluginBase):
                     _msg("theme.apply.materialsNotObject", type=type(materials_in).__name__)
                 )
 
-            palette["updated_at"] = _now_iso()
-            palette["schema"] = SCHEMA_VERSION
-
-            self._write_unlocked(palette)
+            if accepted:
+                palette["updated_at"] = _now_iso()
+                palette["schema"] = SCHEMA_VERSION
+                self._write_unlocked(palette)
+            palette["revision"] = self._palette_revision(palette)
+            if name_warning:
+                palette["name_warning"] = name_warning
+            palette["material_warnings"] = material_warnings
             return palette, errors, accepted
 
     # ------------------------------------------------------------- lifecycle
@@ -1950,7 +2118,8 @@ class ThemeStudioService(NekoPluginBase):
         palette = self._read_unlocked()
         # Clean up unreferenced background images. A failure must never affect startup.
         try:
-            self._gc_backgrounds()
+            with _WRITE_LOCK:
+                self._gc_backgrounds()
         except Exception as exc:  # noqa: BLE001
             self._log("warning", f"背景图回收失败（忽略）：{exc}")
         self._log(
@@ -2022,7 +2191,8 @@ class ThemeStudioService(NekoPluginBase):
     async def get_theme(self, **_):
         try:
             # Include material_vars: the loader does not parse material params, it only reads the compiled variable table.
-            return Ok(self._with_material_vars(self._read_unlocked()))
+            palette = self._read_unlocked()
+            return Ok(self._with_material_vars(palette))
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("theme.getTheme.failed", error=exc)))
 
@@ -2079,6 +2249,13 @@ class ThemeStudioService(NekoPluginBase):
                 "loader_version": str(raw_diag.get("loader_version") or ""),
                 "nts_vars": _safe_int(raw_diag.get("nts_vars")),
                 "mt_vars": _safe_int(raw_diag.get("mt_vars")),
+                "mt_preset": str(raw_diag.get("mt_preset") or "")[:40],
+                "mt_quality": str(raw_diag.get("mt_quality") or "")[:24],
+                "mt_rules": _safe_int(raw_diag.get("mt_rules")),
+                "mt_surfaces": _clean_surface_list(raw_diag.get("mt_surfaces")),
+                "mt_surfaces_page": str(raw_diag.get("mt_surfaces_page") or "")[:120],
+                "mt_surfaces_at": str(raw_diag.get("mt_surfaces_at") or "")[:40],
+                "mt_surfaces_theme": str(raw_diag.get("mt_surfaces_theme") or "")[:40],
                 "rules": _safe_int(raw_diag.get("rules")),
                 "enabled": bool(raw_diag.get("enabled")),
                 "errors": _clean_list(raw_diag.get("errors"), 200, 5),
@@ -2090,6 +2267,10 @@ class ThemeStudioService(NekoPluginBase):
                 "theme_name": _clip_name(palette.get("name"), DEFAULT_THEME_NAME),
                 "theme_enabled": bool(palette.get("enabled")),
                 "theme_updated_at": str(palette.get("updated_at") or ""),
+                "material_preset": palette["materials"]["preset"],
+                "material_quality": palette["materials"]["quality"],
+                "theme_recovery": self._theme_recovery,
+                "trash": self._trash_stats(),
                 "light_vars": len(palette.get("vars") or {}),
                 "dark_vars": len(palette.get("dark_vars") or {}),
                 "library_count": library_count,
@@ -2227,53 +2408,56 @@ class ThemeStudioService(NekoPluginBase):
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("theme.previewMaterials.failed", error=exc)))
 
+    def _store_material_preset(self, name, materials, *, apply=False, imported=False):
+        title = normalize_display_name(name)
+        if _materials.is_reserved_preset_name(title):
+            raise SdkError(_msg("theme.preset.nameReserved", name=title))
+        if materials is not None and not isinstance(materials, dict):
+            raise SdkError(_msg("theme.preset.invalidMaterials"))
+        with _WRITE_LOCK:
+            palette = self._read_unlocked(strict=True)
+            live, _ = _materials.normalize_materials(palette.get("materials"))
+            stored = dict(live["custom_presets"])
+            replaced = title in stored
+            if not replaced and len(stored) >= _materials.MATERIAL_PRESET_LIMIT:
+                raise SdkError(_msg("theme.preset.limit", limit=_materials.MATERIAL_PRESET_LIMIT))
+            if imported:
+                clean, warnings = _materials.normalize_materials(materials)
+            else:
+                # A draft can carry a stale library. Only this one named entry is saved.
+                patch = {k: v for k, v in (materials or {}).items() if k != "custom_presets"}
+                clean, warnings = _materials.apply_materials(live, patch)
+            stored[title] = {section: clean[section].copy() for section in _materials.SECTIONS}
+            if apply:
+                live = clean
+                live["preset"] = title
+            live["custom_presets"] = stored
+            palette["materials"] = live
+            palette["updated_at"] = _now_iso()
+            self._write_unlocked(palette)
+        return {"name": title, "names": sorted(stored), "replaced": replaced,
+                "count": len(stored), "limit": _materials.MATERIAL_PRESET_LIMIT,
+                "materials": live, "material_warnings": warnings}
+
     @plugin_entry(
         id="save_material_preset",
         name=tr("entries.save_material_preset.name", default="保存自定义材质预设"),
-        description=tr(
-            "entries.save_material_preset.description",
-            default=(
-                "把当前五节材质参数存成一份命名预设（custom_presets），预设列表里即可一键切换。",
-                "传入 materials 时以传入值为准（等于「保存并应用」）。"
-            ),
-        ),
+        description=tr("entries.save_material_preset.description", default="保存当前材质或草稿。"),
         input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "预设名（1-40 字符）"},
-                "materials": {"type": "object", "description": "可选；要保存的材质树，缺省用磁盘当前值"},
-            },
-            "required": ["name"],
+            "type": "object", "properties": {
+                "name": {"type": "string"}, "materials": {"type": "object"},
+                "apply": {"type": "boolean"},
+            }, "required": ["name"],
         },
     )
-    async def save_material_preset(self, name: Any = None, materials: Any = None, **_):
+    async def save_material_preset(self, name: Any = None, materials: Any = None, apply: Any = False, **_):
         try:
-            title = str(name or "").strip()
-            if not title:
-                return Err(SdkError(_msg("theme.preset.nameEmpty")))
-            if len(title) > 40:
-                return Err(SdkError(_msg("theme.preset.nameTooLong", length=len(title))))
-            if _materials.is_reserved_preset_name(title):
-                # normalize_materials would silently drop it, so the save would report Ok
-                # while nothing was stored; refuse before writing.
-                return Err(SdkError(_msg("theme.preset.nameReserved", name=title)))
-            palette = self._read_unlocked(strict=True)
-            source = materials if isinstance(materials, dict) else palette.get("materials")
-            clean, warnings = _materials.normalize_materials(source)
-            for warning in warnings:
-                self._log("warning", f"混合材质预设：{warning}")
-            stored = dict(clean.get("custom_presets") or {})
-            stored[title] = {section: dict(clean.get(section) or {}) for section in _materials.SECTIONS}
-            clean["custom_presets"] = stored
-            palette, errors, _accepted = self._apply_and_store(materials_in=clean)
-            if errors:
-                return Err(SdkError(_msg("theme.errorSeparator").join(errors)))
-            current = palette.get("materials") or {}
-            return Ok({
-                "name": title,
-                "names": sorted((current.get("custom_presets") or {}).keys()),
-                "materials": current,
-            })
+            flag = _coerce_bool(apply)
+            if flag is None:
+                raise SdkError(_msg("theme.preset.invalidApply"))
+            return Ok(self._store_material_preset(name, materials, apply=flag))
+        except SdkError as exc:
+            return Err(exc)
         except _ThemeUnreadable as exc:
             return Err(SdkError(str(exc)))
         except Exception as exc:  # noqa: BLE001
@@ -2294,7 +2478,7 @@ class ThemeStudioService(NekoPluginBase):
     )
     async def delete_material_preset(self, name: Any = None, **_):
         try:
-            title = str(name or "").strip()[:40]
+            title = str(name or "").strip()
             if not title:
                 return Err(SdkError(_msg("theme.preset.nameEmpty")))
             # Deletion must bypass _apply_and_store's "merge preset library by name": merging would add the just-deleted
@@ -2305,7 +2489,7 @@ class ThemeStudioService(NekoPluginBase):
                 stored = dict(clean.get("custom_presets") or {})
                 if title not in stored:
                     return Err(SdkError(_msg("theme.preset.notFound", name=title)))
-                stored.pop(title, None)
+                removed = stored.pop(title)
                 clean["custom_presets"] = stored
                 if clean.get("preset") == title:
                     # Deleting the preset in use: params stay as they are, only the label falls back to custom.
@@ -2316,6 +2500,7 @@ class ThemeStudioService(NekoPluginBase):
             current = palette.get("materials") or {}
             return Ok({
                 "deleted": title,
+                "removed": removed,
                 "names": sorted((current.get("custom_presets") or {}).keys()),
                 "materials": current,
             })
@@ -2323,6 +2508,63 @@ class ThemeStudioService(NekoPluginBase):
             return Err(SdkError(str(exc)))
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("theme.preset.deleteFailed", error=exc)))
+
+    @plugin_entry(
+        id="export_material_preset",
+        input_schema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+    )
+    async def export_material_preset(self, name: Any = None, **_):
+        try:
+            # Exact lookup preserves presets saved before display names were normalized.
+            title = str(name or "").strip()
+            palette = self._read_unlocked(strict=True)
+            sections = palette["materials"]["custom_presets"].get(title)
+            if sections is None:
+                raise SdkError(_msg("theme.preset.notFound", name=title))
+            doc = {"format": "neko-material-preset/1", "name": title, "exported_at": _now_iso(),
+                   "materials": sections}
+            body = json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
+            return Ok({"filename": self._download_filename(f"neko-material-{_safe_archive_name(title)}.json"),
+                       "data": base64.b64encode(body).decode("ascii"), "mime": "application/json",
+                       "bytes": len(body), "name": title, "format": doc["format"]})
+        except SdkError as exc:
+            return Err(exc)
+        except _ThemeUnreadable as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("library.exportFile.packFailed", error=exc)))
+
+    @plugin_entry(
+        id="import_material_preset",
+        input_schema={"type": "object", "properties": {
+            "filename": {"type": "string"}, "data": {"type": "string"}, "name": {"type": "string"},
+        }, "required": ["data"]},
+    )
+    async def import_material_preset(self, filename: Any = None, data: Any = None, name: Any = None, **_):
+        try:
+            if not isinstance(data, str) or len(data) > (IMPORT_MAX_CHARS + 2) // 3 * 4:
+                raise SdkError(_msg("theme.preset.invalidFile"))
+            try:
+                raw = base64.b64decode(data, validate=True)
+                if len(raw) > IMPORT_MAX_CHARS:
+                    raise SdkError(_msg("theme.preset.invalidFile"))
+                doc = json.loads(raw.decode("utf-8-sig"))
+            except (ValueError, RecursionError) as exc:
+                raise SdkError(_msg("theme.preset.invalidFile")) from exc
+            if not isinstance(doc, dict) or doc.get("format") != "neko-material-preset/1":
+                raise SdkError(_msg("theme.preset.invalidFile"))
+            source = doc.get("materials")
+            if not isinstance(source, dict) or not any(isinstance(source.get(k), dict) for k in _materials.SECTIONS):
+                raise SdkError(_msg("theme.preset.invalidFile"))
+            sections = {k: source[k] for k in _materials.SECTIONS if k in source}
+            receipt = self._store_material_preset(name or doc.get("name"), sections, imported=True)
+            return Ok({**receipt, "source": str(filename or "")[:160]})
+        except SdkError as exc:
+            return Err(exc)
+        except _ThemeUnreadable as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("theme.import.failed", error=exc)))
 
     @plugin_entry(
         id="loader_report",
@@ -2407,6 +2649,10 @@ class ThemeStudioService(NekoPluginBase):
             "loader_version": str(report.get("version") or ""),
             "nts_vars": _safe_int(report.get("ntsVars")),
             "mt_vars": _safe_int(report.get("mtVars")),
+            "mt_preset": str(report.get("mtPreset") or "")[:40],
+            "mt_quality": str(report.get("mtQuality") or "")[:24],
+            "mt_rules": _safe_int(report.get("mtRuleCount")),
+            "mt_surfaces": _clean_surface_list(report.get("mtSurfaces")),
             "attrs": _clean_attrs(attrs),
             "rules": _safe_int(report.get("rules")),
             "css_len": _safe_int(report.get("cssLen")),
@@ -2432,36 +2678,55 @@ class ThemeStudioService(NekoPluginBase):
         }
         target = self.data_dir / "diagnostics.json"
         try:
-            # Keep the last 20, to make it easy to correlate "change a version -> look once".
-            if target.is_file():
-                try:
-                    old = json.loads(target.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    old = {}
-                past = old.get("history")
-                if isinstance(past, list):
-                    payload["history"] = past[-19:]
-            payload["history"].append({
-                "at": received_at,
-                "page": payload["page"],
-                "loader_version": payload["loader_version"],
-                "nts_vars": payload["nts_vars"],
-                "mt_vars": payload["mt_vars"],
-                "rules": payload["rules"],
-                "focus_rules": payload["focus_rules"],
-                "attrs": payload["attrs"],
-                "errors": payload["errors"],
-                "under_glow": sample_clean.get("--nts-mt-under-glow", ""),
-                "rim_img": sample_clean.get("--nts-mt-rim-img", "")[:80],
-                "comp_matched": payload["comp_matched"],
-                "bg_c": sample_clean.get("--nts-mt-bg-c", "")[:60],
-                "elem_bg": elem_clean.get("background-color", ""),
-                "elem_filter": elem_clean.get("backdrop-filter", "")[:60],
-            })
-            _write_json_atomic(target, payload)
+            with self._diagnostics_lock:
+                self._save_loader_report(target, payload)
             return Ok({"path": str(target), "received_at": received_at})
         except OSError as exc:
             return Err(_msg("theme.loaderReport.writeFailed", error=exc))
+
+    def _save_loader_report(self, target: Path, payload: dict) -> None:
+        received_at = payload["received_at"]
+        sample_clean, elem_clean = payload["samples"], payload["elem_samples"]
+        try:
+            old = json.loads(target.read_text(encoding="utf-8"))
+            old = old if isinstance(old, dict) else {}
+        except (OSError, ValueError):
+            old = {}
+        past = old.get("history")
+        if isinstance(past, list):
+            payload["history"] = past[-19:]
+        try:
+            stamp = str(self.theme_path.stat().st_mtime_ns)
+        except OSError:
+            stamp = ""
+        merged = {}
+        if stamp and old.get("mt_surfaces_theme") == stamp and old.get("loader_version") == payload["loader_version"]:
+            merged = {row["k"]: row for row in _clean_surface_list(old.get("mt_surfaces"))}
+        for row in payload["mt_surfaces"]:
+            prev = merged.get(row["k"], {})
+            merged[row["k"]] = {"k": row["k"], **{k: max(row[k], prev.get(k, 0)) for k in ("r", "b", "f")}}
+        payload["mt_surfaces"] = list(merged.values())[-24:]
+        payload["mt_surfaces_theme"] = stamp
+        payload["mt_surfaces_page"] = payload["page"]
+        payload["mt_surfaces_at"] = received_at
+        payload["history"].append({
+            "at": received_at,
+            "page": payload["page"],
+            "loader_version": payload["loader_version"],
+            "nts_vars": payload["nts_vars"],
+            "mt_vars": payload["mt_vars"],
+            "rules": payload["rules"],
+            "focus_rules": payload["focus_rules"],
+            "attrs": payload["attrs"],
+            "errors": payload["errors"],
+            "under_glow": sample_clean.get("--nts-mt-under-glow", ""),
+            "rim_img": sample_clean.get("--nts-mt-rim-img", "")[:80],
+            "comp_matched": payload["comp_matched"],
+            "bg_c": sample_clean.get("--nts-mt-bg-c", "")[:60],
+            "elem_bg": elem_clean.get("background-color", ""),
+            "elem_filter": elem_clean.get("backdrop-filter", "")[:60],
+        })
+        _write_json_atomic(target, payload)
 
     @plugin_entry(
         id="apply_theme",
@@ -2475,7 +2740,9 @@ class ThemeStudioService(NekoPluginBase):
             "properties": {
                 "vars": {"type": "object", "description": "亮色变量表 --nts-* → 值"},
                 "dark_vars": {"type": "object", "description": "暗色变量表 --nts-* → 值"},
-                "name": {"type": "string", "maxLength": 60},
+                "name": {"type": "string"},
+                "base_revision": {"type": "string"},
+                "base_updated_at": {"type": "string"},
                 "enabled": {"type": "boolean", "default": True},
                 "materials": {
                     "type": "object",
@@ -2495,6 +2762,8 @@ class ThemeStudioService(NekoPluginBase):
         name: Any = None,
         enabled: Any = None,
         materials: Any = None,
+        base_revision: Any = None,
+        base_updated_at: Any = None,
         **_,
     ):
         try:
@@ -2504,7 +2773,11 @@ class ThemeStudioService(NekoPluginBase):
                 name=name,
                 enabled=enabled,
                 materials_in=materials,
+                base_revision=base_revision,
+                base_updated_at=base_updated_at,
             )
+        except _ThemeConflict as conflict:
+            return Ok({"applied": False, "conflict": conflict.details})
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, PermissionError):
                 return Err(SdkError(_permission_hint(exc)))
@@ -2531,6 +2804,65 @@ class ThemeStudioService(NekoPluginBase):
             return Ok({**self._with_material_vars(palette), "rejected": errors})
         return Ok(self._with_material_vars(palette))
 
+    @plugin_entry(id="start_preview")
+    async def start_preview(self, palette=None, dark=None, materials=None, seconds=120, **_):
+        """Publish a validated draft for all loader windows until it expires."""
+        try:
+            ttl = max(5.0, min(600.0, float(seconds)))
+        except (ValueError, TypeError, OverflowError):
+            ttl = 120.0
+        light, night, _errors = _validate_palette(palette, dark)
+        layers = {}
+        for key, source, clean in (("vars", palette, light), ("dark_vars", dark, night)):
+            if isinstance(source, dict):
+                for name, value in source.items():
+                    if name in KNOWN_VARS and (value is None or (isinstance(value, str) and not value.strip())):
+                        clean[name] = ""
+            if clean:
+                layers[key] = clean
+        with _WRITE_LOCK:
+            if isinstance(materials, dict) and any(key in _materials.default_materials() for key in materials):
+                stored = self._read_unlocked()["materials"]
+                layers["materials"], _warnings = _resolve_material_draft(stored, materials)
+            if not layers:
+                return Err(_msg("theme.preview.noChanges"))
+            self._preview_seq += 1
+            expires_at = round(time.time() + ttl, 3)
+            preview_id = f"pv-{int(expires_at * 1000)}-{self._preview_seq}"
+            self._preview = {"id": preview_id, "expires_at": expires_at, **layers}
+            return Ok({"ok": True, "preview": {
+                "id": preview_id, "expires_at": expires_at, "seconds": int(ttl), "fields": sorted(layers),
+            }})
+
+    @plugin_entry(id="stop_preview")
+    async def stop_preview(self, id=None, **_):
+        with _WRITE_LOCK:
+            preview = self.preview_snapshot()
+            cleared = bool(preview and (id is None or id == preview["id"]))
+            if cleared:
+                self._preview = None
+            return Ok({"ok": True, "cleared": cleared})
+
+    @plugin_entry(id="check_contrast")
+    async def check_contrast(self, palette=None, dark=None, standalone=False, **_):
+        """Audit draft colours against the same rendered surfaces as the preset audit."""
+        if any(value is not None and not isinstance(value, dict) for value in (palette, dark)):
+            return Err(_msg("theme.contrast.invalidMap"))
+        base = {} if standalone is True else self._read_unlocked()
+        maps = []
+        for field, patch in (("vars", palette), ("dark_vars", dark)):
+            values = dict(base.get(field, {}))
+            for key, value in (patch or {}).items():
+                if key in KNOWN_VARS:
+                    if value is None or (isinstance(value, str) and not value.strip()):
+                        values.pop(key, None)
+                    elif isinstance(value, str) and _is_safe_value(key, value):
+                        values[key] = value
+            maps.append(values)
+        rows = _contrast_rows(*maps)
+        fails = sorted((row for row in rows if not row["ok"]), key=lambda row: row["ratio"] / row["floor"])
+        return Ok({"rows": rows, "checks": len(rows), "fails": fails, "worst": fails[0] if fails else None})
+
     @plugin_entry(
         id="reset_theme",
         name=tr("entries.reset_theme.name", default="恢复默认主题"),
@@ -2552,22 +2884,13 @@ class ThemeStudioService(NekoPluginBase):
                 # this reset must be refused and the user asked to retry later.
                 try:
                     current = self._read_unlocked(strict=True)
-                except _ThemeUnreadable as exc:
-                    if isinstance(exc.__cause__, OSError):
-                        return Err(
-                            SdkError(_msg("theme.reset.themeJsonUnreadable"))
-                        )
-                    current = None
-                if current is not None:
-                    kept = _materials.normalize_materials(current.get("materials"))[0]
-                    custom = kept.get("custom_presets") or {}
-                    if custom:
-                        materials = dict(palette.get("materials") or _materials.default_materials())
-                        materials["custom_presets"] = dict(custom)
-                        palette["materials"] = materials
+                except _ThemeUnreadable:
+                    return Err(SdkError(_msg("theme.reset.themeJsonUnreadable")))
+                previous_revision = self._palette_revision(current)
+                palette["materials"]["custom_presets"] = current["materials"]["custom_presets"]
                 palette["updated_at"] = _now_iso()
                 self._write_unlocked(palette)
-            return Ok(self._with_material_vars(palette))
+            return Ok({**self._with_material_vars(palette), "previous_revision": previous_revision})
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("theme.reset.failed", error=exc)))
 
@@ -2795,7 +3118,7 @@ class ThemeStudioService(NekoPluginBase):
 
                 name = parsed.get("name")
                 if isinstance(name, str) and name.strip():
-                    palette["name"] = _clip_name(name, DEFAULT_THEME_NAME)
+                    palette["name"] = canonical_live_name(name)[0]
                 if isinstance(parsed.get("enabled"), bool):
                     palette["enabled"] = bool(parsed["enabled"])
 
@@ -2854,6 +3177,13 @@ class ThemeStudioService(NekoPluginBase):
 
     def _library_dir(self) -> Path:
         return self.data_dir / LIBRARY_DIR_NAME
+
+    def _trash_dir(self) -> Path:
+        return self.data_dir / "trash"
+
+    def _trash_stats(self) -> dict[str, Any]:
+        with _WRITE_LOCK:
+            return _trash.stats(self._trash_dir(), TRASH_LIMIT)
 
     def _backgrounds_dir(self) -> Path:
         return self.data_dir / BACKGROUND_DIR_NAME
@@ -3367,9 +3697,15 @@ class ThemeStudioService(NekoPluginBase):
             except OSError as exc:
                 self._log("warning", f"背景图回收已跳过：theme.json 暂时不可读（{exc}）")
                 return []
+        try:
+            for backup in self.data_dir.glob("theme.json.corrupt-*"):
+                texts.append(backup.read_text(encoding="utf-8", errors="ignore"))
+        except OSError as exc:
+            self._log("warning", f"Skipping image cleanup: theme recovery backup is unreadable ({exc})")
+            return []
         # Likewise abort if library/preset entries cannot be read: they may reference images too.
         unreadable = False
-        for directory in (self._library_dir(), self._presets_dir()):
+        for directory in (self._library_dir(), self._presets_dir(), self._trash_dir()):
             if not directory.is_dir():
                 continue
             for item in directory.glob("*.json"):
@@ -3507,6 +3843,7 @@ class ThemeStudioService(NekoPluginBase):
                     "preview": _preset_preview(clean_vars, clean_dark),
                     "material": _material_badge(raw.get("materials")),
                     "_sort": str(raw.get("saved_at") or ""),
+                    "contrast": _contrast_summary(clean_vars, clean_dark),
                 }
             )
         items.sort(key=lambda item: item["_sort"], reverse=True)
@@ -3526,6 +3863,8 @@ class ThemeStudioService(NekoPluginBase):
         copy["tags"] = list(tags) if isinstance(tags, (list, tuple)) else []
         preview = item.get("preview")
         copy["preview"] = dict(preview) if isinstance(preview, dict) else {}
+        contrast = item.get("contrast")
+        copy["contrast"] = dict(contrast) if isinstance(contrast, dict) else None
         material = item.get("material")
         if isinstance(material, dict):
             # The cache is shared across requests in different languages, so
@@ -3626,6 +3965,7 @@ class ThemeStudioService(NekoPluginBase):
                     "family": _preset_family(raw, clean_vars, clean_dark),
                     "preview": _preset_preview(clean_vars, clean_dark),
                     "material": _material_badge(raw.get("materials")),
+                    "contrast": _contrast_summary(clean_vars, clean_dark),
                 }
             )
         if signature is not None:
@@ -3682,12 +4022,15 @@ class ThemeStudioService(NekoPluginBase):
             directory = self._library_dir()
             if len(list(directory.glob("*.json"))) >= LIBRARY_MAX_ITEMS:
                 raise SdkError(_msg("library.full", limit=LIBRARY_MAX_ITEMS))
-            label = _clip_name(name, DEFAULT_THEME_NAME)
+            requested = _clip_name(name, DEFAULT_THEME_NAME)
+            label = _dedupe_name(requested, _library_names(directory))
             slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "theme"
             base = f"{slug[:32]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # A recoverable ID can still be referenced by a schedule or a favorite.
+            reserved = {theme for _, theme, _, _ in _trash.batches(self._trash_dir())}
             theme_id = base
             counter = 2
-            while (directory / f"{theme_id}.json").exists():
+            while theme_id in reserved or (directory / f"{theme_id}.json").exists():
                 theme_id = f"{base}-{counter}"
                 counter += 1
             record = {
@@ -3737,6 +4080,8 @@ class ThemeStudioService(NekoPluginBase):
                         tmp.unlink()
                 except OSError:
                     pass
+            if label != requested:
+                record["_renamed_from"] = requested
             return record
 
     @staticmethod
@@ -3827,17 +4172,58 @@ class ThemeStudioService(NekoPluginBase):
             archive.writestr(
                 "theme.json", json.dumps(record, ensure_ascii=False, indent=2)
             )
-            archive.writestr("README.txt", ARCHIVE_README)
+            packed = []
             for filename in sorted({item[1] for item in refs}):
-                path = self._backgrounds_dir() / filename
                 try:
-                    archive.write(path, f"images/{filename}")
-                except OSError as exc:  # pragma: no cover
-                    self._log("warning", f"打包图片失败（已跳过）{filename}：{exc}")
+                    archive.write(self._backgrounds_dir() / filename, f"images/{filename}")
+                    packed.append(filename)
+                except OSError as exc:
+                    self._log("warning", f"Could not pack background {filename}: {exc}")
+            try:
+                card = self._share_card_png(name, vars_map, dark_map, record.get("materials"))
+            except Exception as exc:  # An optional preview cannot prevent exporting a theme.
+                self._log("warning", f"Could not render the share card: {type(exc).__name__}")
+            else:
+                archive.writestr("card.png", card)
+            material = record.get("materials") or {}
+            counts = {"light": len(vars_map), "dark": len(dark_map)}
+            manifest = {
+                "format": "neko-theme-studio-share/1",
+                "generator": "N.E.K.O Theme Studio",
+                "exported_at": _now_iso(),
+                "theme": {
+                    "name": name, "saved_at": record["saved_at"], "schema": record["schema"],
+                    "note": clean_note, "tags": clean_tags, "light_vars": counts["light"],
+                    "dark_vars": counts["dark"], "materials": bool(material.get("enabled")),
+                    "material_preset": material.get("preset", ""), "quality": material.get("quality", ""),
+                },
+                "images": packed, "has_card": "card.png" in archive.namelist(),
+                "files": [*archive.namelist(), "README.txt", "manifest.json"],
+            }
+            readme = [
+                _msg("share.instructions"), "", name, record["saved_at"],
+                _msg("share.counts", **counts), clean_note, ", ".join(clean_tags),
+            ]
+            if material.get("enabled"):
+                readme.extend((_materials.preset_label(material["preset"]), _materials.quality_label(material["quality"])))
+            readme.extend(["", *manifest["files"]])
+            archive.writestr("README.txt", "\n".join(line for line in readme if line) + "\n")
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         payload = buffer.getvalue()
         self._guard_export_size(payload, what=_msg("library.export.whatShareBundle"))
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         return f"{_safe_archive_name(name)}-{stamp}.zip", payload
+
+    @staticmethod
+    def _share_card_png(name, vars_map, dark_map, materials) -> bytes:
+        from .share_card import render_share_card
+
+        material = materials if materials and materials.get("enabled") else {}
+        return render_share_card(
+            name, vars_map, dark_map,
+            preset_label=_materials.preset_label(material["preset"]) if material.get("preset") else "",
+            quality_label=_materials.quality_label(material["quality"]) if material.get("quality") else "",
+        )
 
     # ------------------------------------------------------- theme library backup / restore
 
@@ -3972,6 +4358,7 @@ class ThemeStudioService(NekoPluginBase):
                     {
                         "id": record["id"],
                         "name": doc["name"],
+                        "material": (doc.get("materials") or {}).get("preset", "") if (doc.get("materials") or {}).get("enabled") else "",
                         "light": len(vars_map),
                         "dark": len(dark_map),
                         "has_image": bool(
@@ -3995,7 +4382,14 @@ class ThemeStudioService(NekoPluginBase):
             archive.writestr(
                 "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
             )
-            archive.writestr("README.txt", LIBRARY_ARCHIVE_README)
+            image_count = sum(name.startswith("images/") for name in archive.namelist())
+            lines = [_msg("share.restore"), "", manifest["exported_at"], _msg("share.files", count=image_count)]
+            for item in manifest["themes"]:
+                details = _msg("share.counts", light=item["light"], dark=item["dark"])
+                if item["material"]:
+                    details += " · " + _materials.preset_label(item["material"])
+                lines.append(f"- {item['name']} ({details})")
+            archive.writestr("README.txt", "\n".join([*lines, "", "manifest.json", ""]))
             self._library_archive_files(archive)
             count = len(manifest["themes"])
         payload = buffer.getvalue()
@@ -4395,11 +4789,7 @@ class ThemeStudioService(NekoPluginBase):
                     )
                 )
             record = self._save_library_item(
-                name=(
-                    name
-                    if isinstance(name, str) and name.strip()
-                    else palette["name"]
-                ),
+                name=normalize_display_name(palette["name"] if name is None else name),
                 vars_map=palette["vars"],
                 dark_map=palette["dark_vars"],
                 # Note/tags can be written at save time: the panel's "save" dialog has a "one-line note", so there is
@@ -4422,7 +4812,7 @@ class ThemeStudioService(NekoPluginBase):
             ),
         )
         self._log("info", f"已保存到主题仓库：{summary['name']}（{summary['id']}）")
-        return Ok({"saved": True, "theme": summary})
+        return Ok({"saved": True, "theme": summary, "renamed_from": record.get("_renamed_from")})
 
     def _apply_theme_record(self, theme_id: str) -> dict[str, Any]:
         """Swap a library / built-in theme wholesale into theme.json and return a summary. **May raise.**
@@ -4444,9 +4834,13 @@ class ThemeStudioService(NekoPluginBase):
         record = dict(record)
         record["vars"] = local["vars"]
         record["dark_vars"] = local["dark_vars"]
-        record["name"] = local["name"]
+        original_name = record.get("name")
+        record["name"], _ = canonical_live_name(
+            original_name if isinstance(original_name, str) else local["name"]
+        )
         with _WRITE_LOCK:
             palette = self._read_unlocked(strict=True)
+            previous_revision = self._palette_revision(palette)
             clean_vars, clean_dark, errors = _validate_palette(
                 record.get("vars"), record.get("dark_vars")
             )
@@ -4469,7 +4863,7 @@ class ThemeStudioService(NekoPluginBase):
                 )
             palette["vars"] = clean_vars
             palette["dark_vars"] = clean_dark
-            palette["name"] = _clip_name(record.get("name"), palette["name"])
+            palette["name"] = record["name"]
             # Old entries without a materials field -> keep the user's current materials untouched (do not reset them to defaults).
             record_materials = record.get("materials")
             # Materials locked: keep the user's hand-tuned set; switching themes does not override it (lock is written by the panel's "follow theme" toggle).
@@ -4536,6 +4930,8 @@ class ThemeStudioService(NekoPluginBase):
             "light": len(clean_vars),
             "dark": len(clean_dark),
             "rejected": errors,
+            "revision": self._palette_revision(palette),
+            "previous_revision": previous_revision,
             # The panel picks its toast text from this: the theme's own materials were applied (True) / skipped due to lock (False).
             "material_applied": material_applied,
             "material_present": isinstance(record_materials, dict),
@@ -4583,6 +4979,8 @@ class ThemeStudioService(NekoPluginBase):
                 "theme": outcome["theme"],
                 "light": outcome["light"],
                 "dark": outcome["dark"],
+                "revision": outcome["revision"],
+                "previous_revision": outcome["previous_revision"],
                 "rejected": rejected,
                 "material_applied": outcome.get("material_applied", False),
                 "material_present": outcome.get("material_present", False),
@@ -4610,30 +5008,135 @@ class ThemeStudioService(NekoPluginBase):
         },
     )
     async def delete_theme(self, theme_id: Any = "", id: Any = "", **_):
-        theme_id = theme_id or id
+        requested = str(theme_id or id or "").strip()
+        if not RE_THEME_ID.fullmatch(requested):
+            return Err(SdkError(_msg("library.delete.invalidId", theme_id=repr(requested))))
         try:
-            record = self._load_library_item(theme_id)
-            # Decide/locate by **the id in the request**: the file name is the library's primary key (_library_items uses
-            # it too); the record's "id" field is just file content and, if hand-edited, points at another theme.
-            requested = str(theme_id or "").strip()
-            if not RE_THEME_ID.match(requested):
-                raise SdkError(
-                    _msg("library.delete.invalidId", theme_id=repr(requested))
-                )
-            if self._preset_path(requested).is_file():
-                raise SdkError(_msg("library.delete.builtin"))
-            directory = self._library_dir().resolve()
-            path = (directory / f"{requested}.json").resolve()
-            if path.parent != directory:
-                raise SdkError(_msg("library.delete.outsideDir"))
-            if not path.is_file():
-                raise SdkError(_msg("library.entry.notFound", theme_id=requested))
-            path.unlink(missing_ok=True)
+            with _WRITE_LOCK:
+                if self._preset_path(requested).is_file():
+                    raise SdkError(_msg("library.delete.builtin"))
+                directory = self._library_dir()
+                trash = self._trash_dir()
+                path = directory / f"{requested}.json"
+                if path.is_symlink() or directory.is_symlink() or trash.is_symlink():
+                    raise SdkError(_msg("library.delete.outsideDir"))
+                record = self._load_library_item(requested)
+                schedule = self._read_schedule(drop_missing=False, strict=True)
+                refs = {
+                    key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
+                    for key in ("zones", "weekend_zones")
+                }
+                trash.mkdir(parents=True, exist_ok=True)
+                now = datetime.now()
+                base = requested + "__" + now.strftime("%Y%m%d-%H%M%S-%f")
+                body = trash / (base + ".json")
+                sidecar = trash / (base + ".meta.json")
+                if body.exists() or sidecar.exists():
+                    raise FileExistsError(base)
+                _write_json_atomic(sidecar, {
+                    "id": requested, "name": _clip_name(record.get("name"), requested),
+                    "deleted_at": now.isoformat(), "schedule": refs,
+                })
+                try:
+                    path.replace(body)
+                except OSError:
+                    sidecar.unlink(missing_ok=True)
+                    raise
+                for _, _, old_body, old_sidecar in _trash.batches(trash)[TRASH_LIMIT:]:
+                    try:
+                        _trash.remove_batch(old_body, old_sidecar)
+                    except OSError as exc:
+                        self._log("warning", f"Could not prune theme trash: {exc}")
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("library.delete.failed", error=exc)))
-        return Ok({"deleted": True, "theme_id": str(theme_id)})
+        return Ok({"deleted": True, "theme_id": requested, "undo": True})
+
+    @plugin_entry(
+        id="restore_theme",
+        name=tr("entries.restore_theme.name", default="恢复已删除的主题"),
+        description=tr("entries.restore_theme.description", default="恢复仓库主题及仍然空闲的排程时段。"),
+        input_schema={"type": "object", "properties": {
+            "theme_id": {"type": "string", "maxLength": 64},
+            "id": {"type": "string", "maxLength": 64},
+        }},
+    )
+    async def restore_theme(self, theme_id: Any = "", id: Any = "", **_):
+        requested = str(theme_id or id or "").strip()
+        if not RE_THEME_ID.fullmatch(requested):
+            return Err(SdkError(_msg("library.entry.invalidId")))
+        restored_zones = []
+        try:
+            with _WRITE_LOCK:
+                directory = self._library_dir()
+                target = directory / f"{requested}.json"
+                if directory.is_symlink() or target.is_symlink():
+                    raise SdkError(_msg("library.delete.outsideDir"))
+                if target.exists() or self._preset_path(requested).exists():
+                    raise SdkError(_msg("library.trash.exists"))
+                candidates = _trash.batches(self._trash_dir())
+                match = next(((body, meta) for _, theme, body, meta in candidates
+                              if theme == requested and not body.is_symlink() and body.is_file()), None)
+                if match is None:
+                    raise SdkError(_msg("library.trash.missing"))
+                if len(list(directory.glob("*.json"))) >= LIBRARY_MAX_ITEMS:
+                    raise SdkError(_msg("library.full", limit=LIBRARY_MAX_ITEMS))
+                body, sidecar = match
+                meta = _trash.read_record(sidecar)
+                refs = meta.get("schedule")
+                if isinstance(refs, dict) and any(refs.values()):
+                    schedule = self._read_schedule(drop_missing=False, strict=True)
+                    previous = {**schedule, "zones": dict(schedule["zones"]),
+                                "weekend_zones": dict(schedule["weekend_zones"])}
+                    for key in ("zones", "weekend_zones"):
+                        bucket = refs.get(key)
+                        if not isinstance(bucket, dict):
+                            continue
+                        for zone in SCHEDULE_ZONES:
+                            if bucket.get(zone) == requested and not schedule[key].get(zone):
+                                schedule[key][zone] = requested
+                                restored_zones.append(f"{key}.{zone}")
+                directory.mkdir(parents=True, exist_ok=True)
+                # Restored references are ignored until the library body reappears.
+                # If the process exits between writes, the user can retry this same restore.
+                if restored_zones:
+                    self._save_schedule_unlocked(schedule)
+                try:
+                    body.replace(target)
+                except OSError:
+                    if restored_zones:
+                        self._save_schedule_unlocked(previous)
+                    raise
+                # A leftover sidecar is harmless. The restored body is already durable.
+                try:
+                    sidecar.unlink(missing_ok=True)
+                except OSError as exc:
+                    self._log("warning", f"Could not remove restored theme metadata: {exc}")
+        except SdkError as exc:
+            return Err(exc)
+        except (ValueError, OSError) as exc:
+            return Err(SdkError(_msg("library.trash.failed", error=exc)))
+        return Ok({"restored": True, "theme_id": requested, "name": meta.get("name"),
+                   "schedule_restored": restored_zones})
+
+    @plugin_entry(
+        id="clear_trash",
+        name=tr("entries.clear_trash.name", default="清空回收站"),
+        description=tr("entries.clear_trash.description", default="永久清除回收站中的主题。"),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def clear_trash(self, **_):
+        removed = total = 0
+        try:
+            with _WRITE_LOCK:
+                for _, _, body, sidecar in _trash.batches(self._trash_dir()):
+                    count, size = _trash.remove_batch(body, sidecar)
+                    removed += count
+                    total += size
+        except OSError as exc:
+            return Err(SdkError(_msg("library.trash.failed", error=exc)))
+        return Ok({"removed": removed, "bytes": total, "count": 0})
 
     @plugin_entry(
         id="update_theme_meta",
@@ -4666,6 +5169,10 @@ class ThemeStudioService(NekoPluginBase):
         tags: Any = None,
         **_,
     ):
+        with _WRITE_LOCK:
+            return self._update_theme_meta_unlocked(theme_id or id, name, note, tags)
+
+    def _update_theme_meta_unlocked(self, theme_id: Any, name: Any, note: Any, tags: Any):
         """Edit only name / note / tags; **never change id, vars, dark_vars or saved_at**.
 
         Why the id must not follow the name: the id is the key shared by
@@ -4676,7 +5183,6 @@ class ThemeStudioService(NekoPluginBase):
         theme does not exist". So once generated the id is fixed; renaming
         only touches display fields.
         """
-        theme_id = theme_id or id
         if name is None and note is None and tags is None:
             return Err(SdkError(_msg("library.updateMeta.nothingToChange")))
         try:
@@ -4700,9 +5206,9 @@ class ThemeStudioService(NekoPluginBase):
             changed = []
 
             if name is not None:
-                if not isinstance(name, str) or not name.strip():
-                    raise SdkError(_msg("library.updateMeta.emptyName"))
-                label = _clip_name(name, DEFAULT_THEME_NAME)
+                label = normalize_display_name(name)
+                if label in _library_names(directory, exclude_id=record_id):
+                    raise SdkError(_msg("library.name.duplicate", name=label))
                 if label != str(payload.get("name") or ""):
                     changed.append("name")
                 payload["name"] = label
@@ -4750,8 +5256,7 @@ class ThemeStudioService(NekoPluginBase):
                     }
                 )
 
-            with _WRITE_LOCK:
-                _write_json_atomic(path, payload)
+            _write_json_atomic(path, payload)
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
@@ -4919,45 +5424,46 @@ class ThemeStudioService(NekoPluginBase):
         so a long name can never turn ``.json`` into ``.j``.
         """
         raw_stem, raw_suffix = os.path.splitext(str(filename or ""))
-        suffix = raw_suffix.lower() if raw_suffix.lower() in (".zip", ".json") else ""
+        suffix = raw_suffix.lower() if raw_suffix.lower() in (".zip", ".json", ".png") else ""
         stem = _safe_archive_name(raw_stem if suffix else str(filename or ""))
         stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "-", stem).strip("-") or "theme"
         return stem + suffix
 
-    def _current_or_saved(self, theme_id: str):
-        """Use the current palette when theme_id is empty, otherwise the library / built-in entry.
-
-        Returns (name, vars, dark, materials). Materials must come along --
-        exporting only colors without materials would give the user half a
-        theme.
-        """
+    def _current_or_saved(self, theme_id: str) -> dict:
+        """Resolve a portable library entry or the active theme into one export snapshot."""
         if theme_id:
-            record = self._load_library_item(theme_id)
-            local = self._rewrite_archive_refs(
-                record,
-                {},
-                label=f"主题 {record.get('name') or theme_id}",
-                from_presets=True,
+            item = self._load_library_item(theme_id)
+            palette = self._rewrite_archive_refs(
+                item, {}, label=str(item.get("name") or theme_id), from_presets=True,
             )
-            clean_vars, clean_dark, _errors = _validate_palette(
-                local.get("vars"), local.get("dark_vars")
-            )
-            return (
-                _clip_name(local.get("name"), DEFAULT_THEME_NAME),
-                clean_vars,
-                clean_dark,
-                local.get("materials"),
-            )
-        palette = self._normalize(self._read_unlocked())
-        clean_vars, clean_dark, _errors = _validate_palette(
+        else:
+            palette = self._normalize(self._read_unlocked())
+        palette["vars"], palette["dark_vars"], _errors = _validate_palette(
             palette.get("vars"), palette.get("dark_vars")
         )
-        return (
-            _clip_name(palette.get("name"), DEFAULT_THEME_NAME),
-            clean_vars,
-            clean_dark,
-            palette.get("materials"),
-        )
+        return palette
+
+    @plugin_entry(id="export_share_card")
+    async def export_share_card(self, theme_id: Any = "", id: Any = "", name: str = "", **_):
+        if not isinstance(name, str):
+            return Err(SdkError(_msg("library.exportFile.paramNotString", param="name", type=type(name).__name__)))
+        try:
+            from .share_card import CARD_H, CARD_W
+
+            palette = self._current_or_saved(str(theme_id or id or "").strip())
+            label = _clip_name(name.strip() or palette.get("name"), DEFAULT_THEME_NAME)
+            payload = self._share_card_png(label, palette["vars"], palette["dark_vars"], palette.get("materials"))
+            self._guard_export_size(payload, what="PNG")
+        except SdkError as exc:
+            return Err(exc)
+        except Exception as exc:
+            return Err(SdkError(_msg("library.exportFile.packFailed", error=exc)))
+        return Ok({
+            "filename": self._download_filename(f"{label}.png"),
+            "data": base64.b64encode(payload).decode("ascii"),
+            "mime": "image/png", "bytes": len(payload), "width": CARD_W, "height": CARD_H,
+            "kind": "png", "theme": label,
+        })
 
     @plugin_entry(
         id="import_library",
@@ -5152,9 +5658,9 @@ class ThemeStudioService(NekoPluginBase):
             )
 
         try:
-            theme_name, vars_map, dark_map, materials_map = self._current_or_saved(
-                str(theme_id).strip()
-            )
+            palette = self._current_or_saved(str(theme_id).strip())
+            theme_name = _clip_name(palette.get("name"), DEFAULT_THEME_NAME)
+            vars_map, dark_map, materials_map = palette["vars"], palette["dark_vars"], palette.get("materials")
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
@@ -5169,13 +5675,12 @@ class ThemeStudioService(NekoPluginBase):
                     vars_map=vars_map,
                     dark_map=dark_map,
                     materials=materials_map,
+                    note=palette.get("note"), tags=palette.get("tags"),
                 )
             else:
                 # Exporting the current theme keeps its on/off state (the copied
                 # JSON from export_theme does too); a library entry exports enabled.
-                enabled_flag = True
-                if not str(theme_id).strip():
-                    enabled_flag = self._read_unlocked().get("enabled") is not False
+                enabled_flag = bool(str(theme_id).strip()) or palette.get("enabled") is not False
                 doc = {
                     "schema": SCHEMA_VERSION,
                     "name": theme_name,

@@ -12,6 +12,7 @@ import zipfile
 import pytest
 
 import theme_studio
+from tests.fake_clock import patch_module_clock
 from theme_studio import service as ts_service
 from theme_studio.i18n import msg, reset_request_locale, set_request_locale
 
@@ -108,6 +109,83 @@ def test_theme_document_carries_compiled_material_vars(studio):
     document = theme_studio.get_theme_document()
     assert document["material_vars"]["light"], "loader would never see materials"
     assert document["material_attrs"]
+
+
+@pytest.mark.unit
+def test_loader_polls_match_both_routes_and_track_asset_changes(studio, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from main_routers.theme_studio_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        first = client.get("/api/theme_studio/theme.json")
+        etag = first.headers["etag"]
+        assert etag == f'"{first.json()["poll_revision"]}"'
+        assert etag.strip('"') != first.json()["revision"]
+        for path in ("theme.json", "palette"):
+            matching = client.get(f"/api/theme_studio/{path}", params={"rev": first.json()["poll_revision"]})
+            assert matching.status_code == 304 and matching.content == b""
+            assert matching.headers["etag"] == etag
+            assert client.get(f"/api/theme_studio/{path}", headers={"If-None-Match": f'W/{etag}'}).status_code == 304
+
+        monkeypatch.setattr(studio, "_asset_meta", lambda: {"loader_version": "99.99"})
+        changed = client.get("/api/theme_studio/palette", headers={"If-None-Match": etag})
+        assert changed.status_code == 200
+        assert changed.headers["etag"] != etag
+        assert changed.json()["revision"] == first.json()["revision"]
+
+
+@pytest.mark.unit
+def test_loader_cache_expires_with_preview_and_keeps_saved_revision(studio, monkeypatch):
+    first = theme_studio.get_theme_document()
+    result = theme_studio.run_entry_sync("start_preview", {"palette": {"--nts-accent": "#123456"}, "seconds": 20})
+    assert result.ok, result.error
+    preview = theme_studio.get_theme_document()
+    assert preview["vars"]["--nts-accent"] == "#123456"
+    assert preview["revision"] == first["revision"]
+    assert preview["poll_revision"] != first["poll_revision"]
+    patch_module_clock(monkeypatch, ts_service, time=lambda: preview["preview"]["expires_at"] + 1)
+    assert theme_studio.get_theme_document() == first
+
+
+@pytest.mark.unit
+def test_loader_cache_returns_independent_documents_and_reuses_compilation(studio, monkeypatch):
+    first = theme_studio.get_theme_document()
+    first["vars"]["--nts-accent"] = "tampered"
+
+    def unexpected_compile(*args):
+        pytest.fail("An unchanged loader poll compiled material variables again")
+
+    monkeypatch.setattr(studio, "_with_material_vars", unexpected_compile)
+    assert theme_studio.get_theme_document()["vars"].get("--nts-accent") != "tampered"
+
+
+@pytest.mark.unit
+def test_studio_panel_actions_are_registered_and_localized(studio):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from main_routers.cookies_login_router import verify_local_access
+    from main_routers.theme_studio_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[verify_local_access] = lambda: None
+    with TestClient(app) as client:
+        actions = client.get("/api/theme_studio/entries").json()["entries"]
+        assert {
+            "start_preview", "stop_preview", "clear_trash", "restore_theme",
+            "export_share_card", "check_contrast", "export_material_preset", "import_material_preset",
+        }.issubset(actions)
+        response = client.post(
+            "/api/theme_studio/run/start_preview", json={},
+            headers={"Sec-Fetch-Site": "same-origin", "X-Neko-Locale": "es"},
+        )
+        assert response.status_code == 200
+        assert response.json()["error"].startswith("Cambia al menos un color")
 
 
 @pytest.mark.unit

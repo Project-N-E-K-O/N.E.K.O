@@ -46,6 +46,11 @@
   var PREVIEW_TIMER = null;
   var PREVIEW_SEQ = 0;
   var PREVIEW_VARS = null;
+  var PALETTE_VARS = {};
+  var PRESET_LIMIT = 24;
+  var LAST_PRESET_NOTE = '';
+  var PLAIN_KEY = 'neko.themeStudio.pvPlain';
+  var PLAIN_ON = false;
 
   /* ---------------- Generic helpers ---------------- */
 
@@ -180,9 +185,9 @@
     return String(a) === String(b);
   }
 
-  function writeValue(sectionId, key, value) {
+  function writeValue(sectionId, key, value, mode) {
     var param = paramOf(key);
-    if (MODE === 'dark') {
+    if ((mode || MODE) === 'dark') {
       // Dark only stores explicit overrides: a value equal to light drops the key and inherits again.
       var light = lightValue(sectionId, key);
       var darkRoot = CURRENT.dark || (CURRENT.dark = {});
@@ -200,7 +205,7 @@
         if (!Object.keys(dk).length) delete CURRENT.dark[sectionId];
       }
     }
-    markDirty();
+    if (!mode) markDirty();
   }
 
   // Dark only stores overrides that differ from light. Returning an item to inherit-from-light would
@@ -232,6 +237,7 @@
     // refreshing only the badge leaves the button one frame behind and looks broken.
     renderHeadState();
     schedulePreview();
+    notifyChange();
   }
 
   /* ---------------- Preview compilation ---------------- */
@@ -244,6 +250,26 @@
   var REF_CACHE = {};
   var REF_APPLIED = [];
   var REF_SEQ = 0;
+
+  function paintPalette(vars) {
+    var targets = [byId('mt-pv'), byId('mt-comp-strip')];
+    targets.forEach(function (target) {
+      if (!target) return;
+      Object.keys(PALETTE_VARS).forEach(function (key) { target.style.removeProperty(key); });
+      Object.keys(vars).forEach(function (key) {
+        if (/^--nts-(?!mt-)[a-z0-9-]+$/.test(key)) target.style.setProperty(key, vars[key]);
+      });
+    });
+    PALETTE_VARS = vars;
+  }
+
+  document.addEventListener('nts:palette-change', function (event) {
+    paintPalette((event.detail && event.detail.vars) || {});
+  });
+
+  function notifyChange() {
+    document.dispatchEvent(new CustomEvent('nts:materials-change'));
+  }
 
   function schedulePreview() {
     if (!MOUNTED) return;
@@ -319,6 +345,7 @@
         else target.removeAttribute(name);
       });
     });
+    paintPalette(PALETTE_VARS);
     paintReadability(vars);
     // With compare on and the light/dark mode switched, the right half must show that mode's original variables.
     if (REF_ON) ensureRef(MODE);
@@ -437,7 +464,24 @@
   function fmtNum(value) {
     var n = num(value, 0);
     if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
-    return String(Math.round(n * 100) / 100);
+    return String(Math.round(n * 1e6) / 1e6);
+  }
+
+  function fineTuning(number, step, min, max, fallback, write) {
+    number.step = step < 1 ? step / 10 : step;
+    number.addEventListener('keydown', function (event) {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      var scale = event.shiftKey ? 10 : event.altKey && step < 1 ? 0.1 : 1;
+      var delta = (event.key === 'ArrowUp' ? 1 : -1) * step * scale;
+      write(clamp(Number(fmtNum(num(number.value, fallback()) + delta)), min, max));
+    });
+    number.addEventListener('dblclick', function (event) {
+      event.preventDefault();
+      var value = clamp(fallback(), min, max);
+      write(value);
+      toast(T('materials.editor.resetDefault', '已复位为 {{value}}', { value: fmtNum(value) }), 'info');
+    });
   }
 
   function optionsOf(param) {
@@ -458,7 +502,8 @@
   function buildRow(param) {
     var sectionId = param.section;
     var key = param.key;
-    var row = el('div', { class: 'mt-row' });
+    var row = el('div', { class: 'mt-row', 'data-key': key, 'data-section': sectionId,
+      role: 'group', 'aria-label': param.label || key });
     var label = el('label', { class: 'mt-row-label', title: param.label + ' · ' + key });
     label.appendChild(document.createTextNode(param.label));
     var mark = null;
@@ -486,7 +531,7 @@
 
     if (param.kind === 'bool') {
       var toggle = el('label', { class: 'mt-toggle' });
-      var box = el('input', { type: 'checkbox' });
+      var box = el('input', { type: 'checkbox', 'aria-label': param.label });
       box.checked = !!value;
       var caption = el('span', { text: value ? T('materials.row.on', '开启') : T('materials.row.off', '关闭') });
       box.addEventListener('change', function () {
@@ -501,7 +546,7 @@
     }
 
     if (param.kind === 'enum') {
-      var select = el('select', { class: 'mt-select mt-select-full' });
+      var select = el('select', { class: 'mt-select mt-select-full', 'aria-label': param.label });
       optionsOf(param).forEach(function (option) {
         var node = el('option', { value: option.value, text: option.label });
         if (String(option.value) === String(value)) node.setAttribute('selected', '');
@@ -515,8 +560,8 @@
 
     if (param.kind === 'color') {
       var wrap = el('div', { class: 'mt-color' });
-      var pick = el('input', { type: 'color', value: hexOf(value) });
-      var text = el('input', { type: 'text', spellcheck: 'false', value: String(value || '') });
+      var pick = el('input', { type: 'color', value: hexOf(value), 'aria-label': param.label });
+      var text = el('input', { type: 'text', spellcheck: 'false', value: String(value || ''), 'aria-label': param.label });
       pick.addEventListener('input', function () {
         text.value = pick.value;
         commit(pick.value);
@@ -564,6 +609,12 @@
       range.value = fmtNum(next);
       commit(next);
     });
+    range.step = step < 1 ? step / 10 : step;
+    fineTuning(number, step, min, max, function () { return num(param.default, min); }, function (next) {
+      number.value = fmtNum(next);
+      range.value = fmtNum(next);
+      commit(next);
+    });
     row.appendChild(range);
     row.appendChild(number);
     return row;
@@ -595,7 +646,20 @@
     if (TAB === 'components') return renderComponents(pane);
     if (TAB === 'presets') return renderPresets(pane);
     (GROUPS[TAB] || []).forEach(function (group) {
-      pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.group.' + group.id, group.title) }));
+      var title = T('materials.group.' + group.id, group.title);
+      pane.appendChild(el('div', { class: 'mt-sub' }, [
+        el('span', { class: 'mt-sub-title', text: title }),
+        el('button', { type: 'button', class: 'mt-sub-reset',
+          title: T('materials.editor.resetGroupHint', '复位「{{name}}」的亮色和暗色设置', { name: title }),
+          text: T('materials.editor.resetGroup', '复位本节'), 'on:click': function () {
+            group.keys.forEach(function (key) {
+              var param = paramOf(key);
+              if (param) patchBoth(param, param.default);
+            });
+            markDirty();
+            renderPane();
+          } })
+      ]));
       group.keys.forEach(function (key) {
         var param = PARAMS[key];
         if (param) pane.appendChild(buildRow(param));
@@ -659,9 +723,13 @@
     return Object.keys((CURRENT && CURRENT.custom_presets) || {}).sort();
   }
 
+  function ownPreset(library, id) {
+    return library && HAS.call(library, id) ? library[id] : null;
+  }
+
   function presetCard(id) {
-    var builtin = (SPEC.presets || {})[id] || null;
-    var custom = (!builtin && ((CURRENT && CURRENT.custom_presets) || {})[id]) || null;
+    var builtin = ownPreset(SPEC.presets, id);
+    var custom = !builtin && ownPreset(CURRENT.custom_presets, id);
     var active = CURRENT.preset === id;
     var card = el('button', {
       class: 'mt-preset' + (active ? ' is-active' : ''), type: 'button'
@@ -689,8 +757,8 @@
   };
 
   function applyPreset(id) {
-    var builtin = (SPEC && SPEC.presets && SPEC.presets[id]) || null;
-    var custom = (!builtin && CURRENT && CURRENT.custom_presets && CURRENT.custom_presets[id]) || null;
+    var builtin = ownPreset(SPEC && SPEC.presets, id);
+    var custom = !builtin && ownPreset(CURRENT && CURRENT.custom_presets, id);
     if (!builtin && !custom) return;
     var params = builtin ? (builtin.params || {}) : custom;
     ['global', 'lighting', 'refraction', 'surface', 'animation'].forEach(function (section) {
@@ -707,10 +775,14 @@
     CURRENT.preset = id;
     // A preset replaces the whole set: dark overrides are cleared too, so old overrides don't fight the new preset.
     var clearedDark = countOverrides(CURRENT.dark);
+    var clearedComponents = Object.keys(CURRENT.components || {}).length;
     CURRENT.dark = {};
-    if (clearedDark > 0) {
-      toast(T('materials.toast.presetClearedDark', '切换预设会清空暗色覆盖：已清除 {{count}} 项（预设是整套替换）。', { count: clearedDark }), 'warn');
-    }
+    CURRENT.components = {};
+    var notes = [];
+    if (clearedDark) notes.push(T('materials.editor.presetClearedDark', '已清除 {{count}} 项暗色覆盖', { count: clearedDark }));
+    if (clearedComponents) notes.push(T('materials.editor.presetClearedComp', '已清除 {{count}} 个组件的覆盖设置', { count: clearedComponents }));
+    LAST_PRESET_NOTE = notes.join(' · ');
+    if (LAST_PRESET_NOTE) toast(LAST_PRESET_NOTE, 'warn');
     markDirty();
     renderPane();
     renderHeadState();
@@ -721,12 +793,19 @@
     var input = byId('mt-preset-name');
     var name = String((input && input.value) || '').trim().slice(0, 40);
     if (!name) { toast(T('materials.toast.presetNameEmpty', '先给预设起个名字。'), 'warn'); return; }
-    if (SPEC && SPEC.presets && SPEC.presets[name.toLowerCase()]) {
+    if (SPEC && SPEC.presets && HAS.call(SPEC.presets, name.toLowerCase())) {
       toast(T('materials.toast.presetNameTaken', '「{{name}}」和内置预设重名了，换一个。', { name: name }), 'warn');
       return;
     }
     if (!CURRENT.custom_presets || typeof CURRENT.custom_presets !== 'object') {
       CURRENT.custom_presets = {};
+    }
+    if (HAS.call(CURRENT.custom_presets, name)) {
+      if (!window.confirm(T('materials.editor.overwrite', '用当前设置覆盖预设「{{name}}」？', { name: name }))) return;
+    } else if (CUSTOM_ORDER().length >= PRESET_LIMIT) {
+      toast(T('materials.editor.presetLimit', '最多可保存 {{count}} 个自定义预设。', { count: PRESET_LIMIT }), 'warn');
+      input.focus();
+      return;
     }
     var copy = {};
     ['global', 'lighting', 'refraction', 'surface', 'animation'].forEach(function (section) {
@@ -738,7 +817,7 @@
         }
       });
     });
-    CURRENT.custom_presets[name] = copy;
+    setPreset(CURRENT.custom_presets, name, copy);
     CURRENT.preset = name;
     if (input) input.value = '';
     markDirty();
@@ -749,18 +828,25 @@
 
   /** Delete a custom preset: a dedicated entry persists it immediately (apply's merge semantics would re-add it). */
   function deleteCustomPreset(name) {
-    if (!name) return;
+    if (!name || !window.confirm(T('materials.editor.confirmDelete', '删除自定义预设「{{name}}」？', { name: name }))) return;
     // A preset that exists only in the draft (created but never applied) is not
     // on the server: remove it locally; the server call is for saved presets only.
     var saved = !!(BASELINE && BASELINE.custom_presets &&
       Object.prototype.hasOwnProperty.call(BASELINE.custom_presets, name));
+    var draft = clone(CURRENT.custom_presets && CURRENT.custom_presets[name]);
     if (!saved) {
       if (CURRENT.custom_presets) delete CURRENT.custom_presets[name];
       if (CURRENT.preset === name) CURRENT.preset = 'custom';
       markDirty();
       renderPane();
       renderHeadState();
-      toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
+      presetDeleted(name, function () {
+        if (!HAS.call(CURRENT.custom_presets, name)) {
+          setPreset(CURRENT.custom_presets, name, draft);
+          markDirty();
+          renderPane();
+        }
+      });
       return;
     }
     // Drop the entry from the draft before the request: an Apply clicked while the
@@ -775,24 +861,27 @@
       var materials = (data && data.materials) || null;
       // The saved baseline follows the server (the delete is persisted), so remaining unapplied edits still show as pending.
       if (BASELINE) {
-        if (materials) {
-          BASELINE.custom_presets = clone(materials.custom_presets || {});
-          BASELINE.preset = materials.preset || 'custom';
-        } else {
-          if (BASELINE.custom_presets) delete BASELINE.custom_presets[name];
-          if (BASELINE.preset === name) BASELINE.preset = 'custom';
-        }
+        if (BASELINE.custom_presets) delete BASELINE.custom_presets[name];
+        if (BASELINE.preset === name) BASELINE.preset = (materials && materials.preset) || 'custom';
       }
       markDirty();
       renderPane();
       renderHeadState();
-      toast(T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name }), 'ok');
+      presetDeleted(name, function () {
+        if (!data || !data.removed || HAS.call(CURRENT.custom_presets, name)) return;
+        callEntry('save_material_preset', { name: name, materials: data.removed, apply: false }).then(function (result) {
+          updateStoredPreset(result, draft);
+          toast(T('materials.editor.restored', '已恢复预设「{{name}}」。', { name: name }), 'ok');
+        }).catch(function (error) {
+          toast(T('materials.editor.restoreFailed', '恢复预设失败：{{error}}', { error: error.message || error }), 'warn');
+        });
+      });
     }).catch(function (error) {
       // The delete did not happen: put the entry back unless it was re-created meanwhile.
       if (removedParams !== undefined) {
         if (!CURRENT.custom_presets) CURRENT.custom_presets = {};
         if (!Object.prototype.hasOwnProperty.call(CURRENT.custom_presets, name)) {
-          CURRENT.custom_presets[name] = removedParams;
+          setPreset(CURRENT.custom_presets, name, removedParams);
           if (wasSelected && CURRENT.preset === 'custom') CURRENT.preset = name;
         }
         renderPane();
@@ -804,6 +893,69 @@
     });
   }
 
+  function presetDeleted(name, undo) {
+    var message = T('materials.toast.presetDeleted', '已删除自定义预设「{{name}}」。', { name: name });
+    if (typeof window.showNotice === 'function') {
+      window.showNotice('ok', message, { label: T('materials.editor.undo', '撤销删除'), handler: undo });
+    } else toast(message, 'ok');
+  }
+
+  function setPreset(library, name, value) {
+    // User-chosen names can also be own-property names of Object.prototype.
+    Object.defineProperty(library, name, { value: clone(value), configurable: true, enumerable: true, writable: true });
+  }
+
+  // A library operation changes one saved preset. Other local draft edits stay editable.
+  function updateStoredPreset(result, draft) {
+    var name = result.name;
+    var stored = result.materials && result.materials.custom_presets;
+    if (!stored || !HAS.call(stored, name)) return;
+    var hadLocalEdits = !same(ownPreset(CURRENT.custom_presets, name), ownPreset(BASELINE.custom_presets, name));
+    setPreset(BASELINE.custom_presets, name, stored[name]);
+    if (!hadLocalEdits) {
+      setPreset(CURRENT.custom_presets, name, draft || stored[name]);
+    }
+    markDirty();
+    renderPane();
+  }
+
+  function choosePresetFile() {
+    var input = el('input', { type: 'file', accept: '.json,application/json' });
+    input.addEventListener('change', function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      // Match the import endpoint's 256 KiB limit before allocating the base64 string.
+      if (!file.size || file.size > 256 * 1024) {
+        toast(T('materials.editor.fileError', '请选择大小在限制内且有内容的 JSON 预设。'), 'warn');
+        return;
+      }
+      var reader = new FileReader();
+      reader.onerror = function () { toast(T('materials.editor.fileError', '请选择大小在限制内且有内容的 JSON 预设。'), 'warn'); };
+      reader.onload = function () {
+        callEntry('import_material_preset', { filename: file.name, data: String(reader.result).split(',')[1] })
+          .then(function (result) {
+            updateStoredPreset(result);
+            toast(result.replaced
+              ? T('materials.editor.importReplaced', '已导入并覆盖同名预设「{{name}}」。', { name: result.name })
+              : T('materials.editor.imported', '已导入预设「{{name}}」。', { name: result.name }), 'ok');
+          }).catch(function (error) {
+            toast(T('materials.editor.importFailed', '导入预设失败：{{error}}', { error: error.message || error }), 'warn');
+          });
+      };
+      reader.readAsDataURL(file);
+    });
+    input.click();
+  }
+
+  function exportPreset(name) {
+    callEntry('export_material_preset', { name: name }).then(function (result) {
+      window.downloadExportResult(result);
+      toast(T('materials.editor.exported', '已下载 {{filename}}。', { filename: result.filename }), 'ok');
+    }).catch(function (error) {
+      toast(T('materials.editor.exportFailed', '导出预设失败：{{error}}', { error: error.message || error }), 'warn');
+    });
+  }
+
   function renderPresets(pane) {
     pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.builtin', '材质预设') }));
     var grid = el('div', { class: 'mt-grid' });
@@ -812,8 +964,12 @@
     pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.builtinHint',
       '预设是整套参数替换：切换后五节参数会整体重置为该预设的值，不会残留上一个预设的调校。') }));
 
-    pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.mine', '我的预设') }));
     var customIds = CUSTOM_ORDER();
+    pane.appendChild(el('div', { class: 'mt-sub mt-preset-head' }, [
+      el('span', { class: 'mt-preset-count', 'data-count': customIds.length, 'data-limit': PRESET_LIMIT,
+        text: T('materials.presets.mine', '我的预设') + ' (' + customIds.length + '/' + PRESET_LIMIT + ')' }),
+      el('button', { type: 'button', class: 'mt-mini mt-preset-import', text: T('materials.editor.importPreset', '导入…'), 'on:click': choosePresetFile })
+    ]));
     if (customIds.length) {
       var customGrid = el('div', { class: 'mt-grid' });
       customIds.forEach(function (id) {
@@ -824,7 +980,14 @@
           if (event && event.stopPropagation) event.stopPropagation();
           deleteCustomPreset(id);
         });
-        wrap.appendChild(del);
+        var canExport = BASELINE && HAS.call(BASELINE.custom_presets, id) &&
+          same(CURRENT.custom_presets[id], BASELINE.custom_presets[id]);
+        wrap.appendChild(el('div', { class: 'mt-preset-ops' }, [
+          el('button', { class: 'mt-mini mt-preset-export', type: 'button', disabled: !canExport,
+            title: canExport ? null : T('materials.editor.applyBeforeExport', '先应用此预设，再导出。'),
+            text: T('materials.editor.exportPreset', '导出'), 'on:click': function () { exportPreset(id); } }),
+          del
+        ]));
         customGrid.appendChild(wrap);
       });
       pane.appendChild(customGrid);
@@ -843,6 +1006,9 @@
     saveRow.appendChild(nameInput);
     saveRow.appendChild(saveBtn);
     pane.appendChild(saveRow);
+    if (customIds.length >= PRESET_LIMIT) {
+      pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.editor.presetLimit', '最多可保存 {{count}} 个自定义预设。', { count: PRESET_LIMIT }) }));
+    }
     pane.appendChild(el('p', { class: 'mt-hint', text: T('materials.presets.mineHint',
       '删除自定义预设会立即写盘（不依赖「应用材质」）；保存则跟随「应用材质」一起提交，导出/分享包里也会带上。') }));
 
@@ -855,10 +1021,7 @@
       card.appendChild(el('b', { text: item.label }));
       card.appendChild(el('span', { text: QUALITY_DESC[item.id] ? T('materials.qualityDesc.' + item.id, QUALITY_DESC[item.id]) : '' }));
       card.addEventListener('click', function () {
-        CURRENT.quality = item.id;
-        markDirty();
-        renderPane();
-        renderHeadState();
+        setQuality(item.id);
       });
       modes.appendChild(card);
     });
@@ -903,16 +1066,21 @@
     if (value === undefined || value === null) value = lightValue(param.section, param.key);
     var range = el('input', { type: 'range', class: 'mt-range', 'aria-label': param.label,
       min: min, max: max, step: step, value: fmtNum(value) });
-    var out = el('span', { class: 'mt-comp-num', text: fmtNum(value) });
-    range.addEventListener('input', function () {
-      var next = num(range.value, num(value, min));
-      out.textContent = fmtNum(next);
+    var out = el('input', { type: 'number', class: 'mt-comp-num', 'aria-label': param.label,
+      min: min, max: max, step: step, value: fmtNum(value) });
+    function write(next) {
+      out.value = fmtNum(next);
+      range.value = fmtNum(next);
       CURRENT.components = CURRENT.components || {};
       var target = CURRENT.components[compId] || (CURRENT.components[compId] = { mode: 'custom' });
       target.mode = 'custom';
       target[param.key] = next;
       markDirty();
-    });
+    }
+    range.addEventListener('input', function () { write(num(range.value, min)); });
+    out.addEventListener('change', function () { write(clamp(num(out.value, num(value, min)), min, max)); });
+    range.step = step < 1 ? step / 10 : step;
+    fineTuning(out, step, min, max, function () { return num(lightValue(param.section, param.key), min); }, write);
     row.appendChild(range);
     row.appendChild(out);
     return row;
@@ -961,6 +1129,25 @@
     modeSel.addEventListener('change', function () { applyComponentMode(comp.id, modeSel.value); });
     head.appendChild(modeSel);
 
+    if (entry.mode === 'custom') {
+      head.appendChild(el('button', { type: 'button', class: 'mt-mini', id: 'mt-comp-copy-' + comp.id,
+        text: T('materials.editor.copy', '复制到其余组件'), 'on:click': function () {
+          var source = CURRENT.components[comp.id];
+          var copied = 0;
+          SPEC.components.forEach(function (other) {
+            if (other.id === comp.id) return;
+            var dest = { mode: 'custom' };
+            ['opacity', 'blur', 'radius', 'borderWidth', 'shadowStrength'].forEach(function (key) {
+              if (HAS.call(source, key)) dest[key] = source[key];
+            });
+            CURRENT.components[other.id] = dest;
+            copied++;
+          });
+          markDirty();
+          renderPane();
+          toast(T('materials.editor.copyDone', '已复制到 {{count}} 个组件', { count: copied }), 'ok');
+        } }));
+    }
     if (entry.mode === 'preset') {
       var presetSel = el('select', { class: 'mt-select' });
       PRESET_ORDER().forEach(function (id) {
@@ -1065,6 +1252,9 @@
     if (!paramPair(CURRENT.quality, BASELINE.quality)) total++;
     if (!!CURRENT.lock !== !!BASELINE.lock) total++;
     if (!same(CURRENT.components || {}, BASELINE.components || {})) total++;
+    new Set(Object.keys(CURRENT.custom_presets || {}).concat(Object.keys(BASELINE.custom_presets || {}))).forEach(function (name) {
+      if (!same(CURRENT.custom_presets[name], BASELINE.custom_presets[name])) total++;
+    });
     // Dark overrides: count the keys that actually differ (added, removed or changed), not
     // the difference in override counts -- editing an existing override changes no count.
     var curDark = CURRENT.dark || {};
@@ -1119,26 +1309,52 @@
     }
   }
 
-  function renderTabs() {
+  function applyTab(id, fromKeyboard) {
+    TAB = id;
+
+    SEARCH = '';
+    var box = byId('mt-search');
+    if (box) box.value = '';
+    renderTabs(fromKeyboard);
+    renderPane();
+  }
+
+  function renderTabs(focusActive) {
     var nav = byId('mt-tabs');
     if (!nav) return;
     nav.textContent = '';
-    TABS.forEach(function (tab) {
+    TABS.forEach(function (tab, index) {
+      var selected = TAB === tab.id;
       var button = el('button', {
-        class: 'mt-tab' + (TAB === tab.id ? ' is-active' : ''),
-        type: 'button', text: T('materials.nav.' + tab.id, tab.label)
+        class: 'mt-tab' + (selected ? ' is-active' : ''),
+        type: 'button',
+        text: T('materials.nav.' + tab.id, tab.label),
+        id: 'mt-tab-' + tab.id,
+        role: 'tab',
+        'aria-selected': selected ? 'true' : 'false',
+        'aria-controls': 'mt-pane',
+
+        tabindex: selected ? '0' : '-1'
       });
-      button.addEventListener('click', function () {
-        TAB = tab.id;
-        // Switching views exits search: a lingering query makes the tab click look like it did nothing.
-        SEARCH = '';
-        var box = byId('mt-search');
-        if (box) box.value = '';
-        renderTabs();
-        renderPane();
+      button.addEventListener('click', function () { applyTab(tab.id, false); });
+      button.addEventListener('keydown', function (event) {
+        var next = -1;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % TABS.length;
+        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + TABS.length) % TABS.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = TABS.length - 1;
+        if (next < 0) return;
+        event.preventDefault();
+        applyTab(TABS[next].id, true);
       });
       nav.appendChild(button);
     });
+    var pane = byId('mt-pane');
+    if (pane) pane.setAttribute('aria-labelledby', 'mt-tab-' + TAB);
+    if (focusActive) {
+      var active = byId('mt-tab-' + TAB);
+      if (active) active.focus();
+    }
   }
 
   function renderAll() {
@@ -1244,7 +1460,24 @@
     });
   }
 
+  function applyPlain() {
+    var stage = byId('mt-pv');
+    if (stage) stage.setAttribute('data-plain', PLAIN_ON ? '1' : '0');
+    var button = byId('mt-pv-plain');
+    if (button) {
+      button.classList.toggle('is-on', PLAIN_ON);
+      button.setAttribute('aria-pressed', String(PLAIN_ON));
+    }
+  }
+
+  function togglePlain() {
+    PLAIN_ON = !PLAIN_ON;
+    try { window.localStorage.setItem(PLAIN_KEY, PLAIN_ON ? '1' : '0'); } catch (_) { /* storage unavailable */ }
+    applyPlain();
+  }
+
   function buildPreview() {
+    try { PLAIN_ON = window.localStorage.getItem(PLAIN_KEY) === '1'; } catch (_) { /* storage unavailable */ }
     if (!BG_TOUCHED) BG_MODE = MODE === 'dark' ? 'dark' : 'light';
     var wrap = el('aside', { class: 'mt-pv-wrap' });
     var title = el('div', { class: 'mt-pv-title' });
@@ -1252,6 +1485,8 @@
       text: T('materials.preview.title', '实时预览 · {{mode}}', { mode: modeLabel(MODE) }) }));
     title.appendChild(el('span', { class: 'mt-pv-off', id: 'mt-pv-off', text: T('materials.preview.off', '材质未启用') }));
     syncOffTag();
+    title.appendChild(el('button', { class: 'mt-pv-bg', type: 'button', id: 'mt-pv-plain',
+      text: T('materials.editor.paletteOnly', '只看配色'), 'on:click': togglePlain }));
     title.appendChild(el('button', {
       class: 'mt-pv-bg', type: 'button', id: 'mt-pv-compare',
       title: T('materials.preview.compareTitle', '右半屏显示参数默认值下的原始材质，拖滑块时能直接对比调整前后'),
@@ -1391,9 +1626,7 @@
       qualitySel.appendChild(opt);
     });
     qualitySel.addEventListener('change', function () {
-      CURRENT.quality = qualitySel.value;
-      markDirty();
-      schedulePreview();
+      setQuality(qualitySel.value);
     });
     head.appendChild(qualitySel);
 
@@ -1412,14 +1645,17 @@
     shell.appendChild(masterWarn);
 
     var body = el('div', { class: 'mt-body' });
-    body.appendChild(el('nav', { class: 'mt-tabs', id: 'mt-tabs' }));
-    body.appendChild(el('section', { class: 'mt-pane', id: 'mt-pane' }));
+    body.appendChild(el('nav', { class: 'mt-tabs', id: 'mt-tabs', role: 'tablist', 'aria-label': T('materials.editor.sections', '材质分区') }));
+    body.appendChild(el('section', { class: 'mt-pane', id: 'mt-pane', role: 'tabpanel', tabindex: '-1' }));
     body.appendChild(buildPreview());
     shell.appendChild(body);
 
     root.appendChild(shell);
     MOUNTED = true;
+    applyPlain();
+    document.dispatchEvent(new CustomEvent('nts:palette-request'));
     renderAll();
+    notifyChange();
     schedulePreview();
   }
 
@@ -1485,6 +1721,7 @@
       renderPane();
       schedulePreview();
     }
+    notifyChange();
   }
 
   function snapshot() {
@@ -1506,6 +1743,7 @@
       renderPane();
       schedulePreview();
     }
+    notifyChange();
   }
 
   function boot() {
@@ -1532,7 +1770,52 @@
     });
   }
 
+  function setQuality(id) {
+    if (!CURRENT || !SPEC || !(SPEC.quality || []).some(function (item) { return item.id === id; })) return false;
+    if (CURRENT.quality !== id) {
+      CURRENT.quality = id;
+      markDirty();
+      renderPane();
+    }
+    return true;
+  }
+
+  // A shortcut for both modes updates the light value even when the editor is showing dark.
+  function patchBoth(param, value) {
+    writeValue(param.section, param.key, value, 'both');
+    var dark = CURRENT.dark && CURRENT.dark[param.section];
+    if (dark) {
+      delete dark[param.key];
+      if (!Object.keys(dark).length) delete CURRENT.dark[param.section];
+    }
+  }
+
+  function patchValues(entries, mode) {
+    if (!CURRENT || !Array.isArray(entries)) return 0;
+    var count = 0;
+    entries.forEach(function (item) {
+      var param = item && paramOf(item.key);
+      if (!param) return;
+      if (mode === 'both') patchBoth(param, item.value);
+      else writeValue(param.section, param.key, item.value, MODE);
+      count++;
+    });
+    if (count) {
+      markDirty();
+      renderPane();
+    }
+    return count;
+  }
+
   window.NekoMaterials = {
+    togglePlain: togglePlain,
+    get plain() { return PLAIN_ON; },
+    get plainKey() { return PLAIN_KEY; },
+    diffCount: diffCount,
+    patch: patchValues,
+    setQuality: setQuality,
+    getQuality: function () { return CURRENT && CURRENT.quality; },
+    lastPresetNote: function () { return LAST_PRESET_NOTE; },
     mount: mount,
     sync: sync,
     snapshot: snapshot,

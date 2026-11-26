@@ -168,11 +168,8 @@ def contrast(fg, bg):
 
 
 def mode_vars(doc, mode):
-    """Variables in effect for ``mode``: dark mode overlays non-empty ``dark_vars``."""
-    merged = dict(doc.get("vars") or {})
-    if mode == "dark":
-        merged.update({k: v for k, v in (doc.get("dark_vars") or {}).items() if v})
-    return merged
+    """Light and dark declarations are scoped to mutually exclusive loader selectors."""
+    return dict(doc.get("dark_vars" if mode == "dark" else "vars") or {})
 
 
 def _layer(vars_map, key, base):

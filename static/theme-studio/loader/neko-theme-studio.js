@@ -40,6 +40,8 @@
   var STYLE_ID = 'nts-dynamic';
   var CACHE_KEY = 'neko.themeStudio.palette';
   // Self-check snapshot key: see persistSnapshot() at the end of the file.
+  var POKE_KEY = 'neko.themeStudio.poke';
+
   var SNAPSHOT_KEY = 'neko.themeStudio.lastDiagnose';
   // Built into the app: the palette API is same-origin with the window; no plugin
   // port and no base-URL override.
@@ -51,6 +53,15 @@
   // good. Symptom: "changed a colour in the panel, the window never updates, the
   // console is silent". A timeout counts as one network failure and goes through
   // the self-healing backoff (see reviveService).
+  var POLL_MID_MS = 3000;
+  var POLL_IDLE_MS = 6000;
+  var POLL_FAST_TICKS = 20;
+  var POLL_MID_TICKS = 60;
+
+  var idlePolls = 0;
+
+  var pollingStopped = false;
+
   var FETCH_TIMEOUT_MS = 8000;
   // In the plugin era these were backoff parameters for "waking the plugin
   // service" (csrf-token -> /plugins/refresh -> /plugin/<id>/start). Built into
@@ -159,6 +170,7 @@
   //   1.6.44 the warm-up gate identifies palettes by content (two switches within
   //          the same second no longer stick on the old theme); warm-up timeout
   //          lets it through.
+  //   1.6.111 adds conditional polling, temporary previews and interactive glass surfaces.
   //   1.6.45 material rules go into @layer nts-theme.materials so the palette
   //          layer's !important no longer overrides them; fixed a prematurely
   //          closed comment in the settings-page material section.
@@ -183,7 +195,7 @@
   //          recorded or previewed. (Static CSS: wallpaper brightness no longer
   //          overrides the fit / position / repeat controls, and compact /chat
   //          outer wrappers stay transparent with materials off.)
-  var SCRIPT_VERSION = '1.6.52';
+  var SCRIPT_VERSION = '1.6.111';
 
   // Allowed colour value shapes. Deliberately conservative: only plain colours, so
   // arbitrary CSS can never be injected into a variable.
@@ -429,7 +441,7 @@
   function warmKeyOf(p) {
     var text = '';
     try {
-      text = JSON.stringify([p.name, p.enabled, p.vars, p.dark_vars, p.material_vars]);
+      text = JSON.stringify([p.name, p.enabled, p.vars, p.dark_vars, p.material_vars, p.preview]);
     } catch (e) {
       text = stampOf(p);
     }
@@ -963,7 +975,19 @@
     } catch (e2) { /* ignore */ }
   }
 
+  function removeBootStyle() {
+    var boot = document.getElementById('nts-boot');
+    if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
+  }
+
   function removeStyle() {
+    removeBootStyle();
+    dropPreviewBadge();
+    resetSurfaceStates();
+    document.documentElement.removeAttribute(SQUIRCLE_ATTR);
+    if (fadeTimer) clearTimeout(fadeTimer);
+    fadeTimer = 0;
+    document.documentElement.removeAttribute(FADE_ATTR);
     var el = document.getElementById(STYLE_ID);
     if (el && el.parentNode) el.parentNode.removeChild(el);
     lastAppliedCss = '';
@@ -1156,7 +1180,6 @@
   // !important rules. In a data URI # must be written as %23: a bare # truncates
   // the CSS in the middle of url().
   var GLASS_NOISE_URI = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='0.6'/></svg>\")";
-
   var GLASS_CSS = (function () {
     var LIGHT = ':root:not([data-theme=dark])';
     var DARK = ':root[data-theme=dark]';
@@ -1207,7 +1230,7 @@
     var SPEC_AT = 'var(--nts-spec-x, 28%) var(--nts-spec-y, 14%)';
     // Specular settles by 45% while scrolling (--nts-scroll-k is written by
     // initGlassPointer's scroll listener).
-    var SPEC_ALPHA = 'calc(' + V_S + ' * (1 - 0.45 * ' + V_K + '))';
+    var SPEC_ALPHA = 'calc(' + V_S + ' * (1 - 0.45 * ' + V_K + ') * var(--nts-spec-on, 1))';
 
     var EDGE = ['rim', 'thickness', 'lens', 'dispersion'];
 
@@ -1306,8 +1329,8 @@
     //    0.3.0. 0.4.0 removed that approach; noise is kept only on the 5 surfaces
     //    with a free ::before (top bar/export area no longer support noise).
     var ambientLayer = 'radial-gradient(64% 120% at ' + LIGHT_AT + ',' +
-      ' rgba(255, 255, 255, calc(' + V_A + ' * 0.22)) 0%,' +
-      ' rgba(255, 255, 255, calc(' + V_A + ' * 0.07)) 38%,' +
+      ' rgba(255, 255, 255, calc(' + V_A + ' * 0.22 * var(--nts-fx-on, 1))) 0%,' +
+      ' rgba(255, 255, 255, calc(' + V_A + ' * 0.07 * var(--nts-fx-on, 1))) 38%,' +
       ' rgba(255, 255, 255, 0) 70%)';
     var causticLayer = 'radial-gradient(58% 46% at 50% 50%,' +
       ' rgba(255, 255, 255, calc(' + V_C + ' * 0.30)) 0%,' +
@@ -1924,6 +1947,254 @@
   // (.composer-overflow-popover), and forcing relative would change their
   // positioning semantics. So only elements whose **computed value is static** get
   // an inline relative (layout-equivalent, no offset), marked to avoid reprocessing.
+  var PLATE_KEY = 'neko.themeStudio.plate';
+
+  var RIM_KEY = 'neko.themeStudio.rim';
+
+  // Keep material overrides in the same sublayer as the compiled surface rules.
+  var SURFACE_CSS = `@layer nts-theme.materials {
+:root[data-nts-mt]:root:root:root:root:root body .compact-chat-surface-frame,
+:root[data-nts-mt]:root:root:root:root:root body .chat-window,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-user,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-assistant,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-tool,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-system,
+:root[data-nts-mt]:root:root:root:root:root body .composer-panel,
+:root[data-nts-mt]:root:root:root:root:root body .composer-input-shell,
+:root[data-nts-mt]:root:root:root:root:root body .window-topbar,
+:root[data-nts-mt]:root:root:root:root:root body .compact-export-history-bubble,
+:root[data-nts-mt]:root:root:root:root:root body .composer-overflow-popover,
+:root[data-nts-mt]:root:root:root:root:root body .composer-icon-popover {
+  --nts-glass-tint: var(--nts-mt-bg-c);
+  --nts-chat-panel-bg: var(--nts-mt-bg-c);
+  --nts-input-bg: var(--nts-mt-bg-c);
+  --nts-panel-glass-tint: var(--nts-mt-bg-c);
+  --nts-panel-gradient:
+    var(--nts-mt-inner-img),
+    var(--nts-mt-inner2),
+    var(--nts-mt-rim-img),
+    var(--nts-mt-sheen-img),
+    var(--nts-mt-spot),
+    var(--nts-mt-noise-img),
+    var(--nts-mt-ambient-img),
+    linear-gradient(var(--nts-mt-refract-tint), var(--nts-mt-refract-tint)),
+    var(--nts-mt-dye);
+  --nts-glass-filter: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
+  --nts-chat-blur: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
+  --nts-chat-panel-blur: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
+}
+
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .compact-chat-surface-frame,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .window-topbar,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .message-bubble-user,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .message-bubble-assistant,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .message-bubble-tool,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .message-bubble-system,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .composer-input-shell,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .compact-export-history-bubble,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .composer-overflow-popover,
+:root[data-nts-mt][data-nts-squircle]:root:root:root:root:root body .composer-icon-popover {
+  corner-shape: squircle;
+}
+
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-assistant,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-user,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-tool,
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-system {
+  --nts-bubble-glass-tint: var(--nts-mt-bg-c);
+  --nts-bubble-glass-filter: blur(calc(var(--nts-mt-blur-c) * var(--nts-lens-clear, 1))) saturate(var(--nts-mt-saturation)) brightness(var(--nts-mt-brightness)) contrast(1.03);
+  --nts-ai-bubble-bg: var(--nts-mt-bg-c);
+  --nts-user-bubble-bg: var(--nts-mt-bg-c);
+  --nts-tool-bubble-bg: var(--nts-mt-bg-c);
+  --nts-mt-stack-c: var(--nts-mt-inner-img), var(--nts-mt-inner2), var(--nts-mt-rim-img), var(--nts-mt-sheen-img), var(--nts-mt-spot), var(--nts-mt-noise-img), var(--nts-mt-ambient-img), linear-gradient(var(--nts-mt-refract-tint), var(--nts-mt-refract-tint)), var(--nts-mt-dye);
+  --nts-ai-bubble-gradient: var(--nts-mt-stack-c);
+  --nts-user-bubble-gradient: var(--nts-mt-stack-c);
+  --nts-ai-bubble-border: var(--nts-mt-border);
+}
+
+:root[data-nts-mt]:root:root:root:root:root body .message-bubble-user {
+  --nts-user-bubble-border: var(--nts-accent);
+}
+
+:root[data-nts-mt]:root:root:root:root:root body .chat-window,
+:root[data-nts-mt]:root:root:root:root:root body #react-chat-window-shell:not([data-chat-surface-mode="compact"]),
+:root[data-nts-mt]:root:root:root:root:root body .composer-panel {
+
+  background-color: var(--nts-chat-bg, #ffffff) !important;
+  background-image: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .chat-window,
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body #react-chat-window-shell:not([data-chat-surface-mode="compact"]),
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .composer-panel {
+  background-color: var(--nts-chat-bg, #14181f) !important;
+}
+
+:root[data-nts-mt]:root:root:root:root:root body .message-list {
+  background-color: transparent !important;
+  background-image: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame,
+:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .window-topbar,
+:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .message-bubble-assistant,
+:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .message-bubble-user,
+:root[data-nts-mt]:not([data-theme="dark"]):root:root:root:root:root body .compact-export-history-bubble {
+
+  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-input-bg: rgba(255, 255, 255, calc(0.24 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-panel-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
+  --nts-bubble-glass-tint: rgba(255, 255, 255, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
+  --nts-ai-bubble-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-user-bubble-bg: rgba(255, 255, 255, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-tool-bubble-bg: rgba(255, 255, 255, calc(0.15 + 0.6 * var(--nts-mt-opacity, 0.58)));
+}
+
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame,
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .window-topbar,
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .message-bubble-assistant,
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .message-bubble-user,
+:root[data-nts-mt][data-theme="dark"]:root:root:root:root:root body .compact-export-history-bubble {
+
+  --nts-mt-bg-c: rgba(26, 32, 42, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-chat-panel-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-input-bg: rgba(24, 30, 40, calc(0.24 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-panel-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
+  --nts-bubble-glass-tint: rgba(24, 30, 40, calc(0.2 + 0.6 * var(--nts-mt-opacity, 0.58)));
+  --nts-ai-bubble-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-user-bubble-bg: rgba(24, 30, 40, calc(0.2 + 0.62 * var(--nts-mt-opacity, 0.58)));
+  --nts-tool-bubble-bg: rgba(24, 30, 40, calc(0.15 + 0.6 * var(--nts-mt-opacity, 0.58)));
+}
+
+:root[data-nts-mt]:root:root:root:root:root body .composer-input-shell {
+background-color: transparent !important;
+background-image: none !important;
+border-color: transparent !important;
+-webkit-backdrop-filter: none !important;
+backdrop-filter: none !important;
+box-shadow: none !important;
+}
+:root[data-nts-mt]:root:root:root:root:root body .composer-input-shell::before,
+:root[data-nts-mt]:root:root:root:root:root body .composer-input-shell::after {
+opacity: 0 !important;
+background-image: none !important;
+}
+
+:root[data-nts-mt][data-nts-plate="0"]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame {
+  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-tint: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.03 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-input-bg: rgba(255, 255, 255, calc(0.05 + 0.06 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-rim: rgba(255, 255, 255, 0.62) !important;
+}
+:root[data-nts-mt][data-nts-plate="1"]:not([data-theme="dark"]):root:root:root:root:root body .compact-chat-surface-frame {
+  --nts-mt-bg-c: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-tint: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-chat-panel-bg: rgba(255, 255, 255, calc(0.1 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-input-bg: rgba(255, 255, 255, calc(0.12 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-rim: rgba(255, 255, 255, 0.55) !important;
+}
+:root[data-nts-mt][data-nts-plate="0"][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame {
+  --nts-mt-bg-c: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-tint: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-chat-panel-bg: rgba(18, 24, 32, calc(0.06 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-input-bg: rgba(18, 24, 32, calc(0.08 + 0.08 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-rim: rgba(255, 255, 255, 0.3) !important;
+}
+:root[data-nts-mt][data-nts-plate="1"][data-theme="dark"]:root:root:root:root:root body .compact-chat-surface-frame {
+  --nts-mt-bg-c: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-tint: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-chat-panel-bg: rgba(20, 26, 34, calc(0.14 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-input-bg: rgba(20, 26, 34, calc(0.16 + 0.3 * var(--nts-mt-opacity, 0.58))) !important;
+  --nts-glass-rim: rgba(255, 255, 255, 0.26) !important;
+}
+
+:root[data-nts-mt][data-nts-mt-heavy]:root:root:root:root:root body :is(.message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  background-image: none !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08) !important;
+}
+:root[data-nts-mt][data-nts-mt-heavy]:root:root:root:root:root body :is(.message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble)::before,
+:root[data-nts-mt][data-nts-mt-heavy]:root:root:root:root:root body :is(.message-bubble-user, .message-bubble-assistant, .compact-export-history-bubble)::after {
+  content: none !important;
+  display: none !important;
+}
+
+:root[data-nts-mt] body .compact-chat-surface-frame,
+:root[data-nts-mt] body .window-topbar,
+:root[data-nts-mt] body .message-bubble-assistant,
+:root[data-nts-mt] body .message-bubble-user,
+:root[data-nts-mt] body .composer-icon-button {
+
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+              background-color var(--nts-mt-exit-duration, 180ms) var(--nts-mt-easing, ease-out),
+              box-shadow var(--nts-mt-hover-duration, 140ms) var(--nts-mt-easing, ease-out) !important;
+  transform-origin: 50% 50%;
+}
+:root[data-nts-mt] body [data-nts-motion] {
+  translate: 0 var(--nts-motion-y, 0px);
+  scale: var(--nts-motion-scale, 1);
+}
+:root[data-nts-mt]:root:root:root:root body [data-nts-press] {
+  box-shadow: var(--nts-press-shadow, var(--nts-mt-shadow)) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-nts-mt] body .compact-chat-surface-frame,
+  :root[data-nts-mt] body .window-topbar,
+  :root[data-nts-mt] body .message-bubble-assistant,
+  :root[data-nts-mt] body .message-bubble-user,
+  :root[data-nts-mt] body .composer-icon-button { transition: none !important; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-nts-fade]:root:root:root:root:root body :is(.chat-window, .composer-input-shell, .window-topbar, .message-bubble-user, .message-bubble-assistant, .compact-chat-surface-frame) {
+    transition: background-color .3s ease, color .3s ease, border-color .3s ease, box-shadow .3s ease !important;
+  }
+}
+
+#nts-preview-badge {
+  position:fixed;
+  right:18px;
+  bottom:18px;
+  z-index:2147482000;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 10px;
+  border-radius:999px;
+  font:600 11px/1.35 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;
+  letter-spacing:.02em;
+  color:var(--nts-send-text,#ffffff);
+  background:var(--nts-send-bg,var(--nts-accent,#5FB8E8));
+  box-shadow:0 6px 18px rgba(15,26,34,.22);
+  pointer-events:none;
+  user-select:none;
+  opacity:.94;
+
+}
+#nts-preview-badge::before {
+  content:"";
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:currentColor;
+  opacity:.75;
+
+}
+
+:root[data-nts-paused]:root:root:root:root:root body .compact-chat-surface-frame,
+  :root[data-nts-paused]:root:root:root:root:root body .chat-window {
+    animation-play-state: paused !important;
+  }
+}`;
   var GLASS_CONTAIN_SEL = [
     '.composer-input-shell', '.message-bubble-user',
     '.message-bubble-assistant'
@@ -1941,7 +2212,6 @@
       el.setAttribute('data-nts-box', '1');
     }
   }
-
   var GLASS_SURFACE_SEL = [
     '.window-topbar', '.composer-input-shell', '.compact-chat-surface-frame',
     '.composer-icon-button', '.composer-overflow-popover',
@@ -1955,6 +2225,14 @@
   // Lighting gate: when the palette has no "lighting variable" at all, pointer
   // tracking hibernates entirely; non-glass themes need no DOM scan every 220ms
   // and no rAF (v1.5.20 performance optimisation).
+  var GLASS_SPEC_ON_HOVER = 1;
+  var GLASS_SPEC_ON_IDLE = 0.34;
+  var GLASS_SPEC_ON_PRESS = 1.12;
+  var GLASS_SPEC_PRESS_SQUEEZE = 0.35;
+  var GLASS_SPEC_FADE = 0.2;
+  var GLASS_SPEC_REST_X = 0.28;
+  var GLASS_SPEC_REST_Y = 0.14;
+  var GLASS_SPEC_PAD = 10;
   var GLASS_FX_VARS = [
     'glass-filter', 'glass-tint', 'glass-highlight', 'glass-rim', 'glass-specular',
     'glass-lens', 'glass-thickness', 'glass-sheen', 'glass-noise', 'ambient-glow',
@@ -1971,6 +2249,7 @@
   function glassFxActive() {
     var de = document.documentElement;
     if (!de || !de.hasAttribute) return false;
+    if (de.hasAttribute(MT_ATTR)) return true;
     for (var gi = 0; gi < glassFxGates.length; gi++) {
       if (de.hasAttribute(glassFxGates[gi])) return true;
     }
@@ -1983,20 +2262,38 @@
   var FADE_ATTR = 'data-nts-fade';
   var fadeTimer = 0;
 
-  function flashThemeSwap() {
+
+  function beginThemeSwapFade() {
     var de = document.documentElement;
-    if (!de || !de.setAttribute) return;
-    if (fadeTimer) clearTimeout(fadeTimer);
+    if (!de || !de.setAttribute) return false;
+    if (prefersReducedMotion()) return false;
+    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = 0; }
     de.setAttribute(FADE_ATTR, '');
+    // Flush the transition gate before changing computed colours.
+    window.getComputedStyle(de).getPropertyValue('transition-property');
+    return true;
+  }
+
+  function endThemeSwapFadeLater() {
+    var de = document.documentElement;
+    if (fadeTimer) clearTimeout(fadeTimer);
     fadeTimer = setTimeout(function () {
       fadeTimer = 0;
-      if (de.removeAttribute) de.removeAttribute(FADE_ATTR);
+      if (de && de.removeAttribute) de.removeAttribute(FADE_ATTR);
     }, 420);
   }
 
+
   var glassPointerBound = false;
   var glassPanels = [];
-  var glassPointer = { x: -1, y: -1, raf: 0, seen: false };
+  var glassRectAt = 0;
+
+  var glassRectDirty = true;
+  var GLASS_RECT_TTL = 400;
+
+  var glassStats = { rebuilds: 0, nodes: 0, lastMs: 0, totalMs: 0 };
+
+  var glassPointer = { x: -1, y: -1, raf: 0, seen: false, present: true, on: 1 };
   var glassScrollTimer = 0;
   var glassObserver = null;
   var glassRebuildTimer = 0;
@@ -2009,25 +2306,33 @@
   function refreshGlassPanels() {
     glassRebuildTimer = 0;
     glassLastRebuild = Date.now ? Date.now() : new Date().getTime();
-    // No DOM sweep without lighting variables: for non-glass themes this would be
-    // wasted work every 220ms.
     if (!glassFxActive()) { glassPanels = []; return; }
+    var statNow = (window.performance && window.performance.now)
+      ? function () { return window.performance.now(); }
+      : function () { return Date.now ? Date.now() : new Date().getTime(); };
+    var statT0 = statNow();
     ensureGlassContainment();
     var nodes = glassNodes();
+    var prev = new Map();
+    for (var pi = 0; pi < glassPanels.length; pi++) prev.set(glassPanels[pi].el, glassPanels[pi]);
     var next = [];
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
-      var keep = null;
-      for (var j = 0; j < glassPanels.length; j++) {
-        if (glassPanels[j].el === el) { keep = glassPanels[j]; break; }
+      var keep = prev.get(el) || null;
+      if (!keep) {
+        try { el.__ntsRimBase = captureEdgeBase(el); } catch (e0) {  }
       }
-      // New surface: cx/cy left empty so the first frame lands on the pointer
-      // position directly (no glide in from 0,0)
-      next.push(keep || { el: el, cx: null, cy: null, tx: 0, ty: 0, sx: '', sy: '', lx: '', ly: '' });
+      next.push(keep || {
+        el: el, cx: null, cy: null, tx: 0, ty: 0, sx: '', sy: '', lx: '', ly: '', a: null, sa: ''
+      });
     }
     glassPanels = next;
-    // Redraw at the current pointer right after rebuilding: newly mounted
-    // bubbles/top bar do not have to wait for the user to move the mouse again
+    glassStats.rebuilds += 1;
+    glassStats.nodes = nodes.length;
+    glassStats.lastMs = Math.round((statNow() - statT0) * 100) / 100;
+    glassStats.totalMs = Math.round((glassStats.totalMs + glassStats.lastMs) * 100) / 100;
+    glassRectDirty = true;
+    syncMaterialHeavy();
     scheduleGlassSpecular();
   }
 
@@ -2040,19 +2345,240 @@
     return (value * 100).toFixed(1) + '%';
   }
 
+  function refreshGlassRects() {
+    glassRectDirty = false;
+    glassRectAt = Date.now ? Date.now() : new Date().getTime();
+    for (var ri = 0; ri < glassPanels.length; ri++) {
+      var rp = glassPanels[ri];
+      try {
+        var rr = rp.el.getBoundingClientRect();
+        rp.rect = {
+          l: rr.left, t: rr.top, r: rr.right, b: rr.bottom,
+          w: rr.width, h: rr.height
+        };
+      } catch (e) {
+        rp.rect = null;
+      }
+    }
+  }
+  var RIM_EDGE_BOOST = 2.4;
+  var RIM_EDGE_BOOST_STRONG = 3.6;
+  var RIM_EDGE_DIM = 0.45;
+  var RIM_EDGE_DIM_STRONG = 0.35;
+  var RIM_EDGE_SIDES = ['t', 'b', 'l', 'r'];
+  var RIM_EDGE_FALLBACK = { t: 0.126, b: 0.028, l: 0.035, r: 0.035 };
+
+  var CHROMA_KEY = 'neko.themeStudio.chroma';
+  var CHROMA_GAIN = { '0': 0, '1': 1, '2': 1.35 };
+
+  var DISP_PROPS = ['--nts-mt-disp-shift', '--nts-mt-disp-warm', '--nts-mt-disp-cool'];
+
+  function chromaLevel() {
+    try {
+      var lv = document.documentElement.getAttribute('data-nts-chroma');
+      return lv === '0' || lv === '2' ? lv : '1';
+    } catch (e) { return '1'; }
+  }
+
+  function clearAllDisp() {
+    for (var i = 0; i < glassPanels.length; i++) {
+      var gp = glassPanels[i];
+      if (gp && gp.el) { clearDispVars(gp.el); gp.el.__ntsRimKey = ''; }
+    }
+    try { paintGlassSpecular(); } catch (e2) {  }
+  }
+
+  function clearDispVars(el) {
+    if (!el || !el.style) return;
+    for (var i = 0; i < DISP_PROPS.length; i++) {
+      try { el.style.removeProperty(DISP_PROPS[i]); } catch (e) {  }
+    }
+    el.__ntsDispKey = '';
+  }
+
+  function rimEdgeColor(el, side) {
+    var raw = '';
+    try { raw = window.getComputedStyle(el).getPropertyValue('--nts-mt-edge-' + side) || ''; }
+    catch (e) { raw = ''; }
+    return (raw || '').trim();
+  }
+
+  function scaleEdgeColor(raw, k, side) {
+    var m = /rgba?\(([^)]+)\)/i.exec(raw || '');
+    if (!m) {
+      var a0 = RIM_EDGE_FALLBACK[side] || 0.04;
+      return 'rgba(255, 255, 255, ' + Math.min(1, a0 * k).toFixed(4) + ')';
+    }
+    var parts = m[1].split(',');
+    var r = Math.round(parseFloat(parts[0]) || 255);
+    var g = Math.round(parseFloat(parts[1]) || 255);
+    var b = Math.round(parseFloat(parts[2]) || 255);
+    var alpha = parts.length > 3 ? parseFloat(parts[3]) : 1;
+    if (!isFinite(alpha)) alpha = 1;
+    alpha = Math.max(0, Math.min(1, alpha * k));
+    return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha.toFixed(4) + ')';
+  }
+
+  // Sample unmodified material edges once, before applying per-pointer intensity and dispersion.
+  function captureEdgeBase(el) {
+    var saved = {};
+    var i, side, key;
+    for (i = 0; i < RIM_EDGE_SIDES.length; i++) {
+      side = RIM_EDGE_SIDES[i];
+      key = '--nts-mt-edge-' + side;
+      try { saved[side] = el.style.getPropertyValue(key) || ''; } catch (e) { saved[side] = ''; }
+      if (saved[side]) { try { el.style.removeProperty(key); } catch (e2) {  } }
+    }
+    var base = {};
+    for (i = 0; i < RIM_EDGE_SIDES.length; i++) {
+      side = RIM_EDGE_SIDES[i];
+      var col = rimEdgeColor(el, side);
+      base[side] = col || ('rgba(255, 255, 255, ' + (RIM_EDGE_FALLBACK[side] || 0.04) + ')');
+    }
+    for (i = 0; i < RIM_EDGE_SIDES.length; i++) {
+      side = RIM_EDGE_SIDES[i];
+      if (saved[side]) { try { el.style.setProperty('--nts-mt-edge-' + side, saved[side]); } catch (e3) {  } }
+    }
+    var savedDisp = {};
+    for (i = 0; i < DISP_PROPS.length; i++) {
+      try { savedDisp[DISP_PROPS[i]] = el.style.getPropertyValue(DISP_PROPS[i]) || ''; }
+      catch (e4) { savedDisp[DISP_PROPS[i]] = ''; }
+      if (savedDisp[DISP_PROPS[i]]) { try { el.style.removeProperty(DISP_PROPS[i]); } catch (e5) {  } }
+    }
+    var dcs = null;
+    try { dcs = window.getComputedStyle(el); } catch (e6) { dcs = null; }
+    base.dispShift = dcs ? (dcs.getPropertyValue('--nts-mt-disp-shift') || '').trim() : '';
+    base.dispWarm = dcs ? (dcs.getPropertyValue('--nts-mt-disp-warm') || '').trim() : '';
+    base.dispCool = dcs ? (dcs.getPropertyValue('--nts-mt-disp-cool') || '').trim() : '';
+    for (i = 0; i < DISP_PROPS.length; i++) {
+      if (savedDisp[DISP_PROPS[i]]) { try { el.style.setProperty(DISP_PROPS[i], savedDisp[DISP_PROPS[i]]); } catch (e7) {  } }
+    }
+    return base;
+  }
+
+  function paintRimLight(el, tx, ty, inside) {
+    if (!el || !el.style || !el.style.setProperty) return;
+    if (!inside) {
+      if (el.__ntsRimLit) {
+        for (var s0 = 0; s0 < RIM_EDGE_SIDES.length; s0++) {
+          el.style.removeProperty('--nts-mt-edge-' + RIM_EDGE_SIDES[s0]);
+        }
+        el.__ntsRimLit = false;
+        el.__ntsRimKey = '';
+        clearDispVars(el);
+      }
+      return;
+    }
+    var lvl = '1';
+    try {
+      lvl = document.documentElement.getAttribute('data-nts-rim') || '1';
+    } catch (e0) { lvl = '1'; }
+    if (lvl === '0') {
+      if (el.__ntsRimLit) {
+        for (var s1 = 0; s1 < RIM_EDGE_SIDES.length; s1++) {
+          el.style.removeProperty('--nts-mt-edge-' + RIM_EDGE_SIDES[s1]);
+        }
+        el.__ntsRimLit = false;
+        el.__ntsRimKey = '';
+        clearDispVars(el);
+      }
+      return;
+    }
+    var qx = Math.round(Math.max(-1, Math.min(1, (tx - 0.5) * 2)) * 10) / 10;
+    var qy = Math.round(Math.max(-1, Math.min(1, (ty - 0.5) * 2)) * 10) / 10;
+    var dx = qx, dy = qy;
+    var k = { t: 1, b: 1, l: 1, r: 1 };
+    var strength = lvl === '2' ? RIM_EDGE_BOOST_STRONG : RIM_EDGE_BOOST;
+    var dimK = lvl === '2' ? RIM_EDGE_DIM_STRONG : RIM_EDGE_DIM;
+    var boost = strength - 1;
+    if (dx > 0) { k.r = 1 + dx * boost; k.l = dimK; }
+    else if (dx < 0) { k.l = 1 - dx * boost; k.r = dimK; }
+    if (dy > 0) { k.b = 1 + dy * boost; k.t = dimK; }
+    else if (dy < 0) { k.t = 1 - dy * boost; k.b = dimK; }
+    var key = k.t.toFixed(2) + '|' + k.b.toFixed(2) + '|' + k.l.toFixed(2) + '|' + k.r.toFixed(2)
+      + '|c' + chromaLevel();
+    if (el.__ntsRimKey === key) return;
+    el.__ntsRimKey = key;
+    el.__ntsRimLit = true;
+    if (!el.__ntsRimBase) el.__ntsRimBase = captureEdgeBase(el);
+    for (var i = 0; i < RIM_EDGE_SIDES.length; i++) {
+      var side = RIM_EDGE_SIDES[i];
+      var base = el.__ntsRimBase[side];
+      el.style.setProperty('--nts-mt-edge-' + side, scaleEdgeColor(base, k[side], side));
+    }
+    var ch = chromaLevel();
+    var dbase = el.__ntsRimBase || {};
+    var shiftPx = parseFloat(dbase.dispShift || '0');
+    if (!ch || ch === '0' || !isFinite(shiftPx) || Math.abs(shiftPx) < 0.05 || Math.abs(dx) < 0.05) {
+      clearDispVars(el);
+    } else {
+      var dispKey = ch + '|' + dx.toFixed(1);
+      if (el.__ntsDispKey !== dispKey) {
+        el.__ntsDispKey = dispKey;
+        var g = CHROMA_GAIN[ch] || 1;
+        el.style.setProperty('--nts-mt-disp-shift', (dx > 0 ? shiftPx : -shiftPx).toFixed(2) + 'px');
+        el.style.setProperty('--nts-mt-disp-warm', scaleEdgeColor(dbase.dispWarm || '', g, 'r'));
+        el.style.setProperty('--nts-mt-disp-cool', scaleEdgeColor(dbase.dispCool || '', g, 'l'));
+      }
+    }
+  }
+
+  function toggleHoverState(el, inside) {
+    var hoverAttr = inside ? '1' : null;
+    if (el.getAttribute('data-nts-hover') !== hoverAttr) {
+      if (inside) el.setAttribute('data-nts-hover', '1');
+      else el.removeAttribute('data-nts-hover');
+      tweenSurface(el);
+      writeSurfaceShadow(el);
+      writeSurfaceBlur(el);
+      return true;
+    }
+    return false;
+  }
+
   function paintGlassSpecular() {
     glassPointer.raf = 0;
-    if (!glassPointer.seen || !glassPanels.length) return;
+    if (!glassFxActive()) { resetSurfaceStates(); return; }
+    if (!glassPanels.length) return;
+    if (!glassPointer.seen) return;
+    var present = !!glassPointer.present;
     var moving = false;
+    var nowMs = Date.now ? Date.now() : new Date().getTime();
+    if (glassRectDirty || !glassRectAt || nowMs - glassRectAt > GLASS_RECT_TTL) {
+      refreshGlassRects();
+    }
+    var vw = window.innerWidth || 0;
+    var vh = window.innerHeight || 0;
     for (var i = 0; i < glassPanels.length; i++) {
-      var g = glassPanels[i], r;
-      try { r = g.el.getBoundingClientRect(); } catch (e) { continue; }
-      if (!r || r.width < 8 || r.height < 8) continue;
-      var tx = (glassPointer.x - r.left) / r.width;
-      var ty = (glassPointer.y - r.top) / r.height;
-      tx = Math.max(-0.25, Math.min(1.25, tx));
-      ty = Math.max(-0.25, Math.min(1.25, ty));
+      var g = glassPanels[i];
+      var r = g.rect;
+      if (!r || r.w < 8 || r.h < 8) continue;
+      if (r.r < -GLASS_SPEC_PAD || r.l > vw + GLASS_SPEC_PAD ||
+          r.b < -GLASS_SPEC_PAD || r.t > vh + GLASS_SPEC_PAD) {
+        toggleHoverState(g.el, false);
+        continue;
+      }
+      var inside = present &&
+        glassPointer.x >= r.l - GLASS_SPEC_PAD && glassPointer.x <= r.r + GLASS_SPEC_PAD &&
+        glassPointer.y >= r.t - GLASS_SPEC_PAD && glassPointer.y <= r.b + GLASS_SPEC_PAD;
+      toggleHoverState(g.el, inside);
+      var tx, ty;
+      if (inside) {
+        tx = (glassPointer.x - r.l) / r.w;
+        ty = (glassPointer.y - r.t) / r.h;
+        tx = Math.max(-0.25, Math.min(1.25, tx));
+        ty = Math.max(-0.25, Math.min(1.25, ty));
+      } else {
+        tx = GLASS_SPEC_REST_X;
+        ty = GLASS_SPEC_REST_Y;
+      }
+      var pressedNow = g.el.getAttribute('data-nts-press') === '1';
+      if (pressedNow && inside) {
+        tx = tx + (0.5 - tx) * GLASS_SPEC_PRESS_SQUEEZE;
+        ty = ty + (0.5 - ty) * GLASS_SPEC_PRESS_SQUEEZE;
+      }
       g.tx = tx; g.ty = ty;
+      paintRimLight(g.el, tx, ty, inside);
       if (g.cx === null || g.cy === null) { g.cx = tx; g.cy = ty; }
       var dx = tx - g.cx, dy = ty - g.cy;
       if (Math.abs(dx) > GLASS_SNAP || Math.abs(dy) > GLASS_SNAP) {
@@ -2062,23 +2588,228 @@
       } else {
         g.cx = tx; g.cy = ty;
       }
-      // Specular: smoothed position (a bit of "glide" inertia)
+      var ta = inside
+        ? (pressedNow ? GLASS_SPEC_ON_PRESS : GLASS_SPEC_ON_HOVER)
+        : GLASS_SPEC_ON_IDLE;
+      if (g.a === null || g.a === undefined) g.a = ta;
+      var da = ta - g.a;
+      if (Math.abs(da) > 0.008) {
+        g.a += da * GLASS_SPEC_FADE;
+        moving = true;
+      } else {
+        g.a = ta;
+      }
       var sx = glassPct(g.cx), sy = glassPct(g.cy);
       if (sx !== g.sx || sy !== g.sy) {
         g.sx = sx; g.sy = sy;
         g.el.style.setProperty('--nts-spec-x', sx);
         g.el.style.setProperty('--nts-spec-y', sy);
       }
-      // Pointer light: uses the raw pointer position (snappier than specular),
-      // raised 18% vertically as if "the light source is above"
-      var lx = glassPct(tx), ly = glassPct(Math.max(0, ty - 0.18));
+      var sa = g.a.toFixed(2);
+      if (sa !== g.sa) {
+        g.sa = sa;
+        g.el.style.setProperty('--nts-spec-on', sa);
+      }
+      var lx = inside ? glassPct(tx) : '50%';
+      var ly = inside ? glassPct(Math.max(0, ty - 0.18)) : '0%';
       if (lx !== g.lx || ly !== g.ly) {
         g.lx = lx; g.ly = ly;
         g.el.style.setProperty('--nts-light-x', lx);
         g.el.style.setProperty('--nts-light-y', ly);
       }
     }
-    if (moving) scheduleGlassSpecular(); // keep running frames while there is a gap; stops once settled
+    if (moving) scheduleGlassSpecular();
+  }
+
+  function splitShadowLayers(text) {
+    var layers = [], depth = 0, buf = '';
+    for (var i = 0; i < text.length; i += 1) {
+      var ch = text.charAt(i);
+      if (ch === '(') depth += 1;
+      else if (ch === ')') depth = Math.max(0, depth - 1);
+      if (ch === ',' && depth === 0) { layers.push(buf.trim()); buf = ''; continue; }
+      buf += ch;
+    }
+    if (buf.trim()) layers.push(buf.trim());
+    return layers;
+  }
+
+  function tightenShadow(text, kBlur, kY) {
+    var layers = splitShadowLayers(text || '');
+    if (!layers.length) return '';
+    var out = [];
+    for (var i = 0; i < layers.length; i += 1) {
+      var layer = layers[i];
+      var nums = [];
+      var re = /-?\d*\.?\d+px/g, m;
+      while ((m = re.exec(layer)) !== null) nums.push({ v: parseFloat(m[0]), raw: m[0], at: m.index });
+      if (nums.length < 3) { out.push(layer); continue; }
+      var parts = [], last = 0;
+      for (var n = 0; n < nums.length && n < 4; n += 1) {
+        var num = nums[n];
+        var value = num.v;
+        if (n === 1) value = value * kY;
+        if (n === 2 || n === 3) value = value * kBlur;
+        var rounded = Math.round(value * 100) / 100;
+        parts.push(layer.slice(last, num.at) + rounded + 'px');
+        last = num.at + num.raw.length;
+      }
+      parts.push(layer.slice(last));
+      out.push(parts.join(''));
+    }
+    return out.join(', ');
+  }
+  var SURFACE_BLUR_HOVER = 1.06;
+  var SURFACE_BLUR_PRESS = 0.94;
+
+  function writeSurfaceBlur(el) {
+    try {
+      if (!el || !el.style) return;
+      var hover = !!el.getAttribute('data-nts-hover');
+      var press = !!el.getAttribute('data-nts-press');
+      if (!hover && !press) { el.style.removeProperty('--nts-mt-blur-c'); return; }
+      if (!el.__ntsBlurBase) {
+        var raw = getComputedStyle(el).getPropertyValue('--nts-mt-blur').trim();
+        var px = parseFloat(raw);
+        if (!(px > 0)) return;
+        el.__ntsBlurBase = px;
+      }
+      var k = press ? SURFACE_BLUR_PRESS : SURFACE_BLUR_HOVER;
+      el.style.setProperty('--nts-mt-blur-c', (el.__ntsBlurBase * k).toFixed(2) + 'px');
+    } catch (e) {  }
+  }
+
+  function writeSurfaceShadow(el) {
+    try {
+      if (!el || !el.style) return;
+      var pressed = !!el.getAttribute('data-nts-press');
+      if (!pressed) { el.style.removeProperty('--nts-press-shadow'); return; }
+      if (!el.__ntsShadowBase) {
+        var base = getComputedStyle(el).boxShadow || '';
+        if (!base || base === 'none') return;
+        el.__ntsShadowBase = base;
+      }
+      var tight = tightenShadow(el.__ntsShadowBase, 0.72, 0.8);
+      if (tight) el.style.setProperty('--nts-press-shadow', tight);
+    } catch (e) {  }
+  }
+
+  var SURFACE_TWEEN_MS = 160;
+
+  function surfaceEase(t) {
+    return 1 - Math.pow(1 - t, 3.2);
+  }
+
+  function surfaceTargetOf(el) {
+    if (!el || !el.getAttribute) return { s: 1, y: 0 };
+    if (el.getAttribute('data-nts-press')) return { s: 0.988, y: 0 };
+    if (el.getAttribute('data-nts-hover')) return { s: 1.002, y: -0.5 };
+    return { s: 1, y: 0 };
+  }
+
+  function writeSurfaceTransform(el, s, y) {
+    try {
+      if (!el || !el.style) return;
+      if (Math.abs(s - 1) < 0.0002 && Math.abs(y) < 0.02) {
+        el.removeAttribute('data-nts-motion');
+        el.style.removeProperty('--nts-motion-y');
+        el.style.removeProperty('--nts-motion-scale');
+        return;
+      }
+      el.setAttribute('data-nts-motion', '1');
+      el.style.setProperty('--nts-motion-y', y.toFixed(2) + 'px');
+      el.style.setProperty('--nts-motion-scale', s.toFixed(4));
+    } catch (e) {  }
+  }
+
+  var reduceMotionMQ = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  function prefersReducedMotion() {
+    return !!(reduceMotionMQ && reduceMotionMQ.matches);
+  }
+
+  function tweenSurface(el) {
+    if (!el || !window.requestAnimationFrame) return;
+    if (!el.__ntsTf) el.__ntsTf = { s: 1, y: 0 };
+    var to = surfaceTargetOf(el);
+    if (prefersReducedMotion()) {
+      if (el.__ntsRaf && window.cancelAnimationFrame) window.cancelAnimationFrame(el.__ntsRaf);
+      el.__ntsRaf = 0;
+      el.__ntsTf = { s: to.s, y: to.y };
+      writeSurfaceTransform(el, to.s, to.y);
+      return;
+    }
+    var from = { s: el.__ntsTf.s, y: el.__ntsTf.y };
+    if (el.__ntsRaf && window.cancelAnimationFrame) window.cancelAnimationFrame(el.__ntsRaf);
+    var t0 = 0;
+    el.__ntsRaf = window.requestAnimationFrame(function step(ts) {
+      if (!t0) t0 = ts;
+      var k = Math.min(1, (ts - t0) / SURFACE_TWEEN_MS);
+      var e = surfaceEase(k);
+      var s = from.s + (to.s - from.s) * e;
+      var y = from.y + (to.y - from.y) * e;
+      el.__ntsTf = { s: s, y: y };
+      writeSurfaceTransform(el, s, y);
+      if (k < 1) {
+        el.__ntsRaf = window.requestAnimationFrame(step);
+      } else {
+        el.__ntsTf = { s: to.s, y: to.y };
+        writeSurfaceTransform(el, to.s, to.y);
+        el.__ntsRaf = 0;
+      }
+    });
+  }
+
+  var fxOnRaf = 0;
+
+  function writeFxOn(value) {
+    var de = document.documentElement;
+    if (glassFxActive() && de && de.style && de.style.setProperty) {
+      de.style.setProperty('--nts-fx-on', value);
+    }
+  }
+
+  function fadeFxOn(target) {
+    if (fxOnRaf) {
+      if (window.cancelAnimationFrame) window.cancelAnimationFrame(fxOnRaf);
+      else window.clearTimeout(fxOnRaf);
+      fxOnRaf = 0;
+    }
+    var value = glassPointer.on;
+    if (Math.abs(target - value) < 0.01) {
+      glassPointer.on = target;
+      writeFxOn(target.toFixed(2));
+      return;
+    }
+    function step() {
+      var delta = target - value;
+      if (Math.abs(delta) < 0.02) {
+        glassPointer.on = target;
+        writeFxOn(target.toFixed(2));
+        fxOnRaf = 0;
+        return;
+      }
+      value += delta * 0.28;
+      glassPointer.on = value;
+      writeFxOn(value.toFixed(2));
+      fxOnRaf = window.requestAnimationFrame ? window.requestAnimationFrame(step) : window.setTimeout(step, 16);
+    }
+    fxOnRaf = window.requestAnimationFrame ? window.requestAnimationFrame(step) : window.setTimeout(step, 16);
+  }
+
+  function markGlassPointerPresent() {
+    if (glassPointer.present || !glassFxActive()) return;
+    glassPointer.present = true;
+    fadeFxOn(1);
+    scheduleGlassSpecular();
+  }
+
+  function markGlassPointerGone() {
+    if (!glassPointer.present || !glassFxActive()) return;
+    glassPointer.present = false;
+    fadeFxOn(0);
+    scheduleGlassSpecular();
+
   }
 
   function scheduleGlassSpecular() {
@@ -2093,12 +2824,11 @@
     glassPointer.x = e.clientX;
     glassPointer.y = e.clientY;
     glassPointer.seen = true;
-    if (!glassFxActive()) {
-      if (glassPanels.length) glassPanels = [];
-      return;
+    if (!glassFxActive()) return;
+    if (!glassPointer.present) {
+      glassPointer.present = true;
+      fadeFxOn(1);
     }
-    // The list may be stale due to streaming messages/page switches: rebuild on
-    // pointer movement
     var now = Date.now ? Date.now() : new Date().getTime();
     if (!glassPanels.length || now - glassLastRebuild > GLASS_STALE_MS) scheduleGlassRebuild();
     scheduleGlassSpecular();
@@ -2107,12 +2837,8 @@
   // Scrolling moves "surfaces" under a still pointer; scroll does not bubble, so
   // the capture phase is used to catch nested scroll containers.
   function onGlassScroll() {
+    glassRectDirty = true;
     var root = document.documentElement;
-    /* Non-glass themes do not write --nts-scroll-k: the variable only drives glass
-     * specular settling, writing it triggers a full-page style recalc, and
-     * scrolling is high-frequency for normal themes. Reset it to 0 once when
-     * switching away, otherwise switching back to a glass theme would stay stuck
-     * in the "settled" still state. */
     if (!glassFxActive()) {
       if (root && root.style && root.style.getPropertyValue('--nts-scroll-k') === '1') {
         root.style.setProperty('--nts-scroll-k', '0');
@@ -2142,27 +2868,55 @@
     if (glassPointerBound) return;
     glassPointerBound = true;
     try {
-      // Capture phase: pointer moves are not lost even if a component calls stopPropagation
       document.addEventListener('pointermove', onGlassPointer, { passive: true, capture: true });
       document.addEventListener('pointerdown', onGlassPointer, { passive: true, capture: true });
       document.addEventListener('pointerover', onGlassPointer, { passive: true, capture: true });
-      // Pause all NTS animations in background tabs: saves power and avoids
-      // animation phase jumps on return.
+      document.addEventListener('pointerout', function (ev) {
+        if (!ev || !ev.relatedTarget) markGlassPointerGone();
+      }, { passive: true, capture: true });
+      document.addEventListener('pointerenter', markGlassPointerPresent, { passive: true, capture: true });
+      document.addEventListener('pointerdown', function (ev) {
+        try {
+          var node = ev && ev.target && ev.target.closest ? ev.target.closest(GLASS_SURFACE_SEL) : null;
+          if (node && glassFxActive()) {
+            node.setAttribute('data-nts-press', '1');
+            tweenSurface(node);
+            writeSurfaceShadow(node);
+            writeSurfaceBlur(node);
+            scheduleGlassSpecular();
+          }
+        } catch (e0) {  }
+      }, { passive: true, capture: true });
+      var clearPress = function () {
+        try {
+          var marked = document.querySelectorAll('[data-nts-press]');
+          for (var k = 0; k < marked.length; k++) {
+            marked[k].removeAttribute('data-nts-press');
+            tweenSurface(marked[k]);
+            writeSurfaceShadow(marked[k]);
+            writeSurfaceBlur(marked[k]);
+            scheduleGlassSpecular();
+          }
+        } catch (e1) {  }
+      };
+      document.addEventListener('pointerup', clearPress, { passive: true, capture: true });
+      document.addEventListener('pointercancel', clearPress, { passive: true, capture: true });
+      window.addEventListener('blur', clearPress);
+      window.addEventListener('blur', markGlassPointerGone);
+      window.addEventListener('focus', markGlassPointerPresent);
       document.addEventListener('visibilitychange', syncAnimationPause);
       syncAnimationPause();
       document.addEventListener('scroll', onGlassScroll, { passive: true, capture: true });
       window.addEventListener('scroll', onGlassScroll, { passive: true });
       window.addEventListener('resize', function () { refreshGlassPanels(); }, { passive: true });
-      // The theme library/message list keep adding and removing nodes: throttle
-      // surface list rebuilds (the old debounce starved during streaming output).
       if (window.MutationObserver && document.body) {
         glassObserver = new MutationObserver(function () {
-          if (!glassFxActive()) return; // non-glass theme: do not even schedule a rebuild timer
+          if (!glassFxActive()) return;
           scheduleGlassRebuild();
         });
         glassObserver.observe(document.body, { childList: true, subtree: true });
       }
-    } catch (e) { /* very old WebView: degrade to a static highlight position */ }
+    } catch (e) {  }
     scheduleGlassSpecular();
   }
 
@@ -2653,6 +3407,7 @@
       de.style.removeProperty('--nts-mt-my');
       de.style.removeProperty('--nts-mt-light-angle');
     }
+    ['data-nts-plate', 'data-nts-rim', 'data-nts-chroma', 'data-nts-mt-heavy'].forEach(function (attr) { de.removeAttribute(attr); });
     mtFollow = 0;
     applyRootBypass(false);
   }
@@ -2712,12 +3467,62 @@
    * --nts-mt-mouse-delay, so floods of pointermove do not drag the main thread
    * (rAF coalesces to the last frame).
    */
+  var mtSettleRaf = 0;
+
+  // On pointer exit, settle the material light back to its rest position.
+  function readCssNumber(name, fallback) {
+    var de = document.documentElement;
+    var raw = '';
+    try { raw = (de.style.getPropertyValue(name) || '').trim(); } catch (e) { raw = ''; }
+    if (!raw) {
+      try { raw = (window.getComputedStyle(de).getPropertyValue(name) || '').trim(); } catch (e2) { raw = ''; }
+    }
+    var num = parseFloat(raw);
+    return isFinite(num) ? num : fallback;
+  }
+
+  function settleMaterialPointer() {
+    var de = document.documentElement;
+    if (!de || !de.hasAttribute(MT_ATTR)) return;
+    if (mtSettleRaf) {
+      if (window.cancelAnimationFrame) window.cancelAnimationFrame(mtSettleRaf);
+      else window.clearTimeout(mtSettleRaf);
+      mtSettleRaf = 0;
+    }
+    var mx = readCssNumber('--nts-mt-mx', 50);
+    var my = readCssNumber('--nts-mt-my', 50);
+    var ang = readCssNumber('--nts-mt-light-angle', 162);
+    function step() {
+      if (!de.hasAttribute(MT_ATTR)) { mtSettleRaf = 0; return; }
+      mx += (50 - mx) * 0.28;
+      my += (50 - my) * 0.28;
+      ang += (162 - ang) * 0.28;
+      if (Math.abs(50 - mx) < 0.4 && Math.abs(50 - my) < 0.4 && Math.abs(162 - ang) < 0.6) {
+        de.style.removeProperty('--nts-mt-mx');
+        de.style.removeProperty('--nts-mt-my');
+        de.style.removeProperty('--nts-mt-light-angle');
+        mtSettleRaf = 0;
+        return;
+      }
+      de.style.setProperty('--nts-mt-mx', mx.toFixed(2) + '%');
+      de.style.setProperty('--nts-mt-my', my.toFixed(2) + '%');
+      de.style.setProperty('--nts-mt-light-angle', ang.toFixed(1) + 'deg');
+      mtSettleRaf = window.requestAnimationFrame ? window.requestAnimationFrame(step) : window.setTimeout(step, 16);
+    }
+    mtSettleRaf = window.requestAnimationFrame ? window.requestAnimationFrame(step) : window.setTimeout(step, 16);
+  }
+
   function initMaterialPointer() {
     if (mtPointerBound) return;
     mtPointerBound = true;
     var timer = 0;
     var lastEv = null;
     function onMove(moveEv) {
+      if (mtSettleRaf) {
+        if (window.cancelAnimationFrame) window.cancelAnimationFrame(mtSettleRaf);
+        else window.clearTimeout(mtSettleRaf);
+        mtSettleRaf = 0;
+      }
       if (!document.documentElement.hasAttribute(MT_ATTR)) return;
       if (mtFollow <= 0) return;
       // Throttle, not debounce: the old clearTimeout-per-move restarted the delay on every
@@ -2749,6 +3554,13 @@
         set('--nts-mt-light-angle', ang.toFixed(1) + 'deg');
       }, mtDelay);
     }
+    function onLeave() {
+      window.clearTimeout(timer);
+      timer = 0;
+      settleMaterialPointer();
+    }
+    window.addEventListener('pointerout', function (ev) { if (!ev.relatedTarget) onLeave(); }, { passive: true });
+    window.addEventListener('blur', onLeave);
     window.addEventListener('pointermove', onMove, { passive: true });
   }
 
@@ -2768,6 +3580,29 @@
   // 401/403 this session stops reporting, otherwise every retry would log an
   // unauthorised-access warning on the server.
   var reportBlocked = false;
+  function materialSurfaceReport() {
+    var surfaces = {chatWindow: '.chat-window', chatShell: '#react-chat-window-shell',
+      composer: '.composer-panel', capsule: '.compact-chat-surface-frame', topbar: '.window-topbar',
+      assistantBubble: '.message-bubble-assistant', userBubble: '.message-bubble-user'};
+    if (!document.documentElement.hasAttribute(MT_ATTR)) return [];
+    var report = [];
+    Object.keys(surfaces).forEach(function (key) {
+      var el = document.querySelector(surfaces[key]);
+      if (!el || !el.getClientRects().length) return;
+      var style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.opacity === '0') return;
+      var flat = key === 'chatWindow' || key === 'chatShell' || key === 'composer';
+      var radius = style.getPropertyValue('--nts-mt-radius-c').trim();
+      var blur = style.backdropFilter || style.webkitBackdropFilter || 'none';
+      var color = style.backgroundColor;
+      var opaque = color.indexOf('rgb(') === 0;
+      var filled = opaque || (color.indexOf('rgba(') === 0 && !/,\s*0\)$/.test(color));
+      report.push({k: key, r: Number(!!radius && style.borderTopLeftRadius === radius),
+        b: Number(flat ? opaque : filled && !opaque), f: Number(flat ? blur === 'none' : blur.indexOf('blur(') >= 0)});
+    });
+    return report;
+  }
+
   function reportRuntime(force) {
     try {
       if (reportBlocked) return;
@@ -3031,16 +3866,17 @@
       try {
         var sn = document.getElementById(STYLE_ID);
         var sh = sn && sn.sheet;
-        if (sh && sh.cssRules) {
-          for (var ri2 = 0; ri2 < sh.cssRules.length; ri2 += 1) {
-            var st2 = sh.cssRules[ri2];
-            var sel3 = st2 && st2.selectorText;
-            if (sel3 && String(sel3).indexOf('react-chat-window-shell') >= 0) {
+        function countMaterialRules(rules) {
+          for (var i = 0; i < rules.length; i++) {
+            var rule = rules[i];
+            if (rule.selectorText && rule.selectorText.indexOf('data-nts-mt') >= 0) {
               mtRuleCount += 1;
-              mtDeclCount += (st2.style && st2.style.length) || 0;
+              mtDeclCount += rule.style.length;
             }
+            if (rule.cssRules) countMaterialRules(rule.cssRules);
           }
         }
+        if (sh && sh.cssRules) countMaterialRules(sh.cssRules);
       } catch (e8) { mtRuleCount = -1; }
       var report = {
         page: (function () {
@@ -3051,6 +3887,9 @@
         version: SCRIPT_VERSION,
         ntsVars: (apply.light || 0) + (apply.dark || 0),
         mtVars: apply.mt || 0,
+        mtPreset: document.documentElement.getAttribute(MT_PRESET_ATTR) || '',
+        mtQuality: document.documentElement.getAttribute(MT_QUALITY_ATTR) || '',
+        mtSurfaces: materialSurfaceReport(),
         attrs: attrs,
         pageTheme: pageTheme,
         elemSamples: elemSamples,
@@ -3094,6 +3933,36 @@
         reportAt = now - 45000;
       });
     } catch (e) { /* ignore */ }
+  }
+
+  function resetSurfaceStates() {
+    // Remove only loader-owned attributes and properties; host transforms and shadows survive theme changes.
+    (glassPanels || []).forEach(function (item) {
+      var el = item.el;
+      if (el.__ntsRaf && window.cancelAnimationFrame) window.cancelAnimationFrame(el.__ntsRaf);
+      el.__ntsRaf = 0;
+      el.__ntsTf = null;
+      el.__ntsRimBase = null;
+      el.__ntsRimKey = '';
+      el.__ntsRimLit = false;
+      el.__ntsShadowBase = '';
+      el.__ntsBlurBase = 0;
+      el.removeAttribute('data-nts-hover');
+      el.removeAttribute('data-nts-press');
+      el.removeAttribute('data-nts-motion');
+      RIM_EDGE_SIDES.forEach(function (side) { el.style.removeProperty('--nts-mt-edge-' + side); });
+      ['--nts-press-shadow', '--nts-mt-blur-c', '--nts-spec-on', '--nts-motion-scale', '--nts-motion-y',
+       '--nts-light-x', '--nts-light-y', '--nts-spec-x', '--nts-spec-y'].forEach(function (key) { el.style.removeProperty(key); });
+      clearDispVars(el);
+    });
+    if (fxOnRaf) {
+      if (window.cancelAnimationFrame) window.cancelAnimationFrame(fxOnRaf);
+      else window.clearTimeout(fxOnRaf);
+      fxOnRaf = 0;
+    }
+    document.documentElement.style.removeProperty('--nts-fx-on');
+    glassPanels = [];
+    glassRectDirty = true;
   }
 
   function applyPalette(p) {
@@ -3151,12 +4020,12 @@
       log('superseded a pending warm-up');
     }
 
+    if (p.preview && p.preview.active && Number(p.preview.expires_at) <= Date.now() / 1000) {
+      restoreSavedTheme();
+      return false;
+    }
     if (p.enabled === false) {
       removeStyle();
-      if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = 0; }
-      if (document.documentElement && document.documentElement.removeAttribute) {
-        document.documentElement.removeAttribute(FADE_ATTR);
-      }
       currentVersion = stampOf(p);
       lastApply = { light: 0, dark: 0, mt: 0, enabled: false, at: Date.now() };
       reportRuntime();
@@ -3173,7 +4042,7 @@
     var mtDark = materialVarsOf(p, 'dark');
     var nMt = countVars(mtLight) + countVars(mtDark);
 
-    if (!nLight && !nDark && !nMt) {
+    if (!nLight && !nDark && !nMt && !(p.preview && p.preview.active)) {
       // Empty palette + no materials = restore the original look
       removeStyle();
       currentVersion = stampOf(p);
@@ -3182,7 +4051,9 @@
       return true;
     }
 
+    resetSurfaceStates();
     var previousStamp = currentVersion;
+    var fading = previousStamp && previousStamp !== stampOf(p) && beginThemeSwapFade();
     var css = '';
     var l = declBlock(light);
     // Light values must be scoped to "not dark", otherwise a light-only palette
@@ -3207,8 +4078,9 @@
     // styleIntact / dedupe logic unchanged).
     // v1.6.0: the material layer (MATERIAL_CSS) is also a constant string, written
     // in the same single textContent as the glass layer.
-    css = PROBE_CSS + css + '\n' + GLASS_CSS + '\n' + MATERIAL_CSS;
+    css = PROBE_CSS + css + '\n' + GLASS_CSS + '\n' + MATERIAL_CSS + '\n' + SURFACE_CSS;
     if (el.textContent !== css) el.textContent = css;
+    removeBootStyle();
     lastAppliedCss = css;
     // Gate attributes must be synced before styles take effect (setAttribute and
     // <style> content changes in the same frame merge into one style recalc, so no
@@ -3219,7 +4091,9 @@
     syncMaterialAttrs(p.material_attrs, nMt > 0);
     // Only transition when the theme really changed (different stamp); no flash on
     // first apply or unchanged content.
-    if (previousStamp && previousStamp !== stampOf(p)) flashThemeSwap();
+    if (fading) endThemeSwapFadeLater();
+    syncMaterialPreferences();
+    syncPreviewBadge(p);
     // Glass material layer: bind pointer specular highlight / scroll flow
     // (idempotent; only writes CSS variables, never changes declarations)
     initGlassPointer();
@@ -3268,7 +4142,7 @@
     if (!raw) return false;
     try {
       var p = JSON.parse(raw);
-      if (!p || p.schema !== 1) return false;
+      if (!p || p.schema !== 1 || (p.preview && p.preview.active)) return false;
       return applyPalette(p);
     } catch (e) {
       log('cache parse failed', e);
@@ -3276,7 +4150,15 @@
     }
   }
 
+  function restoreSavedTheme() {
+    dropPreviewBadge();
+    lastRaw = null;
+    lastRevision = '';
+    if (!restoreFromCache()) removeStyle();
+  }
+
   function saveToCache(p) {
+    if (p.preview && p.preview.active) return;
     try { safeSet(CACHE_KEY, JSON.stringify(p)); } catch (e) { /* ignore */ }
   }
 
@@ -3444,11 +4326,16 @@
     document.addEventListener('visibilitychange', clearPollBackoff);
   } catch (eBackoff) { /* ignore */ }
 
+  // The poll token includes temporary preview and asset state. It is distinct from the editing revision.
+  var lastRevision = '';
+
   function fetchPalette(force) {
     if (inflight) return;
     if (!force && pollBackoffUntil && Date.now() < pollBackoffUntil) return;
     inflight = true;
-    var url = themeUrl() + '?_=' + Date.now();
+    var conditional = !force && lastRevision && styleIntact();
+    var url = themeUrl() + (conditional ? '?rev=' + encodeURIComponent(lastRevision) : '');
+    var unchanged = {};
     // Built in, this is a same-origin request: remote / Docker / reverse-proxied
     // windows must send the instance-access session cookie, otherwise
     // InstanceAccessMiddleware returns 401 before routing.
@@ -3467,6 +4354,7 @@
       return;
     }
     req.then(function (res) {
+      if (res && res.status === 304 && conditional) return unchanged;
       if (!res || !res.ok) throw new Error('HTTP ' + (res ? res.status : '?'));
       return res.json();
     }).then(function (p) {
@@ -3483,6 +4371,10 @@
       // ---- Contract validation (v0.1.11): data arrived but invalid -> no self-healing ----
       // Restarting the plugin service only fixes "service missing", not "the
       // returned JSON is broken".
+      if (p === unchanged) {
+        if (gen === paletteGen) idlePolls += 1;
+        return;
+      }
       if (!p || typeof p !== 'object' ||
           Object.prototype.toString.call(p) !== '[object Object]') {
         warnContractOnce('theme.json is not a JSON object');
@@ -3499,6 +4391,9 @@
         log('drop stale poll response (a newer palette arrived meanwhile)');
         return;
       }
+      var revision = typeof p.poll_revision === 'string' ? p.poll_revision : '';
+      idlePolls = revision && revision === lastRevision ? idlePolls + 1 : 0;
+      lastRevision = revision;
       rememberAssetMeta(p);
       var raw = '';
       try { raw = JSON.stringify(p); } catch (e) { raw = ''; }
@@ -3532,6 +4427,7 @@
       var msg = (err && err.message) || 'unknown';
       lastError = msg;
       lastErrorAt = Date.now();
+      noteThemeActivity();
       notePollFailure();
       // Polling runs every 1.5s; the same error is reported loudly only once, then
       // goes to the debug log.
@@ -3552,33 +4448,204 @@
     }).then(release, release);
   }
 
+  function syncPlateAttr() {
+    var lv = '0';
+    try {
+      var raw = localStorage.getItem(PLATE_KEY);
+      if (raw === '1' || raw === '2') lv = raw;
+    } catch (e0) { lv = '0'; }
+    var de = document.documentElement;
+    if (de.getAttribute('data-nts-plate') !== lv) de.setAttribute('data-nts-plate', lv);
+  }
+
+  function syncRimAttr() {
+    var lv = '1';
+    try {
+      var raw = localStorage.getItem(RIM_KEY);
+      if (raw === '0' || raw === '2') lv = raw;
+    } catch (e0) { lv = '1'; }
+    var de = document.documentElement;
+    if (de.getAttribute('data-nts-rim') !== lv) de.setAttribute('data-nts-rim', lv);
+  }
+
+  function syncChromaAttr() {
+    var lv = '1';
+    try {
+      var raw = localStorage.getItem(CHROMA_KEY);
+      if (raw === '0' || raw === '2') lv = raw;
+    } catch (e0) { lv = '1'; }
+    var de = document.documentElement;
+    if (de.getAttribute('data-nts-chroma') !== lv) de.setAttribute('data-nts-chroma', lv);
+  }
+  var PREVIEW_ATTR = 'data-nts-preview';
+  var PREVIEW_BADGE_ID = 'nts-preview-badge';
+  var PREVIEW_DEADLINE = 0;
+  var PREVIEW_TIMER = 0;
+
+  function previewRemaining() {
+    if (!PREVIEW_DEADLINE) return 0;
+    return Math.max(0, Math.ceil(PREVIEW_DEADLINE - Date.now() / 1000));
+  }
+
+  function previewClock(seconds) {
+    var s = Math.max(0, seconds | 0);
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    return m + ':' + (r < 10 ? '0' + r : String(r));
+  }
+
+  function dropPreviewBadge() {
+    if (PREVIEW_TIMER) { clearInterval(PREVIEW_TIMER); PREVIEW_TIMER = 0; }
+    PREVIEW_DEADLINE = 0;
+    var de = document.documentElement;
+    if (de && de.removeAttribute) de.removeAttribute(PREVIEW_ATTR);
+    var old = document.getElementById(PREVIEW_BADGE_ID);
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+  }
+
+  function paintPreviewBadge() {
+    var left = previewRemaining();
+    if (!left) { restoreSavedTheme(); fetchPalette(true); return; }
+    var el = document.getElementById(PREVIEW_BADGE_ID);
+    if (!el) return;
+    var time = previewClock(left);
+    var i18n = window.i18next;
+    var text = i18n && i18n.t ? i18n.t('themeStudio.runtime.previewCountdown', {time: time, defaultValue: 'Preview · {{time}}'}) : 'Preview · ' + time;
+    el.title = i18n && i18n.t ? i18n.t('themeStudio.runtime.previewHint', {defaultValue: 'This preview is temporary. Your saved theme returns when the timer ends.'}) : 'This preview is temporary. Your saved theme returns when the timer ends.';
+    if (el.textContent !== text) el.textContent = text;
+  }
+  var PREVIEW_HIDE_PATHS = ['/toast', '/subtitle', '/agenthud'];
+  var PREVIEW_MIN_W = 460;
+  var PREVIEW_MIN_H = 300;
+
+  function previewBadgeAllowed() {
+    try {
+      var path = String(location.pathname || '/').replace(/\/+$/, '') || '/';
+      for (var i = 0; i < PREVIEW_HIDE_PATHS.length; i += 1) {
+        if (path === PREVIEW_HIDE_PATHS[i]) return false;
+      }
+      if (window.innerWidth < PREVIEW_MIN_W || window.innerHeight < PREVIEW_MIN_H) return false;
+    } catch (eAllowed) {
+      return true;
+    }
+    return true;
+  }
+
+  function syncPreviewBadge(p) {
+    var pv = p && p.preview && typeof p.preview === 'object' ? p.preview : null;
+    var active = !!(pv && pv.active === true);
+    var exp = active ? (Number(pv.expires_at) || 0) : 0;
+    if (!active || !isFinite(exp) || exp <= Date.now() / 1000) { dropPreviewBadge(); return; }
+    // Overlay windows still expire the preview on time, but never display the badge.
+    PREVIEW_DEADLINE = exp;
+    if (!PREVIEW_TIMER) PREVIEW_TIMER = setInterval(paintPreviewBadge, 1000);
+    if (!previewBadgeAllowed() || !document.body) return;
+    var de = document.documentElement;
+    if (de && de.setAttribute) de.setAttribute(PREVIEW_ATTR, '1');
+    var el = document.getElementById(PREVIEW_BADGE_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = PREVIEW_BADGE_ID;
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'off');
+      document.body.appendChild(el);
+    }
+    paintPreviewBadge();
+  }
+
+  var HEAVY_BUBBLE_LIMIT = 40;
+
+  var HEAVY_KEY = 'neko.themeStudio.heavy';
+
+  var heavyCountAt = 0;
+
+  function heavyMode() {
+    var mode = 'auto';
+    try {
+      var raw = localStorage.getItem(HEAVY_KEY);
+      if (raw === 'on' || raw === 'off') mode = raw;
+    } catch (e0) { mode = 'auto'; }
+    return mode;
+  }
+
+  function syncMaterialHeavy() {
+    var de = document.documentElement;
+    var mode = heavyMode();
+    if (de.getAttribute('data-nts-mt') !== '1' || mode === 'off') {
+      if (de.hasAttribute('data-nts-mt-heavy')) de.removeAttribute('data-nts-mt-heavy');
+      return;
+    }
+    var now = Date.now ? Date.now() : new Date().getTime();
+    if (heavyCountAt && now - heavyCountAt < 1200) return;
+    heavyCountAt = now;
+    var n = 0;
+    try {
+      n = document.querySelectorAll('.message-bubble-user, .message-bubble-assistant').length;
+    } catch (e) { n = 0; }
+    if (mode === 'on') {
+      var vOn = String(n || 1);
+      if (de.getAttribute('data-nts-mt-heavy') !== vOn) de.setAttribute('data-nts-mt-heavy', vOn);
+      return;
+    }
+    if (n > HEAVY_BUBBLE_LIMIT) {
+      if (de.getAttribute('data-nts-mt-heavy') !== String(n)) de.setAttribute('data-nts-mt-heavy', String(n));
+    } else if (de.hasAttribute('data-nts-mt-heavy')) {
+      de.removeAttribute('data-nts-mt-heavy');
+    }
+  }
+
   function startPolling() {
     stopPolling();
-    timer = window.setInterval(function () {
-      if (document.visibilityState === 'hidden') return;
-      // Every heartbeat also re-checks stylesheet freshness (throttled internally
-      // to 15s). So when the user changes colours in the panel, even a window
-      // opened before an update switches to the new rule sheet within seconds,
-      // without restarting the app.
-      refreshStaleStylesheet(false);
-      // Also check whether the loader itself has been updated (throttled
-      // internally to 60s + once per session).
-      selfUpgradeIfNeeded();
-      fetchPalette(false);
-      // Periodically persist this window's self-check state for external
-      // debugging (throttled internally to 60s).
-      try { if (window.NekoThemeStudio && window.NekoThemeStudio.report) window.NekoThemeStudio.report(); } catch (e9) { /* ignore */ }
-    }, POLL_INTERVAL_MS);
+    pollingStopped = false;
+    schedulePollTick();
+  }
+
+  function pollIntervalMs() {
+    if (idlePolls < POLL_FAST_TICKS) return POLL_INTERVAL_MS;
+    if (idlePolls < POLL_MID_TICKS) return POLL_MID_MS;
+    return POLL_IDLE_MS;
+  }
+
+  function noteThemeActivity() { idlePolls = 0; }
+
+  function schedulePollTick() {
+    if (pollingStopped) return;
+    if (timer !== null) { window.clearTimeout(timer); timer = null; }
+    timer = window.setTimeout(function () {
+      timer = null;
+      pollOnce();
+      schedulePollTick();
+    }, pollIntervalMs());
+  }
+
+  function syncMaterialPreferences() {
+    if (!document.documentElement.hasAttribute(MT_ATTR)) return;
+    syncPlateAttr();
+    syncRimAttr();
+    syncChromaAttr();
+    syncMaterialHeavy();
+  }
+
+  function pollOnce() {
+    if (document.visibilityState === 'hidden') return;
+    refreshStaleStylesheet(false);
+    selfUpgradeIfNeeded();
+    fetchPalette(false);
+    syncMaterialPreferences();
+    if (window.NekoThemeStudio && window.NekoThemeStudio.report) window.NekoThemeStudio.report();
   }
 
   function stopPolling() {
-    if (timer !== null) { window.clearInterval(timer); timer = null; }
+    pollingStopped = true;
+    if (timer !== null) { window.clearTimeout(timer); timer = null; }
   }
 
   // ---------------------------------------------------------------- Bootstrap
 
-  // 1) Render from the cache right away to avoid startup flicker.
-  restoreFromCache();
+  // The server's first-paint palette is newer than a previous page's cache.
+  if (!document.getElementById('nts-boot') && !document.documentElement.hasAttribute('data-nts-boot-ready')) {
+    restoreFromCache();
+  }
 
   // 2) Then ask the service for the latest version.
   function boot() {
@@ -3594,7 +4661,7 @@
     refreshStaleStylesheet(true);
 
     fetchPalette(true);
-    startPolling();
+    if (document.visibilityState !== 'hidden') startPolling();
     // Also check the loader version at startup: the user may not have restarted
     // the app for days, so the window may run a script several versions old that
     // silently drops every new variable.
@@ -3614,14 +4681,28 @@
 
     // Window regains focus / becomes visible -> sync immediately (the user just
     // changed colours in the panel)
-    window.addEventListener('focus', function () { fetchPalette(false); }, false);
+    function wakePolling() {
+      noteThemeActivity();
+      if (document.visibilityState === 'hidden') return;
+      startPolling();
+      fetchPalette(false);
+    }
+    window.addEventListener('focus', wakePolling, false);
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') fetchPalette(false);
+      if (document.visibilityState === 'hidden') stopPolling();
+      else wakePolling();
     }, false);
 
     // Another same-origin window changed the cache -> follow it (multi-window app)
     window.addEventListener('storage', function (ev) {
-      if (!ev || ev.key !== CACHE_KEY || !ev.newValue) return;
+      if (!ev) return;
+      if (ev.key === POKE_KEY) { wakePolling(); return; }
+      if (ev.key === PLATE_KEY || ev.key === RIM_KEY || ev.key === CHROMA_KEY || ev.key === HEAVY_KEY) {
+        heavyCountAt = 0;
+        syncMaterialPreferences();
+        return;
+      }
+      if (ev.key !== CACHE_KEY || !ev.newValue) return;
       try {
         var p = JSON.parse(ev.newValue);
         if (!p || p.schema !== 1) return;
@@ -3630,6 +4711,8 @@
         try { raw = JSON.stringify(p); } catch (e0) { raw = ''; }
         if (raw === lastRaw) return;
         paletteGen += 1; // invalidate a poll still in flight (see fetchPalette)
+        lastRevision = '';
+        noteThemeActivity();
         applyPalette(p);
         lastRaw = raw;
       } catch (e) { /* ignore */ }
@@ -3649,12 +4732,46 @@
   // ---------------------------------------------------------------- Public API
 
   window.NekoThemeStudio = {
+    setPlate: function (value) {
+      var level = String(value);
+      if (['0', '1', '2'].indexOf(level) < 0) return;
+      safeSet(PLATE_KEY, level);
+      syncMaterialPreferences();
+    },
+    get plate() { return safeGet(PLATE_KEY) || '0'; },
+    setRim: function (value) {
+      var level = String(value);
+      if (['0', '1', '2'].indexOf(level) < 0) return;
+      safeSet(RIM_KEY, level);
+      syncMaterialPreferences();
+    },
+    get rim() { return safeGet(RIM_KEY) || '1'; },
+    setChroma: function (value) {
+      var level = String(value);
+      if (['0', '1', '2'].indexOf(level) < 0) return;
+      safeSet(CHROMA_KEY, level);
+      syncMaterialPreferences(); clearAllDisp();
+    },
+    get chroma() { return safeGet(CHROMA_KEY) || '1'; },
+    setHeavy: function (value) {
+      var level = String(value);
+      if (['auto', 'on', 'off'].indexOf(level) < 0) return;
+      safeSet(HEAVY_KEY, level);
+      heavyCountAt = 0; syncMaterialPreferences();
+    },
+    get heavy() { return safeGet(HEAVY_KEY) || 'auto'; },
+    get lensSupported() { return false; },
+    get version() { return SCRIPT_VERSION; },
+    get pollInterval() { return pollIntervalMs(); },
+    get idlePolls() { return idlePolls; },
+    get glassStats() { return Object.assign({}, glassStats); },
     /** Refetch the palette immediately */
     refresh: function () { fetchPalette(true); },
     /** Apply a palette object directly (for debugging / manual use) */
     apply: applyPalette,
     /** Clear the variables injected in this window (back to the app's native look; the next poll re-applies automatically) */
     clear: function () {
+      lastRevision = '';
       removeStyle();
       // Without clearing the content equality key, polling would conclude
       // "unchanged = no need to re-inject" and the palette would never come back

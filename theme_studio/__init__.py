@@ -37,7 +37,9 @@ work in a worker thread so the shared event loop is never blocked.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 import threading
 import time
@@ -50,6 +52,9 @@ from .service import (
     API_BASE,
     PRESETS_DIR,
     ThemeStudioService,
+    _WRITE_LOCK,
+    _ThemeUnreadable,
+    default_palette,
 )
 
 __all__ = [
@@ -60,6 +65,7 @@ __all__ = [
     "data_dir",
     "entries",
     "get_service",
+    "get_theme_body",
     "get_theme_document",
     "get_theme_document_async",
     "library_dir",
@@ -296,26 +302,69 @@ def _clean_kwargs(fn: Any, payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k in allowed}
 
 
-def get_theme_document() -> dict[str, Any]:
-    """Palette document polled by the loader (blocking; see the async variant).
+# Only immutable response bytes are shared between polls and callers. The
+# service identity also separates test overrides and restarted host instances.
+_cached_body: tuple[tuple, str, bytes] | None = None
 
-    Same shape as the ``get_theme`` entry: compiled material variables and
-    attributes are attached, otherwise windows would never see materials
-    (``_normalize`` drops the on-disk ``material_vars`` mirror). Asset
-    fingerprints are attached for the loader's stylesheet / self-upgrade checks.
-    """
+
+def get_theme_body() -> tuple[str, bytes]:
+    """Return the representation's ETag and JSON body for a loader poll."""
+    global _cached_body
     service = startup_service()
-    palette = service._with_material_vars(service._read_unlocked())  # noqa: SLF001
-    try:
-        palette = service._with_asset_meta(palette)  # noqa: SLF001
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Reading loader asset fingerprints failed (ignored): %s", exc)
-    return palette
+    with _WRITE_LOCK:
+        try:
+            stat = service.theme_path.stat()
+            file_key = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except OSError:
+            file_key = None
+        preview = service.preview_snapshot()
+        assets = service._asset_meta()
+        key = (
+            service, file_key, (preview["id"], preview["expires_at"]) if preview else None,
+            assets.get("css_sha8"), assets.get("loader_version"),
+        )
+        if file_key and _cached_body and _cached_body[0] == key:
+            return _cached_body[1], _cached_body[2]
+
+        try:
+            saved = service._read_unlocked(strict=True)
+        except _ThemeUnreadable:
+            # A transient read failure must not pin the fallback in the cache.
+            saved = default_palette()
+            file_key = None
+        document = service._with_material_vars(service._with_preview(saved))
+        document.update({name: value for name, value in assets.items() if value})
+        # A preview, its expiration, and asset-only upgrades all change what a
+        # window should render without invalidating an editor's saved revision.
+        poll_revision = hashlib.sha256(_encode_document(document)).hexdigest()[:24]
+        document["poll_revision"] = poll_revision
+        body = _encode_document(document)
+        if file_key:
+            _cached_body = (key, poll_revision, body)
+        return poll_revision, body
+
+
+def _encode_document(document: dict[str, Any]) -> bytes:
+    return json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def get_theme_document() -> dict[str, Any]:
+    """Return an independent, mutable copy of the loader's palette document."""
+    return json.loads(get_theme_body()[1])
 
 
 async def get_theme_document_async() -> dict[str, Any]:
     """:func:`get_theme_document` run in a worker thread."""
     return await asyncio.to_thread(get_theme_document)
+
+
+def configured_data_dir() -> Path:
+    """Resolve the theme directory for page rendering without starting the service."""
+    from .service import _default_data_dir
+
+    if _service is not None:
+        return _service.data_dir
+    return _data_dir_override or _default_data_dir()
 
 
 def data_dir() -> Path:
