@@ -410,6 +410,32 @@ async function waitForLoadStart(predicate, message) {
     assert.deepEqual(switchingExpression.getMoodMap().happy, ['second_happy']);
     assert.equal(switchingExpression.customMoodKeys.has('happy'), true);
 
+    const prototypeGuardExpression = new global.VRMExpression({
+        currentModel: {
+            vrm: {
+                expressionManager: {
+                    expressions: [{ name: 'neutral' }, { name: 'happy' }, { name: 'custom_expr' }],
+                    setValue() {}
+                }
+            }
+        }
+    });
+    for (const badKey of ['constructor', 'toString', 'valueOf', '__proto__', 'prototype', 123]) {
+        assert.deepEqual(prototypeGuardExpression._resolveMoodWeights(badKey, ['happy']), {});
+        prototypeGuardExpression.setMood(badKey);
+        assert.equal(prototypeGuardExpression.currentMood, 'neutral');
+        prototypeGuardExpression.update(0.016);
+        prototypeGuardExpression.setBaseExpression(badKey);
+        assert.equal(prototypeGuardExpression.currentMood, 'neutral');
+    }
+    const safeMapPayload = Object.create(null);
+    Object.defineProperty(safeMapPayload, '__proto__', { value: ['pwn'], enumerable: true });
+    safeMapPayload.constructor = ['pwn'];
+    safeMapPayload.happy = ['joy'];
+    prototypeGuardExpression.setMoodMap(safeMapPayload);
+    assert.equal(({}).pwn, undefined);
+    assert.deepEqual(prototypeGuardExpression.getMoodMap().happy, ['joy']);
+
     const savedRestPlayer = new global.NekoMotionPlayer();
     savedRestPlayer.assets = [];
     assert.equal(savedRestPlayer.setSavedRestAnimations([

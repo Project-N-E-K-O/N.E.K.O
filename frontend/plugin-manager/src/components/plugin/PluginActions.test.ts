@@ -21,8 +21,13 @@ vi.mock('@/i18n', () => ({ getLocale: () => 'en-US' }))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }),
 }))
+const routerMocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  resolve: vi.fn(() => ({ href: '/plugins/demo?tab=ui' })),
+}))
+
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn(), resolve: vi.fn(() => ({ href: '/plugins/demo?tab=ui' })) }),
+  useRouter: () => routerMocks,
 }))
 vi.mock('@element-plus/icons-vue', () => ({
   Monitor: {},
@@ -30,7 +35,10 @@ vi.mock('@element-plus/icons-vue', () => ({
   VideoPause: {},
   VideoPlay: {},
 }))
-vi.mock('@/utils/openExternal', () => ({ openExternalUrl: vi.fn() }))
+vi.mock('@/utils/openExternal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/openExternal')>()),
+  openExternalUrl: vi.fn(),
+}))
 vi.mock('@/composables/usePluginStartGate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/composables/usePluginStartGate')>()),
   usePluginStartGate: () => ({
@@ -284,4 +292,90 @@ describe('PluginActions runtime mutations', () => {
       container.remove()
     },
   )
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'https://evil.example/phish',
+    '//evil.example/phish',
+  ])('blocks unsafe same_tab UI target %s', async (dangerousTarget) => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    elementPlusMocks.ElMessage.warning.mockClear()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = usePluginStore()
+    store.pluginSummaries = [{
+      id: 'demo',
+      name: 'Demo',
+      description: 'Demo',
+      version: '1.0.0',
+      status: 'running',
+      list_actions: [{ id: 'open_ui', kind: 'ui', label: 'Open UI', target: dangerousTarget, open_in: 'same_tab' }],
+    }]
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp(PluginActions, { pluginId: 'demo' })
+    app.use(pinia)
+    stubButtons(app)
+    app.mount(container)
+    await nextTick()
+
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Open UI')
+    expect(button).toBeTruthy()
+    button!.dispatchEvent(new Event('click'))
+    await flushPromises()
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
+
+    app.unmount()
+    container.remove()
+  })
+
+  it('blocks unsafe route UI target and allows safe same_tab URL', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    routerMocks.push.mockClear()
+    elementPlusMocks.ElMessage.warning.mockClear()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = usePluginStore()
+    store.pluginSummaries = [{
+      id: 'demo',
+      name: 'Demo',
+      description: 'Demo',
+      version: '1.0.0',
+      status: 'running',
+      list_actions: [{ id: 'open_ui', kind: 'route', label: 'Open Route', target: '//evil.example' }],
+    }]
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp(PluginActions, { pluginId: 'demo' })
+    app.use(pinia)
+    stubButtons(app)
+    app.mount(container)
+    await nextTick()
+
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Open Route')
+    button!.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(routerMocks.push).not.toHaveBeenCalled()
+    expect(elementPlusMocks.ElMessage.warning).toHaveBeenCalledWith('plugins.ui.unsafeTargetBlocked')
+
+    store.pluginSummaries = [{
+      id: 'demo',
+      name: 'Demo',
+      description: 'Demo',
+      version: '1.0.0',
+      status: 'running',
+      list_actions: [{ id: 'open_ui', kind: 'ui', label: 'Open Safe', target: '/plugin/demo/ui/', open_in: 'same_tab' }],
+    }]
+    await nextTick()
+    const safeButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Open Safe')
+    safeButton!.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(openSpy).toHaveBeenCalledWith('/plugin/demo/ui/', '_self')
+
+    app.unmount()
+    container.remove()
+  })
 })

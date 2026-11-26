@@ -27,7 +27,7 @@ async def get_call_chain_audit(request: Request) -> dict[str, object]:
     return {
         "mode": current_mode(),
         "checks_disabled_sources": list(checks_disabled_sources()),
-        "entries": call_audit.entries(),  # both rings are bounded (1500 total)
+        "entries": call_audit.entries(),  # all rings are bounded (2000 total)
         "dropped": call_audit.dropped,
         "registry_full": capability_gate.registry.registry_full,
     }

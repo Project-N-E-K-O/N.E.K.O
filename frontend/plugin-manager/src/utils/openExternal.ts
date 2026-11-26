@@ -28,6 +28,29 @@
 //    sharp edge (file:// could open arbitrary local content, javascript:
 //    is a non-starter, data: is unsupported by most OS handlers) — only
 //    schemes a sane new-tab/browser would accept get through.
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/
+
+export function isSafeSameTabUrl(url: string): boolean {
+  if (typeof url !== 'string') return false
+  const trimmed = url.trim()
+  if (!trimmed || CONTROL_CHARS_RE.test(trimmed)) return false
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed, window.location.href)
+  } catch {
+    return false
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false
+  return parsed.origin === window.location.origin
+}
+
+export function isSafeAppRoute(target: string): boolean {
+  if (typeof target !== 'string') return false
+  const trimmed = target.trim()
+  if (!trimmed || CONTROL_CHARS_RE.test(trimmed)) return false
+  return trimmed.startsWith('/') && !trimmed.startsWith('//')
+}
+
 function normalizeExternalUrl(url: string): string | null {
   if (!url) return null
   let normalized: URL

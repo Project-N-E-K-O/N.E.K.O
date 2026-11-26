@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -694,7 +695,7 @@ def install_sources(monkeypatch):
         install_source_module, "get_install_source_manager", lambda: holder["manager"]
     )
     monkeypatch.setattr(
-        permission_service, "_plugin_directory", lambda _pid: holder["directory"]
+        permission_service, "_plugin_directory", lambda _pid, _candidates=None: holder["directory"]
     )
     return holder
 
@@ -835,7 +836,7 @@ def test_registry_lock_timeout_is_an_unknown_source(monkeypatch):
     def busy(_plugin_id):
         raise TimeoutError("plugins_read")
 
-    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", busy)
     # A unique entry exists: without the timeout handling the scan would use it.
     manager = FakeInstallSources([_lock_entry(channel="manual")])
     monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
@@ -1542,3 +1543,261 @@ def test_forget_plugin_grants_drops_only_the_given_plugins(monkeypatch, manager)
 
     assert MEMORY_READ not in (store.read("demo") or {}).get("permissions", {})
     assert store.read("other")["permissions"][MEMORY_READ]["state"] == "granted"
+
+
+class LockSnapshot:
+    """A frozen lock state: what ``snapshot()`` returns."""
+
+    def __init__(self, entries, by_directory=None):
+        self.entries = list(entries)
+        self.by_directory = dict(by_directory or {})
+
+
+class SnapshotInstallSources:
+    """Like the real manager: copy-on-write ``snapshot()``, and lookups that
+    read the snapshot they are given (the current one otherwise)."""
+
+    is_degraded = False
+
+    def __init__(self, entries, *, by_directory=None):
+        self.current = LockSnapshot(entries, by_directory)
+        self.lookups = 0
+
+    def publish(self, entries, by_directory=None):
+        self.current = LockSnapshot(entries, by_directory)
+
+    def snapshot(self):
+        return self.current
+
+    def entry_for_directory(self, directory_path, *, include_removed=False, snapshot=None, path_resolved=False):
+        self.classified = (directory_path, path_resolved)
+        entry = (snapshot or self.current).by_directory.get(Path(directory_path).name)
+        if entry is None or (entry.removed and not include_removed):
+            return None
+        return entry
+
+    def list_entries(self, *, include_removed=False, snapshot=None):
+        self.lookups += 1
+        return [e for e in (snapshot or self.current).entries if include_removed or not e.removed]
+
+
+def test_current_source_is_cached_until_the_lock_or_registration_changes(monkeypatch):
+    from plugin.server.infrastructure import config_paths
+
+    registered = {"candidates": ()}
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: registered["candidates"])
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+
+    first = permission_service.current_source("demo")
+    assert permission_service.current_source("demo") == first and manager.lookups == 1
+    # Any change of the install-source lock publishes a new snapshot.
+    manager.publish([_lock_entry(channel="builtin")])
+    assert permission_service.current_source("demo").channel == "builtin" and manager.lookups == 2
+    # A different registration is looked up again.
+    registered["candidates"] = ("/nowhere/plugin.toml",)
+    permission_service.current_source("demo")
+    assert manager.lookups == 3
+    permission_service.current_source("demo")
+    assert manager.lookups == 3
+
+
+def test_a_config_file_appearing_is_looked_up_again(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    first, second = tmp_path / "a" / "plugin.toml", tmp_path / "b" / "plugin.toml"
+    second.parent.mkdir()
+    second.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(first), str(second)))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    directories = []
+    real = permission_service._plugin_directory
+    monkeypatch.setattr(
+        permission_service, "_plugin_directory",
+        lambda pid, candidates=None: directories.append(real(pid, candidates)) or directories[-1],
+    )
+    permission_service.current_source("demo")
+    permission_service.current_source("demo")
+    assert directories == [second.parent.resolve()]
+    first.parent.mkdir()
+    first.write_text("", encoding="utf-8")  # the earlier candidate now wins
+    permission_service.current_source("demo")
+    assert directories[-1] == first.parent.resolve()
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_switched_symlink_on_the_config_path_is_looked_up_again(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "plugin.toml").write_text("", encoding="utf-8")
+    link = tmp_path / "link"
+    os.symlink(tmp_path / "a", link)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(link / "plugin.toml"),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    directories = []
+    real = permission_service._plugin_directory
+    monkeypatch.setattr(
+        permission_service, "_plugin_directory",
+        lambda pid, candidates=None: directories.append(real(pid, candidates)) or directories[-1],
+    )
+    permission_service.current_source("demo")
+    permission_service.current_source("demo")
+    assert directories == [(tmp_path / "a").resolve()]
+    os.remove(link)
+    os.symlink(tmp_path / "b", link)  # both files exist; the directory changed
+    permission_service.current_source("demo")
+    assert directories[-1] == (tmp_path / "b").resolve()
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_the_directory_is_chosen_from_the_paths_the_key_was_made_of(monkeypatch, tmp_path):
+    # The link switches A -> B right after the key is made (and back later):
+    # the source cached under A's key must be worked out from A.
+    from plugin.server.infrastructure import config_paths
+
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "plugin.toml").write_text("", encoding="utf-8")
+    link = tmp_path / "link"
+    os.symlink(tmp_path / "a", link)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(link / "plugin.toml"),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([], by_directory={
+        "a": _lock_entry(channel="manual", directory_name="a"),
+        "b": _lock_entry(channel="builtin", directory_name="b"),
+    })
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    real_key = permission_service._candidates_key
+
+    def key_then_switch(candidates):
+        key = real_key(candidates)
+        os.remove(link)
+        os.symlink(tmp_path / "b", link)
+        return key
+
+    monkeypatch.setattr(permission_service, "_candidates_key", key_then_switch)
+    assert permission_service.current_source("demo").channel == "manual"
+
+
+def test_a_config_file_gone_for_a_moment_does_not_file_another_source_under_its_key(monkeypatch, tmp_path):
+    # A and B both exist when the key is made; A vanishes for the lookup and
+    # comes back. The source under that key must still be A's.
+    from plugin.server.infrastructure import config_paths
+
+    first, second = tmp_path / "a" / "plugin.toml", tmp_path / "b" / "plugin.toml"
+    for config in (first, second):
+        config.parent.mkdir()
+        config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(first), str(second)))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([], by_directory={
+        "a": _lock_entry(channel="manual", directory_name="a"),
+        "b": _lock_entry(channel="builtin", directory_name="b"),
+    })
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    real_key = permission_service._candidates_key
+    hidden = tmp_path / "a.hidden"
+
+    def key_then_hide(candidates):
+        key = real_key(candidates)
+        first.rename(hidden)
+        return key
+
+    monkeypatch.setattr(permission_service, "_candidates_key", key_then_hide)
+    assert permission_service.current_source("demo").channel == "manual"
+    hidden.rename(first)
+    monkeypatch.setattr(permission_service, "_candidates_key", real_key)
+    assert permission_service.current_source("demo").channel == "manual"
+
+
+def test_busy_registry_is_not_cached(monkeypatch):
+    from plugin.server.infrastructure import config_paths
+
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    manager = SnapshotInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    busy = {"on": True}
+
+    def candidates(_pid):
+        if busy["on"]:
+            raise TimeoutError("plugins_read")  # the registry read lock wait
+        return ()
+
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", candidates)
+    assert permission_service.current_source("demo") is None
+    assert permission_service._source_cache == {}
+    busy["on"] = False  # once readable, the real answer is used and cached
+    assert permission_service.current_source("demo").channel == "manual"
+    assert "demo" in permission_service._source_cache
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_cached_source_comes_from_the_snapshot_it_is_keyed_by(monkeypatch, tmp_path, registered):
+    # Publish B, fail to save, roll back to the same snapshot object A while
+    # the source is being read: what is cached under A must be A's source.
+    from plugin.server.infrastructure import config_paths
+
+    config = tmp_path / "demo" / "plugin.toml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    candidates = (str(config),) if registered else ()
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: candidates)
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    entry_a, entry_b = _lock_entry(channel="manual"), _lock_entry(channel="builtin")
+    manager = SnapshotInstallSources([entry_a], by_directory={"demo": entry_a})
+    snapshot_a = manager.current
+
+    def during_publish(read):
+        def lookup(*args, **kwargs):
+            manager.publish([entry_b], {"demo": entry_b})  # B published while we read
+            try:
+                return read(*args, **kwargs)
+            finally:
+                manager.current = snapshot_a  # rolled back: snapshot() is A again
+        return lookup
+
+    manager.list_entries = during_publish(manager.list_entries)
+    manager.entry_for_directory = during_publish(manager.entry_for_directory)
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    assert permission_service.current_source("demo").channel == "manual"
+    assert permission_service._source_cache["demo"][1] is snapshot_a
+    assert permission_service._source_cache["demo"][3].channel == "manual"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs unprivileged symlinks")
+def test_a_resolved_directory_is_classified_as_given(tmp_path):
+    # The plugin directory A is swapped for a link to B between the cache key
+    # and the lock lookup: classifying the key's resolved path must still say A.
+    from plugin.server.application.install_source.manager import classify_plugin_path
+
+    user_root, builtin_root = tmp_path / "user", tmp_path / "builtin"
+    for directory in (user_root / "a", user_root / "b", builtin_root):
+        directory.mkdir(parents=True)
+    resolved_a = (user_root / "a").resolve()
+    (user_root / "a").rmdir()
+    os.symlink(user_root / "b", user_root / "a")
+    roots = {"builtin_root": builtin_root, "user_root": user_root}
+    assert classify_plugin_path(resolved_a, **roots) == ("user", "b")  # resolves again: follows the link
+    assert classify_plugin_path(resolved_a, **roots, already_resolved=True) == ("user", "a")
+
+
+def test_current_source_classifies_the_key_s_resolved_directory_as_given(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import config_paths
+
+    config = tmp_path / "demo" / "plugin.toml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", lambda _pid: (str(config),))
+    monkeypatch.setattr(permission_service, "_source_cache", {})
+    entry = _lock_entry(channel="manual")
+    manager = SnapshotInstallSources([entry], by_directory={"demo": entry})
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+    assert permission_service.current_source("demo").channel == "manual"
+    assert manager.classified == (config.parent.resolve(), True)

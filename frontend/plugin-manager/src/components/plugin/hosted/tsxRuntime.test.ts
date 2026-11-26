@@ -834,6 +834,42 @@ import ghost from "./missing"
     expect(root.textContent).toContain('boom')
     expect(messages.some((message) => message.type === 'neko-hosted-surface-error' && message.payload?.scope === 'component.render')).toBe(true)
   })
+
+  it('prevents case-insensitive script breakout in payload and compiled TSX', () => {
+    const context = baseContext()
+    context.plugin = { id: 'demo', name: '</SCRIPT><img src=x onerror=alert(1)>', description: '', version: '0.1.0' }
+    context.state = { note: '</ScRiPt><!-- -->' }
+    context.i18n = {
+      locale: 'en',
+      default_locale: 'en',
+      messages: { en: { title: '</script><svg onload=alert(1)>' } },
+    }
+    const tsxSource = `
+      export default function Panel(props) {
+        const marker = "</SCRIPT><script>window.__xss=1</script>";
+        return <div id="safe">{props.plugin.name}|{props.state.note}|{props.t("title")}|{marker}</div>
+      }
+    `
+    const html = buildHostedTsxDocument({
+      source: tsxSource,
+      dependencies: [],
+      pluginId: 'demo',
+      surface: baseSurface(),
+      context,
+      locale: 'en\'"><script>',
+    })
+
+    const scriptCloseMatches = html.match(/<\/script/gi) || []
+    expect(scriptCloseMatches).toHaveLength(1)
+    const parsedDoc = new DOMParser().parseFromString(html, 'text/html')
+    expect(parsedDoc.querySelectorAll('script')).toHaveLength(1)
+    expect(html).toContain('<html lang="en&#39;&quot;&gt;&lt;script&gt;">')
+
+    const { root } = executeHostedDocument(tsxSource, context)
+    expect(root.querySelector('#safe')?.textContent).toBe(
+      '</SCRIPT><img src=x onerror=alert(1)>|</ScRiPt><!-- -->|</script><svg onload=alert(1)>|</SCRIPT><script>window.__xss=1</script>',
+    )
+  })
 })
 
 describe('hosted markdown source helpers', () => {
