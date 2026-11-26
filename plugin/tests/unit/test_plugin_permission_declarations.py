@@ -2848,3 +2848,26 @@ def test_the_family_write_check_is_linear(tmp_path):
 def test_datagram_endpoints_whose_remote_address_may_be_unpacked(tmp_path, call, basis):
     source = f"import asyncio\nasync def f(options, rest):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
     assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "vars(socket)['AF_UNIX'] = 2\n",
+        "socket.__dict__['AF_UNIX'] = 2\n",
+        "(socket.AF_UNIX) = 2\n",
+    ],
+)
+def test_a_family_constant_rewritten_through_the_module_dict_is_not_trusted(tmp_path, write):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + write, 1))
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_getattr_on_a_loop_target_is_not_the_module_in_self_attributes(tmp_path):
+    source = (
+        "import subprocess as runner\nclass C:\n    def __init__(self, runners):\n        for runner in runners:\n"
+        "            self.run = getattr(runner, 'run')\n    def go(self):\n        self.run()\n"
+    )
+    report = _scan(tmp_path, source)
+    # The use in go() is not resolved through the shadowed module (as on main).
+    assert [row["line"] for row in report["permissions"]["system.process:spawn"]["findings"]] == [5]

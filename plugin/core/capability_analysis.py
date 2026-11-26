@@ -375,7 +375,8 @@ _FAMILY_NAMES = ("AF_UNIX", "AddressFamily")
 def _families_written(sources, walker) -> bool:
     """The plugin's own code may rebind a socket family constant: a store or
     del of .AF_UNIX / .AddressFamily (plain, annotated, augmented, unpacked,
-    loop / with target), or setattr / delattr with that literal name.
+    loop / with target) or of a ["AF_UNIX"] / ["AddressFamily"] item
+    (vars(socket), socket.__dict__), or setattr / delattr with that name.
 
     Only files that mention the names are parsed for this (again, before
     the main pass); one walk per file, honouring the stop event.
@@ -393,6 +394,13 @@ def _families_written(sources, walker) -> bool:
                 isinstance(node, ast.Attribute)
                 and node.attr in _FAMILY_NAMES
                 and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                return True
+            if (
+                # vars(socket)["AF_UNIX"] = ..., socket.__dict__["AF_UNIX"] = ...
+                isinstance(node, ast.Subscript)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and _literal_string(node.slice) in _FAMILY_NAMES
             ):
                 return True
             if (
@@ -1149,7 +1157,7 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = method.args
-            nodes = walker.scope_nodes(method.body)
+            nodes = list(walker.scope_nodes(method.body))
             declared, method_assignments = _collect_declarations(
                 nodes,
                 [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg) if arg],
@@ -1157,7 +1165,9 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
             )
             own = [(key, value) for key, value in method_assignments if key.startswith("self.")]
             assignments.extend(own)
-            unfollowed.update(id(value) for _key, value in own if _plain_root(value) in declared)
+            # Loop / with / except / walrus targets shadow module names too.
+            local = declared | _rebound_names(nodes, walker)
+            unfollowed.update(id(value) for _key, value in own if _plain_root(value) in local)
     class_bindings = dict(bindings)
     _propagate_assignments(assignments, class_bindings, walker, shared, frozenset(unfollowed))
     return class_bindings
