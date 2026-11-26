@@ -59,7 +59,8 @@ export default defineConfigWithVueTs(
   vueTsConfigs.recommended,
 
   // `src/i18n/plugin-consent/testing.ts` pulls in every language's consent
-  // copy. It lives under `src/` (not `__tests__/`) so that vue-tsc still checks
+  // copy. It lives under `src/` (not `__tests__/`, which vue-tsc left out when
+  // this was written; it no longer does) so that vue-tsc checks
   // its `satisfies Record<AppLocale, ...>`, but app code must never import it:
   // doing so would put all 8 languages back into the first-load bundle.
   // Test files (and the e2e helpers) are exempt.

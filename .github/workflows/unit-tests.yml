@@ -357,6 +357,7 @@ jobs:
           cache-dependency-path: frontend/plugin-manager/package-lock.json
 
       - name: Install dependencies
+        id: install
         working-directory: frontend/plugin-manager
         run: npm ci
 
@@ -378,8 +379,9 @@ jobs:
         # `vue-tsc --noEmit` 一个文件都不检查，永远绿。
         #
         # 放在单测后面并且单测失败也照跑：两类问题各报各的，不互相遮住。
+        # 依赖没装上就不跑：那时只会多一个「vue-tsc: not found」的红步骤。
         # job 名不改 —— 「Plugin manager vitest」是 main 的必过检查名。
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: frontend/plugin-manager
         run: npm run type-check
 
