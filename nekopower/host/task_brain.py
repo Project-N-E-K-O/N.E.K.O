@@ -53,6 +53,7 @@ deferred results, ``needs_confirmation`` and ``clarify``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -475,7 +476,9 @@ class TaskBrain:
             if session is None:
                 continue
             role = roles.get(session.preset or "", session.preset or "familiar")
-            named[session_id] = f'{role} "{session.title}"' if session.title else role
+            # The title quoted as the rest of what the host did not write
+            # (``decision._quoted``): quotes within it cannot end it.
+            named[session_id] = f"{role} {json.dumps(session.title, ensure_ascii=False)}" if session.title else role
         return named
 
     async def _recently_over(self, lanlan_name: str) -> list[Commission]:

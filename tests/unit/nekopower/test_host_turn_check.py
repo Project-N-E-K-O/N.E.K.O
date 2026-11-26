@@ -674,7 +674,7 @@ async def test_a_permission_question_is_told_with_what_it_asks_to_allow(server, 
     answer = await host.query("", lanlan_name="Lan", lang="zh")
 
     # The command itself, not the name of its category.
-    expected = "在等用户回答：运行命令 Remove-Item old.txt (本次允许 / 拒绝)（始终允许 / 仅本会话允许请点问话上的按钮）"
+    expected = "在等用户回答：运行命令 Remove-Item old.txt (本次允许 / 拒绝)（始终允许 / 仅本会话允许：请点问话上的按钮）"
     assert lines == [f"- [等用户回话] 清理旧文件 {expected}"]
     assert expected in answer.text and "run_command" not in answer.text
 
@@ -984,7 +984,7 @@ def test_a_permission_question_names_what_is_asked_and_the_answers():
     assert render_question("整理下载文件夹", question, "zh") == (
         "「整理下载文件夹」要先得到用户批准才能继续：运行命令 Remove-Item old.txt。请转告用户，可以回答："
         # Typed or said, an answer allows once at most: always and this session are the buttons'.
-        "本次允许 / 拒绝（始终允许 / 仅本会话允许请点问话上的按钮）。用户回答后，用任务派发工具把回答交回来。"
+        "本次允许 / 拒绝（始终允许 / 仅本会话允许：请点问话上的按钮）。用户回答后，用任务派发工具把回答交回来。"
     )
 
 
