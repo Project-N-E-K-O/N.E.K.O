@@ -56,6 +56,10 @@ if (typeof window !== 'undefined') {
 // 否则两边同时挪同一个模型。判据和 Live2D 的 isLive2DHostModelDragActive 一致：
 // 宿主在 window.__nekoNiriPetPhysicalCrop 上声明 hostModelDragOwnershipVersion，
 // 再用 isHostModelDragActive() 报告这次按下是否由它接管。
+// 宿主只在自己接管了这次按下时让 isHostModelDragActive() 返回 true。已发布的桌面壳只对 Live2D 画布接管
+// （它的两条接管路径都要求当前是 Live2D 模型），三维模型下返回 false；能接管三维的壳会先读交互对象上的
+// hostModelDragOwnershipVersion。方法缺失或抛错按「已接管」处理沿用 Live2D 的约定：带版本号的宿主从一开始
+// 就同时提供这个方法，真走到这两种情况说明宿主不兼容，宁可不写坐标，也不和宿主同时挪模型。
 function isVRMHostModelDragActive() {
     const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
     if (!api) return false;
