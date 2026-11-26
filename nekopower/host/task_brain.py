@@ -1839,7 +1839,9 @@ class TaskBrain:
                 lanlan_name,
                 reason=reason,
                 text=words[reason].format(receipt=receipt.text(lang)),
-                delivery_mode="proactive" if failed else "passive",
+                # So a stop that left some of a project's work going on: the
+                # user is not to take it all for stopped meanwhile.
+                delivery_mode="proactive" if failed or receipt.left_running else "passive",
                 commission=receipt.first,
             )
         return result

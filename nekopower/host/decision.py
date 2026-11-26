@@ -1196,12 +1196,13 @@ class LexicalDecisionModel:
             # all of it as often as "cancel all of it" is (measured), so "all"
             # is no naming of its own.
             scope = str(reading.get("scope") or "").strip().lower()
-            if not said_which and len(under_way) > 1:
+            if not said_which and len(everything) > 1:
                 # "Stop it" with several under way: which, the user is asked,
                 # not everything stopped on a guess. ("Wait", "not now" said to
                 # what waits for the user is its answer, a refusal, as the
                 # prompt has it; a stop is a stop.) Among all of her work, the
-                # list may have cut.
+                # list may have cut, and counted so: one shown of several is
+                # not taken for the one meant.
                 return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             if hidden and (scope == "all" or (len(stopped) > 1 and scope not in ("project", "these"))):
                 # All of it, or a stop of several that does not say how much,

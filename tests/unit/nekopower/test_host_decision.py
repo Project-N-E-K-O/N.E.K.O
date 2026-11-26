@@ -1392,6 +1392,14 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
     assert await read({**these, "scope": " These "}, shop) == ("stop", ["c1"], ["c3"])
     # A bare "stop it" with several shown asks which, though "these".
     assert await read({**these, "named": False}, shop) == ("ambiguous", ["c1", "c2", "c3"], [])
+    # So with one shown of several under way (all of her work is counted, not what was shown).
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    for scope in ("these", "project", None):
+        said = {**these, "named": False, "scope": scope}
+        assert await read(said, shop[:2]) == ("ambiguous", ["c1", "c2"], []), scope
+        assert await read(said, mixed) == ("ambiguous", ["c1", "c2", "c3"], []), scope
+    # Named, the one shown is stopped, and the rest of its project is said to go on.
+    assert await read(these, shop[:2]) == ("stop", ["c1"], ["c2"])
 
 
 async def test_all_of_nothing_under_way_stops_nothing():
