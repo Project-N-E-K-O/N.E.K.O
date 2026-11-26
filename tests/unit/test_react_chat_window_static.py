@@ -2867,7 +2867,7 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "catch (_) {\n            return normalized;" in source
     assert "container.dataset.niriPhysicalCropPositioned = 'true';" in position_sidepanel_block
     assert (
-        "const goLeft = isNiriPetPhysicalCrop\n"
+        "const goLeft = preserveCropPlacement\n"
         "            ? false\n"
         "            : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);"
     ) in position_sidepanel_block
