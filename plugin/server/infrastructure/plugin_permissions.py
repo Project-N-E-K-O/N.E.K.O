@@ -690,7 +690,8 @@ class PluginPermissionStore:
             record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
             if known_id is None:
-                del permissions[permission_id]
+                # A source change above may have dropped it already.
+                permissions.pop(permission_id, None)
             else:
                 permissions[known_id] = {
                     "state": STATE_UNDECIDED,
