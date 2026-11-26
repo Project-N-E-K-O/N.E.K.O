@@ -476,8 +476,10 @@ describe('the cards of the chat window', () => {
     hold = null;
     release();
     await flush();
-    // The answer failed, but there is nothing left to answer: the card stays closed.
+    // The answer failed, but there is nothing left to answer: the card stays closed. It was plainly
+    // refused, so nothing is said of it not being known whether it counted.
     expect(block().state).toBe('closed');
+    expect(block().notice || '').toBe('');
 
     // Taken, and the word that it is over came before the word that it was taken: answered, not just over.
     hold = new Promise(resolve => { release = resolve; });

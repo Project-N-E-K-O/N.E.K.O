@@ -98,10 +98,11 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
   const [reply, setReply] = useState(() => drafts.get(draftKey)?.reply ?? '');
   const [picked, setPicked] = useState<Record<string, string[]>>(() => drafts.get(draftKey)?.picked ?? {});
   useEffect(() => {
-    if (block.state !== 'pending' && block.state !== 'sending') drafts.delete(draftKey);
-    else if (reply || Object.values(picked).some(labels => labels.length)) drafts.set(draftKey, { reply, picked });
-    else drafts.delete(draftKey);
-    // No more than a few are ever in the making at once; a long session leaves none behind for good.
+    // Kept only while it can still be answered: one whose answer is on its way is not a draft any
+    // more (above the composer its card is taken away before it is drawn as answered). Put in
+    // anew each time, so that the one let go of when there are too many is the one left longest.
+    drafts.delete(draftKey);
+    if (block.state === 'pending' && (reply || Object.values(picked).some(labels => labels.length))) drafts.set(draftKey, { reply, picked });
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value as string);
   }, [draftKey, block.state, reply, picked]);
   const [wholeOpen, setWholeOpen] = useState(false);

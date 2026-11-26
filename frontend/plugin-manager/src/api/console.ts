@@ -407,7 +407,8 @@ export const tellCommission = (commissionId: string, text: string) =>
 /**
  * Answer what a familiar asks: `choice` for a request for approval, `text` for words, `selected`
  * for the options of its questions that were picked (by each question's id). `note` is a sentence
- * added to a choice, passed on to the familiar once the answer is in: `note_taken` says whether it was.
+ * added to a choice, passed on to the familiar once the answer is in: `note_taken` says whether it was
+ * (null: it took longer than the route waits for it, and is still being passed on).
  */
 export interface CommissionAnswer {
   text?: string
@@ -417,7 +418,7 @@ export interface CommissionAnswer {
   note?: string
 }
 export const answerCommission = (commissionId: string, answer: CommissionAnswer) =>
-  send<{ success: boolean; note_taken?: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
+  send<{ success: boolean; note_taken?: boolean | null }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
 export const stopCommission = (commissionId: string) =>
   send<{ status: string }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/stop`)
 

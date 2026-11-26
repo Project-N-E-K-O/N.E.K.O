@@ -82,10 +82,18 @@ const answeredFor = new Map<string, string>()
 // The same where the answer was to whether another familiar is to be opened (which is of no familiar's card), or
 // the familiar is not on the board any more: said above the board.
 const lostElsewhere = ref('')
+// Said for a while, not for good: the familiar goes on with its work, and nothing takes the words away otherwise.
+const LOST_NOTE_MS = 15000
+const withoutCard = (cardId: string) => Object.fromEntries(Object.entries(lost.value).filter(([id]) => id !== cardId))
 const { busyOf, failedOf, answer: answerOne } = useBesideAnswers(() => Promise.all([load(), loadBesides()]), (said, commissionId) => {
   const cardId = answeredFor.get(commissionId)
-  if (cardId) lost.value = { ...lost.value, [cardId]: said }
-  else lostElsewhere.value = said
+  if (cardId) {
+    lost.value = { ...lost.value, [cardId]: said }
+    setTimeout(() => { if (lost.value[cardId] === said) lost.value = withoutCard(cardId) }, LOST_NOTE_MS)
+  } else {
+    lostElsewhere.value = said
+    setTimeout(() => { if (lostElsewhere.value === said) lostElsewhere.value = '' }, LOST_NOTE_MS)
+  }
 })
 function answer(item: Beside, given: GivenAnswer) {
   lostElsewhere.value = ''
@@ -95,7 +103,7 @@ function answerCard(card: BoardCard, given: GivenAnswer) {
   if (!card.commission) return
   answeredFor.set(card.commission.id, card.id)
   // What was said of its last answer is not about this one.
-  lost.value = Object.fromEntries(Object.entries(lost.value).filter(([id]) => id !== card.id))
+  lost.value = withoutCard(card.id)
   void answerOne({ id: card.commission.id, ask: card.commission.ask }, given)
 }
 

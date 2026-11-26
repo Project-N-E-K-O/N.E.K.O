@@ -643,8 +643,10 @@
                 // (Not of a chat that was emptied meanwhile: its cards are gone.)
                 if (!api || !inChat(api, card.message.id)) return;
                 if (result.ok) patch(card, { state: 'answered', answer: shownAnswer(given), notice: result.noteLost ? word('noteLost') : '' });
-                // It stays closed; what is not known of this answer is said on it.
-                else patch(card, { notice: word(result.stale ? 'stale' : 'goneUnsure') });
+                // It stays closed; what is not known of this answer is said on it. (Of one that
+                // was plainly refused nothing is: it did not count, and the card says it is over.)
+                else if (result.stale) patch(card, { notice: word('stale') });
+                else if (result.gone || result.unsure) patch(card, { notice: word('goneUnsure') });
                 return;
             }
             if (result.ok) {

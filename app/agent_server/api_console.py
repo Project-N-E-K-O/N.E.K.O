@@ -833,15 +833,16 @@ def build_console_router(
         # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
         # Neither is one that could not be passed on: sent again, the answer would be turned away.
         passing = asyncio.ensure_future(host.tell(commission_id, note))
+        # Kept referenced from here on, with its failure put in the log when it is done: also where
+        # this request is cancelled while it waits (the page went away), or stops waiting below.
+        _notes_on_their_way.add(passing)
+        passing.add_done_callback(_note_passed_on)
         try:
             # Not cancelled when this stops waiting: passing a sentence on writes the ledger.
             taken: bool | None = bool(await asyncio.wait_for(asyncio.shield(passing), _NOTE_WAIT_SECONDS))
         except asyncio.TimeoutError:
-            _notes_on_their_way.add(passing)
-            passing.add_done_callback(_note_passed_on)
             taken = None
-        except Exception as exc:  # noqa: BLE001 - the answer was taken; only the note was not
-            logger.warning("a sentence added to an answer could not be passed on (exc_type=%s)", type(exc).__name__)
+        except Exception:  # noqa: BLE001 - the answer was taken; only the note was not (logged as it ended)
             taken = False
         return {"success": True, "note_taken": taken}
 

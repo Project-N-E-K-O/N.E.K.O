@@ -278,6 +278,13 @@ describe('the question above the composer of the compact chat', () => {
     view.rerender(within([first, ask(inWords, { state: 'answered', answer: 'x' }, 'd2')]));
     expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('half a sentence');
     expect(at('[data-question="1"] [data-option="b"]').getAttribute('aria-pressed')).toBe('true');
+    // Sent: what was typed is no draft any more, though above the composer the card is taken away
+    // before it is ever drawn as answered.
+    view.rerender(within([ask(twoQuestions, { state: 'sending' }, 'd1')]));
+    view.rerender(within([]));
+    view.rerender(within([first]));
+    expect((at('[data-ask-input]') as HTMLInputElement).value).toBe('');
+    fireEvent.change(at('[data-ask-input]'), { target: { value: 'again' } });
     // Once it is over (its card among the messages says so), nothing of it is kept for a card that is drawn again.
     view.rerender(within([]));
     show(ask(twoQuestions, { state: 'closed' }, 'd1')).unmount();
