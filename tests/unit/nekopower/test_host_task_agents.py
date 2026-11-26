@@ -2775,7 +2775,10 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
         child = await _filed(host, name, parent_id=parent.id)
         await host.ledger.transition(child.id, "working", reason="test")
         members[name] = child.id
-    seen = await host.ledger.select(parent_id=parent.id)
+    # In the order they were started: the one that cannot be closed comes first, and the others
+    # after it are stopped all the same (or not, if a failure gave the rest up).
+    seen = await host.ledger.select(parent_id=parent.id, oldest_first=True)
+    assert [child.id for child in seen] == list(members.values())
     await host.ledger.transition(members["done meanwhile"], "done", reason="test")
     await host.ledger.transition(members["stopped meanwhile"], "cancelled", reason="test")
     team = SimpleNamespace(
