@@ -1348,6 +1348,50 @@ async def test_what_goes_on_with_one_that_ended_takes_it_as_it_ended(server, hos
     assert (receipt.kind, told) == ("told", ["c1"])
 
 
+async def test_what_adds_to_work_is_not_passed_on_once_everything_was_stopped_meanwhile(server, hosts, tmp_path, monkeypatch):
+    from nekopower.host.decision import DecisionRequest, LexicalDecisionModel
+    from tests.unit.nekopower.test_host_decision import commission
+
+    stuck = commission("c1", "sort the photos", route="task_agent", status="blocked", session_id="s1")
+    on = {"value": True}
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), enabled=lambda: on["value"])
+    told: list[Any] = []
+    stop_meanwhile = {"value": ""}
+
+    class Reading(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            # Everything is stopped, or NekoPower switched off, while the reading waits for the model.
+            if tier == "under_way" and stop_meanwhile["value"] == "stopped":
+                host.brain._dispatch_generation += 1
+            if tier == "under_way" and stop_meanwhile["value"] == "switched off":
+                on["value"] = False
+            return await super().complete(tier, messages)
+
+    decisions = Reading()
+    decisions.under_way = [{"does": "add", "items": [1]}]
+    host.brain._decision = LexicalDecisionModel(decisions)
+
+    async def request(*_args: Any, **_kwargs: Any) -> DecisionRequest:
+        return DecisionRequest(dispatch_text="also sort them by month", active=[stuck], task_agent_available=True)
+
+    async def tell(commission_id: str, text: str, *, still_wanted: Any = None) -> bool:
+        told.append((commission_id, still_wanted() if still_wanted else None))
+        return True
+
+    monkeypatch.setattr(host.brain, "_request", request)
+    monkeypatch.setattr(host.brain, "tell", tell)
+
+    receipt = await host.brain._first_round("also sort them by month", "", "Lan", None, "en", "dispatch")
+    # Passed on, with what tells it the stop has not come since (for one that is started again).
+    assert (receipt.kind, told) == ("told", [("c1", True)])
+
+    for meanwhile, reason in (("stopped", "stopped"), ("switched off", "disabled")):
+        told.clear()
+        stop_meanwhile["value"] = meanwhile
+        receipt = await host.brain._first_round("also sort them by month", "", "Lan", None, "en", "dispatch")
+        assert (receipt.kind, receipt.reason, told) == ("no_capability", reason, []), meanwhile
+
+
 def test_a_receipt_says_when_what_the_sentence_does_with_the_work_could_not_be_told():
     import types
 

@@ -1007,7 +1007,15 @@ async def test_an_answer_another_question_offers_too_names_neither():
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
 
     assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2"])
+    # So when the options are those of the questions a task agent asked together (labels or words).
+    asked = {"kind": "question", "questions": [{"question": "Which picture?", "options": [{"label": "Cats"}, {"label": "Dogs"}]}]}
+    post = _waiting("c1", "write a post", asked)
+    card = _waiting("c2", "make a card", {"kind": "question", "questions": [{"question": "Which one?", "options": ["cats", "birds"]}]})
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))
+    assert (triage.kind, triage.targets) == ("ambiguous", ["c1", "c2"])
     # One no other question offers is answered.
+    post = _waiting("c1", "write a post", pets)
     card = _waiting("c2", "make a card", {"kind": "question", "question": "Which colour?", "options": ["Red", "Blue"]})
     llm = _reading({"does": "answer", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))

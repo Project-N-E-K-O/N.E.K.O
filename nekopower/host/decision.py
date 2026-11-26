@@ -581,6 +581,26 @@ def _shown(request: DecisionRequest) -> tuple[list[tuple[str, list[str]]], list[
     return sections, numbered
 
 
+def _offered(question: dict[str, Any]) -> set[str]:
+    """Return the answers a question offers, as the user would say them.
+
+    Its own options, and those of each question an ``ask_user_question``
+    call put together (``questions[].options``, labels or plain strings).
+    """
+
+    def labels(options: Any) -> set[str]:
+        if not isinstance(options, list):
+            return set()
+        said = (str(option.get("label") or "") if isinstance(option, dict) else str(option) for option in options)
+        return {label.strip().casefold() for label in said if label.strip()}
+
+    found = labels(question.get("options"))
+    for asked in question.get("questions") if isinstance(question.get("questions"), list) else []:
+        if isinstance(asked, dict):
+            found |= labels(asked.get("options"))
+    return found
+
+
 def _kin(one: Commission, other: Commission) -> bool:
     """Whether two commissions are of one project or one familiar's (its session)."""
     return bool(
@@ -925,9 +945,9 @@ class LexicalDecisionModel:
                 # An answer the target offers that another question waiting
                 # offers too ("Cats" to two that offer Cats / Dogs) names
                 # neither, whatever the model makes of it.
-                offered = {str(option) for option in (target.question() or {}).get("options") or []}
+                offered = _offered(target.question() or {})
                 shared = (target.question() or {}).get("kind") != "permission" and any(
-                    offered & {str(option) for option in (other.question() or {}).get("options") or []}
+                    offered & _offered(other.question() or {})
                     for other_id, other in all_waiting.items()
                     if other_id != target.id
                 )

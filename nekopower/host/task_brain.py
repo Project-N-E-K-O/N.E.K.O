@@ -695,7 +695,17 @@ class TaskBrain:
                 narrowed=delivered and triage.narrowed,
             )
         if triage.kind == "tell" and targets:
-            delivered = await self.tell(targets[0].id, text)
+            # Not when NekoPower was switched off, or everything stopped, while
+            # this round was looking (the reading waits for a model): a stop
+            # leaves one that is stuck as it is, and passing this on would
+            # start it again.
+            if not self._is_enabled():
+                return Receipt(kind="no_capability", reason="disabled", model_calls=calls, unread=triage.unread)
+            if generation != self._dispatch_generation:
+                return Receipt(kind="no_capability", reason="stopped", model_calls=calls, unread=triage.unread)
+            delivered = await self.tell(
+                targets[0].id, text, still_wanted=lambda: self._switched_on() and generation == self._dispatch_generation
+            )
             if delivered:
                 return Receipt(kind="told", commissions=targets[:1], model_calls=calls)
             # It could not be passed on; treat the sentence as work of its own.
