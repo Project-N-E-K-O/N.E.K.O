@@ -1550,6 +1550,36 @@ async def test_a_late_receipt_is_not_told_once_everything_was_stopped(server, ho
     # What the round came to is over with the stop of everything: nothing of it is told now.
     assert await outbox(host, KIND_RECEIPT) == []
 
+    # Nor when everything is stopped after the round is over but before its receipt is written.
+    async def stop_now(*_args: Any, **_kwargs: Any) -> Any:
+        return working, True, None
+
+    class Quick(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                await asyncio.sleep(0.2)
+                return '{"does": "stop", "items": [1], "named": true}'
+            return await super().complete(tier, messages)
+
+    host.brain._decision = LexicalDecisionModel(Quick())
+    monkeypatch.setattr(host.brain, "_stop", stop_now)
+    spawn = host.brain._spawn
+    spawned = {"count": 0}
+
+    def spawn_then_stop_everything(coroutine: Any) -> Any:
+        spawned["count"] += 1
+        if spawned["count"] == 2:
+            # The receipt is on its way: everything is stopped before it is written.
+            host.brain._dispatch_generation += 1
+        return spawn(coroutine)
+
+    monkeypatch.setattr(host.brain, "_spawn", spawn_then_stop_everything)
+    assert (await host.brain.dispatch("stop it", lanlan_name="Lan", lang="en")).kind == "received"
+    await host.brain.settle()
+    assert await outbox(host, KIND_RECEIPT) == []
+    monkeypatch.setattr(host.brain, "_spawn", spawn)
+    host.brain._decision = LexicalDecisionModel(Slow())
+
     # Not a stop that could not confirm what it ran ended: stopping everything does not take that
     # one up again, and she says so.
     async def stop_not_confirmed(*_args: Any, **_kwargs: Any) -> Any:

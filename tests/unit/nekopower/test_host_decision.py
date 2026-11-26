@@ -994,6 +994,35 @@ async def test_with_several_requests_for_approval_waiting_the_user_is_asked_whic
     assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c3"], False)
 
 
+async def test_questions_that_offer_the_same_answers_say_the_buttons_tell_which():
+    # Two members ask yes or no, one of the links, one of the footer. Naming one ("the links one: yes")
+    # would be asked about again and again: the receipt says the buttons on each question tell which.
+    yes_no = {"kind": "question", "questions": [{"question": "Go on?", "options": [{"label": "Yes"}, {"label": "No"}]}]}
+    links = _waiting("c1", "fix the links", yes_no)
+    footer = _waiting("c2", "fix the footer", yes_no)
+    llm = _reading({"does": "answer", "items": [1], "named": True})
+
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("the links one: yes", active=[links, footer])
+    )
+
+    assert (triage.kind, triage.targets, triage.by_buttons) == ("ambiguous", ["c1", "c2"], True)
+
+
+async def test_one_commission_on_two_rows_is_one():
+    # It ended while the lists were read: it is under way and ended at once. Picked on both rows, it is
+    # one, and what goes on with it takes the row of it that ended.
+    working = commission("c1", "sort the photos", route="task_agent", status="working", session_id="s1")
+    ended = commission("c1", "sort the photos", route="task_agent", status="failed", session_id="s1")
+    llm = _reading({"does": "add", "items": [1, 2]})
+
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("also by month", active=[working], recent=[ended], task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == ("continue", ["c1"])
+
+
 async def test_a_request_for_approval_left_out_of_the_list_counts_all_the_same(monkeypatch):
     # More questions wait than the list shows: one left out is a request for approval as much.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
@@ -1040,7 +1069,15 @@ async def test_an_answer_another_question_offers_too_names_neither():
         llm = _reading({"does": "answer", "items": [1], "named": True})
         triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
         assert (triage.kind, triage.targets) == read, said
+    # A letter with an accent is a letter: "No" is not said in "Noël".
+    post = _waiting("c1", "pick a colour", {"kind": "question", "question": "Blue?", "options": ["Blue", "No"]})
+    card = _waiting("c2", "pick a card", {"kind": "question", "question": "Blue?", "options": ["Blue", "Yes"]})
+    for said, read in (("Blue, Noël", ("ambiguous", ["c1", "c2"])), ("No, please", ("answer", ["c1"]))):
+        llm = _reading({"does": "answer", "items": [1], "named": True})
+        triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request(said, active=[post, card]))
+        assert (triage.kind, triage.targets) == read, said
     # One no other question offers is answered.
+    post = _waiting("c1", "write a post", pets)
     card = _waiting("c2", "make a card", {"kind": "question", "question": "Which colour?", "options": ["Red", "Blue"]})
     llm = _reading({"does": "answer", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("Cats", active=[post, card]))

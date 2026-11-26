@@ -264,7 +264,15 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
         # answer back, which come after it in the sentence.
         from utils.tokenize import count_tokens
 
-        offered = " / ".join(names[option] for option in question.get("options") or [] if option in names)
+        from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT
+
+        options = [option for option in question.get("options") or [] if option in names]
+        # Typed or said, an answer allows the one request at most: always and
+        # this session are named as the buttons' (``decision`` narrows them).
+        offered = " / ".join(names[option] for option in options if option in ("once", "deny"))
+        by_buttons = [names[option] for option in options if option in ("always", "session")]
+        if by_buttons:
+            offered += _loc(PERMISSION_BUTTONS_ONLY_TEXT, lang).format(options=" / ".join(by_buttons))
         room = PERMISSION_SUBJECT_MAX_TOKENS
         shown_title = title
         what, cut = _permission_subject_cut(question, lang, room)

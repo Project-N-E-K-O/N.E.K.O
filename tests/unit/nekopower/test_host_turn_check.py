@@ -347,6 +347,30 @@ async def test_a_promise_to_stop_something_stops_it(server, hosts, tmp_path):
     assert await _notices(host) == [("filed", "passive", "你刚才答应的事已经替你派发了。已叫停：查上海明天的天气")]
 
 
+async def test_a_promised_stop_that_could_not_confirm_its_end_is_told_of_that_commission(server, hosts, tmp_path, monkeypatch):
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "别查天气了"}])
+    llm.under_way = [{"does": "stop", "items": [1], "named": True}]
+    host = _host(hosts, tmp_path, server, llm)
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
+    )
+    await host.ledger.transition(commission.id, "working", route="plugin", plugin_id="weather", entry_id="today")
+
+    async def stop(*_args: Any, **_kwargs: Any) -> Any:
+        after = await host.ledger.get(commission.id)
+        return after, True, RuntimeError("the plugin server is down")
+
+    monkeypatch.setattr(host.brain, "_stop", stop)
+
+    result = await _check(host, "算了别查天气了", "好，我让它停下", external_intent=0.8)
+
+    # Stopped, though what it ran could not be told to end: she is told, about that commission.
+    assert result.receipt.kind == "stop_failed"
+    (notice,) = [item for item in await outbox(host, "correction")]
+    assert (notice.payload["reason"], notice.commission_id) == ("promised_failed", commission.id)
+
+
 async def test_she_said_it_is_done_but_no_task_says_so(server, hosts, tmp_path):
     _weather(server)
     llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "订去东京的机票"}])
@@ -950,7 +974,8 @@ def test_a_permission_question_names_what_is_asked_and_the_answers():
 
     assert render_question("整理下载文件夹", question, "zh") == (
         "「整理下载文件夹」要先得到用户批准才能继续：运行命令 Remove-Item old.txt。请转告用户，可以回答："
-        "始终允许 / 仅本会话允许 / 本次允许 / 拒绝。用户回答后，用任务派发工具把回答交回来。"
+        # Typed or said, an answer allows once at most: always and this session are the buttons'.
+        "本次允许 / 拒绝（始终允许 / 仅本会话允许请点问话上的按钮）。用户回答后，用任务派发工具把回答交回来。"
     )
 
 

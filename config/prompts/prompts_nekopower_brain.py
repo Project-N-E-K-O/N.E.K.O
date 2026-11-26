@@ -475,7 +475,7 @@ RECEIPT_TEXTS = {
         "narrowed": "（只放行了这一次（本次允许）：打字或说出来的回答最多放行一次。要始终允许或仅本会话允许，请用户点问话上的按钮。）",
         "stop_failed": "没能停下：{title}。可以在界面上再停一次。",
         "stop_unconfirmed": "已叫停：{title}，但没能确认它正在跑的部分都停了，可以在界面上看一下。",
-        "by_buttons": "（同时有几条批准在等，说的话分不清是哪一条：请用户点对应问话上的按钮。）",
+        "by_buttons": "（几条问话在等，说的话分不清是哪一条：请用户点对应问话上的按钮。）",
     },
     'zh-TW': {
         "accepted": "已受理：{title}",
@@ -493,7 +493,7 @@ RECEIPT_TEXTS = {
         "narrowed": "（只放行了這一次（本次允許）：打字或說出來的回答最多放行一次。要始終允許或僅本會話允許，請使用者點問話上的按鈕。）",
         "stop_failed": "沒能停下：{title}。可以在介面上再停一次。",
         "stop_unconfirmed": "已叫停：{title}，但沒能確認它正在跑的部分都停了，可以在介面上看一下。",
-        "by_buttons": "（同時有幾條批准在等，說的話分不清是哪一條：請使用者點對應問話上的按鈕。）",
+        "by_buttons": "（幾條問話在等，說的話分不清是哪一條：請使用者點對應問話上的按鈕。）",
     },
     'en': {
         "accepted": "Accepted: {title}",
@@ -511,7 +511,7 @@ RECEIPT_TEXTS = {
         "narrowed": "(Allowed this once only: an answer typed or said allows one request at most. To always allow it or allow it for this session, ask the user to use the buttons on the question.)",
         "stop_failed": "Could not stop: {title}. It can be stopped again on screen.",
         "stop_unconfirmed": "Stopped: {title}, but it could not be confirmed that everything it was running has ended; it can be checked on screen.",
-        "by_buttons": "(Several requests for approval are waiting, and words cannot tell which this is for: ask the user to use the buttons on the question they mean.)",
+        "by_buttons": "(Several questions are waiting, and words cannot tell which this is for: ask the user to use the buttons on the question they mean.)",
     },
     'ja': {
         "accepted": "受け付けました：{title}",
@@ -529,7 +529,7 @@ RECEIPT_TEXTS = {
         "narrowed": "（今回だけ許可しました。入力や音声での回答で許可できるのは 1 回までです。常に許可・このセッションだけ許可にするには、確認のボタンを押すようユーザーに伝えてください。）",
         "stop_failed": "止められませんでした：{title}。画面からもう一度止められます。",
         "stop_unconfirmed": "中止しました：{title}。ただし、実行中だった部分がすべて止まったかは確認できませんでした。画面で確かめられます。",
-        "by_buttons": "（許可の確認が複数待っていて、言葉ではどれのことか分かりません。ユーザーに、該当する確認のボタンを押してもらってください。）",
+        "by_buttons": "（確認が複数待っていて、言葉ではどれのことか分かりません。ユーザーに、該当する確認のボタンを押してもらってください。）",
     },
     'ko': {
         "accepted": "접수했습니다: {title}",
@@ -547,7 +547,7 @@ RECEIPT_TEXTS = {
         "narrowed": "(이번만 허용했습니다. 입력하거나 말로 한 답변으로는 한 번까지만 허용됩니다. 항상 허용하거나 이번 세션만 허용하려면 질문의 버튼을 누르라고 사용자에게 알려 주세요.)",
         "stop_failed": "중지하지 못했습니다: {title}. 화면에서 다시 중지할 수 있습니다.",
         "stop_unconfirmed": "중지했습니다: {title}. 다만 실행 중이던 부분이 모두 멈췄는지는 확인하지 못했습니다. 화면에서 확인할 수 있습니다.",
-        "by_buttons": "(허용 요청이 여러 개 기다리고 있어 말로는 어느 것인지 알 수 없습니다. 사용자에게 해당 질문의 버튼을 눌러 달라고 하세요.)",
+        "by_buttons": "(질문이 여러 개 기다리고 있어 말로는 어느 것인지 알 수 없습니다. 사용자에게 해당 질문의 버튼을 눌러 달라고 하세요.)",
     },
     'ru': {
         "accepted": "Принято: {title}",
@@ -565,7 +565,7 @@ RECEIPT_TEXTS = {
         "narrowed": "(Разрешено только в этот раз: ответ, написанный или сказанный словами, разрешает не больше одного запроса. Чтобы разрешать всегда или на эту сессию, попросите пользователя нажать кнопку в вопросе.)",
         "stop_failed": "Не удалось остановить: {title}. Это можно сделать ещё раз на экране.",
         "stop_unconfirmed": "Остановлено: {title}, но не удалось убедиться, что всё, что оно запускало, завершилось; это можно проверить на экране.",
-        "by_buttons": "(Ждут несколько запросов на разрешение, и по словам не понять, к какому это относится: попросите пользователя нажать кнопку в нужном вопросе.)",
+        "by_buttons": "(Ждут несколько вопросов, и по словам не понять, к какому это относится: попросите пользователя нажать кнопку в нужном вопросе.)",
     },
     'es': {
         "accepted": "Aceptado: {title}",
@@ -583,7 +583,7 @@ RECEIPT_TEXTS = {
         "narrowed": "(Permitido solo esta vez: una respuesta escrita o dicha permite una solicitud como mucho. Para permitir siempre o en esta sesión, pide al usuario que use los botones de la pregunta.)",
         "stop_failed": "No se pudo detener: {title}. Se puede detener de nuevo desde la pantalla.",
         "stop_unconfirmed": "Detenido: {title}, pero no se pudo confirmar que todo lo que estaba ejecutando haya terminado; se puede comprobar en la pantalla.",
-        "by_buttons": "(Hay varias solicitudes de permiso esperando y por las palabras no se sabe a cuál se refiere: pide al usuario que use los botones de la pregunta que quiere responder.)",
+        "by_buttons": "(Hay varias preguntas esperando y por las palabras no se sabe a cuál se refiere: pide al usuario que use los botones de la pregunta que quiere responder.)",
     },
     'pt': {
         "accepted": "Aceito: {title}",
@@ -601,7 +601,7 @@ RECEIPT_TEXTS = {
         "narrowed": "(Permitido só desta vez: uma resposta escrita ou falada permite um pedido no máximo. Para permitir sempre ou nesta sessão, peça ao usuário para usar os botões da pergunta.)",
         "stop_failed": "Não deu para interromper: {title}. Dá para interromper de novo pela tela.",
         "stop_unconfirmed": "Interrompido: {title}, mas não deu para confirmar que tudo o que estava rodando terminou; dá para conferir pela tela.",
-        "by_buttons": "(Há vários pedidos de permissão aguardando e pelas palavras não dá para saber a qual se refere: peça ao usuário para usar os botões da pergunta certa.)",
+        "by_buttons": "(Há várias perguntas aguardando e pelas palavras não dá para saber a qual se refere: peça ao usuário para usar os botões da pergunta certa.)",
     },
 }
 
@@ -670,6 +670,19 @@ QUERY_TEXTS = {
 # How the answers to a permission prompt are named when the question is put to
 # her, and (in English) to the small model that reads what an answer chose
 # (``TASK_BRAIN_ANSWER_PROMPT``, ``decision._read_choice``).
+# After the answers words can give in the question she passes on: the ones
+# the buttons alone give (``reports.render_question``).
+PERMISSION_BUTTONS_ONLY_TEXT = {
+    'zh': "（{options}请点问话上的按钮）",
+    'zh-TW': "（{options}請點問話上的按鈕）",
+    'en': " ({options}: with the buttons on the question)",
+    'ja': "（{options}は確認のボタンで）",
+    'ko': " ({options}은(는) 질문의 버튼으로)",
+    'ru': " ({options} — кнопками в вопросе)",
+    'es': " ({options}: con los botones de la pregunta)",
+    'pt': " ({options}: com os botões da pergunta)",
+}
+
 PERMISSION_OPTION_NAMES = {
     'zh': {"always": "始终允许", "session": "仅本会话允许", "once": "本次允许", "deny": "拒绝"},
     'zh-TW': {"always": "始終允許", "session": "僅本會話允許", "once": "本次允許", "deny": "拒絕"},

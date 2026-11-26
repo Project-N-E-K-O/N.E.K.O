@@ -602,9 +602,9 @@ def _offered(question: dict[str, Any]) -> set[str]:
 
 
 def _said(label: str, spoken: str) -> bool:
-    """Whether an answer offered was said: as a word of its own where it is written in Latin letters ("no" is not in "not")."""
+    """Whether an answer offered was said: as a word of its own where it is written in Latin letters ("no" is not in "not" nor in "Noël")."""
     if label.isascii():
-        return re.search(rf"(?<![0-9a-z]){re.escape(label)}(?![0-9a-z])", spoken) is not None
+        return re.search(rf"(?<![^\W_]){re.escape(label)}(?![^\W_])", spoken) is not None
     return label in spoken
 
 
@@ -924,13 +924,21 @@ class LexicalDecisionModel:
         waiting = list(all_waiting)
         approvals = [item_id for item_id, item in all_waiting.items() if (item.question() or {}).get("kind") == "permission"]
 
-        def which(targets: list[str]) -> tuple[Triage | None, int, bool]:
-            # Which, the user is asked. Among several requests for approval,
-            # words would say no more when asked again: she is told the
-            # buttons on each question do.
-            by_buttons = len(targets) > 1 and all(target in approvals for target in targets)
+        def which(targets: list[str], *, words_cannot: bool = False) -> tuple[Triage | None, int, bool]:
+            # Which, the user is asked. Among several requests for approval, or
+            # questions that offer the same answers, words would say no more
+            # when asked again: she is told the buttons on each question do.
+            by_buttons = words_cannot or (len(targets) > 1 and all(target in approvals for target in targets))
             return Triage(kind="ambiguous", targets=targets, by_buttons=by_buttons, model_calls=1), 1, False
 
+        # One commission on two rows (it ended while the lists were read) is
+        # one: what goes on with it takes the row of it that ended, anything
+        # else the first.
+        by_id: dict[str, tuple[str, Commission]] = {}
+        for place, item in picked:
+            if item.id not in by_id or (does == "add" and place == _ENDED):
+                by_id[item.id] = (place, item)
+        picked = list(by_id.values())
         if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
             # It means one of these and cannot say which (an answer or an
             # addition is to one): which, the user is asked.
@@ -985,7 +993,9 @@ class LexicalDecisionModel:
                 if (not said_which or shared) and len(waiting) > 1:
                     # A plain "yes" with several questions waiting: which, the
                     # user is asked, and none of them is answered on a guess.
-                    return which(waiting)
+                    # (Where the answers are shared, naming the question again
+                    # would be asked about again: the buttons say which.)
+                    return which(waiting, words_cannot=shared)
                 if (target.question() or {}).get("kind") == "permission":
                     if len(approvals) > 1:
                         # Several requests for approval wait: which this allows

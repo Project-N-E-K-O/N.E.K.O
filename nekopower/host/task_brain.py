@@ -111,7 +111,8 @@ class Receipt:
     # Whether an answer that chose "always" or "session" allowed the one
     # request alone (``Triage.narrowed``): the receipt says the buttons do more.
     narrowed: bool = False
-    # For "ambiguous" among several requests for approval (``Triage.by_buttons``):
+    # For "ambiguous" where words cannot tell which (several requests for
+    # approval, questions that offer the same answers; ``Triage.by_buttons``):
     # the receipt says the buttons on each question tell which.
     by_buttons: bool = False
     # For "stop_failed" (the commissions it could not stop): those it did stop,
@@ -608,14 +609,17 @@ class TaskBrain:
                 logger.error("the first round of a dispatch failed after the early receipt", exc_info=error)
                 return
             receipt = task.result()
-            if generation != self._dispatch_generation and receipt.kind != "stop_failed":
-                # Everything was stopped since: what this round came to is
-                # over with it, and nothing of it is told now. Not what a
-                # stop it made could not end: stopping everything does not
-                # take up what is stopped already.
-                return
-            self._spawn(
-                self._reporter.receipt(
+
+            async def tell() -> None:
+                # Looked at when it is written (a stop of everything may come
+                # between this callback and then).
+                if generation != self._dispatch_generation and receipt.kind != "stop_failed":
+                    # Everything was stopped since: what this round came to
+                    # is over with it, and nothing of it is told now. Not what
+                    # a stop it made could not end: stopping everything does
+                    # not take up what is stopped already.
+                    return
+                await self._reporter.receipt(
                     lanlan_name,
                     kind=receipt.kind,
                     text=receipt.text(lang),
@@ -624,7 +628,8 @@ class TaskBrain:
                     # now, as a question it may have answered still waits.
                     urgent=receipt.unread,
                 )
-            )
+
+            self._spawn(tell())
 
         first.add_done_callback(late)
         return Receipt(kind="received")
@@ -1769,7 +1774,7 @@ class TaskBrain:
                 reason=reason,
                 text=words[reason].format(receipt=receipt.text(lang)),
                 delivery_mode="proactive" if failed else "passive",
-                commission=receipt.commissions[0] if receipt.commissions else None,
+                commission=receipt.first,
             )
         return result
 
