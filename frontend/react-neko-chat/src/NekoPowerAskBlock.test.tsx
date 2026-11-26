@@ -1,7 +1,9 @@
 import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
-import CompactNekoPowerAskPrompt, { CompactAskOrRecommendationPrompt, pendingNekoPowerAsk } from './CompactNekoPowerAskPrompt';
+import CompactNekoPowerAskPrompt, {
+  CompactAskOrRecommendationPrompt, NEKOPOWER_ASK_NOTICE_MS, pendingNekoPowerAsk,
+} from './CompactNekoPowerAskPrompt';
 import MessageBlockView from './MessageBlockView';
 import { NEKOPOWER_ASK_SETTLE_MS, askView } from './NekoPowerAskBlock';
 import { parseChatMessage } from './message-schema';
@@ -225,6 +227,37 @@ describe('the question above the composer of the compact chat', () => {
     expect(once().disabled).toBe(true);
     act(() => { vi.advanceTimersByTime(NEKOPOWER_ASK_SETTLE_MS); });
     expect(once().disabled).toBe(false);
+  });
+
+  it('keeps what there is to say of an answer in view for a while, where there is no list of messages to read it in', () => {
+    vi.useFakeTimers();
+    const within = (messages: ChatMessage[]) => (
+      <ChatScreenVisibilityProvider messages={messages}>
+        <CompactAskOrRecommendationPrompt messages={messages} />
+      </ChatScreenVisibilityProvider>
+    );
+    const floating = () => view.container.querySelector('#compact-nekopower-ask-prompt');
+    const view = render(within([ask(permission)]));
+    // Taken, but the sentence added to it was not: said, with nothing left to press.
+    view.rerender(within([ask(permission, { state: 'answered', answer: 'Just this once', notice: 'The sentence you added was not delivered.' })]));
+    expect(floating()?.textContent).toContain('The sentence you added was not delivered.');
+    expect(floating()?.querySelector('[data-choice]')).toBeNull();
+    act(() => { vi.advanceTimersByTime(NEKOPOWER_ASK_NOTICE_MS - 100); });
+    expect(floating()).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(floating()).toBeNull();
+
+    // Too late: said as well. The next question takes its place at once.
+    view.rerender(within([ask({ ...permission, id: 'q7' })]));
+    view.rerender(within([ask({ ...permission, id: 'q7' }, { state: 'closed', notice: 'Not delivered' })]));
+    expect(floating()?.textContent).toContain('Not delivered');
+    view.rerender(within([ask({ ...permission, id: 'q7' }, { state: 'closed', notice: 'Not delivered' }), ask(confirmation)]));
+    expect(floating()?.textContent).not.toContain('Not delivered');
+    expect(floating()?.querySelector('[data-confirm="yes"]')).toBeTruthy();
+
+    // Answered with nothing to say of it: gone at once, as before.
+    view.rerender(within([ask(confirmation, { state: 'answered', answer: 'Yes' })]));
+    expect(floating()).toBeNull();
   });
 
   it('does not float a question the screen hides, and keeps nothing else from being shown for it', () => {

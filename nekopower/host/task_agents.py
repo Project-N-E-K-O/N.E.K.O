@@ -975,7 +975,10 @@ def build_answers(questions: list[Any], text: str, selected: Any = None) -> dict
                 labels.append(label)
         if picked is not None:
             mine = picked.get(str(index))
-            chosen = [label for label in labels if label in mine] if isinstance(mine, list) else []
+            # The pages show a label without the blanks around it, and hand it back so: compared
+            # without them, and given to the task agent as the question has it.
+            wanted = {str(each).strip() for each in mine} if isinstance(mine, list) else set()
+            chosen = [label for label in labels if label.strip() in wanted]
         else:
             chosen = [label for label in labels if label.lower() in lowered]
         if not question.get("multi_select"):

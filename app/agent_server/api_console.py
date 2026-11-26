@@ -72,6 +72,20 @@ _ROW_MAX = 2**63 - 1
 _TEXT_LIMIT = 200_000
 # How many questions an answer may name, and how many options of each: far more than one call asks.
 _SELECTED_LIMIT = 64
+# How long the route that takes an answer waits for the sentence added to it to be passed on. The
+# answer is in by then; a page that waited longer would be told by its server that the request
+# timed out, and take the answer for one whose fate is not known.
+_NOTE_WAIT_SECONDS = 4.0
+# The sentences still being passed on after their route has answered, kept referenced until done.
+_notes_on_their_way: "set[asyncio.Future[Any]]" = set()
+
+
+def _note_passed_on(task: "asyncio.Future[Any]") -> None:
+    _notes_on_their_way.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning(
+            "a sentence added to an answer could not be passed on (exc_type=%s)", type(task.exception()).__name__
+        )
 # The longest words a page may look for in what was said.
 _QUERY_LIMIT = 500
 
@@ -775,7 +789,9 @@ def build_console_router(
         request for confirmation takes ``choice`` "yes" or "no". ``note`` is a sentence the user added to an
         answer that is a choice (an approval, a refusal), which takes no
         words: once the answer is in it is passed on to the task agent as
-        ``/tell`` would, and ``note_taken`` says whether it was.
+        ``/tell`` would, and ``note_taken`` says whether it was (None where
+        that took longer than this waits for it: it is still being passed
+        on).
         """
         payload = payload or {}
         text = text_of(payload, "text") or ""
@@ -796,9 +812,15 @@ def build_console_router(
             )
         ):
             raise _refuse(400, "bad_text", field="selected")
-        if not text.strip() and not choice and not any((selected or {}).values()):
-            raise _refuse(400, "bad_text", field="text")
         host = await get_host()
+        if not text.strip() and not choice:
+            # Nothing said: what was picked is the answer, where something was, and only to
+            # questions that offer something to pick. Any other question would be handed nothing.
+            if not any(label.strip() for labels in (selected or {}).values() for label in labels):
+                raise _refuse(400, "bad_text", field="text")
+            commission = await host.ledger.get(commission_id)
+            if commission is not None and (commission.question() or {}).get("kind") != "questions":
+                raise _refuse(400, "bad_text", field="text")
         if not await host.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected):
             # It asked nothing, or what it asked was answered or withdrawn meanwhile.
             raise _refuse(409, "not_taken")
@@ -806,8 +828,14 @@ def build_console_router(
             return {"success": True}
         # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
         # Neither is one that could not be passed on: sent again, the answer would be turned away.
+        passing = asyncio.ensure_future(host.tell(commission_id, note))
         try:
-            taken = bool(await host.tell(commission_id, note))
+            # Not cancelled when this stops waiting: passing a sentence on writes the ledger.
+            taken: bool | None = bool(await asyncio.wait_for(asyncio.shield(passing), _NOTE_WAIT_SECONDS))
+        except asyncio.TimeoutError:
+            _notes_on_their_way.add(passing)
+            passing.add_done_callback(_note_passed_on)
+            taken = None
         except Exception as exc:  # noqa: BLE001 - the answer was taken; only the note was not
             logger.warning("a sentence added to an answer could not be passed on (exc_type=%s)", type(exc).__name__)
             taken = False

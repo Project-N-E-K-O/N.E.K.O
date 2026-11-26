@@ -314,6 +314,18 @@ describe('the cards of the chat window', () => {
     expect(() => parseChatMessage(messages[0])).not.toThrow();
   });
 
+  it('shows no card for a question of another character than the one the page is with', () => {
+    // Sent to every page, the page of its own character not being open.
+    asks.receive(frame(permission, { lanlan_name: 'Mio' }));
+    expect(messages).toEqual([]);
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    asks.receive(frame(confirmation, { task_id: 'c2' }));
+    expect(messages.map(message => message.id)).toEqual(['nekopower-ask-c1-q1', 'nekopower-ask-c2-q2']);
+    // That one is over is taken whoever it names.
+    asks.receive(frame(null, { question_id: 'q1', lanlan_name: 'Mio' }));
+    expect(block().state).toBe('closed');
+  });
+
   it('closes the card of the question that is over, and no other', () => {
     asks.receive(frame(permission));
     // Late word that an earlier question of the task is over: this one stays.

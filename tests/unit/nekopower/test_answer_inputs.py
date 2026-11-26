@@ -8,6 +8,7 @@ host's side of that, and what such a page is given to draw the card with.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,6 +56,18 @@ def test_a_pick_is_one_of_the_questions_options_and_one_only_where_one_is_asked_
     answers = build_answers(QUESTIONS, "", {"0": ["Vercel", "Not now", "Netlify"], "2": "a", "7": ["x"]})
 
     assert _selected(answers) == [["Vercel"], [], []]
+
+
+def test_a_label_is_the_same_with_or_without_the_blanks_around_it():
+    # The pages show a label trimmed and hand it back so; the model wrote it with a blank after it.
+    questions = [{"id": "go", "question": "Go on?", "options": [{"label": "Yes "}, {"label": " No"}]}]
+
+    answers = build_answers(questions, "", {"0": ["Yes"]})
+
+    # Given to the task agent as the question has it.
+    assert _selected(answers) == [["Yes "]]
+    assert _selected(build_answers(questions, "", {"0": [" No  "]})) == [[" No"]]
+    assert _selected(build_answers(questions, "", {"0": ["Ye"]})) == [[]]
 
 
 def test_an_answer_in_words_alone_is_read_as_it_always_was():
@@ -168,14 +181,22 @@ class _Host:
     """Stands in for the host: takes answers and sentences, and says what waits."""
 
     def __init__(
-        self, *, takes_answer: bool = True, takes_note: bool | Exception = True, waiting: list[Any] | None = None
+        self,
+        *,
+        takes_answer: bool = True,
+        takes_note: "bool | Exception | asyncio.Event" = True,
+        waiting: list[Any] | None = None,
+        asks: str | None = "questions",
     ) -> None:
         self.takes_answer, self.takes_note = takes_answer, takes_note
+        # The kind of question the commission waits with; None for no such commission.
+        self.asks = asks
         self.answers: list[tuple[str, str, dict[str, Any]]] = []
         self.told: list[tuple[str, str]] = []
-        self.ledger = SimpleNamespace(select=self._select)
+        self.ledger = SimpleNamespace(select=self._select, get=self._get)
         self._waiting = waiting or []
         self.selected_with: dict[str, Any] = {}
+        self.passed_on: list[str] = []
 
     async def answer(self, commission_id: str, text: str, **given: Any) -> bool:
         self.answers.append((commission_id, text, given))
@@ -185,7 +206,17 @@ class _Host:
         self.told.append((commission_id, text))
         if isinstance(self.takes_note, Exception):
             raise self.takes_note
+        if isinstance(self.takes_note, asyncio.Event):
+            # Slow to pass on: until the test lets it through.
+            await self.takes_note.wait()
+            self.passed_on.append(text)
+            return True
         return self.takes_note
+
+    async def _get(self, commission_id: str) -> Any:
+        if self.asks is None:
+            return None
+        return SimpleNamespace(id=commission_id, question=lambda: {"kind": self.asks, "id": "q1"})
 
     async def _select(self, **criteria: Any) -> list[Any]:
         self.selected_with = criteria
@@ -234,6 +265,29 @@ async def test_a_note_that_could_not_be_passed_on_leaves_the_answer_taken():
     assert host.told == [("c1", "careful")]
 
 
+async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypatch):
+    from app.agent_server import api_console
+
+    # The page's server gives up on a request after a while and would take the answer for lost.
+    monkeypatch.setattr(api_console, "_NOTE_WAIT_SECONDS", 0.05)
+    release = asyncio.Event()
+    host = _Host(takes_note=release)
+    async with _client(host) as client:
+        answer = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+
+    # The answer is in; whether the sentence was taken is not known yet, and is not said to be lost.
+    assert answer.json() == {"success": True, "note_taken": None}
+    assert host.passed_on == []
+    # Not given up: it is passed on all the same.
+    release.set()
+    for _ in range(50):
+        if host.passed_on:
+            break
+        await asyncio.sleep(0.01)
+    assert host.passed_on == ["careful"]
+    assert not api_console._notes_on_their_way
+
+
 async def test_no_note_is_passed_on_for_an_answer_that_was_not_taken_nor_without_one():
     late = _Host(takes_answer=False)
     async with _client(late) as client:
@@ -260,6 +314,37 @@ async def test_what_was_picked_is_an_answer_of_its_own_and_reaches_the_host():
     assert host.answers == [("c1", "", {"choice": None, "question_id": "q3", "selected": {"0": ["Vercel"], "1": []}})]
     # Nothing picked, nothing said: there is no answer in it.
     assert nothing.status_code == 400 and nothing.json()["detail"]["code"] == "bad_text"
+
+
+@pytest.mark.parametrize("selected", [{"0": [""]}, {"0": ["  "], "1": []}])
+async def test_labels_that_say_nothing_are_no_answer(selected):
+    host = _Host()
+    async with _client(host) as client:
+        nothing = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": selected})
+
+    assert nothing.status_code == 400 and nothing.json()["detail"] == {"code": "bad_text", "field": "text"}
+    assert host.answers == []
+
+
+@pytest.mark.parametrize("kind", ["permission", "confirmation", "report"])
+async def test_a_pick_alone_answers_only_questions_that_offer_something_to_pick(kind):
+    # Any other question would be handed an answer with nothing in it (a report's session, an empty prompt).
+    host = _Host(asks=kind)
+    async with _client(host) as client:
+        alone = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}})
+        with_words = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}, "text": "yes"})
+
+    assert alone.status_code == 400 and alone.json()["detail"] == {"code": "bad_text", "field": "text"}
+    assert with_words.status_code == 200
+    assert [given[1] for given in host.answers] == ["yes"]
+
+
+async def test_a_pick_for_a_commission_that_is_not_there_is_turned_away_as_any_answer_to_it():
+    host = _Host(asks=None, takes_answer=False)
+    async with _client(host) as client:
+        gone = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Yes"]}})
+
+    assert gone.status_code == 409 and gone.json()["detail"]["code"] == "not_taken"
 
 
 @pytest.mark.parametrize(

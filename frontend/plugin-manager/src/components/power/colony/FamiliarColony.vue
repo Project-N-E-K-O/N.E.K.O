@@ -335,6 +335,8 @@ async function answer(given: GivenAnswer) {
 /** Answer what a familiar asks from the card above its head. */
 function answerAbove(id: string, given: GivenAnswer) {
   const commission = byId.value.get(id)?.commission
+  // What was said of the last answer is not about this one.
+  said.value = ''
   if (commission?.status === 'waiting_user') void answerOne({ id: commission.id, ask: commission.ask }, given)
 }
 

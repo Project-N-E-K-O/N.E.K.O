@@ -64,7 +64,7 @@
                 }) }}
                 <template v-if="usage.limit"> · {{ t('power.usage.ofLimit', { used: formatTokens(usage.used), limit: formatTokens(usage.limit) }) }}</template>
               </p>
-              <AskBox v-if="row.item.ask" :ask="row.item.ask" :busy="busy" @answer="answer(row.item, $event)" />
+              <AskBox v-if="row.item.ask" :ask="row.item.ask" :busy="busy" :no-note="row.item.route === 'plugin'" @answer="answer(row.item, $event)" />
               <div v-if="row.item.status === 'working' && row.item.route === 'task_agent'" class="say">
                 <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="commission-say" @keyup.enter="tell(row.item)" />
                 <el-button type="primary" :loading="busy === 'tell'" :disabled="!sentence.trim() || busy !== ''" data-testid="commission-send" @click="tell(row.item)">

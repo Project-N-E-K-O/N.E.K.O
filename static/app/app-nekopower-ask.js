@@ -531,8 +531,15 @@
     function receive(frame) {
         if (!frame || !frame.task_id) return;
         told.set(String(frame.task_id), ++tellings);
-        if (frame.question && typeof frame.question === 'object') show(String(frame.task_id), frame.title, frame.question, frame.route);
-        else close(String(frame.task_id), text(frame.question_id));
+        if (!frame.question || typeof frame.question !== 'object') {
+            close(String(frame.task_id), text(frame.question_id));
+            return;
+        }
+        // Of another character than the one this page is with (sent to every page, its own not
+        // being open): not shown here, as what is read on connecting is not (`sync`).
+        var mine = character();
+        if (mine && frame.lanlan_name && frame.lanlan_name !== mine) return;
+        show(String(frame.task_id), frame.title, frame.question, frame.route);
     }
 
     var syncing = null;

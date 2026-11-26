@@ -125,6 +125,14 @@ describe('the box a question is answered in', () => {
     expect(answers).toEqual([{ choice: 'deny', note: 'use pnpm instead' }])
   })
 
+  it('has no line for a sentence where a plugin does the work and no familiar could take one', async () => {
+    const answers: unknown[] = []
+    const { container } = await mount(AskBox, { ask: permission(), busy: '', noNote: true, onAnswer: (given: unknown) => answers.push(given) })
+    expect(inputOf(container, 'familiar-note')).toBeNull()
+    await press(container.querySelector('[data-choice="once"]'))
+    expect(answers).toEqual([{ choice: 'once', note: undefined }])
+  })
+
   it('answers a plugin that wants confirmation with yes or no, with words beside them', async () => {
     const answers: unknown[] = []
     const { container } = await mount(AskBox, { ask: confirmation, busy: '', onAnswer: (given: unknown) => answers.push(given) })

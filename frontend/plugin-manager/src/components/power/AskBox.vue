@@ -47,7 +47,7 @@
         >{{ choiceLabel(ask, option, t, te) }}</el-button>
       </div>
       <!-- A sentence to go with the choice. Not an answer of its own: words alone would be read as a refusal. -->
-      <el-input v-model="reply" class="note" :placeholder="t('power.ask.notePlaceholder')" :aria-label="t('power.ask.noteLabel')" data-testid="familiar-note" />
+      <el-input v-if="!noNote" v-model="reply" class="note" :placeholder="t('power.ask.notePlaceholder')" :aria-label="t('power.ask.noteLabel')" data-testid="familiar-note" />
     </template>
     <template v-else>
       <div v-if="shape === 'confirmation'" class="choices">
@@ -81,7 +81,8 @@ import type { AskQuestion, GivenAnswer } from './ask'
  * whole, and the ways to answer: buttons for what can be picked, and a line
  * for words beside them. Whoever shows it sends the answer.
  */
-const props = defineProps<{ ask: BoardAsk; busy: string }>()
+/** `noNote`: nothing could take a sentence added to an approval (a plugin does the work, not a familiar): the line for one is left out. */
+const props = defineProps<{ ask: BoardAsk; busy: string; noNote?: boolean }>()
 const emit = defineEmits<{ answer: [given: GivenAnswer] }>()
 const { t, te } = useI18n()
 const reply = ref('')
