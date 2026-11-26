@@ -561,3 +561,104 @@ async def test_keep_new_migrating_legacy_string_entry_assigns_non_empty_id(tmp_p
     assert survivor["text"] == "C"
     assert str(survivor.get("id") or "").startswith("corr_")
     assert survivor["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_retired_old_entry_does_not_force_keep_old(tmp_path):
+    """Permanently suppressed old entries must be ignored by trust arbitration so keep_new writes live new_text."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "旧观察",
+        id="retired_old_arb",
+        speaker_id="qq:alice",
+        speaker_trust=0.95,
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("merged_into", "2026-11-01T00:00:00")},
+    )
+    await pm._aqueue_correction(
+        "小天", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.95},
+        new_speaker_provenance={"speaker_id": "qq:bob", "speaker_trust": 0.2},
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "keep_new"}])):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    retired = next(e for e in facts if e.get("id") == "retired_old_arb")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert bool(retired.get(PERMANENT_SUPPRESSION_KEY)) is True
+    assert "applied_correction_id" not in retired
+    assert len(live) == 1
+    assert live[0]["text"] == "新观察"
+    assert live[0]["applied_correction_id"] == cid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "extra", "expected_text"),
+    [
+        ("merge", {"text": "融合新观察"}, "融合新观察"),
+        ("keep_old", {}, "新观察"),
+    ],
+)
+async def test_retired_old_entry_merge_and_keep_old_preserve_observation(
+    tmp_path, monkeypatch, action, extra, expected_text,
+):
+    """When only a permanently suppressed old entry exists, merge and keep_old must preserve the observation idempotently."""
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY, build_permanent_suppression
+    from memory.persona import corrections as corrections_mod
+    from memory.trust_store import TrustSnapshot
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(
+        pm, "小天", "旧观察",
+        id="retired_old_1",
+        speaker_id="qq:bob",
+        speaker_trust=0.2,
+        **{PERMANENT_SUPPRESSION_KEY: build_permanent_suppression("merged_into", "2026-11-01T00:00:00")},
+    )
+    await pm._aqueue_correction(
+        "小天", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:bob", "speaker_trust": 0.2},
+        new_speaker_provenance={"speaker_id": "qq:alice", "speaker_trust": 0.9},
+    )
+    cid = (await pm.aload_pending_corrections("小天"))[0]["correction_id"]
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    payload = [{"index": 0, "action": action, **extra}]
+
+    with patch("memory.trust_store.trust_snapshot", return_value=TrustSnapshot({}, loaded=True)):
+        with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+            with pytest.raises(OSError, match="disk failure"):
+                await pm.resolve_corrections("小天")
+
+        monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+        with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+            resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    retired = next(e for e in facts if e.get("id") == "retired_old_1")
+    live = [e for e in facts if not e.get(PERMANENT_SUPPRESSION_KEY)]
+    assert bool(retired.get(PERMANENT_SUPPRESSION_KEY)) is True
+    assert "applied_correction_id" not in retired
+    assert len(live) == 1
+    assert live[0]["text"] == expected_text
+    assert str(live[0].get("id") or "").startswith("corr_")
+    assert live[0]["applied_correction_id"] == cid
+    if action == "merge":
+        assert live[0].get("speaker_provenance_mixed") is True
+        assert "speaker_id" not in live[0]

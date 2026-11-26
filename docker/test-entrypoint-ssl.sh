@@ -136,4 +136,34 @@ else
     fail "AUTO_REGENERATE_CERT=1 should fail when archive mv fails"
 fi
 
+echo "== SSL-7 partial archive rollback restores cert when key archive fails =="
+s7="$WORK/s7"
+mkdir -p "$s7"
+printf 'rollback-cert\n' > "$s7/N.E.K.O.crt"
+printf 'rollback-key\n' > "$s7/N.E.K.O.key"
+s7_crt_sum=$(cksum "$s7/N.E.K.O.crt")
+s7_key_sum=$(cksum "$s7/N.E.K.O.key")
+if ! (
+    AUTO_REGENERATE_CERT=1
+    mv() {
+        case "${2:-}" in
+            *N.E.K.O.key) return 1 ;;
+        esac
+        command mv "$@"
+    }
+    ensure_ssl_certificates "$s7/N.E.K.O.crt" "$s7/N.E.K.O.key"
+) >/dev/null 2>&1; then
+    leftover=$(ls "$s7"/N.E.K.O.crt.invalid-* 2>/dev/null || true)
+    if [ -f "$s7/N.E.K.O.crt" ] && [ -f "$s7/N.E.K.O.key" ] &&
+       [ "$(cksum "$s7/N.E.K.O.crt")" = "$s7_crt_sum" ] &&
+       [ "$(cksum "$s7/N.E.K.O.key")" = "$s7_key_sum" ] &&
+       [ -z "$leftover" ]; then
+        pass "partial archive failure rolled back cert cleanly without leaving .invalid files"
+    else
+        fail "partial archive failure left cert/key in inconsistent state (leftover=$leftover)"
+    fi
+else
+    fail "AUTO_REGENERATE_CERT=1 should fail when key archive mv fails"
+fi
+
 exit "$FAILED"

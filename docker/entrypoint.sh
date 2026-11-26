@@ -506,6 +506,7 @@ EOF
 
 _archive_invalid_ssl_file() {
     local target="$1"
+    _ARCHIVED_SSL_DEST=""
     if [ ! -e "$target" ] && [ ! -L "$target" ]; then
         return 0
     fi
@@ -521,7 +522,29 @@ _archive_invalid_ssl_file() {
         echo "❌ Failed to archive invalid/partial SSL file: $target -> $dest" >&2
         return 1
     fi
+    _ARCHIVED_SSL_DEST="$dest"
     echo "📦 Archived invalid/partial SSL file: $target -> $dest"
+    return 0
+}
+
+_archive_invalid_ssl_pair() {
+    local cert_file="$1"
+    local key_file="$2"
+    local archived_cert=""
+    if ! _archive_invalid_ssl_file "$cert_file"; then
+        return 1
+    fi
+    archived_cert="$_ARCHIVED_SSL_DEST"
+    if ! _archive_invalid_ssl_file "$key_file"; then
+        if [ -n "$archived_cert" ] && [ ! -e "$cert_file" ] && [ ! -L "$cert_file" ]; then
+            if mv -f "$archived_cert" "$cert_file"; then
+                echo "↩️ Restored archived certificate after key archive failure: $cert_file" >&2
+            else
+                echo "⚠️ Failed to roll back archived certificate: $archived_cert -> $cert_file" >&2
+            fi
+        fi
+        return 1
+    fi
     return 0
 }
 
@@ -544,7 +567,7 @@ ensure_ssl_certificates() {
         echo "   Key: $key_file"
         if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
             echo "🔄 AUTO_REGENERATE_CERT=1: archiving partial files and regenerating self-signed SSL certificate..."
-            if ! _archive_invalid_ssl_file "$cert_file" || ! _archive_invalid_ssl_file "$key_file"; then
+            if ! _archive_invalid_ssl_pair "$cert_file" "$key_file"; then
                 echo "❌ Refusing to regenerate SSL certificate because existing files could not be archived."
                 if [ "${DISABLE_SSL:-0}" != "1" ]; then
                     return 1
@@ -582,7 +605,7 @@ ensure_ssl_certificates() {
             echo "❌ SSL certificate validation failed."
             if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
                 echo "🔄 AUTO_REGENERATE_CERT=1: archiving invalid SSL files and regenerating..."
-                if ! _archive_invalid_ssl_file "$cert_file" || ! _archive_invalid_ssl_file "$key_file"; then
+                if ! _archive_invalid_ssl_pair "$cert_file" "$key_file"; then
                     echo "❌ Refusing to regenerate SSL certificate because existing files could not be archived."
                     if [ "${DISABLE_SSL:-0}" != "1" ]; then
                         return 1

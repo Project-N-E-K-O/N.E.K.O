@@ -863,6 +863,7 @@ class CorrectionsMixin:
                     if isinstance(entry, dict)
                     and entry.get('text', '') == old_text
                     and _entry_in_scope(entry)
+                    and not is_permanently_suppressed(entry)
                 ]
                 current_old = (
                     current_old_entries[0]
@@ -998,9 +999,11 @@ class CorrectionsMixin:
                 history_entry = _history_snapshot(
                     old_text, 'old', 'correction',
                 )
+                matched = False
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing):
+                        matched = True
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             from memory.speaker_trust import provenance_of_entries
@@ -1076,6 +1079,65 @@ class CorrectionsMixin:
                             _record_applied_cid(new_entry, item_cid)
                             section_facts[j] = new_entry
                         break
+                if not matched:
+                    live_merged = next(
+                        (
+                            (j, e) for j, e in enumerate(section_facts)
+                            if (e.get('text', '') if isinstance(e, dict) else str(e)) == merged_text
+                            and _entry_in_scope(e)
+                            and not is_permanently_suppressed(e)
+                        ),
+                        None,
+                    )
+                    if live_merged is None:
+                        from memory.speaker_trust import provenance_of_entries
+                        new_entry = _stamped_new_entry(merged_text)
+
+                        def _queued_source(prefix: str) -> dict:
+                            src: dict = {
+                                'speaker_id': item.get(f'{prefix}_speaker_id'),
+                                'speaker_trust': item.get(f'{prefix}_speaker_trust'),
+                            }
+                            ent = str(item.get(f'{prefix}_speaker_entity_id') or '').strip()
+                            if ent:
+                                src['speaker_entity_id'] = ent
+                            if item.get(f'{prefix}_speaker_provenance_mixed') is True:
+                                src['speaker_provenance_mixed'] = True
+                            return src
+
+                        old_source = _queued_source('old')
+                        new_source = _queued_source('new')
+                        folded_provenance = provenance_of_entries([
+                            old_source, new_source,
+                        ])
+                        for key in (
+                            'speaker_id', 'speaker_trust', 'speaker_label',
+                            'speaker_entity_id',
+                        ):
+                            new_entry.pop(key, None)
+                        new_entry.update(folded_provenance)
+                        if (
+                            old_source.get('speaker_provenance_mixed') is True
+                            or new_source.get('speaker_provenance_mixed') is True
+                        ):
+                            new_entry['speaker_provenance_mixed'] = True
+                        if merged_text != old_text:
+                            new_entry['version_history'] = [history_entry]
+                        _record_applied_cid(new_entry, item_cid)
+                        section_facts.append(new_entry)
+                    else:
+                        live_idx, live_entry = live_merged
+                        if not isinstance(live_entry, dict):
+                            live_entry = self._normalize_entry_for_section(
+                                persona, entity, live_entry,
+                            )
+                            if item_subject is not None:
+                                live_entry.update(item_subject.as_entry_fields())
+                        live_entry = self._normalize_entry(live_entry)
+                        if isinstance(live_entry, dict):
+                            _ensure_entry_id(live_entry)
+                            _record_applied_cid(live_entry, item_cid)
+                        section_facts[live_idx] = live_entry
             elif action == 'keep_new':
                 old_entries = [
                     e for e in section_facts
@@ -1190,9 +1252,21 @@ class CorrectionsMixin:
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.
-                for existing in section_facts:
+                matched = False
+                for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                    if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing) and isinstance(existing, dict):
+                    if et == old_text and _entry_in_scope(existing) and not is_permanently_suppressed(existing):
+                        matched = True
+                        if not isinstance(existing, dict):
+                            existing = self._normalize_entry_for_section(
+                                persona, entity, existing,
+                            )
+                            if item_subject is not None:
+                                existing.update(item_subject.as_entry_fields())
+                            existing = self._normalize_entry(existing)
+                            if isinstance(existing, dict):
+                                _ensure_entry_id(existing)
+                            section_facts[j] = existing
                         if preference == 'old':
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             history = list(existing.get('version_history') or [])
@@ -1226,6 +1300,33 @@ class CorrectionsMixin:
                                 )[-_VH_MAX:]
                         _record_applied_cid(existing, item_cid)
                         break
+                if not matched:
+                    live_new = next(
+                        (
+                            (j, e) for j, e in enumerate(section_facts)
+                            if (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
+                            and _entry_in_scope(e)
+                            and not is_permanently_suppressed(e)
+                        ),
+                        None,
+                    )
+                    if live_new is None:
+                        new_entry = _stamped_new_entry(new_text)
+                        _record_applied_cid(new_entry, item_cid)
+                        section_facts.append(new_entry)
+                    else:
+                        live_idx, live_entry = live_new
+                        if not isinstance(live_entry, dict):
+                            live_entry = self._normalize_entry_for_section(
+                                persona, entity, live_entry,
+                            )
+                            if item_subject is not None:
+                                live_entry.update(item_subject.as_entry_fields())
+                        live_entry = self._normalize_entry(live_entry)
+                        if isinstance(live_entry, dict):
+                            _ensure_entry_id(live_entry)
+                            _record_applied_cid(live_entry, item_cid)
+                        section_facts[live_idx] = live_entry
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))

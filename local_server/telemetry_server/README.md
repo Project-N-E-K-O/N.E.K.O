@@ -36,6 +36,10 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
     echo "请在仓库根目录或 local_server/telemetry_server 目录中执行升级脚本" >&2
     exit 1
   fi
+  if [ -L "$PWD/data" ] || [ ! -d "$PWD/data" ] || [ -L "$PWD/data/telemetry.db" ] || [ ! -f "$PWD/data/telemetry.db" ]; then
+    echo "未找到宿主机旧库 $PWD/data/telemetry.db（或为符号链接），已中止升级。" >&2
+    exit 1
+  fi
 
   # 1. 先停止旧服务，保证 SQLite（含 -wal/-shm）处于一致状态
   docker compose down
