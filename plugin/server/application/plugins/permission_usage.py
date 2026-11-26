@@ -172,9 +172,15 @@ class UsageIndex:
         yield Use(
             at, plugin_id, permission, outcome, origin, target,
             blocked_by=blocked_by,
-            # An allowed decision inside a call (store unreadable, or
-            # possible laundering) is counted again by the call's summary.
-            summarized=kind == "decision" and outcome == OUTCOME_ALLOWED and bool(_text(entry.get("call_id"))),
+            # An allowed decision inside a call is also counted by the call's
+            # summary, except a possible laundering one (the gate does not
+            # note that use on the call).
+            summarized=(
+                kind == "decision"
+                and outcome == OUTCOME_ALLOWED
+                and bool(_text(entry.get("call_id")))
+                and "possible_laundering" not in flags
+            ),
         )
 
     def _index(self, use: Use) -> None:
@@ -301,6 +307,13 @@ class UsageIndex:
         wanted = set(permissions)
         with self._lock:
             return {plugin_id for plugin_id, permission in self._last if permission in wanted}
+
+    def forget_refused(self, plugin_id: str, permission: str) -> None:
+        """The user decided ``permission`` for ``plugin_id``: earlier refusals
+        no longer ask for a decision."""
+        self.ensure_seeded()
+        with self._lock:
+            self._refused.pop((plugin_id, permission), None)
 
     def refused_uses(self) -> dict[tuple[str, str], tuple[datetime, int]]:
         """``(plugin, permission) -> (last time, count)`` of uses judged not

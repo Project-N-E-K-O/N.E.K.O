@@ -818,3 +818,35 @@ async def test_refusing_with_anytime_is_not_checked(env):
         "PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "denied", "condition": "anytime"}
     )
     assert response.status_code == 200
+
+
+def test_laundering_allowance_is_counted(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, flags=["possible_laundering"], call_id="c1"))
+    assert index.count("a", MEMORY, 1) == 1
+
+
+@pytest.mark.asyncio
+async def test_refusals_before_the_users_choice_leave_the_pending_list(env):
+    env.plugin("p", report=_report())
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided"))
+    assert permission_panel.pending(index=env.index)["first_use"]
+
+    await _call("PUT", f"/plugin-permissions/plugins/p/permissions/{SPAWN}", {"state": "denied"})
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert permission_panel.pending(index=env.index)["first_use"] == []
+
+    later = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=later))
+    assert len(permission_panel.pending(index=env.index)["first_use"]) == 1
+
+
+def test_refusals_older_than_the_stored_decision_are_ignored(env):
+    """After a restart the index is rebuilt from the files: the stored
+    decision time still hides older refusals."""
+    env.plugin("p", report=_report())
+    env.index.observe(_decision("p", MEMORY, verdict="would_deny", reason="self_not_approved",
+                                ts=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()))
+    env.store.apply_legacy_decision("p", "denied", source=MARKET)
+    env.store.clear("p", MEMORY)  # explicit undecided entry with a time
+    assert permission_panel.pending(index=env.index)["first_use"] == []

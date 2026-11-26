@@ -106,6 +106,7 @@ async def _decide(plugin_id: str, permission: str, decision: PermissionDecision)
     await asyncio.to_thread(
         decide_permission, plugin_id, permission, decision.state, condition=decision.condition
     )
+    await asyncio.to_thread(permission_panel.forget_refused, plugin_id, permission)
     return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
 
 
@@ -113,6 +114,7 @@ async def _decide(plugin_id: str, permission: str, decision: PermissionDecision)
 async def _clear(plugin_id: str, permission: str) -> dict:
     await asyncio.to_thread(permission_panel.ensure_plugin_known, plugin_id)
     await asyncio.to_thread(clear_permission, plugin_id, permission)
+    await asyncio.to_thread(permission_panel.forget_refused, plugin_id, permission)
     return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
 
 

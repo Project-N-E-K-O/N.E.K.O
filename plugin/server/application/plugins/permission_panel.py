@@ -459,10 +459,15 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
         # Used while the user has not decided: not asked in a dialog, listed
         # here instead. Whatever the declaration and the scan say.
         states = record_states(inputs.record, checks_off=checks_off)
+        stored = inputs.record.get("permissions") or {}
         for permission in PERMISSION_IDS:
             seen = refused.get((inputs.plugin_id, permission))
             if seen is None or states[permission].status != "undecided":
                 continue
+            entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
+            decided = _parse_time(entry.get("decided_at"))
+            if decided is not None and seen[0] <= decided:
+                continue  # refused before the user last set it
             first_use.append(
                 {
                     "plugin_id": inputs.plugin_id,
@@ -632,6 +637,11 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
             422,
             details={"plugin_id": plugin_id, "permission": permission},
         )
+
+
+def forget_refused(plugin_id: str, permission: str) -> None:
+    """After the user sets ``permission``: earlier refusals leave the pending list."""
+    usage_index.forget_refused(plugin_id, permission)
 
 
 def ensure_plugin_known(plugin_id: str) -> None:
