@@ -919,6 +919,13 @@ async def test_a_stop_that_does_not_say_which_to_the_one_that_waits_is_its_refus
         )
 
         assert (triage.kind, triage.targets, triage.choice) == ("answer", [target], choice)
+    # Said while two members of one team wait: neither is refused on a guess; the user is asked which.
+    other = _waiting("k2", "check another link", _BUILD, parent_id="c2")
+    llm = _reading({"does": "stop", "items": [2], "named": False})
+    triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(
+        request("等一下", active=[parent], answerable=[inner, other])
+    )
+    assert (triage.kind, triage.targets) == ("ambiguous", ["k1", "k2"])
     # Said of the work itself, it is a stop; and so is one that means the work as well as what waits within it.
     llm = _reading({"does": "stop", "items": [1], "named": True})
     triage, _calls, _unread = await LexicalDecisionModel(llm).read_under_way(request("别建了", active=[build]))

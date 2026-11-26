@@ -900,6 +900,11 @@ class LexicalDecisionModel:
                     # not everything stopped on a guess.
                     return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
                 if len(picked) == 1 and picked[0][1].id in waiting:
+                    if len(waiting) > 1:
+                        # Said to one of several that wait (the members of a
+                        # team, say): which, the user is asked, as for a plain
+                        # "no", and none is refused on a guess.
+                        return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
                     # "Wait", "not now" to the one that waits for the user: its
                     # answer, a refusal, and not the end of its work.
                     return answered(picked[0][1], "deny")
