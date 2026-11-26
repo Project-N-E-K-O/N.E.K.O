@@ -6,6 +6,8 @@ afterwards (``nekopower_on`` on the agent side). Before, its opening was only th
 role-play sentence, so she would answer "on it" to a request to open a file and
 nothing happened. The opening now adds ``SESSION_INIT_NO_NEKOPOWER``. Only the master
 switch is looked at (owner, 2026-11-26): the task agent is to start with it alone.
+When asked, she tells the user NekoPower is off and suggests switching it on; the
+built-in tools she still has are named as staying in use (owner, 2026-11-26).
 
 The real ``NotifyMixin`` methods run here, ``_is_agent_enabled`` included.
 """
@@ -24,7 +26,11 @@ from config.prompts.prompts_sys import (
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
 )
+from config.prompts.prompts_task_tools import DISPATCH_TOOL_NAME
+from main_logic import public_knowledge
 from main_logic.core.notify import NotifyMixin
+from main_logic.core.tool_calling import ToolCallingMixin
+from main_logic.tool_calling import ToolRegistry
 from utils.http import internal_client
 
 NAME = "Lan"
@@ -141,12 +147,23 @@ TASK_TOOLS = {
     "zh": "任务工具", "zh-TW": "任務工具", "en": "task tool", "ja": "タスクツール",
     "ko": "작업 도구", "ru": "инструмент", "es": "herramientas de tareas", "pt": "ferramentas de tarefas",
 }
-# The clause that ends the rule once task tools appear (NekoPower switched on mid-session).
-ONCE_THEY_APPEAR = {
-    "zh": "之后有了任务工具", "zh-TW": "之後有了任務工具", "en": "If task tools appear later",
-    "ja": "あとでタスクツールが使えるようになったら", "ko": "나중에 작업 도구가 생기면",
-    "ru": "Если инструменты задач появятся позже", "es": "Si más adelante aparecen herramientas de tareas",
-    "pt": "Se mais tarde aparecerem ferramentas de tarefas",
+# She suggests switching NekoPower on herself, not only that it is off (owner, 2026-11-26).
+SUGGESTS_SWITCHING_ON = {
+    "zh": "主动引导对方把喵能力打开", "zh-TW": "主動引導對方把喵能力打開",
+    "en": "suggest on your own that they switch NekoPower on",
+    "ja": "にゃんパワーをオンにするよう自分から勧めて", "ko": "냥파워를 켜 보라고 먼저 권하세요",
+    "ru": "сами предложите включить NekoPower", "es": "anímale por tu cuenta a activar NekoPower",
+    "pt": "sugira por iniciativa própria que ativem o NekoPower",
+}
+# The built-in tools a session has without NekoPower, as each language names them:
+# recall_memory, and query_public_knowledge once a knowledge package is imported.
+BUILT_IN_TOOLS = {
+    "zh": ("回忆记忆", "查知识库"), "zh-TW": ("回想記憶", "查知識庫"),
+    "en": ("recalling memories", "looking up the knowledge base"),
+    "ja": ("記憶の呼び出し", "知識ベースの検索"), "ko": ("기억 떠올리기", "지식 베이스 찾기"),
+    "ru": ("воспоминаниями", "поиском по базе знаний"),
+    "es": ("recordar memorias", "consultar la base de conocimientos"),
+    "pt": ("lembrar memórias", "consultar a base de conhecimento"),
 }
 # Web search, as the first wording named it: Gemini Live searches on its own whatever NekoPower is.
 WEB_SEARCH = {
@@ -156,12 +173,37 @@ WEB_SEARCH = {
 
 
 @pytest.mark.parametrize("key", PROMPT_KEYS)
-def test_the_rule_holds_while_she_has_no_task_tools_and_ends_once_she_has(key):
-    # Switching NekoPower on mid-session brings the task tools but leaves this opening as it
-    # was: the sentence says "without task tools ..." and "once there are task tools, use them".
+def test_she_has_no_task_tools_by_the_name_the_nekopower_opening_uses(key):
     assert TASK_TOOLS[key] in SESSION_INIT_NO_NEKOPOWER[key], key
     assert TASK_TOOLS[key] in SESSION_INIT_PROMPT_AGENT[key], key
-    assert ONCE_THEY_APPEAR[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_she_suggests_switching_nekopower_on(key):
+    assert SUGGESTS_SWITCHING_ON[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_she_keeps_using_the_built_in_tools_named(key):
+    for name in BUILT_IN_TOOLS[key]:
+        assert name in SESSION_INIT_NO_NEKOPOWER[key], (key, name)
+
+
+def test_the_built_in_tools_named_are_the_ones_a_session_without_nekopower_has(monkeypatch):
+    # The note names recalling memories and the knowledge base: a session with NekoPower off
+    # registers recall_memory, and query_public_knowledge once a knowledge package is there.
+    monkeypatch.delenv("NEKO_DISABLE_BUILTIN_TOOLS", raising=False)
+    monkeypatch.setattr(public_knowledge, "tool_available", lambda: True)
+    monkeypatch.setattr(public_knowledge, "add_availability_listener", lambda owner: None)
+    manager = object.__new__(ToolCallingMixin)
+    manager.user_language = "zh"
+    manager.tool_registry = ToolRegistry()
+    manager._is_agent_enabled = lambda: False
+    manager._register_builtin_tools()
+
+    assert manager.tool_registry.get("recall_memory") is not None
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
 
 
 @pytest.mark.parametrize("key", PROMPT_KEYS)
@@ -169,8 +211,27 @@ def test_web_search_is_not_ruled_out(key):
     assert WEB_SEARCH[key] not in SESSION_INIT_NO_NEKOPOWER[key], key
 
 
+# What she tells the user when asked: that NekoPower is off and she cannot do it now.
+TELLS_IT_IS_OFF = {
+    "zh": "告诉对方喵能力没开", "zh-TW": "告訴對方喵能力沒開",
+    "en": "tell them plainly that NekoPower is off",
+    "ja": "にゃんパワーがオフでいまはできないと正直に伝え",
+    "ko": "냥파워가 꺼져 있어 지금은 할 수 없다고 솔직하게 말하고",
+    "ru": "честно скажите, что NekoPower выключен",
+    "es": "di con franqueza que NekoPower está desactivado",
+    "pt": "diga com franqueza que o NekoPower está desativado",
+}
+
+
 @pytest.mark.parametrize("key", PROMPT_KEYS)
-def test_she_tells_the_user_that_nekopower_is_off_by_its_panel_name(key):
+def test_she_tells_the_user_that_nekopower_is_off(key):
+    assert TELLS_IT_IS_OFF[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_nekopower_goes_by_its_panel_name(key):
     toggles = json.loads((LOCALES_DIR / f"{LOCALE_FILES[key]}.json").read_text(encoding="utf-8"))["settings"]["toggles"]
-    # Named twice: why she has no task tools, and what she tells the user.
-    assert SESSION_INIT_NO_NEKOPOWER[key].count(toggles["agentMaster"]) == 2, key
+    # Why she has no task tools, what she tells the user, and what she suggests switching on.
+    assert SESSION_INIT_NO_NEKOPOWER[key].count(toggles["agentMaster"]) >= 3, key
+    assert toggles["agentMaster"] in TELLS_IT_IS_OFF[key], key
+    assert toggles["agentMaster"] in SUGGESTS_SWITCHING_ON[key], key

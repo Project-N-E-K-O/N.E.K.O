@@ -162,24 +162,24 @@ SESSION_INIT_PROMPT_AGENT = {
 # left as it is. SESSION_INIT_PROMPT itself is not changed: a visit (``prompts_visit``)
 # opens with it too. Only the master switch is looked at (owner, 2026-11-26): the task
 # agent is to start with the master switch alone, whatever capability is on.
-# The rule is tied to having task tools, not to the switch as it was: switching
-# NekoPower on mid-session brings the tools to the live session but does not rebuild
-# this opening (``update_agent_flags``), so the sentence itself says to use them once
-# they appear. Web search is not named and other tools stay in use: some providers
-# search on their own whatever NekoPower is (Gemini Live's google_search).
+# When asked, she tells the user NekoPower is off and suggests switching it on (owner,
+# 2026-11-26). The built-in tools a session has without NekoPower are named as staying
+# in use: recall_memory always, query_public_knowledge once a knowledge package is
+# imported. Web search is not named as something she cannot do: some providers search
+# on their own whatever NekoPower is (Gemini Live's google_search).
 # It rides on every request of a session in the default state, so it is kept short
 # (``tests/unit/test_task_tools_budget.py``). The name of NekoPower is the panel's
 # (``settings.toggles.agentMaster``). Where sentences are parted by a space, the row
 # starts with one: it follows the last sentence of SESSION_INIT_PROMPT directly.
 SESSION_INIT_NO_NEKOPOWER = {
-    'zh': '喵能力没开，你没有任务工具：替人在电脑上动手的事（开文件或程序、操作键鼠、点网页）办不了。被要求时照实告诉对方喵能力没开、现在办不到，别答应，也别说已经开始或完成。其他工具照常用；之后有了任务工具，就用它去办，按回执说话。',
-    'zh-TW': '喵能力沒開，你沒有任務工具：替人在電腦上動手的事（開檔案或程式、操作鍵鼠、點網頁）辦不到。被要求時照實告訴對方喵能力沒開、現在辦不到，別答應，也別說已經開始或完成。其他工具照常用；之後有了任務工具，就用它去辦，照回執說話。',
-    'en': ' NekoPower is off, so you have no task tools and cannot act on the computer for the user (open files or programs, use the keyboard and mouse, click through web pages). If asked, tell them plainly that NekoPower is off and you cannot do it now; do not promise it, and never claim it has started or completed. Keep using your other tools. If task tools appear later, do it through them and speak by what they answer.',
-    'ja': 'にゃんパワーがオフでタスクツールがないため、コンピュータ上で代わりに手を動かす用件（ファイルやプログラムを開く、キーボードやマウスの操作、ページのクリック）はできません。頼まれたら、にゃんパワーがオフでいまはできないと正直に伝え、引き受けたり、開始した・完了したと言ったりしないでください。ほかのツールはそのまま使ってください。あとでタスクツールが使えるようになったら、それを通して行い、その返答に沿って話してください。',
-    'ko': ' 냥파워가 꺼져 있어 작업 도구가 없으므로, 컴퓨터에서 대신 해야 하는 일(파일이나 프로그램 열기, 키보드·마우스 조작, 웹페이지 클릭)은 할 수 없습니다. 부탁받으면 냥파워가 꺼져 있어 지금은 할 수 없다고 솔직하게 말하고, 하겠다고 약속하거나 이미 시작했다·완료했다고 말하지 마세요. 다른 도구는 그대로 쓰세요. 나중에 작업 도구가 생기면 그것으로 처리하고 그 답에 따라 말하세요.',
-    'ru': ' NekoPower выключен, инструментов задач у вас нет, поэтому сделать что-то за пользователя на компьютере (открыть файл или программу, управлять клавиатурой и мышью, прокликать страницы) вы не можете. Если просят, честно скажите, что NekoPower выключен и сейчас это невозможно; не обещайте и не утверждайте, что действие начато или завершено. Другими инструментами пользуйтесь как обычно. Если инструменты задач появятся позже, делайте это через них и говорите по их ответу.',
-    'es': ' NekoPower está desactivado: no tienes herramientas de tareas y no puedes hacer cosas en la computadora por el usuario (abrir archivos o programas, usar el teclado y el ratón, hacer clic en páginas). Si te lo piden, di con franqueza que NekoPower está desactivado y ahora no puedes; no lo prometas ni afirmes que ya empezó o terminó. Sigue usando tus otras herramientas. Si más adelante aparecen herramientas de tareas, hazlo mediante ellas y habla según lo que respondan.',
-    'pt': ' O NekoPower está desativado: você não tem ferramentas de tarefas e não consegue fazer coisas no computador pelo usuário (abrir arquivos ou programas, usar o teclado e o mouse, clicar em páginas). Se pedirem, diga com franqueza que o NekoPower está desativado e agora não dá; não prometa nem afirme que já começou ou terminou. Continue usando suas outras ferramentas. Se mais tarde aparecerem ferramentas de tarefas, faça por meio delas e fale conforme o que responderem.',
+    'zh': '喵能力没开，你没有任务工具：替人在电脑上动手的事（开文件或程序、操作键鼠、点网页）办不了。被要求时照实告诉对方喵能力没开、现在办不到，并主动引导对方把喵能力打开；别答应，也别说已经开始或完成。回忆记忆、查知识库等内置工具照常用。',
+    'zh-TW': '喵能力沒開，你沒有任務工具：替人在電腦上動手的事（開檔案或程式、操作鍵鼠、點網頁）辦不到。被要求時照實告訴對方喵能力沒開、現在辦不到，並主動引導對方把喵能力打開；別答應，也別說已經開始或完成。回想記憶、查知識庫等內建工具照常用。',
+    'en': ' NekoPower is off, so you have no task tools and cannot act on the computer for the user (open files or programs, use the keyboard and mouse, click through web pages). If asked, tell them plainly that NekoPower is off and you cannot do it now, and suggest on your own that they switch NekoPower on; do not promise it, and never claim it has started or completed. Built-in tools such as recalling memories and looking up the knowledge base work as usual.',
+    'ja': 'にゃんパワーがオフでタスクツールがないため、コンピュータ上で代わりに手を動かす用件（ファイルやプログラムを開く、キーボードやマウスの操作、ページのクリック）はできません。頼まれたら、にゃんパワーがオフでいまはできないと正直に伝え、にゃんパワーをオンにするよう自分から勧めてください。引き受けたり、開始した・完了したと言ったりしないでください。記憶の呼び出しや知識ベースの検索などの内蔵ツールはそのまま使えます。',
+    'ko': ' 냥파워가 꺼져 있어 작업 도구가 없으므로, 컴퓨터에서 대신 해야 하는 일(파일이나 프로그램 열기, 키보드·마우스 조작, 웹페이지 클릭)은 할 수 없습니다. 부탁받으면 냥파워가 꺼져 있어 지금은 할 수 없다고 솔직하게 말하고, 냥파워를 켜 보라고 먼저 권하세요. 하겠다고 약속하거나 이미 시작했다·완료했다고 말하지 마세요. 기억 떠올리기, 지식 베이스 찾기 같은 내장 도구는 그대로 쓰세요.',
+    'ru': ' NekoPower выключен, инструментов задач у вас нет, поэтому сделать что-то за пользователя на компьютере (открыть файл или программу, управлять клавиатурой и мышью, прокликать страницы) вы не можете. Если просят, честно скажите, что NekoPower выключен и сейчас это невозможно, и сами предложите включить NekoPower; не обещайте и не утверждайте, что действие начато или завершено. Встроенными инструментами, например воспоминаниями и поиском по базе знаний, пользуйтесь как обычно.',
+    'es': ' NekoPower está desactivado: no tienes herramientas de tareas y no puedes hacer cosas en la computadora por el usuario (abrir archivos o programas, usar el teclado y el ratón, hacer clic en páginas). Si te lo piden, di con franqueza que NekoPower está desactivado y ahora no puedes, y anímale por tu cuenta a activar NekoPower; no lo prometas ni afirmes que ya empezó o terminó. Las herramientas integradas, como recordar memorias o consultar la base de conocimientos, funcionan como siempre.',
+    'pt': ' O NekoPower está desativado: você não tem ferramentas de tarefas e não consegue fazer coisas no computador pelo usuário (abrir arquivos ou programas, usar o teclado e o mouse, clicar em páginas). Se pedirem, diga com franqueza que o NekoPower está desativado e agora não dá, e sugira por iniciativa própria que ativem o NekoPower; não prometa nem afirme que já começou ou terminou. As ferramentas integradas, como lembrar memórias ou consultar a base de conhecimento, funcionam normalmente.',
 }
 
 AGENT_TASKS_HEADER = {

@@ -48,8 +48,10 @@ OFF_LIMIT = {"zh": 34, "zh-TW": 36, "en": 30, "ja": 52, "ko": 43, "ru": 40, "es"
 # The same opening as it goes out with the master switch off, the default state:
 # followed by SESSION_INIT_NO_NEKOPOWER, so she does not promise what no tool can do
 # (#4147). Measured on 2026-11-26 after it was cut down (Chinese 120, the note +86;
-# the first wording was +124), with two tokens to spare.
-OFF_WITH_NOTE_LIMIT = {"zh": 122, "zh-TW": 137, "en": 126, "ja": 207, "ko": 165, "ru": 159, "es": 145, "pt": 140}
+# the first wording was +124), with two tokens to spare. Remeasured the same day when
+# the owner had her suggest switching NekoPower on and name the built-in tools, and
+# dropped the clause about task tools appearing later (Chinese 124, the note +90).
+OFF_WITH_NOTE_LIMIT = {"zh": 126, "zh-TW": 143, "en": 133, "ja": 216, "ko": 171, "ru": 162, "es": 152, "pt": 147}
 
 
 def _registered_tools(lang: str) -> list[dict]:
