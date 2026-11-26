@@ -34,6 +34,11 @@ def _client(base):
                         follow_redirects=False, trust_env=False, proxy=None)
 
 
+def _metadata_client(base):
+    return httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(20, connect=3),
+                             follow_redirects=False, trust_env=False, proxy=None)
+
+
 def _pair_client():
     return httpx.AsyncClient(timeout=8, trust_env=False, proxy=None, follow_redirects=False)
 
@@ -50,6 +55,10 @@ def _json(response, maximum=4096):
         if len(raw) + len(chunk) > maximum:
             raise WorkshopError("model_market_unavailable")
         raw.extend(chunk)
+    return _decode_json(raw, response)
+
+
+def _decode_json(raw, response):
     try:
         value = json.loads(raw)
     except (ValueError, RecursionError):
@@ -65,6 +74,21 @@ def _json(response, maximum=4096):
             code = "model_market_unavailable"
         raise WorkshopError(code)
     return value
+
+
+async def _metadata_json(response, maximum=4096):
+    if response.headers.get("content-encoding", "identity").lower() != "identity":
+        raise WorkshopError("model_market_unavailable")
+    raw = bytearray()
+    try:
+        async with asyncio.timeout(25):
+            async for chunk in response.aiter_raw():
+                if len(raw) + len(chunk) > maximum:
+                    raise WorkshopError("model_market_unavailable")
+                raw.extend(chunk)
+    except TimeoutError:
+        raise WorkshopError("model_market_timeout") from None
+    return _decode_json(raw, response)
 
 
 def _ready(config):
@@ -83,6 +107,7 @@ class ConnectedDownloads:
         self.launches = Launches()
         self.jobs: dict[tuple[str, str], asyncio.Task] = {}
         self.closed = False
+        self.metadata_jobs: dict[tuple[str, str], asyncio.Task] = {}
 
     async def launch(self, config, origin):
         if self.closed:
@@ -154,27 +179,54 @@ class ConnectedDownloads:
                                          for key, job in self.jobs.items())
 
     async def _run(self, config, row):
+        key = (row.request_id, row.operation_id)
         try:
-            await _drain_sync(lambda: self._receive(config, row))
+            if self.closed or row.cancel.is_set():
+                raise WorkshopError("model_market_cancelled")
+            fetch = asyncio.create_task(self._metadata(row))
+            self.metadata_jobs[key] = fetch
+            try:
+                metadata = await fetch
+            finally:
+                self.metadata_jobs.pop(key, None)
+            await _drain_sync(lambda: self._receive(config, row, metadata))
+        except asyncio.CancelledError:
+            if not self.closed and not row.cancel.is_set():
+                raise
+            row.phase, row.error = "cancelled", "model_market_cancelled"
         except Exception as error:
             row.error = str(error) if isinstance(error, WorkshopError) else "model_market_unavailable"
             row.phase = "cancelled" if row.cancel.is_set() else "failed"
 
-    def _receive(self, config, row):
+    async def _metadata(self, row):
         model_id, digest, size = row.selection
         base = resolve_user_plugin_base()
-        with _client(base) as client:
-            # This token stays on the local service hop, never in Market URLs.
+        # Only these read-only requests are interruptible by shutdown. Accepted
+        # package writes retain the synchronous owner and its existing drain.
+        async with _metadata_client(base) as client:
             local = {"Origin": base, "Accept-Encoding": "identity"}
-            with client.stream("GET", "/market/bridge-token", headers=local) as response:
-                token = _json(response).get("bridge_token")
+            async with client.stream("GET", "/market/bridge-token", headers=local) as response:
+                token = (await _metadata_json(response)).get("bridge_token")
             if not isinstance(token, str) or not 1 <= len(token) <= 512:
                 raise WorkshopError("model_market_unavailable")
+            if self.closed or row.cancel.is_set():
+                raise WorkshopError("model_market_cancelled")
             headers = {**local, "Authorization": "Bearer " + token}
             params = {"expected_sha256": digest, "byte_size": size}
-            with client.stream("GET", f"/market/models/descriptor/{model_id}",
-                               headers=headers, params=params) as response:
-                metadata = _json(response)
+            async with client.stream("GET", f"/market/models/descriptor/{model_id}",
+                                     headers=headers, params=params) as response:
+                metadata = await _metadata_json(response)
+        return base, token, metadata
+
+    def _receive(self, config, row, selected):
+        if self.closed or row.cancel.is_set():
+            raise WorkshopError("model_market_cancelled")
+        model_id, digest, size = row.selection
+        base, token, metadata = selected
+        with _client(base) as client:
+            local = {"Origin": base, "Accept-Encoding": "identity"}
+            headers = {**local, "Authorization": "Bearer " + token}
+            params = {"expected_sha256": digest, "byte_size": size}
             if (metadata.get("id"), metadata.get("file_sha256"), metadata.get("byte_size")) != row.selection:
                 raise WorkshopError("model_market_package_changed")
             _ready(config)
@@ -336,6 +388,8 @@ class ConnectedDownloads:
         for row in list(self.launches.items.values()):
             if row.phase in {"downloading", "installing", "installed"}:
                 row.cancel.set()
+        for fetch in list(self.metadata_jobs.values()):
+            fetch.cancel()
         pending = asyncio.gather(*list(self.jobs.values()), return_exceptions=True)
         try:
             await asyncio.shield(pending)

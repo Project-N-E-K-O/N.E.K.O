@@ -1691,7 +1691,7 @@ def test_vrm_morph_texture_charges_each_layer_and_semantic_slot(tmp_path, semant
     budget = 3 * slots * 32 * 2
     def graph(data):
         data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
-        target = {semantic: 0 for semantic in semantics}
+        target = {"POSITION": 0, **{semantic: 0 for semantic in semantics}}
         data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0, 'NORMAL': 0, 'COLOR_0': 0}, 'targets': [target, {}]}]}]
         data['nodes'][0]['mesh'] = 0
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
@@ -1764,7 +1764,7 @@ def test_morph_attribute_count_matches_base_positions(tmp_path, mode, semantic, 
         data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3},
                              {'componentType': 5126, 'type': 'VEC3', 'count': count}]
         data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0, 'NORMAL': 0, 'COLOR_0': 0},
-                                         'targets': [{semantic: 1}, {}], 'mode': mode}]}]
+                                         'targets': [{'POSITION': 0, semantic: 1}, {}], 'mode': mode}]}]
         data['nodes'][0]['mesh'] = 0
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     if valid: assert validate_model_bundle(path).model_format == 'vrm'
@@ -1781,3 +1781,68 @@ def test_morph_texture_copy_cannot_hide_billion_iterations_in_mismatched_accesso
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     assert path.stat().st_size < 20000
     with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+@pytest.mark.parametrize('kind', ['vrm', 'pmx', 'pmd'])
+@pytest.mark.parametrize('depth,valid', [(64, True), (65, False)])
+def test_model_hierarchy_depth_boundary(tmp_path, kind, depth, valid):
+    if kind == 'vrm':
+        def graph(data):
+            data['nodes'] = [{'children': [i + 1]} if i + 1 < depth else {} for i in range(depth)]
+        raw, entry = vrm_bytes(change=graph), 'Avatar.vrm'
+    else:
+        raw = mmd_runtime_bytes(kind, parents=[i + 1 if i + 1 < depth else -1 for i in range(depth)])
+        entry = 'Avatar.' + kind
+    path = make_native_bundle(tmp_path, kind='vrm' if kind == 'vrm' else 'mmd', entry=entry, files={entry: raw})
+    if valid: assert validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=64)).model_format
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=64))
+
+
+@pytest.mark.parametrize('kind', ['vrm', 'pmx', 'pmd'])
+def test_model_default_hierarchy_limit_rejects_deep_flat_references(tmp_path, kind):
+    depth = 1025
+    if kind == 'vrm':
+        def graph(data):
+            data['nodes'] = [{'children': [i + 1]} if i + 1 < depth else {} for i in range(depth)]
+        raw, entry = vrm_bytes(change=graph), 'Avatar.vrm'
+    else:
+        raw = mmd_runtime_bytes(kind, parents=[i + 1 if i + 1 < depth else -1 for i in range(depth)])
+        entry = 'Avatar.' + kind
+    path = make_native_bundle(tmp_path, kind='vrm' if kind == 'vrm' else 'mmd', entry=entry, files={entry: raw})
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
+
+
+def test_vrm_shared_descendants_keep_longest_path_even_when_already_checked(tmp_path):
+    def graph(data):
+        data['nodes'] = [{}, {'children': [0]}, {'children': [1]}, {'children': [2]}, {'children': [1]}]
+        data['scenes'][0]['nodes'] = [3, 4]
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError): validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=3))
+    assert validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=4)).model_format == 'vrm'
+
+
+@pytest.mark.parametrize('semantic', ['NORMAL', 'COLOR_0'])
+@pytest.mark.parametrize('position', [False, True])
+def test_vrm_rendered_morphs_need_a_position_layer(tmp_path, semantic, position):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 3}]
+        target = {semantic: 0}
+        if position: target['POSITION'] = 0
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 0, 'NORMAL': 0, 'COLOR_0': 0}, 'targets': [target, {}]}]}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    if position: assert validate_model_bundle(path).model_format == 'vrm'
+    else:
+        with pytest.raises(ModelFormatError): validate_model_bundle(path)
+
+
+def test_vrm_common_multi_expression_face_keeps_padding_allowance(tmp_path):
+    def graph(data):
+        data['accessors'] = [{'componentType': 5126, 'type': 'VEC3', 'count': 12000}]
+        primitive = {'attributes': {'POSITION': 0, 'NORMAL': 0}, 'targets': [{'POSITION': 0, 'NORMAL': 0}] * 60}
+        data['meshes'] = [{'primitives': [primitive] * 6}]
+        data['nodes'][0]['mesh'] = 0
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
+    assert validate_model_bundle(path).model_format == 'vrm'

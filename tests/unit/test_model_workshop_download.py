@@ -80,6 +80,7 @@ async def flow(owner, tmp_path, monkeypatch):
     monkeypatch.setattr(download, 'resolve_user_plugin_base', lambda: 'http://127.0.0.1:48916')
     monkeypatch.setattr(download, 'get_market_web_url', lambda: 'https://market.example.test')
     monkeypatch.setattr(download, '_client', lambda base: httpx.Client(base_url=base, transport=httpx.MockTransport(loopback)))
+    monkeypatch.setattr(download, '_metadata_client', lambda base: httpx.AsyncClient(base_url=base, transport=httpx.MockTransport(loopback)), raising=False)
     monkeypatch.setattr(download, '_pair_client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(pair)))
     driver = download.ConnectedDownloads()
     monkeypatch.setattr(api, 'connected_downloads', driver)
@@ -351,3 +352,85 @@ async def test_auth_pending_after_install_does_not_block_the_result(flow, monkey
     await select(flow, row); await settled(flow)
     value = flow.driver.launches.get(row['request_id'])
     assert value.phase == 'installed' and value.connection.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['bridge-token', 'descriptor'])
+@pytest.mark.parametrize('cancel_close', [False, True])
+async def test_shutdown_interrupts_pending_metadata_before_storage(flow, monkeypatch, stage, cancel_close):
+    class Pending(httpx.SyncByteStream, httpx.AsyncByteStream):
+        def __init__(self):
+            self.entered, self.release = threading.Event(), threading.Event()
+            self.async_release = asyncio.Event()
+            self.closed = False
+        def __iter__(self):
+            self.entered.set()
+            assert self.release.wait(5)
+            yield b'{}'
+        async def __aiter__(self):
+            self.entered.set()
+            await self.async_release.wait()
+            yield b'{}'
+        def close(self): self.closed = True
+        async def aclose(self): self.closed = True
+    body = Pending()
+    calls = []
+    def network(request):
+        calls.append(request.url.path)
+        if stage in request.url.path:
+            return httpx.Response(200, stream=body)
+        return network_json({'bridge_token': 'bridge'})
+    monkeypatch.setattr(download, '_client', lambda base: httpx.Client(base_url=base, transport=httpx.MockTransport(network)))
+    monkeypatch.setattr(download, '_metadata_client', lambda base: httpx.AsyncClient(base_url=base, transport=httpx.MockTransport(network)), raising=False)
+    def storage(_): raise AssertionError('cancelled metadata reached storage')
+    monkeypatch.setattr(download, 'get_service', storage)
+    row = await opened(flow); await select(flow, row)
+    assert await asyncio.to_thread(body.entered.wait, 3)
+    closing = asyncio.create_task(flow.driver.close())
+    try:
+        await asyncio.sleep(0)
+        if cancel_close:
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError): await asyncio.wait_for(asyncio.shield(closing), 1)
+        else:
+            await asyncio.wait_for(asyncio.shield(closing), 1)
+        assert body.closed and not flow.driver.jobs
+        assert flow.driver.launches.get(row['request_id']).phase == 'cancelled'
+        assert not any('/package/' in path for path in calls)
+    finally:
+        body.release.set(); body.async_release.set()
+        await asyncio.gather(closing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['bridge-token', 'descriptor'])
+async def test_shutdown_closes_real_pending_metadata_connection(flow, monkeypatch, stage):
+    entered, disconnected = asyncio.Event(), asyncio.Event()
+    async def serve(reader, writer):
+        try:
+            request = await reader.readuntil(b'\r\n\r\n')
+            if stage.encode() in request.split(b'\r\n', 1)[0]:
+                entered.set()
+                assert await reader.read() == b''
+                disconnected.set()
+            else:
+                raw = json.dumps({'bridge_token': 'local'}).encode()
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(raw)).encode() + b'\r\nConnection: close\r\n\r\n' + raw)
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    server = await asyncio.start_server(serve, '127.0.0.1', 0)
+    base = 'http://127.0.0.1:' + str(server.sockets[0].getsockname()[1])
+    monkeypatch.setattr(download, 'resolve_user_plugin_base', lambda: base)
+    monkeypatch.setattr(download, '_metadata_client', lambda target: httpx.AsyncClient(base_url=target, trust_env=False, proxy=None, timeout=20))
+    def storage(_): raise AssertionError('cancelled metadata reached storage')
+    monkeypatch.setattr(download, 'get_service', storage)
+    try:
+        row = await opened(flow); await select(flow, row)
+        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.wait_for(flow.driver.close(), 1)
+        await asyncio.wait_for(disconnected.wait(), 1)
+        assert not flow.driver.jobs and flow.driver.launches.get(row['request_id']).phase == 'cancelled'
+    finally:
+        server.close(); await server.wait_closed()
