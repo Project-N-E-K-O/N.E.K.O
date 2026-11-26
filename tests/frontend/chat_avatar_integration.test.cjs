@@ -1263,7 +1263,7 @@ for (const explicit of [false, true]) for (const delay of ['headers', 'body']) {
 }
 
 
-function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false) {
+function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false, hooks = {}) {
     const w = h.window, c = h.context, loads = [];
     w.location = { pathname: '/web_chat_compact', search: '', href: 'https://example.test/web_chat_compact' };
     c.URL = URL; c.URLSearchParams = URLSearchParams; c.requestAnimationFrame = () => 0;
@@ -1273,8 +1273,17 @@ function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false) {
     w.mmdModuleLoaded = w.vrmModuleLoaded = true;
     w.VRMCore = {};
     c.MMDManager = class {
-        async init() { this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; }
-        async loadModel(url) { this._activeLoadToken++; loads.push(url); return (this.currentModel = { url, mesh: {} }); }
+        async init() { this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; this._isDisposed = false; }
+        dispose() { this._isDisposed = true; this.currentModel = null; }
+        async loadModel(url) {
+            this._activeLoadToken++;
+            loads.push(url);
+            if (hooks.mmdLoadModel) {
+                const hooked = await hooks.mmdLoadModel({ url, manager: this, loads });
+                if (hooked !== undefined) return hooked;
+            }
+            return (this.currentModel = { url, mesh: {} });
+        }
         async waitForRenderFrame() {}
     };
     const loadLive2D = () => {
@@ -1285,7 +1294,9 @@ function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false) {
             getCurrentModel() { return this.currentModel; }
             removeModel() { this.currentModel = null; }
             async ensurePIXIReady() {}
-            async loadUserPreferences() { return []; }
+            async loadUserPreferences() {
+                return hooks.live2dPreferences ? await hooks.live2dPreferences() : [];
+            }
             async loadModel(input) {
                 const url = typeof input === 'string' ? input : input.url;
                 loads.push(url);
@@ -1647,8 +1658,9 @@ test('pre-index Live2D startup does not refetch or reload after C has committed'
 
 test('initial Live2D startup rechecks ownership immediately before delayed model load', () => {
     const source = fs.readFileSync(path.join(root, 'static/live2d/live2d-init.js'), 'utf8');
-    assert.match(source, /const stillOwnsInitialLive2DStartup = \(\) => \{/);
-    assert.match(source, /switch_revision[\s\S]*?currentPath === targetModelPath[\s\S]*?!hasMountedLive2D\(\)/);
+    const ownership = source.match(/const stillOwnsInitialLive2DStartup = \(\) => \{[\s\S]*?^    \};/m)?.[0] || '';
+    assert.match(ownership, /currentPath === targetModelPath[\s\S]*?!hasMountedLive2D\(\)/);
+    assert.doesNotMatch(ownership, /lanlan_config\?\.switch_revision/, 'receipt high-water mark is not renderer-commit ownership');
     assert.match(source, /const ownsInitialLive2DStartupAfterSwitchSettlement = async \(\) => \{[\s\S]*?isSwitchingCatgirl[\s\S]*?setTimeout\(resolve, 50\)/);
     assert.match(
         source,
@@ -1656,6 +1668,42 @@ test('initial Live2D startup rechecks ownership immediately before delayed model
         'the settlement-aware ownership check must stay between delayed preference work and loadModel'
     );
 });
+
+test('failed takeover may raise receipt revision without cancelling authoritative Live2D startup', async () => {
+    const h = harness(), preferences = deferred(), preferencesStarted = deferred();
+    const pathA = '/A.model3.json';
+    const modelA = desktopAvatarConfig('A', 'live2d', 82, pathA);
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'A', switch_revision: 82, model_type: 'live2d' },
+        async url => {
+            if (url === '/api/config/page_config') return { json: async () => modelA };
+            if (url === '/api/characters') return { ok: false, status: 503, json: async () => ({}) };
+            return { ok: true, json: async () => ({}) };
+        },
+        true,
+        {
+            live2dPreferences: async () => {
+                preferencesStarted.resolve();
+                await preferences.promise;
+                return [];
+            },
+        }
+    );
+    assert.equal(await startup.ready, true);
+    await preferencesStarted.promise;
+
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 83 }), false);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.lanlan_config.switch_revision, 83, 'receipt high-water mark remains newer after failed takeover');
+
+    preferences.resolve();
+    for (let turn = 0; turn < 12 && !startup.loads.includes(pathA); turn++) {
+        await new Promise(setImmediate);
+    }
+    assert.ok(startup.loads.includes(pathA), 'A startup must continue because A name/path still own the renderer');
+});
+
 
 test('Live2D loaded ahead of index waits past the old 5-second local fallback for the shared retry', async () => {
     const h = harness(), delayed = deferred(), domReady = [];
@@ -1737,6 +1785,93 @@ test('MMD startup waits for an in-flight switch to settle and resumes when takeo
 
     assert.ok(startup.loads.includes(pathB), 'failed takeover leaves B current, so its startup must resume');
     assert.equal(canvas.style.visibility, 'visible');
+});
+
+
+test('MMD startup restarts from current config after an MMD-to-MMD takeover disposes its manager then fails', async () => {
+    const h = harness(), firstSettings = deferred(), settingsStarted = deferred();
+    const pathB = '/static/mmd/B/B.pmx', pathC = '/static/mmd/C/C.pmx';
+    const modelB = desktopAvatarConfig('B', 'mmd', 82, pathB);
+    const modelC = desktopAvatarConfig('C', 'mmd', 83, pathC);
+    let bSettingsReads = 0;
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
+        async url => {
+            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (url.endsWith('/B/mmd_settings')) {
+                bSettingsReads++;
+                if (bSettingsReads === 1) {
+                    settingsStarted.resolve();
+                    await firstSettings.promise;
+                }
+                return { ok: true, json: async () => ({ success: false }) };
+            }
+            if (url.endsWith('/C/mmd_settings')) return { ok: true, json: async () => ({ success: false }) };
+            if (url === '/api/characters') return { ok: true, json: async () => ({ ['猫娘']: {
+                B: { ...modelB, mmd: pathB, _reserved: { character_uid: UID_B } },
+                C: { ...modelC, mmd: pathC, _reserved: { character_uid: 'c'.repeat(32) } },
+            } }) };
+            return { ok: true, json: async () => ({}) };
+        },
+        false,
+        {
+            mmdLoadModel: async ({ url, manager }) => {
+                if (url === pathC) {
+                    manager.currentModel = { url, mesh: {} };
+                    throw new Error('C load failed after MMD manager replacement');
+                }
+                return undefined;
+            },
+        }
+    );
+    assert.equal(await startup.ready, true);
+    await settingsStarted.promise;
+
+    assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), false);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    firstSettings.resolve();
+
+    for (let turn = 0; turn < 20 && startup.loads.at(-1) !== pathB; turn++) {
+        await new Promise(setImmediate);
+    }
+    assert.ok(startup.loads.includes(pathC), 'the failed takeover reached the replacement MMD manager');
+    assert.equal(startup.loads.at(-1), pathB, 'rollback must restart B using a fresh manager and current config');
+    assert.ok(bSettingsReads >= 2, 'recovery must re-read B settings rather than reuse the disposed startup instance');
+});
+
+test('same-name MMD path refresh retires the old startup and loads only the new path', async () => {
+    const h = harness(), firstSettings = deferred(), settingsStarted = deferred();
+    const oldPath = '/static/mmd/B/old.pmx', newPath = '/static/mmd/B/new.pmx';
+    const modelB = desktopAvatarConfig('B', 'mmd', 82, oldPath);
+    let settingsReads = 0;
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
+        async url => {
+            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (url.endsWith('/B/mmd_settings')) {
+                settingsReads++;
+                if (settingsReads === 1) {
+                    settingsStarted.resolve();
+                    await firstSettings.promise;
+                }
+                return { ok: true, json: async () => ({ success: false }) };
+            }
+            return { ok: true, json: async () => ({ ['猫娘']: { B: modelB } }) };
+        }
+    );
+    assert.equal(await startup.ready, true);
+    await settingsStarted.promise;
+
+    h.window.mmdModel = newPath;
+    firstSettings.resolve();
+    for (let turn = 0; turn < 20 && !startup.loads.includes(newPath); turn++) {
+        await new Promise(setImmediate);
+    }
+
+    assert.ok(!startup.loads.includes(oldPath), 'the stale startup must not load the old MMD path');
+    assert.ok(startup.loads.includes(newPath), 'a fresh startup must pick up the new same-name MMD path');
 });
 
 for (const rejectBeforeTakeover of [false, true]) {
@@ -1876,7 +2011,7 @@ for (const renderer of ['live2d', 'mmd']) {
     });
 }
 
-test('PNGTuber rollback makes a same-current authoritative receipt recover the hidden avatar', async () => {
+test('PNGTuber rollback makes a same-current authoritative receipt request avatar reload', async () => {
     const h = harness(), calls = avatarCalls(h);
     h.window.location.pathname = '/';
     h.window.lanlan_config = { lanlan_name: 'A', model_type: 'pngtuber', pngtuber: { idle_image: '/A.png' } };

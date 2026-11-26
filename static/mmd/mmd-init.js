@@ -495,32 +495,79 @@ async function autoInitMMDOnMainPage() {
     // do not resume old settings/assets on the successor's (possibly reused) manager.
     const catgirlName = window.lanlan_config?.lanlan_name;
     const startupAttempt = window.appState?._switchAttemptCounter || 0;
+    const effectiveMmdPath = value => {
+        const raw = typeof value === 'string' ? value.trim() : '';
+        return raw && raw !== 'undefined' && raw !== 'null'
+            ? raw
+            : '/static/mmd/Miku/Miku.pmx';
+    };
+    const startupMmdPath = effectiveMmdPath(window.mmdModel);
     let manager, loadToken;
     let loadStarted = false;
-    const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
-        && window.lanlan_config?.lanlan_name === catgirlName
+    let recoveryScheduled = false;
+    const currentStillTargetsMmd = () => window.lanlan_config?.lanlan_name === catgirlName
         && (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d'
-        && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd'
+        && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
+    const currentMmdPath = () => effectiveMmdPath(window.mmdModel);
+    const resolvedMmdPath = value => window._mmdConvertPath ? window._mmdConvertPath(value) : value;
+    const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
+        && currentStillTargetsMmd()
+        && currentMmdPath() === startupMmdPath
         && (!manager || (window.mmdManager === manager && !manager._isDisposed))
         && (loadStarted
             ? manager._activeLoadToken === loadToken
             : (window.appState?._switchAttemptCounter || 0) === startupAttempt
                 || !window.mmdManager?.currentModel?.mesh);
+    const scheduleCurrentMmdRecovery = () => {
+        if (recoveryScheduled || !currentStillTargetsMmd()) return;
+        recoveryScheduled = true;
+        const activeManager = window.mmdManager;
+        const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
+        const activeResolvedPath = activeManager?.currentModel?.url || '';
+        if (activeManager?.currentModel?.mesh && activeResolvedPath !== desiredResolvedPath) {
+            // A failed successor may already have mounted its mesh before a
+            // later step failed. Retire that wrong owner so the normal startup
+            // path is allowed to rebuild the rolled-back/current configuration.
+            try { activeManager.dispose?.(); } catch (error) {
+                console.warn('[MMD Init] 回滚恢复时销毁错误 MMD 实例失败:', error);
+            }
+            if (window.mmdManager === activeManager) window.mmdManager = null;
+        }
+        Promise.resolve().then(() => autoInitMMDOnMainPage()).catch(error => {
+            console.warn('[MMD Init] 回滚/路径刷新后的重新启动失败:', error);
+        });
+    };
     const ownsStartupAfterSwitchSettlement = async () => {
         const deadline = Date.now() + 46000;
         while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
             await new Promise(resolve => setTimeout(resolve, 50));
         }
-        return stillOwnsStartup();
+        const owns = stillOwnsStartup();
+        if (!owns && currentStillTargetsMmd()) {
+            const activeManager = window.mmdManager;
+            const pathChanged = currentMmdPath() !== startupMmdPath;
+            const managerReplaced = !!manager && (activeManager !== manager || manager._isDisposed);
+            const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
+            const activeResolvedPath = activeManager?.currentModel?.url || '';
+            const activeAlreadyCurrent = !!activeManager?.currentModel?.mesh
+                && activeResolvedPath === desiredResolvedPath;
+            if (!activeAlreadyCurrent && (pathChanged || managerReplaced)) {
+                // A same-name config refresh needs the new path; an MMD→MMD
+                // failed takeover may have disposed this startup's manager.
+                // Restart from current globals/settings instead of reviving the
+                // stale instance.
+                scheduleCurrentMmdRecovery();
+            }
+        }
+        return owns;
     };
 
     const loadingSessionId = window._createMMDLoadingSessionId('mmd-main');
     window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
 
-    let mmdPath = window.mmdModel;
-    if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
+    let mmdPath = startupMmdPath;
+    if (!window.mmdModel || window.mmdModel === 'undefined' || window.mmdModel === 'null' || String(window.mmdModel).trim() === '') {
         console.warn('[MMD Init] MMD 模型路径为空，使用默认模型');
-        mmdPath = '/static/mmd/Miku/Miku.pmx';
     }
 
     console.log('[MMD Init] 检测到 MMD 模式，自动初始化并加载:', mmdPath);

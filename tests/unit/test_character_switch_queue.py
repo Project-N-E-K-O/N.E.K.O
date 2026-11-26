@@ -433,6 +433,54 @@ async def test_synced_delete_notifies_fallback_even_when_cancelled_after_commit(
 
 
 @pytest.mark.asyncio
+async def test_synced_delete_rollback_compensates_published_fallback_revision(monkeypatch):
+    uid = 'a' * 32
+    chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
+    websocket = AsyncMock()
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(chars)))
+    observed = {}
+
+    async def save(updated):
+        chars.clear()
+        chars.update(copy.deepcopy(updated))
+
+    async def rolled_back_delete(_name):
+        observer = crud._delete_commit_observer.get()
+        assert observer is not None
+        rollback = observer()
+        observed['fallback_revision'] = crud._catgirl_switch_revision
+        assert callable(rollback)
+        # The inner transaction restored its own snapshot. That snapshot was
+        # taken after the sync layer had tentatively made B current, so A exists
+        # again but the outer layer must still restore current=A.
+        rollback()
+        return {'success': False}
+
+    manager.asave_characters = save
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 70)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {'A': SimpleNamespace(websocket=websocket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', rolled_back_delete)
+
+    assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    assert chars['当前猫娘'] == 'A'
+    assert 'A' in chars['猫娘']
+    websocket.send_text.assert_awaited_once()
+    frame = json.loads(websocket.send_text.await_args.args[0])
+    assert frame['old_catgirl'] == 'B'
+    assert frame['new_catgirl'] == 'A'
+    assert frame['switch_revision'] > observed['fallback_revision']
+    assert frame['switch_revision'] == crud._catgirl_switch_revision
+    assert crud._catgirl_switch_revision_target == 'A'
+
+
+@pytest.mark.asyncio
 async def test_synced_current_deletion_stamps_the_fallback_notification(monkeypatch):
     uid = 'a' * 32
     chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}

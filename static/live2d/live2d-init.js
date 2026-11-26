@@ -579,13 +579,14 @@ async function _initLive2DModelInner() {
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
     const startupName = window.lanlan_config?.lanlan_name || '';
-    const startupRevision = Number(window.lanlan_config?.switch_revision) || 0;
     const stillOwnsInitialLive2DStartup = () => {
         if (isModelManagerPage) return true;
         const currentPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
         return !window.appState?.isSwitchingCatgirl
             && (window.lanlan_config?.lanlan_name || '') === startupName
-            && (Number(window.lanlan_config?.switch_revision) || 0) === startupRevision
+            // switch_revision is a receipt high-water mark, not proof that a
+            // successor renderer committed. A failed takeover may raise it
+            // while leaving this same name/path authoritative.
             && (window.lanlan_config?.model_type || 'live2d').toLowerCase() === 'live2d'
             && currentPath === targetModelPath
             && !hasMountedLive2D();

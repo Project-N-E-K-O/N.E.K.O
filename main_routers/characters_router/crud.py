@@ -2585,11 +2585,18 @@ async def _delete_synced_character(uid: str, before_delete):
         created_fallback = False
         success = False
         committed_switch_revision = 0
+        committed_switch_rolled_back = False
+        rollback_switch_revision = 0
+
+        def mark_delete_rolled_back():
+            nonlocal committed_switch_rolled_back
+            committed_switch_rolled_back = True
 
         def mark_delete_committed():
             nonlocal committed_switch_revision
             if switched and fallback and not committed_switch_revision:
                 committed_switch_revision = _advance_current_catgirl_switch_revision(fallback)
+            return mark_delete_rolled_back if committed_switch_revision else None
 
         try:
             if switched:
@@ -2620,28 +2627,45 @@ async def _delete_synced_character(uid: str, before_delete):
                 mark_delete_committed()
         finally:
             end_character_mutation(name)
-            if switched and not success and not committed_switch_revision:
+            if switched and not success and (not committed_switch_revision or committed_switch_rolled_back):
+                restored_previous_config = False
+
                 async def restore_previous_character():
+                    nonlocal restored_previous_config
                     latest = await cm.aload_characters()
-                    if name in latest.get('猫娘', {}):
-                        latest['当前猫娘'] = previous_current
-                        if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
-                            del latest['猫娘'][fallback]
-                        await cm.asave_characters(latest)
-                        if created_fallback:
-                            await get_remove_one_catgirl()(fallback)
-                        await get_switch_current_catgirl_fast()()
+                    if name not in latest.get('猫娘', {}):
+                        return False
+                    latest['当前猫娘'] = previous_current
+                    if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
+                        del latest['猫娘'][fallback]
+                    await cm.asave_characters(latest)
+                    restored_previous_config = True
+                    if created_fallback:
+                        await get_remove_one_catgirl()(fallback)
+                    await get_switch_current_catgirl_fast()()
+                    return True
                 try:
                     await _await_cleanup_to_completion(restore_previous_character())
                 except (Exception, asyncio.CancelledError):
                     logger.exception("Failed to restore current character after sync deletion")
-            if switched and committed_switch_revision:
+                if restored_previous_config and committed_switch_rolled_back:
+                    # B was already published at the inner delete's tentative
+                    # commit boundary. Never decrement that revision: publish
+                    # a newer compensation for the restored A authority. The
+                    # persisted config is the authority even if runtime refresh
+                    # after the save reports an error.
+                    rollback_switch_revision = _advance_current_catgirl_switch_revision(previous_current)
+                    committed_switch_revision = 0
+            notify_revision = rollback_switch_revision or committed_switch_revision
+            if switched and notify_revision:
+                notify_new_catgirl = previous_current if rollback_switch_revision else fallback
+                notify_old_catgirl = fallback if rollback_switch_revision else name
                 async def notify_committed_switch():
                     frame = json.dumps({
                         'type': 'catgirl_switched',
-                        'old_catgirl': name,
-                        'new_catgirl': fallback,
-                        'switch_revision': committed_switch_revision,
+                        'old_catgirl': notify_old_catgirl,
+                        'new_catgirl': notify_new_catgirl,
+                        'switch_revision': notify_revision,
                     })
                     await asyncio.gather(
                         *(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
@@ -2874,6 +2898,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         memory_server_reloaded = False
         characters_save_attempted = False
         delete_committed = False
+        delete_commit_rollback = None
         released_memory_handle = False
         release_claim_token = create_derived_task_claim_token()
         try:
@@ -3071,7 +3096,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             delete_committed = True
             delete_commit_observer = _delete_commit_observer.get()
             if delete_commit_observer is not None:
-                delete_commit_observer()
+                delete_commit_rollback = delete_commit_observer()
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_delete, recent_delete_result,
             )
@@ -3120,6 +3145,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     )
                 )
             )
+            if not rollback_error and delete_commit_rollback is not None:
+                delete_commit_rollback()
+                delete_commit_rollback = None
             if rollback_cancelled:
                 raise asyncio.CancelledError
             if rollback_error:
@@ -3145,6 +3173,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     )
                 )
             )
+            if not rollback_error and delete_commit_rollback is not None:
+                delete_commit_rollback()
+                delete_commit_rollback = None
             if rollback_cancelled:
                 raise asyncio.CancelledError
             logger.exception("删除角色失败，已尝试回滚: %s", name)
