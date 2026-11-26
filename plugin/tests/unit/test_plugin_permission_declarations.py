@@ -2668,6 +2668,10 @@ def test_self_attribute_sockets_keep_direct_evidence(tmp_path, source, basis):
             "import socket\nclass C:\n    sock = None\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
             "    def go(self):\n        self.sock.listen()\n"
         ),
+        # Rebound by a def / class, or possibly by a star import.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef s():\n    pass\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nclass s:\n    pass\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nfrom evil import *\ns.listen()\n",
     ],
 )
 def test_only_the_narrow_local_socket_shapes_are_trusted(tmp_path, source):

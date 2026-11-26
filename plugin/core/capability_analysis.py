@@ -633,13 +633,22 @@ def _references(tree, walker: _AnalysisWalker):
         # tracking; the aliases themselves resolve as before).
         assigned = {key for key, _value in assignments}
         import_counts: dict[str, int] = {}
+        star = False
         for node in nodes:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 for item in node.names:
+                    if item.name == "*":
+                        star = True
+                        continue
                     name = item.asname or item.name.split(".")[0]
                     import_counts[name] = import_counts.get(name, 0) + 1
-        # Imported and also assigned, or imported more than once.
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                import_counts[node.name] = import_counts.get(node.name, 0) + 1
+        # Imported or defined (def / class) and also assigned, or bound that
+        # way more than once; with a star import any name may be rebound.
         imported = {name for name, count in import_counts.items() if count > 1 or name in assigned}
+        if star:
+            imported |= assigned
         comprehended = set().union(*comprehension_locals.values()) if comprehension_locals else set()
         # Names a match pattern captures (case s:, case [*s], case {**s}).
         captured = {
