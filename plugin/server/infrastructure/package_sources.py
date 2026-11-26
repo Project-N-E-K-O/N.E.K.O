@@ -189,13 +189,13 @@ def _ensure_loaded() -> None:
         if source_id in _RETIRED_MIRROR_IDS:
             continue
         try:
-            _routes[source_id] = _parse_route(values, now)
+            _routes[source_id] = _parse_route(source_id, values, now)
         except (ValueError, TypeError, AttributeError, ArithmeticError) as exc:
             # One corrupt route must not cost the others their history.
             logger.warning("dropping corrupt statistics of download route {}: {}", source_id, exc)
 
 
-def _parse_route(values: Any, now: float) -> RouteStats:
+def _parse_route(source_id: str, values: Any, now: float) -> RouteStats:
     if not isinstance(values, dict):
         raise TypeError("route statistics are not an object")
     updated = _finite(values.get("updated", 0.0), "updated")
@@ -209,12 +209,24 @@ def _parse_route(values: Any, now: float) -> RouteStats:
     if isinstance(samples, bool) or not isinstance(samples, (int, float)):
         raise TypeError("samples is not a number")
     return RouteStats(
-        latency=_sample(_optional(values.get("latency"), "latency"), _MAX_LATENCY, allow_zero=True),
-        throughput=_sample(_optional(values.get("throughput"), "throughput"), _MAX_THROUGHPUT),
+        latency=_loaded_sample(source_id, values, "latency", _MAX_LATENCY, allow_zero=True),
+        throughput=_loaded_sample(source_id, values, "throughput", _MAX_THROUGHPUT),
         failures=min(_MAX_FAILURES, max(0.0, _finite(values.get("failures", 0.0), "failures"))),
         samples=min(_MAX_SAMPLES, max(0, int(_finite(samples, "samples")))),
         updated=updated,
     )
+
+
+def _loaded_sample(
+    source_id: str, values: dict[str, Any], name: str, limit: float, *, allow_zero: bool = False,
+) -> float | None:
+    """A persisted measurement; an unusable one is ignored, keeping the rest of the route."""
+    value = values.get(name)
+    sample = _sample(value, limit, allow_zero=allow_zero)
+    # None and 0 mean "not measured" and are not reported.
+    if sample is None and value is not None and value != 0:
+        logger.warning("ignoring corrupt {} of download route {}: {!r}", name, source_id, value)
+    return sample
 
 
 def _finite(value: Any, name: str) -> float:
@@ -224,10 +236,6 @@ def _finite(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"{name} is not finite")
     return number
-
-
-def _optional(value: Any, name: str) -> float | None:
-    return None if value is None else _finite(value, name)
 
 
 def _sample(value: Any, limit: float, *, allow_zero: bool = False) -> float | None:
@@ -287,6 +295,8 @@ def estimate_route(source_id: str, *, now: float | None = None) -> RouteEstimate
             _reported_routes.add(source_id)
             logger.warning("ignoring statistics of download route {}: {!r}", source_id, exc)
         return _PRIOR_ESTIMATE
+    # A route that recovers is reported again if it breaks later.
+    _reported_routes.discard(source_id)
     return estimate
 
 
@@ -310,7 +320,8 @@ def route_generation() -> int:
 
 def _record(observation: RouteObservation, now: float) -> None:
     stats = _routes.setdefault(observation.source_id, RouteStats())
-    if stats.updated:
+    # Keyed on samples, not on the stamp: a history stamped 0 still decays.
+    if stats.samples:
         stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
     stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY, allow_zero=True))
     stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
