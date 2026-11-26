@@ -1294,7 +1294,10 @@ class TaskBrain:
 
         The status and what follows it run as one task of their own: a caller
         that goes away once the status is written does not leave the plugin
-        run or the task agent going.
+        run or the task agent going. A commission that was over already is
+        left as it was, but for what may still be going of it
+        (``_end_what_is_left``): stopping it again is how what failed to end
+        at its stop is tried again.
         """
         after, _moved, failed = await self._stop(commission_id, reason=reason, notify=notify)
         # (A cancel the plugin server did not take is asked again by the next
@@ -1338,16 +1341,9 @@ class TaskBrain:
             commission_id, "cancelled", reason=reason, report=report, deferred_until=None
         )
         if not moved.applied:
-            # Already ended, yet a plugin run whose cancel did not get through
-            # may still be going: a stop asks for that cancel again.
-            if self._runner.active_runs(commission_id):
-                try:
-                    await self._runner.cancel_commission(commission_id, reason)
-                except Exception as exc:  # noqa: BLE001 - handed back to the caller
-                    return commission, False, exc
-                if self._runner.cancels_not_taken(commission_id):
-                    return commission, False, _CancelNotTaken("the plugin server did not take the cancel of every run")
-            return commission, False, None
+            # As it is now, not as it was read before the stop was asked for.
+            ended = moved.commission or commission
+            return ended, False, await self._end_what_is_left(ended, reason)
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
             timer.cancel()
@@ -1392,6 +1388,32 @@ class TaskBrain:
             except Exception:  # noqa: BLE001 - a hint, and nothing of the stop
                 logger.warning("noting the stop of commission %s as a preference failed", commission_id, exc_info=True)
         return moved.commission, True, failed
+
+    async def _end_what_is_left(self, commission: Commission, reason: str) -> Exception | None:
+        """For a stop of a commission that was over already: end what may still be going of it.
+
+        A plugin run whose cancel did not get through, whatever ended the
+        commission, is asked to cancel again. A stopped commission's task
+        agent, whose closing may have failed at that stop, is closed again
+        (closing one that is closed already does nothing). One that ended
+        any other way keeps its task agent's session as it is. Each part is
+        tried on its own, as at the stop itself; what failed is returned.
+        """
+        failed: Exception | None = None
+        if self._runner.active_runs(commission.id):
+            try:
+                await self._runner.cancel_commission(commission.id, reason)
+            except Exception as exc:  # noqa: BLE001 - handed back to the caller
+                failed = exc
+            else:
+                if self._runner.cancels_not_taken(commission.id):
+                    failed = _CancelNotTaken("the plugin server did not take the cancel of every run")
+        if commission.status == "cancelled" and self._task_agents is not None:
+            try:
+                await self._task_agents.abort(commission.id)
+            except Exception as exc:  # noqa: BLE001 - handed back, as the one above
+                failed = exc if failed is None or isinstance(failed, _CancelNotTaken) else failed
+        return failed
 
     async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
         """Pass a sentence on to a commission. Only a task agent can take one.

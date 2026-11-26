@@ -1214,6 +1214,95 @@ async def test_a_stop_says_whether_it_is_what_ended_the_commission(server, hosts
     assert await host.brain._stop("no-such-commission", reason="x", notify=False) == (None, False, None)
 
 
+async def test_stopping_again_closes_the_task_agent_a_stop_left_open_and_nothing_of_what_ended_otherwise(
+    server, hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+
+    async def filed(title: str, *statuses: str) -> Any:
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+        )
+        for status in statuses:
+            await host.ledger.transition(commission.id, status, reason="test")
+        return commission
+
+    stopped = await filed("sort the photos", "working")
+    done = await filed("back up the notes", "working", "done")
+    failed_one = await filed("tidy the desktop", "working", "failed")
+    closed: list[str] = []
+    agent_down = {"value": True}
+
+    class TaskAgents:
+        async def abort(self, commission_id: str) -> None:
+            closed.append(commission_id)
+            if agent_down["value"]:
+                raise RuntimeError("the task agent did not close")
+
+    monkeypatch.setattr(host.brain, "_task_agents", TaskAgents())
+
+    # Its status is written, its task agent is not closed: handed back.
+    after, moved, failed = await host.brain._stop(stopped.id, reason="through a dispatch", notify=False)
+    assert (after.status, moved, str(failed), closed) == ("cancelled", True, "the task agent did not close", [stopped.id])
+    # Stopped again while the task agent still cannot be closed: tried again, and handed back again.
+    _after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert (moved, str(failed), closed) == (False, "the task agent did not close", [stopped.id] * 2)
+    # The board says so too.
+    with pytest.raises(RuntimeError, match="the task agent did not close"):
+        await host.brain.abort(stopped.id, reason="from the board")
+    # Once it can be closed, stopping it again closes it; the stop ended nothing else.
+    agent_down["value"] = False
+    after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert (after.status, after.status_reason, moved, failed) == ("cancelled", "through a dispatch", False, None)
+    assert closed == [stopped.id] * 4
+    # Each part on its own: a plugin run that cannot be told to end again does not keep the task
+    # agent from being closed again.
+    async def down(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the plugin server is down")
+
+    async def asked(*_args: Any, **_kwargs: Any) -> int:
+        return 1
+
+    monkeypatch.setattr(host.brain._runner, "active_runs", lambda commission_id: ["run"] if commission_id == stopped.id else [])
+    monkeypatch.setattr(host.brain._runner, "cancel_commission", down)
+    closed.clear()
+    _after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert (moved, str(failed), closed) == (False, "the plugin server is down", [stopped.id])
+    # Both failing, the first is handed back; but a task agent left open is said before a cancel
+    # the plugin server did not take (which the board passes over), as at the stop itself.
+    agent_down["value"] = True
+    _after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert str(failed) == "the plugin server is down"
+    monkeypatch.setattr(host.brain._runner, "cancel_commission", asked)
+    monkeypatch.setattr(host.brain._runner, "cancels_not_taken", lambda commission_id: ["run"] if commission_id == stopped.id else [])
+    _after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert str(failed) == "the task agent did not close"
+    agent_down["value"] = False
+    _after, moved, failed = await host.brain._stop(stopped.id, reason="again", notify=False)
+    assert type(failed).__name__ == "_CancelNotTaken"
+    # One that ended any other way keeps its task agent's session as it is.
+    closed.clear()
+    for ended, status in ((done, "done"), (failed_one, "failed")):
+        after, moved, failed = await host.brain._stop(ended.id, reason="stop", notify=False)
+        assert (after.status, moved, failed) == (status, False, None)
+    assert closed == []
+    # By what it is when the stop is refused, not by what was read before: one stopped from
+    # the board in between has its task agent closed again all the same.
+    raced = await filed("water the plants", "working")
+    stale = await host.ledger.get(raced.id)
+    await host.ledger.transition(raced.id, "cancelled", reason="from the board")
+    real_get = host.brain._ledger.get
+
+    async def get_before_the_board(commission_id: str) -> Any:
+        return stale if commission_id == raced.id else await real_get(commission_id)
+
+    monkeypatch.setattr(host.brain._ledger, "get", get_before_the_board)
+    after, moved, failed = await host.brain._stop(raced.id, reason="through a dispatch", notify=False)
+    assert (moved, failed, closed) == (False, None, [raced.id])
+    # And what is handed back is it as it is now (the board, Esc show that), not what was read before.
+    assert (after.status, after.status_reason) == ("cancelled", "from the board")
+
+
 async def test_what_a_stop_cannot_end_is_handed_back_and_the_rest_is_ended_all_the_same(server, hosts, tmp_path, monkeypatch):
     started = await _slow_weather(server)
     host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("weather", "today")]))
