@@ -182,15 +182,20 @@ def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
     with _listeners_lock:
         listeners = list(_change_listeners)
     for listener in listeners:
+        # Tracked per listener, so one working listener does not report
+        # another one as recovered.
+        operation = "listener:" + str(getattr(listener, "__qualname__", type(listener).__name__))
         try:
             listener(plugin_ids)
         except Exception as exc:
             _errors.failed(
-                "listener",
+                operation,
                 type(exc).__name__,
                 "plugin permission change listener failed: error={}",
                 type(exc).__name__,
             )
+        else:
+            _errors.recovered(operation, "plugin permission change listener works again")
 
 
 def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
@@ -243,6 +248,7 @@ def _marker_present(path) -> bool:
     try:
         os.stat(path.with_name(MARKER_FILENAME))
     except FileNotFoundError:
+        _errors.recovered("marker_check", "legacy plugin consent import marker can be checked again")
         return False
     except OSError as exc:
         _errors.failed(
@@ -254,6 +260,7 @@ def _marker_present(path) -> bool:
         raise _read_failed(
             "Plugin permission storage is unavailable", file=MARKER_FILENAME
         ) from exc
+    _errors.recovered("marker_check", "legacy plugin consent import marker can be checked again")
     return True
 
 
@@ -445,6 +452,7 @@ class PluginPermissionStore:
         try:
             raw = read_json_tolerating_replace(legacy_path)
         except FileNotFoundError:
+            _errors.recovered("legacy_read", "legacy plugin consents can be read again")
             return {}, {"status": "absent", "plugins": 0, "skipped": 0}
         except OSError as exc:
             # Possibly transient: do not create the new file, so the import is
@@ -459,11 +467,13 @@ class PluginPermissionStore:
                 "Legacy plugin consent records could not be read", file=LEGACY_FILENAME
             ) from exc
         except (ValueError, UnicodeError) as exc:
+            _errors.recovered("legacy_read", "legacy plugin consents can be read again")
             logger.error(
                 "legacy plugin consents are not valid JSON and were not imported: error={}",
                 type(exc).__name__,
             )
             return {}, {"status": "invalid", "plugins": 0, "skipped": 0}
+        _errors.recovered("legacy_read", "legacy plugin consents can be read again")
         if (
             not isinstance(raw, dict)
             or raw.get("schema_version") != LEGACY_SCHEMA_VERSION
@@ -564,7 +574,10 @@ class PluginPermissionStore:
         # Persist first; the cache only moves once the disk has the change.
         self._save(manager, document)
         before, self._document = self._document, document
-        self._unsaved = False
+        was_unsaved, self._unsaved = self._unsaved, False
+        if was_unsaved:
+            # This save also put a pending first-use import on disk.
+            self._mark_imported(manager, self._path, document)
         _notify_change(_changed_plugins(before, document))
 
     # ------------------------------------------------------------------
@@ -639,6 +652,8 @@ class PluginPermissionStore:
                         "plugin source binding was not saved: plugin_id={}",
                         plugin_id,
                     )
+                else:
+                    _errors.recovered("bind", "plugin source bindings are saved again")
                 return copy.deepcopy(record)
             manager = self._load_for_write()
             self._commit(manager, document)

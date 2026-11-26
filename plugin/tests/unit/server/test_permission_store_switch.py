@@ -43,6 +43,14 @@ class ConfigManager:
         self.saved.append(name)
 
 
+def _switch(manager, **kwargs):
+    """A switch store that loads inline and records pushes."""
+    kwargs.setdefault("spawn", lambda load: load())
+    pushes = kwargs.pop("pushes", [])
+    kwargs.setdefault("on_change", lambda: pushes.append(True))
+    return permission_switch.PermissionSwitchStore(manager, **kwargs)
+
+
 @pytest.fixture
 def manager(tmp_path):
     return ConfigManager(tmp_path / "config")
@@ -232,30 +240,30 @@ def test_failing_saves_log_once_and_recovery_is_reported(manager, logged, monkey
 
 
 def test_switch_setting_defaults_to_checks_on(manager):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     assert store.disabled() is False
 
 
 def test_switch_setting_is_saved_and_read_back(manager):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     store.set_disabled(True)
 
     assert store.disabled() is True
     saved = json.loads((manager.root / permission_switch.FILENAME).read_text(encoding="utf-8"))
     assert saved["checks_disabled"] is True and saved["schema_version"] == 1
-    assert permission_switch.PermissionSwitchStore(manager).disabled() is True
+    assert _switch(manager).disabled() is True
 
 
 @pytest.mark.parametrize("content", ["{broken", json.dumps({"checks_disabled": "yes"}), "[]"])
 def test_unreadable_switch_setting_keeps_checks_on(manager, content):
     manager.root.mkdir(parents=True)
     (manager.root / permission_switch.FILENAME).write_text(content, encoding="utf-8")
-    assert permission_switch.PermissionSwitchStore(manager).disabled() is False
+    assert _switch(manager).disabled() is False
 
 
 def test_unreadable_switch_setting_is_retried_later(manager):
     clock = {"now": 0.0}
-    store = permission_switch.PermissionSwitchStore(manager, clock=lambda: clock["now"])
+    store = _switch(manager, clock=lambda: clock["now"])
     manager.root.mkdir(parents=True)
     path = manager.root / permission_switch.FILENAME
     path.write_text("{broken", encoding="utf-8")
@@ -267,7 +275,7 @@ def test_unreadable_switch_setting_is_retried_later(manager):
 
 
 def test_failed_switch_write_raises_and_changes_nothing(manager):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     manager.fail[permission_switch.FILENAME] = OSError("disk full")
 
     with pytest.raises(ServerDomainError) as failure:
@@ -287,7 +295,7 @@ def test_failed_switch_write_raises_and_changes_nothing(manager):
     ],
 )
 def test_host_setting_is_one_source_of_the_switch(monkeypatch, manager, config, env, legacy, sources):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     store.set_disabled(config)
     monkeypatch.setattr(permission_switch, "switch_store", store)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", env)
@@ -304,7 +312,7 @@ def test_host_setting_is_one_source_of_the_switch(monkeypatch, manager, config, 
 
 @pytest.fixture
 def switch_env(monkeypatch, manager):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     monkeypatch.setattr(permission_switch, "switch_store", store)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
@@ -416,14 +424,14 @@ def test_each_report_counts_only_what_followed_the_previous_one(logged):
 
 
 def test_a_write_replaces_the_cached_value(manager):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     assert store.disabled() is False  # cached
     store.set_disabled(True)
     assert store.disabled() is True
 
 
 def test_a_read_that_started_before_a_write_does_not_undo_it(manager, monkeypatch):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     manager.root.mkdir(parents=True)
     (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": False}), encoding="utf-8")
     real_read = permission_switch.read_json_tolerating_replace
@@ -458,7 +466,7 @@ def test_uncheckable_marker_is_logged(manager, logged, monkeypatch):
 
 
 def test_a_concurrent_reader_does_not_read_the_file_again(manager, monkeypatch):
-    store = permission_switch.PermissionSwitchStore(manager)
+    store = _switch(manager)
     manager.root.mkdir(parents=True)
     (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
     real_read = permission_switch.read_json_tolerating_replace
@@ -472,3 +480,127 @@ def test_a_concurrent_reader_does_not_read_the_file_again(manager, monkeypatch):
     monkeypatch.setattr(permission_switch, "read_json_tolerating_replace", slow_read)
     assert store.disabled() is True
     assert len(reads) == 1 and seen_meanwhile == [False]
+
+
+def test_checks_never_read_the_file_on_their_own_thread(manager):
+    manager.root.mkdir(parents=True)
+    (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
+    started = []
+    store = permission_switch.PermissionSwitchStore(manager, spawn=started.append, on_change=lambda: None)
+
+    assert store.disabled() is False  # unknown yet: checks stay on
+    assert store.disabled() is False and len(started) == 1  # one load in flight
+    started[0]()  # the background load
+    assert store.disabled() is True
+
+
+def test_startup_load_reads_now(manager):
+    manager.root.mkdir(parents=True)
+    (manager.root / permission_switch.FILENAME).write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
+    store = permission_switch.PermissionSwitchStore(manager, spawn=lambda _load: None, on_change=lambda: None)
+    assert store.load() is True and store.disabled() is True
+
+
+def test_a_load_that_changes_the_effective_value_pushes_states(manager):
+    pushes = []
+    clock = {"now": 0.0}
+    store = _switch(manager, pushes=pushes, clock=lambda: clock["now"])
+    manager.root.mkdir(parents=True)
+    path = manager.root / permission_switch.FILENAME
+    path.write_text("{broken", encoding="utf-8")
+    assert store.load() is False and pushes == []  # still off: nothing to push
+
+    path.write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
+    clock["now"] = permission_switch.RETRY_SECONDS + 1
+    assert store.disabled() is True
+    assert pushes == [True]  # recovered with a different value
+
+
+def test_a_write_is_pushed_by_its_caller_not_twice(manager):
+    pushes = []
+    store = _switch(manager, pushes=pushes)
+    store.set_disabled(True)
+    assert store.disabled() is True and pushes == []
+
+
+def test_a_pending_import_saved_by_a_bulk_drop_is_marked(manager):
+    _legacy(manager, {
+        "a": {"decision": "approved", "approved_capabilities": ["memory.read"]},
+        "b": {"decision": "denied", "approved_capabilities": []},
+    })
+    manager.fail["plugin_permissions.json"] = OSError("disk full")
+    store = PluginPermissionStore(manager)
+    store.read("a")  # import held in memory
+    del manager.fail["plugin_permissions.json"]
+
+    assert store.forget_many(["b"]) == ["b"]
+
+    assert _marker(manager).is_file()
+
+
+def test_each_logged_operation_reports_its_recovery(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    _legacy(manager)
+    real_read = plugin_permissions.read_json_tolerating_replace
+    failing = {"legacy": True}
+
+    def read(path):
+        if str(path).endswith("plugin_consents.json") and failing["legacy"]:
+            raise PermissionError("busy")
+        return real_read(path)
+
+    monkeypatch.setattr(plugin_permissions, "read_json_tolerating_replace", read)
+    with pytest.raises(ServerDomainError):
+        PluginPermissionStore(manager).read("a")
+    failing["legacy"] = False
+    PluginPermissionStore(manager).read("a")
+    assert ("info", "legacy plugin consents can be read again (after 1 failure(s))") in logged.lines
+
+
+def test_listener_recovery_is_tracked_per_listener(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    state = {"fail": True}
+
+    def flaky(_ids):
+        if state["fail"]:
+            raise RuntimeError("boom")
+
+    def healthy(_ids):
+        return None
+
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [flaky, healthy])
+    store = PluginPermissionStore(manager)
+    store.decide("a", MEMORY, "granted")
+    assert not any(level == "info" for level, _ in logged.lines)  # healthy recovers nothing
+    state["fail"] = False
+    store.decide("a", MEMORY, "denied")
+    infos = [line for level, line in logged.lines if level == "info"]
+    assert len(infos) == 1 and infos[0].startswith("plugin permission change listener works again")
+
+
+def test_marker_check_and_binding_report_recovery(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    plugin_permissions._errors.failed("marker_check", "PermissionError", "m={}", 1)
+    plugin_permissions._errors.failed("bind", "X", "b={}", 1)
+    store = PluginPermissionStore(manager)
+    store.decide("a", MEMORY, "granted")  # loads: the marker check works
+    assert ("info", "legacy plugin consent import marker can be checked again (after 1 failure(s))") in logged.lines
+    store.sync_source("a", plugin_permissions.PluginSource("market", "m"))  # first binding saved
+    assert ("info", "plugin source bindings are saved again (after 1 failure(s))") in logged.lines
+
+
+def test_marker_check_recovers_when_the_marker_exists(manager, logged, monkeypatch):
+    monkeypatch.setattr(plugin_permissions, "_errors", plugin_permissions._ErrorLog())
+    _legacy(manager)
+    _marker(manager).write_text("{}", encoding="utf-8")
+    plugin_permissions._errors.failed("marker_check", "PermissionError", "m={}", 1)
+    PluginPermissionStore(manager).read("a")
+    assert ("info", "legacy plugin consent import marker can be checked again (after 1 failure(s))") in logged.lines
+
+
+def test_a_load_after_a_write_does_not_push_again(manager):
+    pushes = []
+    store = _switch(manager, pushes=pushes)
+    store.set_disabled(True)
+    assert store.load() is True
+    assert pushes == []
