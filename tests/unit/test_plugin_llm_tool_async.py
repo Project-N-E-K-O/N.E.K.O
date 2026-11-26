@@ -2801,3 +2801,55 @@ async def test_failed_withdrawal_keeps_an_earlier_registration_tracked(monkeypat
         await asyncio.wait_for(task, timeout=2.0)
 
     assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_keeps_tracking_of_an_earlier_registration_of_the_name(monkeypatch, registry):
+    """Tracking is per name, not per role: withdrawing a cancelled register
+    (role B) must not drop the entry of the registration main_server still
+    holds for role A."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    task = asyncio.create_task(handle_llm_tool_register(
+        _rpc_ctx(), dict(_REGISTER_REQUEST, role="RoleB", registration_id="reg-1"),
+    ))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["register", "unregister"]  # the withdrawal succeeded
+    assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+
+
+@pytest.mark.asyncio
+async def test_rejected_register_after_the_plugin_stops_is_withdrawn(monkeypatch, registry):
+    """main_server records the tool before syncing roles, so ``ok: false``
+    (every role's sync failed) may still leave it stored."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    class _RejectsAfterStoring(_HeldMainServer):
+        async def post(self, url, json=None, **kw):
+            if url.endswith("/register"):
+                self.posts.append(("register", json))
+                self.arrived["register"].set()
+                await self.release.wait()
+                return _FakeResp({"ok": False, "registration_id": json["registration_id"], "affected_roles": [],
+                                  "failed_roles": [{"role": "Lanlan", "error": "sync failed"}]})
+            return await super().post(url, json=json, **kw)
+
+    server = _use_main_server(monkeypatch, registry, _RejectsAfterStoring())
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    result = await asyncio.wait_for(task, timeout=2.0)
+
+    assert result["ok"] is False and result["error"] == "rejected"
+    assert server.ops() == ["register", "clear", "unregister"]
+    assert server.posts[2][1]["expected_registration_id"] == "reg-1"
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")

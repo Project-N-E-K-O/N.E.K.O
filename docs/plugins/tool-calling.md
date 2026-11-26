@@ -566,8 +566,9 @@ returns what `main_server` answered:
 
 `error` codes: `rejected` (register: no role accepted, e.g. the name is
 owned by another source), `plugin_stopped` (register: the plugin was
-stopped while the register was in flight; whatever `main_server` stored
-was withdrawn by its registration id), `partial_failure` (unregister: some roles
+stopped while the register was in flight; whatever `main_server` may have
+stored is withdrawn by its registration id on a best-effort basis, and if
+that fails it may remain until the plugin's next cleanup), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (the request could not reach
 `main_server`; nothing was applied), `main_server_error`
 (HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none

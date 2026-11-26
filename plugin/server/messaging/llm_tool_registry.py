@@ -424,8 +424,10 @@ async def register_remote_tool(
 
     * The plugin was stopped (``clear_plugin_tools`` ran) after this call
       started: nothing is sent if the stop came first; otherwise the
-      registration main_server stored is removed again by its id, nothing
-      is tracked, and ``RemoteToolError(code="plugin_stopped")`` is raised.
+      registration main_server may have stored is withdrawn by its id
+      (best effort: if that fails it stays until the plugin's next
+      cleanup), nothing is tracked, and
+      ``RemoteToolError(code="plugin_stopped")`` is raised.
     * The call is cancelled after the request was sent: main_server may
       still store the tool, so the registration is removed by its id before
       the cancellation propagates. If that removal fails while the plugin
@@ -511,10 +513,13 @@ async def _register_remote_tool_locked(
         ))
         raise
     except (httpx.HTTPError, RemoteToolError) as exc:
-        # Unknown outcome (answer lost or unreadable) after the plugin was
-        # stopped: main_server may hold the tool and nothing will clear it.
-        # A definite failure stored nothing, so it needs no removal.
-        unknown = not isinstance(exc, RemoteToolError) or exc.code == "timeout"
+        # After the plugin was stopped, any answer that may leave the tool on
+        # main_server needs the removal, since nothing else will clear it:
+        # an unknown outcome (answer lost or unreadable), or ``rejected``
+        # (main_server records the tool before syncing roles, so ``ok:
+        # false`` after every role's sync failed still leaves it stored).
+        # Other failures stored nothing; a removal by id is harmless anyway.
+        unknown = not isinstance(exc, RemoteToolError) or exc.code in {"timeout", "rejected"}
         if unknown and stopped():
             _, interrupted = await _finish_despite_cancellation(_remove_registration(
                 plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
@@ -526,15 +531,18 @@ async def _register_remote_tool_locked(
 
     if plugin_stopped:
         stored_id = body.get("registration_id") or registration_id
-        _, interrupted = await _finish_despite_cancellation(_remove_registration(
+        task, interrupted = await _finish_despite_cancellation(_remove_registration(
             plugin_id=plugin_id, name=name, role=role, registration_id=stored_id,
             why="register completed after plugin stop",
         ))
         if interrupted:
             raise asyncio.CancelledError()
+        outcome = (
+            "the registration was withdrawn" if task.result()
+            else "withdrawing the registration failed; it may remain until the plugin's next cleanup"
+        )
         raise RemoteToolError(
-            f"plugin '{plugin_id}' was stopped while '{name}' was being registered; "
-            "the registration was withdrawn",
+            f"plugin '{plugin_id}' was stopped while '{name}' was being registered; {outcome}",
             code="plugin_stopped",
             body=body,
         )
@@ -626,6 +634,7 @@ async def _remove_registration(
             plugin_id=plugin_id, name=name, role=role,
             expected_registration_id=registration_id,
             request_timeout=_RECONCILE_TIMEOUT_SECONDS, reconcile_on_cancel=False,
+            drop_tracking_only_of=registration_id,
         )
     except Exception as exc:
         logger.warning(
@@ -715,7 +724,12 @@ async def _unregister_remote_tool_locked(
     expected_registration_id: Optional[str],
     request_timeout: Optional[float] = None,
     reconcile_on_cancel: bool = True,
+    drop_tracking_only_of: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """``drop_tracking_only_of``: drop host tracking only when it records
+    that registration id. Withdrawals of an interrupted register pass it:
+    the tracked entry may belong to an earlier registration of the name
+    (e.g. for another role) that main_server still holds."""
     payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
     if expected_registration_id is not None:
         # Remove only that registration; a newer one of the same name stays.
@@ -751,7 +765,7 @@ async def _unregister_remote_tool_locked(
             ))
         raise
     try:
-        return await _apply_unregister_answer(plugin_id, name, resp)
+        return await _apply_unregister_answer(plugin_id, name, resp, drop_tracking_only_of)
     except asyncio.CancelledError:
         # Only the wait for ``_lock`` can be interrupted here, after
         # main_server answered: reconcile the same way.
@@ -780,7 +794,9 @@ async def _retry_cancelled_unregister(
         )
 
 
-async def _apply_unregister_answer(plugin_id: str, name: str, resp: Any) -> Dict[str, Any]:
+async def _apply_unregister_answer(
+    plugin_id: str, name: str, resp: Any, drop_tracking_only_of: Optional[str] = None,
+) -> Dict[str, Any]:
     if resp.status_code >= 400:
         text = resp.text
         logger.warning(
@@ -835,7 +851,10 @@ async def _apply_unregister_answer(plugin_id: str, name: str, resp: Any) -> Dict
             isinstance(r, dict) and r.get("reason") == "different registration"
             for r in (refused_roles or [])
         )
-        if tracked is not None and not other_registration:
+        if (
+            tracked is not None and not other_registration
+            and (drop_tracking_only_of is None or tracked.get("registration_id") == drop_tracking_only_of)
+        ):
             # A refusal for "different registration" means main_server still
             # holds another registration of this plugin under the name (e.g.
             # a timed-out register that landed late): model calls still come

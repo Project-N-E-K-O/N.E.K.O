@@ -329,8 +329,10 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 no pooled connection), "main_server_error" (HTTP status >= 400),
 #                 "rejected" (register: no role accepted the tool),
 #                 "plugin_stopped" (register: the plugin was stopped while
-#                 the register was in flight; what main_server stored was
-#                 withdrawn by its registration id),
+#                 the register was in flight; what main_server may have
+#                 stored is withdrawn by its registration id on a best-effort
+#                 basis: if that fails it may remain until the plugin's next
+#                 cleanup),
 #                 "partial_failure" (unregister: some roles failed).
 #   both       -- "timeout" (no usable answer: none from the host within
 #                 ``request_timeout``, or none from main_server after the
