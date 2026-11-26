@@ -214,6 +214,7 @@
                                 </label>
                             </div>
                         </div>
+                        <p id="subscription-summary" class="subscription-summary" role="status" hidden></p>
                         <div class="field-row">
                             <label for="assistApiKeyInput">
                                 <span data-i18n="api.assistApiKeyLabel">通用模型 API Key</span>
@@ -234,25 +235,30 @@
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
-                        <!-- 百炼业务空间 ID：决策模型用 qwen / qwen_intl 时显示（见 updateBailianWorkspaceControls） -->
+                        <!-- 百炼 API Host（业务空间专属域名）：决策模型用 qwen / qwen_intl 时显示（见 updateBailianWorkspaceControls） -->
                         <div id="bailianWorkspaceRow" class="field-row" style="display: none;">
                             <label for="bailianWorkspaceIdInput">
-                                <span data-i18n="api.bailianWorkspaceIdLabel">百炼业务空间 ID（决策模型）</span>
+                                <span data-i18n="api.bailianWorkspaceIdLabel">百炼 API Host（决策模型）</span>
                             </label>
                             <input type="text" id="bailianWorkspaceIdInput"
                                 data-i18n-placeholder="api.bailianWorkspaceIdPlaceholder"
-                                placeholder="例如 llm-xxxxxxxx" value="" maxlength="200"
+                                placeholder="例如 ws-xxxxxxxxxxxxxxxx.cn-beijing.maas.aliyuncs.com" value="" maxlength="512"
                                 autocomplete="off" spellcheck="false"
-                                aria-describedby="bailianWorkspaceIdHint bailianWorkspaceIdError"
+                                aria-describedby="bailianWorkspaceIdHint bailianWorkspaceIdError bailianWorkspaceRegionNote"
                                 style="max-width: 600px; width: 100%;">
                             <em id="bailianWorkspaceIdHint" style="font-weight: normal; color: #888; font-size: 0.85em;">
-                                <span data-i18n="api.bailianWorkspaceIdHint">没填时，决策模型用普通聊天模型代替。业务空间 ID 就是 API Host 最前面那一段（如 llm-xxx），可在百炼控制台「业务空间管理」页或创建 API Key 的弹窗里找到，也可以直接粘贴整个 API Host。</span>
+                                <span data-i18n="api.bailianWorkspaceIdHint">没填时，决策模型用普通聊天模型代替。打开百炼控制台的「业务空间管理」页，复制「API Host」那一列（形如 ws-xxxx.cn-beijing.maas.aliyuncs.com）粘贴到这里；创建 API Key 的弹窗里也有。只填前面的业务空间 ID 也行，地域按 API Key 所在地域。</span>
+                                <a id="bailianWorkspaceConsoleLink" href="https://bailian.console.aliyun.com/cn-beijing/settings/workspace"
+                                    target="_blank" rel="noopener noreferrer"
+                                    data-i18n="api.bailianWorkspaceConsoleLink">打开业务空间管理页</a>
                                 <a id="bailianWorkspaceIdDocLink" href="https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain"
                                     target="_blank" rel="noopener noreferrer"
                                     data-i18n="api.bailianWorkspaceIdDocLink">查看官方说明</a>
                             </em>
                             <em id="bailianWorkspaceIdError" role="alert" data-i18n="api.bailianWorkspaceIdInvalid"
-                                style="display: none; font-weight: normal; color: #c0392b; font-size: 0.85em;">百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符</em>
+                                style="display: none; font-weight: normal; color: #c0392b; font-size: 0.85em;">百炼 API Host 格式不对：请粘贴控制台里的 API Host（如 ws-xxxx.cn-beijing.maas.aliyuncs.com），或只填业务空间 ID</em>
+                            <em id="bailianWorkspaceRegionNote" role="status"
+                                style="display: none; font-weight: normal; color: #b9770e; font-size: 0.85em;"></em>
                         </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">
@@ -280,26 +286,34 @@
                         </div>
                     </div>
 
-                    <section id="chatgpt-settings" class="section" aria-labelledby="chatgpt-toggle-btn">
-                        <button type="button" id="chatgpt-toggle-btn" aria-expanded="false" aria-controls="chatgpt-options">
+                    <section id="subscriptions-settings" class="section" aria-labelledby="subscriptions-toggle-btn">
+                        <button type="button" id="subscriptions-toggle-btn" aria-expanded="false" aria-controls="subscriptions-options">
                             <img src="/static/icons/dropdown_arrow.png" alt="" class="dropdown-icon">
-                            <span data-i18n="api.chatgpt.title">ChatGPT 订阅</span>
+                            <span data-i18n="api.subscriptions.title">订阅与套餐</span>
                         </button>
-                        <div id="chatgpt-options" hidden>
-                            <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
-                            <div class="field-row">
-                                <label for="chatgpt-account" data-i18n="api.chatgpt.account">ChatGPT 账号</label>
-                                <select id="chatgpt-account"></select>
+                        <div id="subscriptions-options" hidden>
+                            <p data-i18n="api.subscriptions.description">登录或填好一个订阅后，勾选要交给它的功能并打开开关，这些功能就改用订阅额度；关掉就回到原来的设置。原来的设置不会被改动。「按功能单独指定模型」里单独指定好的功能优先于订阅。</p>
+                            <p id="subscriptions-load-error" class="subscription-message" role="status" hidden></p>
+                            <div id="subscription-cards">
+                                <div id="chatgpt-settings" class="subscription-card" data-plan="chatgpt">
+                                    <div class="subscription-card-header" data-role="header"></div>
+                                    <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
+                                    <div class="field-row">
+                                        <label for="chatgpt-account" data-i18n="api.chatgpt.account">ChatGPT 账号</label>
+                                        <select id="chatgpt-account"></select>
+                                    </div>
+                                    <div class="chatgpt-actions">
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-login" data-oai-siwc-button data-i18n="api.chatgpt.login">Continue with ChatGPT</button>
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-add" data-i18n="api.chatgpt.add">添加账号</button>
+                                        <button type="button" class="gsv-tutorial-link" id="chatgpt-logout" data-i18n="api.chatgpt.logout">退出所选账号</button>
+                                    </div>
+                                    <p id="chatgpt-status" role="status" aria-live="polite"></p>
+                                    <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
+                                    <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">登录后，在下面勾选要交给 ChatGPT 的功能、选好模型，再打开「使用这个订阅」。核心 API、TTS 和 ASR 不受影响。</p>
+                                    <div class="subscription-card-body" data-role="body"></div>
+                                    <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
+                                </div>
                             </div>
-                            <div class="chatgpt-actions">
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-login" data-oai-siwc-button data-i18n="api.chatgpt.login">Continue with ChatGPT</button>
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-add" data-i18n="api.chatgpt.add">添加账号</button>
-                                <button type="button" class="gsv-tutorial-link" id="chatgpt-logout" data-i18n="api.chatgpt.logout">退出所选账号</button>
-                            </div>
-                            <p id="chatgpt-status" role="status" aria-live="polite"></p>
-                            <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
-                            <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">登录后，在下方开启「按功能单独指定模型」，把需要的档位服务商选为「ChatGPT (subscription)」并选好模型，再保存。核心 API、TTS 和 ASR 不受影响。</p>
-                            <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
                         </div>
                     </section>
 
@@ -1029,7 +1043,7 @@
 
     <!-- Independent revision forces existing clients off the previously cached
          API-key settings script after a settings-display behavior change. -->
-    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v9"></script>
+    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v10"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
@@ -1097,6 +1111,7 @@
         });
     </script>
     <script src="/static/js/chatgpt_settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/subscription_settings.js?v={{ static_asset_version }}"></script>
 </body>
 
 </html>

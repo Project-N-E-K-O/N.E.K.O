@@ -96,8 +96,13 @@ describe('a familiar on the board', () => {
     ['asleep', null, 'asleep', words.home.states.asleep],
     ['asleep', 'resting', 'resting', words.home.states.resting],
     ['asleep', 'queued', 'queued', words.home.states.queued],
+    // Of one in a git worktree of its own: what it changed is merged, clashed, or waits for the user.
+    ['landing', null, 'landing', words.home.states.landing],
+    ['resolving', null, 'resolving', words.home.states.resolving],
+    ['held', null, 'held', words.home.states.held],
+    ['unlanded', null, 'unlanded', words.home.states.unlanded],
     // One the page has no words for yet is shown as it came, and breaks nothing.
-    ['landing', null, 'asleep', 'landing'],
+    ['brand_new', null, 'asleep', 'brand_new'],
   ])('in state %s with %s in hand is drawn as %s', async (state, status, look, label) => {
     const commission = status ? { id: 'c', title: 't', status, started_at: 0 } : null
     const page = await mount(FamiliarCard, { card: card({ state, commission }) })

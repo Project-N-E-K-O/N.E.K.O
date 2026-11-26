@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import multiprocessing
+import pickle
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -1053,6 +1055,60 @@ async def test_unpicklable_factory_fails_open_without_process_leak() -> None:
     assert metrics["host_start_task_count"] == 0
     assert metrics["backend_process_count"] == 0
     await runtime.close()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="only Windows spawn starts the child before pickling its payload",
+)
+def test_failed_spawn_payload_reaps_the_half_started_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The orphan of a failed spawn duplicates its bootstrap pipe handle by
+    # value once it boots. If it is still alive when the parent releases that
+    # handle, it reads whichever pipe recycled the value -- in CI, the next
+    # host's bootstrap -- and that healthy host dies with UnpicklingError.
+    import _winapi
+    from multiprocessing import popen_spawn_win32
+
+    process_terminate = 0x0001
+    spawned: list[int] = []
+    create_process = _winapi.CreateProcess
+
+    def recording_create_process(*args: Any) -> Any:
+        result = create_process(*args)
+        spawned.append(
+            _winapi.OpenProcess(
+                _winapi.SYNCHRONIZE | process_terminate,
+                False,
+                result[2],
+            )
+        )
+        return result
+
+    monkeypatch.setattr(
+        popen_spawn_win32._winapi,
+        "CreateProcess",
+        recording_create_process,
+    )
+
+    with pytest.raises((pickle.PicklingError, AttributeError)):
+        _BackendProcessHost.create_started(
+            factory=lambda: _BackendFactory()(),
+            terminate_timeout_seconds=0.5,
+        )
+
+    assert len(spawned) == 1
+    try:
+        assert (
+            _winapi.WaitForSingleObject(spawned[0], 0) == _winapi.WAIT_OBJECT_0
+        )
+    finally:
+        try:
+            _winapi.TerminateProcess(spawned[0], 1)
+        except OSError:
+            pass  # already gone, which is the expected outcome
+        _winapi.CloseHandle(spawned[0])
 
 
 @pytest.mark.parametrize("blocked_stage", ["load", "score"])

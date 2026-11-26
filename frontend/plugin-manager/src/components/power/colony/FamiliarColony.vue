@@ -7,11 +7,17 @@
     </div>
 
     <!-- Whoever waits for the user is said first, and answered from here. -->
-    <ul v-if="position === null && waiting.length" class="waiting" data-testid="colony-waiting">
+    <ul v-if="position === null && (waiting.length || besides.length)" class="waiting" data-testid="colony-waiting">
       <li v-for="card in waiting" :key="card.id" :data-waiting="card.id">
         <span class="who">{{ nameOfCard(card) }}</span>
         <span class="what">{{ card.commission?.ask ? askSummary(card.commission.ask, t, te) : card.commission?.title }}</span>
         <el-button type="primary" size="small" @click="asking = card.id">{{ t('power.colony.answer') }}</el-button>
+      </li>
+      <!-- Whether another is to do what waits for a busy one: at no familiar yet, said by the busy one. -->
+      <li v-for="item in besides" :key="item.id" :data-beside="item.id">
+        <span class="who">{{ t('power.colony.besideWho', { name: nameOf(item.beside) }) }}</span>
+        <span class="what">{{ askSummary(item.ask, t, te) }}</span>
+        <el-button type="primary" size="small" @click="asking = BESIDE_KEY + item.id">{{ t('power.colony.answer') }}</el-button>
       </li>
     </ul>
 
@@ -57,12 +63,12 @@
         >
         <span class="muted moment" data-testid="replay-moment">{{ momentLabel }}</span>
         <el-button v-if="position !== null" size="small" data-testid="replay-now" @click="toNow">{{ t('power.colony.now') }}</el-button>
-        <el-button v-else-if="!whole && !dropped && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
+        <el-button v-else-if="!whole && !dropped && wholeFits && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
           {{ t('power.colony.fromBeginning') }}
         </el-button>
       </div>
       <!-- More happened than is held: reading from the beginning would end with the same latest ones, so it is said and not offered. -->
-      <p v-if="dropped" class="muted" data-testid="timeline-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
+      <p v-if="dropped || !wholeFits" class="muted" data-testid="timeline-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
       <p v-if="gone && position !== null" class="muted" role="status" data-testid="replay-gone">{{ t('power.colony.momentGone') }}</p>
 
       <h2 class="feed-title">{{ t('power.activity.title') }}</h2>
@@ -72,7 +78,7 @@
     <!-- Loaded when first needed: what a dialog is drawn with is not part of the first page. -->
     <ColonyDialogs
       v-if="dialogs"
-      :asking="askingCard" :asking-name="askingCard ? nameOfCard(askingCard) : ''" :parting="parting" :busy="busy" :error="actionError"
+      :asking="asked" :parting="parting" :busy="busy" :error="actionError"
       @answer="answer" @part="part" @close-ask="asking = ''" @close-part="parting = ''"
     />
   </section>
@@ -83,13 +89,14 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch 
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { answerCommission, archiveProject, getWaits } from '@/api/console'
-import type { BoardCard } from '@/api/console'
+import type { BoardAsk, BoardCard } from '@/api/console'
 import { askSummary } from '../ask'
 import { describeConsoleError, familiarLook, familiarName } from '../powerFormat'
 import ActivityFeed from './ActivityFeed.vue'
 import { SAID_SECONDS, clockTime, firstSeen, ghostsOf, sceneAt } from './activity'
 import ColonyTerritory from './ColonyTerritory.vue'
 import type { ColonyMember, Territory } from './ColonyTerritory.vue'
+import { BESIDE_KEY, useBesideAsks } from './useBesideAsks'
 import { useBoard } from './useBoard'
 import { KEPT_ENTRIES, useTimeline } from './useTimeline'
 
@@ -104,8 +111,9 @@ const { t, te } = useI18n()
 const router = useRouter()
 const describe = (failure: unknown) => describeConsoleError(failure, t, te)
 const { board, loaded, error, load } = useBoard(() => t('power.home.unavailable'), describe)
+const { asks: besides, load: loadBesides } = useBesideAsks(board)
 const {
-  entries, loading: timelineLoading, error: timelineError, whole, dropped, fromBeginning,
+  entries, loading: timelineLoading, error: timelineError, whole, dropped, base, wholeFits, fromBeginning,
 } = useTimeline(() => null, describe)
 
 // The entry what happened is replayed up to; null: as things stand now.
@@ -133,7 +141,8 @@ const byId = computed(() => new Map(cards.value.map(card => [card.id, card])))
 const ghosts = computed(() => ghostsOf(entries.value, new Set(byId.value.keys())))
 const ghostById = computed(() => new Map(ghosts.value.map(ghost => [ghost.id, ghost])))
 const seen = computed(() => firstSeen(entries.value, whole.value))
-const scene = computed(() => sceneAt(entries.value, position.value ?? entries.value.length - 1))
+// From how they stood where the entries begin; once the first of those were let go, that is not where they begin.
+const scene = computed(() => sceneAt(entries.value, position.value ?? entries.value.length - 1, dropped.value ? [] : base.value))
 
 const nameOfCard = (card: BoardCard) => familiarName(card, t, te)
 function nameOf(sessionId: string | null | undefined): string {
@@ -145,7 +154,7 @@ function nameOf(sessionId: string | null | undefined): string {
 
 function member(card: BoardCard): ColonyMember {
   const at = scene.value.get(card.id)
-  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent }
+  const base = { id: card.id, name: nameOfCard(card), avatar: card.avatar, leader: card.leader, parent: card.parent, team: card.team ?? null }
   if (position.value === null) {
     // As it stands now; what it said lately stays above it for a while.
     const fresh = at && clock.value - at.saidAt <= SAID_SECONDS ? at.said : ''
@@ -165,7 +174,18 @@ const lands = computed<Territory[]>(() => {
     .filter(project => !project.archived && project.members.length)
     .map(project => ({ key: `project:${project.name}`, name: project.name, loose: false, members: project.members.map(member) }))
   if (now.loose?.length) made.push({ key: 'loose', name: t('power.home.loose'), loose: true, members: now.loose.map(member) })
-  if (position.value === null) return made
+  if (position.value === null) {
+    // The one that would be opened for what waits for a busy one: drawn beside that one, not there yet.
+    for (const item of besides.value) {
+      const land = made.find(each => each.key === `project:${item.project}`)
+      if (!land) continue
+      land.members.push({
+        id: BESIDE_KEY + item.id, name: item.member || t('power.home.states.unborn'), avatar: 'general', leader: false,
+        parent: land.members.some(each => each.id === item.beside) ? item.beside : null, look: 'unborn', said: '', hidden: false,
+      })
+    }
+    return made
+  }
   // While what happened is replayed, those who took part and are gone since stand where they did.
   for (const ghost of ghosts.value) {
     const at = scene.value.get(ghost.id)
@@ -185,10 +205,17 @@ const lands = computed<Territory[]>(() => {
 })
 const tally = computed(() => ({
   working: cards.value.filter(card => card.state === 'working').length,
-  waiting: cards.value.filter(card => card.state === 'waiting_user').length,
+  waiting: cards.value.filter(card => card.state === 'waiting_user').length + besides.value.length,
 }))
 const waiting = computed(() => cards.value.filter(card => card.state === 'waiting_user' && card.commission))
-const askingCard = computed(() => waiting.value.find(card => card.id === asking.value) ?? null)
+/** What the user is answering: of a familiar that waits, or whether another is to be opened. Gone once it is not asked any more. */
+const asked = computed<{ name: string; title: string; ask: BoardAsk | null; commission: string } | null>(() => {
+  const card = waiting.value.find(each => each.id === asking.value)
+  if (card?.commission) return { name: nameOfCard(card), title: card.commission.title, ask: card.commission.ask ?? null, commission: card.commission.id }
+  const item = besides.value.find(each => BESIDE_KEY + each.id === asking.value)
+  // What came is among what the question says: not said above it once more.
+  return item ? { name: t('power.colony.besideTitle'), title: '', ask: item.ask, commission: item.id } : null
+})
 // The moment shown is an entry, kept by where it is among those held: when the oldest are let go to
 // make room for new ones, it is that many places further to the front.
 // Whether the moment that was shown went with them: said until another moment is asked for, since
@@ -217,6 +244,11 @@ const momentLabel = computed(() => {
 })
 
 function open(land: Territory, id: string) {
+  // The one that would be opened is no familiar yet: what is asked of it is answered.
+  if (id.startsWith(BESIDE_KEY)) {
+    asking.value = id
+    return
+  }
   void router.push({ path: '/familiars/space', query: { project: land.loose ? undefined : land.name, familiar: id } })
 }
 
@@ -269,19 +301,18 @@ function togglePlay() {
 }
 
 async function answer(given: { text?: string; choice?: string }) {
-  const card = askingCard.value
-  const commission = card?.commission
-  if (!commission || (!given.choice && !given.text?.trim())) return
+  const now = asked.value
+  if (!now || (!given.choice && !given.text?.trim())) return
   busy.value = given.choice ? `choice:${given.choice}` : 'answer'
   actionError.value = ''
   try {
-    await answerCommission(commission.id, { ...given, text: given.text?.trim(), question_id: commission.ask?.id })
+    await answerCommission(now.commission, { ...given, text: given.text?.trim(), question_id: now.ask?.id })
     asking.value = ''
   } catch (failure) {
     actionError.value = describe(failure)
   }
   busy.value = ''
-  await load()
+  await Promise.all([load(), loadBesides()])
 }
 
 /** Put the project away into the archive: its familiars leave the colony with it. */

@@ -8,7 +8,7 @@
 
     <div class="layout">
       <nav v-loading="loading" class="scopes" :aria-label="t('power.space.title')">
-        <button class="scope" :class="{ on: !selected }" data-scope="" @click="choose(null)">
+        <button class="scope" :class="{ on: !selected && !archivedHome }" data-scope="" @click="choose(null)">
           <span class="name">{{ t('power.space.global') }}</span>
           <small>{{ t('power.space.globalHint') }}</small>
         </button>
@@ -83,6 +83,14 @@
             >{{ t('power.space.workdirSave') }}</el-button>
           </template>
         </el-dialog>
+
+        <!-- A familiar of a project that was put away since: it is said whose it is, and that project is a click away. -->
+        <div v-if="archivedHome" class="archived-home" role="note" data-testid="familiar-archived">
+          <span>{{ t('power.space.archivedFamiliar', { project: archivedHome.name, year: archivedHome.archive_year }) }}</span>
+          <el-button size="small" link type="primary" data-testid="familiar-archived-open" @click="choose(archivedHome)">
+            {{ t('power.space.archivedOpen') }}
+          </el-button>
+        </div>
 
         <el-tabs v-model="tab">
           <el-tab-pane v-if="!isArchived" :label="t('power.space.familiars.tab')" name="familiars" lazy>
@@ -165,6 +173,17 @@ const scope = computed<SpaceScope>(() => {
   return project.archive_year
     ? { project: project.directory || project.name, archive_year: project.archive_year }
     : { project: project.name }
+})
+/**
+ * The project, put away into the archive since, that the familiar the address names belongs to: the
+ * address names it as it was named while it was at work (a link from a commission), and no project
+ * at work has that name now. The latest of that name, where it was put away more than once.
+ */
+const archivedHome = computed<SpaceProject | null>(() => {
+  const name = typeof route.query.project === 'string' ? route.query.project : ''
+  if (!name || selected.value || !familiarId.value || !projectsRead.value || typeof route.query.year === 'string') return null
+  const found = archived.value.filter(project => project.name === name)
+  return found.sort((one, other) => (other.archived_at ?? 0) - (one.archived_at ?? 0))[0] ?? null
 })
 /** The familiar the address names (`?familiar=`, a session's id), shown up close among the familiars. */
 const familiarId = computed(() => (typeof route.query.familiar === 'string' ? route.query.familiar : ''))
@@ -271,6 +290,7 @@ h1 { margin: 0 0 8px; font-size: 26px; }
 .project dd { margin: 0; overflow-wrap: anywhere; }
 .muted { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; margin: 0; }
 .pad { padding: 4px 10px 8px; }
+.archived-home { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; font-size: 13px; border-radius: 8px; background: var(--el-fill-color-light); }
 .block { margin-bottom: 12px; }
 @media (max-width: 860px) {
   .layout { flex-direction: column; }

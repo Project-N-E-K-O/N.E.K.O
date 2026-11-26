@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function surface(initial, respond = () => ({}), browser = false) {
-    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization', 'toggle-btn', 'options'].map(id => [id, {
+    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization'].map(id => [id, {
         value: '', options: [], disabled: false, textContent: '', listeners: {},
         hidden: true, checked: false, style: {display: 'none'}, classList: {toggle() {}},
         setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; },
@@ -57,7 +57,7 @@ function surface(initial, respond = () => ({}), browser = false) {
         }
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../static/js/chatgpt_settings.js'), 'utf8'), context);
-    return {nodes, calls, window, setState: value => { state = value; },
+    return {nodes, calls, window, context, setState: value => { state = value; },
         get activeElement() { return context.document.activeElement; },
         get connectivityInvalidations() { return connectivityInvalidations; },
         get opened() { return opened; }, get timer() { return timer; },
@@ -314,15 +314,24 @@ test('account invalidation clears only subscription lights and rejects even succ
 });
 
 
-test('disclosure starts collapsed and exposes its expanded state', async () => {
-    const ui = surface(signedIn);
+test('account changes tell the subscriptions panel to reload', async () => {
+    const ui = surface({...signedIn, accounts: [...signedIn.accounts, {id: 'other-87654321', email: 'b@example.test'}]},
+        () => ({success: true}));
+    const events = [];
+    ui.window.dispatchEvent = event => events.push(event.type);
+    ui.context.CustomEvent = function CustomEvent(type) { this.type = type; };
     await flush();
-    assert.equal(ui.nodes.options.hidden, true);
-    ui.nodes['toggle-btn'].listeners.click();
-    assert.equal(ui.nodes.options.hidden, false);
-    assert.equal(ui.nodes['toggle-btn']['aria-expanded'], 'true');
-    ui.nodes['toggle-btn'].listeners.click();
-    assert.equal(ui.nodes.options.hidden, true);
+    ui.nodes.account.value = 'other-87654321';
+    await ui.nodes.account.listeners.change();
+    assert.ok(events.includes('neko:chatgpt-account-changed'));
+});
+
+test('signing out the last account says the ChatGPT subscription was turned off', async () => {
+    const ui = surface(signedIn, url => (url.endsWith('/logout')
+        ? {success: true, revocation_confirmed: true, subscription_turned_off: true} : {success: true}));
+    await flush();
+    await ui.nodes.logout.listeners.click();
+    assert.match(ui.nodes.status.textContent, /subscription is off/);
 });
 
 test('switching accounts invalidates connectivity again after the switch, even if the refresh fails', async () => {
@@ -362,7 +371,7 @@ test('account panel reuses page styles and has no subscription switch', () => {
     const root = path.join(__dirname, '../..');
     const html = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
     const css = fs.readFileSync(path.join(root, 'static/css/api_key_settings.css'), 'utf8');
-    assert.match(html, /id="chatgpt-settings" class="section"/);
+    assert.match(html, /id="chatgpt-settings" class="subscription-card" data-plan="chatgpt"/);
     assert.match(html, /class="gsv-tutorial-link" href="https:\/\/chatgpt.com\/settings\/usage"/);
     assert.doesNotMatch(html, /chatgpt-enabled|chatgpt-confirm-modal|chatgpt-independent-settings-note/);
     assert.doesNotMatch(css, /#chatgpt-settings\s*\{[^}]*margin-bottom:/);

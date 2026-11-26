@@ -343,13 +343,10 @@ def _resolve_memory_cfg(session: Session) -> ModelGroupConfig:
         raise MemoryOpError(exc.code, exc.message, status=412) from exc
 
 
-def _llm_for_memory(session: Session, *, temperature: float):
+def _llm_for_memory(session: Session):
     """Instantiate a ChatOpenAI bound to the ``memory`` group config."""
     cfg = _resolve_memory_cfg(session)
-    return create_chat_llm(
-        cfg.model, cfg.base_url, cfg.api_key,
-        temperature=temperature,
-    )
+    return create_chat_llm(cfg.model, cfg.base_url, cfg.api_key)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -507,7 +504,7 @@ async def _preview_recent_compress(
             .replace("{MASTER_NAME}", master_name)
         )
 
-    llm = _llm_for_memory(session, temperature=0.3)
+    llm = _llm_for_memory(session)
     warnings: list[str] = []
     summary_text = ""
     _memory_wire = [{"role": ROLE_USER, "content": prompt}]
@@ -703,7 +700,7 @@ async def _preview_facts_extract(
     prompt = prompt.replace("{LANLAN_NAME}", character)
     prompt = prompt.replace("{MASTER_NAME}", master_display)
 
-    llm = _llm_for_memory(session, temperature=0.3)
+    llm = _llm_for_memory(session)
     warnings: list[str] = []
     _memory_wire = [{"role": ROLE_USER, "content": prompt}]
     try:
@@ -945,7 +942,7 @@ async def _preview_reflect(
     prompt = prompt.replace("{LANLAN_NAME}", character)
     prompt = prompt.replace("{MASTER_NAME}", master_display)
 
-    llm = _llm_for_memory(session, temperature=0.5)
+    llm = _llm_for_memory(session)
     warnings: list[str] = []
     _memory_wire = [{"role": ROLE_USER, "content": prompt}]
     try:
@@ -1239,7 +1236,7 @@ async def _preview_persona_resolve_corrections(
     )
     prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
 
-    llm = _llm_for_memory(session, temperature=0.3)
+    llm = _llm_for_memory(session)
     _memory_wire = [{"role": ROLE_USER, "content": prompt}]
     try:
         record_last_llm_wire(

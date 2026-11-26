@@ -78,9 +78,6 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any], *, for_task_a
             409, "model",
         )
     protocol = host_protocol(config)
-    # Temperature compatibility is judged on the effective request value in
-    # prepare_chat_request: an explicit valid override must not be rejected
-    # because of an unused (legacy) saved default.
     return slot.model_copy(update={
         "protocol": protocol,
         "base_url": base_url,
@@ -109,6 +106,9 @@ _PLUGIN_OWNED_FIELDS = frozenset({
     "tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
     "stream", "stream_options", "n",
 })
+# Never merged from provider settings either: plugin model requests carry no
+# temperature (scripts/check_no_temperature.py).
+_NEVER_MERGED_FIELDS = frozenset({"temperature"})
 
 
 def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -156,7 +156,7 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
         # built-in web_search would otherwise bypass the tool_calling
         # capability check done in prepare_chat_request. Explicit plugin
         # parameters (and validated core fields) win.
-        if key in _PLUGIN_OWNED_FIELDS:
+        if key in _PLUGIN_OWNED_FIELDS or key in _NEVER_MERGED_FIELDS:
             continue
         # Deliberately unlike forward.py's body.update(extra) (provider wins):
         # here the plugin's explicit request wins over provider defaults.

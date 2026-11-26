@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'vision', 'memory', 'recognition', 'omni', 'agentAdvanced', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition'];
+const MODEL_TYPES = ['conversation', 'vision', 'memory', 'recognition', 'omni', 'agentAdvanced', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition', 'decision'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -64,7 +64,7 @@ const ASSIST_PROVIDERS = {
         recognition_model: 'kimi-for-coding',
         agent_model: 'kimi-for-coding',
     },
-    mimo: { conversation_model: 'mimo-v2.5' },
+    mimo: { conversation_model: 'mimo-v2.6-flash' },
     openai: { conversation_model: 'gpt-5.6-luna' },
 };
 const CORE_PROVIDERS = {
@@ -178,6 +178,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
             gameMain: 'conversation_model',
             gameSummary: 'memory_model',
             recognition: 'recognition_model',
+            decision: 'decision_model',
             vision: 'vision_model',
             agent: 'agent_model',
             omni: 'core_model',
@@ -299,7 +300,7 @@ test('named and custom slots fall back the same way as the backend snapshot', ()
     assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'qwen3.8-flash');
 
     setSlot('agent', 'mimo');
-    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.5');
+    assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.6-flash');
 
     setSlot('conversation', 'custom');
     assert.equal(context.resolveSlotModelState('conversation').defaultModelId, 'google/gemini-2.5-flash');
@@ -585,6 +586,30 @@ test('model lists are normalized and cached only when the request succeeds', asy
     await context.fetchModelList({ ...body });
     assert.equal(calls, 1);
     assert.equal(state.fetchCalls[0].url, '/api/config/list_models');
+});
+
+test('the decision slot asks for decision models and keeps their tag', async () => {
+    const { context, state } = createPickerContext({
+        fetchImpl: async () => ({
+            ok: true,
+            json: async () => ({
+                success: true,
+                models: [{ id: 'baseten/joey-1', decision: true }, { id: 'openai/gpt-6-luna', decision: 'yes' }],
+            }),
+        }),
+    });
+    state.customKey = 'sk-typed';
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('decision')), {
+        body: { provider_key: 'openrouter', api_key: 'sk-typed', model_type: 'decision' },
+    });
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), {
+        body: { provider_key: 'openrouter', api_key: 'sk-typed' },
+    });
+    const result = await context.fetchModelList({ provider_key: 'openrouter', api_key: '', model_type: 'decision' });
+    assert.deepEqual(plain(result.models), [
+        { id: 'baseten/joey-1', name: '', decision: true },
+        { id: 'openai/gpt-6-luna', name: '' },
+    ]);
 });
 
 test('model list failures are mapped to error codes and not cached', async () => {

@@ -20,8 +20,13 @@ class ReplyTailClient:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and positive")
         from config import MAIN_SERVER_PORT
+        from utils.internal_http_client import internal_service_event_hooks
 
-        async with httpx.AsyncClient(trust_env=False, timeout=min(timeout, 30.0)) as client:
+        async with httpx.AsyncClient(
+            trust_env=False,
+            timeout=min(timeout, 30.0),
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             response = await client.post(
                 f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools/reply-tail/{operation}",
                 json={"plugin_id": str(self._host_ctx.plugin_id), **payload},

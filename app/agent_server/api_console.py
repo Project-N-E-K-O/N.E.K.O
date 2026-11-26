@@ -56,7 +56,13 @@ _SIZE_BUDGET_SECONDS = 1.5
 _SHOWN_CATEGORIES: tuple[str, ...] = (
     "workdir_files", "outside_read", "outside_write", "run_command",
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
+    # Another member for work that waits for a busy one: set here as well, or what was
+    # allowed for good from its question could not be taken back.
+    "open_beside",
 )
+# What may become of work that waits for a member busy with something else (``beside``
+# of the landing settings): the user is asked, another member is opened, it waits.
+_BESIDE_CHOICES: tuple[str, ...] = ("ask", "open", "queue")
 _UNSET = object()
 # No setting of a page is a number beyond this; the largest number a row of the ledger is counted by.
 _NUMBER_MAX = 10**15
@@ -64,6 +70,8 @@ _ROW_MAX = 2**63 - 1
 # The longest text a page may send for one field (rules, an entry): what
 # is kept is a file a person wrote, not a store of documents.
 _TEXT_LIMIT = 200_000
+# The longest words a page may look for in what was said.
+_QUERY_LIMIT = 500
 
 
 def _refuse(status: int, code: str, **more: Any) -> HTTPException:
@@ -807,6 +815,167 @@ def build_console_router(
             raise _refuse(409, "project_busy", reason=str(exc)) from None
         return {"success": True, "project": archived}
 
+    # -- more task agents for a project that is there --------------------------
+
+    async def whose(payload: dict[str, Any]) -> str:
+        """Return the character a task agent is for: the one the page names, else the one the user is with now."""
+        lanlan_name = payload.get("lanlan_name")
+        if isinstance(lanlan_name, str) and lanlan_name.strip():
+            return lanlan_name
+        return (await character() if character is not None else None) or ""
+
+    @router.post("/familiars/member")
+    async def add_member(payload: dict[str, Any]) -> dict[str, Any]:
+        """Add a task agent to a project that is there: a member that does work of it. Nothing is started.
+
+        Whether it works in the project's directory or in a git worktree of
+        its own is the host's to tell (``seat`` in the answer).
+        """
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        if project is None:
+            raise _refuse(400, "bad_name")
+        fields = {name: text_of(payload, name) or "" for name in ("preset", "title", "duty")}
+        host = await get_host()
+        try:
+            made = await host.open_member(
+                await whose(payload), project, preset=fields["preset"] or "general",
+                title=fields["title"], duty=fields["duty"],
+            )
+        except LookupError:
+            raise _refuse(404, "no_project") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code == "too_many_members":
+                # The project has as many members that take work as it may (``PROJECT_MEMBERS_MAX``).
+                raise _refuse(409, code) from None
+            raise _refuse(400, code if code in ("no_character", "bad_preset") else "bad_name") from None
+        return {"success": True, **made}
+
+    @router.post("/space/projects/leader")
+    async def give_leader(payload: dict[str, Any]) -> dict[str, Any]:
+        """Give a project a leader, which hands its work out to the others; ``made`` False when it had one."""
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        if project is None:
+            raise _refuse(400, "bad_name")
+        host = await get_host()
+        try:
+            made = await host.derive_leader(project, await whose(payload))
+        except LookupError:
+            raise _refuse(404, "no_project") from None
+        except ValueError as exc:
+            raise _refuse(400, "no_character" if str(exc) == "no_character" else "bad_name") from None
+        return {"success": True, **made}
+
+    # -- the git worktrees task agents work in, and landing what they changed --
+    #
+    # A worktree is named by its ``id``; see ``NekoPowerHost.worktrees``.
+
+    def tree_refused(exc: Exception) -> HTTPException:
+        if isinstance(exc, LookupError):
+            return _refuse(404, "no_worktree")
+        code = str(exc)
+        # ``at_work``: its commission is under way; ``busy``: another decision on it is carried
+        # out; ``gone``: its directory, or the repository of its project, is not there any more (it
+        # can be discarded); ``not_opened``: it is there and git could not open it just now (try
+        # again in a while); ``moved``: one the user sees to was made from where the project worked
+        # before (it moved, or was put away), and is not merged there.
+        return _refuse(409, code if code in ("at_work", "busy", "gone", "not_opened", "moved") else "worktree_refused")
+
+    @router.get("/worktrees")
+    async def list_worktrees(project: str | None = None) -> dict[str, Any]:
+        """Return the git worktrees task agents work in or left for the user, of one project or of all, the oldest first."""
+        project, _ = scope(project)
+        host = await get_host()
+        return {"success": True, "worktrees": await host.worktrees(project)}
+
+    @router.post("/worktrees/{tree_id}/land")
+    async def land_worktree(tree_id: str) -> dict[str, Any]:
+        """Merge what a worktree holds into its project's directory: once more, or for the first time where the user is asked first."""
+        host = await get_host()
+        try:
+            landed = await host.land_worktree(tree_id)
+        except (LookupError, ValueError) as exc:
+            raise tree_refused(exc) from None
+        return {"success": True, **landed}
+
+    @router.post("/worktrees/{tree_id}/discard")
+    async def discard_worktree(tree_id: str) -> dict[str, Any]:
+        """Remove a worktree with what it holds; ``removed`` False when its directory is removed when the host next starts."""
+        host = await get_host()
+        try:
+            removed = await host.discard_worktree(tree_id)
+        except (LookupError, ValueError) as exc:
+            raise tree_refused(exc) from None
+        return {"success": True, **removed}
+
+    @router.post("/worktrees/{tree_id}/keep")
+    async def keep_worktree(tree_id: str) -> dict[str, Any]:
+        """Leave a worktree to the user, who sees to it personally: nothing reminds of it any more."""
+        host = await get_host()
+        try:
+            kept = await host.keep_worktree(tree_id)
+        except (LookupError, ValueError) as exc:
+            raise tree_refused(exc) from None
+        return {"success": True, "worktree": kept}
+
+    @router.post("/worktrees/{tree_id}/open")
+    async def open_worktree(tree_id: str) -> dict[str, Any]:
+        """Show the project's directory within a worktree in the system's file manager. Only one the host keeps."""
+        host = await get_host()
+        found = next((tree for tree in await host.worktrees() if tree.get("id") == tree_id), None)
+        if found is None:
+            raise _refuse(404, "no_worktree")
+        path = Path(str(found.get("workdir") or found.get("path") or ""))
+        if not str(path) or not await asyncio.to_thread(path.is_dir):
+            raise _refuse(404, "place_missing")
+        opener = open_directory
+        if opener is None:
+            from utils.native_directory import open_directory as opener
+        try:
+            await asyncio.to_thread(opener, path)
+        except Exception as exc:  # noqa: BLE001 - NativeDirectoryError, with its own code
+            logger.warning("showing a worktree failed (exc_type=%s)", type(exc).__name__)
+            raise _refuse(500, "open_failed") from None
+        return {"success": True}
+
+    @router.get("/landing")
+    async def get_landing() -> dict[str, Any]:
+        """Return the landing settings: ``mode`` (``auto`` / ``ask``), ``inspect``, and ``beside`` where the host has it."""
+        host = await get_host()
+        return {"success": True, **(await host.landing_settings())}
+
+    @router.post("/landing")
+    async def set_landing(payload: dict[str, Any]) -> dict[str, Any]:
+        """Set what is given of ``mode``, ``inspect`` and ``beside``; returns the settings as they stand.
+
+        ``beside``: what becomes of work that waits for a member busy with
+        something else, in a project without a leader (``ask``, ``open``,
+        ``queue``; see ``NekoPowerHost.set_landing_settings``).
+        """
+        payload = payload or {}
+        # Only what is given is passed on: what is left out stays as it is.
+        given = {name: payload[name] for name in ("mode", "inspect", "beside") if name in payload}
+        if not given:
+            raise _refuse(400, "nothing_to_change")
+        if "mode" in given and given["mode"] not in ("auto", "ask"):
+            raise _refuse(400, "bad_mode")
+        if "inspect" in given and not isinstance(given["inspect"], bool):
+            raise _refuse(400, "bad_flag")
+        if "beside" in given and given["beside"] not in _BESIDE_CHOICES:
+            raise _refuse(400, "bad_beside")
+        host = await get_host()
+        try:
+            changed = await host.set_landing_settings(**given)
+        except ValueError as exc:
+            code = {"bad_inspect": "bad_flag", "bad_beside": "bad_beside"}.get(str(exc), "bad_mode")
+            raise _refuse(400, code) from None
+        except OSError:
+            # Its file could not be written: the settings are what they were.
+            raise _refuse(409, "landing_not_saved") from None
+        return {"success": True, **changed}
+
     # -- what happened among the task agents, and who waits for whom -------
 
     def whole_number(value: Any, code: str, *, least: int = 0) -> int | None:
@@ -903,6 +1072,25 @@ def build_console_router(
         if page is None:
             raise _refuse(404, "no_familiar")
         return {"success": True, **page}
+
+    @router.get("/familiars/{session_id}/transcript/search")
+    async def search_transcript(session_id: str, q: str | None = None) -> dict[str, Any]:
+        """Return where the words ``q`` occur in what was said in a task agent's session, the latest first.
+
+        Each hit is opened whole with ``transcript?at=``. A session dsh
+        holds, or one nothing was said in, answers ``readable`` false.
+        """
+        if not isinstance(q, str) or not q.split() or len(q) > _QUERY_LIMIT:
+            raise _refuse(400, "bad_query")
+        host = await get_host()
+        try:
+            found = await host.search_transcript(session_id, q)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(409 if code == "record_unreadable" else 400, code if code == "record_unreadable" else "bad_query") from None
+        if found is None:
+            raise _refuse(404, "no_familiar")
+        return {"success": True, **found}
 
     @router.get("/familiars/{session_id}/usage")
     async def get_session_usage(session_id: str) -> dict[str, Any]:

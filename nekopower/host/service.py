@@ -296,6 +296,11 @@ class NekoPowerHost:
         judge = getattr(decision, "side_question", None)
         if judge is not None:
             self.task_agents.set_side_question_judge(judge)
+        # Whether work told apart from what a busy member is at goes on with it all
+        # the same, before another member is opened for it: one request of the small model.
+        beside = getattr(decision, "goes_on_with", None)
+        if beside is not None:
+            self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
         belongs = getattr(decision, "belongs", None)
@@ -537,14 +542,17 @@ class NekoPowerHost:
         usage = await self.task_agents.usage_of(commission_id)
         if usage is None:
             return None
-        window = None
+        return {**usage, "window": await self._window_of(commission_id)}
+
+    async def _window_of(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what the model a commission's session is sent to is managed for; None where that cannot be told."""
         try:
             config = await self.task_agents.model_of_commission(commission_id)
             if config and config.get("model"):
-                window = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+                return await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
         except Exception:  # noqa: BLE001 - what was used is told all the same
             logger.warning("reading the window of the task agent model failed", exc_info=True)
-        return {**usage, "window": window}
+        return None
 
     async def fork_session(self, session_id: str, *, name: str | None = None, upto: str | None = None) -> Any:
         """Make a session from another by copying what was said in it; see ``TaskAgentManager.fork_session``."""
@@ -761,8 +769,8 @@ class NekoPowerHost:
         await self._shorten(page["entries"])
         return page
 
-    async def timeline_start(self) -> dict[str, str]:
-        """Return where to begin reading the timeline for what happened lately: ``{"after", "latest"}``.
+    async def timeline_start(self) -> dict[str, Any]:
+        """Return where to begin reading the timeline for what happened lately: ``{"after", "latest", "before", "scene"}``.
 
         The timeline is handed out forwards from a cursor, and a page that
         opens wants the last stretch of it, not all there ever was.
@@ -772,10 +780,17 @@ class NekoPowerHost:
         the beginning: there is nothing before it to leave out);
         ``latest`` stands at the end. Good for any filter: a cursor is a
         place in the two tables, whatever is then kept of what follows it.
+        ``before`` is how many entries come before ``after`` (as far as
+        ``CONSOLE_TIMELINE_BEFORE_COUNT_MAX``) and ``scene``
+        how the sessions stood there (``timeline.read_before``): a page that
+        replays what follows knows who was at work already, and whether
+        reading from the beginning would bring more than it keeps.
         """
         from config.nekopower_settings import (
             CONSOLE_TIMELINE_RECENT_EVENT_ROWS,
             CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS,
+            CONSOLE_TIMELINE_BEFORE_COUNT_MAX,
+            CONSOLE_TIMELINE_SCENE_MAX_ROWS,
         )
         from nekopower.host.timeline import cursor, parse_cursor
 
@@ -783,7 +798,11 @@ class NekoPowerHost:
         events, messages = parse_cursor(latest)
         events = max(0, events - CONSOLE_TIMELINE_RECENT_EVENT_ROWS)
         messages = max(0, messages - CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS)
-        return {"after": cursor(events, messages) if events or messages else "", "latest": latest}
+        after = cursor(events, messages) if events or messages else ""
+        before = await self.ledger.timeline_before(
+            after, limit=CONSOLE_TIMELINE_SCENE_MAX_ROWS, count_most=CONSOLE_TIMELINE_BEFORE_COUNT_MAX
+        )
+        return {"after": after, "latest": latest, **before}
 
     async def waits(self, project: str | None = None, lanlan_name: str | None = None) -> dict[str, Any]:
         """Return who waits for whom now: ``{"waits", "more"}``; see ``timeline.read_waits``.
@@ -894,6 +913,48 @@ class NekoPowerHost:
             return {"readable": False, "reason": "empty", "entries": [], "before": None}
         return {"readable": True, **page}
 
+    async def search_transcript(self, session_id: str, query: str) -> dict[str, Any] | None:
+        """Return where words occur in what was said in a session, for showing it to the user; None for an unknown session.
+
+        ``{"readable": True, "hits": [...], "total", "whole"}`` as
+        ``records.search_page`` says, the latest first; a hit is opened
+        with ``transcript(session_id, at=hit["at"])``. A session the
+        built-in runtime keeps no record of comes back as for
+        ``transcript``. The search the task agents have of each other's
+        records reads the same file. Raises ``ValueError`` with a code:
+        ``bad_query`` (no words to look for), ``record_unreadable``.
+        """
+        from config import nekopower_settings as settings
+        from nekopower.host import records
+        from nekopower.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
+
+        if not isinstance(query, str) or not query.split():
+            raise ValueError("bad_query")
+        kept = await self.ledger.get_session(session_id)
+        if kept is None:
+            return None
+
+        def place() -> tuple[Path, bool]:
+            session_dir = Path(self.task_agents.session_dir_of(kept))
+            return session_dir / TRANSCRIPT_NAME, (session_dir / DSH_SESSION_NAME).is_file()
+
+        path, in_dsh = await asyncio.to_thread(place)
+        try:
+            found = await asyncio.to_thread(
+                records.search_page,
+                path,
+                query,
+                hits=settings.CONSOLE_TRANSCRIPT_SEARCH_HITS,
+                excerpt_tokens=settings.CONSOLE_TRANSCRIPT_SEARCH_EXCERPT_TOKENS,
+                max_bytes=settings.CONSOLE_TRANSCRIPT_SEARCH_MAX_BYTES,
+            )
+        except records.RecordUnreadable:
+            raise ValueError("record_unreadable") from None
+        except records.RecordError:
+            # No record (nothing said yet, removed), or one dsh keeps where the host cannot read it.
+            return {"readable": False, "reason": "dsh" if in_dsh else "empty", "hits": [], "total": 0, "whole": True}
+        return {"readable": True, **found}
+
     async def session_usage(self, session_id: str) -> dict[str, Any] | None:
         """Return what a session used over all its commissions, and what the commission it has in hand may; None for an unknown one.
 
@@ -910,39 +971,26 @@ class NekoPowerHost:
         turn; the oldest of several. None for a session that has none in
         hand: one that is over is not held against a limit any more.
         """
-        from nekopower.host.ledger import UNDER_WAY_STATUSES
-
         self._first_use()
-        kept = await self.ledger.get_session(session_id)
-        if kept is None:
+        # What it has in hand and what that used, read at one moment: one that is done between
+        # two reads is not shown with what it used as it stood before.
+        found = await self.ledger.usage_in_hand(session_id)
+        if found is None:
             return None
-
-        def turn(item: Commission) -> int:
-            if item.status == "queued":
-                return 2
-            return 1 if item.resting else 0
-
-        under_way = await self.ledger.select(
-            session_id=session_id, statuses=tuple(UNDER_WAY_STATUSES), oldest_first=True
-        )
-        held = min(under_way, key=turn) if under_way else None
-        # The window is the model's: told by the latest commission where none is in hand.
-        latest = [held] if held is not None else await self.ledger.select(session_id=session_id, limit=1)
+        kept, held, latest, standing = found
         in_hand = None
-        window = None
-        if latest:
-            usage = await self.usage(latest[0].id)
-            if usage is not None:
-                window = usage.get("window")
-            if usage is not None and held is not None:
-                in_hand = {
-                    "id": held.id,
-                    "title": held.title,
-                    "status": "resting" if held.resting else held.status,
-                    "used": usage["used"],
-                    "limit": usage["limit"],
-                    "own": usage["commission"],
-                }
+        # The window is the model's: told by the latest commission where none is in hand.
+        window = await self._window_of(latest.id) if latest is not None else None
+        if held is not None:
+            usage = await self.task_agents.usage_view(held, standing, kept)
+            in_hand = {
+                "id": held.id,
+                "title": held.title,
+                "status": "resting" if held.resting else held.status,
+                "used": usage["used"],
+                "limit": usage["limit"],
+                "own": usage["commission"],
+            }
         return {
             "session": {
                 "requests": kept.requests,
@@ -1036,12 +1084,15 @@ class NekoPowerHost:
         over = [item for item in ordered if item.status not in UNDER_WAY_STATUSES]
         more = len(over) > rows or (looked_at_here and len(read) >= reach)
         left_out = {item.id for item in over[rows:]}
+        queued_most = settings.CONSOLE_COMMISSIONS_QUEUED_MAX
+        if queued_most is not None:
+            # Those waiting for their turn, the newest first, as many as may be listed.
+            queued = [item for item in ordered if item.status == "queued"]
+            more = more or len(queued) > queued_most
+            left_out |= {item.id for item in queued[max(0, queued_most) :]}
         listed = [item for item in ordered if item.id not in left_out]
 
-        sessions: dict[str, Any] = {}
-        for item in listed:
-            if item.session_id and item.session_id not in sessions:
-                sessions[item.session_id] = await self.ledger.get_session(item.session_id)
+        sessions = await self.ledger.get_sessions(item.session_id for item in listed if item.session_id)
 
         def session_of(item: Commission) -> dict[str, Any] | None:
             session = sessions.get(item.session_id or "")
@@ -1602,8 +1653,8 @@ class NekoPowerHost:
     async def landing_settings(self) -> dict[str, Any]:
         """Return what the user set about landing, with how many git worktrees a project may have.
 
-        ``{"mode": "auto" | "ask", "inspect": bool, "worktrees_per_project": int}``
-        (``landing_settings.py``). The last is no setting of the user's:
+        ``{"mode": "auto" | "ask", "inspect": bool, "beside": "ask" | "open" | "queue",
+        "worktrees_per_project": int}`` (``landing_settings.py``). The last is no setting of the user's:
         it is for a page to say when a project has as many as it may
         (those the user sees to personally count, ``worktrees()`` lists
         them), which is when its next task agent works in the project's
@@ -1613,19 +1664,26 @@ class NekoPowerHost:
 
         return {**await self.task_agents.landing.get(), "worktrees_per_project": WORKTREES_PER_PROJECT}
 
-    async def set_landing_settings(self, *, mode: Any = None, inspect: Any = None) -> dict[str, Any]:
+    async def set_landing_settings(
+        self, *, mode: Any = None, inspect: Any = None, beside: Any = None
+    ) -> dict[str, Any]:
         """Set what is given of the landing settings and return them as they stand.
 
         ``mode``: ``auto`` (what a task agent changed in its git
         worktree is merged into the project's directory when its
         commission is done) or ``ask`` (it waits there for the user to
         say so); ``inspect``: whether an inspector looks at what was
-        changed before every landing. Raises ``ValueError("bad_mode")``
-        or ``ValueError("bad_inspect")``.
+        changed before every landing; ``beside``: what becomes of work
+        that waits for a member busy with something else, in a project
+        without a leader: ``ask`` (the user is asked whether another
+        member is to do it in a git worktree of its own), ``open``
+        (another does, with nobody asked) or ``queue`` (it waits).
+        Raises ``ValueError("bad_mode")``, ``ValueError("bad_inspect")``
+        or ``ValueError("bad_beside")``.
         """
         from config.nekopower_settings import WORKTREES_PER_PROJECT
 
-        stands = await self.task_agents.landing.put(mode=mode, inspect=inspect)
+        stands = await self.task_agents.landing.put(mode=mode, inspect=inspect, beside=beside)
         return {**stands, "worktrees_per_project": WORKTREES_PER_PROJECT}
 
     async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:

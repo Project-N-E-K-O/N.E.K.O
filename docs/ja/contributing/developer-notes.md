@@ -51,7 +51,7 @@ Provider／backend／feature は構造的に対になっています。一つの
 - async handler でブロッキング処理を直接実行しません。
 - 起動時の同期 config write を async 経路でも使う場合は、対応する async `a*` interface を提供します。
 - main package の layering と `main_logic/core/` facade 契約は CI が検査します。
-- 制限対象の LLM 構築／呼び出しへ `temperature=` を渡さず、output、timeout、input の budget を監視します。
+- リポジトリ内のコードはモデルの `temperature` を設定しません。例外（リアルタイム音声セッションなど）は理由とともに `scripts/check_no_temperature.py` に列挙します（リポジトリ全体を CI が検査）。output、timeout、input の budget を監視します。
 
 ## メモリ
 

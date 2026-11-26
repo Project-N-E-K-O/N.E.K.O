@@ -1004,7 +1004,7 @@ async def build_cluster_labels(session, character: str) -> dict[str, Any]:
     llm_labels: dict[int, str] = {}
     method = "llm"
     try:
-        llm = _llm_for_memory(session, temperature=0.0)
+        llm = _llm_for_memory(session)
         raw = ""
         try:
             resp = await llm.ainvoke(prompt)

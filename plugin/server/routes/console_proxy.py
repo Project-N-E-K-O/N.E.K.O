@@ -51,8 +51,14 @@ def _agent_base() -> str:
 def _http() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
+        from utils.internal_http_client import internal_service_event_hooks
+
         # Loopback only: no proxy of the environment is to be asked.
-        _client = httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False)
+        _client = httpx.AsyncClient(
+            timeout=_TIMEOUT,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        )
     return _client
 
 

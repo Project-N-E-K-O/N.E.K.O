@@ -579,6 +579,31 @@
         I.dispatchHostEvent('import-image', {});
     }
 
+    // 语音消息：聊天窗等待这个 Promise；拒绝时 Error.name 为 AudioMessageRejected，
+    // message 为 'busy' 表示会话忙，其余视为一般失败（草稿保留，可用同一 requestId 重试）
+    I.handleComposerAudioMessage = function handleComposerAudioMessage(payload) {
+        var handler = I.state.onComposerAudioMessage;
+        if (typeof handler !== 'function') {
+            var unavailable = new Error('unavailable');
+            unavailable.name = 'AudioMessageRejected';
+            return Promise.reject(unavailable);
+        }
+        return Promise.resolve().then(function () {
+            return handler(payload);
+        });
+    };
+
+    I.handleAudioMessageActiveChange = function handleAudioMessageActiveChange(active, phase) {
+        I.state.audioMessageActive = active === true;
+        I.state.audioMessagePhase = typeof phase === 'string' ? phase : (active === true ? 'active' : 'idle');
+        if (!I.state.audioMessageActive && typeof I.state.deferredAudioMessageTarget === 'string') {
+            // 草稿刚结束：被推迟的收起马上生效，不留可以再点麦克风的空档
+            I.state.audioMessageTarget = I.state.deferredAudioMessageTarget;
+            I.state.deferredAudioMessageTarget = null;
+            I.renderWindow();
+        }
+    };
+
     I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {
@@ -1431,7 +1456,7 @@
             reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
         } catch (e) {}
         if (reduceMotion) {
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
             return;
         }
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
@@ -1458,7 +1483,7 @@
             // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
             // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
             if (I.getCurrentChatSurfaceMode() !== 'compact') return;
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
 

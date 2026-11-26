@@ -23,12 +23,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, TypeAlias
+
+import httpx
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
-from ._shared import MAX_SEGMENT_PCM_BYTES, encode_pcm16_wav, is_auth_rejection
+from ._shared import (
+    MAX_SEGMENT_PCM_BYTES,
+    RETRY_LATER_STATUSES,
+    AsrRequestFailure,
+    encode_pcm16_wav,
+    is_auth_rejection,
+    provider_status_code,
+)
 
 
 _GEMINI_MODEL = "gemini-3.1-flash-lite"
@@ -131,6 +140,127 @@ def _is_auth_rejection(exc: BaseException) -> bool:
     return _has_google_api_key_rejection(getattr(exc, "details", None))
 
 
+_TRADITIONAL_CHINESE_HINTS = ("zh-tw", "zh-hk", "zh-mo", "zh-hant")
+
+
+def _language_hint(language: str | None) -> str:
+    """One prompt line naming the expected language, or "" for detection.
+
+    Without it Gemini picks the Chinese script on its own (live tests returned
+    Traditional characters for Mandarin from a zh-CN user).
+    """
+
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if not normalized or normalized == "auto":
+        return ""
+    if normalized.startswith("zh"):
+        if normalized.startswith(_TRADITIONAL_CHINESE_HINTS):
+            return (
+                "\nThe user reads Traditional Chinese: write all Chinese text in "
+                "Traditional characters only, never Simplified."
+            )
+        return (
+            "\nThe user reads Simplified Chinese: write all Chinese text in "
+            "Simplified characters only, never Traditional."
+        )
+    return f"\nThe speech is most likely in the language with BCP-47 code {normalized}."
+
+
+async def request_gemini_transcript(
+    client: Any,
+    wav_audio: bytes,
+    *,
+    model: str = _GEMINI_MODEL,
+    timeout_seconds: float | None = None,
+    single_attempt: bool = False,
+    on_sent: Callable[[], None] | None = None,
+    language: str | None = None,
+) -> str:
+    """Transcribe one WAV file with Gemini; shared with the offline layer.
+
+    Raises :class:`AsrRequestFailure` (``ASR_GEMINI_TIMEOUT``,
+    ``ASR_GEMINI_INVALID_RESPONSE``, ``ASR_CREDENTIALS_REJECTED`` or
+    ``ASR_GEMINI_REQUEST_FAILED``). ``single_attempt`` disables SDK retries,
+    which protected-delivery audio requires. ``language`` (offline only; the
+    realtime worker never passes it) adds a script/language hint.
+    """
+
+    try:
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model,
+                contents=[
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": _GEMINI_TRANSCRIPTION_PROMPT + _language_hint(language)},
+                            {
+                                "inline_data": {
+                                    "mime_type": "audio/wav",
+                                    "data": wav_audio,
+                                }
+                            },
+                        ],
+                    }
+                ],
+                config={
+                    **({"http_options": {"retry_options": {"attempts": 1}}} if single_attempt else {}),
+                    "temperature": 0,
+                    "thinking_config": {"thinking_level": "minimal"},
+                    "response_mime_type": "application/json",
+                    "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
+                },
+            ),
+            _REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+        )
+        if on_sent is not None:
+            on_sent()
+        return _response_transcript(response)
+    except asyncio.CancelledError:
+        raise
+    except httpx.TimeoutException as exc:
+        # The SDK lets transport timeouts through as httpx errors; keep the
+        # realtime code but classify them as timeouts.
+        raise AsrRequestFailure(
+            "ASR_GEMINI_REQUEST_FAILED",
+            "Gemini ASR request failed",
+            kind="timeout",
+        ) from exc
+    except asyncio.TimeoutError as exc:
+        raise AsrRequestFailure(
+            "ASR_GEMINI_TIMEOUT",
+            "Gemini ASR request timed out",
+            kind="timeout",
+        ) from exc
+    except ValueError as exc:
+        raise AsrRequestFailure(
+            "ASR_GEMINI_INVALID_RESPONSE",
+            "Gemini ASR returned an invalid transcript",
+            kind="invalid_response",
+        ) from exc
+    except Exception as exc:
+        if _is_auth_rejection(exc):
+            raise AsrRequestFailure(
+                "ASR_CREDENTIALS_REJECTED",
+                "Gemini ASR credentials were rejected",
+                kind="auth",
+            ) from exc
+        status = provider_status_code(exc)
+        if status is None:
+            status = getattr(exc, "code", None)
+        raise AsrRequestFailure(
+            "ASR_GEMINI_REQUEST_FAILED",
+            "Gemini ASR request failed",
+            kind=(
+                "rate_limited"
+                if status in RETRY_LATER_STATUSES
+                else "rejected"
+                if isinstance(status, int) and 400 <= status < 500
+                else "failed"
+            ),
+        ) from exc
+
+
 async def gemini_asr_worker(
     request_queue: asyncio.Queue[_AsrWorkerRequest],
     response_queue: asyncio.Queue[_AsrWorkerEvent],
@@ -163,95 +293,50 @@ async def gemini_asr_worker(
 
     async def _transcribe(key: _UtteranceKey, pcm16: bytes) -> None:
         delivery_spans = interval_delivery_spans(request_queue, key)
+        failure: AsrRequestFailure | None = None
         try:
-            wav_audio = encode_pcm16_wav(pcm16)
-            evidence = begin_transport_write(request_queue, delivery_spans=delivery_spans)
-            response = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=_GEMINI_MODEL,
-                    contents=[
-                        {
-                            "role": "user",
-                            "parts": [
-                                {"text": _GEMINI_TRANSCRIPTION_PROMPT},
-                                {
-                                    "inline_data": {
-                                        "mime_type": "audio/wav",
-                                        "data": wav_audio,
-                                    }
-                                },
-                            ],
-                        }
-                    ],
-                    config={
-                        **({"http_options": {"retry_options": {"attempts": 1}}} if delivery_spans else {}),
-                        "temperature": 0,
-                        "thinking_config": {"thinking_level": "minimal"},
-                        "response_mime_type": "application/json",
-                        "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
-                    },
+            try:
+                wav_audio = encode_pcm16_wav(pcm16)
+                evidence = begin_transport_write(request_queue, delivery_spans=delivery_spans)
+            except ValueError as exc:
+                raise AsrRequestFailure(
+                    "ASR_GEMINI_INVALID_RESPONSE",
+                    "Gemini ASR returned an invalid transcript",
+                    kind="invalid_response",
+                ) from exc
+            except Exception as exc:
+                raise AsrRequestFailure(
+                    "ASR_GEMINI_REQUEST_FAILED",
+                    "Gemini ASR request failed",
+                ) from exc
+            transcript = await request_gemini_transcript(
+                client,
+                wav_audio,
+                single_attempt=bool(delivery_spans),
+                on_sent=lambda: complete_transport_write(
+                    evidence, len(pcm16), generation=key[0],
+                    buffer_epoch=key[1], provider="gemini",
+                    delivery_spans=delivery_spans, takes_ownership=True,
                 ),
-                _REQUEST_TIMEOUT_SECONDS,
             )
-            complete_transport_write(
-                evidence, len(pcm16), generation=key[0],
-                buffer_epoch=key[1], provider="gemini",
-            delivery_spans=delivery_spans, takes_ownership=True,
-            )
-            transcript = _response_transcript(response)
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            if _is_current(key) and inflight.get(key) is asyncio.current_task():
-                await response_queue.put(
-                    _AsrWorkerEvent(
-                        kind="error",
-                        generation=key[0],
-                        buffer_epoch=key[1],
-                        utterance_id=key[2],
-                        error_code="ASR_GEMINI_TIMEOUT",
-                        error_message="Gemini ASR request timed out",
-                    )
-                )
-            return
-        except ValueError:
-            if _is_current(key) and inflight.get(key) is asyncio.current_task():
-                await response_queue.put(
-                    _AsrWorkerEvent(
-                        kind="error",
-                        generation=key[0],
-                        buffer_epoch=key[1],
-                        utterance_id=key[2],
-                        error_code="ASR_GEMINI_INVALID_RESPONSE",
-                        error_message="Gemini ASR returned an invalid transcript",
-                    )
-                )
-            return
-        except Exception as exc:
-            if _is_current(key) and inflight.get(key) is asyncio.current_task():
-                rejected = _is_auth_rejection(exc)
-                await response_queue.put(
-                    _AsrWorkerEvent(
-                        kind="error",
-                        generation=key[0],
-                        buffer_epoch=key[1],
-                        utterance_id=key[2],
-                        error_code=(
-                            "ASR_CREDENTIALS_REJECTED"
-                            if rejected
-                            else "ASR_GEMINI_REQUEST_FAILED"
-                        ),
-                        error_message=(
-                            "Gemini ASR credentials were rejected"
-                            if rejected
-                            else "Gemini ASR request failed"
-                        ),
-                    )
-                )
-            return
-
+        except AsrRequestFailure as exc:
+            failure = exc
         finally:
             retire_interval_deliveries(request_queue, only_spans=delivery_spans)
+
+        if failure is not None:
+            if _is_current(key) and inflight.get(key) is asyncio.current_task():
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="error",
+                        generation=key[0],
+                        buffer_epoch=key[1],
+                        utterance_id=key[2],
+                        error_code=failure.code,
+                        error_message=failure.message,
+                    )
+                )
+            return
 
         if _is_current(key) and inflight.get(key) is asyncio.current_task():
             await response_queue.put(

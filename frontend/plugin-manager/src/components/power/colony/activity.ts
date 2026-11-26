@@ -7,10 +7,14 @@
  * moment, for replaying them. An entry of a kind this page does not know
  * changes nothing and is listed by the name of its kind.
  */
-import type { TimelineEntry } from '@/api/console'
+import type { SceneStanding, TimelineEntry } from '@/api/console'
 
 /** How a familiar is drawn. */
-export type CatLook = 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
+export type CatLook =
+  | 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | 'resting' | 'queued'
+  | 'landing' | 'resolving' | 'held' | 'unlanded'
+  // Not there yet: the one that would be opened beside a busy one, should the user say so.
+  | 'unborn'
 
 export interface SceneCat {
   look: CatLook
@@ -23,6 +27,8 @@ export interface SceneCat {
 export const SAID_SECONDS = 30
 
 const SAYS = new Set(['reported', 'message', 'asked_session', 'asked_user'])
+// How the host says a familiar stood where the entries begin.
+const LOOKS_AT_START = new Set(['working', 'waiting_user', 'resting', 'queued'])
 
 function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: CatLook): SceneCat | null {
   if (!id) return null
@@ -37,18 +43,35 @@ function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: 
 }
 
 /**
+ * Put a familiar whose commission ended at rest; unless it is stuck over what it changed in its
+ * worktree, which waits there for the user: it is drawn as waiting then.
+ */
+function atRest(cats: Map<string, SceneCat>, entry: TimelineEntry) {
+  const look = cats.get(entry.session_id ?? '')?.look ?? ''
+  if (entry.detail?.outcome === 'blocked' && (look === 'held' || look === 'unlanded')) return
+  put(cats, entry.session_id, 'idle')
+}
+
+/**
  * Return how each session stood once the entries up to `index` had happened.
  *
  * A session that no entry up to there names is not in the answer: whoever
- * draws it decides whether it was there already. What was asked through a
- * tool is not recorded as answered; the commission going on (`started`)
- * says that it was. A session is at one commission at a time: another that
- * waits for its turn in it, or is called off there, leaves it as it stands.
+ * draws it decides whether it was there already. One that asked the user
+ * is at work again once it is answered (`answered`), or goes on (`started`).
+ * A session is at one commission at a time: another that waits for its turn
+ * in it, is asked about there (whether another familiar is to do it beside
+ * it), or is called off there, leaves it as it stands.
  */
-export function sceneAt(entries: TimelineEntry[], index: number): Map<string, SceneCat> {
+export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStanding[] = []): Map<string, SceneCat> {
   const cats = new Map<string, SceneCat>()
   // The commission each session is at, by session.
   const atWork = new Map<string, string | null>()
+  // How they stood where the entries begin, when that is not the beginning of the record.
+  for (const standing of base) {
+    if (!LOOKS_AT_START.has(standing.look)) continue
+    put(cats, standing.session_id, standing.look as CatLook)
+    atWork.set(standing.session_id, standing.commission_id)
+  }
   const busyWithAnother = (entry: TimelineEntry) =>
     Boolean(entry.session_id) && atWork.has(entry.session_id as string) && atWork.get(entry.session_id as string) !== entry.commission_id
   const last = Math.min(index, entries.length - 1)
@@ -62,15 +85,40 @@ export function sceneAt(entries: TimelineEntry[], index: number): Map<string, Sc
         put(cats, id, 'working')
         if (id) atWork.set(id, entry.commission_id)
         break
-      case 'asked_user': put(cats, id, 'waiting_user'); break
+      // Of one at another commission, what waits for it is asked about: it is still at its own.
+      case 'asked_user': put(cats, id, busyWithAnother(entry) ? undefined : 'waiting_user'); break
+      // Answered: at work again (what a tool asked is answered so; a report's answer is followed by `started`).
+      case 'answered': {
+        const cat = busyWithAnother(entry) ? null : put(cats, id)
+        if (cat?.look === 'waiting_user') cat.look = 'working'
+        break
+      }
       case 'resting': put(cats, id, 'resting'); break
       case 'rest_over': put(cats, id, 'idle'); break
       case 'ended':
         if (busyWithAnother(entry)) break
-        put(cats, id, 'idle')
+        atRest(cats, entry)
         if (id) atWork.delete(id)
         break
-      case 'child_returned': case 'ask_answered': put(cats, id, 'idle'); break
+      // What a familiar changed in a worktree of its own: merged where it clashed, left for the user.
+      case 'landing_conflict': put(cats, id, busyWithAnother(entry) ? undefined : 'resolving'); break
+      case 'not_landed': put(cats, id, busyWithAnother(entry) ? undefined : 'unlanded'); break
+      case 'landing_held': put(cats, id, busyWithAnother(entry) ? undefined : 'held'); break
+      // The user decided on it, maybe long after: of one at another commission by then, that one says how it stands.
+      case 'landed': case 'tree_discarded': case 'tree_kept':
+        if (!busyWithAnother(entry)) {
+          const cat = put(cats, id)
+          if (cat && ['resolving', 'held', 'unlanded'].includes(cat.look)) cat.look = atWork.has(id ?? '') ? 'working' : 'idle'
+        }
+        break
+      // A member of a team, or another one a familiar started, ends so.
+      case 'child_returned':
+        if (busyWithAnother(entry)) break
+        atRest(cats, entry)
+        // Its commission is over: what is decided on its worktree later leaves it at rest.
+        if (id) atWork.delete(id)
+        break
+      case 'ask_answered': atRest(cats, entry); break
       case 'child_started':
         put(cats, id)
         // The one it started is there from now on.
@@ -179,6 +227,11 @@ export function describeEntry(
   const who = nameOf(entry.session_id)
   const peer = entry.peer?.type === 'user' ? t('power.activity.you') : nameOf(entry.peer?.session_id)
   let text = entry.text
+  // What a tool asked answered with a choice (allow once, deny): said in words.
+  const choice = entry.detail?.choice
+  if (entry.kind === 'answered' && !text && typeof choice === 'string' && te(`power.space.familiars.choices.${choice}`)) {
+    text = t(`power.space.familiars.choices.${choice}`)
+  }
   if (entry.kind === 'asked_user' && entry.detail?.question_kind === 'permission') {
     // A request for approval is recorded by its kind (and, of an MCP server, which): said in words here.
     const [category, ...rest] = text.split(':')
@@ -187,12 +240,51 @@ export function describeEntry(
   }
   let key = `power.activity.kinds.${entry.kind}`
   // How it ended is part of what is said: done, failed, stopped, stuck. Of a project that got its
-  // leader, why it got one.
-  const how = entry.detail?.[entry.kind === 'leader_derived' ? 'reason' : 'outcome']
-  const outcome = typeof how === 'string' ? how : ''
+  // leader, or of what a familiar changed that was not merged, why; of an inspection, what it found;
+  // of a landing, whether the user had it done.
+  const how = entry.detail?.[VARIANT_OF[entry.kind] ?? 'outcome']
+  const outcome = how === true ? 'user' : typeof how === 'string' ? how : ''
   if (outcome && te(`${key}_${outcome}`)) key = `${key}_${outcome}`
   if (!te(key)) return [who, entry.kind, text].filter(Boolean).join(' · ')
-  return t(key, { who, peer, text }).replace(/[\s：:]+$/u, '')
+  const line = t(key, { who, peer, text, ...figures(entry, t, te) }).replace(/[\s：:]+$/u, '')
+  // Of a landing: what landed outside the project's directory was not asked about; what was not
+  // carried over stays in the worktree. No other kind says either.
+  const told = [line]
+  for (const [field, words] of [['outside', 'power.activity.landedOutside'], ['skipped', 'power.activity.landedSkipped']] as const) {
+    const files = entry.detail?.[field]
+    if (Array.isArray(files) && files.length) told.push(t(words, { count: files.length }))
+  }
+  return told.join(' ')
+}
+
+// Which field of its `detail` tells the words of an entry apart; `outcome` for the others.
+const VARIANT_OF: Record<string, string> = {
+  leader_derived: 'reason', not_landed: 'reason', inspected: 'verdict', landed: 'by_user', landing_conflict: 'by_user',
+}
+
+/** Return what the words of an entry about worktrees and teams tell besides who: how many files, lines, members. */
+function figures(entry: TimelineEntry, t: Translate, te: Exists): Record<string, unknown> {
+  const detail = entry.detail ?? {}
+  const number = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+  const members = list(detail.members).filter((item): item is { name?: unknown; preset?: unknown } => !!item && typeof item === 'object')
+  return {
+    files: list(detail.files).length + number(detail.more),
+    added: number(detail.lines_added),
+    deleted: number(detail.lines_deleted),
+    conflicts: list(detail.conflicts).length,
+    round: number(detail.round),
+    // Of a team, how many and what kinds; of a reminder, how many it had.
+    count: entry.kind === 'team_formed' ? members.length : number(detail.members),
+    names: members
+      .map(item => {
+        const preset = typeof item.preset === 'string' ? item.preset : ''
+        const named = `power.home.presets.${preset}`
+        return te(named) ? t(named) : typeof item.name === 'string' ? item.name : preset
+      })
+      .filter(Boolean)
+      .join(' · '),
+  }
 }
 
 /** Return a time of day for the list: hours and minutes, with seconds when `seconds` is set. */

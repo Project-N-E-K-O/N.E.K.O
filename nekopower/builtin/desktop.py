@@ -184,8 +184,15 @@ def _post_capture_bridge(cancel_event: threading.Event | None) -> Any:
     client_lock = threading.Lock()
 
     def post() -> httpx.Response:
+        from utils.internal_http_client import internal_service_event_hooks
+
         timeout = httpx.Timeout(28.0, connect=1.0)
-        with httpx.Client(timeout=timeout, proxy=None, trust_env=False) as client:
+        with httpx.Client(
+            timeout=timeout,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(sync=True),
+        ) as client:
             with client_lock:
                 active_client.append(client)
             try:

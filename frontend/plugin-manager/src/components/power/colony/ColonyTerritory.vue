@@ -16,26 +16,42 @@
         :x2="`${at(other).x * 100}%`" :y2="`${at(other).y * 100}%`"
       />
     </svg>
+    <!-- Those a leader started for one commission, with the leader: a team, framed together. -->
+    <!-- Styled here and not in the stylesheet: what the first page loads of that is held to a budget. -->
+    <div
+      v-for="team in teams"
+      :key="team.id"
+      :style="{ ...TEAM_BOX, left: `${team.left * 100}%`, top: `${team.top * 100}%`, width: `${team.width * 100}%`, height: `${team.height * 100}%` }"
+      :data-team="team.id"
+      aria-hidden="true"
+    >
+      <span :style="TEAM_NAME">{{ t('power.colony.team') }}</span>
+    </div>
     <button
       v-for="member in shown"
       :key="member.id"
       type="button"
       class="cat"
-      :class="[`cat--${member.look}`, { 'cat--lead': member.leader, 'cat--held': held === member.id }]"
-      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%` }"
+      :class="[`cat--${member.look}`, { 'cat--waits': WAITS.has(member.look), 'cat--lead': member.leader, 'cat--grabbed': held === member.id }]"
+      :style="{ left: `${at(member.id).x * 100}%`, top: `${at(member.id).y * 100}%`, ...(member.look === 'unborn' ? UNBORN : {}) }"
       :data-cat="member.id"
       :data-look="member.look"
-      :aria-label="t('power.colony.catLabel', { name: member.name, state: stateWord(member.look) })"
-      @pointerdown="grab(member.id, $event)"
+      :aria-label="member.look === 'unborn' ? t('power.colony.unbornLabel', { name: member.name }) : t('power.colony.catLabel', { name: member.name, state: stateWord(member.look) })"
+      :title="member.look === 'unborn' ? t('power.colony.besideTip') : undefined"
+      @pointerdown="member.look === 'unborn' || grab(member.id, $event)"
       @pointermove="drag($event)"
       @pointerup="drop($event)"
       @pointercancel="cancel($event)"
-      @keydown="nudge(member.id, $event)"
+      @keydown="member.look === 'unborn' || nudge(member.id, $event)"
       @click="clicked(member.id, $event)"
     >
       <span v-if="bubble(member)" class="bubble" :class="{ 'bubble--loud': member.look === 'waiting_user' }">{{ bubble(member) }}</span>
-      <ColonyFigure :avatar="member.avatar" :look="member.look" :leader="member.leader" />
-      <span class="tag">{{ member.name }}</span>
+      <!-- Merging what it changed is drawn as work; one not there yet, faded. -->
+      <ColonyFigure
+        :avatar="member.avatar" :look="MERGING.has(member.look) ? 'working' : member.look" :leader="member.leader"
+        :style="member.look === 'unborn' ? UNBORN_FIGURE : undefined"
+      />
+      <span class="tag" :style="member.look === 'unborn' ? UNBORN_TAG : undefined">{{ member.name }}</span>
     </button>
   </section>
 </template>
@@ -60,6 +76,8 @@ export interface ColonyMember {
   said: string
   /** Not there at the moment shown (while what happened is replayed). */
   hidden: boolean
+  /** The same for a leader and those it started for the commission it has in hand. */
+  team?: string | null
 }
 
 export interface Territory {
@@ -100,14 +118,70 @@ const shown = computed(() => props.territory.members.filter(member => !member.hi
 const size = computed(() => territorySize(props.territory.members.length))
 const standing = computed(() => defaultSpots(props.territory.members))
 
+const byId = computed(() => new Map(props.territory.members.map(member => [member.id, member])))
+
 function home(id: string): Spot {
-  return placed[id] ?? standing.value[id] ?? { x: 0.5, y: 0.5 }
+  const own = placed[id]
+  if (own) return own
+  const spot = standing.value[id] ?? { x: 0.5, y: 0.5 }
+  // The one that would be opened beside a busy one stands by it where the user put that one: it is
+  // told apart from the others only by where it stands. (Not put anywhere by the user itself.)
+  const member = byId.value.get(id)
+  const by = member?.look === 'unborn' && member.parent ? placed[member.parent] : undefined
+  const was = member?.parent ? standing.value[member.parent] : undefined
+  if (!by || !was) return spot
+  const { x, y } = { x: spot.x - was.x, y: spot.y - was.y }
+  // Where that would be outside, as far on another side of it: brought back to the edge, it would
+  // stand on the busy one put there, and cover it. The other way first, then across.
+  for (const [dx, dy] of [[x, y], [-x, -y], [y, -x], [-y, x]] as const) {
+    const there = { x: by.x + dx, y: by.y + dy }
+    if (inTerritory(there)) return there
+  }
+  return intoTerritory({ x: by.x + x, y: by.y + y })
 }
 function at(id: string): Spot {
   const base = home(id)
   const off = held.value === id ? undefined : stroll[id]
   return off ? { x: base.x + off.x, y: base.y + off.y } : base
 }
+
+// How far a team's frame reaches beyond the middles of those in it, as parts of the territory: a
+// familiar is drawn about 92 pixels wide, with its name below it.
+const TEAM_PAD_X = 0.09
+const TEAM_PAD_Y = 0.16
+const TEAM_BOX = {
+  position: 'absolute', border: '1.5px dashed var(--el-color-primary-light-5)', borderRadius: '16px',
+  background: 'var(--el-color-primary-light-9)', pointerEvents: 'none',
+} as const
+const TEAM_NAME = {
+  position: 'absolute', top: '-9px', left: '12px', padding: '0 6px', fontSize: '11px', lineHeight: '16px',
+  color: 'var(--el-color-primary)', background: 'var(--el-bg-color)', borderRadius: '8px', whiteSpace: 'nowrap',
+} as const
+// The looks of one that waits for the user, drawn alike; and of one whose changes are being merged.
+const WAITS = new Set<CatLook>(['waiting_user', 'held', 'unlanded', 'unborn'])
+const MERGING = new Set<CatLook>(['landing', 'resolving'])
+// One that would be opened, should the user say so: not picked up nor moved with the keys (it stands by
+// the busy one) but pressed, faded, its name framed in dashes. What it asks is said when it is pointed at, not above it: it stands close below the one it
+// would work beside, whose name a bubble would cover. Styled here and not in the stylesheet, as the teams are.
+const UNBORN = { cursor: 'pointer' } as const
+const UNBORN_FIGURE = { opacity: 0.45, filter: 'grayscale(1)' } as const
+const UNBORN_TAG = { borderStyle: 'dashed' } as const
+/** The teams of two or more that are there now, each with the box that holds those in it. */
+const teams = computed(() => {
+  const by = new Map<string, Spot[]>()
+  for (const member of shown.value) {
+    if (member.team) by.set(member.team, [...(by.get(member.team) ?? []), home(member.id)])
+  }
+  return [...by.entries()]
+    .filter(([, spots]) => spots.length > 1)
+    .map(([id, spots]) => {
+      const left = Math.max(0, Math.min(...spots.map(spot => spot.x)) - TEAM_PAD_X)
+      const top = Math.max(0, Math.min(...spots.map(spot => spot.y)) - TEAM_PAD_Y)
+      const right = Math.min(1, Math.max(...spots.map(spot => spot.x)) + TEAM_PAD_X)
+      const bottom = Math.min(1, Math.max(...spots.map(spot => spot.y)) + TEAM_PAD_Y)
+      return { id, left, top, width: right - left, height: bottom - top }
+    })
+})
 
 const heldLinks = computed(() => {
   const id = held.value
@@ -271,11 +345,11 @@ onBeforeUnmount(() => {
 .lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lines line { stroke: var(--el-color-primary); stroke-width: 2; stroke-dasharray: 5 5; }
 .cat { position: absolute; transform: translate(-50%, -50%); width: 92px; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: center; cursor: grab; transition: left 2.4s ease-in-out, top 2.4s ease-in-out; }
-.cat--held { cursor: grabbing; transition: none; z-index: 2; }
+.cat--grabbed { cursor: grabbing; transition: none; z-index: 2; }
 .cat:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; border-radius: 10px; }
 .tag { display: inline-block; max-width: 100%; padding: 0 7px; font-size: 11px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--el-border-color-lighter); border-radius: 9px; background: var(--el-bg-color); }
 .cat--working .tag { border-color: var(--el-color-success); color: var(--el-color-success); }
-.cat--waiting_user .tag { border-color: var(--el-color-warning); color: var(--el-color-warning); }
+.cat--waits .tag { border-color: var(--el-color-warning); color: var(--el-color-warning); }
 .bubble { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); max-width: 180px; padding: 0 7px; font-size: 11px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--el-border-color-lighter); border-radius: 9px; background: var(--el-bg-color); }
 .bubble--loud { color: #fff; font-weight: 600; border-color: var(--el-color-warning); background: var(--el-color-warning); }
 @media (prefers-reduced-motion: reduce) { .cat { transition: none; } }

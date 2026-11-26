@@ -1,6 +1,11 @@
 <template>
   <section class="panel" data-testid="familiars-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="familiars-error" />
+    <!-- Of a project: one more familiar for it, and a leader where it has none. Not of the loose ones. -->
+    <template v-if="project !== null && loaded && !error">
+      <CrewTools :project="project" :has-leader="hasLeader" :lanlan-name="lanlanName" @changed="crewChanged" />
+      <ProjectTrees :project="project" :refresh="board?.revision" />
+    </template>
     <el-empty v-if="loaded && !members.length && !selectedId" :description="t('power.space.familiars.empty')" />
 
     <div v-if="members.length" class="members">
@@ -61,6 +66,18 @@
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>
         </div>
       </dl>
+
+      <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
+      <TreeActions v-if="selected.tree" :key="selected.tree.id" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
+      <p v-if="treeSaid.said && selected.tree?.id !== treeSaid.tree" class="muted" role="status" data-testid="tree-said">{{ treeSaid.said }}</p>
+
+      <!-- Whether another is to do what waits for it, busy with something else: drawn under it, not there yet. -->
+      <div v-if="besides.length" class="besides">
+        <BesideAsk
+          v-for="item in besides" :key="item.id"
+          :item="item" :busy="besideBusyOf(item)" :error="besideFailedOf(item)" @answer="answerBeside(item, $event)"
+        />
+      </div>
 
       <div class="views" role="tablist">
         <button
@@ -146,9 +163,14 @@ import { useI18n } from 'vue-i18n'
 import { answerCommission, getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
+import { useBesideAnswers, useBesideAsks } from '../colony/useBesideAsks'
+import BesideAsk from '../home/BesideAsk.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import CrewTools from './CrewTools.vue'
+import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
+import TreeActions from './TreeActions.vue'
 import UsagePane from './UsagePane.vue'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
@@ -170,6 +192,8 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
+// What came of the last thing done to its worktree: said after the worktree is gone from its card as well.
+const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
 const sentence = ref('')
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
@@ -197,6 +221,8 @@ const members = computed<BoardCard[]>(() => {
   return (now.projects ?? []).find(project => project.name === props.project)?.members ?? []
 })
 const hasLeader = computed(() => members.value.some(card => card.leader))
+// Whose familiars they are: a new one of the project is that character's as well.
+const lanlanName = computed(() => members.value.find(card => card.lanlan_name)?.lanlan_name ?? null)
 const selected = computed(() => members.value.find(card => card.id === props.selectedId) ?? null)
 // The one the address names is not on the board. Known only once the board was read, of the
 // project the address means: a board that could not be read, or another project's, holds nobody.
@@ -204,6 +230,16 @@ const offBoard = computed(() => Boolean(
   loaded.value && board.value && !error.value && props.settled && props.selectedId && !selected.value,
 ))
 const ask = computed(() => (selected.value?.state === 'waiting_user' ? selected.value.commission?.ask ?? null : null))
+// Whether another familiar is to do what waits for the one chosen, busy with something else (as
+// the home page asks it). Looked for only while one of a project is chosen that is at something:
+// of none other is it shown here.
+const { asks: allBesides, load: loadBesides } = useBesideAsks(
+  computed(() => (props.project !== null && selected.value?.commission ? board.value : null)),
+)
+const besides = computed(() => allBesides.value.filter(item => item.beside === selected.value?.id))
+const { busyOf: besideBusyOf, failedOf: besideFailedOf, answer: answerBeside } = useBesideAnswers(
+  () => Promise.all([load(), loadBesides()]),
+)
 const shownTitle = computed(() => {
   const card = selected.value
   if (!card) return ''
@@ -308,6 +344,19 @@ async function saveCard() {
   editing.value = false
 }
 
+function treeChanged(tree: string, said: string) {
+  treeSaid.value = { tree, said }
+  void load()
+}
+
+/** One more familiar, or a leader, was made: shown at once, and up close. */
+async function crewChanged(sessionId: string) {
+  const project = props.project
+  await load()
+  // Another project was opened meanwhile: the new one is not among its familiars.
+  if (props.project === project) emit('select', sessionId)
+}
+
 function onVisibility() {
   if (!document.hidden && alive) void load()
 }
@@ -321,6 +370,7 @@ watch(() => props.selectedId, () => {
   // The editor was opened for the one the user has left.
   editing.value = false
   note.value = ''
+  treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
   view.value = 'doing'
   pastView.value = 'talk'
@@ -352,6 +402,7 @@ onBeforeUnmount(() => {
 .view.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .fell-back { margin-left: 6px; padding: 0 6px; font-size: 12px; border-radius: 8px; color: var(--el-color-warning); background: var(--el-color-warning-light-9); cursor: help; }
 .say { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.besides { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .grow { flex: 1; }
 .block { margin-bottom: 12px; }
 </style>
