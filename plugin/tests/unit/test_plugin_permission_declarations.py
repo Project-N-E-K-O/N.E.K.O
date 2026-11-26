@@ -2187,8 +2187,8 @@ def test_constant_getattr_results_are_followed_like_the_attribute(tmp_path, refl
         # or SDK object is not followed, so the legacy capability scan (read
         # by the old consent flow) sees exactly what it saw before.
         (
-            "class P:\n    def go(self):\n        getattr(self.ctx, 'bus').memory.get('x')\n"
-            "        push = getattr(self.ctx, 'push_message')\n        push('hi')\n",
+            ("class P:\n    def go(self):\n        getattr(self.ctx, 'bus').memory.get('x')\n"
+             "        push = getattr(self.ctx, 'push_message')\n        push('hi')\n"),
             ["messages.push"],
             {"plugin_sdk.main_agent.messages:push": "suffix_match"},
         ),
@@ -2225,8 +2225,8 @@ def test_aliased_getattr_with_a_constant_name_is_still_a_blind_spot(tmp_path):
         "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
         "import socket\nfamily = socket.AF_UNIX\ns = socket.socket(family)\ns.listen()\n",
         "from socket import socket as sock, AF_UNIX\ns = sock(AF_UNIX)\ns.listen()\n",
-        "import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
-        "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n",
+        ("import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+         "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n"),
     ],
 )
 def test_unix_socket_servers_are_only_possible_evidence(tmp_path, source):
@@ -2301,8 +2301,8 @@ def test_datagram_endpoints_listen_only_with_a_local_address(tmp_path, call, bas
         "import extlib\ngetattr(getattr(extlib, 'get_ctx')(), 'push_message')('x')\n",
         "import importlib\nim = getattr(importlib, 'import_module')\nim('x').push_message()\n",
         # An alias chain that receives the getattr path last.
-        "import extlib\nfrom extlib import get_ctx as a, get_ctx as b, get_ctx as c\nc = b\nb = a\n"
-        "a = getattr(extlib, 'get_ctx')\nc().push_message()\n",
+        ("import extlib\nfrom extlib import get_ctx as a, get_ctx as b, get_ctx as c\nc = b\nb = a\n"
+         "a = getattr(extlib, 'get_ctx')\nc().push_message()\n"),
     ],
 )
 def test_followed_getattr_keeps_the_legacy_reading(tmp_path, source):
@@ -2355,10 +2355,10 @@ def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
         # t may hold the INET socket when it listens.
         "import socket\ns = socket.socket(socket.AF_UNIX)\nt = socket.socket()\nt.listen()\nt = s\n",
         # Assigned by another scope.
-        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    global s\n    s = socket.socket()\n"
-        "def g():\n    s.listen()\n",
-        "import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    def g():\n        nonlocal s\n"
-        "        s = socket.socket()\n    g()\n    s.listen()\n",
+        ("import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    global s\n    s = socket.socket()\n"
+         "def g():\n    s.listen()\n"),
+        ("import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    def g():\n        nonlocal s\n"
+         "        s = socket.socket()\n    g()\n    s.listen()\n"),
         # The family name is rebound.
         "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\nsocket.socket(AF_UNIX).listen()\n",
         "import socket\nfrom socket import AF_UNIX\nfor AF_UNIX in families:\n    socket.socket(AF_UNIX).listen()\n",
@@ -2367,11 +2367,11 @@ def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
         "import socket\nfamily = socket.AF_UNIX\nfamily = 2\ns = socket.socket(family)\ns.listen()\n",
         "import socket\nfrom socket import AF_UNIX\n[socket.socket(AF_UNIX).listen() for AF_UNIX in families]\n",
         "import socket\nfamily = socket.AF_UNIX\nfrom other import family\nsocket.socket(family).listen()\n",
-        "import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
-        "socket.socket(AF_UNIX).listen()\n",
+        ("import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
+         "socket.socket(AF_UNIX).listen()\n"),
         # A class attribute set to another socket in another method.
-        "import socket\nclass S:\n    def a(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
-        "    def b(self):\n        self.sock = socket.socket()\n    def c(self):\n        self.sock.listen()\n",
+        ("import socket\nclass S:\n    def a(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+         "    def b(self):\n        self.sock = socket.socket()\n    def c(self):\n        self.sock.listen()\n"),
     ],
 )
 def test_sockets_that_may_not_be_unix_keep_their_listen_evidence(tmp_path, source):
@@ -2385,9 +2385,9 @@ def test_sockets_that_may_not_be_unix_keep_their_listen_evidence(tmp_path, sourc
 def test_the_local_socket_marker_never_reaches_the_report(tmp_path):
     report = _scan(
         tmp_path,
-        "import socket\nclass P:\n    def go(self):\n        s = socket.socket(socket.AF_UNIX)\n"
-        "        getattr(s, 'bind')('/p')\n        s.listen()\n        s.push_message()\n"
-        "        socket.socket(socket.AF_UNIX).__dict__\n",
+        ("import socket\nclass P:\n    def go(self):\n        s = socket.socket(socket.AF_UNIX)\n"
+         "        getattr(s, 'bind')('/p')\n        s.listen()\n        s.push_message()\n"
+         "        socket.socket(socket.AF_UNIX).__dict__\n"),
     )
     rows = [row for item in report["permissions"].values() for row in item["findings"]]
     methods = [row["method"] for row in rows + report["evidence"] + report["blind_spots"]]
@@ -2421,13 +2421,65 @@ def test_untrusted_family_names_keep_their_legacy_binding(tmp_path):
 @pytest.mark.parametrize(
     "source",
     [
+        # A parameter replaced in one branch only.
+        (
+            "import socket\ndef f(sock):\n    if sock is None:\n        sock = socket.socket(socket.AF_UNIX)\n"
+            "    sock.connect(('a', 80))\n    sock.listen()\n"
+        ),
+        # self.x set to a network socket in another method, or through setattr.
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket()\n"
+            "    def use(self):\n        self.sock.listen()\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        setattr(self, 'sock', socket.socket())\n"
+            "    def use(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n        self.sock.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self, name):\n        setattr(self, name, socket.socket())\n"
+            "    def use(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n        self.sock.listen()\n"
+        ),
+        # A match capture reuses the name.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case s:\n        s.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case [*s]:\n        s.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case {**s}:\n        s.listen()\n",
+        # fileno= wraps whatever socket the descriptor is.
+        "import socket\ndef f(fd):\n    s = socket.socket(socket.AF_UNIX, fileno=fd)\n    s.listen()\n",
+        "import socket\ndef f(fd):\n    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0, fd)\n    s.listen()\n",
+        "import socket\ndef f(options):\n    s = socket.socket(socket.AF_UNIX, **options)\n    s.listen()\n",
+    ],
+)
+def test_names_that_may_hold_another_socket_keep_direct_evidence(tmp_path, source):
+    # On main all of these are resolved_call.
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert not [issue for issue in compare_declarations(report) if issue.params["permission"] == LISTEN and issue.severity != "error"]
+
+
+def test_followed_getattr_on_an_environment_value_adds_no_evidence(tmp_path):
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "getattr").mkdir()
+    plain = _scan(tmp_path / "plain", "import os\ntok = os.environ.get('X')\ntok.strip().lower()\n")
+    reflective = _scan(tmp_path / "getattr", "import os\ntok = os.environ.get('X')\ngetattr(tok, 'strip')().lower()\n")
+
+    def methods(report):
+        return {row["method"] for row in report["permissions"]["system.env:read"]["findings"]}
+
+    # The getattr call itself reads as tok.strip (as on main); the chain
+    # after it adds nothing, like the attribute spelling.
+    assert methods(reflective) - methods(plain) == {"os.environ.get().strip"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         # The module name of the family is rebound.
-        "import socket as families\nfrom socket import socket as make\nfor families in sources:\n"
-        "    s = make(families.AF_UNIX)\n    s.listen()\n",
+        ("import socket as families\nfrom socket import socket as make\nfor families in sources:\n"
+         "    s = make(families.AF_UNIX)\n    s.listen()\n"),
         "from socket import socket as make\nimport socket\nfor socket in families:\n    make(socket.AF_UNIX).listen()\n",
         # A method parameter spelled like the module constant.
-        "import socket\nfrom socket import AF_UNIX\nclass S:\n    def __init__(self, AF_UNIX):\n"
-        "        self.s = socket.socket(AF_UNIX)\n    def go(self):\n        self.s.listen()\n",
+        ("import socket\nfrom socket import AF_UNIX\nclass S:\n    def __init__(self, AF_UNIX):\n"
+         "        self.s = socket.socket(AF_UNIX)\n    def go(self):\n        self.s.listen()\n"),
     ],
 )
 def test_rebound_family_roots_and_parameters_are_not_local(tmp_path, source):

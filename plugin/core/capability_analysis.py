@@ -362,6 +362,14 @@ def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bo
     # must end in AF_UNIX.
     if not (isinstance(argument, ast.Name) or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")):
         return False
+    if index == 0 and (
+        len(call.args) > 3
+        or any(isinstance(item, ast.Starred) for item in call.args)
+        or any(item.arg in ("fileno", None) for item in call.keywords)
+    ):
+        # socket.socket(..., fileno=fd) wraps whatever socket fd is; the
+        # family only labels it (and *args / **kwargs may carry fileno).
+        return False
     raw = _dotted_name(argument, walker)
     if not raw or _untrusted(_root_name(raw), bindings):
         return False
@@ -624,7 +632,20 @@ def _references(tree, walker: _AnalysisWalker):
             for item in node.names
         } & assigned
         comprehended = set().union(*comprehension_locals.values()) if comprehension_locals else set()
-        _propagate_assignments(assignments, bindings, walker, rebound | shared | imported | comprehended)
+        # Names a match pattern captures (case s:, case [*s], case {**s}).
+        captured = {
+            name
+            for node in nodes
+            if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping))
+            for name in ((node.rest,) if isinstance(node, ast.MatchMapping) else (node.name,))
+            if name
+        }
+        # Parameters may already hold another socket (def f(sock): if sock
+        # is None: sock = socket.socket(AF_UNIX)).
+        _propagate_assignments(
+            assignments, bindings, walker,
+            rebound | shared | imported | comprehended | captured | set(parameters),
+        )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
         membership = {
@@ -900,6 +921,13 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
     # A family name already bound (imported or inherited) and also assigned
     # here (from socket import AF_UNIX; AF_UNIX = 2).
     uncertain.update(key for key in counts if bindings.get(key, (None,))[0] in _UNIX_FAMILIES)
+    # self.x already bound by the class to something other than this local
+    # socket (another method sets it, or it is set through setattr).
+    uncertain.update(
+        key
+        for key in counts
+        if "." in key and key in bindings and not (bindings[key][0] or "").startswith(_UNIX_SOCKET)
+    )
     # Settled before any socket is resolved through them. Kept apart from
     # the bindings, which resolve as before (the legacy scan reads them).
     for key in uncertain:
@@ -962,6 +990,7 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
     # Method parameters are not shadowed here (as before), so a parameter
     # spelled like a family name is only kept out of the AF_UNIX check.
     parameters: set[str] = set()
+    set_through: set[str] = set()
     for method in node.body:
         walker.check()
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -971,15 +1000,30 @@ def _propagate_self_attributes(node, bindings, walker, shared=frozenset()):
                 for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
                 if arg is not None
             )
-            nodes = walker.scope_nodes(method.body)
+            nodes = list(walker.scope_nodes(method.body))
             _, method_assignments = _collect_declarations(nodes, (), walker)
             assignments.extend(
                 (key, value) for key, value in method_assignments if key.startswith("self.")
             )
+            # setattr(self, "x", ...) also sets self.x, out of the alias
+            # resolution's sight; a computed name may set any of them.
+            for call in nodes:
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "setattr"
+                    and call.args
+                    and isinstance(call.args[0], ast.Name)
+                    and call.args[0].id == "self"
+                ):
+                    attribute = _literal_string(call.args[1]) if len(call.args) > 1 else None
+                    set_through.add(f"self.{attribute}" if attribute else "*")
+    if "*" in set_through:
+        set_through.update(key for key, _value in assignments)
     class_bindings = dict(bindings)
     for name in parameters:
         class_bindings[_UNTRUSTED + name] = (None, False)
-    _propagate_assignments(assignments, class_bindings, walker, shared)
+    _propagate_assignments(assignments, class_bindings, walker, shared | set_through)
     for name in parameters:
         # Methods see their own parameters; do not distrust module names there.
         if not _untrusted(name, bindings):
@@ -1043,6 +1087,9 @@ def _emit_references(nodes, bindings, scope, walker, function="", shared=frozens
                     via_call_result = False
                     if kind != _ROOT_IMPORT:
                         raw_root = _root_name(_plain_name(target))
+                        # As for the attribute (tok = os.environ.get("X");
+                        # getattr(tok, "strip")()): the read is already reported.
+                        via_call_result = _is_data_read_result(_resolve(raw_root, bindings)[0])
                 else:
                     resolved, external, bound = _resolve_with_origin(raw, bindings)
                     via_call_result = (
