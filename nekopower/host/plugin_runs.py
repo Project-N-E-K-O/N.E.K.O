@@ -73,16 +73,17 @@ def _default_client_factory(**kwargs: Any) -> Any:
     return httpx.AsyncClient(**merged)
 
 
-def _reraise_swallowed_cancellation() -> None:
+def _reraise_swallowed_cancellation(cause: BaseException | None = None) -> None:
     """Raise ``CancelledError`` if this task was cancelled and something below hid it.
 
     A cancellation can surface as an ordinary error from the layer that was
     awaited, or be absorbed there altogether. Carrying on would keep polling a
-    run whose caller is gone, and the run would never be cancelled.
+    run whose caller is gone, and the run would never be cancelled. ``cause``
+    is the error it came up as, kept as the cause of the one raised.
     """
     task = asyncio.current_task()
     if task is not None and task.cancelling():
-        raise asyncio.CancelledError
+        raise asyncio.CancelledError from cause
 
 
 def plugin_server_url() -> str:
@@ -760,7 +761,9 @@ class PluginRunner:
                     await on_run_created(run_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - a listener never costs the run its result
+                except Exception as exc:  # noqa: BLE001 - a listener never costs the run its result
+                    # A cancellation of the caller that came up as an error is one.
+                    _reraise_swallowed_cancellation(exc)
                     logger.warning("the listener for new runs failed", exc_info=True)
             try:
                 completion = await self._await_completion(
@@ -770,7 +773,7 @@ class PluginRunner:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 # A cancellation of the caller that came up as an error is one.
-                _reraise_swallowed_cancellation()
+                _reraise_swallowed_cancellation(exc)
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 # Nothing says it ended: it is given up on, as one whose polling failed.
                 completion = {

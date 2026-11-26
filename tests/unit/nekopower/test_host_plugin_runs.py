@@ -264,12 +264,13 @@ async def test_a_run_whose_wait_failed_unexpectedly_is_cancelled_and_stays_known
     assert runner.active_runs("c1") == []
 
 
-async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_while_waiting_is_one(server, monkeypatch):
+@pytest.mark.parametrize("where", ["waiting", "the listener for new runs"])
+async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_is_one(server, monkeypatch, caplog, where):
     started = _slow_weather(server)
     faults = Faults()
     runner = _runner(server, faults)
 
-    async def wrapped(_run_id: str, **_kwargs: Any) -> dict[str, Any]:
+    async def wrapped(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         await asyncio.wait_for(started.wait(), 5)
         asyncio.current_task().cancel()
         try:
@@ -278,17 +279,28 @@ async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_while_wait
             raise RuntimeError("the request layer wrapped the cancellation") from None
         return {}
 
-    monkeypatch.setattr(runner, "_await_completion", wrapped)
-    calling = asyncio.ensure_future(runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}))
+    listener = None
+    if where == "waiting":
+        monkeypatch.setattr(runner, "_await_completion", wrapped)
+    else:
+        listener = wrapped
+    calling = asyncio.ensure_future(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}, on_run_created=listener)
+    )
 
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(calling, 5)
+    await asyncio.wait([calling], timeout=5)
+    with pytest.raises(asyncio.CancelledError) as raised:
+        calling.result()
     await wait_until(lambda: faults.cancel_requests == 1, what="the cancel request")
     await runner.aclose()
 
     # The caller was cancelled, and the run with it: not a wait that failed, which would go on as if nothing happened.
     assert faults.cancel_reasons == ["caller cancelled"]
     assert runner.active_runs("c1") == []
+    # The error it came up as is kept as its cause; nothing on record says a listener or the wait failed.
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert "the listener for new runs failed" not in caplog.text
+    assert "waiting for run" not in caplog.text
 
 
 async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
