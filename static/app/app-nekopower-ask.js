@@ -102,6 +102,8 @@
      * What a request for approval asks to allow, in one line: in the language of the page, as its
      * buttons are, where the question has the line in that one (`lines`); else in the language of
      * the commission (`line`). With whether that very line leaves part of the command out.
+     * The same as `saidHere` in frontend/react-neko-chat/src/NekoPowerAskBlock.tsx: what is
+     * changed in one is changed in the other.
      */
     function saidHere(asked) {
         var lines = asked.lines && typeof asked.lines === 'object' ? asked.lines : {};

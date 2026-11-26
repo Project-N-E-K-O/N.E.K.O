@@ -76,6 +76,9 @@ function pageLanguage(): string {
  * What a request for approval asks to allow, in one line: in the language of the page, as its
  * buttons are, where the question has the line in that one (`lines`); else in the language of the
  * commission (`line`). With whether that very line leaves part of the command out.
+ * The same as `saidHere` in static/app/app-nekopower-ask.js: what is changed in one is changed in
+ * the other. (Once the page is put in another language, the chat window is drawn anew as a whole,
+ * and this with it.)
  */
 function saidHere(question: Record<string, unknown>): { line: string; cut: boolean } {
   const lines = (question.lines && typeof question.lines === 'object' ? question.lines : {}) as Record<string, unknown>;
@@ -151,14 +154,6 @@ export default function NekoPowerAskBlock({ block, message, interactive, onActio
   const draftKey = `${block.taskId}:${block.questionId}`;
   const [reply, setReply] = useState(() => drafts.get(draftKey)?.reply ?? '');
   const [picked, setPicked] = useState<Record<string, string[]>>(() => drafts.get(draftKey)?.picked ?? {});
-  // Drawn anew when the page is put in another language (or its words have come): the line is
-  // then said in that one (`askView`), and the words of the buttons with it.
-  const [, setRedrawn] = useState(0);
-  useEffect(() => {
-    const redraw = () => setRedrawn(count => count + 1);
-    window.addEventListener('localechange', redraw);
-    return () => window.removeEventListener('localechange', redraw);
-  }, []);
   useEffect(() => {
     // Kept until the question is answered or over, also while an answer is on its way. (Above the
     // composer a card is taken away without being drawn as answered: the chat lets go of what is

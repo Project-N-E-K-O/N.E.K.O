@@ -39,13 +39,12 @@ function show(message: ChatMessage, presentation: 'card' | 'bubble' = 'card') {
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-// Asked in Chinese, of a page that may be in English: and here the English line is the one cut.
-const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
-  detail: { tool: 'hand_over', title: 'a long title' }, line: '交给另一只使魔：a long title', line_cut: false,
-  lines: { 'zh-CN': { line: '交给另一只使魔：a long title', line_cut: false }, en: { line: 'start another familiar: a long … title', line_cut: true } } };
-
 describe('what a NekoPower commission asks, as a card of the chat', () => {
   it('says what is to be allowed in the language of the page, and asks it opened first where that very line is cut', () => {
+    // Asked in Chinese, of a page in English: and here the English line is the one cut.
+    const handed = { kind: 'permission', id: 'q8', category: 'open_session', options: ['always', 'session', 'once', 'deny'],
+      detail: { tool: 'hand_over', title: 'a long title' }, line: '交给另一只使魔：a long title', line_cut: false,
+      lines: { 'zh-CN': { line: '交给另一只使魔：a long title', line_cut: false }, en: { line: 'start another familiar: a long … title', line_cut: true } } };
     const seen = (language?: string) => {
       vi.stubGlobal('i18next', language === undefined ? undefined : { language });
       const { line, lineCut, needsWhole } = askView(handed);
@@ -59,20 +58,6 @@ describe('what a NekoPower commission asks, as a card of the chat', () => {
     expect(seen()).toEqual(['交给另一只使魔：a long title', false, false]);
     vi.stubGlobal('i18next', { language: 'en' });
     expect(askView({ ...handed, lines: { en: { line: '', line_cut: true } } }).line).toBe('交给另一只使魔：a long title');
-  });
-
-  it('says it anew in the language the page is put in while the card is shown', () => {
-    vi.stubGlobal('i18next', { language: 'zh-CN' });
-    const card = show(ask(handed));
-    const choices = () => [...card.container.querySelectorAll('[data-choice]')].map(node => node.getAttribute('data-choice'));
-    expect(card.at('.nekopower-ask-line').textContent).toBe('交给另一只使魔：a long title');
-    expect(choices()).toEqual(['always', 'session', 'once', 'deny']);
-    vi.stubGlobal('i18next', { language: 'en' });
-    act(() => { window.dispatchEvent(new Event('localechange')); });
-    expect(card.at('.nekopower-ask-line').textContent).toBe('start another familiar: a long … title');
-    // Cut in that one: all of it is to be opened before a wider approval.
-    expect(choices()).toEqual(['once', 'deny']);
-    card.unmount();
   });
 
   it('reads the kinds of question, and when all of what it would do has to be opened first', () => {
