@@ -194,20 +194,24 @@ class HudTasks:
         """Take in the state of a task agent's own task agent; returns the task shown above it if what it shows changed."""
         self._parents[commission.id] = commission.parent_id
         top = self._top(commission.id)
-        asked = self._asked_below.setdefault(top, {})
+        task = self._tasks.get(top)
+        if task is None:
+            # The task it was started for is not in view (let go of already): nothing to show
+            # it with, and nothing kept of it, which nothing would let go of.
+            self._parents.pop(commission.id, None)
+            return None
+        asked = self._asked_below.get(top, {})
         question = _page_question(commission) if commission.status == "waiting_user" else None
         if question is not None:
             entry = {"id": commission.id, "name": commission.name or "", "title": commission.title or "", "question": question}
             if asked.get(commission.id) == entry:
                 return None
             asked[commission.id] = entry
+            self._asked_below[top] = asked
         elif asked.pop(commission.id, None) is None:
             return None
         if not asked:
             self._asked_below.pop(top, None)
-        task = self._tasks.get(top)
-        if task is None:
-            return None
         task["sub_questions"] = list(asked.values())
         return task
 

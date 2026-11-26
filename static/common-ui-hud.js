@@ -1438,14 +1438,14 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         const below = this._syncSubAsks(task);
         if (below) desired.push(below);
     });
-    // 卡片不在了的那一块也拿掉；它下面上一次展开的是哪只，也不用再记着了。
+    // 卡片不在了的那一块也拿掉；它下面上一次展开的是哪只、各只上一次问的是哪条，也不用再记着了。
     if (this._subAskBlocks) this._subAskBlocks.forEach((block, taskId) => {
         if (desired.indexOf(block) !== -1) return;
         block.remove();
         this._subAskBlocks.delete(taskId);
     });
-    if (this._subAskOpen) Object.keys(this._subAskOpen).forEach(taskId => {
-        if (!activeIds.has(taskId)) delete this._subAskOpen[taskId];
+    [this._subAskOpen, this._subAskedBy].forEach(kept => {
+        if (kept) Object.keys(kept).forEach(taskId => { if (!activeIds.has(taskId)) delete kept[taskId]; });
     });
 
     // 只挪位置不对的卡片：已经站在该站的位置上的不动。把卡片挪走再插回会让卡片里正在打字的输入框
@@ -1514,7 +1514,9 @@ window.AgentHUD._syncSubAsks = function (task) {
     if (!this._subAskBlocks) this._subAskBlocks = new Map();
     if (!this._subAskOpen) this._subAskOpen = {};
     if (!this._subAskedBy) this._subAskedBy = {};
-    const list = (window.NekoPowerAsk && Array.isArray(task.sub_questions) ? task.sub_questions : []).filter(item =>
+    // 外层任务已经结束（它派出去的那几只正被一并停下）：不再挂出能作答的问话。
+    const underWay = task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
+    const list = (underWay && window.NekoPowerAsk && Array.isArray(task.sub_questions) ? task.sub_questions : []).filter(item =>
         item && typeof item === 'object' && item.id && item.question && typeof item.question === 'object');
     let block = this._subAskBlocks.get(task.id);
     if (!list.length) {
@@ -1645,9 +1647,10 @@ window.AgentHUD._fillSubAskRow = function (row, task, item, open, switched, last
         box.remove();
         box = null;
     }
-    // 这只上一次问的是哪条：问完接着干、又问了下一条，这一行重新冒出来时照样先停一下。
-    const lastAsked = this._subAskedBy[item.id];
-    this._subAskedBy[item.id] = questionId;
+    // 这只上一次问的是哪条：问完接着干、又问了下一条，这一行重新冒出来时照样先停一下。按外层任务记，卡片不在了就清。
+    const askedUnder = this._subAskedBy[task.id] || (this._subAskedBy[task.id] = {});
+    const lastAsked = askedUnder[item.id];
+    askedUnder[item.id] = questionId;
     if (!box) {
         if (!open) return;
         row.appendChild(window.NekoPowerAsk.render({
@@ -2572,6 +2575,10 @@ window.AgentHUD.refreshHudI18n = function () {
                 }
                 card.remove();
             });
+            // 卡片下面挂着的子使魔问话也一样：作答框只在换题时才重画，不拿掉就会停在旧语言。
+            // 上一次展开的是哪只、各问到哪条留着，重建后照旧展开那只，也不会多停一下。
+            taskList.querySelectorAll('.task-sub-asks').forEach(block => block.remove());
+            if (this._subAskBlocks) this._subAskBlocks.clear();
         }
         try { this.updateAgentTaskHUD(this._latestTasksData); } catch (_) { /* ignore */ }
     }

@@ -287,6 +287,39 @@ describe('what the task agents a task agent started ask', () => {
     // Nothing a card can show is not drawn.
     show([asking('c1', [below('c3', null), { name: 'x' }, null])]);
     expect(block('c1')).toBeNull();
+    // Hung under a task under way only: one that ended stops the ones it started, which may not be told yet.
+    show([asking('c1', [below('c2', permission('q2'))], { status: 'waiting_user', question: permission('q1') })]);
+    expect(row('c1', 'c2')).toBeTruthy();
+    show([asking('c1', [below('c2', permission('q2'))], { status: 'cancelled' })]);
+    expect(block('c1')).toBeNull();
+  });
+
+  it('draws what they ask anew in the language the page is turned to, the one opened still open', () => {
+    show([asking('c1', [below('c2', permission('q2')), below('c3', permission('q3'))])]);
+    head('c1', 'c3').click();
+    const words = { 'agent.taskHud.title': 'Tasks', 'agent.ask.once': 'Just once', 'agent.taskHud.statusWaitingUser': 'Waiting for you' };
+    window.t = key => words[key] || key;
+    try {
+      hud.refreshHudI18n();
+      hud._doUpdateAgentTaskHUD();
+      expect(opened('c1', 'c3').querySelector('[data-choice="once"]').textContent).toBe('Just once');
+      expect(row('c1', 'c3').querySelector('.task-sub-ask-badge').textContent).toBe('Waiting for you');
+      expect(opened('c1', 'c2')).toBeNull();
+      // Drawn anew for the language, not put in the place of another: not held back.
+      expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(false);
+      expect(document.querySelectorAll('.task-sub-asks').length).toBe(1);
+    } finally {
+      delete window.t;
+    }
+  });
+
+  it('lets go of what was asked under a task once its card is gone', () => {
+    vi.useFakeTimers();
+    show([asking('c1', [below('c2', permission('q2'))])]);
+    show([task('c9')]);
+    // The same one under it asks something else once the task is shown again: the first there, not held back.
+    show([asking('c1', [below('c2', permission('q3'))])]);
+    expect(opened('c1', 'c2').querySelector('[data-choice="once"]').disabled).toBe(false);
   });
 
   it('sends the answer to the task agent that asked, against its question', async () => {

@@ -1103,15 +1103,18 @@ def test_what_a_task_agents_own_task_agents_ask_is_shown_with_the_task_above_the
     assert [task["id"] for task in view.all()] == ["c1"]
 
 
-def test_what_is_asked_under_a_task_not_yet_in_view_is_shown_once_it_is():
+def test_nothing_is_kept_of_what_is_asked_under_a_task_not_in_view():
     from app.agent_server.nekopower_mount import HudTasks
 
     view = HudTasks()
-    # Read from the ledger in the order filed, with one already waiting by then: nothing to tell yet.
+    # The task it was started for let go of already (or never seen): nothing to show it with, nothing kept.
     assert view.update(_below("c2", "c1", "q2")) is None
-    assert _asked_below(view.update(_commission(id="c1"))) == [("c2", "q2")]
-    # Waiting with nothing on record that a card could show: not one to be answered there.
+    assert view.update(_below("c3", "c2", "q3")) is None
+    assert (view._parents, view._asked_below) == ({}, {})
+    assert view.update(_commission(id="c1"))["sub_questions"] == []
+    # Waiting with nothing on record that a card could show: not one to be answered there, and nothing kept.
     assert view.update(_below("c5", "c1", status="waiting_user")) is None
+    assert view._asked_below == {}
 
 
 def test_who_is_under_a_task_is_let_go_of_with_the_task():
