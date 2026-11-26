@@ -888,7 +888,8 @@
             const originalMax = parseFloat(getComputedStyle(container).maxWidth);
             container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
         }
-        const panelW = container.offsetWidth * panelScale;
+        const viewportMaxWidth = container.style.maxWidth;
+        let panelW = container.offsetWidth * panelScale;
         let panelH = container.offsetHeight * panelScale;
         const sideSpace = goLeft ? popupRect.left - gap - edgeMargin
             : screenW - popupRect.right - gap - edgeMargin;
@@ -904,6 +905,10 @@
         const ownerPrefix = ownerPrefixMatch ? ownerPrefixMatch[1] : '';
 
         function positionStackedPanel(buttonZone) {
+            // Discard side-only constraints before measuring the stacked panel.
+            container.style.maxWidth = viewportMaxWidth;
+            panelW = container.offsetWidth * panelScale;
+            panelH = container.offsetHeight * panelScale;
             let panelLeft = Math.max(edgeMargin, popupRect.left);
             if (panelLeft + panelW > screenW - edgeMargin) {
                 panelLeft = edgeMargin;

@@ -258,3 +258,37 @@ def test_settings_collision_width_limits_include_box_insets(page, edge, delayed,
         assert result["panel"]["right"] <= 328.5
     else:
         assert result["panel"]["left"] >= 1099.5
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("cropped", [False, True])
+@pytest.mark.parametrize("scale", [1, 1.25])
+@pytest.mark.parametrize("delayed", [False, True])
+def test_settings_stacked_fallback_restores_width_after_side_clamp(page, cropped, scale, delayed):
+    _install_settings_panel(page, prefix="live2d", scale=scale, cropped=cropped, edge="right")
+    natural_width = page.evaluate("""({scale, delayed}) => {
+        const panel = document.getElementById('settings-panel');
+        panel.style.width = '280px';
+        const naturalWidth = panel.getBoundingClientRect().width;
+        panel._popupElement.style.left = (240 * scale + 40) + 'px';
+        document.getElementById('live2d-btn-settings').style.left = (240 * scale + 290) + 'px';
+        const position = () => {
+            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, delayed);
+            AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        };
+        if (delayed) position();
+        const button = document.createElement('button');
+        button.id = 'live2d-btn-collision';
+        button.style.cssText = `position:fixed;left:${240 * scale}px;top:350px;width:48px;height:48px`;
+        document.body.appendChild(button);
+        if (!delayed) position();
+        return naturalWidth;
+    }""", dict(scale=scale, delayed=delayed))
+    page.wait_for_function("document.getElementById('settings-panel')._nekoPositionCheckTimer == null")
+    page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
+    result = _snapshot(page)
+    panel, owner = result["panel"], result["popup"]
+    assert result["down"] == "true"
+    assert panel["width"] == pytest.approx(natural_width, abs=0.5)
+    assert panel["left"] >= 7.5 and panel["right"] <= 1432.5
+    assert panel["bottom"] <= owner["top"] or panel["top"] >= owner["bottom"]
