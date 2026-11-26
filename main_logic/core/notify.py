@@ -67,6 +67,8 @@ from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_NO_NEKOPOWER,
+    SESSION_INIT_NEKOPOWER_NO_CAPABILITY,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
     normalize_sys_prompt_locale,
@@ -75,6 +77,17 @@ from utils.language_utils import normalize_language_code, is_supported_language_
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.screen_comment_guard import screen_guard_enabled, screen_history_rewrites
 from ._shared import logger
+
+
+def _no_nekopower_note(agent_flags) -> dict:
+    """What a session's opening adds when NekoPower is not fully on: off, or on with no capability.
+
+    With only the master switch on, the panel looks switched on, so the
+    sentence names the capability switches as well.
+    """
+    if (agent_flags or {}).get("agent_enabled", False):
+        return SESSION_INIT_NEKOPOWER_NO_CAPABILITY
+    return SESSION_INIT_NO_NEKOPOWER
 
 
 class NotifyMixin:
@@ -236,8 +249,11 @@ class NotifyMixin:
                 + self.lanlan_prompt
             )
         else:
+            # Without NekoPower fully on there is no task tool and no turn check:
+            # say so in the opening, or she promises what nothing will do.
             prompt = (
                 _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
+                + _loc(_no_nekopower_note(getattr(self, "agent_flags", None)), _lang)
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():

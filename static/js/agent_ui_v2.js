@@ -33,7 +33,27 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status', 'pngtuber-agent-status'),
+        taskHudCropNote: getEls(
+            'live2d-agent-taskhud-crop-note', 'vrm-agent-taskhud-crop-note',
+            'mmd-agent-taskhud-crop-note', 'pngtuber-agent-taskhud-crop-note'
+        ),
     });
+    // 桌面版的省算力模式（N.E.K.O.-PC，Windows/macOS）正在把桌宠窗口裁到模型附近：这时任务
+    // 悬浮窗显示不出来，「显示悬浮窗」下面要说一句。裁剪期间才有 __nekoNiriPetPhysicalCrop；
+    // __nekoLive2DPeekHostStage 只在 Windows/macOS 的壳里有，用来和 Linux 上常开的物理裁剪分开。
+    const isPetPowerSaveCropActive = () => {
+        try {
+            const crop = window.__nekoNiriPetPhysicalCrop;
+            if (!crop || !window.__nekoLive2DPeekHostStage) return false;
+            return typeof crop.isActive === 'function' ? crop.isActive() === true : true;
+        } catch (_) {
+            return false;
+        }
+    };
+    const syncTaskHudCropNote = () => {
+        const hidden = !isPetPowerSaveCropActive();
+        el().taskHudCropNote.forEach(note => { if (note) note.hidden = hidden; });
+    };
     const sync = (cbs) => {
         if (!cbs) return;
         (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -283,6 +303,7 @@
     function render(source = 'render') {
         const { master, keyboard, browser, userPlugin } = el();
         if (!master.length) return;
+        syncTaskHudCropNote();
         const snap = state.snapshot;
         if (!snap) {
             master.forEach(m => {
@@ -377,6 +398,14 @@
             });
         } else if (!analyzerEnabled) {
             setStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪', {
+                stabilizeTutorialText: true
+            });
+        } else if (!FLAG_KEYS.some((k) => (
+            Object.prototype.hasOwnProperty.call(state.optimistic, k) ? !!state.optimistic[k] : !!flags[k]
+        ))) {
+            // 只开了总开关：喵能力要至少开一项能力才算开着（agent 进程的 nekopower_on），
+            // 不然她不会派任务，面板却看着像开了。
+            setStatus(window.t ? window.t('agent.status.noCapability') : '再打开下面至少一项，喵能力才会替你办事', {
                 stabilizeTutorialText: true
             });
         } else {

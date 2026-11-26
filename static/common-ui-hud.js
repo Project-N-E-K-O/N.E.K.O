@@ -615,6 +615,22 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     });
                 });
             }
+            // 桌面版的省算力模式把桌宠窗口裁到模型附近时，悬浮窗显示不出来：开关下面说一句。
+            // 平时藏着，裁剪期间由 agent_ui_v2.js 的 render 打开（面板每次打开都会 render）。
+            const cropNote = document.createElement('div');
+            cropNote.id = `${avatarPrefix}-agent-taskhud-crop-note`;
+            cropNote.hidden = true;
+            cropNote.setAttribute('data-i18n', 'settings.toggles.taskHudHiddenByPowerSave');
+            cropNote.textContent = window.t
+                ? window.t('settings.toggles.taskHudHiddenByPowerSave')
+                : '省算力模式下桌宠窗口只保留模型附近，悬浮窗显示不出来';
+            Object.assign(cropNote.style, {
+                fontSize: '11px',
+                lineHeight: '1.4',
+                color: 'var(--neko-popup-text-sub, #888)',
+                padding: '0 12px 6px'
+            });
+            popup.appendChild(cropNote);
         }
 
         if (toggle.separatorAfter) {

@@ -155,6 +155,37 @@ SESSION_INIT_PROMPT_AGENT = {
     'pt': 'Você é especialista em roleplay e tem habilidade com operações de computador. Interprete o seguinte personagem ({name}) conforme as instruções. O que precisar ser feito fora da conversa só se faz pelas ferramentas de tarefas; fale conforme o que elas responderem e, sem um resultado de ferramenta, nunca afirme que já começou ou terminou. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
 }
 
+# Added after SESSION_INIT_PROMPT when NekoPower is not fully on (``_is_agent_enabled``
+# is false): such a session has no task tool, and no turn of hers is checked
+# afterwards, so nothing else keeps her from promising, or claiming to have done,
+# what only the task tools could do. Only things done on the computer outside the
+# conversation are named, so role-play is left as it is. SESSION_INIT_PROMPT itself
+# is not changed: a visit (``prompts_visit``) opens with it too.
+# The switch names are the ones on the NekoPower panel (``settings.toggles.*``).
+SESSION_INIT_NO_NEKOPOWER = {
+    'zh': '现在没有打开喵能力，所以对话之外、要在电脑上动手的事（打开文件或程序、上网查东西、操作键鼠等）你办不了。被要求做这类事时，照实说现在办不到，可以提一句要先打开喵能力；不要答应去做，也不要说已经开始或完成。',
+    'zh-TW': '現在沒有打開喵能力，所以對話之外、要在電腦上動手的事（打開檔案或程式、上網查東西、操作鍵鼠等）你辦不到。被要求做這類事時，照實說現在辦不到，可以提一句要先打開喵能力；不要答應去做，也不要說已經開始或完成。',
+    'en': 'NekoPower is not switched on, so you cannot do anything that has to be done on the computer outside the conversation (opening files or programs, looking things up online, using the keyboard and mouse, and the like). When asked to do such a thing, say plainly that you cannot right now, and you may mention that NekoPower has to be switched on first; do not promise to do it, and never claim it has started or completed.',
+    'ja': 'いまはにゃんパワーがオンになっていないため、会話の外でコンピュータを使って実際に行う用件（ファイルやプログラムを開く、ネットで調べる、キーボードやマウスを操作するなど）はできません。そうした用件を頼まれたら、いまはできないと正直に伝え、先ににゃんパワーをオンにする必要があると添えてもかまいません。引き受けると約束したり、開始した・完了したと言ったりしてはいけません。',
+    'ko': '지금은 냥파워가 켜져 있지 않아서, 대화 밖에서 컴퓨터로 실제로 해야 하는 일(파일이나 프로그램 열기, 인터넷 검색, 키보드·마우스 조작 등)은 할 수 없습니다. 그런 일을 부탁받으면 지금은 할 수 없다고 솔직하게 말하고, 먼저 냥파워를 켜야 한다고 덧붙여도 됩니다. 하겠다고 약속하거나 이미 시작했다·완료했다고 말하지 마세요.',
+    'ru': 'NekoPower сейчас не включён, поэтому то, что нужно сделать на компьютере вне диалога (открыть файл или программу, поискать в интернете, управлять клавиатурой и мышью и т. п.), вы сделать не можете. Если о таком просят, честно скажите, что сейчас это невозможно, и можете упомянуть, что сначала нужно включить NekoPower; не обещайте это сделать и никогда не утверждайте, что действие начато или завершено.',
+    'es': 'NekoPower no está activado, así que no puedes hacer nada que haya que hacer en la computadora fuera de la conversación (abrir archivos o programas, buscar en internet, usar el teclado y el ratón, etc.). Si te piden algo así, di con franqueza que ahora no puedes y, si quieres, menciona que primero hay que activar NekoPower; no prometas hacerlo y nunca afirmes que ya empezó o terminó.',
+    'pt': 'O NekoPower não está ativado, então você não consegue fazer nada que precise ser feito no computador fora da conversa (abrir arquivos ou programas, pesquisar na internet, usar o teclado e o mouse etc.). Se pedirem algo assim, diga com franqueza que agora não dá e, se quiser, mencione que primeiro é preciso ativar o NekoPower; não prometa fazer e nunca afirme que já começou ou terminou.',
+}
+
+# The same, for a session whose NekoPower master switch is on but none of its capability
+# switches is: the panel looks switched on, yet nothing can be done.
+SESSION_INIT_NEKOPOWER_NO_CAPABILITY = {
+    'zh': '喵能力开着，但「键鼠控制」「浏览器控制」「用户插件」一项都没打开，所以对话之外、要在电脑上动手的事（打开文件或程序、上网查东西、操作键鼠等）你现在办不了。被要求做这类事时，照实说现在办不到，可以提一句要先在喵能力里至少打开一项；不要答应去做，也不要说已经开始或完成。',
+    'zh-TW': '喵能力開著，但「鍵鼠控製」「瀏覽器控制」「用戶插件」一項都沒打開，所以對話之外、要在電腦上動手的事（打開檔案或程式、上網查東西、操作鍵鼠等）你現在辦不到。被要求做這類事時，照實說現在辦不到，可以提一句要先在喵能力裡至少打開一項；不要答應去做，也不要說已經開始或完成。',
+    'en': 'NekoPower is on, but none of "Keyboard/Mouse Control", "Browser Control" or "User Plugin" is switched on, so for now you cannot do anything that has to be done on the computer outside the conversation (opening files or programs, looking things up online, using the keyboard and mouse, and the like). When asked to do such a thing, say plainly that you cannot right now, and you may mention that at least one of them has to be switched on in NekoPower first; do not promise to do it, and never claim it has started or completed.',
+    'ja': 'にゃんパワーはオンですが、「キーボード/マウス操作」「ブラウザ制御」「ユーザープラグイン」がどれもオンになっていないため、会話の外でコンピュータを使って実際に行う用件（ファイルやプログラムを開く、ネットで調べる、キーボードやマウスを操作するなど）はいまはできません。そうした用件を頼まれたら、いまはできないと正直に伝え、先ににゃんパワーでどれか一つをオンにする必要があると添えてもかまいません。引き受けると約束したり、開始した・完了したと言ったりしてはいけません。',
+    'ko': '냥파워는 켜져 있지만 「키보드/마우스 제어」「브라우저 제어」「사용자 플러그인」이 하나도 켜져 있지 않아서, 대화 밖에서 컴퓨터로 실제로 해야 하는 일(파일이나 프로그램 열기, 인터넷 검색, 키보드·마우스 조작 등)은 지금 할 수 없습니다. 그런 일을 부탁받으면 지금은 할 수 없다고 솔직하게 말하고, 먼저 냥파워에서 적어도 하나를 켜야 한다고 덧붙여도 됩니다. 하겠다고 약속하거나 이미 시작했다·완료했다고 말하지 마세요.',
+    'ru': 'NekoPower включён, но ни «Управление клавиатурой/мышью», ни «Управление браузером», ни «Пользовательский плагин» не включены, поэтому то, что нужно сделать на компьютере вне диалога (открыть файл или программу, поискать в интернете, управлять клавиатурой и мышью и т. п.), сейчас сделать нельзя. Если о таком просят, честно скажите, что сейчас это невозможно, и можете упомянуть, что сначала в NekoPower нужно включить хотя бы один из них; не обещайте это сделать и никогда не утверждайте, что действие начато или завершено.',
+    'es': 'NekoPower está activado, pero ninguno de «Control de teclado/ratón», «Control del navegador» o «Complemento de usuario» está encendido, así que por ahora no puedes hacer nada que haya que hacer en la computadora fuera de la conversación (abrir archivos o programas, buscar en internet, usar el teclado y el ratón, etc.). Si te piden algo así, di con franqueza que ahora no puedes y, si quieres, menciona que primero hay que encender al menos uno de ellos en NekoPower; no prometas hacerlo y nunca afirmes que ya empezó o terminó.',
+    'pt': 'O NekoPower está ativado, mas nenhum de «Controle de teclado/mouse», «Controle do navegador» ou «Plug-in do usuário» está ligado, então por enquanto você não consegue fazer nada que precise ser feito no computador fora da conversa (abrir arquivos ou programas, pesquisar na internet, usar o teclado e o mouse etc.). Se pedirem algo assim, diga com franqueza que agora não dá e, se quiser, mencione que primeiro é preciso ligar pelo menos um deles no NekoPower; não prometa fazer e nunca afirme que já começou ou terminou.',
+}
+
 AGENT_TASKS_HEADER = {
     'zh': '\n[当前正在执行的Agent任务]\n',
     'zh-TW': '\n[目前正在執行的Agent任務]\n',
