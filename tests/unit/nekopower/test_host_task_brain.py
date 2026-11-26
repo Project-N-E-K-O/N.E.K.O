@@ -1372,28 +1372,42 @@ async def test_a_stop_of_the_one_it_names_says_what_of_its_project_was_not_shown
         assert (RECEIPT_TEXTS["en"]["left_running"].split(":")[0] in late[0].payload["text"]) == (mode == "proactive")
 
     # Everything was stopped before a late stop that could not end all it ran is told: that is told
-    # (as before), and not what it said goes on, which was stopped with everything.
+    # (as before), and what it said goes on only of what is still under way, looked at again: not
+    # what was stopped with everything, but what that could not stop.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
-    await filed("redo the footer", "Shop site")
-
-    class SlowThenEverything(Slow):
-        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-            said = await super().complete(tier, messages)
-            if tier == "under_way":
-                host.brain._dispatch_generation += 1
-            return said
-
     monkeypatch.setattr(host.brain._task_agents, "abort", not_closed)
-    reading = '{"does": "stop", "items": [1], "named": true, "scope": "these"}'
-    host.brain._decision = LexicalDecisionModel(SlowThenEverything(reading))
-    before = len(await outbox(host, KIND_RECEIPT))
-    assert (await _dispatch(host, "stop the footer one", lang="en")).kind == "received"
-    await host.brain.settle()
+    host.brain._decision = LexicalDecisionModel(Slow('{"does": "stop", "items": [1], "named": true, "scope": "these"}'))
+    spawn = host.brain._spawn
+    stopping = {"all": True}
+
+    def everything_stopped_before_it_is_told(coroutine: Any, **kwargs: Any) -> Any:
+        if getattr(getattr(coroutine, "cr_code", None), "co_name", "") != "tell":
+            return spawn(coroutine, **kwargs)
+
+        async def then_tell() -> None:
+            host.brain._dispatch_generation += 1
+            if stopping["all"]:
+                for item in await host.ledger.select(lanlan_name="Lan", statuses=ACTIVE_STATUSES):
+                    await host.ledger.transition(item.id, "cancelled", reason="everything stopped")
+            await coroutine
+
+        return spawn(then_tell(), **kwargs)
+
+    monkeypatch.setattr(host.brain, "_spawn", everything_stopped_before_it_is_told)
+    for stopped_all in (True, False):
+        stopping["all"] = stopped_all
+        await filed("compress product images", "Shop site")
+        await filed("redo the footer", "Shop site")
+        before = len(await outbox(host, KIND_RECEIPT))
+        assert (await _dispatch(host, "stop the footer one", lang="en")).kind == "received"
+        await host.brain.settle()
+        (late,) = (await outbox(host, KIND_RECEIPT))[before:]
+        assert (late.payload["receipt"], late.payload["delivery_mode"]) == ("stop_failed", "proactive")
+        assert late.payload["text"].startswith("Stopped: redo the footer, but it could not be confirmed")
+        said = RECEIPT_TEXTS["en"]["left_running"].split(":")[0] in late.payload["text"]
+        assert said == (not stopped_all), stopped_all
+    monkeypatch.setattr(host.brain, "_spawn", spawn)
     monkeypatch.setattr(host.brain._task_agents, "abort", abort)
-    (late,) = (await outbox(host, KIND_RECEIPT))[before:]
-    assert (late.payload["receipt"], late.payload["delivery_mode"]) == ("stop_failed", "proactive")
-    assert late.payload["text"].startswith("Stopped: redo the footer, but it could not be confirmed")
-    assert RECEIPT_TEXTS["en"]["left_running"].split(":")[0] not in late.payload["text"]
 
 
 def test_a_receipt_names_a_few_of_what_goes_on_and_says_how_many_there_are():

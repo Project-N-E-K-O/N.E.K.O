@@ -639,8 +639,23 @@ class TaskBrain:
                         return
                     # Not what a stop it made could not end: stopping
                     # everything does not take up what is stopped already.
-                    # What it said goes on was stopped with everything.
-                    said = replace(receipt, left_running=[])
+                    # What it said goes on was stopped with everything, but
+                    # for what that could not stop: looked at again (and, not
+                    # to be read, taken for stopped).
+                    going_on: list[Commission] = []
+                    if receipt.left_running:
+                        try:
+                            now = {
+                                item.id
+                                for item in await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+                            }
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - not said to go on
+                            logger.warning("reading her work under way for a late receipt failed", exc_info=True)
+                            now = set()
+                        going_on = [item for item in receipt.left_running if item.id in now]
+                    said = replace(receipt, left_running=going_on)
                 await self._reporter.receipt(
                     lanlan_name,
                     kind=said.kind,

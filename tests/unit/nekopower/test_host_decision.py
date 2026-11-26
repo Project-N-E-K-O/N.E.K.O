@@ -1383,6 +1383,12 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
     # what was meant, as with the whole list.
     mixed = [*shop[:2], commission("c3", "write the cat food post", route="task_agent", project="Blog")]
     assert await read(these, mixed) == ("stop", ["c1"], [])
+    # Of several it names, of two projects: said for the one some of which was left out, not for
+    # the other, all of which was shown.
+    blog = [commission(f"b{n}", f"blog post {n}", route="task_agent", project="Blog") for n in (1, 2)]
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 4)
+    two = [shop[0], *blog, *shop[1:]]
+    assert await read({**these, "items": [1, 2]}, two) == ("stop", ["c1", "b1"], ["c2", "c3"])
     # Nothing left out: nothing said.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 3)
     assert await read(these, shop) == ("stop", ["c1"], [])

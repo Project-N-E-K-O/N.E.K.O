@@ -1224,11 +1224,14 @@ class LexicalDecisionModel:
                 # the one item shown: what was shown and not named goes on as
                 # well, owner's automatic review). Where none of it was left
                 # out, what it names is what was meant, as when the list is
-                # whole: nothing is said.
+                # whole: nothing is said. So for each it names: a stop of the
+                # shop site's one and the blog's one says nothing of the blog,
+                # all of which was shown.
+                cut = [other for other in shown_stopped if any(_kin(item, other) for item in hidden)]
                 going_on = [
                     item.id for item in request.active
-                    if item.id not in stopped and any(_kin(item, other) for other in shown_stopped)
-                ] if kin else []
+                    if item.id not in stopped and any(_kin(item, other) for other in cut)
+                ]
                 return Triage(kind="stop", targets=stopped, left_running=going_on, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
             # nothing of hers it names is under way.
