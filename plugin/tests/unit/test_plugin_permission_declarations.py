@@ -3029,3 +3029,31 @@ def test_an_attribute_write_elsewhere_keeps_a_function_local_socket(tmp_path):
     # Another module cannot rebind a function's local name.
     report = _scan(tmp_path, _REINIT_CLIENT.format("pass"), **{"net_setup.py": "import main\nmain.s = None\n"})
     assert _bases(report) == {CONNECT: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "make = socket.socket\nsocket.socket = lambda family: make(socket.AF_INET)\n",
+        "socket.SocketType = object\n",
+        "setattr(socket, 'socket', object)\n",
+        "socket.socket.listen = lambda self: None\n",
+        "from socket import socket as S\nS.listen = lambda self: None\n",
+        "S = socket.socket\nT = S\nT.bind = lambda self, address: None\n",
+        "setattr(socket.socket, 'bind', None)\n",
+    ],
+)
+def test_a_patched_socket_module_disables_the_downgrade(tmp_path, patch):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + patch, 1))
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_socket_module_patched_in_another_file_disables_the_downgrade(tmp_path):
+    other = "import socket\nmake = socket.socket\nsocket.socket = lambda family: make(socket.AF_INET)\n"
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_writing_other_attributes_keeps_the_downgrade(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER + "class C:\n    def go(self):\n        self.sock = None\n")
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}

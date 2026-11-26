@@ -412,6 +412,17 @@ def _constant_attribute_name(call: ast.Call, name: str) -> str | None:
     return None
 
 
+# Constructor entries of the socket module; a write to one may make
+# socket.socket(AF_UNIX) build another socket.
+_CONSTRUCTOR_NAMES = frozenset({"socket", "SocketType"})
+
+
+def _receiver_root(node) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _super_call(node) -> bool:
     # Only the zero-argument form: super(cls, obj) may name another instance.
     return (
@@ -446,6 +457,11 @@ def _families_written(sources, walker, written=None) -> bool:
     stores, deletes or sets by a constant name, in any file: a module-level
     socket of that name may be replaced from another module (import main;
     main.s = ...). Complete only when the result is False.
+
+    Patching the socket module counts as well: a write to a .socket /
+    .SocketType attribute, or to any attribute reached from a name the file
+    imports from socket (socket.socket.connect = ..., S.connect = ... after
+    from socket import socket as S), directly or by a constant setattr.
     """
     for relative, source in sources:
         walker.poll()
@@ -459,9 +475,19 @@ def _families_written(sources, walker, written=None) -> bool:
             continue  # reported by the main pass
         # ast.walk visits a call before its callee.
         static_callees: set[int] = set()
+        # Names bound to the socket module or its members in this file, and
+        # the root names whose attributes are written; compared at the end.
+        socket_names = {"socket"}
+        written_roots: set[str] = set()
+        aliases: list[tuple[str, str]] = []
         for node in ast.walk(tree):
             walker.poll()
-            if isinstance(node, ast.Call):
+            if isinstance(node, ast.Import):
+                socket_names.update(item.asname or item.name for item in node.names if item.name == "socket")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "socket" and not node.level:
+                    socket_names.update(item.asname or item.name for item in node.names)
+            elif isinstance(node, ast.Call):
                 callee = node.func
                 name = callee.id if isinstance(callee, ast.Name) else (
                     callee.attr if isinstance(callee, ast.Attribute) else None
@@ -470,8 +496,14 @@ def _families_written(sources, walker, written=None) -> bool:
                     constant = _constant_attribute_name(node, name)
                     if constant is not None:
                         static_callees.add(id(callee))
-                        if written is not None and name in _NAMED_WRITERS:
-                            written.add(constant)
+                        if name in _NAMED_WRITERS:
+                            if constant in _CONSTRUCTOR_NAMES:
+                                return True
+                            root = _receiver_root(node.args[0]) if node.args else None
+                            if root:
+                                written_roots.add(root)
+                            if written is not None:
+                                written.add(constant)
                     elif name in _NAME_READERS:
                         return True
             elif isinstance(node, (ast.Name, ast.Attribute)):
@@ -483,8 +515,11 @@ def _families_written(sources, walker, written=None) -> bool:
                     # from another file); super().__init__() is not one.
                     return True
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
-                    if node.attr in _FAMILY_NAMES:
+                    if node.attr in _FAMILY_NAMES or node.attr in _CONSTRUCTOR_NAMES:
                         return True
+                    root = _receiver_root(node.value)
+                    if root:
+                        written_roots.add(root)
                     if written is not None:
                         written.add(node.attr)
             elif isinstance(node, ast.Constant):
@@ -500,6 +535,24 @@ def _families_written(sources, walker, written=None) -> bool:
             elif isinstance(node, ast.keyword):
                 if node.arg in _FAMILY_NAMES:
                     return True
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                root = _receiver_root(node.value)
+                if root:
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    aliases.extend((target.id, root) for target in targets if isinstance(target, ast.Name))
+        # Aliases of those names (S = socket.socket; S.connect = ...).
+        readers: dict[str, list[str]] = {}
+        for alias, root in aliases:
+            readers.setdefault(root, []).append(alias)
+        pending = list(socket_names)
+        while pending:
+            walker.poll()
+            for alias in readers.get(pending.pop(), ()):
+                if alias not in socket_names:
+                    socket_names.add(alias)
+                    pending.append(alias)
+        if written_roots & socket_names:
+            return True
     return False
 
 
