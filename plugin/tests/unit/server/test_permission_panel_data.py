@@ -1032,13 +1032,32 @@ async def test_busy_operation_lock_answers_in_the_module_error_shape(env, monkey
     assert response.json()["detail"]["details"] == {}
 
 
-def test_an_update_that_reset_the_grants_is_listed_as_upgraded(env):
+def test_a_changed_source_is_asked_in_full_like_a_new_plugin(env):
     _weather(env)
     env.sources["weather"] = MARKET
     env.store.decide("weather", CONNECT, "granted", source=MARKET)
-    env.store.sync_source("weather", PluginSource("market", "new-fingerprint"))
+    env.store.sync_source("weather", PluginSource("market", "other-market-id"))
 
     result = permission_panel.pending(index=env.index)
 
-    assert [row["plugin_id"] for row in result["upgraded"]] == ["weather"]
-    assert result["to_confirm"] == []
+    assert [row["plugin_id"] for row in result["to_confirm"]] == ["weather"]
+    assert result["upgraded"] == []
+    assert permission_panel.plugin_panel("weather", index=env.index)["grants_reset"]["reason"] == "source_changed"
+
+
+def test_a_whole_plugin_denial_covers_permissions_set_back_to_undecided(env):
+    env.plugin("p", manifest=None, report=_report(
+        plugin_sdk_main_agent_memory__read={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+        plugin_sdk_main_agent_conversations__read={"declared": None, "findings": [_finding("a.py", 2)], "basis": "resolved_call"},
+    ))
+    env.store.decide("p", MEMORY, "granted")
+    env.store.decide("p", SPAWN, "granted")
+    env.store.clear("p", MEMORY)
+    env.store.clear("p", SPAWN)
+
+    env.store.apply_legacy_decision("p", "denied")
+
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("p", index=env.index)["rows"]}
+    assert rows[MEMORY]["state"] == "denied" and rows[CONVERSATIONS]["state"] == "denied"
+    # Outside what the dialog decides: the user's own choice stays.
+    assert env.store.read("p")["permissions"][SPAWN]["state"] == "undecided"

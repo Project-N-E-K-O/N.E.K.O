@@ -61,6 +61,9 @@ logger = get_logger("server.infrastructure.plugin_permissions")
 FILENAME = "plugin_permissions.json"
 SCHEMA_VERSION = 1
 
+# Permissions the consent dialog's whole-plugin decision covers.
+LEGACY_IDS: frozenset[str] = frozenset(LEGACY_PERMISSION_NAMES.values())
+
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
 
@@ -788,6 +791,15 @@ class PluginPermissionStore:
                 record.pop(GRANTS_RESET, None)
             if decision == "denied":
                 record[LEGACY_DENIED] = True
+                # A fresh whole-plugin denial covers the permissions that
+                # flow knows about, including ones set back to undecided
+                # earlier (which would otherwise read undecided).
+                for permission_id in [
+                    key
+                    for key, entry in permissions.items()
+                    if key in LEGACY_IDS and isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED
+                ]:
+                    del permissions[permission_id]
             elif decision == "approved":
                 record[LEGACY_APPROVED] = True
             if record == self._document["plugins"].get(plugin_id):
