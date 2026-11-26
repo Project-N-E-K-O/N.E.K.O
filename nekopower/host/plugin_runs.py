@@ -73,16 +73,21 @@ def _default_client_factory(**kwargs: Any) -> Any:
     return httpx.AsyncClient(**merged)
 
 
-def _reraise_swallowed_cancellation() -> None:
+def _reraise_swallowed_cancellation(cause: BaseException | None = None) -> None:
     """Raise ``CancelledError`` if this task was cancelled and something below hid it.
 
     A cancellation can surface as an ordinary error from the layer that was
     awaited, or be absorbed there altogether. Carrying on would keep polling a
-    run whose caller is gone, and the run would never be cancelled.
+    run whose caller is gone, and the run would never be cancelled. ``cause``
+    is the error it came up as, kept as the cause of the one raised. Without
+    one nothing is given as the cause, so an error being handled here is
+    still shown as what it happened during (``from None`` would hide it).
     """
     task = asyncio.current_task()
     if task is not None and task.cancelling():
-        raise asyncio.CancelledError
+        if cause is None:
+            raise asyncio.CancelledError
+        raise asyncio.CancelledError from cause
 
 
 def plugin_server_url() -> str:
@@ -760,7 +765,9 @@ class PluginRunner:
                     await on_run_created(run_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - a listener never costs the run its result
+                except Exception as exc:  # noqa: BLE001 - a listener never costs the run its result
+                    # A cancellation of the caller that came up as an error is one.
+                    _reraise_swallowed_cancellation(exc)
                     logger.warning("the listener for new runs failed", exc_info=True)
             try:
                 completion = await self._await_completion(
@@ -770,7 +777,7 @@ class PluginRunner:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 # A cancellation of the caller that came up as an error is one.
-                _reraise_swallowed_cancellation()
+                _reraise_swallowed_cancellation(exc)
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 # Nothing says it ended: it is given up on, as one whose polling failed.
                 completion = {
@@ -960,7 +967,7 @@ class PluginRunner:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - counted; three in a row end the wait
-                    _reraise_swallowed_cancellation()
+                    _reraise_swallowed_cancellation(exc)
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                         logger.warning("polling run %s failed: %s", run_id, type(exc).__name__)
@@ -1046,7 +1053,7 @@ class PluginRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the run's status still stands
-                _reraise_swallowed_cancellation()
+                _reraise_swallowed_cancellation(exc)
                 logger.debug("export of run %s could not be read: %s", run_id, type(exc).__name__)
 
             chosen_raw = trigger_raw if trigger_raw is not None else fallback_raw
