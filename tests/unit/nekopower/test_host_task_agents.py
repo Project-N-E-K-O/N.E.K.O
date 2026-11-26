@@ -2601,12 +2601,13 @@ async def test_a_task_agent_a_stop_could_not_close_is_closed_when_it_is_stopped_
     monkeypatch.setattr(host.task_agents, "_close_session", close_session)
 
     # The child's session could not be closed, and the stop says so; both are stopped all the same.
+    # What failed came before the parent's own session was closed: that one is left open.
     with pytest.raises(RuntimeError, match="the runtime did not answer"):
         await host.abort(receipt.commission_id)
     assert [(await host.ledger.get(one)).status for one in (receipt.commission_id, sub.id)] == ["cancelled"] * 2
-    assert sub.id in host.task_agents.running
+    assert receipt.commission_id in host.task_agents.running
 
-    # Stopped again: what is still open of it, the child it started included, is closed.
+    # Stopped again: what is still open of it is closed.
     again = await host.abort(receipt.commission_id)
 
     assert (again.status, again.status_reason) == ("cancelled", "stopped")
