@@ -189,6 +189,42 @@ test('三维模型双指捏合：宿主接管时只缩放不挪位置，未接�
     assert.notDeepEqual(free.position.toArray(), [0.5, 0, 0], '未接管：按捏合中心挪');
 });
 
+test('三维模型双指捏合：宿主接管时捏合中心投不到平面上（画布 0×0）也照常缩放；未接管时照旧不缩放', async () => {
+    const THREE = await loadThree();
+    const { context, document } = createContext(THREE);
+    vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar/avatar-touch-gestures.js'), 'utf8'), context);
+    const gestures = vm.runInContext('window.NekoModelTouchGestures', context);
+    function pinch(hostActive) {
+        const { renderer, canvas } = createRenderer(THREE, { width: 800, height: 600 });
+        canvas.ownerDocument = document;
+        canvas.setPointerCapture = () => {};
+        canvas.releasePointerCapture = () => {};
+        const camera = new THREE.PerspectiveCamera(30, 800 / 600, 0.1, 100);
+        camera.position.z = 5;
+        const model = new THREE.Object3D();
+        const interaction = { manager: { renderer, camera }, _hitTestModel: () => true,
+            _rememberPanDragPointer() {}, _rememberDragHintPanPointer() {},
+            _disableButtonPointerEvents() {}, _restoreButtonPointerEvents() {}, dragHandler() {} };
+        const handle = gestures.installThree(interaction, {
+            getModel: () => model,
+            setScale: scale => model.scale.setScalar(scale),
+            enabled: () => true,
+            isHostModelDragActive: () => hostActive
+        });
+        const touch = (pointerId, clientX, clientY) => ({ pointerId, pointerType: 'touch', clientX, clientY,
+            preventDefault() {}, stopPropagation() {} });
+        canvas.emit('pointerdown', touch(1, 300, 300));
+        canvas.emit('pointerdown', touch(2, 500, 300));
+        // 捏合途中画布变成 0×0（例如过渡中），捏合中心投不到平面上。
+        canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0 });
+        document.emit('pointermove', touch(2, 600, 300));
+        handle.dispose();
+        return model;
+    }
+    assert.ok(pinch(true).scale.x > 1, '宿主接管：照常缩放');
+    assert.equal(pinch(false).scale.x, 1, '未接管：和原来一样，没有捏合中心就不动');
+});
+
 // 走 VRM、MMD 自己的 initDragAndZoom 和真实的 installThree，确认两边都把接管判断接到了捏合上。
 for (const kind of ['vrm', 'mmd']) {
     test(`${kind.toUpperCase()} 双指捏合（真实触摸控制器）：宿主接管时只缩放，未接管时按捏合中心挪`, async () => {

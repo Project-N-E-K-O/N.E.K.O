@@ -1265,6 +1265,10 @@ class VRMInteraction {
     /**
      * 收尾平移或旋转拖拽，锁定和鼠标释放复用同一流程。
      */
+    // 宿主接管拖动（isVRMHostModelDragActive）时，宿主只在拖动途中挪承载模型的那一层；它要在页面处理
+    // 这次松手之前撤掉接管、把模型坐标补到最终位置，跨屏、出界回弹、保存仍由这里做。三维模型没有
+    // 宿主侧的结算入口，这一点和 Live2D 不同：Live2D 的 onDragEnd 在宿主仍持有接管时直接返回，
+    // 那种情况下宿主自己调用 _settleLive2DDragTerminal 结算。
     async _endDrag() {
         if (!this.isDragging) return;
         const endedModel = this.manager.currentModel;

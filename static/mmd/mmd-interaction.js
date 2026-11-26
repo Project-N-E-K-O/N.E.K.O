@@ -492,6 +492,8 @@ class MMDInteraction {
         };
 
         // 鼠标抬起
+        // 宿主接管拖动（isMMDHostModelDragActive）时，宿主要在页面处理这次松手之前撤掉接管、补好模型坐标，
+        // 结算（跨屏、出界回弹、保存）仍由这里做；三维模型没有宿主侧的结算入口（见 VRM 的 _endDrag）。
         this.mouseUpHandler = async (e) => {
             if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (this.isDragging) {

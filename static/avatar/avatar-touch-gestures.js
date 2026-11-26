@@ -186,14 +186,17 @@
             move(points, gesture) {
                 if (points.length === 1) { interaction.dragHandler(points[0]); return; }
                 if (!pinch || pinch.model !== getModel()) return;
-                const desired = planePoint(gesture.center, pinch.plane);
-                if (!desired) return;
-                setScale(Math.max(0.1, Math.min(50, pinch.scale * gesture.ratio)));
-                // 宿主接管拖动时只让出模型坐标，缩放照常（和 Live2D 的捏合一致）。
+                const scale = Math.max(0.1, Math.min(50, pinch.scale * gesture.ratio));
+                // 宿主接管拖动时只让出模型坐标，缩放照常（和 Live2D 的捏合一致）。这条分支不挪位置，
+                // 用不到捏合中心，捏合中心投不到平面上（例如画布正好是 0×0）也照常缩放。
                 if (typeof isHostModelDragActive === 'function' && isHostModelDragActive()) {
+                    setScale(scale);
                     manager._lastInteractionBoostTs = performance.now();
                     return;
                 }
+                const desired = planePoint(gesture.center, pinch.plane);
+                if (!desired) return;
+                setScale(scale);
                 const model = pinch.model;
                 model.updateWorldMatrix(true, false);
                 const current = model.localToWorld(pinch.local.clone());

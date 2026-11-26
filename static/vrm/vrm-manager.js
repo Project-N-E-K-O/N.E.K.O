@@ -1830,6 +1830,7 @@ class VRMManager {
                 || visibleWidth <= 0 || visibleHeight <= 0) return;
             // 尺寸没变就不重设：setSize 会重新分配画布缓冲区，画布在下一次渲染前是空的。
             // 宿主改了窗口尺寸、页面视口却不变时（resize 事件照常派发）就是这种情况。
+            // 一并跳过的 _revalidateMovementTarget、refreshSyntheticOutlineWidth 只依赖画布尺寸，结果不变。
             if (isVRMRendererSizeCurrent(this.renderer, this.camera, visibleWidth, visibleHeight)) return;
             this.camera.aspect = visibleWidth / visibleHeight;
             this.camera.updateProjectionMatrix();
