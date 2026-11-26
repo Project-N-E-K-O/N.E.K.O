@@ -1223,7 +1223,8 @@ async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover(m
 
     async def _sleep(delay, *args, **kwargs):
         if delay != 0.02:
-            return await real_sleep(delay, *args, **kwargs)
+            await real_sleep(delay, *args, **kwargs)
+            return
         # The interrupt wait inside the real _let_tts_interrupt_land.
         wait_entered.set()
         await takeover_done.wait()
