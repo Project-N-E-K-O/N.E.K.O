@@ -332,6 +332,8 @@ async def test_a_promise_nothing_can_keep_wakes_her_to_take_it_back(server, host
 async def test_a_promise_to_stop_something_stops_it(server, hosts, tmp_path):
     _weather(server)
     llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": "别查天气了"}])
+    # What the sentence filed for her does with the work there is: the model reads it as that stop.
+    llm.under_way = [{"does": "stop", "items": [1], "named": True}]
     host = _host(hosts, tmp_path, server, llm)
     commission, _created = await host.ledger.create(
         lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"

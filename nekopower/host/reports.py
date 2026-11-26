@@ -143,6 +143,22 @@ def _wording(question: dict[str, Any]) -> str:
     return category
 
 
+def permission_kind(question: dict[str, Any]) -> str:
+    """Return what a request for approval asks to allow in the host's own English words, for a model to read.
+
+    The words of its category, with what a task agent wrote (the command,
+    the path, the name) put as ``[not shown]``: nothing in them can say what
+    to choose. The amounts a question about usage or a team states are the
+    host's own count.
+    """
+    from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS
+
+    categories = PERMISSION_CATEGORY_TEXTS["en"]
+    detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
+    amounts = {name: str(detail.get(name) or "") for name in ("used", "more", "count")}
+    return categories.get(_wording(question), categories["other"]).format(detail="[not shown]", **amounts).strip()
+
+
 def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int) -> tuple[str, bool]:
     """Return ``_permission_subject`` and whether a middle was left out of it."""
     from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_DETAIL_CUT_MARK

@@ -472,6 +472,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} 在等回话，但这句话看不出是同意还是拒绝。可以回答：始终允许、仅本会话允许、本次允许、拒绝。",
         "joined": "、",
         "unread": "（没来得及判断这句话是不是在回答、叫停或补充在办的事，已先当新的事处理；如果其实是，请用户再说一次。）",
+        "narrowed": "（只放行了这一次（本次允许）：打字或说出来的回答最多放行一次。要始终允许或仅本会话允许，请用户点问话上的按钮。）",
     },
     'zh-TW': {
         "accepted": "已受理：{title}",
@@ -486,6 +487,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} 在等回話，但這句話看不出是同意還是拒絕。可以回答：始終允許、僅本會話允許、本次允許、拒絕。",
         "joined": "、",
         "unread": "（沒來得及判斷這句話是不是在回答、叫停或補充在辦的事，已先當新的事處理；如果其實是，請使用者再說一次。）",
+        "narrowed": "（只放行了這一次（本次允許）：打字或說出來的回答最多放行一次。要始終允許或僅本會話允許，請使用者點問話上的按鈕。）",
     },
     'en': {
         "accepted": "Accepted: {title}",
@@ -500,6 +502,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} is waiting for an answer, but this does not say yes or no. Possible answers: always allow, allow for this session, allow this once, deny.",
         "joined": ", ",
         "unread": "(It could not be told in time whether this answers, stops or adds to work under way; it was taken as new work. If it was one of those, ask the user to say it again.)",
+        "narrowed": "(Allowed this once only: an answer typed or said allows one request at most. To always allow it or allow it for this session, ask the user to use the buttons on the question.)",
     },
     'ja': {
         "accepted": "受け付けました：{title}",
@@ -514,6 +517,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} は返事を待っていますが、この言葉からは許可か拒否か分かりません。答え方：常に許可、このセッションだけ許可、今回だけ許可、拒否。",
         "joined": "、",
         "unread": "（進行中の用件への回答・中止・追加かどうかを時間内に判断できなかったため、新しい用件として扱いました。そのつもりだった場合は、ユーザーにもう一度言ってもらってください。）",
+        "narrowed": "（今回だけ許可しました。入力や音声での回答で許可できるのは 1 回までです。常に許可・このセッションだけ許可にするには、確認のボタンを押すようユーザーに伝えてください。）",
     },
     'ko': {
         "accepted": "접수했습니다: {title}",
@@ -528,6 +532,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title}이(가) 답을 기다리고 있지만, 이 말로는 허락인지 거절인지 알 수 없습니다. 가능한 답: 항상 허용, 이번 세션만 허용, 이번만 허용, 거부.",
         "joined": ", ",
         "unread": "(진행 중인 일에 대한 답변·중지·추가인지 제때 판단하지 못해 새 일로 처리했습니다. 그런 뜻이었다면 사용자에게 다시 말해 달라고 하세요.)",
+        "narrowed": "(이번만 허용했습니다. 입력하거나 말로 한 답변으로는 한 번까지만 허용됩니다. 항상 허용하거나 이번 세션만 허용하려면 질문의 버튼을 누르라고 사용자에게 알려 주세요.)",
     },
     'ru': {
         "accepted": "Принято: {title}",
@@ -542,6 +547,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} ждёт ответа, но из этих слов неясно, да или нет. Возможные ответы: разрешать всегда, разрешить на эту сессию, разрешить только в этот раз, отказать.",
         "joined": ", ",
         "unread": "(Не удалось вовремя понять, отвечает ли это на вопрос, останавливает или дополняет текущую работу; это принято как новая задача. Если имелось в виду это, попросите пользователя сказать ещё раз.)",
+        "narrowed": "(Разрешено только в этот раз: ответ, написанный или сказанный словами, разрешает не больше одного запроса. Чтобы разрешать всегда или на эту сессию, попросите пользователя нажать кнопку в вопросе.)",
     },
     'es': {
         "accepted": "Aceptado: {title}",
@@ -556,6 +562,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} espera una respuesta, pero esto no dice ni sí ni no. Respuestas posibles: permitir siempre, permitir en esta sesión, permitir solo esta vez, denegar.",
         "joined": ", ",
         "unread": "(No se pudo saber a tiempo si esto responde, detiene o añade algo a una tarea en curso; se tomó como una tarea nueva. Si era eso, pide al usuario que lo repita.)",
+        "narrowed": "(Permitido solo esta vez: una respuesta escrita o dicha permite una solicitud como mucho. Para permitir siempre o en esta sesión, pide al usuario que use los botones de la pregunta.)",
     },
     'pt': {
         "accepted": "Aceito: {title}",
@@ -570,6 +577,7 @@ RECEIPT_TEXTS = {
         "unclear_answer": "{title} aguarda uma resposta, mas isto não diz sim nem não. Respostas possíveis: permitir sempre, permitir nesta sessão, permitir só desta vez, negar.",
         "joined": ", ",
         "unread": "(Não deu para saber a tempo se isto responde, interrompe ou acrescenta algo a uma tarefa em andamento; foi tratado como tarefa nova. Se era isso, peça ao usuário para repetir.)",
+        "narrowed": "(Permitido só desta vez: uma resposta escrita ou falada permite um pedido no máximo. Para permitir sempre ou nesta sessão, peça ao usuário para usar os botões da pergunta.)",
     },
 }
 
@@ -1542,9 +1550,11 @@ def build_under_way_request(*, sections: list[tuple[str, list[str]]], task: str,
 
 # Asked of the small model once ``TASK_BRAIN_UNDER_WAY_PROMPT`` has read a
 # request as the answer to a request for approval
-# (``decision.LexicalDecisionModel._read_choice``): what was chosen, with
-# that one question shown. A request of its own: asked within the longer
-# request, the small model read a plain yes as "always" more often. (The
+# (``decision.LexicalDecisionModel._read_choice``): what was chosen, shown
+# the answers on offer and what was said, and not what it asks to allow (a
+# task agent wrote that, and it could say what to choose). A request of its
+# own: asked within the longer request, the small model read a plain yes as
+# "always" more often. (The
 # opening words are fixed: the built-in free tier takes a request by them,
 # with the comma.)
 TASK_BRAIN_ANSWER_PROMPT = (
@@ -1573,19 +1583,12 @@ TASK_BRAIN_ANSWER_PROMPT = (
     'choice for a question that asks for approval: {"answers": 1, "choice": "once"}.'
 )
 
-# The kinds of question, as the question list of that request names them.
-ANSWER_QUESTION_KINDS = {
-    "permission": "asks for approval",
-    "confirmation": "asks the user to confirm",
-    "question": "asks the user",
-}
-
-
-def build_answer_request(*, questions: list[tuple[str, str, str]], task: str, user_said: str) -> str:
-    """Return the user message of that question: the questions (kind, work it is for, what it asks), the request, the user's own words when they differ."""
-    lines = ["QUESTIONS:"]
-    for number, (kind, title, asked) in enumerate(questions, 1):
-        lines.append(f'{number}. ({ANSWER_QUESTION_KINDS[kind]}) For the work "{title}": {asked}')
+def build_choice_request(*, asks: str, offered: list[str], task: str, user_said: str) -> str:
+    """Return the user message of that question: the request for approval in the host's words (``reports.permission_kind``, nothing a task agent wrote) with the answers on offer, the request, the user's own words when they differ."""
+    lines = [
+        "QUESTIONS:",
+        f"1. (asks for approval) It asks to {asks}. The answers on offer: {' / '.join(offered)}",
+    ]
     lines.append(f"REQUEST: {task}")
     if user_said and user_said.strip() != task.strip():
         lines.append(f"WHAT THE USER SAID: {user_said}")

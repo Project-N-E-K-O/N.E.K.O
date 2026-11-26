@@ -108,6 +108,9 @@ class Receipt:
     # told in time (``Triage.unread``): it was taken for new work, and the
     # receipt says so.
     unread: bool = False
+    # Whether an answer that chose "always" or "session" allowed the one
+    # request alone (``Triage.narrowed``): the receipt says the buttons do more.
+    narrowed: bool = False
 
     @property
     def commission_id(self) -> str | None:
@@ -255,6 +258,8 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
     first = receipt.commissions[0] if receipt.commissions else None
     title = first.title if first else ""
     note = f" {templates['unread']}" if receipt.unread else ""
+    if receipt.narrowed:
+        note += f" {templates['narrowed']}"
     if receipt.kind == "no_capability":
         reason = _texts(NO_CAPABILITY_REASONS, lang).get(receipt.reason) or receipt.reason
         return templates["no_capability"].format(reason=reason) + note
@@ -431,8 +436,10 @@ class TaskBrain:
 
         roles = _texts(ROLE_NAMES, lang)
         named: dict[str, str] = {}
-        for session_id in {item for commission in commissions for item in (commission.session_id, commission.handed_by) if item}:
-            session = await self._ledger.get_session(session_id)
+        wanted = {item for commission in commissions for item in (commission.session_id, commission.handed_by) if item}
+        found = await self._ledger.get_sessions(wanted)
+        for session_id in wanted:
+            session = found.get(session_id)
             if session is None:
                 continue
             role = roles.get(session.preset or "", session.preset or "familiar")
@@ -601,7 +608,9 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        by_id = {commission.id: commission for commission in (*request.active, *request.answerable, *request.recent)}
+        # One under way and among those that ended as well (it ended while they
+        # were read) is taken as it was under way: that is what was read.
+        by_id = {commission.id: commission for commission in (*request.recent, *request.active, *request.answerable)}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
         # The commission this sentence goes on with, when it is one that is over.
@@ -615,10 +624,22 @@ class TaskBrain:
             return Receipt(kind="duplicate", commissions=targets, model_calls=calls, unread=triage.unread)
         if triage.kind == "stop" and targets:
             # Every one it means: "stop everything on the shop site" may be several.
-            stopped = [
-                await self.abort(target.id, reason="stopped through a dispatch", notify=False) or target
-                for target in targets
-            ]
+            # Each is stopped on its own: one that cannot be does not keep the
+            # others going. Only what is stopped now is said to be (not one that
+            # ended meanwhile, nor one that is gone).
+            stopped: list[Commission] = []
+            for target in targets:
+                try:
+                    after = await self.abort(target.id, reason="stopped through a dispatch", notify=False)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - the others are stopped all the same
+                    logger.warning("stopping commission %s through a dispatch failed", target.id, exc_info=True)
+                    continue
+                if after is not None and after.status == "cancelled":
+                    stopped.append(after)
+            if not stopped:
+                return Receipt(kind="nothing_active", model_calls=calls)
             return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
         if triage.kind == "answer" and targets:
             target = targets[0]
@@ -630,7 +651,12 @@ class TaskBrain:
             delivered = await self.answer(
                 target.id, text, choice=triage.choice, question_id=(target.question() or {}).get("id")
             )
-            return Receipt(kind="answered" if delivered else "ambiguous", commissions=[target], model_calls=calls)
+            return Receipt(
+                kind="answered" if delivered else "ambiguous",
+                commissions=[target],
+                model_calls=calls,
+                narrowed=delivered and triage.narrowed,
+            )
         if triage.kind == "tell" and targets:
             delivered = await self.tell(targets[0].id, text)
             if delivered:
@@ -673,9 +699,9 @@ class TaskBrain:
         # Read again after the waits above: NekoPower may have been switched
         # off, or everything stopped, while this round was looking.
         if not self._is_enabled():
-            return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+            return Receipt(kind="no_capability", reason="disabled", model_calls=calls, unread=triage.unread)
         if generation != self._dispatch_generation:
-            return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
+            return Receipt(kind="no_capability", reason="stopped", model_calls=calls, unread=triage.unread)
 
         follows: dict[str, Any] = {}
         if earlier is not None:

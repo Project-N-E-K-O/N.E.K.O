@@ -1007,7 +1007,8 @@ async def test_a_sentence_that_adds_to_a_commission_is_chosen_for_like_any_other
     assert (done.session_id, done.continues, done.route) == (first.commission_id, first.commission_id, "task_agent")
     (chosen,) = await _events(host, receipt.commission_id, "decision")
     assert (chosen.payload["route"], chosen.payload["continues"]) == ("task_agent", first.commission_id)
-    assert chosen.payload["model_calls"] == 1
+    # Two requests: the reading of what it does with the work there is, and the choice among plugins.
+    assert chosen.payload["model_calls"] == 2 and len(decision.under_way_calls) == 1
     # What the sentence states for good is kept, which that request reads.
     (kept,) = await host.preferences.list()
     assert kept.text == "name photos by the date they were taken"
@@ -1061,21 +1062,25 @@ async def test_a_sentence_that_adds_to_a_commission_and_is_not_for_a_task_agent_
     host.task_agents.release_files(earlier.session_id)
 
 
-async def test_a_dispatched_sentence_about_something_else_is_a_commission_in_a_session_of_its_own(hosts, tmp_path):
+async def test_a_dispatched_sentence_read_as_new_work_is_a_commission_in_a_session_of_its_own(hosts, tmp_path):
     scripts = {
         "sort the photos": ScriptedLLM([_report("ready", "sorted")]),
         "back up the notes": ScriptedLLM([_report("ready", "backed up")]),
     }
-    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    decision = FakeDecisionLLM()
+    decision.under_way = [{"does": "new"}]
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), decision_llm=decision)
     first = await _dispatch(host, "sort the photos in my downloads folder")
     await wait_status(host, first.commission_id, "done")
 
-    # About the same thing without a word that says it adds something, and about something else with such a word.
+    # Read as new work, it goes on in no session of the one that ended, whatever words they
+    # share ("also", the same photos): nothing but that reading says what it adds to.
     for text in ("sort the photos on drive E: as well", "also back up the notes to drive F:"):
         receipt = await _dispatch(host, text)
         done = await wait_status(host, receipt.commission_id, "done")
         assert (done.session_id, done.continues) == (receipt.commission_id, None)
         scripts["sort the photos"].add(*_report("ready", "sorted again"))
+    assert len(decision.under_way_calls) == 2
 
 
 async def test_a_dispatched_sentence_that_adds_to_a_commission_that_failed_takes_that_one_up_again(hosts, tmp_path):
@@ -1101,7 +1106,10 @@ async def test_a_follow_up_to_a_commission_of_a_project_waits_for_the_projects_s
         "add a chart": ScriptedLLM([[wait, *_report("ready", "chart added")]]),
         "semicolons": ScriptedLLM([_report("ready", "now with semicolons")]),
     }
-    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    decision = FakeDecisionLLM()
+    # The chart is under way (1), the export ended lately (2): the follow-up is read as adding to the export.
+    decision.under_way = [{"does": "new"}, {"does": "add", "items": [2]}]
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), decision_llm=decision)
     workdir = tmp_path / "budget-files"
     workdir.mkdir()
     await host.space.touch_project("Budget app", workdir=str(workdir))

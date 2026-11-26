@@ -44,8 +44,10 @@ Model calls per path (asserted in ``tests/unit/nekopower/test_host_decision.py``
 
 * ``triage``: 0; 1 more while there is work the sentence may be about (her
   work under way, what waits for the user within it, her work that ended
-  lately), and 1 more (small model) when there is no local candidate and no
-  task agent.
+  lately), 1 more when that reads it as the answer to a request for approval
+  (what it chose, ``_read_choice``; each of the two waits up to
+  ``UNDER_WAY_READ_SECONDS``), and 1 more (small model) when there is no
+  local candidate and no task agent.
 * ``probe`` for a query: always 0.
 * ``select``: 1; 2 when the descriptions exceed the threshold (coarse screen
   plus fine selection), unless ``triage`` already ran the coarse screen, whose
@@ -198,6 +200,9 @@ class Triage:
     # request failed, came too late or said nothing it could be): it is
     # taken for new work, and she is told it could not be told.
     unread: bool = False
+    # An answer that chose "always" or "session", read from the user's words:
+    # it allows the one request ("once"), and she is told the buttons do more.
+    narrowed: bool = False
 
 
 @dataclass(slots=True)
@@ -275,8 +280,10 @@ class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
     The coarse screen, the turn check and short descriptions run on the small
-    latency-sensitive tier (``emotion``), and so, as the settings name it, do
-    the orchestrator and the reading of answers; the fine selection, the reviews of
+    latency-sensitive tier (``emotion``); the orchestrator and the readings of
+    what a request does with the work there is and of what an answer chose
+    run on the models the settings name (``ORCHESTRATOR_MODEL_SLOT``,
+    ``UNDER_WAY_READ_MODEL_SLOT``: ``recognition``); the fine selection, the reviews of
     finished commissions, the summaries of archived projects, the tidying
     of the task agent space and the form of a new session on the ``summary`` tier. Endpoints come from the user's configuration as they
     are, ``http://`` addresses included.
@@ -574,7 +581,7 @@ def _numbers(value: Any, count: int) -> list[int]:
     """Return the item numbers a reading names, in range and once each."""
     seen: list[int] = []
     for item in value if isinstance(value, list) else [value]:
-        if isinstance(item, str) and item.strip().isdigit():
+        if isinstance(item, str) and item.strip().isascii() and item.strip().isdecimal():
             item = int(item.strip())
         if isinstance(item, int) and not isinstance(item, bool) and 1 <= item <= count and item not in seen:
             seen.append(item)
@@ -878,7 +885,20 @@ class LexicalDecisionModel:
         def answered(target: Commission, choice: str | None, calls: int = 1) -> tuple[Triage | None, int, bool]:
             if (target.question() or {}).get("kind") != "permission":
                 choice = None
-            return Triage(kind="answer", targets=[target.id], choice=choice, model_calls=calls), calls, False
+            # Read from what was typed or said, an answer allows the one
+            # request at most: "always" (written to the settings) and
+            # "session" come from the buttons alone, so that a reading gone
+            # wrong, or steered, never opens more than that one request. The
+            # receipt says the buttons do more.
+            narrowed = choice in ("always", "session")
+            return (
+                Triage(
+                    kind="answer", targets=[target.id], choice="once" if narrowed else choice,
+                    narrowed=narrowed, model_calls=calls,
+                ),
+                calls,
+                False,
+            )
 
         if does == "answer" and len(picked) == 1:
             _place, target = picked[0]
@@ -888,26 +908,36 @@ class LexicalDecisionModel:
                     # user is asked, and none of them is answered on a guess.
                     return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
                 if (target.question() or {}).get("kind") == "permission":
-                    # What it chose is read apart, with that question alone.
+                    approvals = [
+                        item.id
+                        for _place, item in numbered
+                        if item.id in waiting and (item.question() or {}).get("kind") == "permission"
+                    ]
+                    if len(approvals) > 1:
+                        # Several requests for approval wait: which this allows
+                        # or refuses, the user is asked, however plainly the
+                        # model says it is named. (Their commands are written by
+                        # task agents and are what it read that by; none is
+                        # decided by a reading words a task agent wrote could
+                        # steer.)
+                        return Triage(kind="ambiguous", targets=approvals, model_calls=1), 1, False
+                    # What it chose is read apart, from the user's words alone.
                     return answered(target, await self._read_choice(request, target), calls=2)
                 return answered(target, None)
         if does == "stop" and picked:
             stopped = [item.id for place, item in picked if place == _UNDER_WAY]
             under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
-            if not said_which:
-                if len(under_way) > 1:
-                    # "Stop it" with several under way: which, the user is asked,
-                    # not everything stopped on a guess.
-                    return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
-                if len(picked) == 1 and picked[0][1].id in waiting:
-                    if len(waiting) > 1:
-                        # Said to one of several that wait (the members of a
-                        # team, say): which, the user is asked, as for a plain
-                        # "no", and none is refused on a guess.
-                        return Triage(kind="ambiguous", targets=waiting, model_calls=1), 1, False
-                    # "Wait", "not now" to the one that waits for the user: its
-                    # answer, a refusal, and not the end of its work.
-                    return answered(picked[0][1], "deny")
+            if not said_which and len(under_way) > 1:
+                # "Stop it" with several under way: which, the user is asked,
+                # not everything stopped on a guess. ("Wait", "not now" said to
+                # what waits for the user is its answer, a refusal, as the
+                # prompt has it; a stop is a stop.)
+                return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
+            if len(stopped) > 1 and len(request.active) > len(under_way):
+                # A stop of several (a project, a familiar's) while some of her
+                # work was left out of the list: it may mean those as well,
+                # which were not shown. Which, the user is asked, among all.
+                return Triage(kind="ambiguous", targets=[item.id for item in request.active], model_calls=1), 1, False
             if stopped:
                 return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
@@ -927,32 +957,40 @@ class LexicalDecisionModel:
             # A plugin run takes no addition, and what a task agent of hers
             # started is that one's business: work of its own.
             return None, 1, False
-        logger.warning("what a request does with the work under way could not be read: %s", does or "nothing said")
+        # (What the model wrote is not logged: it may repeat what was said.)
+        logger.warning("what a request does with the work under way could not be read: %s", "unknown reading" if does else "nothing said")
         return None, 1, True
 
     async def _read_choice(self, request: DecisionRequest, target: Commission) -> str | None:
         """Read what an answer to a request for approval chose (``ANSWER_CHOICES``); None for an answer not understood.
 
-        One request (``TIER_ANSWER_CHOICE``) with that one question shown,
-        made once ``read_under_way`` has read the sentence as its answer:
-        asked within that longer request, the small model read a plain yes
-        as "always" more often. One that says it is no answer after all,
-        names no choice, fails or comes too late is an answer not
+        One request (``TIER_ANSWER_CHOICE``), made once ``read_under_way``
+        has read the sentence as its answer: asked within that longer
+        request, the small model read a plain yes as "always" more often.
+        It is shown what kind of thing is asked in the host's own words
+        (``reports.permission_kind``), the answers on offer and what was
+        said, and nothing a task agent wrote: not the command, the path or
+        the title of what asks, which could otherwise say what to choose.
+        The choice comes from the user's words alone. One that says it is no answer after
+        all, names no choice, fails or comes too late is an answer not
         understood: the user is asked again.
         """
         from config.nekopower_settings import UNDER_WAY_READ_SECONDS
-        from config.prompts.prompts_nekopower_brain import TASK_BRAIN_ANSWER_PROMPT, build_answer_request
+        from config.prompts.prompts_nekopower_brain import (
+            PERMISSION_OPTION_NAMES,
+            TASK_BRAIN_ANSWER_PROMPT,
+            build_choice_request,
+        )
 
-        kind, asked = _asked(target)
-        messages = [
-            {"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT},
-            {
-                "role": "user",
-                "content": build_answer_request(
-                    questions=[(kind, target.title, asked)], task=request.dispatch_text, user_said=request.user_text
-                ),
-            },
-        ]
+        from nekopower.host.reports import permission_kind
+
+        question = target.question() or {}
+        names = PERMISSION_OPTION_NAMES["en"]
+        offered = [names[option] for option in question.get("options") or [] if option in names]
+        asked = build_choice_request(
+            asks=permission_kind(question), offered=offered, task=request.dispatch_text, user_said=request.user_text
+        )
+        messages = [{"role": "system", "content": TASK_BRAIN_ANSWER_PROMPT}, {"role": "user", "content": asked}]
         try:
             raw = await asyncio.wait_for(self._llm.complete(TIER_ANSWER_CHOICE, messages), UNDER_WAY_READ_SECONDS)
         except Exception as exc:  # noqa: BLE001 - not understood: the user is asked again
@@ -960,7 +998,10 @@ class LexicalDecisionModel:
             return None
         reading = parse_json_object(raw or "") or {}
         choice = str(reading.get("choice") or "").strip().lower()
-        return choice if reading.get("answers") in (1, "1") and choice in ANSWER_CHOICES else None
+        said = reading.get("answers")
+        # The one question, as a number or its digit ("true" and 1.0 are no answer it gave).
+        answers_it = said == "1" or (type(said) is int and said == 1)
+        return choice if answers_it and choice in ANSWER_CHOICES else None
 
     # -- first round ------------------------------------------------------
 

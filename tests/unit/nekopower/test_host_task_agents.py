@@ -1916,8 +1916,9 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     host = _host(hosts, tmp_path, llm)
     receipt = await _dispatch(host, "write two files outside the work folder")
     await wait_status(host, receipt.commission_id, "waiting_user")
+    question = (await host.ledger.get(receipt.commission_id)).question()
 
-    assert (await _dispatch(host, "always, from now on")).kind == "answered"
+    assert await host.answer(receipt.commission_id, "", choice="always", question_id=question["id"]) is True
 
     await wait_status(host, receipt.commission_id, "done")
     assert (tmp_path / "one.txt").exists() and (tmp_path / "two.txt").exists()
@@ -1926,6 +1927,37 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     # question row is gone: never delivered here, and out of date once answered.)
     waits = [event for event in await _events(host, receipt.commission_id, "status") if event.payload["to"] == "waiting_user"]
     assert len(waits) == 1
+
+
+async def test_a_typed_always_allows_the_one_request_and_says_the_buttons_do_more(hosts, tmp_path):
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+
+    llm = ScriptedLLM(
+        [
+            _write_outside(tmp_path, "one.txt"),
+            [call("write", {"file_path": str(tmp_path / "two.txt"), "content": "hi"}, "c2"), finish("tool_calls")],
+            _report("ready", "written"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "write two files outside the work folder")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+
+    # Read from the words as "always" (the fake reads it so), it allows this one write:
+    # nothing in the settings changes, and the second write asks again.
+    typed = await _dispatch(host, "always, from now on")
+    assert (typed.kind, typed.narrowed) == ("answered", True)
+    assert typed.text("en").endswith(RECEIPT_TEXTS["en"]["narrowed"])
+    await wait_until(lambda: (tmp_path / "one.txt").exists(), what="the first file")
+    await wait_until(lambda: _waiting_for(host, receipt.commission_id, "two.txt"), what="the second question")
+    assert not (tmp_path / "two.txt").exists()
+    assert await host.permission_store.mode("outside_write") == "first_ask"
+    # So for "session".
+    said = await _dispatch(host, "for this session")
+    assert (said.kind, said.narrowed) == ("answered", True)
+    await wait_status(host, receipt.commission_id, "done")
+    assert await host.permission_store.mode("outside_write") == "first_ask"
+    assert (tmp_path / "two.txt").read_text(encoding="utf-8") == "hi"
 
 
 async def test_permission_denied_is_told_to_the_task_agent(hosts, tmp_path):

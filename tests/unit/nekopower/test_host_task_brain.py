@@ -1127,6 +1127,104 @@ async def test_the_familiars_are_named_as_the_user_calls_them(server, hosts, tmp
     assert (await host.brain._familiars([worked], "en"))[scout.id] == 'Scout cat "链接"'
 
 
+async def test_a_stop_of_several_stops_each_it_can_and_says_only_those(server, hosts, tmp_path, monkeypatch):
+    from nekopower.host.decision import DecisionRequest, LexicalDecisionModel
+    from tests.unit.nekopower.test_host_decision import commission
+
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    decisions = FakeDecisionLLM()
+    decisions.under_way = [{"does": "stop", "items": [1, 2, 3, 4], "named": True}]
+    host.brain._decision = LexicalDecisionModel(decisions)
+    active = [commission(f"c{number}", f"task {number}", route="task_agent") for number in (1, 2, 3, 4)]
+
+    async def request(*_args: Any, **_kwargs: Any) -> DecisionRequest:
+        return DecisionRequest(dispatch_text="stop all four", active=active, task_agent_available=True)
+
+    async def abort(commission_id: str, **_kwargs: Any) -> Any:
+        # c1 is stopped; c2 cannot be; c3 had ended meanwhile; c4 is gone.
+        if commission_id == "c2":
+            raise RuntimeError("the plugin server is down")
+        if commission_id == "c4":
+            return None
+        status = "cancelled" if commission_id == "c1" else "done"
+        return commission(commission_id, f"task {commission_id[1:]}", route="task_agent", status=status)
+
+    monkeypatch.setattr(host.brain, "_request", request)
+    monkeypatch.setattr(host.brain, "abort", abort)
+
+    receipt = await host.brain._first_round("stop all four", "", "Lan", None, "en", "dispatch")
+
+    assert (receipt.kind, [item.id for item in receipt.commissions]) == ("stopped", ["c1"])
+    # None of them stopped now: nothing is under way that it stopped.
+    decisions.under_way = [{"does": "stop", "items": [3, 4], "named": True}]
+    receipt = await host.brain._first_round("stop those two", "", "Lan", None, "en", "dispatch")
+    assert (receipt.kind, receipt.commissions) == ("nothing_active", [])
+
+
+async def test_what_was_read_as_waiting_is_answered_as_it_was_read(server, hosts, tmp_path, monkeypatch):
+    # A commission that ended between the two reads of the ledger is among those under way and those
+    # that ended: it is answered as it was read, with the question it waited with.
+    import json as _json
+
+    from nekopower.host.decision import DecisionRequest, LexicalDecisionModel
+    from tests.unit.nekopower.test_host_decision import commission
+
+    question = {"kind": "question", "question": "Which title?", "id": "q1"}
+    waiting = commission("c1", "write a post", route="task_agent", status="waiting_user", pending_question=_json.dumps(question))
+    ended = commission("c1", "write a post", route="task_agent", status="done", session_id="s1")
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    decisions = FakeDecisionLLM()
+    decisions.under_way = [{"does": "answer", "items": [1], "named": True}]
+    host.brain._decision = LexicalDecisionModel(decisions)
+    answered: list[Any] = []
+
+    async def request(*_args: Any, **_kwargs: Any) -> DecisionRequest:
+        return DecisionRequest(dispatch_text="Cats", active=[waiting], recent=[ended], task_agent_available=True)
+
+    async def answer(commission_id: str, text: str, **kwargs: Any) -> bool:
+        answered.append((commission_id, text, kwargs.get("question_id")))
+        return True
+
+    monkeypatch.setattr(host.brain, "_request", request)
+    monkeypatch.setattr(host.brain, "answer", answer)
+
+    receipt = await host.brain._first_round("Cats", "", "Lan", None, "en", "dispatch")
+
+    assert receipt.kind == "answered" and answered == [("c1", "Cats", "q1")]
+
+
+async def test_what_could_not_be_told_is_said_when_nekopower_was_switched_off_meanwhile(
+    server, hosts, tmp_path, monkeypatch
+):
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+    from nekopower.host.decision import DecisionRequest, LexicalDecisionModel
+    from tests.unit.nekopower.test_host_decision import commission
+
+    on = {"value": True}
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), enabled=lambda: on["value"])
+    working = commission("c1", "sort the photos", route="task_agent", status="working")
+
+    class SwitchedOffMeanwhile(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                # Switched off while the reading was under way, which then failed.
+                on["value"] = False
+                raise RuntimeError("down")
+            return await super().complete(tier, messages)
+
+    host.brain._decision = LexicalDecisionModel(SwitchedOffMeanwhile())
+
+    async def request(*_args: Any, **_kwargs: Any) -> DecisionRequest:
+        return DecisionRequest(dispatch_text="back up the notes", active=[working], task_agent_available=True)
+
+    monkeypatch.setattr(host.brain, "_request", request)
+
+    receipt = await host.brain._first_round("back up the notes", "", "Lan", None, "en", "dispatch")
+
+    assert (receipt.kind, receipt.reason, receipt.unread) == ("no_capability", "disabled", True)
+    assert receipt.text("en").endswith(RECEIPT_TEXTS["en"]["unread"])
+
+
 def test_a_receipt_says_when_what_the_sentence_does_with_the_work_could_not_be_told():
     import types
 
@@ -1704,7 +1802,7 @@ async def test_receipts_render_in_every_language(server, hosts, tmp_path):
     }
     assert set(RECEIPT_TEXTS["en"]) == {
         "accepted", "received", "duplicate", "no_capability", "stopped", "told", "answered",
-        "ambiguous", "nothing_active", "unclear_answer", "joined", "unread",
+        "ambiguous", "nothing_active", "unclear_answer", "joined", "unread", "narrowed",
     }
 
 
