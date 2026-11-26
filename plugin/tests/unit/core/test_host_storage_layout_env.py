@@ -3273,7 +3273,7 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
                 assert "reject after superseded commit" in str(
                     sender.payloads[-1].get("error", "")
                 )
-            expected_cfg = {"base": 1} if raises_in_cb else {"host": 9}
+            expected_cfg = {"base": 1, "draft": 1} if raises_in_cb else {"host": 9}
             assert ctx._effective_config == expected_cfg
             assert instance.refreshed[-1] == expected_cfg
             assert ctx._effective_config_uncertain is True
@@ -4031,8 +4031,10 @@ def test_replace_config_update_overtaking_in_flight_write_retains_accepted_basel
 
         handler_entered = asyncio.Event()
         allow_handler_fail = asyncio.Event()
+        observed_old_configs: list[dict[str, object]] = []
 
-        async def _config_change(**_kwargs: object) -> None:
+        async def _config_change(old_config: dict[str, object], **_kwargs: object) -> None:
+            observed_old_configs.append(copy.deepcopy(old_config))
             handler_entered.set()
             await allow_handler_fail.wait()
             raise RuntimeError("host replace rejected")
@@ -4070,15 +4072,20 @@ def test_replace_config_update_overtaking_in_flight_write_retains_accepted_basel
             else:
                 allow_handler_fail.set()
                 await cmd_task
+                assert ctx._effective_config == {"k": "accepted"}
+                assert ctx._effective_config_uncertain is True
                 release_rpc.set()
                 with pytest.raises(RuntimeError, match="write rpc rejected"):
                     await write_task
 
+            assert observed_old_configs == [{"k": "draft"}]
             assert sender.payloads[-1]["success"] is False
             assert ctx._effective_config == {"k": "accepted"}
             assert ctx._effective_config_uncertain is False
             assert instance.refreshed[-1] == {"k": "accepted"}
             assert getattr(ctx, "_in_flight_write_baseline", None) is None
+            assert not getattr(ctx, "_overtaken_host_rollbacks", {})
+            assert getattr(ctx, "_settled_overtaken_host_rollback", None) is None
 
             loaded = await ctx.get_own_config()
             assert loaded["config"] == {"k": "accepted"}
@@ -4238,112 +4245,128 @@ def test_replace_config_update_overtaking_in_flight_write_preserves_uncertainty_
                         return_exceptions=True,
                     )
 
-    # Subcase B: committed write overtaken by failed host replace invalidates cache for disk read.
+    # Subcase B: committed write overtaken by failed host replace converges to committed config.
     async def _case_committed_write_invalidation() -> None:
-        for order in ("commit_first", "handler_first"):
-            ctx = PluginContext(
-                plugin_id="demo",
-                config_path=tmp_path / f"demo_commit_inv_{order}" / "plugin.toml",
-                logger=_FakeLogger(),  # type: ignore[arg-type]
-                status_queue=None,
-            )
-            instance = _RecordingInstance()
-            ctx._instance = instance
-            ctx._set_effective_config_cache({"k": "accepted"})
+        for write_kind in ("update", "replace"):
+            for order in ("commit_first", "handler_first"):
+                ctx = PluginContext(
+                    plugin_id="demo",
+                    config_path=tmp_path / f"demo_commit_inv_{write_kind}_{order}" / "plugin.toml",
+                    logger=_FakeLogger(),  # type: ignore[arg-type]
+                    status_queue=None,
+                )
+                instance = _RecordingInstance()
+                ctx._instance = instance
+                ctx._set_effective_config_cache({"k": "accepted"})
 
-            rpc_started = asyncio.Event()
-            release_rpc = asyncio.Event()
-            read_rpcs: list[str] = []
+                rpc_started = asyncio.Event()
+                release_rpc = asyncio.Event()
+                read_rpcs: list[str] = []
 
-            async def _fake_rpc(
-                *,
-                method_name: str = "",
-                request_type: str = "",
-                _rpc_started: asyncio.Event = rpc_started,
-                _release_rpc: asyncio.Event = release_rpc,
-                _read_rpcs: list[str] = read_rpcs,
-                **_kwargs: object,
-            ) -> dict[str, object]:
-                if request_type == "PLUGIN_CONFIG_GET" or method_name == "get_own_config":
-                    _read_rpcs.append(request_type or method_name)
-                    return {"plugin_id": "demo", "config": {"k": "committed"}}
-                _rpc_started.set()
-                await _release_rpc.wait()
-                return {
-                    "success": True,
-                    "persisted": True,
-                    "plugin_id": "demo",
-                    "config": {"k": "committed"},
-                }
+                async def _fake_rpc(
+                    *,
+                    method_name: str = "",
+                    request_type: str = "",
+                    _rpc_started: asyncio.Event = rpc_started,
+                    _release_rpc: asyncio.Event = release_rpc,
+                    _read_rpcs: list[str] = read_rpcs,
+                    **_kwargs: object,
+                ) -> dict[str, object]:
+                    if request_type == "PLUGIN_CONFIG_GET" or method_name == "get_own_config":
+                        _read_rpcs.append(request_type or method_name)
+                        return {"plugin_id": "demo", "config": {"k": "committed", "server": True}}
+                    _rpc_started.set()
+                    await _release_rpc.wait()
+                    return {
+                        "success": True,
+                        "persisted": True,
+                        "plugin_id": "demo",
+                        "config": {"k": "committed", "server": True},
+                    }
 
-            ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
-            write_task = asyncio.create_task(ctx.update_own_config({"k": "committed"}))
+                ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+                write_coro = (
+                    ctx.update_own_config({"k": "draft"})
+                    if write_kind == "update"
+                    else ctx.replace_own_config({"k": "draft"})
+                )
+                write_task = asyncio.create_task(write_coro)
 
-            handler_entered = asyncio.Event()
-            allow_handler_fail = asyncio.Event()
+                handler_entered = asyncio.Event()
+                allow_handler_fail = asyncio.Event()
+                observed_old_configs: list[dict[str, object]] = []
 
-            async def _config_change(
-                _entered: asyncio.Event = handler_entered,
-                _allow: asyncio.Event = allow_handler_fail,
-                **_kwargs: object,
-            ) -> None:
-                _entered.set()
-                await _allow.wait()
-                raise RuntimeError("host replace rejected")
+                async def _config_change(
+                    old_config: dict[str, object],
+                    _entered: asyncio.Event = handler_entered,
+                    _allow: asyncio.Event = allow_handler_fail,
+                    _observed: list[dict[str, object]] = observed_old_configs,
+                    **_kwargs: object,
+                ) -> None:
+                    _observed.append(copy.deepcopy(old_config))
+                    _entered.set()
+                    await _allow.wait()
+                    raise RuntimeError("host replace rejected")
 
-            sender = _FakeResponseSender()
-            cmd_task: asyncio.Task[None] | None = None
-            try:
-                await _wait_for_checkpoint_or_task_failure(rpc_started, write_task)
-                cmd_task = asyncio.create_task(
-                    host_module._handle_config_update_command(
-                        msg={
-                            "req_id": f"req-commit-inv-{order}",
-                            "config": {"k": "host"},
-                            "mode": "temporary",
-                            "replace": True,
-                        },
-                        ctx=ctx,
-                        events_by_type={"lifecycle": {"config_change": _config_change}},
-                        plugin_id="demo",
-                        res_sender=sender,
-                        logger=_FakeLogger(),
+                sender = _FakeResponseSender()
+                cmd_task: asyncio.Task[None] | None = None
+                try:
+                    await _wait_for_checkpoint_or_task_failure(rpc_started, write_task)
+                    cmd_task = asyncio.create_task(
+                        host_module._handle_config_update_command(
+                            msg={
+                                "req_id": f"req-commit-inv-{write_kind}-{order}",
+                                "config": {"k": "host"},
+                                "mode": "temporary",
+                                "replace": True,
+                            },
+                            ctx=ctx,
+                            events_by_type={"lifecycle": {"config_change": _config_change}},
+                            plugin_id="demo",
+                            res_sender=sender,
+                            logger=_FakeLogger(),
+                        )
                     )
-                )
-                await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
+                    await _wait_for_checkpoint_or_task_failure(handler_entered, cmd_task)
 
-                if order == "commit_first":
+                    if order == "commit_first":
+                        release_rpc.set()
+                        res = await write_task
+                        allow_handler_fail.set()
+                        await cmd_task
+                    else:
+                        allow_handler_fail.set()
+                        await cmd_task
+                        release_rpc.set()
+                        res = await write_task
+
+                    assert observed_old_configs == [{"k": "draft"}]
+                    if write_kind == "update":
+                        assert res["persisted"] is True
+                    assert res["config"] == {"k": "committed", "server": True}
+                    assert sender.payloads[-1]["success"] is False
+                    assert ctx._effective_config == {"k": "committed", "server": True}
+                    assert instance.refreshed[-1] == {"k": "committed", "server": True}
+                    assert ctx._effective_config_uncertain is True
+                    assert getattr(ctx, "_in_flight_write_baseline", None) is None
+                    assert not getattr(ctx, "_overtaken_host_rollbacks", {})
+                    assert getattr(ctx, "_settled_overtaken_host_rollback", None) is None
+
+                    local_query_calls.clear()
+                    loaded = await ctx.get_own_config()
+                    assert local_query_calls == ["demo"]
+                    assert loaded["config"] == {"k": "committed", "server": True}
+                    assert len(read_rpcs) == 1
+                finally:
                     release_rpc.set()
-                    res = await write_task
                     allow_handler_fail.set()
-                    await cmd_task
-                else:
-                    allow_handler_fail.set()
-                    await cmd_task
-                    release_rpc.set()
-                    res = await write_task
-
-                assert res["persisted"] is True
-                assert res["config"] == {"k": "committed"}
-                assert sender.payloads[-1]["success"] is False
-                assert ctx._effective_config_uncertain is True
-                assert getattr(ctx, "_in_flight_write_baseline", None) is None
-
-                local_query_calls.clear()
-                loaded = await ctx.get_own_config()
-                assert local_query_calls == ["demo"]
-                assert loaded["config"] == {"k": "committed"}
-                assert len(read_rpcs) == 1
-            finally:
-                release_rpc.set()
-                allow_handler_fail.set()
-                for t in (write_task, cmd_task):
-                    if t is not None and not t.done():
-                        t.cancel()
-                await asyncio.gather(
-                    *(t for t in (write_task, cmd_task) if t is not None),
-                    return_exceptions=True,
-                )
+                    for t in (write_task, cmd_task):
+                        if t is not None and not t.done():
+                            t.cancel()
+                    await asyncio.gather(
+                        *(t for t in (write_task, cmd_task) if t is not None),
+                        return_exceptions=True,
+                    )
 
     asyncio.run(_case_uncertain_baseline())
     asyncio.run(_case_committed_write_invalidation())
