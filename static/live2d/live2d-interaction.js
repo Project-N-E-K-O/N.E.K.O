@@ -188,6 +188,13 @@ const LIVE2D_PEEK_HIDDEN_MARGIN_PX = 2;
 const LIVE2D_PEEK_REVEAL_ANIMATION_MS = 300;
 const LIVE2D_PEEK_HIDE_ANIMATION_MS = 220;
 const LIVE2D_PEEK_RESTORE_ANIMATION_MS = 260;
+// 宿主把 Pet 窗口裁到模型附近时，探身落点通常不在当前窗口里。宿主通过
+// window.__nekoLive2DPeekHostStage 声明能力后，进探身分两段：先把模型直接摆到屏外的隐藏位，
+// 屏内没有模型的这段时间交给宿主挪窗口；宿主回话或超时后再照常探出或保持隐藏。
+// 超时后照常继续，宿主不回话时模型也不会一直留在屏外。
+const LIVE2D_PEEK_HOST_STAGE_TIMEOUT_MS = 600;
+// 探出动画（easeOutSoftBack）最多冲过终点约 3.04%，宿主留窗口时要算上这一段。
+const LIVE2D_PEEK_REVEAL_OVERSHOOT_RATIO = 0.031;
 let live2DPeekDisplayContext = null;
 let live2DPeekDisplayReconcileId = 0;
 let live2DPeekPendingDisplayRestoreAnchor = null;
@@ -1341,6 +1348,9 @@ Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reas
     const state = this._live2DPeekState;
     const model = state && state.model && !state.model.destroyed ? state.model : null;
     if (!state || !state.active || !model) return false;
+    // 宿主还在挪窗口：这时探出会落在旧窗口里。等 _tryApplyLive2DPeek 收到宿主回话后
+    // 按那一刻的隐身/互动状态统一决定探出还是保持隐藏。
+    if (state.hostStagePending === true) return false;
 
     const shouldReveal = visible === true;
     if (shouldReveal && (state.phase === 'revealing' || state.phase === 'peeking')) return true;
@@ -1470,10 +1480,123 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model, edgeContact
         document.body.classList.add('neko-live2d-peek');
     }
     this._setLive2DPeekControlsSuppressed(true);
+    const anchorState = this._live2DPeekState;
+    const hostStage = this._beginLive2DPeekHostStage(model, anchorState);
+    if (hostStage) {
+        await hostStage;
+        // 等待期间探身被清掉或被新的落点替换（关掉贴边探身、换显示器、切模型）：不再往下走。
+        if (this._live2DPeekState !== anchorState || !anchorState.active ||
+                anchorState.transitionId !== transitionId || model.destroyed) {
+            return false;
+        }
+        anchorState.hostStagePending = false;
+        if (!shouldRevealLive2DPeek()) {
+            // 保持隐藏：模型已经在隐藏位，下面的 _setLive2DPeekVisibility 不会再播动画、也不发通知。
+            // 照不分段时的做法发一次落定通知，只认 anchor-created 的监听（首次探身提示等）照常收到。
+            try {
+                window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+                    detail: {
+                        active: true,
+                        visible: false,
+                        phase: 'hidden',
+                        edge: anchorState.edge,
+                        visibleBounds: null,
+                        reason: 'anchor-created'
+                    }
+                }));
+            } catch (_) {}
+        }
+    }
     return await this._setLive2DPeekVisibility(
         shouldRevealLive2DPeek(),
         'anchor-created'
     );
+};
+
+function getLive2DPeekHostStageApi() {
+    const api = typeof window !== 'undefined' ? window.__nekoLive2DPeekHostStage : null;
+    if (!api || typeof api !== 'object') return null;
+    const version = Number(api.version);
+    if (!Number.isFinite(version) || version < 1) return null;
+    return typeof api.prepare === 'function' ? api : null;
+}
+
+// 给宿主看的探身落点。有这个方法就表示页面支持分段进探身；没有探身时返回 null。
+// visibleBounds 是探出后模型露在屏内的范围（页面坐标）。探出、缩回动画只沿水平方向滑动，
+// 全程落在这个范围往屏内方向再加 revealOvershootPx 之内，宿主按它留窗口即可。
+// staged 表示这次落点由宿主接过分段；pending 表示还在等宿主回话（模型在屏外）。
+Live2DManager.prototype.getLive2DPeekHostStageInfo = function () {
+    const state = this._live2DPeekState;
+    const visibleBounds = state && state.visibleBounds;
+    if (!state || !state.active || !state.model || state.model.destroyed || !visibleBounds) return null;
+    return {
+        edge: state.edge,
+        side: state.side,
+        phase: state.phase,
+        staged: state.hostStaged === true,
+        pending: state.hostStagePending === true,
+        visibleBounds: {
+            left: visibleBounds.left,
+            top: visibleBounds.top,
+            right: visibleBounds.right,
+            bottom: visibleBounds.bottom,
+            width: visibleBounds.width,
+            height: visibleBounds.height
+        },
+        revealOvershootPx: Math.ceil(
+            Math.abs(Number(state.peekX) - Number(state.hiddenX)) * LIVE2D_PEEK_REVEAL_OVERSHOOT_RATIO
+        ) || 0
+    };
+};
+
+// 问宿主要不要分段进探身。宿主同步返回一个 Promise 表示它接了：模型当场摆到隐藏位，
+// 返回的 Promise 在宿主回话或超时后完成。宿主没声明、返回的不是 Promise 或抛错时返回 null，
+// 调用方照原样播动画，模型姿态不动。
+Live2DManager.prototype._beginLive2DPeekHostStage = function (model, state) {
+    const api = getLive2DPeekHostStageApi();
+    const info = api && model && !model.destroyed ? this.getLive2DPeekHostStageInfo() : null;
+    if (!info) return null;
+    let pending = null;
+    try {
+        pending = api.prepare(Object.assign(info, { reveal: shouldRevealLive2DPeek() }));
+    } catch (_) {
+        return null;
+    }
+    if (!pending || typeof pending.then !== 'function') return null;
+
+    state.hostStaged = true;
+    state.hostStagePending = true;
+    state.phase = 'hidden';
+    model.x = state.hiddenX;
+    model.y = state.hiddenY;
+    model.rotation = state.peekRotation;
+    if (model.scale) model.scale.x = state.peekScaleX;
+    model.interactive = false;
+    this.syncLive2DEffectiveInputLock();
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+            detail: {
+                active: true,
+                visible: false,
+                phase: 'hidden',
+                edge: state.edge,
+                visibleBounds: null,
+                reason: 'host-stage'
+            }
+        }));
+    } catch (_) {}
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer = 0;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        timer = setTimeout(finish, LIVE2D_PEEK_HOST_STAGE_TIMEOUT_MS);
+        Promise.resolve(pending).then(finish, finish);
+    });
 };
 
 function clearLive2DPeek(reason, options) {

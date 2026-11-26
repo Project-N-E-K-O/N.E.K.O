@@ -21,7 +21,8 @@ function createHarness({
     desktopRuntime = true,
     interactionActive = true,
     reducedMotion = false,
-    snapshotSettledSequence = null
+    snapshotSettledSequence = null,
+    timers = null
 } = {}) {
     const rafQueue = [];
     const bodyClasses = new Set();
@@ -37,8 +38,9 @@ function createHarness({
     const context = {
         Live2DManager,
         console,
-        setTimeout, AbortController,
-        clearTimeout,
+        setTimeout: timers ? timers.setTimeout : setTimeout,
+        AbortController,
+        clearTimeout: timers ? timers.clearTimeout : clearTimeout,
         performance: {
             now: () => 0
         },
@@ -3730,4 +3732,331 @@ test('clearing a peeking state removes the locked hover fade class', () => {
     manager._live2DPeekState = { active: false, phase: 'hidden' };
     manager.syncLive2DEffectiveInputLock();
     assert.equal(containerClasses.has('locked-hover-fade'), false);
+});
+
+function installPeekHostStage(harness, prepare, extra = {}) {
+    const calls = [];
+    harness.window.__nekoLive2DPeekHostStage = Object.assign({
+        version: 1,
+        prepare(detail) {
+            calls.push(detail);
+            return prepare(detail);
+        }
+    }, extra);
+    return calls;
+}
+
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(rounds = 6) {
+    for (let i = 0; i < rounds; i += 1) await Promise.resolve();
+}
+
+test('host-staged peek parks the model off-screen until the host answers, then reveals', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const events = [];
+    // 建立落点前会先清一次旧探身（active: false），这里只看新落点的事件。
+    harness.window.addEventListener('neko:live2d-peek-changed', (event) => {
+        if (event.detail && event.detail.active === true) events.push(event.detail);
+    });
+    const hostReady = createDeferred();
+    const calls = installPeekHostStage(harness, () => hostReady.promise);
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    const state = manager._live2DPeekState;
+
+    // 宿主接了：没有转身滑过去的动画，模型当场在屏外，等宿主挪窗口。
+    assert.equal(calls.length, 1);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(state.phase, 'hidden');
+    assert.equal(state.hostStagePending, true);
+    assert.equal(model.x, state.hiddenX);
+    assert.equal(model.y, state.hiddenY);
+    assert.equal(model.rotation, state.peekRotation);
+    assert.ok(model.getBounds().right < 0, 'model must be fully off-screen while the host moves its window');
+    assert.equal(model.interactive, false);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].phase, 'hidden');
+    assert.equal(events[0].visible, false);
+    assert.equal(events[0].reason, 'host-stage');
+
+    const detail = calls[0];
+    assert.equal(detail.side, 'left');
+    assert.equal(detail.reveal, true);
+    // 落点信息在宿主被问到的那一刻还没进入分段。
+    assert.equal(detail.staged, false);
+    assert.equal(detail.pending, false);
+    const pendingInfo = manager.getLive2DPeekHostStageInfo();
+    assert.equal(pendingInfo.staged, true);
+    assert.equal(pendingInfo.pending, true);
+    assert.equal(pendingInfo.phase, 'hidden');
+    assert.equal(pendingInfo.revealOvershootPx, detail.revealOvershootPx);
+    assert.equal(detail.visibleBounds.left, state.visibleBounds.left);
+    assert.equal(detail.visibleBounds.right, state.visibleBounds.right);
+    assert.equal(detail.visibleBounds.top, state.visibleBounds.top);
+    assert.equal(detail.visibleBounds.bottom, state.visibleBounds.bottom);
+    assert.ok(detail.revealOvershootPx > 0);
+
+    await flushMicrotasks();
+    assert.equal(harness.rafQueue.length, 0, 'reveal must not start before the host answers');
+
+    hostReady.resolve(true);
+    await waitForQueuedFrame(harness);
+    assert.equal(state.hostStagePending, false);
+    assert.equal(state.phase, 'revealing');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    assert.equal(state.phase, 'peeking');
+    assert.deepEqual(events.map((detail) => detail.reason), ['host-stage', 'anchor-created']);
+    assert.equal(events[1].phase, 'peeking');
+    assert.equal(model.x, state.peekX);
+    assert.equal(model.interactive, true);
+});
+
+test('host-staged reveal never leaves the reported visible bounds plus overshoot', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const calls = installPeekHostStage(harness, () => Promise.resolve(true));
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    await waitForQueuedFrame(harness);
+    const detail = calls[0];
+    const limitRight = detail.visibleBounds.right + detail.revealOvershootPx;
+    let maxRight = -Infinity;
+    for (let time = 5; time <= 300; time += 5) {
+        flushNextFrame(harness, time);
+        const bounds = model.getBounds();
+        maxRight = Math.max(maxRight, bounds.right);
+        assert.ok(bounds.top >= detail.visibleBounds.top - 1e-6);
+        assert.ok(bounds.bottom <= detail.visibleBounds.bottom + 1e-6);
+        if (time < 300) await waitForQueuedFrame(harness);
+    }
+    assert.equal(await enterPromise, true);
+    assert.ok(maxRight > detail.visibleBounds.right, 'the soft-back reveal should overshoot');
+    assert.ok(maxRight <= limitRight, `overshoot ${maxRight} must stay within ${limitRight}`);
+});
+
+test('host-staged peek stays hidden in stealth mode without an interaction', async () => {
+    const harness = createHarness({ interactionActive: false, stealthModeEnabled: true });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const events = [];
+    harness.window.addEventListener('neko:live2d-peek-changed', (event) => {
+        if (event.detail && event.detail.active === true) events.push(event.detail);
+    });
+    const calls = installPeekHostStage(harness, () => Promise.resolve(true));
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.equal(calls[0].reveal, false);
+    assert.equal(await enterPromise, true);
+    // 和不分段时一样，落定后发一次 anchor-created（首次探身提示只认这个）。
+    assert.deepEqual(events.map((detail) => detail.reason), ['host-stage', 'anchor-created']);
+    assert.equal(events[1].phase, 'hidden');
+    assert.equal(events[1].visible, false);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(manager._live2DPeekState.hostStagePending, false);
+    assert.ok(model.getBounds().right < 0);
+    assert.equal(model.interactive, false);
+});
+
+test('visibility requests during the host stage wait for the host answer', async () => {
+    const harness = createHarness({ interactionActive: false, stealthModeEnabled: true });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+    const hostReady = createDeferred();
+    installPeekHostStage(harness, () => hostReady.promise);
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    harness.window.NekoWidgetInteraction.isActive = () => true;
+    harness.window.dispatchEvent({
+        type: 'neko:widget-interaction-state-changed',
+        detail: { active: true, reason: 'user-message' }
+    });
+    await flushMicrotasks();
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(harness.rafQueue.length, 0, 'the reveal would land in the stale host window');
+
+    hostReady.resolve(true);
+    await waitForQueuedFrame(harness);
+    // 回话那一刻互动还在：按当时的状态探出。
+    assert.equal(manager._live2DPeekState.phase, 'revealing');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+});
+
+test('host stage times out and reveals when the host never answers', async () => {
+    const pendingTimers = [];
+    const timers = {
+        setTimeout(callback, delay) {
+            const timer = { callback, delay, cleared: false };
+            pendingTimers.push(timer);
+            return timer;
+        },
+        clearTimeout(timer) {
+            if (timer) timer.cleared = true;
+        }
+    };
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false, timers });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    installPeekHostStage(harness, () => new Promise(() => {}));
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    await flushMicrotasks();
+    assert.equal(harness.rafQueue.length, 0);
+    const stageTimers = pendingTimers.filter((timer) => !timer.cleared);
+    assert.equal(stageTimers.length, 1);
+    assert.equal(stageTimers[0].delay, 600);
+
+    stageTimers[0].callback();
+    await waitForQueuedFrame(harness);
+    assert.equal(manager._live2DPeekState.phase, 'revealing');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+    assert.equal(model.x, manager._live2DPeekState.peekX);
+});
+
+test('a rejected host stage still reveals the model', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    installPeekHostStage(harness, () => Promise.reject(new Error('host failed')));
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    await waitForQueuedFrame(harness);
+    assert.equal(manager._live2DPeekState.phase, 'revealing');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+});
+
+test('clearing the peek during the host stage restores the base pose and skips the reveal', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const hostReady = createDeferred();
+    installPeekHostStage(harness, () => hostReady.promise);
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.ok(model.getBounds().right < 0);
+    manager.clearLive2DPeek('widget-mode-disabled');
+    assert.equal(model.x, 0);
+    assert.equal(model.rotation, 0);
+    assert.equal(model.interactive, true);
+
+    hostReady.resolve(true);
+    assert.equal(await enterPromise, false);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(model.x, 0);
+});
+
+test('hosts that do not take the stage keep the ordinary peek animation', async () => {
+    const variants = [
+        // 没声明能力。
+        (harness) => {
+            harness.window.__nekoLive2DPeekHostStage = { prepare: () => Promise.resolve(true) };
+        },
+        // 声明了但这次不接（比如省算力没开）。
+        (harness) => installPeekHostStage(harness, () => false),
+        (harness) => installPeekHostStage(harness, () => undefined),
+        // 宿主抛错。
+        (harness) => installPeekHostStage(harness, () => {
+            throw new Error('host failed');
+        })
+    ];
+    for (const install of variants) {
+        const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+        const manager = new harness.Live2DManager();
+        const model = createModel({ x: 0 });
+        install(harness);
+
+        const enterPromise = manager._tryApplyLive2DPeek(model);
+        // 和没有宿主时一样：同步进入 revealing，模型还在原位，从原位播动画过去。
+        assert.equal(manager._live2DPeekState.phase, 'revealing');
+        assert.equal(manager._live2DPeekState.hostStagePending, undefined);
+        assert.equal(model.x, 0);
+        assert.equal(model.rotation, 0);
+        assert.equal(harness.rafQueue.length, 1);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        assert.equal(manager._live2DPeekState.phase, 'peeking');
+    }
+});
+
+test('a host stage superseded by a newer anchor does not drive the newer anchor', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const firstReady = createDeferred();
+    let callCount = 0;
+    // 第一次接，第二次不接（走原来的动画）。
+    installPeekHostStage(harness, () => {
+        callCount += 1;
+        return callCount === 1 ? firstReady.promise : false;
+    });
+
+    const firstPromise = manager._tryApplyLive2DPeek(model);
+    const firstState = manager._live2DPeekState;
+    assert.equal(firstState.hostStagePending, true);
+
+    manager.clearLive2DPeek('widget-mode-anchor-prepare');
+    const secondPromise = manager._tryApplyLive2DPeek(model);
+    const secondState = manager._live2DPeekState;
+    assert.notEqual(secondState, firstState);
+    assert.equal(secondState.phase, 'revealing');
+
+    firstReady.resolve(true);
+    assert.equal(await firstPromise, false, 'the superseded stage must not report the newer anchor as its own');
+    assert.equal(secondState.phase, 'revealing');
+    flushNextFrame(harness);
+    assert.equal(await secondPromise, true);
+    assert.equal(secondState.phase, 'peeking');
+});
+
+test('peek host stage info describes the anchor and is null without one', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+
+    assert.equal(manager.getLive2DPeekHostStageInfo(), null);
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    const state = manager._live2DPeekState;
+    const info = manager.getLive2DPeekHostStageInfo();
+    assert.equal(info.phase, 'peeking');
+    assert.equal(info.side, 'left');
+    assert.equal(info.staged, false);
+    assert.equal(info.pending, false);
+    assert.equal(info.visibleBounds.left, state.visibleBounds.left);
+    assert.equal(info.visibleBounds.right, state.visibleBounds.right);
+    assert.equal(info.visibleBounds.top, state.visibleBounds.top);
+    assert.equal(info.visibleBounds.bottom, state.visibleBounds.bottom);
+    assert.equal(
+        info.revealOvershootPx,
+        Math.ceil(Math.abs(state.peekX - state.hiddenX) * 0.031)
+    );
+    // 返回的是副本，宿主改它不影响探身状态。
+    info.visibleBounds.left = -999;
+    assert.notEqual(state.visibleBounds.left, -999);
+
+    manager.clearLive2DPeek('manual');
+    assert.equal(manager.getLive2DPeekHostStageInfo(), null);
 });
