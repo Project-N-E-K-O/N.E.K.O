@@ -5448,7 +5448,9 @@ class TaskAgentManager(TreeWork):
         For any end: of a run (``_act_on_end``), at a landing, of the quota
         partway through (``_on_usage``), or of the usage the user allowed
         (``_wind_up_step``). How it ended is written by now, and the caller
-        closes its own session once this returns. These ends come once, so
+        sees to its own session as it does once this returns (closes it, or,
+        at a landing, waits for these to be gone from their runtime before
+        what was changed is merged). These ends come once, so
         what the ledger is asked, and each one's stop, is tried again after
         a failure (``_looked``). Each by itself: one that cannot be stopped
         this moment does not leave the others at work, nor keep the
@@ -5539,7 +5541,7 @@ class TaskAgentManager(TreeWork):
         (``Ledger.transition``'s ``unless_waiting_in_tree``): a worktree
         that comes to wait a moment before is not missed. None, with
         nothing written, while the user's decision on its worktree is
-        carried out (``_waits_in_tree``): the worktree may be on record as
+        carried out (``_decided_for``): the worktree may be on record as
         being landed by then, or be gone, with it not done yet. That is
         looked at each time this is asked, with nothing awaited before the
         write is asked for, and the user's decision is in hand
