@@ -206,3 +206,55 @@ def test_pending_settings_check_repositions_after_crop_mode_changes(page):
     assert result["panel"]["width"] >= 225
     assert result["panel"]["left"] >= 7.5 and result["panel"]["right"] <= 552.5
     assert result["popup"]["top"] - result["panel"]["bottom"] == pytest.approx(12, abs=0.5)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("cropped", [False, True])
+@pytest.mark.parametrize("scale", [1, 1.25])
+@pytest.mark.parametrize("box_sizing", ["content-box", "border-box"])
+def test_settings_width_limits_include_box_insets(page, cropped, scale, box_sizing):
+    _install_settings_panel(page, prefix="live2d", scale=scale, cropped=cropped, edge="left", width=320)
+    page.evaluate("""boxSizing => {
+        const panel = document.getElementById('settings-panel');
+        Object.assign(panel.style, {width:'400px', boxSizing});
+        AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, false);
+        AvatarPopupUI.applySidePanelTransform(panel, 'none');
+    }""", box_sizing)
+    page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
+    result = _snapshot(page)
+    assert result["down"] == "true"
+    assert result["panel"]["width"] >= 240
+    assert result["panel"]["left"] >= 7.5 and result["panel"]["right"] <= 312.5
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("edge", ["left", "right"])
+@pytest.mark.parametrize("delayed", [False, True])
+@pytest.mark.parametrize("box_sizing", ["content-box", "border-box"])
+def test_settings_collision_width_limits_include_box_insets(page, edge, delayed, box_sizing):
+    _install_settings_panel(page, prefix="live2d", scale=1.25, cropped=True, edge=edge)
+    page.evaluate("""({edge, delayed, boxSizing}) => {
+        const panel = document.getElementById('settings-panel');
+        Object.assign(panel.style, {width:'400px', boxSizing});
+        const position = () => {
+            AvatarPopupUI.positionSidePanel(panel, panel._anchorElement, {}, delayed);
+            AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        };
+        if (delayed) position();
+        const button = document.createElement('button');
+        button.id = 'live2d-btn-collision';
+        button.style.cssText = `position:fixed;left:${edge === 'right' ? 340 : 1040}px;top:350px;width:48px;height:48px`;
+        document.body.appendChild(button);
+        if (!delayed) position();
+    }""", dict(edge=edge, delayed=delayed, boxSizing=box_sizing))
+    expected_left = 8 if edge == "right" else 1100
+    page.wait_for_function("left => parseFloat(document.getElementById('settings-panel').style.left) === left", arg=expected_left)
+    page.wait_for_function("document.getElementById('settings-panel').getAnimations().length === 0")
+    result = _snapshot(page)
+    assert result["down"] == "false"
+    assert result["panel"]["width"] >= 240
+    assert result["panel"]["left"] >= 7.5 and result["panel"]["right"] <= 1432.5
+    if edge == "right":
+        assert result["panel"]["right"] <= 328.5
+    else:
+        assert result["panel"]["left"] >= 1099.5

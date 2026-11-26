@@ -879,9 +879,12 @@
         const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
         const screenW = niriViewport ? niriViewport.width : window.innerWidth;
         const screenH = niriViewport ? niriViewport.height : window.innerHeight;
+        const insets = getBoxInsets(container);
+        const toPanelMaxWidth = width => Math.max(0,
+            toLocalCssPx(width, panelScale) - (insets.borderBox ? 0 : insets.width));
         if (!preserveCropPlacement) {
             // Bound the rendered width, including the shared UI scale.
-            const viewportWidth = Math.max(1, toLocalCssPx(screenW - edgeMargin * 2, panelScale));
+            const viewportWidth = Math.max(1, toPanelMaxWidth(screenW - edgeMargin * 2));
             const originalMax = parseFloat(getComputedStyle(container).maxWidth);
             container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
         }
@@ -942,7 +945,7 @@
             // 超出屏幕左边缘时限制
             if (panelLeft < edgeMargin) {
                 panelLeft = edgeMargin;
-                container.style.maxWidth = `${Math.max(0, toLocalCssPx(panelRight - edgeMargin, panelScale))}px`;
+                container.style.maxWidth = `${toPanelMaxWidth(panelRight - edgeMargin)}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
@@ -953,7 +956,7 @@
 
             // 超出屏幕右边缘时限制
             if (panelLeft + panelW > screenW - edgeMargin) {
-                container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - panelLeft, panelScale))}px`;
+                container.style.maxWidth = `${toPanelMaxWidth(screenW - edgeMargin - panelLeft)}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
@@ -998,10 +1001,10 @@
                     positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
-                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
+                    container.style.maxWidth = `${toPanelMaxWidth(zone.left - gap - edgeMargin)}px`;
                 } else {
                     container.style.left = `${zone.right + gap}px`;
-                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - zone.right - gap, panelScale))}px`;
+                    container.style.maxWidth = `${toPanelMaxWidth(screenW - edgeMargin - zone.right - gap)}px`;
                 }
             }
         }
@@ -1044,10 +1047,10 @@
                     positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
-                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;
+                    _containerRef.style.maxWidth = `${toPanelMaxWidth(z.left - _gap - _edgeMargin)}px`;
                 } else {
                     _containerRef.style.left = `${z.right + _gap}px`;
-                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(_screenW - _edgeMargin - z.right - _gap, _containerRef.dataset.nekoUiScale))}px`;
+                    _containerRef.style.maxWidth = `${toPanelMaxWidth(_screenW - _edgeMargin - z.right - _gap)}px`;
                 }
                 applySidePanelTransform(_containerRef, 'none');
             }
