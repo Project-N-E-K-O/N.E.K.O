@@ -9,6 +9,7 @@ import pytest
 
 from main_logic.voice_turn.contracts import PreserveUnsentPrefix
 from tests.support.asr_fakes import _Runtime, _install_ready_lifecycle
+from tests.support.task_sets import wait_task_set_empty
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
 
@@ -32,8 +33,7 @@ def _source(*, write_attempted=False):
 
 
 async def _settle(manager):
-    while manager._core_asr_cleanup_tasks:
-        await asyncio.gather(*tuple(manager._core_asr_cleanup_tasks))
+    await wait_task_set_empty(manager._core_asr_cleanup_tasks)
 
 
 @pytest.mark.parametrize("missing_attribute", [True, False])

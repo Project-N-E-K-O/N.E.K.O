@@ -214,12 +214,14 @@ async def test_the_permission_table_shows_each_category_and_what_auto_comes_to(c
     rows = {row["category"]: row for row in seen["categories"]}
     assert list(rows) == [
         "workdir_files", "outside_read", "outside_write", "run_command",
-        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session",
+        "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other", "open_session", "open_beside",
     ]
     assert all(row["mode"] == "auto" for row in rows.values()) and seen["unreadable"] is False
     assert rows["run_command"]["auto"] == "first_ask" and rows["workdir_files"]["auto"] == "allow"
     # A boss starting another familiar that changes files: asked about once, and can be set here.
     assert rows["open_session"]["auto"] == "first_ask"
+    # Another one beside a busy one, for something else (a category of its own): likewise.
+    assert rows["open_beside"]["auto"] == "first_ask"
     # The tools of dsh plugins: confirmed at install, not asked for.
     assert rows["other"]["auto"] == "allow"
     assert seen["modes"] == ["auto", "first_ask", "always_ask", "allow", "deny"]

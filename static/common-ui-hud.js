@@ -1430,25 +1430,79 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     });
 
     // Build the desired card order, reusing/updating existing cards
-    const fragment = document.createDocumentFragment();
-    activeTasks.forEach(task => {
+    const desired = activeTasks.map(task => {
         const existing = existingById.get(task.id);
-        if (existing) {
-            const node = this._updateTaskCard(existing, task);
-            fragment.appendChild(node || existing);
-        } else {
-            const card = this._createTaskCard(task);
-            fragment.appendChild(card);
-        }
+        return existing ? (this._updateTaskCard(existing, task) || existing) : this._createTaskCard(task);
     });
 
-    // Re-append empty state first (it should stay at top), then task cards
-    if (emptyState && emptyState.parentNode === taskList) {
-        taskList.insertBefore(fragment, emptyState.nextSibling);
-    } else {
-        taskList.appendChild(fragment);
-    }
+    // 只挪位置不对的卡片：已经站在该站的位置上的不动。把卡片挪走再插回会让卡片里正在打字的输入框
+    // 丢掉焦点（输入法也会被打断），哪怕只是别的任务新来了一张卡。空状态留在最前面。
+    let next = emptyState && emptyState.parentNode === taskList ? emptyState.nextSibling : taskList.firstChild;
+    desired.forEach(card => {
+        if (card === next) {
+            next = next.nextSibling;
+        } else {
+            taskList.insertBefore(card, next);
+        }
+    });
     if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
+};
+
+// 等用户回话的任务：卡片里直接显示它问的话，带按钮和小输入框（static/app/app-nekopower-ask.js）。
+// 同一个问题不重画（输入框里打到一半的字不能丢）；换了问题才换，按钮先停一小会儿，免得点到新问题上。
+window.AgentHUD._syncTaskAsk = function (card, task) {
+    if (!card) return;
+    const asks = window.NekoPowerAsk;
+    const question = task.status === 'waiting_user' && task.question && typeof task.question === 'object' && asks ? task.question : null;
+    const shown = card.querySelector('.task-ask');
+    this._syncTaskAskNotice(card, task.id);
+    if (!question) {
+        if (shown) shown.remove();
+        return;
+    }
+    const questionId = String(question.id || '');
+    if (shown && shown.dataset.questionId === questionId) return;
+    if (shown) shown.remove();
+    // 这件任务上一次问的是哪条：中间画过一帧「运行中」、卡片上已经没有问话了，换成下一条时照样先停一下。
+    if (!this._askedByTask) this._askedByTask = {};
+    const last = this._askedByTask[task.id];
+    this._askedByTask[task.id] = questionId;
+    card.appendChild(asks.render({
+        taskId: task.id,
+        question: question,
+        // 插件直接办的事没有使魔能收「补一句」。
+        noNote: task.type === 'user_plugin',
+        settle: Boolean(shown) || (last !== undefined && last !== questionId),
+        onNoteLost: (said) => {
+            this._askNotices[task.id] = said;
+            // 留一会儿就撤；这件任务下一次更新时卡片照着画。
+            setTimeout(() => {
+                if (this._askNotices[task.id] !== said) return;
+                delete this._askNotices[task.id];
+                const here = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"] .task-ask-notice');
+                if (here) here.remove();
+            }, 15000);
+            // 只画这句提示，不碰卡片上现在挂着的问话：这件任务可能已经问了下一条，里面还有打到一半的字。
+            const live = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"]');
+            if (live) this._syncTaskAskNotice(live, task.id);
+        }
+    }));
+};
+
+// 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
+window.AgentHUD._syncTaskAskNotice = function (card, taskId) {
+    if (!this._askNotices) this._askNotices = {};
+    const noticed = this._askNotices[taskId];
+    let notice = card.querySelector('.task-ask-notice');
+    if (noticed && !notice) {
+        notice = document.createElement('div');
+        notice.className = 'task-ask-notice';
+        notice.setAttribute('role', 'status');
+        Object.assign(notice.style, { marginTop: '4px', fontSize: '11px', lineHeight: '1.4', color: 'var(--neko-popup-error, #dc2626)' });
+        card.appendChild(notice);
+    }
+    if (notice && !noticed) notice.remove();
+    else if (notice && notice.textContent !== noticed) notice.textContent = noticed;
 };
 
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
@@ -1532,6 +1586,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     }
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // Handle progress row: add if now running but missing, remove if no longer running
     const progressRow = card.querySelector('.task-progress-row');
@@ -1821,6 +1876,7 @@ window.AgentHUD._createTaskCard = function (task) {
     card.appendChild(header);
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {

@@ -1,6 +1,11 @@
 <template>
   <section class="panel" data-testid="familiars-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="familiars-error" />
+    <!-- Of a project: one more familiar for it, and a leader where it has none. Not of the loose ones. -->
+    <template v-if="project !== null && loaded && !error">
+      <CrewTools :project="project" :has-leader="hasLeader" :lanlan-name="lanlanName" @changed="crewChanged" />
+      <ProjectTrees :project="project" :refresh="board?.revision" />
+    </template>
     <el-empty v-if="loaded && !members.length && !selectedId" :description="t('power.space.familiars.empty')" />
 
     <div v-if="members.length" class="members">
@@ -62,6 +67,23 @@
         </div>
       </dl>
 
+      <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
+      <TreeActions v-if="selected.tree" :key="selected.tree.id" :tree="selected.tree" :title="selected.commission?.title" @changed="treeChanged" />
+      <p v-if="treeSaid.said && selected.tree?.id !== treeSaid.tree" class="muted" role="status" data-testid="tree-said">{{ treeSaid.said }}</p>
+
+      <!-- Whether another is to do what waits for it, busy with something else: drawn under it, not there yet. -->
+      <div v-if="besides.length" class="besides">
+        <BesideAsk
+          v-for="item in besides" :key="item.id"
+          :item="item" :busy="besideBusyOf(item)" :error="besideFailedOf(item)" @answer="answerBeside(item, $event)"
+        />
+      </div>
+
+      <!-- What it asks is answered whichever view is open: the page may be opened at what was said in it. -->
+      <AskBox v-if="ask" :ask="ask" :busy="busy" :place="selected.commission?.id" @answer="answer" />
+      <!-- Said here and not in a view: the question is gone once it is answered, whichever view is open. -->
+      <p v-if="answered?.id === selected.id" class="muted" role="status" data-testid="familiar-answer-note">{{ answered.said }}</p>
+
       <div class="views" role="tablist">
         <button
           v-for="name in VIEWS"
@@ -93,10 +115,8 @@
           <template v-if="selected.doing"><br>{{ selected.doing }}</template>
         </p>
 
-        <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
-
         <div v-if="selected.state === 'working'" class="say">
-          <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keyup.enter="tell" />
+          <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keydown="enterKey.down" @keyup.enter="enterKey.up(tell)" />
           <el-button type="primary" :loading="busy === 'tell'" :disabled="!sentence.trim() || busy !== ''" data-testid="familiar-send" @click="tell">
             {{ t('power.space.familiars.send') }}
           </el-button>
@@ -143,13 +163,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { answerCommission, getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
+import { getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
 import AskBox from '../AskBox.vue'
+import { answeringAs, describeAnswerError, rememberAsks, saysSomething } from '../ask'
+import type { GivenAnswer } from '../ask'
+import { useBesideAnswers, useBesideAsks } from '../colony/useBesideAsks'
+import BesideAsk from '../home/BesideAsk.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import { sendAnswer } from '../useAskAnswers'
+import CrewTools from './CrewTools.vue'
+import ProjectTrees from './ProjectTrees.vue'
 import TranscriptPane from './TranscriptPane.vue'
+import TreeActions from './TreeActions.vue'
 import UsagePane from './UsagePane.vue'
+import { useEnterKey } from '@/utils/enterKey'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
 const props = withDefaults(defineProps<{
@@ -161,6 +190,8 @@ const props = withDefaults(defineProps<{
    * True when it is not said (a switch that is left out would read as false).
    */
   settled?: boolean
+  /** The view a familiar the address names is opened at: `talk` for what was said in it. Its work, when it is not said. */
+  startView?: string
 }>(), { settled: true })
 const emit = defineEmits<{ select: [id: string] }>()
 const { t, te } = useI18n()
@@ -170,11 +201,20 @@ const error = ref('')
 // Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
 const cardError = ref('')
 const note = ref('')
+rememberAsks()
+// What is said of an answer that was taken while the sentence added to it was not, and of which
+// familiar's: shown with that one only (the answer may come back after another was chosen).
+const answered = ref<{ id: string; said: string } | null>(null)
+// What came of the last thing done to its worktree: said after the worktree is gone from its card as well.
+const treeSaid = ref({ tree: '', said: '' })
 const busy = ref('')
 const sentence = ref('')
+// Enter that picks a word of an input method is not Enter that sends.
+const enterKey = useEnterKey()
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
 const VIEWS = ['doing', 'talk', 'usage'] as const
-const view = ref<(typeof VIEWS)[number]>('doing')
+const startingView = (): (typeof VIEWS)[number] => (props.startView === 'talk' ? 'talk' : 'doing')
+const view = ref<(typeof VIEWS)[number]>(startingView())
 // Of one that is not on the board there is no card to show what it is doing.
 const PAST_VIEWS = ['talk', 'usage'] as const
 const pastView = ref<(typeof PAST_VIEWS)[number]>('talk')
@@ -197,6 +237,8 @@ const members = computed<BoardCard[]>(() => {
   return (now.projects ?? []).find(project => project.name === props.project)?.members ?? []
 })
 const hasLeader = computed(() => members.value.some(card => card.leader))
+// Whose familiars they are: a new one of the project is that character's as well.
+const lanlanName = computed(() => members.value.find(card => card.lanlan_name)?.lanlan_name ?? null)
 const selected = computed(() => members.value.find(card => card.id === props.selectedId) ?? null)
 // The one the address names is not on the board. Known only once the board was read, of the
 // project the address means: a board that could not be read, or another project's, holds nobody.
@@ -204,6 +246,16 @@ const offBoard = computed(() => Boolean(
   loaded.value && board.value && !error.value && props.settled && props.selectedId && !selected.value,
 ))
 const ask = computed(() => (selected.value?.state === 'waiting_user' ? selected.value.commission?.ask ?? null : null))
+// Whether another familiar is to do what waits for the one chosen, busy with something else (as
+// the home page asks it). Looked for only while one of a project is chosen that is at something:
+// of none other is it shown here.
+const { asks: allBesides, load: loadBesides } = useBesideAsks(
+  computed(() => (props.project !== null && selected.value?.commission ? board.value : null)),
+)
+const besides = computed(() => allBesides.value.filter(item => item.beside === selected.value?.id))
+const { busyOf: besideBusyOf, failedOf: besideFailedOf, answer: answerBeside } = useBesideAnswers(
+  () => Promise.all([load(), loadBesides()]),
+)
 const shownTitle = computed(() => {
   const card = selected.value
   if (!card) return ''
@@ -240,7 +292,7 @@ async function load() {
 }
 
 /** Do one thing to the familiar's task, then show where it stands; `done` is said when it took. */
-async function act(name: string, work: () => Promise<unknown>, done = ''): Promise<boolean> {
+async function act(name: string, work: () => Promise<unknown>, done = '', words = describeConsoleError): Promise<boolean> {
   busy.value = name
   note.value = ''
   let took = true
@@ -250,7 +302,7 @@ async function act(name: string, work: () => Promise<unknown>, done = ''): Promi
     note.value = done
   } catch (failure) {
     took = false
-    error.value = describeConsoleError(failure, t, te)
+    error.value = words(failure, t, te)
   }
   const failed = error.value
   await load()
@@ -266,12 +318,17 @@ async function tell() {
   if (await act('tell', () => tellCommission(commission.id, text), t('power.space.familiars.sent'))) sentence.value = ''
 }
 
-async function answer(given: { text?: string; choice?: string }) {
+async function answer(given: GivenAnswer) {
   const commission = selected.value?.commission
-  if (!commission || (!given.choice && !given.text?.trim())) return
-  const name = given.choice ? `choice:${given.choice}` : 'answer'
-  const sent = { ...given, text: given.text?.trim(), question_id: ask.value?.id }
-  await act(name, () => answerCommission(commission.id, sent))
+  // One answer to a question: nothing more is sent while one is on its way.
+  if (!commission || !saysSomething(given) || busy.value) return
+  const asked = ask.value
+  const whose = selected.value?.id ?? ''
+  let lost = ''
+  if (answered.value?.id === whose) answered.value = null
+  const took = await act(answeringAs(given), async () => { lost = await sendAnswer(commission.id, given, asked, t) }, '', describeAnswerError)
+  // The answer is in; the sentence that was to go with it was not taken.
+  if (took && lost) answered.value = { id: whose, said: lost }
 }
 
 async function stop() {
@@ -308,6 +365,19 @@ async function saveCard() {
   editing.value = false
 }
 
+function treeChanged(tree: string, said: string) {
+  treeSaid.value = { tree, said }
+  void load()
+}
+
+/** One more familiar, or a leader, was made: shown at once, and up close. */
+async function crewChanged(sessionId: string) {
+  const project = props.project
+  await load()
+  // Another project was opened meanwhile: the new one is not among its familiars.
+  if (props.project === project) emit('select', sessionId)
+}
+
 function onVisibility() {
   if (!document.hidden && alive) void load()
 }
@@ -321,8 +391,9 @@ watch(() => props.selectedId, () => {
   // The editor was opened for the one the user has left.
   editing.value = false
   note.value = ''
+  treeSaid.value = { tree: '', said: '' }
   sentence.value = ''
-  view.value = 'doing'
+  view.value = startingView()
   pastView.value = 'talk'
 })
 document.addEventListener('visibilitychange', onVisibility)
@@ -352,6 +423,7 @@ onBeforeUnmount(() => {
 .view.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .fell-back { margin-left: 6px; padding: 0 6px; font-size: 12px; border-radius: 8px; color: var(--el-color-warning); background: var(--el-color-warning-light-9); cursor: help; }
 .say { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.besides { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .grow { flex: 1; }
 .block { margin-bottom: 12px; }
 </style>

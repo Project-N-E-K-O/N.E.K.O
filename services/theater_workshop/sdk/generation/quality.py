@@ -718,7 +718,7 @@ class NumericV2QualityAssessor(ModelAgent):
                 preserved_issues = None
                 location_error = False
                 for attempt in range(2):
-                    response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+                    response = self.call_llm(messages, max_tokens=6000, max_retries=1,
                         response_format={"type": "json_object"},
                         thinking={"type": "disabled"}, operation=(
                             "numeric_v2_fact_review" if attempt == 0 else "numeric_v2_fact_review_format_repair"))
@@ -845,7 +845,7 @@ class NumericV2QualityAssessor(ModelAgent):
                                                            "start_node_id": story.get("start_node_id"),
                                                            "terminal_node_ids": terminal_ids})}]
                 for attempt in range(2):
-                    response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+                    response = self.call_llm(messages, max_tokens=6000, max_retries=1,
                         response_format={"type": "json_object"}, thinking={"type": "disabled"},
                         operation=("numeric_v2_fact_evidence_review" if attempt == 0
                                    else "numeric_v2_fact_evidence_review_format_repair"))
@@ -915,7 +915,7 @@ class NumericV2QualityAssessor(ModelAgent):
         messages = [{"role": "system", "content": EXIT_BINDING_PROMPT},
                     {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}]
         for attempt in range(2):
-            response = self.call_llm(messages, temperature=0.1, max_tokens=3000, max_retries=1,
+            response = self.call_llm(messages, max_tokens=3000, max_retries=1,
                 response_format={"type": "json_object"}, thinking={"type": "disabled"},
                 operation=("numeric_v2_exit_fact_binding" if not attempt
                            else "numeric_v2_exit_fact_binding_format_repair"))
@@ -980,7 +980,7 @@ class NumericV2QualityAssessor(ModelAgent):
         preserved = None
         location_error = False
         for attempt in range(2):
-            response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+            response = self.call_llm(messages, max_tokens=6000, max_retries=1,
                 response_format={"type": "json_object"}, thinking={"type": "disabled"},
                 operation=("numeric_v2_exit_fact_review" if not attempt else "numeric_v2_exit_fact_review_format_repair"))
             raw = None
@@ -1081,7 +1081,7 @@ class NumericV2QualityAssessor(ModelAgent):
                      {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {"plans": plans, "story_outline": outline,
                          "global_strengths_to_preserve": result.get("strengths") or [],
                          "protected_repair_targets": protected, "removable_bridge_targets": removable_bridges})}],
-                    temperature=0.1, max_tokens=6000, max_retries=1,
+                    max_tokens=6000, max_retries=1,
                     response_format={"type": "json_object"}, thinking={"type": "disabled"},
                     operation="numeric_v2_repair_plan_review",
                 )
@@ -1150,7 +1150,7 @@ class NumericV2QualityAssessor(ModelAgent):
                          + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
                         {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}]
             for attempt in range(2):
-                response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+                response = self.call_llm(messages, max_tokens=6000, max_retries=1,
                     response_format={"type": "json_object"}, thinking={"type": "disabled"},
                     operation="numeric_v2_literary_block" if not attempt else "numeric_v2_literary_block_format_repair")
                 try:
@@ -1229,7 +1229,7 @@ class NumericV2QualityAssessor(ModelAgent):
              "其中text_path是本次请求内完整原文字段的JSON Pointer，与quote等价；原path仍是作者稿证据位置。"
              "局部意见仍不是运行时事实或最终演绎评分。" + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
             {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}],
-            temperature=0.1, max_tokens=6000, max_retries=1, response_format={"type": "json_object"},
+            max_tokens=6000, max_retries=1, response_format={"type": "json_object"},
             thinking={"type": "disabled"}, operation="numeric_v2_quality_assessment")
         payload = self._parse_response(response, "invalid_quality_assessment")
         if "issues" in payload or not isinstance(payload.get("scores"), Mapping):
@@ -1439,7 +1439,6 @@ class NumericV2QualityAssessor(ModelAgent):
                     }),
                 },
             ],
-            temperature=0.15,
             max_tokens=6000,
             max_retries=1,
             response_format={"type": "json_object"},

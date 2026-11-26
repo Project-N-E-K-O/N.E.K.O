@@ -5,14 +5,14 @@ N.E.K.O. can use eligible ChatGPT plan usage through **Continue with ChatGPT**, 
 ## Setup
 
 1. Open API settings on the machine running N.E.K.O., using `localhost` or `127.0.0.1`.
-2. Expand **ChatGPT subscription**, between **API Key Book** and **Per-Feature Models (Advanced)**, and click **Continue with ChatGPT**. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
-3. In **Per-Feature Models (Advanced)**, check **Turn on per-feature models**, choose **ChatGPT (subscription)** as the provider of the slots that should use it, fetch the account's models in the model ID field and pick one, then click **Save Settings**. A ChatGPT slot without a model cannot be saved.
+2. Expand **Subscriptions & plans**, between **API Key Book** and **Per-Feature Models (Advanced)**, and click **Continue with ChatGPT** on the ChatGPT card. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
+3. On the same card, click **Load models from this account**, tick the features ChatGPT should take over, pick their models and switch on **Use this subscription**. Per-feature models do not need to be turned on and **Save Settings** is not needed. Switch it off and those features go back to their previous settings. See [Subscriptions & plans](/config/subscriptions).
 
-Supported slots: Chat Model, Memory Upkeep (Large Model), Recognition Model (small), Familiar Model (general), Familiar Model (small), Familiar Model (advanced), Mini-game Chat Model, Mini-game Memory Model and Mini-game Recognition Model; images go to the Chat Model. Function calls use Neko's existing tool execution. Speech recognition, Realtime Voice (local), Text-to-Speech, Image generation and the Decision Model (dedicated API) keep their own providers.
+Supported features: Chat Model, Memory Upkeep (Large Model), Recognition Model (small), Familiar Model (general), Familiar Model (small), Familiar Model (advanced), Mini-game Chat Model, Mini-game Memory Model and Mini-game Recognition Model; images go to the Chat Model. Function calls use Neko's existing tool execution. Speech recognition, Realtime Voice (local), Text-to-Speech, Image generation and the Decision Model (dedicated API) keep their own providers.
 
-NekoPower task agents can use Familiar Model slots set to ChatGPT (dsh does not take these models, so such tasks run on the built-in runtime). A plugin model slot that follows a ChatGPT slot reports it as unsupported; plugins need an API of their own.
+NekoPower task agents can use Familiar Model tiers handed to ChatGPT (dsh does not take these models, so such tasks run on the built-in runtime). A plugin model slot that follows a ChatGPT tier reports it as unsupported; plugins need an API of their own.
 
-Switching the active ChatGPT account changes subsequent ChatGPT requests. Fetch models again and choose a model available to that account. Signing out clears the selected registration's tokens; slots set to ChatGPT keep that setting and use an account that is still signed in, and ask to sign in again once none is. If remote revocation cannot be confirmed, disconnect the application in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
+Switching the active ChatGPT account changes subsequent ChatGPT requests. Fetch models again and choose a model available to that account. Signing out clears the selected registration's tokens; the ChatGPT subscription keeps using an account that is still signed in, and turns off when the last one signs out, so its features go back to their previous settings. If remote revocation cannot be confirmed, disconnect the application in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
 
 ## Implementation
 

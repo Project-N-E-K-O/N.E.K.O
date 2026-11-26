@@ -453,7 +453,6 @@ async def _check_proactive_vision_consent(
 async def _make_proactive_llm(
     model_config: ProactiveModelConfig,
     *,
-    temperature: float = 1.0,
     max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     use_vision: bool = False,
     disable_thinking: bool = True,
@@ -495,7 +494,6 @@ async def _make_proactive_llm(
     from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
 
     kwargs: dict[str, Any] = {
-        "temperature": temperature,
         "max_completion_tokens": max_completion_tokens,
         "streaming": True,
         "timeout": DIALOG_LLM_STREAM_TIMEOUT_SECONDS,
@@ -530,7 +528,6 @@ async def _llm_call_with_retry(
     lanlan_name: str,
     system_prompt: str,
     label: str,
-    temperature: float = 1.0,
     max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     timeout: float = 16.0,
     use_vision: bool = False,
@@ -568,7 +565,6 @@ async def _llm_call_with_retry(
         try:
             async with await _make_proactive_llm(
                 model_config,
-                temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 use_vision=use_vision,
                 disable_thinking=disable_thinking,
@@ -1102,7 +1098,6 @@ async def _generate_phase2_stream(
     try:
         async with asyncio.timeout(25.0):
             async with await make_llm(
-                temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 use_vision=phase2_use_vision,
                 disable_thinking=phase2_disable_thinking,
@@ -1257,7 +1252,6 @@ async def _generate_phase2_stream(
             try:
                 async with asyncio.timeout(20.0):
                     async with await make_llm(
-                        temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
                         disable_thinking=phase2_disable_thinking,
@@ -1762,7 +1756,6 @@ async def _guard_phase2_output(
         try:
             async with asyncio.timeout(20.0):
                 async with await make_llm(
-                    temperature=1.0,
                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                     use_vision=phase2_use_vision,
                     disable_thinking=phase2_disable_thinking,

@@ -143,7 +143,14 @@ async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
     )
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             async with asyncio.timeout(_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S):
                 for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
                     await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)
@@ -897,6 +904,11 @@ async def notify_config_changed():
     asked anything: a key that is wrong shows when a task agent first uses
     it, and is reported with its reason.
     """
+    # The main server just wrote the configuration; this process may hold the old
+    # text in its read cache for up to two seconds, and the refresh below reads it now.
+    from utils.config_manager import read_cache
+
+    read_cache.invalidate()
     if not Modules.analyzer_enabled:
         return {"success": True, "message": "agent idle; nothing to refresh"}
     # In the background: the main server waits a few seconds for the answer,

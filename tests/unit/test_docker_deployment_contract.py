@@ -229,6 +229,60 @@ def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():
         )
 
 
+def _dockerignore_excludes(rel_path: str, patterns: list[str]) -> bool:
+    """Evaluate Docker .dockerignore inclusion/exclusion rules for a relative path."""
+    import fnmatch
+    from pathlib import PurePosixPath
+
+    excluded = False
+    path_obj = PurePosixPath(rel_path)
+    for raw in patterns:
+        negated = raw.startswith("!")
+        pat = raw[1:] if negated else raw
+        pat = pat.strip().lstrip("/")
+        if not pat:
+            continue
+        matched = False
+        if "**" in pat:
+            # Support leading "**/" recursive patterns in .dockerignore.
+            sub_pat = pat.replace("**/", "")
+            matched = (
+                fnmatch.fnmatch(rel_path, pat)
+                or fnmatch.fnmatch(path_obj.name, sub_pat)
+                or any(fnmatch.fnmatch(str(p), pat) for p in [path_obj, *path_obj.parents] if str(p) != ".")
+            )
+        else:
+            matched = fnmatch.fnmatch(rel_path, pat)
+        if matched:
+            excluded = not negated
+    return excluded
+
+
+def test_dockerignore_excludes_dotenv_secrets_and_keeps_env_template():
+    """Root and nested .env files must stay out of the Docker build context while docker/env.template remains."""
+    patterns = [
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    for required in (".env", ".env.*", "*.env", "**/.env", "**/.env.*", "**/*.env"):
+        assert required in patterns, f".dockerignore is missing secret exclusion pattern: {required}"
+
+    for secret_path in (
+        ".env",
+        ".env.local",
+        "prod.env",
+        "docker/.env",
+        "docker/.env.prod",
+        "docker/secrets.env",
+    ):
+        assert _dockerignore_excludes(secret_path, patterns), f"Expected .dockerignore to exclude {secret_path}"
+
+    assert not _dockerignore_excludes("docker/env.template", patterns), (
+        "docker/env.template must stay in the Docker build context"
+    )
+
+
 def test_entrypoint_exports_shared_instance_id_before_starting_services():
     """Ensure Docker three-process launches share one NEKO_INSTANCE_ID for internal CSRF tokens (#4019 P4/R04)."""
     entrypoint_path = ROOT / "docker" / "entrypoint.sh"

@@ -77,6 +77,10 @@ TIER_COARSE = "coarse"
 # Whether a commission is a side question (``LexicalDecisionModel.side_question``):
 # on the small tier, like the coarse screen.
 TIER_SIDE_QUESTION = "side_question"
+# Whether a commission goes on with what a busy member is at, before another
+# member is opened for it (``LexicalDecisionModel.goes_on_with``): the small
+# tier as well, kept apart for what is counted of it.
+TIER_BESIDE = "beside"
 TIER_FINE = "fine"
 # Where a commission belongs (``LexicalDecisionModel.belongs``): one request
 # on the tier the settings name (``ORCHESTRATOR_MODEL_SLOT``), metered under
@@ -308,11 +312,16 @@ class ConfiguredDecisionLLM:
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
 
-        from config.nekopower_settings import ORCHESTRATOR_OUTPUT_MAX_TOKENS, SIDE_QUESTION_OUTPUT_MAX_TOKENS
+        from config.nekopower_settings import (
+            BESIDE_JUDGE_OUTPUT_MAX_TOKENS,
+            ORCHESTRATOR_OUTPUT_MAX_TOKENS,
+            SIDE_QUESTION_OUTPUT_MAX_TOKENS,
+        )
 
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
             TIER_SIDE_QUESTION: SIDE_QUESTION_OUTPUT_MAX_TOKENS,
+            TIER_BESIDE: BESIDE_JUDGE_OUTPUT_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
             TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
@@ -367,6 +376,9 @@ class _Cues:
                 "always": _patterns(texts.PERMISSION_ALWAYS_PATTERNS),
                 "once": _patterns(texts.PERMISSION_ONCE_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
+                "beside_answer": _patterns(texts.BESIDE_ANSWER_WORD_PATTERNS),
+                "hand_over_answer": _patterns(texts.HAND_OVER_ANSWER_WORD_PATTERNS),
+                "start_team_answer": _patterns(texts.START_TEAM_ANSWER_WORD_PATTERNS),
             }
         return cls._loaded[name]
 
@@ -458,6 +470,60 @@ def _question_text(commission: Commission) -> str:
     return " ".join(parts)
 
 
+# What is asked (``detail.tool``) where a request for approval quotes the commission it is asked for: the
+# cue lists of what an answer to it says of the choice itself, and the setting of how many words of its own
+# it may say beside them (``_says_more_than_an_answer``).
+_QUOTING_TOOLS: dict[str, tuple[tuple[str, ...], str]] = {
+    "beside": (("beside_answer",), "BESIDE_ANSWER_WORDS_MAX"),
+    "hand_over": (("beside_answer", "hand_over_answer"), "HAND_OVER_ANSWER_WORDS_MAX"),
+    "start_team": (("beside_answer", "hand_over_answer", "start_team_answer"), "START_TEAM_ANSWER_WORDS_MAX"),
+}
+
+
+def _quotes_its_commission(question: dict[str, Any]) -> bool:
+    """Whether what a commission asks quotes the commission itself: asked whether other members are to do it.
+
+    Such a question carries the commission's title for a page to show:
+    asked beside a busy member, with its project and the names of the
+    members (``TaskAgentManager._beside``); asked for the project's leader,
+    with what the member it starts is to do (``_hand_over``,
+    ``_ask_about_member``), or what each member of the team it starts that
+    changes files is to do (``_cb_start_team``), in the user's language.
+    Those are words that nearly anything said of the project next shares.
+    Other requests for approval name a tool, a command, a path.
+    """
+    detail = question.get("detail")
+    return question.get("kind") == "permission" and isinstance(detail, dict) and detail.get("tool") in _QUOTING_TOOLS
+
+
+def _says_more_than_an_answer(text: str, question: dict[str, Any], question_tokens: frozenset[str]) -> bool:
+    """Whether a sentence that says a yes or a no says more than an answer to a question that quotes its commission.
+
+    It adds something (``supplement``), or what says yes or no (and for how
+    long), what says it answers and what speaks of the choice itself
+    (another member, waiting, who said so: ``BESIDE_ANSWER_WORD_PATTERNS``;
+    for the leader's questions its changing files, the work handed to it,
+    the user doing it themself as well: ``HAND_OVER_ANSWER_WORD_PATTERNS``;
+    for its team, the team, at the same time, one after the other:
+    ``START_TEAM_ANSWER_WORD_PATTERNS``) set aside, more words of its own
+    are left that are not the question's than an answer says (the setting
+    ``_QUOTING_TOOLS`` names for the question). It is then new work that
+    says a yes or a no in passing ("make sure the checkout page loads
+    fast"); a long answer is taken for new work as well, which the user
+    sees, with the question still open.
+    """
+    from config import nekopower_settings as settings
+    from nekopower.host.orchestrator import content_tokens
+
+    if has_cue("supplement", text):
+        return True
+    of_the_choice, most = _QUOTING_TOOLS[question["detail"]["tool"]]
+    rest = text
+    for name in ("answer", "deny", "session", "always", "once", *of_the_choice):
+        rest = strip_cues(name, rest)
+    return len(content_tokens(rest) - question_tokens) > getattr(settings, most)
+
+
 def _single_best(scored: list[tuple[float, Commission]]) -> Commission | None:
     """Return the commission with the highest score when it stands alone at the top."""
     ranked = sorted(scored, key=lambda item: item[0], reverse=True)
@@ -511,15 +577,47 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
     explicit = has_cue("answer", text)
     choice = parse_permission_choice(text)
 
+    def new_work_beside(commission: Commission) -> bool:
+        question = commission.question() or {}
+        return _quotes_its_commission(question) and _says_more_than_an_answer(
+            text, question, token_set(_question_text(commission))
+        )
+
+    if choice is not None and not explicit and any(new_work_beside(commission) for commission in waiting):
+        # New work that says a yes or a no in passing, while a question that quotes its commission
+        # waits: no answer to it, nor to any other question waiting beside it, which it would
+        # answer by that yes or no alone (and allow, say, a command). Should it name what one of
+        # those asks (the command, the path), it may answer that after all: the user is asked which.
+        from nekopower.host.orchestrator import content_tokens
+
+        said = text
+        for name in ("answer", "deny", "session", "always", "once"):
+            said = strip_cues(name, said)
+        named = content_tokens(said)
+        if any(
+            not _quotes_its_commission(commission.question() or {}) and named & token_set(_question_text(commission))
+            for commission in waiting
+        ):
+            return Triage(kind="ambiguous", targets=[commission.id for commission in waiting])
+        return None
+
     def bears_on(commission: Commission) -> float:
         score = 0.0
-        if tokens:
-            question_tokens = token_set(_question_text(commission))
+        # A question that quotes its own commission is held against the sentence only where the
+        # sentence says an answer at all (a choice, or a word that says it answers): any other
+        # sentence that shares a word with the commission's title is new work, not an answer
+        # that was not understood. (Where it does say one, the words tell which question it
+        # answers, should several wait.)
+        question = commission.question() or {}
+        quotes = _quotes_its_commission(question)
+        says_no_answer = choice is None and not explicit
+        question_tokens = token_set(_question_text(commission))
+        if tokens and not (says_no_answer and quotes):
             score = len(tokens & question_tokens) / len(tokens)
         # A plain yes or no shares no word with the question it answers. It
         # still bears on a question that asks for exactly that: a permission,
         # or a confirmation a plugin asked for.
-        asks_yes_or_no = (commission.question() or {}).get("kind") in ("permission", "confirmation")
+        asks_yes_or_no = question.get("kind") in ("permission", "confirmation")
         if asks_yes_or_no and choice is not None:
             score += 0.5
         return score
@@ -794,6 +892,49 @@ class LexicalDecisionModel:
             return None
         decision = parse_json_object(raw or "")
         verdict = decision.get("side_question") if decision is not None else None
+        return verdict if isinstance(verdict, bool) else None
+
+    async def goes_on_with(self, dispatch_text: str, user_text: str, busy: str, at_hand: Sequence[str]) -> bool | None:
+        """Say whether a commission goes on with what a busy member is at. None when it cannot be told.
+
+        One request on the small tier (``TIER_BESIDE``), asked only where
+        the user would be asked whether another member is to do it, or one
+        would be opened for it with nobody asked (``TaskAgentManager._beside``),
+        once its words tell it apart from what the member is at. ``busy`` is
+        the member's name, ``at_hand`` what it has under way. What is too long
+        to be shown whole is not asked about, and neither is anything told
+        by an answer that cannot be read.
+        """
+        from config.nekopower_settings import (
+            BESIDE_JUDGE_AT_HAND_MAX_TOKENS,
+            DISPATCH_TEXT_MAX_TOKENS,
+            DISPATCH_USER_TEXT_MAX_TOKENS,
+        )
+        from config.prompts.prompts_nekopower_brain import TASK_BRAIN_BESIDE_PROMPT, build_beside_request
+        from utils.tokenize import count_tokens
+
+        if (
+            count_tokens(dispatch_text) > DISPATCH_TEXT_MAX_TOKENS
+            or count_tokens(user_text) > DISPATCH_USER_TEXT_MAX_TOKENS
+            or count_tokens("\n".join(at_hand)) > BESIDE_JUDGE_AT_HAND_MAX_TOKENS
+        ):
+            return None
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_BESIDE_PROMPT},
+            {
+                "role": "user",
+                "content": build_beside_request(task=dispatch_text, user_said=user_text, busy=busy, at_hand=at_hand),
+            },
+        ]
+        try:
+            raw = await self._llm.complete(TIER_BESIDE, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not told
+            logger.warning("telling whether a commission goes on with a busy member's work failed: %s", type(exc).__name__)
+            return None
+        decision = parse_json_object(raw or "")
+        verdict = decision.get("goes_on") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
 
     async def belongs(self, messages: list[dict[str, Any]]) -> str | None:

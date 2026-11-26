@@ -7,8 +7,8 @@
 ```bash
 cd local_server/telemetry_server
 
-# Docker（推荐）
-# 修改 docker-compose.yml 中的 TELEMETRY_ADMIN_TOKEN
+# Docker（推荐；admin API 默认禁用，如需启用请在 .env 或环境变量中设置强随机 TELEMETRY_ADMIN_TOKEN）
+# TELEMETRY_ADMIN_TOKEN=your-strong-random-token docker-compose up -d
 docker-compose up -d
 
 # 或直接运行
@@ -16,7 +16,7 @@ pip install -r requirements.txt
 python server.py --port 8099 --admin-token YOUR_SECRET_TOKEN
 ```
 
-部署好后，在 `utils/token_tracker.py` 顶部修改：
+部署好后，在 `utils/token_tracker/reporting.py` 顶部修改：
 ```python
 _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 ```
@@ -165,7 +165,7 @@ _report_to_server()  检查距上次上报是否 ≥ 60s（1分钟）
 
 ## 管理端 API
 
-全部需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`（或 `?token=` 查询参数）。**返回 JSON，公开 repo 不内置 HTML 看板**——可视化由内部工具基于这些 JSON / 直查 DB 自建。
+全部需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`。**返回 JSON，公开 repo 不内置 HTML 看板**——可视化由内部工具基于这些 JSON / 直查 DB 自建。
 
 ```bash
 TOKEN="YOUR_ADMIN_TOKEN"

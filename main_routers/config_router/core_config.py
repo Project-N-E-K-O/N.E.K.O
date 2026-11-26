@@ -33,11 +33,12 @@ from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
 from utils.config_manager.tier_renames import migrate_renamed_tier_fields
 from utils.decision_client.workspace import (
-    InvalidWorkspaceIdError,
-    normalize_workspace_id,
-    safe_workspace_id,
+    InvalidWorkspaceHostError,
+    normalize_workspace_host,
+    stored_workspace_host,
+    workspace_id_of,
 )
-from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS, TTS_KEY_BOOK_FIELDS
+from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS, TTS_KEY_BOOK_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
@@ -86,9 +87,10 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyAtlascloud',
 )
 
-# Bailian workspace IDs (core_config.json field names), one per provider region.
-CORE_CONFIG_WORKSPACE_ID_FIELDS = tuple(
-    file_field for file_field, _config_key in ASSIST_WORKSPACE_ID_FIELDS.values()
+# Bailian workspace API Hosts (core_config.json field names, legacy ID-only
+# field names), one pair per provider.
+CORE_CONFIG_WORKSPACE_HOST_FIELDS = tuple(
+    (file_field, legacy_field) for file_field, legacy_field, _config_key in ASSIST_WORKSPACE_HOST_FIELDS.values()
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -327,10 +329,17 @@ async def get_core_config_api():
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
             "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
-            # Bailian workspace IDs are not secrets; an invalid stored value reads as unset.
+            # Bailian workspace hosts are not secrets; an invalid stored value reads as unset.
             **{
-                file_field: safe_workspace_id(core_cfg.get(file_field, ''))
-                for file_field in CORE_CONFIG_WORKSPACE_ID_FIELDS
+                file_field: stored_workspace_host(core_cfg, file_field, legacy_field)
+                for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
+            },
+            # A settings page loaded before the host field existed reads only the
+            # ID-only field and posts it back on save; give it the saved host's ID
+            # so that save does not clear the workspace.
+            **{
+                legacy_field: workspace_id_of(stored_workspace_host(core_cfg, file_field, legacy_field))
+                for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
             },
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
@@ -674,18 +683,32 @@ async def update_core_config(request: Request):
                 if not isinstance(data[field], str) or len(data[field]) > 200:
                     return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
                 core_cfg[field] = data[field].strip()
-        for field in CORE_CONFIG_WORKSPACE_ID_FIELDS:
-            if field in data:
-                # The ID becomes part of a hostname: reject anything that is not a
-                # single DNS label instead of trying to clean it up.
-                try:
-                    core_cfg[field] = normalize_workspace_id(data[field])
-                except InvalidWorkspaceIdError:
-                    return {
-                        "success": False,
-                        "error": "INVALID_WORKSPACE_ID",
-                        "field": field,
-                    }
+        for field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS:
+            # A page loaded before the host field existed still sends the ID-only field.
+            submitted_field = field if field in data else legacy_field if legacy_field in data else ""
+            if not submitted_field:
+                continue
+            # The value becomes part of a hostname: reject anything that is not a
+            # workspace ID or a Bailian workspace API Host instead of cleaning it up.
+            try:
+                submitted = normalize_workspace_host(data[submitted_field])
+            except InvalidWorkspaceHostError:
+                return {
+                    "success": False,
+                    "error": "INVALID_WORKSPACE_HOST",
+                    "field": submitted_field,
+                }
+            if submitted_field == legacy_field:
+                # An old page only knows the ID: the same bare ID it was given keeps
+                # the saved full host (and its region) instead of replacing it. A full
+                # host sent under the legacy name is saved as sent; it never equals a
+                # bare ID, so its region is not dropped.
+                current = stored_workspace_host(core_cfg, field, legacy_field)
+                if submitted and submitted == workspace_id_of(current):
+                    submitted = current
+            core_cfg[field] = submitted
+            # The host field replaces the legacy one, which would otherwise come back once it is cleared.
+            core_cfg.pop(legacy_field, None)
         if 'openclawUrl' in data:
             # Frontend forms populate original saved values. If startup migration failed to persist (Windows antivirus may block
             # os.replace), this still receives old 8089; writing unchanged would persist the old port again,
@@ -984,8 +1007,17 @@ async def update_core_config(request: Request):
         try:
             import httpx
             from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
-                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            from utils.internal_http_client import internal_service_event_hooks
+
+            async with httpx.AsyncClient(
+                timeout=5,
+                proxy=None,
+                trust_env=False,
+                event_hooks=internal_service_event_hooks(),
+            ) as client:
+                notify_resp = await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+                if notify_resp is not None and not notify_resp.is_success:
+                    raise RuntimeError(f"HTTP {notify_resp.status_code}")
             logger.info("已通知 agent_server 刷新 CUA 适配器")
         except Exception as notify_err:
             logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")

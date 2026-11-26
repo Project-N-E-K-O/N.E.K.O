@@ -14,6 +14,7 @@ from main_logic.voice_input.interception import (
 from main_logic.voice_input.activation import ActivationGeneration, OutputCommit
 from main_logic.voice_turn.contracts import AsrSubmitResult, AsrSubmitStatus
 from tests.unit.asr_runtime.test_active_session_interception import _Runtime, _frame
+from tests.support.task_sets import wait_task_set_empty
 
 
 IDENTITY = InterceptionOutputIdentity("session", 1, "profile", "model", "config")
@@ -570,8 +571,7 @@ async def _close_degraded_recovery_core(core):
     bridge = core._active_session_interception_bridge
     if bridge is not None:
         await bridge.close()
-    while core._core_asr_cleanup_tasks:
-        await asyncio.gather(*tuple(core._core_asr_cleanup_tasks), return_exceptions=True)
+    await wait_task_set_empty(core._core_asr_cleanup_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

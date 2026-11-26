@@ -78,7 +78,22 @@ def _nested_runner_run(self, coro, *, context=None):
 def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
     """Preserve Python 3.12's loop_factory support after nest_asyncio patches asyncio.run."""
     if loop_factory is None:
-        return _orig_asyncio_run(main, debug=debug)
+        if asyncio.events._get_running_loop() is not None:
+            return _orig_asyncio_run(main, debug=debug)
+        # nest_asyncio's run() reuses the thread's default loop, and its
+        # run_until_complete() returns as soon as the task is done, before the
+        # done-callbacks that completion queued get a turn. The loop is then
+        # left alone, so those callbacks never run. One of them is anyio's
+        # worker.stop (registered by to_thread.run_sync / Starlette's
+        # run_in_threadpool), and its worker is a non-daemon thread blocked
+        # on queue.get(), so the interpreter can never exit. Run the loop for
+        # one more step, as the stock asyncio.run() would have.
+        loop = asyncio.get_event_loop()
+        try:
+            return _orig_asyncio_run(main, debug=debug)
+        finally:
+            if not loop.is_closed() and not loop.is_running():
+                loop.run_until_complete(asyncio.sleep(0))
 
     with asyncio.runners.Runner(debug=debug, loop_factory=loop_factory) as runner:
         return runner.run(main)

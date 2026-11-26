@@ -342,7 +342,8 @@ async def test_every_pair_of_statuses_follows_the_table(ledger, current, target)
 
 def test_the_transition_table_is_the_intended_one():
     assert ALLOWED_TRANSITIONS == {
-        "queued": {"working", "failed", "cancelled"},
+        # Waiting for the user before it started: asked whether another member is to do it beside a busy one.
+        "queued": {"working", "waiting_user", "failed", "cancelled"},
         # Queued when its idle session was closed and a task agent it started reports back.
         "working": {"waiting_user", "queued", "done", "blocked", "failed", "cancelled"},
         # Queued when its closed session's answer finds no free place.

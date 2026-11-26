@@ -25,6 +25,9 @@ export function formatBytes(bytes: number | null | undefined): string {
  */
 export function describeConsoleError(error: unknown, t: Translate, te: Exists): string {
   const code = consoleErrorCode(error)
+  // Of a refusal that says why (a project that is busy), the words for why where the pages have some.
+  const reason = (error as { response?: { data?: { detail?: { reason?: unknown } } } })?.response?.data?.detail?.reason
+  if (code && typeof reason === 'string' && reason && te(`power.errors.${code}_${reason}`)) return t(`power.errors.${code}_${reason}`)
   if (code && te(`power.errors.${code}`)) return t(`power.errors.${code}`)
   const status = (error as { response?: { status?: number } })?.response?.status
   if (status === 502 || status === undefined) return t('power.errors.agent_unreachable')
@@ -73,7 +76,10 @@ export function formatDuration(seconds: number | null | undefined): string {
   return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`
 }
 
-const LOOKS = ['working', 'waiting_user', 'idle', 'asleep', 'compacting'] as const
+// The last four are of one that works in a git worktree of its own: what it changed is being
+// merged into the project's directory, it merges what clashed there, or what it changed waits there
+// for the user (`held`: the user is asked first; `unlanded`: it could not be merged).
+const LOOKS = ['working', 'waiting_user', 'idle', 'asleep', 'compacting', 'landing', 'resolving', 'held', 'unlanded'] as const
 export type FamiliarLook = (typeof LOOKS)[number] | 'resting' | 'queued'
 
 /**

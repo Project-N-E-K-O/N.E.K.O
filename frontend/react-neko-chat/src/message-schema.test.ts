@@ -182,6 +182,19 @@ describe('message-schema', () => {
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the host send promise through the audio message callback', async () => {
+    // zod 4 同步包装器不能直接校验 z.promise 输出；这里确认宿主 Promise 原样交回、非 thenable 被拒。
+    const payload = { requestId: 'req-1', target: 'Neko', audio: 'UklGRg==', sampleRateHz: 16000 };
+    const onComposerAudioMessage = vi.fn(async () => ({ status: 'sent' }));
+    const props = parseChatWindowProps({ onComposerAudioMessage });
+
+    await expect(props.onComposerAudioMessage?.(payload)).resolves.toEqual({ status: 'sent' });
+    expect(onComposerAudioMessage).toHaveBeenCalledWith(payload);
+
+    const syncProps = parseChatWindowProps({ onComposerAudioMessage: vi.fn(() => undefined) });
+    expect(() => syncProps.onComposerAudioMessage?.(payload)).toThrow(ZodCallbackError);
+  });
+
   it('keeps the void return contract for host callbacks that report nothing', () => {
     // 与上一条对偶：放宽只发生在截图这一项，其余回调仍然钉死"不许有返回值"。
     const onComposerImportImage = vi.fn(function handleComposerImportImage() {
@@ -204,7 +217,7 @@ describe('message-schema', () => {
       return inner instanceof z.ZodFunction ? [[key, inner] as const] : [];
     });
     // 精确数量：新增 / 删除回调时同步更新，防止覆盖面静默缩水。
-    expect(callbacks.map(([key]) => key)).toHaveLength(20);
+    expect(callbacks.map(([key]) => key)).toHaveLength(22);
     for (const [key, fn] of callbacks) {
       const input = fn._zod.def.input as z.core.$ZodTuple;
       expect(input._zod.def.rest, key).toBeInstanceOf(z.ZodUnknown);

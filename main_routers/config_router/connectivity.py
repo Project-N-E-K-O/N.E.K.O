@@ -73,8 +73,11 @@ class ConnectivityTestRequest(BaseModel):
     sub_type: Optional[str] = ""
     voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
-    # provider_scope='decision' only: Bailian workspace ID for providers whose
-    # native decision endpoint lives on a workspace-only host (qwen / qwen_intl).
+    # provider_scope='decision' only: Bailian workspace API Host (or bare
+    # workspace ID) for providers whose native decision endpoint lives on a
+    # workspace-only host (qwen / qwen_intl). workspace_id is the name a page
+    # loaded before hosts were accepted still sends.
+    workspace_host: Optional[str] = ""
     workspace_id: Optional[str] = ""
 
 
@@ -690,6 +693,12 @@ async def _test_decision_endpoint(
         return {"success": True}
     except DecisionProtocolError as e:
         status = e.status_code
+        if e.error_code == "workspace_mismatch":
+            return {
+                "success": False,
+                "error": "API Host 和 API Key 不属于同一个百炼业务空间",
+                "error_code": "workspace_mismatch",
+            }
         if status in (401, 403):
             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
         if status == 429:
@@ -1140,25 +1149,29 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 and not profile_decision_url
             ):
                 # Same rule as runtime core_config.py: the native endpoint exists only
-                # on the workspace host. Without an ID the runtime decides with the
-                # profile's chat model, so probe exactly that instead of a doomed URL.
+                # on the workspace host, and a bare ID takes its region from the chat
+                # endpoint the key resolved to. Without a usable host the runtime
+                # decides with the profile's chat model, so probe exactly that
+                # instead of a doomed URL.
                 from utils.decision_client.workspace import (
-                    InvalidWorkspaceIdError,
-                    build_workspace_decision_url,
-                    normalize_workspace_id,
+                    InvalidWorkspaceHostError,
+                    normalize_workspace_host,
+                    resolve_workspace_decision_url,
                 )
 
+                submitted_workspace = req.workspace_host or req.workspace_id
                 try:
-                    workspace_id = normalize_workspace_id(req.workspace_id)
-                except InvalidWorkspaceIdError:
-                    return {"success": False, "error": "业务空间 ID 格式无效", "error_code": "invalid_workspace_id"}
-                region_supported = not regional_url or same_endpoint(regional_url, profile_openrouter_url)
-                if workspace_id and region_supported:
-                    profile_decision_url = build_workspace_decision_url(
-                        profile_decision_url_template, workspace_id
-                    )
+                    workspace_host = normalize_workspace_host(submitted_workspace)
+                except InvalidWorkspaceHostError:
+                    return {"success": False, "error": "百炼 API Host 格式无效", "error_code": "invalid_workspace_id"}
+                workspace_url, decision_fallback = resolve_workspace_decision_url(
+                    profile_decision_url_template,
+                    workspace_host,
+                    regional_url or profile_openrouter_url,
+                )
+                if workspace_url:
+                    profile_decision_url = workspace_url
                 else:
-                    decision_fallback = "workspace_missing" if region_supported else "region_unsupported"
                     resolved_protocol = "chat_fallback"
                     model = str(profile.get("recognition_model") or profile.get("memory_model") or "").strip()
                     _source_label = f"{profile.get('name', provider_key)}（决策模型·聊天回退）"

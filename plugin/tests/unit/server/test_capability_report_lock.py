@@ -22,32 +22,18 @@ from plugin.server.application.plugins import (
 )
 from plugin.server.application.plugins import consent_service
 from plugin.server.application.plugins import operation_lock
+from plugin.server.application.plugins import permission_service
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     hold_plugin_operation_file_lock,
     plugin_operation_lock,
 )
 from plugin.server.infrastructure.capability_reports import CapabilityReportStore
-from plugin.server.infrastructure.plugin_consent import PluginConsentStore
 
 
 @pytest.fixture(autouse=True)
 def _isolate_operation_file_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
-
-
-class _ConfigManager:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def get_runtime_config_path(self, name):
-        return self.root / name
-
-    def save_json_config(self, name, data):
-        import json
-
-        self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / name).write_text(json.dumps(data), encoding="utf-8")
 
 
 def _plugin(tmp_path: Path) -> Path:
@@ -152,23 +138,21 @@ async def test_report_inside_a_serialized_operation_reuses_the_held_lock(
 async def test_revoke_returns_verified_details_without_deadlock(monkeypatch, tmp_path):
     # revoke_plugin holds the operation lock and builds details in a thread,
     # the real caller that would wait on its own lock.
+    # Decisions live in the permission store (isolated per test by conftest).
     root = _plugin(tmp_path)
-    store = PluginConsentStore(_ConfigManager(tmp_path / "consent"))
-    store.decide("demo", "approved", ["messages.push"], "1")
+    permission_service.record_consent_decision("demo", "approved", ["messages.push"])
+    assert permission_service.consent_record("demo")["decision"] == "approved"
     runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
     _seed_fresh_report(runner, root)
     monkeypatch.setattr(analysis, "analysis_service", runner)
-    monkeypatch.setattr(consent_service, "consent_store", store)
     monkeypatch.setattr(consent_service, "plugin_source", lambda _: (root, "1"))
-    monkeypatch.setattr(
-        consent_service, "mirror_consent_decision", lambda *_, **__: (lambda: None)
-    )
     walks = _count_walks(monkeypatch)
 
     details = await asyncio.wait_for(consent_service.revoke_plugin("demo"), timeout=5)
 
     assert details["analysis"]["status"] == "completed"
     assert details["decision"] is None
+    assert permission_service.consent_record("demo") == {}
     assert len(walks) == 1
 
 
@@ -179,11 +163,9 @@ async def test_busy_details_keep_the_report_and_approval_still_verifies(
     from plugin.server.domain.errors import ServerDomainError
 
     root = _plugin(tmp_path)
-    store = PluginConsentStore(_ConfigManager(tmp_path / "consent"))
     runner = analysis.CapabilityAnalysisService(CapabilityReportStore(tmp_path / "reports"))
     _seed_fresh_report(runner, root)
     monkeypatch.setattr(analysis, "analysis_service", runner)
-    monkeypatch.setattr(consent_service, "consent_store", store)
     monkeypatch.setattr(consent_service, "plugin_source", lambda _: (root, "1"))
     scheduled: list[str] = []
     monkeypatch.setattr(
@@ -218,7 +200,7 @@ async def test_busy_details_keep_the_report_and_approval_still_verifies(
             timeout=5,
         )
     assert rejected.value.code == "PLUGIN_CONSENT_CHANGED"
-    assert store.read("demo") == {}
+    assert permission_service.consent_record("demo") == {}
     assert len(walks) == 1
 
 

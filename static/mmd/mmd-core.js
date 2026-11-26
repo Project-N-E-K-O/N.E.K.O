@@ -11,6 +11,22 @@ const MMD_IDLE_FPS = 30;
 const MMD_INTERACTIVE_FPS_HOLD_MS = 900;
 const MMD_IDLE_GOVERNOR_INTERVAL_MS = 300;
 
+// 渲染尺寸、画布缓冲区、画布样式尺寸和相机宽高比都已经是目标值。
+function isMMDRendererSizeCurrent(renderer, camera, width, height) {
+    const canvas = renderer && renderer.domElement;
+    const THREE = typeof window !== 'undefined' ? window.THREE : null;
+    if (!canvas || !canvas.style || !camera || !THREE || typeof renderer.getSize !== 'function'
+        || typeof renderer.getPixelRatio !== 'function') return false;
+    const size = renderer.getSize(new THREE.Vector2());
+    const pixelRatio = renderer.getPixelRatio();
+    return size.x === width && size.y === height
+        && canvas.width === Math.floor(width * pixelRatio)
+        && canvas.height === Math.floor(height * pixelRatio)
+        && canvas.style.width === width + 'px'
+        && canvas.style.height === height + 'px'
+        && camera.aspect === width / height;
+}
+
 class MMDCore {
     constructor(manager) {
         this.manager = manager;
@@ -103,7 +119,12 @@ class MMDCore {
             ? renderer.getPixelRatio()
             : null;
 
-        renderer.setPixelRatio(this._getQualityPixelRatio(window.renderQuality || 'medium'));
+        const targetPixelRatio = this._getQualityPixelRatio(window.renderQuality || 'medium');
+        // 像素比没变就不重设：three.js 的 setPixelRatio 会连带 setSize 重新分配画布缓冲区，
+        // 画布在下一次渲染前是空的。窗口尺寸变了但页面视口不变时（resize 事件照常派发）就是这种情况。
+        if (!(Number.isFinite(prevPixelRatio) && Math.abs(prevPixelRatio - targetPixelRatio) < 0.001)) {
+            renderer.setPixelRatio(targetPixelRatio);
+        }
 
         const nextPixelRatio = typeof renderer.getPixelRatio === 'function'
             ? renderer.getPixelRatio()
@@ -1362,6 +1383,9 @@ class MMDCore {
             width = window.innerWidth;
             height = window.innerHeight;
         }
+
+        // 尺寸没变就不重设：setSize 会重新分配画布缓冲区，画布在下一次渲染前是空的。
+        if (isMMDRendererSizeCurrent(this.manager.renderer, this.manager.camera, width, height)) return;
 
         this.manager.camera.aspect = width / height;
         this.manager.camera.updateProjectionMatrix();

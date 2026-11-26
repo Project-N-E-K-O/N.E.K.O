@@ -67,7 +67,6 @@ def create_target_llm(cfg: Dict[str, Any]) -> ChatOpenAI:
         model=cfg["model"],
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
-        temperature=cfg.get("temperature", 1.0),
         streaming=True,
         max_retries=1,
         timeout=60.0,

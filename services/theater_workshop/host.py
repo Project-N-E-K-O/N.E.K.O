@@ -69,7 +69,7 @@ class NekoWorkshopModel:
         return isinstance(other, NekoWorkshopModel) and self._settings == other._settings
 
     def __call__(self, messages, *, max_tokens, max_retries, response_format,
-                 thinking, operation, temperature=None):
+                 thinking, operation):
         from utils.llm_client import (
             create_chat_llm, set_active_character, reset_active_character,
             set_dialog_slop_lang, reset_dialog_slop_lang,
@@ -128,8 +128,9 @@ class NekoWorkshopModel:
                 api_key=settings.get("api_key") or "", provider_type=settings.get("provider_type"),
                 timeout=self.request_timeout(max_tokens), max_retries=0,
                 max_completion_tokens=max_tokens, **quality_options)
-            # User-selected providers use the host's token/thinking/temperature
-            # policy; preserve the operation budget and do not add retries.
+            # User-selected providers use the host's token/thinking policy and
+            # their own default temperature; preserve the operation budget and
+            # do not add retries.
             response = client.invoke(messages, response_format=response_format)  # noqa: LLM_INPUT_BUDGET # Complete messages are counted and rejected above against the caller's max_input_tokens.
             usage = (response.response_metadata or {}).get("token_usage") or None
             if usage and "input_tokens" in usage and "prompt_tokens" not in usage:
