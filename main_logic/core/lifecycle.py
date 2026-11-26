@@ -2891,6 +2891,54 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Extra Reply: preparation trigger error: {e}")
 
+    async def renew_session_now(self, *, wait_seconds: float = 60.0) -> bool:
+        """Swap in a session prepared now, with the opening prompt and tools as they are at this moment.
+
+        For a change the live session cannot take in by itself: the opening
+        prompt is built once per session, and Gemini Live fixes its tools at
+        connect (switching NekoPower on from the ``enable_nekopower`` card).
+        Uses the hot swap of session renewal: a pending session prepared
+        before the change is thrown away, a new one is prepared at once, and
+        the swap runs as soon as nothing is under way
+        (``_can_release_proactive``), or at the end of the turn that is.
+        Returns whether the session was swapped within ``wait_seconds``; with
+        no session up there is nothing to swap (the next start builds anew).
+        """
+        if self.session is None or not self.is_active:
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        swap = self.final_swap_task
+        if swap is not None and not swap.done():
+            # A swap under way: what it promotes was prepared earlier; renew after it.
+            try:
+                await asyncio.wait_for(asyncio.shield(swap), timeout=wait_seconds)
+            except Exception:
+                return False
+        await self._cleanup_pending_session_resources()
+        await self._reset_preparation_state()
+        await self._trigger_immediate_preparation_for_extra()
+        warmed = self.pending_session_warmed_up_event
+        if warmed is None:
+            return False
+        while not warmed.is_set():
+            preparing = self.background_preparation_task
+            if loop.time() >= deadline or preparing is None or (preparing.done() and not warmed.is_set()):
+                return False
+            await asyncio.sleep(0.2)
+        old = self.session
+        while loop.time() < deadline:
+            if self.session is not old:
+                return True
+            swapping = self.final_swap_task is not None and not self.final_swap_task.done()
+            if not swapping and not self.is_hot_swap_imminent and self._can_release_proactive():
+                # As the end of a turn does (turn.py), without waiting for one.
+                self.is_hot_swap_imminent = True
+                self.pending_session_final_prime_complete_event = asyncio.Event()
+                self.final_swap_task = asyncio.create_task(self._perform_final_swap_sequence())
+            await asyncio.sleep(0.5)
+        return self.session is not old
+
     @staticmethod
     def _swap_session_is_dead(session) -> bool:
         """[Hot-swap related] Closed/unusable session detection for the swap

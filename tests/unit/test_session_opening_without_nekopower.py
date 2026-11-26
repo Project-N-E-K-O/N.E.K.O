@@ -147,13 +147,13 @@ TASK_TOOLS = {
     "zh": "任务工具", "zh-TW": "任務工具", "en": "task tool", "ja": "タスクツール",
     "ko": "작업 도구", "ru": "инструмент", "es": "herramientas de tareas", "pt": "ferramentas de tarefas",
 }
-# She suggests switching NekoPower on herself, not only that it is off (owner, 2026-11-26).
+# She asks the user herself to authorize her to switch NekoPower on (owner, 2026-11-26).
 SUGGESTS_SWITCHING_ON = {
-    "zh": "主动引导对方把喵能力打开", "zh-TW": "主動引導對方把喵能力打開",
-    "en": "suggest on your own that they switch NekoPower on",
-    "ja": "にゃんパワーをオンにするよう自分から勧めて", "ko": "냥파워를 켜 보라고 먼저 권하세요",
-    "ru": "сами предложите включить NekoPower", "es": "anímale por tu cuenta a activar NekoPower",
-    "pt": "sugira por iniciativa própria que ativem o NekoPower",
+    "zh": "主动引导对方授权你把喵能力打开", "zh-TW": "主動引導對方授權你把喵能力打開",
+    "en": "on your own ask them to authorize you to switch NekoPower on",
+    "ja": "にゃんパワーをオンにする許可をくれるよう自分から頼んで", "ko": "냥파워를 켤 수 있게 허락해 달라고 먼저 부탁하세요",
+    "ru": "сами попросите разрешить вам включить NekoPower", "es": "pídele por tu cuenta que te autorice a activar NekoPower",
+    "pt": "peça por iniciativa própria que autorizem você a ativar o NekoPower",
 }
 # The built-in tool every session without NekoPower has (recall_memory), as each language names it.
 RECALL = {

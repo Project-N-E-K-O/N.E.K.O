@@ -19,6 +19,7 @@ import pytest
 
 from config import TOOL_SERVER_PORT
 from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
+from config.prompts.prompts_nekopower_enable import ENABLE_NEKOPOWER_TOOL_NAME
 from config.prompts.prompts_task_tools import (
     DISPATCH_TOOL_DESCRIPTION,
     DISPATCH_TOOL_NAME,
@@ -248,7 +249,10 @@ def test_that_switch_holds_when_a_switch_update_registers_them_directly(monkeypa
 
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
     assert manager.tool_registry.get(QUERY_TOOL_NAME) is None
-    assert manager.fired == []
+    # The one change synced is enable_nekopower going away, offered while the master
+    # switch was off (#4155): not a task tool coming in.
+    assert manager.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME) is None
+    assert len(manager.fired) == 1
 
 
 def test_the_switch_set_later_takes_the_two_tools_out_again(monkeypatch):
