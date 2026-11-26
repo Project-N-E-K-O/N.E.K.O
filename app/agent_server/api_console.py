@@ -823,8 +823,16 @@ def build_console_router(
             # Only of the question that is answered: one that is over, or replaced by another
             # meanwhile, is turned away below as an answer that came too late (409), which the
             # pages say so of.
-            if asked and question_id in (None, asked.get("id")) and asked.get("kind") != "questions":
-                raise _refuse(400, "bad_text", field="text")
+            if asked and question_id in (None, asked.get("id")):
+                if asked.get("kind") != "questions":
+                    raise _refuse(400, "bad_text", field="text")
+                # Nor what names nothing this question offers, where it offers it: the task
+                # agent would be handed an answer with nothing picked and nothing said.
+                from nekopower.host.task_agents import build_answers
+
+                picked = build_answers(asked.get("questions") or [], "", selected)["answers"]
+                if not any(answer["selected"] for answer in picked):
+                    raise _refuse(400, "bad_text", field="selected")
         if not await host.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected):
             # It asked nothing, or what it asked was answered or withdrawn meanwhile.
             raise _refuse(409, "not_taken")
@@ -837,20 +845,21 @@ def build_console_router(
         # this request is cancelled while it waits (the page went away), or stops waiting below.
         _notes_on_their_way.add(passing)
         passing.add_done_callback(_note_passed_on)
-        try:
-            # Not cancelled when this stops waiting: passing a sentence on writes the ledger.
-            taken: bool | None = bool(await asyncio.wait_for(asyncio.shield(passing), _NOTE_WAIT_SECONDS))
-        except asyncio.TimeoutError:
+        # Waited for, and not awaited: the passing on goes on when this stops waiting (it
+        # writes the ledger), a request that is itself cancelled is cancelled whatever became of
+        # the sentence, and how the passing on ended is read off it, not off what ended the wait.
+        done, _ = await asyncio.wait({passing}, timeout=_NOTE_WAIT_SECONDS)
+        taken: bool | None
+        if not done:
+            # Still on its way: not known yet, and not said to be lost.
             taken = None
-        except asyncio.CancelledError:
-            # The passing on was cancelled (the host is being shut down), not this request: the
-            # answer is in all the same, and saying anything else would have it given again.
-            request = asyncio.current_task()
-            if not passing.cancelled() or (request is not None and request.cancelling()):
-                raise
+        elif passing.cancelled() or passing.exception() is not None:
+            # The answer was taken; only the sentence was not (logged as it ended). Also where
+            # the passing on was cancelled, the host being shut down: anything but saying so
+            # would have the answer given again.
             taken = False
-        except Exception:  # noqa: BLE001 - the answer was taken; only the note was not (logged as it ended)
-            taken = False
+        else:
+            taken = bool(passing.result())
         return {"success": True, "note_taken": taken}
 
     @router.get("/questions")

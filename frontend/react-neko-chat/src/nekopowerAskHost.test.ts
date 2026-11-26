@@ -759,6 +759,133 @@ describe('the cards of the chat window', () => {
     expect(messages).toEqual([]);
   });
 
+  it('does not show a question again that was answered while its card was out of the chat', async () => {
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    let answered = () => {};
+    let read: Array<() => void> = [];
+    let held = false;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      const page = { ok: true, status: 200, json: async () => (url.includes('/answer') ? { success: true } : { questions: rows }) };
+      if (url.includes('/answer')) return new Promise(resolve => { answered = () => resolve(page); });
+      return held ? new Promise(resolve => { read.push(() => resolve(page)); }) : Promise.resolve(page);
+    }));
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    // Back: what waits is read (it still lists the question), and the answer is back before that read is.
+    w.lanlan_config.lanlan_name = 'Lan';
+    held = true;
+    const reading = asks.sync();
+    await flush();
+    answered();
+    await flush();
+    read.forEach(release => release());
+    read = [];
+    held = false;
+    await reading;
+    await flush();
+    expect(messages.filter(message => message.blocks[0].state === 'pending' || message.blocks[0].state === 'sending')).toEqual([]);
+  });
+
+  it('keeps an answer nothing is known of as on its way through the page being turned to another character and back', async () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    // The server gave up waiting, and what waits cannot be read.
+    reply = url => (url.includes('/answer') ? { status: 504, body: {} } : { status: 502, body: {} });
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect([block().state, block().notice]).toEqual(['sending', '还不确定送到没有，过一会儿再看。']);
+    // To the other one and back; the question still waits, as far as can be read now.
+    reply = url => (url.includes('/answer') ? { status: 200, body: { success: true } }
+      : { status: 200, body: { questions: [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }] } });
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(messages).toEqual([]);
+    // Not looked into while it is out of the chat.
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS);
+    w.lanlan_config.lanlan_name = 'Lan';
+    await asks.sync();
+    // The card as it stood: not one to answer anew while nothing is known of the first answer.
+    expect([block().state, block().notice]).toEqual(['sending', '还不确定送到没有，过一会儿再看。']);
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'deny' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.filter(call => call.url.includes('/answer')).length).toBe(1);
+    // Looked into again now it is shown: the same question is seen to wait, and can be given again.
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS);
+    expect([block().state, block().notice]).toEqual(['pending', '没送到，再试一次吧。']);
+  });
+
+  it('says of an answer that came back unknown while its card was out of the chat, once the card is shown again', async () => {
+    vi.useFakeTimers();
+    const w = window as unknown as Record<string, { getState?: () => unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    let back = () => {};
+    let readable = true;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      // The answer: the server gives up waiting for it.
+      if (url.includes('/answer')) return new Promise(resolve => { back = () => resolve({ ok: false, status: 504, json: async () => ({}) }); });
+      return Promise.resolve(readable ? { ok: true, status: 200, json: async () => ({ questions: rows }) } : { ok: false, status: 502, json: async () => ({}) });
+    }));
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await vi.advanceTimersByTimeAsync(0);
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(messages).toEqual([]);
+    // It comes back while the page is with the other one, and what waits cannot be read then.
+    readable = false;
+    back();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(messages).toEqual([]);
+    readable = true;
+    w.lanlan_config.lanlan_name = 'Lan';
+    await asks.sync();
+    expect([block().state, block().notice]).toEqual(['sending', '还不确定送到没有，过一会儿再看。']);
+    await vi.advanceTimersByTimeAsync(asks.RECHECK_MS);
+    expect([block().state, block().notice]).toEqual(['pending', '没送到，再试一次吧。']);
+  });
+
+  it('closes a card the read does not list though the connection said meanwhile that another question of its task is over', async () => {
+    let release = () => {};
+    asks.receive(frame(confirmation));
+    // Its own close was missed; the read says the task asks nothing by now.
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 200, body: { questions: [] } });
+    const reading = asks.sync();
+    asks.receive(frame(null, { question_id: 'q1' }));
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    expect(block().state).toBe('closed');
+  });
+
+  it('does not take a late report of a question that is over for news of what its task asks', async () => {
+    let release = () => {};
+    asks.receive(frame(permission));
+    asks.receive(frame(null, { question_id: 'q1' }));
+    hold = new Promise(resolve => { release = resolve; });
+    reply = () => ({ status: 200, body: { questions: [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: confirmation }] } });
+    const reading = asks.sync();
+    asks.receive(frame(permission));
+    hold = null;
+    release();
+    await reading;
+    await flush();
+    expect(messages.map(message => [message.id, message.blocks[0].state])).toEqual([
+      ['nekopower-ask-c1-q1', 'closed'], ['nekopower-ask-c1-q2', 'pending'],
+    ]);
+  });
+
   it('reads once more when it was asked to while a read was on its way, or the character changed meanwhile', async () => {
     let release = () => {};
     hold = new Promise(resolve => { release = resolve; });

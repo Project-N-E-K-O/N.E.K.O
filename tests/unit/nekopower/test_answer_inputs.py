@@ -219,7 +219,10 @@ class _Host:
         if self.asks == "nothing":
             # There, and not asking anything any more.
             return SimpleNamespace(id=commission_id, question=lambda: None)
-        return SimpleNamespace(id=commission_id, question=lambda: {"kind": self.asks, "id": "q1"})
+        asked: dict[str, Any] = {"kind": self.asks, "id": "q1"}
+        if self.asks == "questions":
+            asked["questions"] = [{"id": "go", "question": "Go on?", "options": ["Yes", {"label": " Vercel "}]}, *QUESTIONS[2:]]
+        return SimpleNamespace(id=commission_id, question=lambda: asked)
 
     async def _select(self, **criteria: Any) -> list[Any]:
         self.selected_with = criteria
@@ -306,6 +309,58 @@ async def test_a_request_that_is_itself_cancelled_with_the_passing_on_is_cancell
         asyncio.current_task().uncancel()
 
 
+async def test_a_note_that_ran_out_of_time_itself_is_said_to_be_lost_and_not_to_be_on_its_way():
+    # What passes it on gave up (a write that timed out): that is known, and is no "not yet".
+    host = _Host(takes_note=TimeoutError("the ledger did not answer"))
+    async with _client(host) as client:
+        answer = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+
+    assert answer.json() == {"success": True, "note_taken": False}
+
+
+async def test_a_request_cancelled_as_its_note_is_passed_on_is_cancelled_all_the_same():
+    class _Leaving(_Host):
+        asked_in: Any = None
+
+        async def answer(self, commission_id: str, text: str, **given: Any) -> bool:
+            self.asked_in = asyncio.current_task()
+            return await super().answer(commission_id, text, **given)
+
+        async def tell(self, commission_id: str, text: str) -> bool:
+            # The sentence is passed on, and the page is gone that very moment.
+            self.asked_in.cancel()
+            return True
+
+    host = _Leaving()
+    async with _client(host) as client:
+        with pytest.raises(asyncio.CancelledError):
+            await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+        asyncio.current_task().uncancel()
+
+
+@pytest.mark.parametrize(
+    "selected",
+    [
+        # A place the question does not have; a label it does not offer there; one of another place.
+        {"7": ["Yes"]},
+        {"0": ["Maybe"]},
+        {"0": ["a"]},
+    ],
+)
+async def test_a_pick_that_names_nothing_the_question_offers_is_no_answer(selected):
+    host = _Host(asks="questions")
+    async with _client(host) as client:
+        nothing = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": selected})
+        # With something said, the words are the answer whatever was picked.
+        said = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": selected, "text": "later"})
+        # As the page shows a label: without the blanks around it.
+        shown = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"selected": {"0": ["Vercel"]}})
+
+    assert nothing.status_code == 400 and nothing.json()["detail"]["field"] == "selected"
+    assert said.status_code == 200 and shown.status_code == 200
+    assert len(host.answers) == 2
+
+
 async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypatch):
     from app.agent_server import api_console
 
@@ -314,7 +369,10 @@ async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypat
     release = asyncio.Event()
     host = _Host(takes_note=release)
     async with _client(host) as client:
-        answer = await client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"})
+        # (Given up on here after a while, so that a route that waits for good fails and does not hang.)
+        answer = await asyncio.wait_for(
+            client.post("/console/commissions/c1/answer", headers=HEADERS, json={"choice": "once", "note": "careful"}), 5
+        )
 
     # The answer is in; whether the sentence was taken is not known yet, and is not said to be lost.
     assert answer.json() == {"success": True, "note_taken": None}

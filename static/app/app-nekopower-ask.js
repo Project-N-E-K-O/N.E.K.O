@@ -528,7 +528,7 @@
         card.message = Object.assign({}, card.message, {
             blocks: [Object.assign({}, card.message.blocks[0], changes)]
         });
-        if (api) api.updateMessage(card.message.id, { blocks: card.message.blocks });
+        if (api && inChat(api, card.message.id)) api.updateMessage(card.message.id, { blocks: card.message.blocks });
     }
     /** Close the card of a task's question: all of that task's, or the one that asked `questionId`. */
     function close(taskId, questionId) {
@@ -597,6 +597,8 @@
         if (sent) {
             open.set(taskId, sent);
             if (!inChat(api, sent.message.id)) api.appendMessage(sent.message);
+            // One whose answer nothing is known of yet is looked into again, now it is shown.
+            if (sent.looking && !sent.watched) lookFor(sent, taskId + ':' + shown.id);
             return;
         }
         var now = new Date();
@@ -619,6 +621,9 @@
     function receive(frame) {
         if (!frame || !frame.task_id) return;
         var closing = !frame.question || typeof frame.question !== 'object';
+        // What a question that is over was (its report came late): not shown, and nothing new
+        // of its task, so what is read of the task meanwhile stands.
+        if (!closing && isOver(view(frame.question).id)) return;
         // `at`: when the task was last told of at all. `whole`: when it was last told what it
         // asks now, or that whatever it asked is over. That one named question of it is over
         // says nothing of the others, and is kept apart (`closed`): it does not undo `whole`.
@@ -665,14 +670,15 @@
                 rows.forEach(function (row) {
                     if (row && row.task_id && row.question) asked.set(String(row.task_id), row);
                 });
-                var fresh = function (taskId) { return (told.get(taskId) || { at: 0 }).at > since; };
-                // For what the read says a task asks: not gone by where the connection told of the
-                // task since, unless all it told is that another question of it is over, which
-                // says nothing of this one.
+                // Whether the connection told since what a task asks now (or that whatever it asked
+                // is over): the read is older than that, and is not gone by for the task. That one
+                // named question of it is over is no such word: that one is closed already, and
+                // the others of the task are as the read says.
+                var fresh = function (taskId) { return (told.get(taskId) || { whole: 0 }).whole > since; };
+                // For what the read says a task asks: nor where that very question was closed since.
                 var newerThan = function (taskId, questionId) {
                     var said = told.get(taskId);
-                    if (!said || said.at <= since) return false;
-                    return said.whole > since || said.closed === questionId;
+                    return fresh(taskId) || Boolean(said && said.at > since && said.closed === questionId);
                 };
                 Array.from(open.keys()).forEach(function (taskId) {
                     var row = asked.get(taskId);
@@ -717,6 +723,34 @@
         sync();
     });
 
+    /**
+     * Look into a card whose answer was sent and nothing is known of, until it is: while the card
+     * is shown. Taken out of the chat it is left be (`watched` says so), and looked into again
+     * once it is shown again.
+     */
+    function lookFor(card, flight) {
+        var block = card.message.blocks[0];
+        card.looking = true;
+        card.watched = true;
+        lookInto(block.taskId, block.questionId, function () {
+            var shown = open.get(block.taskId) === card;
+            if (!shown) card.watched = false;
+            return shown;
+        }, function (waits) {
+            card.looking = false;
+            card.watched = false;
+            flying.delete(flight);
+            if (waits) {
+                patch(card, { state: 'pending', notice: word('failed') });
+                return;
+            }
+            open.delete(block.taskId);
+            setOver(card.questionId);
+            patch(card, { state: 'closed', notice: word('goneUnsure') });
+            sync();
+        });
+    }
+
     window.addEventListener('react-chat-window:action', function (event) {
         var detail = event.detail || {};
         var action = detail.action || {};
@@ -731,10 +765,22 @@
         var flight = block.taskId + ':' + block.questionId;
         flying.set(flight, card);
         answer(block.taskId, block.questionId, given).then(function (result) {
-            flying.delete(flight);
+            // Noted whatever became of the card meanwhile: a question that is plainly over is
+            // not shown again by a read that is older than this.
+            if (result.ok || result.stale || result.gone) setOver(card.questionId);
+            // One nothing is known of yet is kept as on its way, until it is known.
+            var known = !result.unsure || isOver(card.questionId);
+            if (known) flying.delete(flight);
             // The task may ask its next question before this is back: that card is the one kept.
             var mine = open.get(block.taskId) === card;
             var forget = function () { if (mine) open.delete(block.taskId); };
+            if (!mine && !known) {
+                // Taken out of the chat meanwhile (the page is with another character): it says
+                // what is not known once it is shown again, and is looked into from then.
+                card.looking = true;
+                patch(card, { state: 'sending', notice: word('unsure') });
+                return;
+            }
             if (!mine) {
                 // Closed while the answer was on its way (it was answered elsewhere, or is over):
                 // the card says so already, and is not opened again whatever came of this.
@@ -761,18 +807,7 @@
                 // Not to be sent again until it is known whether this was taken: the card stays as
                 // one whose answer is on its way, and is looked into until it is known.
                 patch(card, { state: 'sending', notice: word('unsure') });
-                card.looking = true;
-                lookInto(block.taskId, block.questionId, function () { return open.get(block.taskId) === card; }, function (waits) {
-                    card.looking = false;
-                    if (waits) {
-                        patch(card, { state: 'pending', notice: word('failed') });
-                        return;
-                    }
-                    open.delete(block.taskId);
-                    setOver(card.questionId);
-                    patch(card, { state: 'closed', notice: word('goneUnsure') });
-                    sync();
-                });
+                lookFor(card, flight);
             } else {
                 patch(card, { state: 'pending', notice: word('failed') });
             }
