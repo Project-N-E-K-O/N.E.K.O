@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import asyncio
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -598,6 +599,8 @@ async def test_context_concurrent_profile_activates_are_serialized(
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
     )
+    home_activate_started = asyncio.Event()
+    release_home_activate = asyncio.Event()
     first_get_started = asyncio.Event()
     release_first_get = asyncio.Event()
     active_profile = {"name": "home"}
@@ -617,13 +620,16 @@ async def test_context_concurrent_profile_activates_are_serialized(
         del method_name, timeout, wrap_result
         if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
             target = str(request_data["profile_name"])
-            active_profile["name"] = target
             rpc_trace.append(("activate", target))
+            if target == "home":
+                home_activate_started.set()
+                await release_home_activate.wait()
+            active_profile["name"] = target
             return {"config_profiles": {"active": target}}
         if request_type == "PLUGIN_CONFIG_GET":
             current = active_profile["name"]
             rpc_trace.append(("get", current))
-            if current == "home":
+            if current == "home" and not first_get_started.is_set():
                 first_get_started.set()
                 await release_first_get.wait()
                 if first_get_fails:
@@ -635,22 +641,31 @@ async def test_context_concurrent_profile_activates_are_serialized(
     ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
     ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
 
-    first_refresh = asyncio.create_task(ctx.set_own_active_profile("home"))
-    second_refresh: asyncio.Task[dict[str, object]] | None = None
+    first_activate = asyncio.create_task(ctx.set_own_active_profile("home"))
+    second_activate: asyncio.Task[dict[str, object]] | None = None
     try:
-        await _wait_for_checkpoint_or_task_failure(first_get_started, first_refresh)
+        await _wait_for_checkpoint_or_task_failure(home_activate_started, first_activate)
 
-        second_refresh = asyncio.create_task(ctx.set_own_active_profile("work"))
+        second_activate = asyncio.create_task(ctx.set_own_active_profile("work"))
         await asyncio.sleep(0)
-        # Second profile activation must wait on _config_write_lock until first completes.
-        assert rpc_trace == [("activate", "home"), ("get", "home")]
+        # Second profile activation must wait while the first activate RPC holds the write lock.
+        assert rpc_trace == [("activate", "home")]
+
+        release_home_activate.set()
+        await _wait_for_checkpoint_or_task_failure(first_get_started, first_activate)
+
+        # Once home finishes its write RPC and moves post-lock refresh out of the lock,
+        # work proceeds promptly and finishes without waiting for the stale home refresh.
+        await second_activate
+        assert ctx._effective_config == {"profile": "work"}
+        assert ctx._effective_config_uncertain is False
 
         release_first_get.set()
-        await first_refresh
-        await second_refresh
+        await first_activate
     finally:
+        release_home_activate.set()
         release_first_get.set()
-        for task in (first_refresh, second_refresh):
+        for task in (first_activate, second_activate):
             if task is not None:
                 if not task.done():
                     task.cancel()
@@ -795,20 +810,22 @@ async def test_context_concurrent_writes_and_profile_activate_are_serialized(
         with pytest.raises(RuntimeError, match="a rejected"):
             await task_a
 
-        # Phase 2: while work refresh GET is still paused, write B queues behind activation lock.
+        # Phase 2: post-lock refresh runs outside the write lock, so failing write B proceeds
+        # without waiting on a slow refresh GET and never pushes an empty {} runtime config.
         await _wait_for_checkpoint_or_task_failure(work_get_started, task_activate)
+        refreshed_before_b = len(instance.refreshed)
         task_b = asyncio.create_task(
             ctx.update_own_config({"tag": "b"})
             if operation == "update"
             else ctx.replace_own_config({"tag": "b"})
         )
-        await asyncio.sleep(0)
-        assert events == ["write_a", "activate_work", "get_work"]
+        with pytest.raises(RuntimeError, match="b rejected"):
+            await task_b
+        assert len(instance.refreshed) == refreshed_before_b
+        assert ctx._effective_config is None
 
         release_work_get.set()
         await task_activate
-        with pytest.raises(RuntimeError, match="b rejected"):
-            await task_b
     finally:
         release_a.set()
         release_work_get.set()
@@ -819,7 +836,11 @@ async def test_context_concurrent_writes_and_profile_activate_are_serialized(
                 await asyncio.gather(task, return_exceptions=True)
 
     assert events == ["write_a", "activate_work", "get_work", "write_b"]
-    # Failing write B rolled back cleanly to active profile "work" rather than empty {}.
+    # The earlier refresh GET started before write B bumped generation, so it stays ignored;
+    # the subsequent get_own_config cleanly reloads active profile "work".
+    assert ctx._effective_config is None
+    reloaded = await ctx.get_own_config()
+    assert reloaded["config"] == {"profile": "work"}
     assert ctx._effective_config == {"profile": "work"}
     assert ctx._effective_config_uncertain is False
     assert instance.refreshed[-1] == {"profile": "work"}
@@ -1443,3 +1464,410 @@ async def test_context_profile_write_timeout_or_cancel_invalidates_inflight_read
     assert fresh["config"] == final_disk_config
     assert ctx._effective_config == final_disk_config
     assert ctx._effective_config_uncertain is False
+
+
+@pytest.mark.plugin_unit
+def test_context_cross_loop_and_cross_thread_config_writes_serialize_cleanly(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"count": 0}
+
+    state_mu = threading.Lock()
+    server_config: dict[str, object] = {"count": 0}
+    in_flight = 0
+    max_in_flight = 0
+    order: list[str] = []
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        nonlocal in_flight, max_in_flight
+        del method_name, timeout, wrap_result
+        assert request_type == "PLUGIN_CONFIG_UPDATE"
+        updates = request_data["updates"]
+        assert isinstance(updates, dict)
+        with state_mu:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            tag = next(iter(updates.keys()))
+        try:
+            await asyncio.sleep(0.05 if tag == "timer" else 0.01)
+            with state_mu:
+                server_config.update(updates)
+                order.append(tag)
+                return {"config": dict(server_config), "persisted": True}
+        finally:
+            with state_mu:
+                in_flight -= 1
+
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    async def _contend_on_loop(tag_a: str, tag_b: str) -> tuple[dict[str, object], dict[str, object]]:
+        return await asyncio.gather(
+            ctx.update_own_config({tag_a: 1}),
+            ctx.update_own_config({tag_b: 2}),
+        )
+
+    # Phase 1: contention on loop 1 followed by contention on a brand-new loop 2 must not hit loop-binding errors.
+    asyncio.run(_contend_on_loop("loop1_a", "loop1_b"))
+    asyncio.run(_contend_on_loop("loop2_a", "loop2_b"))
+    assert max_in_flight == 1
+
+    # Phase 2: timer thread running asyncio.run concurrent with command-loop updates must serialize and finish promptly.
+    timer_entered = threading.Event()
+    orig_rpc = ctx._send_request_and_wait_async
+
+    async def _threaded_rpc(**kwargs: object) -> dict[str, object]:
+        request_data = kwargs["request_data"]
+        assert isinstance(request_data, dict)
+        updates = request_data["updates"]
+        if isinstance(updates, dict) and "timer" in updates:
+            timer_entered.set()
+        return await orig_rpc(**kwargs)  # type: ignore[misc]
+
+    ctx._send_request_and_wait_async = _threaded_rpc  # type: ignore[method-assign]
+
+    thread_errors: list[BaseException] = []
+    thread_results: list[dict[str, object]] = []
+
+    def _timer_worker() -> None:
+        try:
+            thread_results.append(asyncio.run(ctx.update_own_config({"timer": True}, timeout=2.0)))
+        except BaseException as exc:  # pragma: no cover - defensive capture
+            thread_errors.append(exc)
+
+    t = threading.Thread(target=_timer_worker, daemon=True)
+    started = time.monotonic()
+    t.start()
+    assert timer_entered.wait(timeout=1.0), "timer thread did not start config write"
+
+    async def _command_loop_writer() -> dict[str, object]:
+        return await ctx.update_own_config({"command": True}, timeout=2.0)
+
+    cmd_result = asyncio.run(_command_loop_writer())
+    t.join(timeout=2.0)
+    elapsed = time.monotonic() - started
+
+    assert not t.is_alive()
+    assert not thread_errors
+    assert len(thread_results) == 1
+    assert elapsed < 1.0
+    assert max_in_flight == 1
+    assert order[-2:] == ["timer", "command"]
+    assert cmd_result["config"] == server_config
+    assert ctx._effective_config == server_config
+    assert ctx._effective_config_uncertain is False
+    assert instance.refreshed[-1] == server_config
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiter_op", ("update", "replace", "upsert", "delete", "activate"))
+async def test_context_queued_config_writes_respect_timeout_and_preserve_state(
+    tmp_path: Path,
+    waiter_op: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home", "keep": 1}
+
+    holder_started = asyncio.Event()
+    release_holder = asyncio.Event()
+    rpc_calls: list[tuple[str, float]] = []
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, wrap_result
+        rpc_calls.append((request_type, timeout))
+        if request_type == "PLUGIN_CONFIG_REPLACE" and request_data.get("config") == {"holder": True}:
+            holder_started.set()
+            await release_holder.wait()
+            return {"config": {"profile": "home", "keep": 1, "holder": True}}
+        if request_type == "PLUGIN_CONFIG_UPDATE":
+            updates = request_data["updates"]
+            assert isinstance(updates, dict)
+            return {"config": {"profile": "home", "keep": 1, "holder": True, **updates}}
+        if request_type == "PLUGIN_CONFIG_REPLACE":
+            return {"config": dict(request_data["config"])}  # type: ignore[arg-type]
+        if request_type == "PLUGIN_CONFIG_PROFILE_UPSERT":
+            return {"config": {"x": 1}, "affected_active": False}
+        if request_type == "PLUGIN_CONFIG_PROFILE_DELETE":
+            return {"removed": True, "affected_active": False}
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            return {"config_profiles": {"active": "work"}}
+        if request_type == "PLUGIN_CONFIG_GET":
+            return {"config": {"profile": "work"}}
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    async def _call_waiter(wait_timeout: float) -> object:
+        if waiter_op == "update":
+            return await ctx.update_own_config({"queued": 1}, timeout=wait_timeout)
+        if waiter_op == "replace":
+            return await ctx.replace_own_config({"queued": 1}, timeout=wait_timeout)
+        if waiter_op == "upsert":
+            return await ctx.upsert_own_profile_config("work", {"queued": 1}, timeout=wait_timeout)
+        if waiter_op == "delete":
+            return await ctx.delete_own_profile_config("work", timeout=wait_timeout)
+        return await ctx.set_own_active_profile("work", timeout=wait_timeout)
+
+    holder = asyncio.create_task(ctx.replace_own_config({"holder": True}, timeout=5.0))
+    try:
+        await _wait_for_checkpoint_or_task_failure(holder_started, holder)
+        refreshed_while_holding = list(instance.refreshed)
+
+        started = time.monotonic()
+        if waiter_op == "update":
+            timed_out_res = await _call_waiter(0.05)
+            assert isinstance(timed_out_res, dict)
+            assert timed_out_res["success"] is False
+            assert timed_out_res["persisted"] is False
+            assert timed_out_res["config"] == {"holder": True}
+        else:
+            with pytest.raises(TimeoutError):
+                await _call_waiter(0.05)
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.3
+
+        # No extra RPC was sent, runtime cache stays on holder's optimistic state, and write flag remains intact.
+        assert rpc_calls == [("PLUGIN_CONFIG_REPLACE", pytest.approx(5.0, abs=0.1))]
+        assert ctx._effective_config == {"holder": True}
+        assert ctx._effective_config_uncertain is False
+        assert ctx._config_write_in_progress is True
+        assert instance.refreshed == refreshed_while_holding
+
+        release_holder.set()
+        await holder
+    finally:
+        release_holder.set()
+        if not holder.done():
+            holder.cancel()
+        await asyncio.gather(holder, return_exceptions=True)
+
+    assert ctx._config_write_in_progress is False
+    assert ctx._effective_config == {"profile": "home", "keep": 1, "holder": True}
+
+    # Verify remaining timeout budget after queuing is passed to the subsequent RPC.
+    rpc_calls.clear()
+    holder_started.clear()
+    release_holder.clear()
+
+    async def _timed_holder() -> dict[str, object]:
+        return await ctx.replace_own_config({"holder": True}, timeout=5.0)
+
+    holder2 = asyncio.create_task(_timed_holder())
+    waiter2: asyncio.Task[object] | None = None
+    try:
+        await _wait_for_checkpoint_or_task_failure(holder_started, holder2)
+        waiter2 = asyncio.create_task(_call_waiter(0.4))
+        await asyncio.sleep(0.08)
+        release_holder.set()
+        await holder2
+        await waiter2
+    finally:
+        release_holder.set()
+        for t in (holder2, waiter2):
+            if t is not None:
+                if not t.done():
+                    t.cancel()
+                await asyncio.gather(t, return_exceptions=True)
+
+    assert len(rpc_calls) >= 2
+    assert 0.0 < rpc_calls[1][1] < 0.35
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ("update", "replace", "upsert", "delete", "activate"))
+@pytest.mark.parametrize("bad_timeout", (None, "bad", float("nan"), float("inf"), True))
+async def test_context_invalid_timeout_fails_before_mutating_cache_or_write_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    op: str,
+    bad_timeout: object,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+    rpc_called = False
+
+    async def _unexpected_rpc(**_kwargs: object) -> dict[str, object]:
+        nonlocal rpc_called
+        rpc_called = True
+        return {}
+
+    ctx._send_request_and_wait_async = _unexpected_rpc  # type: ignore[method-assign]
+
+    with pytest.raises((TypeError, ValueError)):
+        if op == "update":
+            await ctx.update_own_config({"x": 1}, timeout=bad_timeout)  # type: ignore[arg-type]
+        elif op == "replace":
+            await ctx.replace_own_config({"x": 1}, timeout=bad_timeout)  # type: ignore[arg-type]
+        elif op == "upsert":
+            await ctx.upsert_own_profile_config("work", {"x": 1}, timeout=bad_timeout)  # type: ignore[arg-type]
+        elif op == "delete":
+            await ctx.delete_own_profile_config("work", timeout=bad_timeout)  # type: ignore[arg-type]
+        else:
+            await ctx.set_own_active_profile("work", timeout=bad_timeout)  # type: ignore[arg-type]
+
+    assert rpc_called is False
+    assert ctx._effective_config == {"profile": "home"}
+    assert ctx._effective_config_uncertain is False
+    assert getattr(ctx, "_config_write_in_progress", False) is False
+    assert instance.refreshed == []
+
+    # Subsequent reads must still populate cache normally.
+    ctx._effective_config = None
+
+    class _QueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            assert plugin_id == "demo"
+            return {"plugin_id": plugin_id, "config": {"profile": "reloaded"}}
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _QueryService)
+    reloaded = await ctx.get_own_config()
+    assert reloaded["config"] == {"profile": "reloaded"}
+    assert ctx._effective_config == {"profile": "reloaded"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_op", ("update", "replace"))
+async def test_context_failed_write_after_failed_profile_refresh_does_not_push_empty_config(
+    tmp_path: Path,
+    write_op: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"profile": "home"}
+
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, request_data, timeout, wrap_result
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            return {"config_profiles": {"active": "work"}}
+        if request_type == "PLUGIN_CONFIG_GET":
+            raise RuntimeError("refresh read failed")
+        if request_type in {"PLUGIN_CONFIG_UPDATE", "PLUGIN_CONFIG_REPLACE"}:
+            raise RuntimeError("write rejected")
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    await ctx.set_own_active_profile("work")
+    assert ctx._effective_config is None
+    assert instance.refreshed == []
+
+    with pytest.raises(RuntimeError, match="write rejected"):
+        if write_op == "update":
+            await ctx.update_own_config({"x": 1})
+        else:
+            await ctx.replace_own_config({"x": 1})
+
+    assert ctx._effective_config is None
+    assert instance.refreshed == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_op", ("update", "replace"))
+async def test_context_successful_persisted_write_clears_prior_uncertain_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_op: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    ctx._effective_config = {"k": 0}
+
+    rpc_calls = 0
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        nonlocal rpc_calls
+        del method_name, request_data, timeout, wrap_result
+        rpc_calls += 1
+        if rpc_calls == 1:
+            raise TimeoutError("timed out")
+        return {"config": {"k": 2}, "persisted": True}
+
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+    timed_out = await ctx.update_own_config({"k": 1})
+    assert timed_out["persisted"] is None
+    assert ctx._effective_config_uncertain is True
+
+    if write_op == "update":
+        committed = await ctx.update_own_config({"k": 2})
+    else:
+        committed = await ctx.replace_own_config({"k": 2})
+
+    assert committed["config"] == {"k": 2}
+    assert ctx._effective_config == {"k": 2}
+    assert ctx._effective_config_uncertain is False
+
+    class _UnexpectedQueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            raise AssertionError(f"Unexpected remote read for {plugin_id}")
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _UnexpectedQueryService)
+    cached = await ctx.get_own_config()
+    assert cached["config"] == {"k": 2}

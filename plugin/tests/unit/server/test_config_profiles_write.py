@@ -435,3 +435,144 @@ def test_update_profile_config_rejects_unknown_profile_with_404(
     assert not (profiles_dir / "prd.toml").exists()
     assert not (plugin_dir / "profiles.toml").exists()
     assert (profiles_dir / "prod.toml").read_text(encoding="utf-8") == "[feature]\nx=1\n"
+
+
+@pytest.mark.plugin_unit
+def test_update_profile_config_rejects_deleted_profile_with_leftover_file_and_upsert_recreates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+    from fastapi import HTTPException
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        config={"feature": {"x": 1}},
+        make_active=False,
+    )
+    deleted = module.delete_profile_config(plugin_id="demo", profile_name="work")
+    assert deleted["removed"] is True
+
+    work_file = profiles_dir / "work.toml"
+    profiles_toml = plugin_dir / "profiles.toml"
+    assert work_file.exists()
+    work_before = work_file.read_bytes()
+    profiles_before = profiles_toml.read_bytes()
+
+    with pytest.raises(HTTPException) as exc_info:
+        module.update_profile_config(
+            plugin_id="demo",
+            profile_name="work",
+            updates={"feature": {"x": 2}},
+        )
+
+    assert exc_info.value.status_code == 404
+    assert work_file.read_bytes() == work_before
+    assert profiles_toml.read_bytes() == profiles_before
+    assert "work" not in tomllib.loads(profiles_toml.read_text(encoding="utf-8"))["config_profiles"]["files"]
+
+    recreated = module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        config={"feature": {"x": 42}},
+        make_active=False,
+    )
+    assert recreated["config"] == {"feature": {"x": 42}}
+    assert "work" in tomllib.loads(profiles_toml.read_text(encoding="utf-8"))["config_profiles"]["files"]
+
+
+@pytest.mark.plugin_unit
+def test_profile_writes_numeric_alias_fallback_precedence_and_affected_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\nentry='demo:Plugin'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    one_path = profiles_dir / "one.toml"
+    one_path.write_text("[feature]\nx=1\n", encoding="utf-8")
+    zero_one_path = profiles_dir / "zero_one.toml"
+    zero_one_path.write_text("[feature]\nx=100\n", encoding="utf-8")
+    profiles_toml = plugin_dir / "profiles.toml"
+
+    # Case 1: env forces active="01" while only "1" is registered -> both update and upsert of "1" affect active.
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='1'\n[config_profiles.files]\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEKO_PLUGIN_DEMO_PROFILE", "01")
+
+    upd_one = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="1",
+        updates={"feature": {"x": 2}},
+    )
+    assert upd_one["active_profile"] == "01"
+    assert upd_one["affected_active"] is True
+
+    ups_one = module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="1",
+        config={"feature": {"x": 3}},
+        make_active=False,
+    )
+    assert ups_one["active_profile"] == "01"
+    assert ups_one["affected_active"] is True
+
+    # Case 2: active="1", update called with "01" -> resolves via "1" without registering extra alias "01".
+    monkeypatch.delenv("NEKO_PLUGIN_DEMO_PROFILE", raising=False)
+    upd_alias = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="01",
+        updates={"feature": {"x": 4}},
+    )
+    assert upd_alias["affected_active"] is True
+    assert tomllib.loads(one_path.read_text(encoding="utf-8")) == {"feature": {"x": 4}}
+    assert set(tomllib.loads(profiles_toml.read_text(encoding="utf-8"))["config_profiles"]["files"]) == {"1"}
+
+    # Case 3: exact key "01" points to a distinct valid file -> updating "1" keeps affected_active=False.
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='01'\n"
+        "[config_profiles.files]\n'01'='profiles/zero_one.toml'\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    upd_other = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="1",
+        updates={"feature": {"x": 5}},
+    )
+    assert upd_other["affected_active"] is False
+    assert tomllib.loads(zero_one_path.read_text(encoding="utf-8")) == {"feature": {"x": 100}}
+
+    upd_exact = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="01",
+        updates={"feature": {"x": 101}},
+    )
+    assert upd_exact["affected_active"] is True
+    assert tomllib.loads(zero_one_path.read_text(encoding="utf-8")) == {"feature": {"x": 101}}
+
+    # Case 4: exact key "01" is whitespace-only/empty -> falls back to "1" cleanly.
+    profiles_toml.write_text(
+        "[config_profiles]\nactive='01'\n"
+        "[config_profiles.files]\n'01'='   '\n'1'='profiles/one.toml'\n",
+        encoding="utf-8",
+    )
+    upd_blank = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="1",
+        updates={"feature": {"x": 6}},
+    )
+    assert upd_blank["affected_active"] is True

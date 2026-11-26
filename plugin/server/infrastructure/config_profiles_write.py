@@ -298,6 +298,25 @@ def _validate_profile_name(profile_name: object) -> str:
     return normalized
 
 
+def _lookup_registered_profile_path(
+    files_map: Mapping[str, str],
+    profile_name: str,
+) -> tuple[str, str] | None:
+    raw_path = files_map.get(profile_name)
+    if isinstance(raw_path, str) and raw_path.strip():
+        return profile_name, raw_path
+    if profile_name.isdigit():
+        try:
+            numeric_name = str(int(profile_name))
+        except ValueError:
+            numeric_name = ""
+        if numeric_name:
+            numeric_raw = files_map.get(numeric_name)
+            if isinstance(numeric_raw, str) and numeric_raw.strip():
+                return numeric_name, numeric_raw
+    return None
+
+
 def _profile_affects_active(
     *,
     base_dir: Path,
@@ -310,9 +329,10 @@ def _profile_affects_active(
         return False
     if active_name == profile_name:
         return True
-    active_raw = files_map.get(active_name)
-    if not isinstance(active_raw, str) or not active_raw.strip():
+    active_entry = _lookup_registered_profile_path(files_map, active_name)
+    if active_entry is None:
         return False
+    _, active_raw = active_entry
     active_path = resolve_profile_path(active_raw, base_dir)
     return active_path is not None and active_path == profile_path
 
@@ -457,24 +477,17 @@ def update_profile_config(
                 data["config_profiles"] = dict(seeded_cfg)
 
         profiles_cfg, files_map = _normalize_profiles_config(data)
-        raw_path = files_map.get(profile_name)
-        synthesized_default_path = False
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            raw_path = f"profiles/{profile_name}.toml"
-            synthesized_default_path = True
+        registered = _lookup_registered_profile_path(files_map, profile_name)
+        if registered is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Profile '{profile_name}' not found",
+            )
+        _, raw_path = registered
 
         profile_path = resolve_profile_path(raw_path, base_dir)
         if profile_path is None:
             raise HTTPException(status_code=400, detail="Invalid profile path")
-        if synthesized_default_path:
-            if profile_path.parent != (base_dir / "profiles").resolve():
-                raise HTTPException(status_code=400, detail="Invalid profile path")
-            if not profile_path.exists():
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Profile '{profile_name}' not found",
-                )
-            files_map[profile_name] = raw_path
 
         data["config_profiles"] = profiles_cfg
 
