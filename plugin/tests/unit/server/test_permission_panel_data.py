@@ -298,14 +298,14 @@ def test_refused_uses_are_collected(tmp_path):
     index.observe(_system_use("a", SPAWN, verdict="would_deny", reason="undecided"))
     index.observe(_system_use("a", FS_WRITE))
 
-    assert index.refused_uses() == {("a", SPAWN): (NOW, 2)}
+    assert index.refused_uses() == {("a", SPAWN): (NOW, 2, False)}
 
 
 def test_a_chain_refusal_counts_for_the_caller_that_lacked_it(tmp_path):
     index = _index(tmp_path)
     index.observe(_decision("b", MEMORY, verdict="would_deny", reason="caller_chain", blocked_by=["a"]))
 
-    assert index.refused_uses() == {("a", MEMORY): (NOW, 1)}
+    assert index.refused_uses() == {("a", MEMORY): (NOW, 1, False)}
     assert index.last_use("b", MEMORY).outcome == "would_block"
 
 
@@ -1657,12 +1657,13 @@ def test_refusal_batches_stay_bounded_and_keep_the_total(tmp_path, monkeypatch):
 
     monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
     index = _index(tmp_path)
-    for minutes in (50, 40, 30, 20, 10):
+    # 50 and 45 merge first (closest), then 20 and 12.
+    for minutes in (50, 45, 30, 20, 12):
         index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
     assert len(index._refused[("a", MEMORY)]) == 3
-    assert index.refused_uses() == {("a", MEMORY): (NOW - timedelta(minutes=10), 5)}
+    assert index.refused_uses() == {("a", MEMORY): (NOW - timedelta(minutes=12), 5, False)}
     cutoff = NOW - timedelta(minutes=25)
-    assert index.refused_uses(after=lambda _p, _q: cutoff) == {("a", MEMORY): (NOW - timedelta(minutes=10), 2)}
+    assert index.refused_uses(after=lambda _p, _q: cutoff) == {("a", MEMORY): (NOW - timedelta(minutes=12), 2, False)}
 
 
 def test_a_cutoff_inside_a_merged_batch_leaves_the_older_refusals_out(tmp_path, monkeypatch):
@@ -1670,11 +1671,12 @@ def test_a_cutoff_inside_a_merged_batch_leaves_the_older_refusals_out(tmp_path, 
 
     monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
     index = _index(tmp_path)
-    # Rebuilt in time order; 50 and 40 merge into one batch spanning them.
-    for minutes in (50, 40, 30, 20):
+    # Rebuilt in time order; 50 and 45, the closest, merge into one batch spanning them.
+    for minutes in (50, 45, 30, 20):
         index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
-    answered = NOW - timedelta(minutes=45)  # inside the merged batch
-    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=20), 2)}
+    answered = NOW - timedelta(minutes=47)  # inside the merged batch
+    # The count is short by the refusal at 45 and says so.
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=20), 2, True)}
 
 
 def test_a_merged_batch_keeps_its_earliest_refusal_when_history_comes_in_later(tmp_path, monkeypatch):
@@ -1686,12 +1688,72 @@ def test_a_merged_batch_keeps_its_earliest_refusal_when_history_comes_in_later(t
     def refuse(minutes):
         index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
 
-    for minutes in (100, 99, 98, 97):  # live first
+    for minutes in (100, 99, 98, 97, 90):  # live first: 99, 98 and 97 merge
         refuse(minutes)
-    for minutes in (150, 125):  # then the audit files, older
-        refuse(minutes)
-    answered = NOW - timedelta(minutes=140)  # after 150, before everything else
-    total = index.refused_uses(after=lambda _p, _q: answered)[("a", MEMORY)][1]
-    # The merged batch spans the answer and is left out (the documented
-    # undercount); the refusal from before the answer is never counted.
-    assert total == 2
+    refuse(98.5)  # then the audit files: older than the merged batch's end, merged into it
+    answered = NOW - timedelta(minutes=98.7)  # after 99, before 98.5
+    # The merged batch spans the answer and is left out (a lower bound); the
+    # refusal at 99, from before the answer, is never counted.
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=90), 1, True)}
+
+
+def test_on_equal_gaps_the_newer_batches_merge(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
+    index = _index(tmp_path)
+    for minutes in (40, 30, 20, 10):  # equal gaps: 20 and 10 merge, 40 and 30 stay apart
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
+    answered = NOW - timedelta(minutes=35)
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=10), 3, False)}
+
+
+def test_refusals_all_merged_across_the_answer_are_still_listed(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 1)
+    index = _index(tmp_path)
+    for minutes in (30, 20, 10):  # all in one batch
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
+    answered = NOW - timedelta(minutes=25)
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=10), 0, True)}
+    # A batch ending at the answer itself is all from before it: nothing listed.
+    assert index.refused_uses(after=lambda _p, _q: NOW - timedelta(minutes=10)) == {}
+
+
+def test_a_refusal_from_before_the_answer_does_not_swallow_the_later_ones(tmp_path):
+    # One refusal from before the answer (read back after a restart) and
+    # 1000 after it, far more than REFUSED_BATCHES: all 1000 count.
+    index = _index(tmp_path, created=NOW + timedelta(days=1))
+    answered = NOW
+    index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(hours=1))))
+    for second in range(1, 1001):
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided",
+                                ts=_ts(-timedelta(seconds=second))))
+    assert index.refused_uses(after=lambda _p, _q: answered) == {
+        ("a", MEMORY): (NOW + timedelta(seconds=1000), 1000, False)
+    }
+
+
+def test_first_use_says_when_its_count_is_a_lower_bound(env, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
+    env.plugin("legacy", manifest=None, report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    now = datetime.now(timezone.utc)
+
+    def refuse(delta):
+        env.index.observe(_system_use("legacy", SPAWN, verdict="would_deny", reason="undecided",
+                                      ts=(now + delta).isoformat()))
+
+    refuse(-timedelta(milliseconds=1))  # just before the answer
+    env.store.decide("legacy", SPAWN, "granted")
+    env.store.clear("legacy", SPAWN)  # the user answered: back to undecided
+    # A burst right after the answer merges with the refusal before it.
+    for seconds in (1, 2, 60, 120, 180):
+        refuse(timedelta(seconds=seconds))
+    rows = permission_panel.pending(index=env.index)["first_use"]
+    assert [(row["permission"], row["count_is_lower_bound"]) for row in rows] == [(SPAWN, True)]
+    assert rows[0]["count"] < 5

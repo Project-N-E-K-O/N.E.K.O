@@ -703,6 +703,9 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
                     "permission": permission,
                     "at": seen[0].isoformat(),
                     "count": seen[1],
+                    # True when refusals around the last answer were merged
+                    # and left out: the count is then "at least".
+                    "count_is_lower_bound": seen[2],
                 }
             )
     return {"to_confirm": to_confirm, "upgraded": upgraded, "inferred": inferred, "first_use": first_use}

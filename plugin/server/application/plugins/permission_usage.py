@@ -40,10 +40,13 @@ NETWORK_CONNECT = "system.network:connect"
 RECENT_LIMIT = 50
 DAYS_KEPT = 31
 # Refusals kept per plugin and permission, as (last time, count, first time)
-# batches; past this the two oldest are merged. A count after a cut-off takes
-# only batches that start after it, so it is exact unless the cut-off falls
-# inside a merged batch, which leaves that batch out: the newer batches,
-# more than REFUSED_BATCHES - 2 of them, all count.
+# batches; past this the two neighbouring batches closest in time are merged
+# (on a tie, the newer pair). A count after a cut-off takes only batches that
+# start after it, so it is exact unless the cut-off falls inside a merged
+# batch, which leaves that batch out: refused_uses then says the count is a
+# lower bound. Merging by gap keeps a lone refusal from before the cut-off
+# (read back after a restart) out of the newer batches; refusals in a burst
+# right after the cut-off can still be merged across it.
 REFUSED_BATCHES = 32
 _ORIGINS_KEPT = 1024
 _FILE_NAME = "call_audit.jsonl"
@@ -242,10 +245,18 @@ class UsageIndex:
             batches = self._refused.setdefault(refused_key, [])
             bisect.insort(batches, (use.at, use.count, use.at))
             if len(batches) > REFUSED_BATCHES:
-                # Live uses arrive before the audit files are read, so a
-                # merged batch can come in after older single ones.
-                (_end, first_count, first_start), (end, second_count, second_start) = batches[0], batches[1]
-                batches[:2] = [(end, first_count + second_count, min(first_start, second_start))]
+                # Merge the two neighbours with the smallest gap (the newer
+                # pair on a tie). Live uses arrive before the audit files are
+                # read, so a merged batch can overlap an older single one:
+                # the merged batch spans both.
+                i = min(
+                    range(len(batches) - 1),
+                    key=lambda k: (batches[k + 1][2] - batches[k][0], -k),
+                )
+                (first_end, first_count, first_start), (second_end, second_count, second_start) = batches[i], batches[i + 1]
+                batches[i:i + 2] = [
+                    (max(first_end, second_end), first_count + second_count, min(first_start, second_start))
+                ]
         recent = self._recent.setdefault(use.permission, [])
         recent.append(use)
         if len(recent) > RECENT_LIMIT * 2:
@@ -358,10 +369,12 @@ class UsageIndex:
         with self._lock:
             self._refused.pop((plugin_id, permission), None)
 
-    def refused_uses(self, after=None) -> dict[tuple[str, str], tuple[datetime, int]]:
-        """``(plugin, permission) -> (last time, count)`` of uses judged not
-        allowed because that plugin lacked the permission. ``after(plugin,
-        permission)``: count only the refusals later than the time it returns."""
+    def refused_uses(self, after=None) -> dict[tuple[str, str], tuple[datetime, int, bool]]:
+        """``(plugin, permission) -> (last time, count, count is a lower bound)``
+        of uses judged not allowed because that plugin lacked the permission.
+        ``after(plugin, permission)``: count only the refusals later than the
+        time it returns. A merged batch that spans that time is left out, so
+        the count can be short (down to 0): the third value is then True."""
         self.ensure_seeded()
         with self._lock:
             refused = {key: list(batches) for key, batches in self._refused.items()}
@@ -369,8 +382,13 @@ class UsageIndex:
         for key, batches in refused.items():
             cutoff = after(*key) if after is not None else None
             kept = [(at, count) for at, count, start in batches if cutoff is None or start > cutoff]
+            spanning = [at for at, _count, start in batches if cutoff is not None and start <= cutoff < at]
             if kept:
-                out[key] = (kept[-1][0], sum(count for _at, count in kept))
+                out[key] = (kept[-1][0], sum(count for _at, count in kept), bool(spanning))
+            elif spanning:
+                # Every refusal after the cut-off was merged across it: still
+                # listed, with a count of at least 0.
+                out[key] = (spanning[-1], 0, True)
         return out
 
     def recent(self, permissions, limit: int = RECENT_LIMIT) -> list[Use]:
