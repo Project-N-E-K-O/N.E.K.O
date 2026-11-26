@@ -1909,6 +1909,86 @@ async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, m
         await runtime.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('capture_marked', [False, True])
+async def test_long_term_status_cannot_interleave_with_a_snapshot_capture(tmp_path, monkeypatch, capture_marked):
+    from unittest.mock import AsyncMock
+
+    runtime, _, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    read_local, owed_path = adapter.read_local, adapter.owed_path
+    requested, attempting, finished = threading.Event(), threading.Event(), threading.Event()
+    errors, recorded = [], []
+    grant = epoch = None
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime.long_term_memory, 'sync', AsyncMock(return_value={'changed': False, 'hasMore': False}))
+
+    def capture():
+        try:
+            assert requested.wait(5)
+            attempting.set()
+            with runtime.writer.locked():
+                adapter.write_local(grant, epoch, base=None, pending={
+                    'operationId': 'b' * 32, 'baseRevision': 0,
+                    'document': {'schemaVersion': 1, 'completedAt': 2000, 'entries': []},
+                })
+                owed_path(UID).unlink(missing_ok=True)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    armed = [True]
+
+    def inspect_owed(uid):
+        if armed[0]:
+            armed[0] = False
+            requested.set()
+            assert attempting.wait(2)
+            # A capture on the same writer must wait until status is committed.
+            finished.wait(1)
+        return owed_path(uid)
+
+    success = runtime.scheduler.success
+
+    def record_success(domain, channel, *, pending=False):
+        local = read_local(grant, epoch)
+        assert pending or not (local and local['pending']), 'Unconfirmed snapshot recorded as successful'
+        if not recorded:
+            assert not finished.is_set(), 'Capture interleaved with status commit'
+        recorded.append(pending)
+        success(domain, channel, pending=pending)
+
+    thread = None
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        grant = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=None)
+        if capture_marked:
+            owed_path(UID).touch()
+        monkeypatch.setattr(adapter, 'owed_path', inspect_owed)
+        monkeypatch.setattr(runtime.scheduler, 'success', record_success)
+        thread = threading.Thread(target=capture)
+        thread.start()
+        presence = await runtime.session_presence_provider()
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert recorded == [capture_marked]
+        assert await asyncio.to_thread(finished.wait, 3)
+        assert not errors
+        assert read_local(grant, epoch)['pending']['operationId'] == 'b' * 32
+        await runtime._long_term_memory_pass(UID, presence=presence)
+        assert recorded == [capture_marked, True]
+        assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'waiting'
+    finally:
+        requested.set()
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 3)
+            assert not thread.is_alive()
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()

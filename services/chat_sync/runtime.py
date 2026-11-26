@@ -1646,16 +1646,20 @@ class DesktopChatSyncRuntime:
                     applied = await self.long_term_memory.adapter.flush(uid)
                     if applied and self.history_changed:
                         await self._notify_history_changed(binding, presence)
-                # An accepted upload can leave a newer local snapshot or a merge
-                # waiting to be captured, as well as an unapplied incoming snapshot.
-                local_after = await commit(self.long_term_memory.adapter.read_local, grant, epoch)
-                upload_pending = bool(local_after and local_after['pending'])
-                pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
-                           or await asyncio.to_thread(self.long_term_memory.adapter.incoming_path(uid).is_file)
-                           or await asyncio.to_thread(self.long_term_memory.adapter.owed_path(uid).is_file))
-                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=pending)
-                if result['hasMore'] or upload_pending:
-                    await commit(self.scheduler.request_check, domain.key(), 'long_term')
+                def record_long_term_status():
+                    # commit holds the writer lock through the snapshot and status
+                    # write, so capture cannot replace owed work between these reads.
+                    self.writer.require_epoch(epoch)
+                    local_after = self.long_term_memory.adapter.read_local(grant, epoch)
+                    upload_pending = bool(local_after and local_after['pending'])
+                    pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
+                               or self.long_term_memory.adapter.incoming_path(uid).is_file()
+                               or self.long_term_memory.adapter.owed_path(uid).is_file())
+                    self.scheduler.success(domain.key(), 'long_term', pending=pending)
+                    if result['hasMore'] or upload_pending:
+                        self.scheduler.request_check(domain.key(), 'long_term')
+
+                await commit(record_long_term_status)
                 return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}
             except (ValueError, OSError, sqlite3.Error) as error:
                 await asyncio.to_thread(self.scheduler.failure, domain.key(), 'long_term', binding['generation'], presence, error)
