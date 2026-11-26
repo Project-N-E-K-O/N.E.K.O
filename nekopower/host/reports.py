@@ -213,6 +213,28 @@ def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int
     return action, cut
 
 
+def page_question(question: dict[str, Any] | None, lang: str) -> dict[str, Any] | None:
+    """Return a pending question as a page shows it on a card with the ways to answer; None for none.
+
+    The question as the ledger has it, and for a request for approval
+    what is to be allowed in one line of the commission's language
+    (``line``: the words ``render_question`` has for her, without the
+    answers on offer, which the card shows as buttons). ``line_cut`` says
+    the command or path in it is not whole: the card then shows it whole
+    (``detail``) before an approval that holds for more than this once is
+    offered.
+    """
+    if not isinstance(question, dict):
+        return None
+    if question.get("kind") != "permission":
+        return dict(question)
+    from config.nekopower_settings import PERMISSION_SUBJECT_MAX_TOKENS
+    from config.prompts._locale import normalize_prompt_locale
+
+    line, cut = _permission_subject_cut(question, normalize_prompt_locale(lang), PERMISSION_SUBJECT_MAX_TOKENS)
+    return {**question, "line": line, "line_cut": cut}
+
+
 def tokens_text(tokens: int) -> str:
     """Return a number of tokens in a few characters, the same in every language: ``950``, ``12k``, ``1.3M``."""
     tokens = max(0, int(tokens))
@@ -421,8 +443,8 @@ class Reporter:
         """Report that a commission waits for the user to answer or approve.
 
         ``text`` is the question as one sentence for her to pass on, in the
-        commission's language; ``question`` keeps its parts for an interface
-        that shows buttons.
+        commission's language; ``question`` keeps its parts, and ``card``
+        is those as an interface shows them with buttons.
         """
         root = commission
         payload = {
@@ -430,6 +452,9 @@ class Reporter:
             "task_id": commission.id,
             "title": commission.title,
             "question": question,
+            # The same as a card of a page shows it (``page_question``).
+            "card": page_question(question, commission.lang or "en"),
+            "route": commission.route,
             "text": render_question(commission.title, question, commission.lang or "en"),
             "delivery_mode": "proactive",
         }

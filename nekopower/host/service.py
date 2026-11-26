@@ -478,10 +478,16 @@ class NekoPowerHost:
         return await self.brain.tell(commission_id, text)
 
     async def answer(
-        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+        self,
+        commission_id: str,
+        text: str,
+        *,
+        choice: str | None = None,
+        question_id: str | None = None,
+        selected: dict[str, list[str]] | None = None,
     ) -> bool:
         self._first_use()
-        return await self.brain.answer(commission_id, text, choice=choice, question_id=question_id)
+        return await self.brain.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected)
 
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()

@@ -1316,7 +1316,7 @@ async def test_answers_are_read_on_the_model_the_settings_name_with_their_own_bu
 
 
 async def test_every_sentence_of_the_evaluation_set_is_shown_with_what_waits_and_its_label_carried_out():
-    # The set measures the model (with the numbers in the design notes, 17.16). Here: what waits is shown
+    # The set measures the model (with the numbers in the design notes, 17.17). Here: what waits is shown
     # for each of its sentences, and each label it has is one the reading carries out as it is meant.
     data = json.loads((Path(__file__).parent / "fixtures" / "answer_reading_sentences.json").read_text("utf-8"))
     assert len(data["sentences"]) == 873
@@ -1370,7 +1370,7 @@ def _background(spec: dict[str, Any], text: str) -> DecisionRequest:
 
 
 async def test_every_sentence_of_the_set_about_the_work_there_is_is_shown_with_it_and_its_label_carried_out():
-    # The set measures the model (with the numbers in the design notes, 17.16). Here: every item of each
+    # The set measures the model (with the numbers in the design notes, 17.17). Here: every item of each
     # background is shown, by the name the user calls its familiar, and each label is carried out as meant.
     data = json.loads((Path(__file__).parent / "fixtures" / "under_way_sentences.json").read_text("utf-8"))
     assert (len(data["backgrounds"]), len(data["sentences"])) == (8, 213)

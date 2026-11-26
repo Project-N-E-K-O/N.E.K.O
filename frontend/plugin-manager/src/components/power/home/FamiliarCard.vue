@@ -1,36 +1,45 @@
 <template>
-  <button
-    class="familiar"
-    :class="[`familiar--${look}`, { 'familiar--lead': card.leader }]"
-    :data-familiar="card.id"
-    :data-state="look"
-    :aria-label="t('power.home.open', { name: shownName })"
-    @click="emit('open', card)"
-  >
-    <span class="face" aria-hidden="true">
-      <span v-if="card.leader" class="crown">👑</span>
-      <span class="cat">{{ FAMILIAR_FACES[card.avatar] ?? FAMILIAR_FACES.general }}</span>
-    </span>
-    <span class="words">
-      <span class="name">
-        {{ shownName }}
-        <span class="state">{{ stateLabel }}</span>
+  <!-- The card is a button that opens the familiar; what it asks is answered below it, outside the button. -->
+  <div class="familiar" :class="[`familiar--${look}`, { 'familiar--lead': card.leader }]" :data-familiar="card.id" :data-state="look" @click="emit('open', card)">
+    <button class="open" type="button" :aria-label="t('power.home.open', { name: shownName })" data-testid="familiar-open">
+      <span class="face" aria-hidden="true">
+        <span v-if="card.leader" class="crown">👑</span>
+        <span class="cat">{{ FAMILIAR_FACES[card.avatar] ?? FAMILIAR_FACES.general }}</span>
       </span>
-      <span class="title">{{ shownTitle }}</span>
-      <span v-if="line" class="line">{{ line }}</span>
-    </span>
-  </button>
+      <span class="words">
+        <span class="name">
+          {{ shownName }}
+          <span class="state">{{ stateLabel }}</span>
+        </span>
+        <span class="title">{{ shownTitle }}</span>
+        <span v-if="line" class="line">{{ line }}</span>
+      </span>
+    </button>
+    <!-- Pressing anywhere on the card opens the familiar; answering it does not. -->
+    <div v-if="asked || error" class="answering" @click.stop>
+      <AskBox v-if="asked" :ask="asked" :busy="busy ?? ''" :place="card.commission?.id" class="asked" @answer="emit('answer', $event)" />
+      <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="error" data-testid="familiar-card-error" />
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardCard } from '@/api/console'
+import AskBox from '../AskBox.vue'
+import type { GivenAnswer } from '../ask'
 import { FAMILIAR_FACES, familiarLook, presetName } from '../powerFormat'
 
-const props = defineProps<{ card: BoardCard }>()
-const emit = defineEmits<{ open: [card: BoardCard] }>()
+/**
+ * `answers`: where the card is shown with the ways to answer what its familiar asks (the board).
+ * `busy` and `error` are then how the answer to it fares; whoever shows the card sends it.
+ */
+const props = defineProps<{ card: BoardCard; answers?: boolean; busy?: string; error?: string }>()
+const emit = defineEmits<{ open: [card: BoardCard]; answer: [given: GivenAnswer] }>()
 const { t, te } = useI18n()
+/** What it asks, where it is answered in the card. */
+const asked = computed(() => (props.answers && props.card.commission?.status === 'waiting_user' ? props.card.commission.ask ?? null : null))
 
 const look = computed(() => familiarLook(props.card))
 const stateLabel = computed(() => {
@@ -48,8 +57,13 @@ const line = computed(() => props.card.doing || props.card.duty)
 </script>
 
 <style scoped>
-.familiar { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; background: var(--el-fill-color-lighter); border: 1px solid var(--el-border-color-lighter); border-radius: 12px; padding: 10px 12px; min-width: 0; }
-.familiar:hover, .familiar:focus-visible { border-color: var(--el-color-primary); outline: none; }
+.familiar { width: 100%; min-width: 0; cursor: pointer; background: var(--el-fill-color-lighter); border: 1px solid var(--el-border-color-lighter); border-radius: 12px; padding: 10px 12px; }
+.familiar:hover, .familiar:focus-within { border-color: var(--el-color-primary); }
+.open { display: flex; align-items: flex-start; gap: 10px; width: 100%; min-width: 0; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; background: none; border: 0; border-radius: 8px; }
+.open:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }
+.answering { cursor: default; }
+.asked { background: var(--el-bg-color); }
+.error { margin-top: 8px; }
 .face { position: relative; flex: none; width: 40px; text-align: center; font-size: 28px; line-height: 1.2; }
 .crown { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); font-size: 14px; }
 .words { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }

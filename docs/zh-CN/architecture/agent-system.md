@@ -176,6 +176,8 @@ task agent 的工具清单里只有网关的两个工具，办哪件委托都一
 
 对话会话每隔几轮就会换一个，自己留不住任务记录。每个新会话都会调用 `GET /nekopower/brief`，得知哪些事还在办。委托的每次变化同时作为 `task_update` 事件发出，供[任务 HUD](/architecture/task-hud-system) 显示。
 
+等用户回话的委托，问的话也能在界面上直接答，不必经她转达。`task_update` 在委托等用户时带上它问的话（`question`；权限问话多一行 `line`，是要批准的事，按委托的语言写，`line_cut` 表示里面的命令或路径没写全），任务 HUD 在卡片里出按钮和输入框。问话的汇报同时把这些交给主服务器，聊天窗里出一张问话卡（`nekopower_question` 帧）；委托不再等的时候再发一帧，不带问题、带那条问话的编号，卡片随之收起。task agent 自己起的 task agent 的问话也走这两帧（HUD 不列它们）。页面连上时用 `GET /api/agent/questions` 读一次现在还在等的。回答走 `POST /api/agent/commissions/{id}/answer`，原样转给 agent 进程的 `/console/commissions/{id}/answer`：`choice`（权限的四种选择；插件确认的 `yes`、`no`）、`text`、`selected`（`ask_user_question` 里点中的选项，按题目的位置 `"0"`、`"1"` 给）、`note`（跟着选择补的一句，回答收下以后照 `/tell` 转给 task agent，`note_taken` 说转没转到），都对着 `question_id`；这条问话已经答过、撤回或换了新的，回 409。小地方（HUD、聊天窗的小窗、群落里使魔头顶）不直接给「始终允许」「这件事里都允许」：命令或路径没展开看全时不出，头顶的卡片只出「只这一次」和「拒绝」。
+
 ## 事后检查
 
 用户发起的一轮结束、而她这一轮没有调用会动手的工具时（回忆、查知识、`query_tasks` 不算），`main_logic/cross_server.py` 会发出 `turn_check_request`，带上用户这句话和她的回复。`publish_turn_check_reliably()` 短暂等待 `turn_check_ack`，超时重试一次。她自己发起的轮次、智能体回调轮次、只有图片的轮次不发。

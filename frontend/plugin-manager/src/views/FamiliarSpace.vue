@@ -96,6 +96,7 @@
           <el-tab-pane v-if="!isArchived" :label="t('power.space.familiars.tab')" name="familiars" lazy>
             <FamiliarsPane
               :project="selected ? selected.name : null" :selected-id="familiarId" :settled="projectSettled"
+              :start-view="typeof route.query.view === 'string' ? route.query.view : ''"
               @select="chooseFamiliar"
             />
           </el-tab-pane>
@@ -201,7 +202,8 @@ const tab = computed({
 })
 
 function chooseFamiliar(id: string) {
-  void router.replace({ query: { ...route.query, tab: 'familiars', familiar: id } })
+  // Chosen here, it opens at its work: the view the address asked for was for the one it named.
+  void router.replace({ query: { ...route.query, tab: 'familiars', familiar: id, view: undefined } })
 }
 
 function isSelected(project: SpaceProject): boolean {

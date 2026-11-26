@@ -388,6 +388,10 @@ const messages: PowerMessages = {
     },
   },
   colony: {
+    askLabel: '{name} が聞いています',
+    say: '返事を書く…',
+    more: 'もっと…',
+    sayPlaceholder: 'ひとこと返す…',
     catLabel: '{name}、{state}。Enter キーで開き、矢印キーで移動します。',
     waitingBubble: '返事待ち ❗',
     answer: '回答する…',
@@ -486,6 +490,12 @@ const messages: PowerMessages = {
     },
   },
   ask: {
+    notePlaceholder: 'ひとこと添えるならここに書いて、上のボタンを押してください',
+    noteLabel: '答えに添えるひとこと',
+    addPlaceholder: '文字で答えるか、ひとこと添えて上の選択肢を押してください',
+    confirm: { yes: 'はい、進めて', no: 'いいえ' },
+    stale: '届きませんでした：この質問はもう答え済みか、新しい質問に変わっています。いま表示しているのが最新の状況です。',
+    noteLost: '答えは届きましたが、添えたひとことは届きませんでした：いまは受け取れない状態です。',
     command: 'コマンド全体',
     path: 'パス全体',
     copy: 'コピー',

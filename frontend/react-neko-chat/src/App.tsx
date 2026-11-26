@@ -14,7 +14,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
-import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
+import { CompactAskOrRecommendationPrompt } from './CompactNekoPowerAskPrompt';
+import { useNekoPowerAskDrafts } from './NekoPowerAskBlock';
 import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
@@ -917,6 +918,9 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
   );
+  // Here, for both surfaces of the chat: what was typed into a question's card is let go of
+  // with the question, whichever of them draws it.
+  useNekoPowerAskDrafts(props.messages || defaultMessages);
   return (
     <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
@@ -6256,7 +6260,7 @@ function CompactChatApp({
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
-        <CompactMusicRecommendationPrompt messages={messages} onAction={onMessageAction} />
+        <CompactAskOrRecommendationPrompt messages={messages} onAction={onMessageAction} />
       ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}

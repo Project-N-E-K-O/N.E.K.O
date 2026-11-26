@@ -70,6 +70,22 @@ _ROW_MAX = 2**63 - 1
 # The longest text a page may send for one field (rules, an entry): what
 # is kept is a file a person wrote, not a store of documents.
 _TEXT_LIMIT = 200_000
+# How many questions an answer may name, and how many options of each: far more than one call asks.
+_SELECTED_LIMIT = 64
+# How long the route that takes an answer waits for the sentence added to it to be passed on. The
+# answer is in by then; a page that waited longer would be told by its server that the request
+# timed out, and take the answer for one whose fate is not known.
+_NOTE_WAIT_SECONDS = 4.0
+# The sentences still being passed on after their route has answered, kept referenced until done.
+_notes_on_their_way: "set[asyncio.Future[Any]]" = set()
+
+
+def _note_passed_on(task: "asyncio.Future[Any]") -> None:
+    _notes_on_their_way.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning(
+            "a sentence added to an answer could not be passed on (exc_type=%s)", type(task.exception()).__name__
+        )
 # The longest words a page may look for in what was said.
 _QUERY_LIMIT = 500
 
@@ -765,20 +781,113 @@ def build_console_router(
 
     @router.post("/commissions/{commission_id}/answer")
     async def answer_commission(commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Give the user's answer to a task agent that waits for one: ``choice`` for a question with options, else ``text``."""
+        """Give the user's answer to a task agent that waits for one: ``choice`` for a question with options, else ``text``.
+
+        ``selected`` is which options of the questions it put with
+        ``ask_user_question`` were picked with a button: for each question,
+        by where it stands among them ("0", "1", ...), the labels. A plugin's
+        request for confirmation takes ``choice`` "yes" or "no". ``note`` is a sentence the user added to an
+        answer that is a choice (an approval, a refusal), which takes no
+        words: once the answer is in it is passed on to the task agent as
+        ``/tell`` would, and ``note_taken`` says whether it was (None where
+        that took longer than this waits for it: it is still being passed
+        on).
+        """
         payload = payload or {}
         text = text_of(payload, "text") or ""
+        note = (text_of(payload, "note") or "").strip()
         choice, question_id = payload.get("choice"), payload.get("question_id")
         for value in (choice, question_id):
             if value is not None and not isinstance(value, str):
                 raise _refuse(400, "bad_text", field="choice")
-        if not text.strip() and not choice:
-            raise _refuse(400, "bad_text", field="text")
+        selected = payload.get("selected")
+        if selected is not None and not (
+            isinstance(selected, dict)
+            and len(selected) <= _SELECTED_LIMIT
+            and all(
+                isinstance(labels, list)
+                and len(labels) <= _SELECTED_LIMIT
+                and all(isinstance(label, str) and len(label) <= _TEXT_LIMIT for label in labels)
+                for labels in selected.values()
+            )
+        ):
+            raise _refuse(400, "bad_text", field="selected")
         host = await get_host()
-        if not await host.answer(commission_id, text, choice=choice, question_id=question_id):
+        if not text.strip() and not choice:
+            # Nothing said: what was picked is the answer, where something was, and only to
+            # questions that offer something to pick. Any other question would be handed nothing.
+            if not any(label.strip() for labels in (selected or {}).values() for label in labels):
+                raise _refuse(400, "bad_text", field="text")
+            commission = await host.ledger.get(commission_id)
+            asked = commission.question() if commission is not None else None
+            # Only of the question that is answered: one that is over, or replaced by another
+            # meanwhile, is turned away below as an answer that came too late (409), which the
+            # pages say so of.
+            if asked and question_id in (None, asked.get("id")):
+                if asked.get("kind") != "questions":
+                    raise _refuse(400, "bad_text", field="text")
+                # Nor what names nothing this question offers, where it offers it: the task
+                # agent would be handed an answer with nothing picked and nothing said.
+                from nekopower.host.task_agents import build_answers
+
+                picked = build_answers(asked.get("questions") or [], "", selected)["answers"]
+                if not any(answer["selected"] for answer in picked):
+                    raise _refuse(400, "bad_text", field="selected")
+        if not await host.answer(commission_id, text, choice=choice, question_id=question_id, selected=selected):
             # It asked nothing, or what it asked was answered or withdrawn meanwhile.
             raise _refuse(409, "not_taken")
-        return {"success": True}
+        if not note:
+            return {"success": True}
+        # The answer is in whatever becomes of this: a note nothing took is said, and is no error.
+        # Neither is one that could not be passed on: sent again, the answer would be turned away.
+        passing = asyncio.ensure_future(host.tell(commission_id, note))
+        # Kept referenced from here on, with its failure put in the log when it is done: also where
+        # this request is cancelled while it waits (the page went away), or stops waiting below.
+        _notes_on_their_way.add(passing)
+        passing.add_done_callback(_note_passed_on)
+        # Waited for, and not awaited: the passing on goes on when this stops waiting (it
+        # writes the ledger), a request that is itself cancelled is cancelled whatever became of
+        # the sentence, and how the passing on ended is read off it, not off what ended the wait.
+        done, _ = await asyncio.wait({passing}, timeout=_NOTE_WAIT_SECONDS)
+        taken: bool | None
+        if not done:
+            # Still on its way: not known yet, and not said to be lost.
+            taken = None
+        elif passing.cancelled() or passing.exception() is not None:
+            # The answer was taken; only the sentence was not (logged as it ended). Also where
+            # the passing on was cancelled, the host being shut down: anything but saying so
+            # would have the answer given again.
+            taken = False
+        else:
+            taken = bool(passing.result())
+        return {"success": True, "note_taken": taken}
+
+    @router.get("/questions")
+    async def list_questions() -> dict[str, Any]:
+        """Return what commissions ask the user right now, the oldest first, each as a card shows it.
+
+        For a page that shows the questions as cards and was not there when
+        they were put (it opened later, or its connection was away). A task
+        agent's own task agent is among them: the user is asked for it too.
+        """
+        from nekopower.host.reports import page_question
+
+        host = await get_host()
+        waiting = await host.ledger.select(statuses=("waiting_user",), oldest_first=True)
+        return {
+            "success": True,
+            "questions": [
+                {
+                    "task_id": commission.id,
+                    "title": commission.title,
+                    "lanlan_name": commission.lanlan_name,
+                    "route": commission.route,
+                    "question": page_question(commission.question(), commission.lang or "en"),
+                }
+                for commission in waiting
+                if commission.question()
+            ],
+        }
 
     @router.post("/commissions/{commission_id}/stop")
     async def stop_commission(commission_id: str) -> dict[str, Any]:

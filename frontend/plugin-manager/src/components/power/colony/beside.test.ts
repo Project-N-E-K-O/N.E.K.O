@@ -305,7 +305,7 @@ describe('the question in the colony', () => {
     expect(byTest('colony-ask-title')).toBeNull()
     await click(choice('deny'))
     expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'deny', text: undefined, question_id: 'q9' })
-    expect(byTest('colony-ask-error')?.textContent).toContain(words.errors.not_taken)
+    expect(byTest('colony-ask-error')?.textContent).toContain(words.ask.stale)
   })
 
   it('goes once it is taken back', async () => {
@@ -362,6 +362,109 @@ describe('the question on the board', () => {
     expect(document.querySelector('[data-hive="loose"] [data-testid="beside-ask"]')).toBeNull()
   })
 
+  it('says on the card of the familiar that a sentence added to its answer was not taken, also once its commission is done', async () => {
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    api.getBoard.mockResolvedValue(board([waiting]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    const here = () => document.querySelector(`[data-familiar="${waiting.id}"]`)
+    // Answered, the sentence lost; and by the time the board is read again its commission is done.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await click(here()?.querySelector('[data-choice="deny"]'))
+    await flush()
+    expect(here()?.querySelector('[data-testid="familiar-ask"]')).toBeNull()
+    expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
+  })
+
+  it('keeps the words of a later answer for their own while, though those of an earlier one read the same', async () => {
+    vi.useFakeTimers()
+    const ask = (id: string) => ({ id, kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] })
+    const waiting = (id: string) => card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask: ask(id) } })
+    api.getBoard.mockResolvedValue(board([waiting('q1')]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    // Answered, the sentence lost; it asks the next thing, which is answered just before those words would go.
+    api.getBoard.mockResolvedValue(board([waiting('q2')], 'r2'))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(14900)
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r3'))
+    let back: (value: unknown) => void = () => {}
+    api.answerCommission.mockReturnValue(new Promise(resolve => { back = resolve }))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(api.answerCommission).toHaveBeenCalledTimes(2)
+    // What was said of the last answer is not about this one, which is on its way.
+    expect(byTest('familiar-card-error')).toBeNull()
+    back({ success: true, note_taken: false })
+    await flush()
+    // The time of the first ones is up: these are not theirs to take away.
+    await vi.advanceTimersByTimeAsync(500)
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    await vi.advanceTimersByTimeAsync(14000)
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(byTest('familiar-card-error')).toBeNull()
+  })
+
+  it('says it above the board where the familiar has no card on it any more by the time the board is read again', async () => {
+    vi.useFakeTimers()
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    const other = card({ id: 'desk', name: 'Shop/desk', commission: null, state: 'idle' })
+    api.getBoard.mockResolvedValue(board([waiting, other]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    // While its card is there, the card says it and nothing is said above the board.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null }), other], 'r2'))
+    await click(document.querySelector(`[data-familiar="${waiting.id}"] [data-choice="deny"]`))
+    await flush()
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    expect(byTest('board-answer-note')).toBeNull()
+    // Read again, the familiar that was answered is gone from the board.
+    api.getBoard.mockResolvedValue(board([other], 'r3'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(document.querySelector(`[data-familiar="${waiting.id}"]`)).toBeNull()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+  })
+
+  it('takes those words away again after a while: nothing else would, once the familiar is back at its work', async () => {
+    vi.useFakeTimers()
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    api.getBoard.mockResolvedValue(board([waiting]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await click(document.querySelector(`[data-familiar="${waiting.id}"] [data-choice="deny"]`))
+    await flush()
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(14000)
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(byTest('familiar-card-error')).toBeNull()
+  })
+
+  it('says above the board that a sentence added to that answer was not taken: it is of no familiar\'s card', async () => {
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    await mount(FamiliarBoard)
+    await click(choice('once', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+    // Not about the next answer.
+    api.answerCommission.mockResolvedValue({ success: true })
+    await click(choice('deny', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')).toBeNull()
+  })
+
   it('stands under the busy one, answered with a button', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarBoard)
@@ -400,7 +503,7 @@ describe('the question on the board', () => {
     api.answerCommission.mockRejectedValue(refusal('not_taken'))
     await mount(FamiliarBoard)
     await click(choice('deny', byTest('beside-ask')!))
-    expect(byTest('beside-error')?.textContent).toContain(words.errors.not_taken)
+    expect(byTest('beside-error')?.textContent).toContain(words.ask.stale)
     // It can be answered again.
     expect(choice('once', byTest('beside-ask')!)?.hasAttribute('disabled')).toBe(false)
   })
