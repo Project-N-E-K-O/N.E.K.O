@@ -3327,8 +3327,31 @@
 
         // ---- onmessage ----
         S.socket.onmessage = function (event) {
+            // A retired socket must not keep delivering ordinary chat/audio, but a
+            // stamped character-switch frame is control-plane ordering evidence.
+            // Parse text frames just enough to preserve that evidence before the
+            // socket ownership filter; unversioned legacy frames remain tied to
+            // the live socket and are ignored here.
+            var preParsedResponse = null;
+            if (!(event.data instanceof Blob)) {
+                try {
+                    preParsedResponse = JSON.parse(event.data);
+                } catch (_) { /* parsed normally below for the live socket */ }
+            }
             if (S.socket !== _thisSocket) {
-                console.log('[WS] stale onmessage skipped (socket already replaced)');
+                if (preParsedResponse
+                        && preParsedResponse.type === 'catgirl_switched'
+                        && Number.isSafeInteger(preParsedResponse.switch_revision)
+                        && preParsedResponse.switch_revision > 0
+                        && typeof window.handleCatgirlSwitch === 'function') {
+                    window.handleCatgirlSwitch(
+                        preParsedResponse.new_catgirl,
+                        preParsedResponse.old_catgirl,
+                        { switchRevision: preParsedResponse.switch_revision }
+                    );
+                } else {
+                    console.log('[WS] stale onmessage skipped (socket already replaced)');
+                }
                 return;
             }
 
@@ -3344,7 +3367,7 @@
             }
 
             try {
-                var response = JSON.parse(event.data);
+                var response = preParsedResponse || JSON.parse(event.data);
                 // 串门帧（visit_*）统一再派发一份给 static/visit/ 下的脚本（口型 / pacer）；
                 // 只派发、不 return，各类型的处理分支照常往下走
                 if (typeof response.type === 'string' && response.type.indexOf('visit_') === 0) {
