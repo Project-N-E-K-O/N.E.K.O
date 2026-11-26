@@ -1455,19 +1455,7 @@ window.AgentHUD._syncTaskAsk = function (card, task) {
     const asks = window.NekoPowerAsk;
     const question = task.status === 'waiting_user' && task.question && typeof task.question === 'object' && asks ? task.question : null;
     const shown = card.querySelector('.task-ask');
-    // 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
-    if (!this._askNotices) this._askNotices = {};
-    const noticed = this._askNotices[task.id];
-    let notice = card.querySelector('.task-ask-notice');
-    if (noticed && !notice) {
-        notice = document.createElement('div');
-        notice.className = 'task-ask-notice';
-        notice.setAttribute('role', 'status');
-        Object.assign(notice.style, { marginTop: '4px', fontSize: '11px', lineHeight: '1.4', color: 'var(--neko-popup-error, #dc2626)' });
-        card.appendChild(notice);
-    }
-    if (notice && !noticed) notice.remove();
-    else if (notice && notice.textContent !== noticed) notice.textContent = noticed;
+    this._syncTaskAskNotice(card, task.id);
     if (!question) {
         if (shown) shown.remove();
         return;
@@ -1494,10 +1482,27 @@ window.AgentHUD._syncTaskAsk = function (card, task) {
                 const here = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"] .task-ask-notice');
                 if (here) here.remove();
             }, 15000);
+            // 只画这句提示，不碰卡片上现在挂着的问话：这件任务可能已经问了下一条，里面还有打到一半的字。
             const live = document.querySelector('.task-card[data-task-id="' + String(task.id).replace(/"/g, '') + '"]');
-            if (live) this._syncTaskAsk(live, Object.assign({}, task, { status: 'running', question: null }));
+            if (live) this._syncTaskAskNotice(live, task.id);
         }
     }));
+};
+
+// 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
+window.AgentHUD._syncTaskAskNotice = function (card, taskId) {
+    if (!this._askNotices) this._askNotices = {};
+    const noticed = this._askNotices[taskId];
+    let notice = card.querySelector('.task-ask-notice');
+    if (noticed && !notice) {
+        notice = document.createElement('div');
+        notice.className = 'task-ask-notice';
+        notice.setAttribute('role', 'status');
+        Object.assign(notice.style, { marginTop: '4px', fontSize: '11px', lineHeight: '1.4', color: 'var(--neko-popup-error, #dc2626)' });
+        card.appendChild(notice);
+    }
+    if (notice && !noticed) notice.remove();
+    else if (notice && notice.textContent !== noticed) notice.textContent = noticed;
 };
 
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）

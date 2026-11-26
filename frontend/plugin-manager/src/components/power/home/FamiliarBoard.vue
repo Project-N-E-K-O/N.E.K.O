@@ -4,6 +4,8 @@
       <span>{{ t('power.home.working', { count: tally.working }) }}</span>
       <span :class="{ loud: tally.waiting > 0 }">{{ t('power.home.waiting', { count: tally.waiting }) }}</span>
     </div>
+    <!-- Of an answer whose added sentence was not taken, where no card of a familiar is there to say it on. -->
+    <p v-if="lostElsewhere" class="notice notice--warn" role="status" data-testid="board-answer-note">{{ lostElsewhere }}</p>
     <p v-if="error" class="notice notice--warn" role="status" data-testid="board-error">{{ error }}</p>
     <div v-else-if="loaded && !hives.length" class="notice" data-testid="board-empty">
       <strong>{{ t('power.home.empty') }}</strong>
@@ -77,16 +79,24 @@ const { asks: besides, load: loadBesides } = useBesideAsks(board)
 // done and gone from its card by the time that is known, and the card is still there to say it on.
 const lost = ref<Record<string, string>>({})
 const answeredFor = new Map<string, string>()
-const { busyOf, failedOf, answer } = useBesideAnswers(() => Promise.all([load(), loadBesides()]), (said, commissionId) => {
+// The same where the answer was to whether another familiar is to be opened (which is of no familiar's card), or
+// the familiar is not on the board any more: said above the board.
+const lostElsewhere = ref('')
+const { busyOf, failedOf, answer: answerOne } = useBesideAnswers(() => Promise.all([load(), loadBesides()]), (said, commissionId) => {
   const cardId = answeredFor.get(commissionId)
   if (cardId) lost.value = { ...lost.value, [cardId]: said }
+  else lostElsewhere.value = said
 })
+function answer(item: Beside, given: GivenAnswer) {
+  lostElsewhere.value = ''
+  void answerOne(item, given)
+}
 function answerCard(card: BoardCard, given: GivenAnswer) {
   if (!card.commission) return
   answeredFor.set(card.commission.id, card.id)
   // What was said of its last answer is not about this one.
   lost.value = Object.fromEntries(Object.entries(lost.value).filter(([id]) => id !== card.id))
-  void answer({ id: card.commission.id, ask: card.commission.ask }, given)
+  void answerOne({ id: card.commission.id, ask: card.commission.ask }, given)
 }
 
 const hives = computed<Hive[]>(() => {

@@ -378,6 +378,19 @@ describe('the question on the board', () => {
     expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
   })
 
+  it('says above the board that a sentence added to that answer was not taken: it is of no familiar\'s card', async () => {
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    await mount(FamiliarBoard)
+    await click(choice('once', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+    // Not about the next answer.
+    api.answerCommission.mockResolvedValue({ success: true })
+    await click(choice('deny', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')).toBeNull()
+  })
+
   it('stands under the busy one, answered with a button', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarBoard)

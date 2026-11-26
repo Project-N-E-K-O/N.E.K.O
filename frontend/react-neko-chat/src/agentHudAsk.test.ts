@@ -187,6 +187,26 @@ describe('the task HUD and what a task asks', () => {
       expect(card('c1').querySelector('.task-ask-notice')).toBeNull();
       show([task('c1', { status: 'running', question: null, progress: 0.6 })]);
       expect(card('c1').querySelector('.task-ask-notice')).toBeNull();
+
+      // The task asks its next question before the last answer is back: saying the sentence was
+      // lost leaves that question, and what is being typed into it, as they are.
+      let back = () => {};
+      vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => {
+        back = () => resolve({ ok: true, status: 200, json: async () => ({ success: true, note_taken: false }) });
+      })));
+      show([task('c2', { status: 'waiting_user', question: permission('q1') })]);
+      card('c2').querySelector('.task-ask-input').value = 'use pnpm';
+      card('c2').querySelector('[data-choice="deny"]').click();
+      await vi.advanceTimersByTimeAsync(0);
+      show([task('c2', { status: 'waiting_user', question: permission('q2', 'git push') })]);
+      const next = card('c2').querySelector('.task-ask-input');
+      next.value = 'half a sen';
+      back();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(card('c2').querySelector('.task-ask').dataset.questionId).toBe('q2');
+      expect(card('c2').querySelector('.task-ask-input')).toBe(next);
+      expect(next.value).toBe('half a sen');
+      expect(card('c2').querySelector('.task-ask-notice')?.textContent).toBe('回答送到了，补的那句没送到。');
     } finally {
       vi.unstubAllGlobals();
     }
