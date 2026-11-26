@@ -1781,6 +1781,35 @@ body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-minimiz
     image-rendering: auto !important;
 }
 
+/* 最小化小球的角标：喵能力有问话在等回话（宿主据 React 上报设 data-nekopower-ask-waiting）。
+   挂在拖拽手柄（即小球的点击区）里，压在毛线球右上沿（51px 方框里球偏左上、右下是线头）；
+   不接指针事件，点击和拖动照旧落在小球上。
+   颜色取问话卡的琥珀色边框，白圈让它在毛线球和任何背景上都分得出来。 */
+body.subtitle-web-host #react-chat-window-shell .react-chat-minimized-ask-badge {
+    display: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell.is-minimized[data-nekopower-ask-waiting="true"] .react-chat-minimized-ask-badge {
+    display: block;
+    position: absolute;
+    top: 2px;
+    right: 9px;
+    width: 14px;
+    height: 14px;
+    box-sizing: border-box;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #e8962a;
+    box-shadow: 0 1px 3px rgba(42, 49, 66, 0.35);
+    pointer-events: none;
+}
+
+/* 旧版 full 形态的呼吸灯球是撑满 51px 的整圆：角标贴右上角。 */
+body.subtitle-web-host #react-chat-window-shell.is-minimized.is-legacy-full-ball[data-nekopower-ask-waiting="true"] .react-chat-minimized-ask-badge {
+    top: 0;
+    right: 0;
+}
+
 /* 隐藏 resize 边缘 */
 body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-resize-edge {
     display: none;
