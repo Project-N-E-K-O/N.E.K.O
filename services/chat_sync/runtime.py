@@ -1646,11 +1646,14 @@ class DesktopChatSyncRuntime:
                     applied = await self.long_term_memory.adapter.flush(uid)
                     if applied and self.history_changed:
                         await self._notify_history_changed(binding, presence)
-                # A successful fetch can still leave a staged snapshot for the memory owner.
-                pending = result['hasMore'] or await asyncio.to_thread(
-                    self.long_term_memory.adapter.incoming_path(uid).is_file)
+                # An accepted upload can leave a newer local snapshot or a merge
+                # waiting to be captured, as well as an unapplied incoming snapshot.
+                local_after = await commit(self.long_term_memory.adapter.read_local, grant, epoch)
+                upload_pending = bool(local_after and local_after['pending'])
+                pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
+                           or await asyncio.to_thread(self.long_term_memory.adapter.incoming_path(uid).is_file))
                 await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term', pending=pending)
-                if result['hasMore']:
+                if result['hasMore'] or upload_pending:
                     await commit(self.scheduler.request_check, domain.key(), 'long_term')
                 return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}
             except (ValueError, OSError, sqlite3.Error) as error:

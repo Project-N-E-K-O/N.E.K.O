@@ -1840,6 +1840,66 @@ async def test_long_term_status_waits_until_the_staged_snapshot_is_consumed(tmp_
         await runtime.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outbox', ['pending', 'republish', 'empty'])
+async def test_long_term_receipt_does_not_complete_newer_outbox_work(tmp_path, monkeypatch, outbox):
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: 'Neko'}, long_term=True)
+    adapter = runtime.long_term_memory.adapter
+    monkeypatch.setattr(adapter, 'flush', AsyncMock(return_value=False))
+    snapshots = [
+        {'operationId': operation * 32, 'baseRevision': 0,
+         'document': {'schemaVersion': 1, 'completedAt': completed, 'entries': []}}
+        for operation, completed in [('a', 1000), ('b', 2000)]
+    ]
+    uploads = []
+    grant = epoch = None
+
+    async def observed(request):
+        if request.url.path.endswith('/long-term-memory'):
+            if request.method == 'PUT':
+                value = json.loads(request.content)
+                uploads.append(value['operationId'])
+                if len(uploads) == 1 and outbox == 'pending':
+                    # Capture B while A's HTTP response is still in flight.
+                    adapter.write_local(grant, epoch, base=None, pending=snapshots[1], sent=[snapshots[0]])
+                return httpx.Response(200, json={
+                    'ownerId': OWNER, 'characterSyncId': UID, 'operationId': value['operationId'],
+                    'revision': len(uploads), 'accepted': True,
+                })
+            if outbox == 'republish':
+                local = adapter.read_local(grant, epoch)
+                adapter.write_local(grant, epoch, base=local['base'], pending=None, republish=True)
+            return httpx.Response(200, json={
+                'ownerId': OWNER, 'characterSyncId': UID, 'revision': len(uploads), 'completedAt': 2000,
+            })
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        grant = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
+        epoch = runtime.writer.epoch()
+        adapter.write_local(grant, epoch, base=None, pending=snapshots[0])
+        presence = await runtime.session_presence_provider()
+        result = await runtime._long_term_memory_pass(UID, presence=presence)
+        assert result['hasMore'] is False and not adapter.incoming_path(UID).exists()
+        state = runtime.scheduler.channel_status(DOMAIN.key())['long_term']
+        assert state['status'] == ('success' if outbox == 'empty' else 'waiting')
+        assert (state['lastSuccessAt'] is not None) is (outbox == 'empty')
+        if outbox == 'pending':
+            assert adapter.read_local(grant, epoch)['pending']['operationId'] == snapshots[1]['operationId']
+            # The next pass can send B immediately without bypassing retry fences.
+            await runtime._long_term_memory_pass(UID, presence=presence)
+            assert uploads == [snapshot['operationId'] for snapshot in snapshots]
+            assert runtime.scheduler.channel_status(DOMAIN.key())['long_term']['status'] == 'success'
+    finally:
+        await runtime.close()
+
+
 async def run_scheduler_tick(runtime):
     """Run one scheduler decision and wait for the finite channel sweeps it launched."""
     await runtime.scheduler_tick()

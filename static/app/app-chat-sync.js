@@ -10,7 +10,7 @@
     var writerRecoveryRequired = false;
     var foregroundWakeRunning = false;
     var settingsEpoch = 0, statusFlight = null, settingsTimer = null;
-    var modelActionRunning = false, recoveryNotice = '';
+    var modelActionRunning = false, recoveryNotice = '', actionError = '';
 
     function text(key, values) {
         // All visible labels use the same eight-locale namespace.
@@ -39,6 +39,8 @@
             recent_memory_file_unreadable: 'errorRecentFileUnreadable',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
+            cloud_model_upload_unavailable: 'errorServiceRejected',
+            cloud_model_download_unavailable: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',
             chat_sync_not_enabled: 'profileNeedsBinding',
             chat_sync_character_not_found: 'errorBindingChanged',
@@ -109,9 +111,11 @@
         var state = await api('/status');
         if (!currentSettings(name, epoch)) return false;
         var role = state.characters.find(function (item) { return item.displayName === name; });
+        if (activeUid !== (role ? role.characterSyncId : null)) actionError = '';
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
+        if (writerRecoveryRequired) recoveryNotice = '';
         var modelPanel = dialog.querySelector('[data-sync-model]'), modelStatus = {}, modelReadError = null;
         if (modelPanel && activeUid && binding && binding.enabled) {
             modelStatus = await api('/characters/' + activeUid + '/model-sync').catch(function (error) {
@@ -127,15 +131,20 @@
             [['pull', 'channelRecent'], ['long_term', 'channelLongTerm'], ['profile', 'channelProfile'], ['model', 'channelModel']]
                 .forEach(function (entry) {
                     var channel = channels[entry[0]] || {}, localErrors = [];
+                    var incomingPending = entry[0] === 'long_term' && diagnostics.includes('long_term_memory_incoming_pending');
                     diagnostics.filter(function (code) {
                         return !isNotice(code) && (entry[0] === 'pull' ? code.startsWith('recent_')
                             : entry[0] === 'long_term' && code.startsWith('long_term_'));
-                    }).forEach(function (code) { localErrors.push(code); assignedDiagnostics.add(code); });
+                    }).forEach(function (code) {
+                        if (code !== 'long_term_memory_incoming_pending') localErrors.push(code);
+                        assignedDiagnostics.add(code);
+                    });
                     if (channel.lastError) { localErrors.unshift(channel.lastError); channelErrors.add(channel.lastError); }
                     if (entry[0] === 'profile' && binding.profile && binding.profile.conflict) localErrors.push('character_profile_conflict');
                     if (entry[0] === 'model' && modelReadError) localErrors.push(modelReadError.message);
                     var needsModelChoice = entry[0] === 'model' && (modelStatus.conflict || modelStatus.failed);
                     var pendingWork = (entry[0] === 'pull' && (binding.pendingOriginals || binding.pendingDeletions))
+                        || incomingPending
                         || (entry[0] === 'model' && (modelStatus.candidate || modelStatus.pending))
                         || (entry[0] === 'profile' && binding.profile &&
                             (binding.profile.dirty || binding.profile.pending || binding.profile.apply_pending));
@@ -144,7 +153,10 @@
                         : localErrors.length || needsModelChoice ? 'channelError' : pendingWork ? 'channelWaiting'
                         : channel.status === 'success' && channel.lastSuccessAt != null ? 'channelSuccess' : 'channelWaiting';
                     lines.push(text('channelStatus', {channel: text(entry[1]), status: text(label)}));
-                    Array.from(new Set(localErrors)).forEach(function (code) { lines.push(describeError(code)); });
+                    if (label === 'channelError') {
+                        Array.from(new Set(localErrors)).forEach(function (code) { lines.push(describeError(code)); });
+                    }
+                    if (incomingPending && label === 'channelWaiting') lines.push(describeError('long_term_memory_incoming_pending'));
                 });
         }
         var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic,
@@ -154,6 +166,7 @@
         if (errors.length) lines.push(Array.from(new Set(errors)).map(describeError).join('\n'));
         if (recoveryNotice) lines.push(recoveryNotice);
         else if (writerRecoveryRequired || !errors.length) lines.push(text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired'));
+        if (actionError) lines.push(actionError);
         statusNode.textContent = lines.join('\n');
         Array.from(new Set(diagnostics.filter(isNotice))).forEach(function (code) {
             statusNode.textContent += '\n' + text(notices[code]);
@@ -182,6 +195,7 @@
                     button.addEventListener('click', async function () {
                         if (!currentSettings(name, epoch) || activeUid !== modelUid || modelActionRunning) return;
                         modelActionRunning = true;
+                        actionError = '';
                         button.disabled = true;
                         try {
                             await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action });
@@ -189,7 +203,8 @@
                         }
                         catch (error) {
                             if (currentSettings(name, epoch) && activeUid === modelUid) {
-                                statusNode.textContent = describeError(error);
+                                actionError = describeError(error);
+                                statusNode.textContent = actionError;
                             }
                         }
                         finally { button.disabled = false; modelActionRunning = false; }
@@ -217,7 +232,7 @@
         if (!dialog || !dialog.open || document.visibilityState === 'hidden' || operationRunning || modelActionRunning) return;
         var name = characterName(), epoch = settingsEpoch;
         return refreshStatus().catch(function (error) {
-            if (currentSettings(name, epoch)) statusNode.textContent = describeError(error);
+            if (currentSettings(name, epoch)) statusNode.textContent = [actionError, describeError(error)].filter(Boolean).join('\n');
         });
     }
 
@@ -229,6 +244,7 @@
         if (operationRunning || !dialog.open || !writerRecoveryRequired || !activeUid) return;
         var requestedName = characterName(), requestedUid = activeUid, epoch = settingsEpoch;
         operationRunning = true;
+        actionError = ''; recoveryNotice = '';
         updateControls();
         try {
             if (!await refreshStatus() || !currentSettings(requestedName, epoch)
@@ -246,7 +262,8 @@
             recoveryNotice = statusNode.textContent;
         } catch (error) {
             if (currentSettings(requestedName, epoch) && activeUid === requestedUid) {
-                statusNode.textContent = describeError(error);
+                actionError = describeError(error);
+                statusNode.textContent = actionError;
             }
         } finally {
             operationRunning = false;
@@ -324,6 +341,7 @@
         openSettings: async function (name) {
             var epoch = ++settingsEpoch;
             recoveryNotice = '';
+            actionError = '';
             settingsCharacterName = name || null;
             if (!dialog) buildDialog();
             dialog.showModal();

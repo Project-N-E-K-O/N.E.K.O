@@ -207,6 +207,10 @@ class ChatSyncScheduler:
                 "chat_sync_network_unavailable", "chat_sync_internal_error",
                 "chat_sync_service_rejected", "chat_sync_retry_later", "invalid_chat_sync_response",
                 "chat_sync_local_ca_invalid", "chat_sync_local_ca_loopback_required",
+                "chat_sync_not_enabled", "chat_sync_character_not_found", "chat_sync_writer_recovery_required",
+                "character_profile_changed", "character_profile_name_conflict", "character_profile_unsupported_value",
+                "character_profile_conflict", "profile_revision_conflict",
+                "cloud_model_upload_unavailable", "cloud_model_download_unavailable",
                 "recent_write_receipt_conflict", "invalid_recent_write_receipt",
             }
             safe_code = code if code in safe_codes else "chat_sync_internal_error"

@@ -408,6 +408,24 @@ def test_unknown_error_text_is_still_not_stored(tmp_path):
     assert scheduler.last_error("a") == "chat_sync_internal_error"
 
 
+@pytest.mark.parametrize('code', [
+    'character_profile_unsupported_value', 'character_profile_name_conflict', 'character_profile_changed',
+    'character_profile_conflict', 'profile_revision_conflict', 'chat_sync_not_enabled',
+    'chat_sync_character_not_found', 'chat_sync_writer_recovery_required',
+    'cloud_model_upload_unavailable', 'cloud_model_download_unavailable',
+])
+def test_known_business_failures_keep_their_specific_channel_diagnostic(tmp_path, code):
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: 1000, uniform=lambda *_: 0)
+    remote_storage = code.startswith('cloud_model_')
+    error = OSError(code) if remote_storage else ValueError(code)
+    scheduler.failure('role', 'model' if remote_storage else 'profile', 1, 'session', error)
+    channel = scheduler.channel_status('role')['model' if remote_storage else 'profile']
+    assert channel == {'status': 'error', 'lastSuccessAt': None, 'lastError': code}
+    if remote_storage:
+        with closing(scheduler._connect()) as conn:
+            assert conn.execute('SELECT retry_at FROM scheduler_tasks').fetchone()[0] == 6000
+
+
 @pytest.mark.parametrize('channel', ['pull', 'long_term', 'profile', 'model'])
 def test_channel_status_keeps_success_separate_from_other_failures(tmp_path, channel):
     path = tmp_path / 'scheduler.db'

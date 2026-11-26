@@ -466,6 +466,115 @@ def test_sync_settings_does_not_report_unresolved_model_or_profile_work_as_succe
     """.replace('ISSUE', json.dumps(issue)))
 
 
+@pytest.mark.parametrize('extra_error', [None, 'long_term_memory_capacity_exceeded'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_staged_long_term_memory_waits_without_masking_actual_failures(extra_error, enabled):
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+    run_script(r"""(async()=>{
+        const labels=LABELS,extra=EXTRA,enabled=ENABLED;
+        window.t=(key,values={})=>labels[key.replace('chatSync.','')].replace(/{{(.*?)}}/g,(_,name)=>values[name]);
+        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled,
+                localMemoryDiagnostics:['long_term_memory_incoming_pending',extra].filter(Boolean),
+                channelStatus:{long_term:{status:'waiting',lastSuccessAt:null}}}
+        }]}:{}});
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('Long-term memory: '+(!enabled?labels.channelDisabled:extra?labels.channelError:labels.channelWaiting)));
+        if(enabled&&!extra)assert(shown.includes(labels.errorLongTermPending));
+        assert.equal(shown.includes('long_term_memory_capacity_exceeded'),enabled&&!!extra);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LABELS', json.dumps(labels)).replace('EXTRA', json.dumps(extra_error)).replace('ENABLED', json.dumps(enabled)))
+
+
+@pytest.mark.parametrize('action', ['recovery', 'cloud', 'retry'])
+@pytest.mark.parametrize('reset', ['next_action', 'reopen', 'character'])
+def test_action_failure_survives_polling_until_its_operation_or_context_changes(action, reset):
+    run_script(r"""(async()=>{
+        const action=ACTION,reset=RESET,create=document.createElement;
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        let fail=true,readFails=false;
+        const code=action==='recovery'?'chat_sync_account_mismatch':'cloud_model_upload_unavailable';
+        global.fetch=async(path,options)=>{
+            if(path.endsWith('/status')){
+                if(readFails)throw new TypeError('private transport details');
+                return{ok:true,json:async()=>({writerRecoveryRequired:action==='recovery'&&fail,characters:[{
+                    displayName:window.lanlan_config.lanlan_name,characterSyncId:original.characterSyncId,binding:{enabled:true}
+                }]})};
+            }
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>({conflict:action==='cloud',failed:action==='retry'})};
+            assert.equal(options.method,'POST');
+            return{ok:!fail,json:async()=>fail?{detail:code}:{deletions:{count:0}}};
+        };
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],shown=()=>modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        const button=action==='recovery'?modal.querySelector('[data-sync-action="recover"]')
+            :modal.querySelector('[data-sync-model]').children.find(node=>node.textContent==='cloudModel.'+(action==='cloud'?'useCloud':'retry')+'{}');
+        await button.events.click();
+        assert(shown().includes(code));
+        const poll=intervals.find(item=>item.delay===5000).callback;
+        await poll();assert(shown().includes(code));
+        readFails=true;await poll();assert(shown().includes(code));assert(!shown().includes('private'));
+        readFails=false;await poll();assert(shown().includes(code));
+        fail=false;
+        if(reset==='next_action')await button.events.click();
+        else{
+            modal.close();
+            if(reset==='character')window.lanlan_config.lanlan_name='Other';
+            await window.nekoChatSync.openSettings();
+        }
+        assert(!shown().includes(code));
+        await intervals.filter(item=>item.delay===5000).at(-1).callback();
+        assert(!shown().includes(code));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ACTION', json.dumps(action)).replace('RESET', json.dumps(reset)))
+
+
+def test_writer_recovery_notice_yields_to_a_new_verification_requirement():
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        let needsRecovery=true;
+        global.fetch=async path=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{writerRecoveryRequired:needsRecovery,characters:[{
+                displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}
+            }]};
+            assert(path.endsWith('/recovery/preview'));
+            needsRecovery=false;return{deletions:{count:0}};
+        }});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],shown=()=>modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        await modal.querySelector('[data-sync-action="recover"]').events.click();
+        const poll=intervals.find(item=>item.delay===5000).callback;
+        await poll();assert(shown().includes('chatSync.recoveryChecked'));
+        needsRecovery=true;await poll();
+        assert(shown().includes('chatSync.writerRecoveryRequired'));
+        assert(!shown().includes('chatSync.recoveryChecked'));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_disabled_channels_do_not_present_retained_failures_as_active_errors(enabled):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async()=>({ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:ENABLED,
+                lastSyncError:'chat_sync_internal_error',channelStatus:{
+                    pull:{status:'error',lastError:'chat_sync_internal_error'}}}
+        }]})});
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('"channel":"chatSync.channelRecent{}","status":"chatSync.'+(ENABLED?'channelError':'channelDisabled')+'{}"'));
+        assert.equal(shown.includes('chat_sync_internal_error'),ENABLED);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ENABLED', json.dumps(enabled)))
+
+
 def test_open_sync_settings_refreshes_without_overlapping_and_stops_when_closed():
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);
