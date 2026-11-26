@@ -57,8 +57,6 @@ async def get_plugin_permission_panel(plugin_id: str):
     """Permission tab data: declaration vs. scan, decisions, counts, last use."""
     try:
         return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
-    except PluginOperationBusy:
-        raise _busy()
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
 
@@ -67,8 +65,6 @@ async def get_plugin_permission_panel(plugin_id: str):
 async def get_pending_permissions():
     try:
         return await asyncio.to_thread(permission_panel.pending)
-    except PluginOperationBusy:
-        raise _busy()
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
 
@@ -77,8 +73,6 @@ async def get_pending_permissions():
 async def get_privacy_overview():
     try:
         return await asyncio.to_thread(permission_panel.privacy_overview)
-    except PluginOperationBusy:
-        raise _busy()
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
 
@@ -87,8 +81,6 @@ async def get_privacy_overview():
 async def get_privacy_group(group_id: str):
     try:
         return await asyncio.to_thread(permission_panel.privacy_group, group_id)
-    except PluginOperationBusy:
-        raise _busy()
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
 

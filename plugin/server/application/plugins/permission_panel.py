@@ -14,6 +14,7 @@ translations. Declared reasons are passed on as written by the plugin.
 from __future__ import annotations
 
 import threading
+import time
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -69,6 +70,11 @@ from plugin.server.infrastructure.plugin_permissions import (
     LEGACY_DENIED,
 )
 
+# Whether a view read the plugin's plugin.toml (``manifest`` in the panel,
+# ``incomplete`` in the all-plugin views).
+MANIFEST_READ = "read"
+MANIFEST_CACHED = "cached"  # an operation held the lock: the copy read last
+MANIFEST_UNAVAILABLE = "unavailable"  # an operation held the lock, no usable copy
 # Reconciliation of the declaration with the scan, one per permission row.
 RECONCILE_MATCHED = "matched"  # declared and found
 RECONCILE_UNDECLARED = "undeclared"  # found, not declared
@@ -143,13 +149,20 @@ class _PluginInputs:
     report: dict
     manifest: dict
     declarations: PermissionDeclarations
+    manifest_status: str = MANIFEST_READ
+
+    @property
+    def manifest_known(self) -> bool:
+        return self.manifest_status != MANIFEST_UNAVAILABLE
 
 
-# Seconds a first manifest read waits for a running plugin operation.
-MANIFEST_LOCK_WAIT = 5.0
+# Seconds one request waits in all for running plugin operations before it
+# answers with the manifests it could read.
+MANIFEST_LOCK_WAIT = 2.0
+_MIN_LOCK_WAIT = 0.2
 _MANIFEST_CACHE_SIZE = 512
-# plugin root -> manifest read last (insertion order = least recently read first)
-_manifest_cache: dict[str, dict] = {}
+# plugin root -> (plugin version, manifest) read last, least recently read first
+_manifest_cache: dict[str, tuple[str, dict]] = {}
 _manifest_cache_lock = threading.Lock()
 
 
@@ -158,30 +171,57 @@ def _plugin_metas() -> dict[str, dict]:
         return {key: dict(value) for key, value in state.plugins.items() if isinstance(value, dict)}
 
 
-def _read_manifest(root: Path | None) -> dict:
-    """The plugin's plugin.toml, read under the plugin operation lock:
-    uninstall and update rename the plugin directory, which fails on Windows
-    while a file in it is open. While an operation holds the lock, the copy
-    read last is served; the first read of a plugin waits for the lock
-    (bounded, then ``PluginOperationBusy``)."""
+class _LockBudget:
+    """How long one request still waits for running plugin operations.
+
+    Every read may wait at least ``_MIN_LOCK_WAIT``, so a read that finds
+    another view's short read holding the lock is not marked unavailable;
+    once a read found an operation holding it past its wait, the rest of the
+    request does not wait at all.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self._deadline = time.monotonic() + seconds
+        self.blocked = False
+
+    def wait(self) -> float:
+        if self.blocked:
+            return 0.0
+        return max(_MIN_LOCK_WAIT, self._deadline - time.monotonic())
+
+
+def _read_manifest(root: Path | None, version: str, budget: _LockBudget | None = None) -> tuple[dict, str]:
+    """The plugin's plugin.toml and how it was read (``MANIFEST_*``).
+
+    Read under the plugin operation lock: uninstall and update rename the
+    plugin directory, which fails on Windows while a file in it is open.
+    Inside the owning operation the held lock is reused. Otherwise the lock
+    is waited for as ``budget`` allows (none: no wait).
+    While an operation keeps it, the copy read last for the same plugin
+    version is served without touching the file, else the manifest is
+    unavailable (``{}``, which callers must not read as "declares nothing").
+    """
     if root is None:
-        return {}
+        return {}, MANIFEST_READ
     key = str(root)
-    with _manifest_cache_lock:
-        cached = _manifest_cache.get(key)
+    wait = 0.0 if budget is None else budget.wait()
     try:
-        with hold_plugin_operation_file_lock(None, timeout=0 if cached is not None else MANIFEST_LOCK_WAIT):
+        with hold_plugin_operation_file_lock(None, timeout=wait):
             manifest = _load_manifest(root)
     except PluginOperationBusy:
-        if cached is None:
-            raise
-        return cached
+        if budget is not None:
+            budget.blocked = True
+        with _manifest_cache_lock:
+            cached = _manifest_cache.get(key)
+        if cached is not None and cached[0] == version:
+            return cached[1], MANIFEST_CACHED
+        return {}, MANIFEST_UNAVAILABLE
     with _manifest_cache_lock:
         _manifest_cache.pop(key, None)
-        _manifest_cache[key] = manifest
+        _manifest_cache[key] = (version, manifest)
         while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
             _manifest_cache.pop(next(iter(_manifest_cache)))
-    return manifest
+    return manifest, MANIFEST_READ
 
 
 def _load_manifest(root: Path) -> dict:
@@ -195,13 +235,16 @@ def _load_manifest(root: Path) -> dict:
         return {}
 
 
-def _inputs(plugin_id: str, meta: dict, *, verify: bool = False) -> _PluginInputs:
+def _inputs(plugin_id: str, meta: dict, *, verify: bool = False, budget: _LockBudget | None = None) -> _PluginInputs:
     """``verify``: check the cached scan against the plugin's files (a tree
     walk) and queue a new scan when it is stale or missing. The single-plugin
-    panel does; the all-plugin views use the cached reports as they are."""
+    panel does; the all-plugin views use the cached reports as they are.
+    ``budget``: see ``_read_manifest``."""
     config_path = meta.get("config_path")
     root = Path(config_path).parent if config_path else None
     version = str(meta.get("version") or "")
+    # Before a scan is queued below: the scan holds the lock while it runs.
+    manifest, manifest_status = _read_manifest(root, version, budget)
     if root is None:
         report = {"status": "unavailable"}
     else:
@@ -209,7 +252,6 @@ def _inputs(plugin_id: str, meta: dict, *, verify: bool = False) -> _PluginInput
         if verify and report.get("status") == "unavailable" and not report.get("analysis_id"):
             schedule_analysis(plugin_id)
             report = read_report(plugin_id, root, version, verify_revision=False)
-    manifest = _read_manifest(root)
     declarations, _issues = parse_permission_declarations(manifest)
     return _PluginInputs(
         plugin_id=plugin_id,
@@ -220,6 +262,7 @@ def _inputs(plugin_id: str, meta: dict, *, verify: bool = False) -> _PluginInput
         report=report,
         manifest=manifest,
         declarations=declarations,
+        manifest_status=manifest_status,
     )
 
 
@@ -325,7 +368,10 @@ def _rows(inputs: _PluginInputs, index: UsageIndex, checks_off: bool, now: datet
             {
                 "permission": permission,
                 "tier": PERMISSION_TIERS[permission],
-                "reconcile": _reconcile(declared, bool(findings), report.get("status")),
+                # Unknown while the declaration could not be read.
+                "reconcile": _reconcile(declared, bool(findings), report.get("status"))
+                if inputs.manifest_known
+                else None,
                 "declared": _declaration(inputs, permission),
                 "scan": _scan_summary(permission, findings, item.get("basis")),
                 "state": resolved.status,
@@ -445,7 +491,7 @@ def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
     meta = _plugin_metas().get(plugin_id)
     if meta is None:
         raise _not_found(plugin_id)
-    inputs = _inputs(plugin_id, meta, verify=True)
+    inputs = _inputs(plugin_id, meta, verify=True, budget=_LockBudget(MANIFEST_LOCK_WAIT))
     checks_off = _checks_off()
     rows = _rows(inputs, index, checks_off, datetime.now(timezone.utc))
     report = inputs.report
@@ -455,11 +501,12 @@ def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
         "source": _source(inputs.record),
         "grants_reset": _grants_reset(inputs.record),
         "checks_disabled": checks_off,
+        "manifest": inputs.manifest_status,
         "analysis": {
             "status": report.get("status"),
             "analyzer_version": report.get("_analyzer_version"),
             "analyzed_at": report.get("analyzed_at"),
-            "declarations": inputs.declarations.status,
+            "declarations": inputs.declarations.status if inputs.manifest_known else MANIFEST_UNAVAILABLE,
         },
         "counts": _counts(rows),
         "rows": rows,
@@ -477,9 +524,10 @@ def plugin_panel(plugin_id: str, *, index: UsageIndex = usage_index) -> dict:
 def _all_rows(index: UsageIndex) -> list[tuple[_PluginInputs, list[dict]]]:
     checks_off = _checks_off()
     now = datetime.now(timezone.utc)
+    budget = _LockBudget(MANIFEST_LOCK_WAIT)
     out = []
     for plugin_id, meta in sorted(_plugin_metas().items()):
-        inputs = _inputs(plugin_id, meta)
+        inputs = _inputs(plugin_id, meta, budget=budget)
         out.append((inputs, _rows(inputs, index, checks_off, now)))
     return out
 
@@ -519,11 +567,19 @@ def _needs_decision(row: dict) -> bool:
     )
 
 
+def _incomplete(plugins: list[tuple[_PluginInputs, list[dict]]]) -> list[str]:
+    """Plugins whose declaration could not be read this time: their items to
+    confirm are not known yet (ask again later), what was seen in use is."""
+    return [inputs.plugin_id for inputs, _rows in plugins if not inputs.manifest_known]
+
+
 def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex) -> dict:
     to_confirm, upgraded, inferred, first_use = [], [], [], []
     refused = index.refused_uses()
     checks_off = _checks_off()
     for inputs, rows in plugins:
+        # An unread declaration reads as none here; its rows have no
+        # reconcile value, so nothing is inferred from the scan for them.
         if inputs.declarations.status != "declared":
             # No declaration of its own: what the scan found are inferred
             # items, collected for the user rather than asked one by one.
@@ -571,7 +627,8 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
 
 def pending(*, index: UsageIndex = usage_index) -> dict:
     """The "needs you" list of the privacy page."""
-    return _pending(_all_rows(index), index)
+    plugins = _all_rows(index)
+    return {**_pending(plugins, index), "incomplete": _incomplete(plugins)}
 
 
 def _can_use(row: dict) -> bool:
@@ -624,6 +681,7 @@ def privacy_overview(*, index: UsageIndex = usage_index) -> dict:
         "checks_disabled": _checks_off(),
         "history": _history(index),
         "pending": {key: len(value) for key, value in pending_items.items()},
+        "incomplete": _incomplete(plugins),
         "groups": groups,
         "combos": combos,
     }
@@ -656,7 +714,7 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
                             key: row[key]
                             for key in (
                                 "permission", "state", "condition", "condition_basis",
-                                "legacy_any", "enforced", "last_used", "unused_30d",
+                                "legacy_any", "enforced", "usage_tracked", "last_used", "unused_30d",
                             )
                         },
                         "uses_7d": index.count(inputs.plugin_id, row["permission"], WEEK_DAYS),
@@ -680,6 +738,7 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
                     "condition_basis": CONDITION_BASIS,
                     "legacy_any": False,
                     "enforced": PERMISSIONS[permission].enforced,
+                    "usage_tracked": permission in USAGE_AUDITED_PERMISSIONS,
                     "last_used": last.last_used(),
                     "unused_30d": None,
                     "uses_7d": index.count(plugin_id, permission, WEEK_DAYS),
@@ -700,6 +759,7 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
         "partial_block": group.partial_block,
         "checks_disabled": _checks_off(),
         "history": _history(index),
+        "incomplete": _incomplete(plugins),
         "plugins": out,
         "recent": [use.to_dict() for use in index.recent(group.permissions)],
     }
@@ -730,9 +790,13 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     if meta is None:
         raise _not_found(plugin_id)
     config_path = meta.get("config_path")
-    declarations, _issues = parse_permission_declarations(
-        _read_manifest(Path(config_path).parent if config_path else None)
+    manifest, status = _read_manifest(
+        Path(config_path).parent if config_path else None, str(meta.get("version") or "")
     )
+    if status == MANIFEST_UNAVAILABLE:
+        # Only outside the decision's own operation, which holds the lock.
+        raise PluginOperationBusy()
+    declarations, _issues = parse_permission_declarations(manifest)
     if declarations.status != "declared":
         return
     item = declarations.items.get(permission)
@@ -758,4 +822,4 @@ def ensure_plugin_known(plugin_id: str) -> None:
     if meta is None:
         raise _not_found(plugin_id)
     config_path = meta.get("config_path")
-    _read_manifest(Path(config_path).parent if config_path else None)
+    _read_manifest(Path(config_path).parent if config_path else None, str(meta.get("version") or ""))

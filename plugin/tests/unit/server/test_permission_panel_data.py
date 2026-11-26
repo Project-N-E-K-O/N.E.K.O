@@ -5,6 +5,8 @@ routes."""
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1225,55 +1227,174 @@ def test_a_plugin_seen_using_a_disclosure_only_permission_counts_in_the_privacy_
     assert plugins["quiet"]["has_permission"] is True
 
 
-def test_manifest_is_read_under_the_operation_lock_and_the_last_copy_serves_while_busy(env, monkeypatch):
-    from contextlib import contextmanager
+@contextmanager
+def _operation_running_elsewhere():
+    """Another plugin operation holds the real operation file lock."""
+    from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
 
-    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+    taken, release = threading.Event(), threading.Event()
 
-    held = {"busy": False, "reads": 0, "timeouts": []}
-    load = permission_panel._load_manifest
+    def hold():
+        with hold_plugin_operation_file_lock(None):
+            taken.set()
+            release.wait(10)
 
-    @contextmanager
-    def lock(_stop, *, timeout=None):
-        held["timeouts"].append(timeout)
-        if held["busy"]:
-            raise PluginOperationBusy()
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    assert taken.wait(5)
+    try:
         yield
+    finally:
+        release.set()
+        thread.join(5)
 
-    def counted(root):
-        held["reads"] += 1
-        return load(root)
 
-    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", lock)
-    monkeypatch.setattr(permission_panel, "_load_manifest", counted)
-    _weather(env)
-
-    first = permission_panel.plugin_panel("weather", index=env.index)
-    assert held["reads"] == 1 and held["timeouts"] == [permission_panel.MANIFEST_LOCK_WAIT]
-
-    held["busy"] = True
-    assert permission_panel.plugin_panel("weather", index=env.index)["rows"] == first["rows"]
-    assert held["reads"] == 1 and held["timeouts"][-1] == 0
-
-    env.plugin("fresh", report=_report())
-    with pytest.raises(PluginOperationBusy):
-        permission_panel.plugin_panel("fresh", index=env.index)
+@pytest.fixture
+def short_wait(monkeypatch):
+    monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 0.05)
 
 
 @pytest.mark.asyncio
-async def test_read_routes_answer_busy_when_a_manifest_cannot_be_read_yet(env, monkeypatch):
+async def test_all_plugin_views_answer_while_another_operation_holds_the_lock(env, short_wait):
+    _weather(env)
+    assert permission_panel.pending(index=env.index)["to_confirm"]  # weather read once
+    env.plugin("fresh", manifest="[plugin]\nid='fresh'\n", report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    env.index.observe(_decision("fresh", PUSH))
+
+    with _operation_running_elsewhere():
+        response = await _call("GET", "/plugin-permissions/pending")
+        overview = await _call("GET", "/plugin-permissions/privacy")
+        detail = await _call("GET", "/plugin-permissions/privacy/messages")
+        counted = permission_panel.privacy_overview(index=env.index)
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert [row["plugin_id"] for row in result["to_confirm"]] == ["weather"]  # its copy read last
+    # Not read yet: not taken as "declares nothing", so nothing inferred from the scan.
+    assert result["incomplete"] == ["fresh"] and result["inferred"] == []
+    assert overview.status_code == 200 and overview.json()["incomplete"] == ["fresh"]
+    groups = {row["group"]: row for row in counted["groups"]}
+    assert groups["messages"]["plugins"] == 2  # what was seen in use still counts
+    assert detail.status_code == 200 and detail.json()["incomplete"] == ["fresh"]
+
+
+@contextmanager
+def _operation_ending_soon(seconds=0.1):
+    from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
+
+    taken = threading.Event()
+
+    def hold():
+        with hold_plugin_operation_file_lock(None):
+            taken.set()
+            threading.Event().wait(seconds)
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    assert taken.wait(5)
+    try:
+        yield
+    finally:
+        thread.join(5)
+
+
+@pytest.mark.parametrize("view", ["pending", "panel"])
+def test_a_short_operation_is_waited_for(env, monkeypatch, view):
+    monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 5.0)
+    _weather(env)
+    with _operation_ending_soon():
+        if view == "pending":
+            assert permission_panel.pending(index=env.index)["incomplete"] == []
+        else:
+            assert permission_panel.plugin_panel("weather", index=env.index)["manifest"] == "read"
+
+
+def test_one_busy_read_ends_the_wait_for_the_rest_of_the_request(env, monkeypatch):
+    budget = permission_panel._LockBudget(0.0)
+    assert budget.wait() == permission_panel._MIN_LOCK_WAIT  # a spent budget still waits briefly
+    monkeypatch.setattr(permission_panel, "MANIFEST_LOCK_WAIT", 0.05)
+    monkeypatch.setattr(permission_panel, "_MIN_LOCK_WAIT", 0.05)
+    for pid in ("a", "b", "c"):
+        env.plugin(pid, report=_report())
+    waits = []
+    real = permission_panel.hold_plugin_operation_file_lock
+
+    def recording(stop, *, timeout=None):
+        waits.append(timeout)
+        return real(stop, timeout=timeout)
+
+    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", recording)
+    with _operation_running_elsewhere():
+        assert permission_panel.pending(index=env.index)["incomplete"] == ["a", "b", "c"]
+    assert waits[0] > 0 and waits[1:] == [0.0, 0.0]
+
+
+def test_a_copy_of_an_earlier_version_is_not_served(env, short_wait):
+    _weather(env)
+    permission_panel.pending(index=env.index)
+    env.metas["weather"]["version"] = "2.0"
+    with _operation_running_elsewhere():
+        result = permission_panel.pending(index=env.index)
+    assert result["incomplete"] == ["weather"] and result["to_confirm"] == []
+
+
+def test_panel_marks_a_manifest_it_could_not_read(env, short_wait):
+    env.plugin("fresh", report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    with _operation_running_elsewhere():
+        panel = permission_panel.plugin_panel("fresh", index=env.index)
+    assert panel["manifest"] == "unavailable" and panel["analysis"]["declarations"] == "unavailable"
+    rows = {row["permission"]: row for row in panel["rows"]}
+    assert rows[SPAWN]["reconcile"] is None and rows[SPAWN]["declared"] is None
+    assert panel["counts"]["undeclared_found"] == 0
+    assert permission_panel.plugin_panel("fresh", index=env.index)["manifest"] == "read"
+
+
+def test_panel_reads_the_manifest_before_it_queues_a_scan(env, monkeypatch):
+    order = []
+    load = permission_panel._load_manifest
+    monkeypatch.setattr(permission_panel, "_load_manifest", lambda root: order.append("manifest") or load(root))
+    monkeypatch.setattr(permission_panel, "schedule_analysis", lambda pid: order.append("scan"))
+    _weather(env)
+    env.reports.pop("weather", None)
+    permission_panel.plugin_panel("weather", index=env.index)
+    assert order == ["manifest", "scan"]
+
+
+@pytest.mark.asyncio
+async def test_a_decision_reads_the_manifest_under_its_own_lock(env, short_wait):
+    _weather(env)
+    # Needs the declaration, read inside the decision's operation: busy
+    # (409) if the held lock were not reused there.
+    refused = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{CONNECT}",
+                          {"state": "granted", "condition": "anytime"})
+    assert refused.status_code == 422, refused.text
+    granted = await _call("PUT", f"/plugin-permissions/plugins/weather/permissions/{MEMORY}",
+                          {"state": "granted", "condition": "anytime"})
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["manifest"] == "read"
+
+
+def test_anytime_is_not_allowed_on_an_unread_declaration(env, short_wait):
     from plugin.server.application.plugins.operation_lock import PluginOperationBusy
 
-    def busy(_root):
-        raise PluginOperationBusy()
-
-    monkeypatch.setattr(permission_panel, "_read_manifest", busy)
     _weather(env)
-    for path in ("/plugin-permissions/pending", "/plugin-permissions/privacy",
-                 "/plugin-permissions/privacy/memory", "/plugin-permissions/plugins/weather/panel"):
-        response = await _call("GET", path)
-        assert response.status_code == 409, (path, response.text)
-        assert response.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
+    with _operation_running_elsewhere(), pytest.raises(PluginOperationBusy):
+        permission_panel.check_condition_allowed("weather", CONNECT, "granted", "anytime")
+
+
+def test_usage_tracked_is_in_the_privacy_group_items(env):
+    _weather(env)
+    env.store.decide("weather", MEMORY, "granted", source=MARKET)
+    env.index.observe(_decision("gone", MEMORY))
+    detail = permission_panel.privacy_group("memory", index=env.index)
+    items = {row["plugin_id"]: row["items"][0] for row in detail["plugins"]}
+    assert items["weather"]["usage_tracked"] is True and items["gone"]["usage_tracked"] is True
+    assert {row["usage_tracked"] for row in permission_panel.privacy_group("models", index=env.index)["plugins"]
+            for row in row["items"]} <= {False}
 
 
 @pytest.mark.asyncio
