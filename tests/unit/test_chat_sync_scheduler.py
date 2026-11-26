@@ -494,15 +494,28 @@ def test_network_error_keeps_transport_backoff_and_its_specific_code(tmp_path):
     assert scheduler.channel_status('role')['pull']['lastError'] == 'chat_sync_network_unavailable'
 
 
-def test_retrying_a_failed_model_waits_for_a_new_successful_receipt(tmp_path):
-    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: 1000)
+@pytest.mark.parametrize('failure_recorded', [False, True])
+def test_retrying_a_failed_model_waits_for_a_new_successful_receipt(tmp_path, failure_recorded):
+    path = tmp_path / 'scheduler.db'
+    clock = [1000]
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0])
     scheduler.claim('role', 'model', 1, 'session')
     scheduler.success('role', 'model')
-    scheduler.failure('role', 'model', 1, 'session', ValueError('private model error'))
+    scheduler.claim('role', 'pull', 1, 'session')
+    scheduler.success('role', 'pull')
+    if failure_recorded:
+        scheduler.failure('role', 'model', 1, 'session', ValueError('private model error'))
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute('UPDATE scheduler_device SET origin_retry_at=9000')
     scheduler.retry_model('role')
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0])
     assert scheduler.channel_status('role')['model'] == {
         'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
     }
+    assert scheduler.channel_status('role')['pull']['lastSuccessAt'] == 1000
+    assert not scheduler.ready('role', 'model', 1, 'session')
+    clock[0] = 9000
+    assert scheduler.ready('role', 'model', 1, 'session')
 
 
 # The scheduler_device shape every released version created before its unused

@@ -87,7 +87,7 @@ class ChatSyncScheduler:
         """An explicit model retry retains the service-wide Retry-After fence."""
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE scheduler_tasks SET due_at=0,retry_at=0,failures=0,blocked_generation=NULL,"
-                         "blocked_session=NULL,last_error=NULL WHERE domain=? AND channel='model'", (domain,))
+                         "blocked_session=NULL,last_error=NULL,last_success=NULL WHERE domain=? AND channel='model'", (domain,))
 
     def next_wake_at(self) -> int | None:
         """Expose future admission deadlines so an idle host can sleep longer."""

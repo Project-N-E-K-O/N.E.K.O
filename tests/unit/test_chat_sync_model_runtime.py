@@ -577,23 +577,28 @@ async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('pending', [True, False])
-async def test_legacy_model_404_fallback_preserves_an_unconfirmed_upload(tmp_path, monkeypatch, pending):
+@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'none'])
+async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, monkeypatch, work):
     from unittest.mock import AsyncMock
     from services.chat_sync.runtime import ChatSyncServiceError
 
     runtime, _, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
-    if not pending:
-        state = runtime.models.store.get(DOMAIN.key())
+    state = runtime.models.store.get(DOMAIN.key())
+    if work != 'upload':
         state.pop('pending')
-        runtime.models.store.put(DOMAIN.key(), state)
+    if work in {'candidate', 'revision'}:
+        state['seen_revision'] = state['revision'] + 1
+    if work == 'candidate':
+        state['candidate'] = {'token': 'f' * 32, 'revision': state['seen_revision'], 'record': state['remote'],
+                              'expected': state['selection'], 'path': '/user_live2d/cloud-sync/candidate/model.model3.json'}
+    runtime.models.store.put(DOMAIN.key(), state)
     monkeypatch.setattr(runtime.models, 'step', AsyncMock(side_effect=ChatSyncServiceError(404)))
     try:
         await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
         state = runtime.scheduler.channel_status(DOMAIN.key())['model']
         assert state['lastError'] is None
-        assert state['status'] == ('waiting' if pending else 'success')
-        assert (state['lastSuccessAt'] is not None) is (not pending)
+        assert state['status'] == ('success' if work == 'none' else 'waiting')
+        assert (state['lastSuccessAt'] is not None) is (work == 'none')
     finally:
         await runtime.close()
 
@@ -620,6 +625,73 @@ async def test_legacy_model_read_failure_records_error_and_still_cleans_cache(tm
                          'lastError': 'chat_sync_unavailable' if failure == 'io' else 'chat_sync_internal_error'}
         assert read_state(DOMAIN.key())['pending']['operationId'] == pending['operationId']
         cleanup.assert_called_once_with()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['apply', 'retry', 'retry_inactive'])
+async def test_automatic_model_completion_waits_for_renderer_admission_and_retry(tmp_path, outcome):
+    from tests.unit.test_chat_sync_runtime import OTHER_UID
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, _, _ = setup_runtime(tmp_path, ModelService())
+    selected = [UID]
+
+    async def current_character():
+        return selected[0]
+
+    class Adapter:
+        path = '/user_live2d/original/model.model3.json'
+
+        async def read(self, _uid):
+            return {'name': 'Synthetic', 'kind': 'live2d', 'path': self.path,
+                    'selection': canonical(['live2d', self.path]).decode()}
+
+        async def apply(self, _uid, expected, path, commit):
+            assert expected == (await self.read(_uid))['selection']
+            await commit(setattr, self, 'path', path)
+            return True
+
+    runtime.current_character_uid_provider = current_character
+    runtime.models.adapter = Adapter()
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        candidate = (await runtime.models.status(UID))['candidate']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        if outcome != 'apply':
+            assert await runtime.models.finish(UID, candidate['token'], False) is False
+            runtime.test_clock[0] += PULL_INTERVAL_MS
+            await runtime._automatic_models(bindings, presence)
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+            # Earlier versions could persist a transport receipt before admission.
+            runtime.scheduler.success(DOMAIN.key(), 'model')
+            if outcome == 'retry_inactive':
+                selected[0] = OTHER_UID
+            await runtime.models.resolve(UID, 'retry')
+            assert (await runtime.models.status(UID)) == {'conflict': False, 'failed': False}
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+                'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+            }
+            if outcome == 'retry_inactive':
+                await runtime._automatic_models(bindings, presence)
+                assert runtime.scheduler.channel_status(DOMAIN.key())['model']['lastSuccessAt'] is None
+                selected[0] = UID
+            await runtime._automatic_models(bindings, presence)
+            candidate = (await runtime.models.status(UID))['candidate']
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+        assert await runtime.models.finish(UID, candidate['token'], True) is True
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'success', 'lastSuccessAt': runtime.test_clock[0], 'lastError': None,
+        }
     finally:
         await runtime.close()
 
