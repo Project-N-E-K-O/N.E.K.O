@@ -1325,7 +1325,7 @@ async def test_a_stop_of_the_one_it_names_says_what_of_its_project_was_not_shown
             return await super().complete(tier, messages)
 
     for reading, scope, mode in (("these", "these", "proactive"), ("project, all shown", None, "passive")):
-        footer = await filed("redo the footer", "Shop site")
+        await filed("redo the footer", "Shop site")
         if scope is None:
             # All of the shop site's shown: nothing of it goes on unshown.
             monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 12)
