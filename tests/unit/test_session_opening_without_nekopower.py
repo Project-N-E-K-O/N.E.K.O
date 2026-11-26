@@ -155,15 +155,16 @@ SUGGESTS_SWITCHING_ON = {
     "ru": "сами предложите включить NekoPower", "es": "anímale por tu cuenta a activar NekoPower",
     "pt": "sugira por iniciativa própria que ativem o NekoPower",
 }
-# The built-in tools a session has without NekoPower, as each language names them:
-# recall_memory, and query_public_knowledge once a knowledge package is imported.
-BUILT_IN_TOOLS = {
-    "zh": ("回忆记忆", "查知识库"), "zh-TW": ("回想記憶", "查知識庫"),
-    "en": ("recalling memories", "looking up the knowledge base"),
-    "ja": ("記憶の呼び出し", "知識ベースの検索"), "ko": ("기억 떠올리기", "지식 베이스 찾기"),
-    "ru": ("воспоминаниями", "поиском по базе знаний"),
-    "es": ("recordar memorias", "consultar la base de conocimientos"),
-    "pt": ("lembrar memórias", "consultar a base de conhecimento"),
+# The built-in tool every session without NekoPower has (recall_memory), as each language names it.
+RECALL = {
+    "zh": "回忆记忆", "zh-TW": "回想記憶", "en": "recalling memories", "ja": "記憶の呼び出し",
+    "ko": "기억 떠올리기", "ru": "воспоминаниями", "es": "recordar memorias", "pt": "lembrar memórias",
+}
+# The knowledge base, as each language would name it: there only once a knowledge pack is
+# imported (not the usual state), so the sentence leaves it to "and the like".
+KNOWLEDGE_BASE = {
+    "zh": "知识", "zh-TW": "知識", "en": "knowledge", "ja": "知識",
+    "ko": "지식", "ru": "знаний", "es": "conocimiento", "pt": "conhecimento",
 }
 # Web search, as the first wording named it: Gemini Live searches on its own whatever NekoPower is.
 WEB_SEARCH = {
@@ -184,16 +185,20 @@ def test_she_suggests_switching_nekopower_on(key):
 
 
 @pytest.mark.parametrize("key", PROMPT_KEYS)
-def test_she_keeps_using_the_built_in_tools_named(key):
-    for name in BUILT_IN_TOOLS[key]:
-        assert name in SESSION_INIT_NO_NEKOPOWER[key], (key, name)
+def test_she_keeps_using_the_built_in_tool_every_session_has(key):
+    assert RECALL[key] in SESSION_INIT_NO_NEKOPOWER[key], key
 
 
-def test_the_built_in_tools_named_are_the_ones_a_session_without_nekopower_has(monkeypatch):
-    # The note names recalling memories and the knowledge base: a session with NekoPower off
-    # registers recall_memory, and query_public_knowledge once a knowledge package is there.
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_the_knowledge_base_is_not_named(key):
+    # With no knowledge pack imported there is no such tool: named, she might claim to search it.
+    assert KNOWLEDGE_BASE[key] not in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("pack_imported", (True, False))
+def test_the_tool_named_is_there_without_nekopower_whatever_is_imported(monkeypatch, pack_imported):
     monkeypatch.delenv("NEKO_DISABLE_BUILTIN_TOOLS", raising=False)
-    monkeypatch.setattr(public_knowledge, "tool_available", lambda: True)
+    monkeypatch.setattr(public_knowledge, "tool_available", lambda: pack_imported)
     monkeypatch.setattr(public_knowledge, "add_availability_listener", lambda owner: None)
     manager = object.__new__(ToolCallingMixin)
     manager.user_language = "zh"
@@ -202,7 +207,8 @@ def test_the_built_in_tools_named_are_the_ones_a_session_without_nekopower_has(m
     manager._register_builtin_tools()
 
     assert manager.tool_registry.get("recall_memory") is not None
-    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None
+    # The knowledge base comes and goes with the packs: why the sentence does not name it.
+    assert (manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None) is pack_imported
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
 
 
