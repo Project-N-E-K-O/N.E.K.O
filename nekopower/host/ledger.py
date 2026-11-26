@@ -932,6 +932,13 @@ TREE_STATES: tuple[str, ...] = ("making", "active", "landing", "resolving", "hel
 TREE_STATES_PENDING: frozenset[str] = frozenset(TREE_STATES) - {"kept", "discarding"}
 # Those whose commission is over, and which wait for the user.
 TREE_STATES_LEFT: frozenset[str] = frozenset({"held", "unlanded", "kept"})
+# Those whose commission is done and stuck over them alone: it waits for the
+# user to have what it changed landed (``Ledger.transition``'s
+# ``unless_waiting_in_tree``). Not one the user sees to personally (``kept``):
+# its commission may be at work in another.
+TREE_STATES_WAITING: frozenset[str] = frozenset({"held", "unlanded"})
+# Why a move is refused for that.
+WAITS_IN_TREE_REFUSAL = "its changes wait in a worktree for the user"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1734,6 +1741,8 @@ class Ledger:
         reason: str,
         values: dict[str, Any],
         only_from: frozenset[str] | None = None,
+        *,
+        unless_waiting_in_tree: bool = False,
     ) -> Transition:
         if status not in STATUSES:
             raise ValueError(f"unknown status {status!r}")
@@ -1747,6 +1756,14 @@ class Ledger:
             return Transition(False, current, current.status, f"already {status}")
         if only_from is not None and current.status not in only_from:
             return Transition(False, current, current.status, f"{current.status}, not {sorted(only_from)}")
+        if unless_waiting_in_tree:
+            marks = ", ".join("?" for _ in TREE_STATES_WAITING)
+            waiting = conn.execute(
+                f"SELECT 1 FROM worktrees WHERE commission_id = ? AND state IN ({marks}) LIMIT 1",
+                (commission_id, *sorted(TREE_STATES_WAITING)),
+            ).fetchone()
+            if waiting is not None:
+                return Transition(False, current, current.status, WAITS_IN_TREE_REFUSAL)
         if status not in ALLOWED_TRANSITIONS[current.status]:
             refusal = f"{current.status} cannot become {status}"
             self._event(conn, commission_id, "transition_refused", {"from": current.status, "to": status, "reason": reason})
@@ -1833,12 +1850,18 @@ class Ledger:
         reason: str = "",
         outbox: Iterable[tuple[str, dict[str, Any]]] = (),
         only_from: Iterable[str] | None = None,
+        unless_waiting_in_tree: bool = False,
         **values: Any,
     ) -> Transition:
         """Move a commission to ``status`` if ``ALLOWED_TRANSITIONS`` permits it.
 
         With ``only_from``, the move is also refused unless the commission is
-        in one of those statuses, checked in the same transaction.
+        in one of those statuses, checked in the same transaction. With
+        ``unless_waiting_in_tree``, it is also refused while a git worktree
+        of the commission's waits for the user to have it landed
+        (``TREE_STATES_WAITING``), checked in the same transaction: a
+        worktree that comes to wait a moment before cannot be missed. Neither
+        refusal is noted as an event.
 
         This is the only way a status changes. A refused move changes nothing
         and is recorded as a ``transition_refused`` event; in particular a
@@ -1855,7 +1878,9 @@ class Ledger:
         sources = None if only_from is None else frozenset(only_from)
 
         def work(conn: sqlite3.Connection) -> Transition:
-            moved = self._transition(conn, commission_id, status, reason, values, sources)
+            moved = self._transition(
+                conn, commission_id, status, reason, values, sources, unless_waiting_in_tree=unless_waiting_in_tree
+            )
             if not moved.applied or not reports:
                 return moved
             ids = tuple(self._outbox_insert(conn, commission_id, kind, payload) for kind, payload in reports)

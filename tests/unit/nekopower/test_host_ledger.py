@@ -547,6 +547,36 @@ async def test_a_move_limited_to_some_statuses_is_refused_from_others(ledger):
     assert (await ledger.transition(commission.id, "working", reason="taken up")).applied
 
 
+@pytest.mark.parametrize("state", ["held", "unlanded", "active", "landing", "kept", None])
+async def test_a_move_unless_its_changes_wait_in_a_worktree_is_refused_while_they_do(ledger, tmp_path, state):
+    from nekopower.host.ledger import WAITS_IN_TREE_REFUSAL
+
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "working")
+    await ledger.transition(commission.id, "blocked", reason="stuck over its worktree")
+    if state is not None:
+        await ledger.add_tree(
+            id="t1", project_dir=str(tmp_path), path=str(tmp_path / "t1"), workdir=str(tmp_path / "t1"),
+            state=state, commission_id=commission.id,
+        )
+    before = await ledger.events(commission.id)
+
+    moved = await ledger.transition(commission.id, "cancelled", reason="its parent finished", unless_waiting_in_tree=True)
+
+    if state in ("held", "unlanded"):
+        # Its changes wait for the user to have them landed: it stays as it is, with nothing
+        # put on its record for it.
+        assert (moved.applied, moved.refusal, moved.commission.status) == (False, WAITS_IN_TREE_REFUSAL, "blocked")
+        assert (await ledger.get(commission.id)).status == "blocked"
+        assert await ledger.events(commission.id) == before
+        # Not asked to look: it moves as ever.
+        assert (await ledger.transition(commission.id, "cancelled", reason="stopped")).applied
+    else:
+        # A worktree it is at work in, is being landed in, or the user sees to personally; or none.
+        assert moved.applied
+        assert (await ledger.get(commission.id)).status == "cancelled"
+
+
 async def test_reopening_in_the_same_process_object_is_refused(ledger):
     commission = await _file(ledger)
     await _walk(ledger, commission.id, "working")
