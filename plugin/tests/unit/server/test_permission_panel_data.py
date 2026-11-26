@@ -1675,3 +1675,23 @@ def test_a_cutoff_inside_a_merged_batch_leaves_the_older_refusals_out(tmp_path, 
         index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
     answered = NOW - timedelta(minutes=45)  # inside the merged batch
     assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=20), 2)}
+
+
+def test_a_merged_batch_keeps_its_earliest_refusal_when_history_comes_in_later(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "REFUSED_BATCHES", 3)
+    index = _index(tmp_path)
+
+    def refuse(minutes):
+        index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
+
+    for minutes in (100, 99, 98, 97):  # live first
+        refuse(minutes)
+    for minutes in (150, 125):  # then the audit files, older
+        refuse(minutes)
+    answered = NOW - timedelta(minutes=140)  # after 150, before everything else
+    total = index.refused_uses(after=lambda _p, _q: answered)[("a", MEMORY)][1]
+    # The merged batch spans the answer and is left out (the documented
+    # undercount); the refusal from before the answer is never counted.
+    assert total == 2

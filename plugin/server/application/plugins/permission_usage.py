@@ -242,8 +242,10 @@ class UsageIndex:
             batches = self._refused.setdefault(refused_key, [])
             bisect.insort(batches, (use.at, use.count, use.at))
             if len(batches) > REFUSED_BATCHES:
-                (_end, first_count, start), (end, second_count, _start) = batches[0], batches[1]
-                batches[:2] = [(end, first_count + second_count, start)]
+                # Live uses arrive before the audit files are read, so a
+                # merged batch can come in after older single ones.
+                (_end, first_count, first_start), (end, second_count, second_start) = batches[0], batches[1]
+                batches[:2] = [(end, first_count + second_count, min(first_start, second_start))]
         recent = self._recent.setdefault(use.permission, [])
         recent.append(use)
         if len(recent) > RECENT_LIMIT * 2:
