@@ -28,7 +28,7 @@
             chat_sync_unavailable: 'errorUnavailable',
             chat_sync_network_unavailable: 'errorNetwork',
             chat_sync_internal_error: 'errorInternal',
-            invalid_chat_sync_response: 'errorUnavailable',
+            invalid_chat_sync_response: 'errorInternal',
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
             long_term_memory_evidence_capacity_exceeded: 'errorLongTermEvidenceCapacity',

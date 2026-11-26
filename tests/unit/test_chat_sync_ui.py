@@ -689,17 +689,21 @@ def test_sync_status_cannot_overwrite_a_reopened_dialog_for_the_same_character(o
     """.replace('RESULT', json.dumps(old_result)))
 
 
-@pytest.mark.parametrize('failure,key', [('network', 'errorNetwork'), ('json', 'errorInternal')])
+@pytest.mark.parametrize('failure,key', [
+    ('network', 'errorNetwork'), ('json', 'errorInternal'), ('remote_json', 'errorInternal'),
+])
 def test_sync_status_distinguishes_local_response_failures_from_transport_failures(failure, key):
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);
         global.fetch=async()=>{
             if(FAILURE==='network')throw new TypeError('private transport information');
+            if(FAILURE==='remote_json')return{ok:false,json:async()=>({detail:'invalid_chat_sync_response'})};
             return {ok:false,json:async()=>{throw new SyntaxError('private server response');}};
         };
         await window.nekoChatSync.openSettings();
         const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
         assert(shown.includes(KEY));assert(!shown.includes('private'));
+        if(FAILURE==='remote_json')assert(shown.includes('invalid_chat_sync_response'));
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('FAILURE', json.dumps(failure)).replace('KEY', json.dumps(key)))
 
