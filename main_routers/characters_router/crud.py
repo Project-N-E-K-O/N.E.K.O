@@ -156,6 +156,12 @@ _catgirl_switch_revision_target = ''
 _delete_commit_observer = ContextVar('_delete_commit_observer', default=None)
 
 
+def _observe_character_delete_commit():
+    observer = _delete_commit_observer.get()
+    if observer is not None:
+        observer()
+
+
 def _advance_current_catgirl_switch_revision(current_catgirl: str) -> int:
     """Publish a durable current-character change while holding character_config_mutation_lock."""
     global _catgirl_switch_revision, _catgirl_switch_revision_target
@@ -2585,18 +2591,13 @@ async def _delete_synced_character(uid: str, before_delete):
         created_fallback = False
         success = False
         committed_switch_revision = 0
-        committed_switch_rolled_back = False
         rollback_switch_revision = 0
-
-        def mark_delete_rolled_back():
-            nonlocal committed_switch_rolled_back
-            committed_switch_rolled_back = True
+        surviving_switch_target = None
 
         def mark_delete_committed():
             nonlocal committed_switch_revision
             if switched and fallback and not committed_switch_revision:
                 committed_switch_revision = _advance_current_catgirl_switch_revision(fallback)
-            return mark_delete_rolled_back if committed_switch_revision else None
 
         try:
             if switched:
@@ -2611,7 +2612,12 @@ async def _delete_synced_character(uid: str, before_delete):
                     created_fallback = True
                 characters['当前猫娘'] = fallback
                 await before_delete()
-                await cm.asave_characters(characters)
+                # ConfigManager saves in a worker thread. Settle this write
+                # before rollback so a cancelled caller cannot leave a late
+                # provisional selection after the lifecycle lock is released.
+                _, save_cancelled = await _await_coroutine_to_completion(cm.asave_characters(characters))
+                if save_cancelled:
+                    raise asyncio.CancelledError
                 if created_fallback:
                     await get_init_one_catgirl()(fallback, is_new=False)
                 await get_switch_current_catgirl_fast()()
@@ -2627,19 +2633,36 @@ async def _delete_synced_character(uid: str, before_delete):
                 mark_delete_committed()
         finally:
             end_character_mutation(name)
-            if switched and not success and (not committed_switch_revision or committed_switch_rolled_back):
-                restored_previous_config = False
-
+            if switched and not success:
                 async def restore_previous_character():
-                    nonlocal restored_previous_config
-                    latest = await cm.aload_characters()
-                    if name not in latest.get('猫娘', {}):
+                    nonlocal rollback_switch_revision, committed_switch_revision, surviving_switch_target
+                    latest = await _aload_authoritative_characters(cm)
+                    registry = latest.get('猫娘', {})
+                    restored = registry.get(name)
+                    if not isinstance(restored, dict) or get_character_uid(restored) != uid:
+                        # The inner transaction may have persisted the delete and
+                        # then failed to restore its snapshot. In that state the
+                        # provisional fallback is no longer provisional: publish
+                        # the surviving persisted authority now instead of leaving
+                        # ordering evidence pointed at the deleted character.
+                        surviving = str(latest.get('当前猫娘', '') or '').strip()
+                        if surviving and surviving in registry:
+                            surviving_switch_target = surviving
+                            if (
+                                committed_switch_revision <= 0
+                                or _catgirl_switch_revision_target != surviving
+                            ):
+                                committed_switch_revision = _advance_current_catgirl_switch_revision(surviving)
                         return False
                     latest['当前猫娘'] = previous_current
                     if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
                         del latest['猫娘'][fallback]
                     await cm.asave_characters(latest)
-                    restored_previous_config = True
+                    if committed_switch_revision:
+                        # Readers may run while we clean up the temporary
+                        # fallback. Publish the restored UID's selection as soon
+                        # as the authoritative save succeeds, before any await.
+                        rollback_switch_revision = _advance_current_catgirl_switch_revision(previous_current)
                     if created_fallback:
                         await get_remove_one_catgirl()(fallback)
                     await get_switch_current_catgirl_fast()()
@@ -2648,17 +2671,13 @@ async def _delete_synced_character(uid: str, before_delete):
                     await _await_cleanup_to_completion(restore_previous_character())
                 except (Exception, asyncio.CancelledError):
                     logger.exception("Failed to restore current character after sync deletion")
-                if restored_previous_config and committed_switch_rolled_back:
-                    # B was already published at the inner delete's tentative
-                    # commit boundary. Never decrement that revision: publish
-                    # a newer compensation for the restored A authority. The
-                    # persisted config is the authority even if runtime refresh
-                    # after the save reports an error.
-                    rollback_switch_revision = _advance_current_catgirl_switch_revision(previous_current)
-                    committed_switch_revision = 0
             notify_revision = rollback_switch_revision or committed_switch_revision
             if switched and notify_revision:
-                notify_new_catgirl = previous_current if rollback_switch_revision else fallback
+                notify_new_catgirl = (
+                    previous_current
+                    if rollback_switch_revision
+                    else (surviving_switch_target or fallback)
+                )
                 notify_old_catgirl = fallback if rollback_switch_revision else name
                 async def notify_committed_switch():
                     frame = json.dumps({
@@ -2814,6 +2833,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 # The old rescue path leaves a published config delete committed
                 # on cancellation. Retire only its UID-owned display resource.
                 if unsafe_config_deleted:
+                    _observe_character_delete_commit()
                     await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
                 raise
             except MaintenanceModeError as exc:
@@ -2838,6 +2858,10 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 if rollback_error:
                     error_message = f"{error_message}; 回滚失败: {rollback_error}"
                 return JSONResponse({"success": False, "error": error_message}, status_code=500)
+
+        # From here the rescue delete cannot roll back. A cancellation during
+        # avatar/visit cleanup must still publish the persisted selection.
+        _observe_character_delete_commit()
 
         # Every other end-of-identity path retires the sidecar stores; this
         # branch returned without doing so, and a snapshot staged while the
@@ -2898,7 +2922,6 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         memory_server_reloaded = False
         characters_save_attempted = False
         delete_committed = False
-        delete_commit_rollback = None
         released_memory_handle = False
         release_claim_token = create_derived_task_claim_token()
         try:
@@ -3094,9 +3117,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 except Exception as exc:
                     logger.warning("记录本会话工坊删除标记失败: %s", exc)
             delete_committed = True
-            delete_commit_observer = _delete_commit_observer.get()
-            if delete_commit_observer is not None:
-                delete_commit_rollback = delete_commit_observer()
+            _observe_character_delete_commit()
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_delete, recent_delete_result,
             )
@@ -3145,9 +3166,6 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     )
                 )
             )
-            if not rollback_error and delete_commit_rollback is not None:
-                delete_commit_rollback()
-                delete_commit_rollback = None
             if rollback_cancelled:
                 raise asyncio.CancelledError
             if rollback_error:
@@ -3173,9 +3191,6 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     )
                 )
             )
-            if not rollback_error and delete_commit_rollback is not None:
-                delete_commit_rollback()
-                delete_commit_rollback = None
             if rollback_cancelled:
                 raise asyncio.CancelledError
             logger.exception("删除角色失败，已尝试回滚: %s", name)

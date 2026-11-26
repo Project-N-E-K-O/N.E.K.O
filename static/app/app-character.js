@@ -290,6 +290,20 @@
         return supportsLocalModelRuntime() && !window.NekoAvatarFloatingBoot?.shouldSkipUserModelBoot?.();
     }
 
+    function rolledBackRendererNeedsRecovery(name) {
+        if (rolledBackRenderer?.name !== name) return null;
+        const mounted = getMountedRenderer(configuredRenderer(window.lanlan_config));
+        return !rolledBackRenderer.original.has(mounted);
+    }
+
+    function confirmRestoredRenderer(name, type, mounted) {
+        const config = window.lanlan_config;
+        if (rolledBackRenderer?.name === name && !S.isSwitchingCatgirl && config?.lanlan_name === name
+            && configuredRenderer(config) === type && mounted && getMountedRenderer(type) === mounted) {
+            rolledBackRenderer = null;
+        }
+    }
+
     function needsCurrentCharacterRecovery(name, { fromSnapshot = false, switchRevision = 0 } = {}) {
         const config = window.lanlan_config;
         if (!name || config?.lanlan_name !== name) return false;
@@ -312,7 +326,8 @@
         const renderer = configuredRenderer(config);
         const mounted = getMountedRenderer(renderer);
         if (renderer === 'pngtuber' && rolledBackPngtuberName === name) return true;
-        if (rolledBackRenderer?.name === name) return !rolledBackRenderer.original.has(mounted);
+        const rolledBackNeedsRecovery = rolledBackRendererNeedsRecovery(name);
+        if (rolledBackNeedsRecovery !== null) return rolledBackNeedsRecovery;
         // A cold snapshot supplies the original boot's path. Only a previously
         // committed VRM that has genuinely gone missing needs the switch loader
         // for a same-name HTTP snapshot after that original boot was superseded.
@@ -2393,6 +2408,8 @@
     // ======================================================================
     mod.handleCatgirlSwitch = handleCatgirlSwitch;
     mod.needsCurrentCharacterRecovery = needsCurrentCharacterRecovery;
+    mod.rolledBackRendererNeedsRecovery = rolledBackRendererNeedsRecovery;
+    mod.confirmRestoredRenderer = confirmRestoredRenderer;
     mod.hasCommittedPageModel = hasCommittedPageModel;
 
     // Backward-compatible window global so app.js call-sites work unchanged

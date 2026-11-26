@@ -25,7 +25,7 @@ import json
 import urllib.parse
 from fastapi import Response
 from ..shared_state import get_config_manager
-from ..characters_router import get_current_live2d_model
+from ..characters_router.live2d_models import resolve_live2d_model_snapshot
 from ..characters_router.crud import (
     current_catgirl_snapshot_generation,
     read_current_catgirl_snapshot,
@@ -343,56 +343,15 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             
             logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
         
-            model_response = await get_current_live2d_model(target_name, live2d_item_id)
-            # Extract JSONResponse content.
-            model_data = model_response.body.decode('utf-8')
-            model_json = json.loads(model_data)
+            # The catalog stays shared with the Live2D endpoint; its character
+            # binding comes from the same registry that supplied the revision.
+            # Looking up the name again can resolve a different profile after
+            # a delete or rename reuses it, even when the asset is not a fallback.
+            model_response = await resolve_live2d_model_snapshot(target_name, live2d_item_id, {
+                '当前猫娘': her_name, '猫娘': lanlan_basic_config,
+            })
+            model_json = json.loads(model_response.body.decode('utf-8'))
             model_info = model_json.get('model_info') or {}
-
-            # get_current_live2d_model performs its own config read. If that
-            # second read raced a rename/delete and fell back to the default
-            # model, do not stamp the fallback with the committed character's
-            # revision. Re-verify the authoritative snapshot and retry once;
-            # if the committed character is not present, report a changing
-            # configuration instead of publishing mismatched model data.
-            if target_name == her_name and model_info.get('is_fallback'):
-                verify_data, verify_name, verify_revision = await read_current_catgirl_snapshot(
-                    _config_manager.aget_character_data, lambda value: value[1],
-                )
-                verify_registry = verify_data[3] if verify_data is not None and len(verify_data) > 3 else {}
-                if (
-                    verify_data is None
-                    or verify_name != her_name
-                    or verify_revision != current_switch_revision
-                    or target_name not in verify_registry
-                ):
-                    return {
-                        "success": False,
-                        "lanlan_name": her_name,
-                        "switch_revision": current_switch_revision,
-                        "error": "Current character configuration is changing",
-                    }
-                model_response = await get_current_live2d_model(target_name, live2d_item_id)
-                model_data = model_response.body.decode('utf-8')
-                model_json = json.loads(model_data)
-                model_info = model_json.get('model_info') or {}
-                final_data, final_name, final_revision = await read_current_catgirl_snapshot(
-                    _config_manager.aget_character_data, lambda value: value[1],
-                )
-                final_registry = final_data[3] if final_data is not None and len(final_data) > 3 else {}
-                if (
-                    final_data is None
-                    or final_name != her_name
-                    or final_revision != current_switch_revision
-                    or target_name not in final_registry
-                ):
-                    return {
-                        "success": False,
-                        "lanlan_name": her_name,
-                        "switch_revision": current_switch_revision,
-                        "error": "Current character configuration is changing",
-                    }
-
             model_path = model_info.get('path', '')
         
         result = {

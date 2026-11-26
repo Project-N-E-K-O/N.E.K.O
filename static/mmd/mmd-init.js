@@ -509,6 +509,7 @@ async function autoInitMMDOnMainPage() {
         && (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d'
         && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
     const currentMmdPath = () => effectiveMmdPath(window.mmdModel);
+    const rendererNeedsRecovery = () => window.appCharacter?.rolledBackRendererNeedsRecovery?.(catgirlName) === true;
     const resolvedMmdPath = value => window._mmdConvertPath ? window._mmdConvertPath(value) : value;
     const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
         && currentStillTargetsMmd()
@@ -524,7 +525,7 @@ async function autoInitMMDOnMainPage() {
         const activeManager = window.mmdManager;
         const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
         const activeResolvedPath = activeManager?.currentModel?.url || '';
-        if (activeManager?.currentModel?.mesh && activeResolvedPath !== desiredResolvedPath) {
+        if (activeManager?.currentModel?.mesh && (activeResolvedPath !== desiredResolvedPath || rendererNeedsRecovery())) {
             // A failed successor may already have mounted its mesh before a
             // later step failed. Retire that wrong owner so the normal startup
             // path is allowed to rebuild the rolled-back/current configuration.
@@ -549,9 +550,10 @@ async function autoInitMMDOnMainPage() {
             const managerReplaced = !!manager && (activeManager !== manager || manager._isDisposed);
             const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
             const activeResolvedPath = activeManager?.currentModel?.url || '';
+            const wrongRenderer = rendererNeedsRecovery();
             const activeAlreadyCurrent = !!activeManager?.currentModel?.mesh
-                && activeResolvedPath === desiredResolvedPath;
-            if (!activeAlreadyCurrent && (pathChanged || managerReplaced)) {
+                && activeResolvedPath === desiredResolvedPath && !wrongRenderer;
+            if (!activeAlreadyCurrent && (pathChanged || managerReplaced || wrongRenderer)) {
                 // A same-name config refresh needs the new path; an MMD→MMD
                 // failed takeover may have disposed this startup's manager.
                 // Restart from current globals/settings instead of reviving the
@@ -684,6 +686,7 @@ async function autoInitMMDOnMainPage() {
                 mmdCanvas.style.visibility = 'visible';
                 mmdCanvas.style.pointerEvents = 'auto';
             }
+            window.appCharacter?.confirmRestoredRenderer?.(catgirlName, 'mmd', manager.currentModel?.mesh);
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {

@@ -1276,6 +1276,7 @@ function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false, hooks =
         async init() { this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; this._isDisposed = false; }
         dispose() { this._isDisposed = true; this.currentModel = null; }
         async loadModel(url) {
+            if (this._isDisposed) throw new Error('cannot load onto a disposed MMD manager');
             this._activeLoadToken++;
             loads.push(url);
             if (hooks.mmdLoadModel) {
@@ -1827,16 +1828,23 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
     );
     assert.equal(await startup.ready, true);
     await settingsStarted.promise;
+    const originalManager = h.window.mmdManager;
 
     assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), false);
+    const failedManager = h.window.mmdManager;
+    assert.ok(originalManager._isDisposed);
     assert.equal(h.window.lanlan_config.lanlan_name, 'B');
     firstSettings.resolve();
 
-    for (let turn = 0; turn < 20 && startup.loads.at(-1) !== pathB; turn++) {
+    for (let turn = 0; turn < 20 && h.window.mmdManager?.currentModel?.url !== pathB; turn++) {
         await new Promise(setImmediate);
     }
+    const restoredManager = h.window.mmdManager;
     assert.ok(startup.loads.includes(pathC), 'the failed takeover reached the replacement MMD manager');
-    assert.equal(startup.loads.at(-1), pathB, 'rollback must restart B using a fresh manager and current config');
+    assert.notEqual(restoredManager, originalManager);
+    assert.notEqual(restoredManager, failedManager);
+    assert.equal(restoredManager?.currentModel?.url, pathB, 'the fresh manager must actually own the restored mesh');
+    assert.ok(restoredManager.currentModel.mesh);
     assert.ok(bSettingsReads >= 2, 'recovery must re-read B settings rather than reuse the disposed startup instance');
 });
 
@@ -2250,4 +2258,80 @@ test('same-character HTTP refresh still fills a cold VRM model path without a sw
     assert.equal(await h.window.reloadPageConfig(), true);
     assert.equal(h.window.vrmModel, path);
     assert.deepEqual(calls, []);
+});
+
+test('MMD startup restores the original settings after watchdog rollback between roles sharing the same asset', async () => {
+    const h = harness(), firstSettings = deferred(), earlyStarted = deferred();
+    const waitingIdle = deferred(), idleStarted = deferred();
+    const shared = '/static/mmd/shared/avatar.pmx';
+    const cfgA = desktopAvatarConfig('A', 'mmd', 82, shared);
+    const cfgB = desktopAvatarConfig('B', 'mmd', 83, shared);
+    let settingsA = 0, failedManager, attempts = 0;
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'A', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
+        async url => {
+            if (url === '/api/config/page_config') return { json: async () => cfgA };
+            if (url.endsWith('/A/mmd_settings')) {
+                settingsA++;
+                if (settingsA === 1) {
+                    earlyStarted.resolve();
+                    await firstSettings.promise;
+                }
+                return { ok: true, json: async () => ({ success: true, settings: { physics: { enabled: false, strength: 0.4 } } }) };
+            }
+            if (url.endsWith('/B/mmd_settings')) {
+                return { ok: true, json: async () => ({ success: true, settings: { physics: { enabled: true, strength: 1.8 } } }) };
+            }
+            if (url === '/api/characters') return { ok: true, json: async () => ({ ['猫娘']: {
+                A: { ...cfgA, mmd: shared, _reserved: { character_uid: UID_A } },
+                B: { ...cfgB, mmd: shared, mmd_idle_animation: '/B.vmd', _reserved: { character_uid: UID_B } },
+            } }) };
+            return { ok: true, json: async () => ({}) };
+        },
+        false,
+        {
+            mmdLoadModel: async ({ url, manager }) => {
+                const character = (++attempts === 1) ? 'B' : 'A';
+                manager.applySettings = settings => { manager.appliedPhysics = settings.physics ?? null; };
+                manager.currentModel = { url, mesh: {}, character };
+                manager.loadAnimation = async animation => {
+                    assert.equal(animation, '/B.vmd');
+                    idleStarted.resolve();
+                    await waitingIdle.promise;
+                };
+                manager.playAnimation = () => {};
+                if (character === 'B') failedManager = manager;
+                return manager.currentModel;
+            },
+        },
+    );
+    assert.equal(await startup.ready, true);
+    await earlyStarted.promise;
+    const originalManager = h.window.mmdManager;
+    const takeover = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 83 });
+    await idleStarted.promise;
+    assert.equal(failedManager.currentModel.character, 'B', 'the failed takeover already mounted its mesh');
+    assert.equal(failedManager.appliedPhysics.strength, 1.8);
+    assert.ok(originalManager._isDisposed);
+    const watchdog = [...h.timers.values()].find(x => x.delay === 45000);
+    assert.ok(watchdog);
+    watchdog.callback();
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.appCharacter.needsCurrentCharacterRecovery('A', { fromSnapshot: true }), true);
+    firstSettings.resolve();
+    waitingIdle.resolve();
+    assert.equal(await takeover, false);
+    await new Promise(setImmediate);
+    const restoredManager = h.window.mmdManager;
+    assert.notEqual(restoredManager, originalManager);
+    assert.notEqual(restoredManager, failedManager);
+    assert.equal(restoredManager?.currentModel?.character, 'A');
+    assert.equal(restoredManager.currentModel.url, shared);
+    assert.equal(restoredManager.physicsStrength, 0.4);
+    assert.deepEqual([settingsA, attempts], [2, 2]);
+    assert.equal(h.window.appCharacter.needsCurrentCharacterRecovery('A', { fromSnapshot: true }), false);
+    assert.equal(await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 84 }), true);
+    assert.equal(await h.window.handleCatgirlSwitch('A', 'A', { switchRevision: 84 }), true);
+    assert.deepEqual([settingsA, attempts], [2, 2], 'healthy shared-file recovery absorbs repeated replay');
 });

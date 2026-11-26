@@ -5899,6 +5899,265 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    old, fallback, uid = 'ProvisionalPrimary', 'ProvisionalSpare', 'a' * 32
+    roles = cm.load_characters()
+    roles['当前猫娘'] = old
+    roles['猫娘'] = {old: {'昵称': old, '_reserved': {'character_uid': uid}}, fallback: {'昵称': fallback}}
+    cm.save_characters(roles, bypass_write_fence=True)
+    actual_save = cm.save_characters
+    entered, landed = asyncio.Event(), asyncio.Event()
+    do_save = threading.Event()
+    loop = asyncio.get_running_loop()
+    paused = False
+
+    def save(value, *args, **kwargs):
+        nonlocal paused
+        if value['当前猫娘'] == fallback and old in value['猫娘'] and not paused:
+            paused = True
+            loop.call_soon_threadsafe(entered.set)
+            if not do_save.wait(8):
+                raise TimeoutError('test release of the real writer')
+            try:
+                return actual_save(value, *args, **kwargs)
+            finally:
+                loop.call_soon_threadsafe(landed.set)
+        return actual_save(value, *args, **kwargs)
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(cm, 'save_characters', save)
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: cm)
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', asyncio.Lock())
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', old)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {old: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    delete = AsyncMock()
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', delete)
+
+    task = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        # Cancellation must not outrun the real ConfigManager writer thread.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+        assert crud.character_config_mutation_lock.locked()
+    finally:
+        do_save.set()
+        await asyncio.wait_for(landed.wait(), timeout=5)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+
+    stored = cm.load_characters()
+    response = json.loads((await crud.get_current_catgirl()).body)
+    delete.assert_not_awaited()
+    socket.send_text.assert_not_awaited()
+    assert old in stored['猫娘']
+    assert stored['当前猫娘'] == old
+    assert response == {'current_catgirl': old, 'switch_revision': 71}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", [".", "B"])
+async def test_synced_legacy_delete_cancel_after_save_notifies_only_a_changed_selection(tmp_path, monkeypatch, initial):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    chars = cm.load_characters()
+    chars["猫娘"] = {".": {"昵称": "legacy", "_reserved": {"character_uid": uid}}, "B": {"昵称": "fallback"}}
+    chars["当前猫娘"] = initial
+    cm.save_characters(chars, bypass_write_fence=True)
+    entered = asyncio.Event()
+
+    async def paused_reload(*args, **kwargs):
+        entered.set()
+        await asyncio.Future()
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", initial)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {initial: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud, "notify_memory_server_reload", paused_reload)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        deletion.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await deletion
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == "B" and "." not in stored["猫娘"]
+    if initial == "B":
+        socket.send_text.assert_not_awaited()
+        assert crud._catgirl_switch_revision == 71
+    else:
+        socket.send_text.assert_awaited_once()
+        frame = json.loads(socket.send_text.await_args.args[0])
+        assert (frame["old_catgirl"], frame["new_catgirl"]) == (".", "B")
+        assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maintenance", [False, True])
+@pytest.mark.parametrize("create_fallback", [False, True])
+async def test_synced_delete_publishes_config_rollback_before_runtime_cleanup(tmp_path, monkeypatch, maintenance, create_fallback):
+    from main_routers.characters_router import crud
+    from utils.cloudsave_runtime import MaintenanceModeError
+    from utils.config_manager import get_character_uid
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    name, other = "RollbackPrimary", "RollbackSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {name: {"昵称": "A", "_reserved": {"character_uid": uid}}}
+    if not create_fallback:
+        chars["猫娘"][other] = {"昵称": "B"}
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+    socket = SimpleNamespace(send_text=AsyncMock())
+    published = {}
+    entered_cleanup, release_cleanup = asyncio.Event(), asyncio.Event()
+
+    def fail_finalize(_result):
+        stored = cm.load_characters()
+        assert name not in stored["猫娘"]
+        assert stored["当前猫娘"] == crud._catgirl_switch_revision_target != name
+        published.update(name=stored["当前猫娘"], revision=crud._catgirl_switch_revision)
+        if maintenance:
+            raise MaintenanceModeError("maintenance_readonly", operation="delete", target=f"characters/{name}")
+        raise OSError("recent archive finalization failed")
+
+    async def reload_memory(*, reason, **kwargs):
+        return "回滚" not in reason
+
+    async def remove_runtime(deleted_name):
+        if deleted_name != name:  # runtime cleanup for the temporary fallback
+            assert deleted_name == published["name"]
+            entered_cleanup.set()
+            await release_cleanup.wait()
+
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: remove_runtime)
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", reload_memory)
+    monkeypatch.setattr(crud, "finalize_character_recent_delete", fail_finalize)
+
+    async def delete():
+        if maintenance:
+            with pytest.raises(MaintenanceModeError):
+                await crud._delete_synced_character(uid, AsyncMock())
+        else:
+            assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    deletion = asyncio.create_task(delete())
+    try:
+        if create_fallback:
+            await asyncio.wait_for(entered_cleanup.wait(), timeout=5)
+            assert set(cm.load_characters()["猫娘"]) == {name}
+            in_cleanup = json.loads((await asyncio.wait_for(crud.get_current_catgirl(), timeout=1)).body)
+            assert in_cleanup["current_catgirl"] == name
+            assert in_cleanup["switch_revision"] > published["revision"]
+    finally:
+        release_cleanup.set()
+        await asyncio.wait_for(deletion, timeout=5)
+
+    restored = cm.load_characters()
+    assert restored["当前猫娘"] == name and get_character_uid(restored["猫娘"][name]) == uid
+    socket.send_text.assert_awaited_once()
+    frame = json.loads(socket.send_text.await_args.args[0])
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert frame["old_catgirl"] == published["name"]
+    assert frame["new_catgirl"] == current["current_catgirl"] == name
+    assert current["switch_revision"] == frame["switch_revision"] > published["revision"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_publishes_surviving_authority_when_inner_config_restore_fails(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    name, fallback = "RollbackLostPrimary", "RollbackLostSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    rollback = AsyncMock(return_value="characters restore failed: disk full")
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=False))
+    monkeypatch.setattr(crud, "_rollback_character_operation", rollback)
+
+    assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == fallback
+    assert name not in stored["猫娘"]
+    rollback.assert_awaited_once()
+    socket.send_text.assert_awaited_once()
+    frame = json.loads(socket.send_text.await_args.args[0])
+    assert (frame["old_catgirl"], frame["new_catgirl"]) == (name, fallback)
+    assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == fallback
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {"current_catgirl": fallback, "switch_revision": frame["switch_revision"]}
+
+
+@pytest.mark.unit
 def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_rebind():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

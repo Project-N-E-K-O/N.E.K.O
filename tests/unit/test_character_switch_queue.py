@@ -174,9 +174,9 @@ async def test_readers_return_committed_identity_while_lifecycle_mutation_is_sus
     for mod in (crud, page_config, ws_router):
         monkeypatch.setattr(mod, 'get_config_manager', lambda: manager)
     monkeypatch.setattr(ws_router, 'get_session_manager', lambda: {'B': object(), 'C': object()})
-    async def model(name, _item):
+    async def model(name, _item, _characters):
         return SimpleNamespace(body=json.dumps({'model_info': {'path': '/' + name}}).encode())
-    monkeypatch.setattr(page_config, 'get_current_live2d_model', model)
+    monkeypatch.setattr(page_config, 'resolve_live2d_model_snapshot', model)
     socket, sent = AsyncMock(), asyncio.Event()
     socket.send_text.side_effect = lambda _frame: sent.set()
     async with lock:
@@ -273,9 +273,9 @@ async def test_affected_page_finishes_same_read_after_rename_settles(monkeypatch
     monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
     monkeypatch.setattr(crud, 'get_config_manager', lambda: manager)
     monkeypatch.setattr(page_config, 'get_config_manager', lambda: manager)
-    async def model(name, _item):
+    async def model(name, _item, _characters):
         return SimpleNamespace(body=json.dumps({'model_info': {'path': '/' + name}}).encode())
-    monkeypatch.setattr(page_config, 'get_current_live2d_model', model)
+    monkeypatch.setattr(page_config, 'resolve_live2d_model_snapshot', model)
     async with lock:
         affected = asyncio.create_task(page_config.get_page_config(SimpleNamespace(headers={})))
         await asyncio.wait_for(two_reads.wait(), timeout=1)
@@ -365,32 +365,42 @@ async def test_snapshot_settlement_does_not_wait_for_a_later_unrelated_writer(mo
 
 
 @pytest.mark.asyncio
-async def test_current_page_does_not_stamp_default_model_when_second_read_loses_character(monkeypatch):
-    page_config = importlib.import_module('main_routers.config_router.page_config')
-    state = {'name': 'A'}
-
-    async def character_data():
-        active = state['name']
-        return ('master', active, {}, {active: {'model_type': 'live2d'}}, {}, {}, {}, {}, {})
-
-    manager = SimpleNamespace(aget_character_data=character_data)
-    monkeypatch.setattr(crud, 'character_config_mutation_lock', asyncio.Lock())
+async def test_page_config_uses_the_live2d_asset_from_its_committed_identity_snapshot(monkeypatch):
+    page = importlib.import_module('main_routers.config_router.page_config')
+    model = importlib.import_module('main_routers.characters_router.live2d_models')
+    workshop = importlib.import_module('main_routers.workshop_router')
+    lock = asyncio.Lock()
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
     monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
     monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
-    monkeypatch.setattr(page_config, 'get_config_manager', lambda: manager)
+    paths = {name: f'/static/{name}/{name}.model3.json' for name in ('oldcard', 'newcard')}
+    registry = {'A': {'model_type': 'live2d', 'live2d': paths['oldcard']},
+                'D': {'model_type': 'live2d', 'live2d': paths['newcard']}}
 
-    async def fallback_model(_name, _item):
-        state['name'] = 'B'
-        return SimpleNamespace(body=json.dumps({
-            'model_info': {'path': '/default.model3.json', 'is_fallback': True},
-        }).encode())
+    async def page_read():
+        return ('master', 'A', {}, copy.deepcopy(registry), {}, {}, {}, {}, {})
 
-    monkeypatch.setattr(page_config, 'get_current_live2d_model', fallback_model)
-    page = await page_config.get_page_config(SimpleNamespace(headers={}))
+    async def model_read():
+        # An independently read registry may already have committed A -> C
+        # and reused the name A for another profile. Both paths are real.
+        async with lock:
+            registry['C'] = registry.pop('A')
+            crud._advance_current_catgirl_switch_revision('C')
+            registry['A'] = registry.pop('D')
+            crud._advance_current_catgirl_switch_revision('A')
+        return {'当前猫娘': 'A', '猫娘': copy.deepcopy(registry)}
 
-    assert page['success'] is False
-    assert page['lanlan_name'] == 'A'
-    assert page['switch_revision'] == 71
+    manager = SimpleNamespace(aget_character_data=page_read, aload_characters=model_read)
+    monkeypatch.setattr(page, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(model, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(model, 'find_models', lambda: [
+        {'name': name, 'path': path, 'source': 'static'} for name, path in paths.items()
+    ])
+    monkeypatch.setattr(workshop, 'get_subscribed_workshop_items', AsyncMock(return_value={'success': True, 'items': []}))
+
+    result = await page.get_page_config(SimpleNamespace(headers={}))
+    assert result['success'] is True
+    assert (result['lanlan_name'], result['switch_revision'], result['model_path']) == ('A', 71, paths['oldcard'])
 
 
 @pytest.mark.asyncio
@@ -398,7 +408,7 @@ async def test_synced_delete_notifies_fallback_even_when_cancelled_after_commit(
     uid = 'a' * 32
     chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
     websocket = AsyncMock()
-    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(chars)))
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda **_kwargs: copy.deepcopy(chars)))
 
     async def save(updated):
         chars.clear()
@@ -433,11 +443,12 @@ async def test_synced_delete_notifies_fallback_even_when_cancelled_after_commit(
 
 
 @pytest.mark.asyncio
-async def test_synced_delete_rollback_compensates_published_fallback_revision(monkeypatch):
+@pytest.mark.parametrize('restored_uid', ['a' * 32, 'b' * 32, None])
+async def test_synced_delete_checks_original_identity_before_compensating(monkeypatch, restored_uid):
     uid = 'a' * 32
     chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
     websocket = AsyncMock()
-    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(chars)))
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda **_kwargs: copy.deepcopy(chars)))
     observed = {}
 
     async def save(updated):
@@ -447,13 +458,15 @@ async def test_synced_delete_rollback_compensates_published_fallback_revision(mo
     async def rolled_back_delete(_name):
         observer = crud._delete_commit_observer.get()
         assert observer is not None
-        rollback = observer()
+        observer()
         observed['fallback_revision'] = crud._catgirl_switch_revision
-        assert callable(rollback)
-        # The inner transaction restored its own snapshot. That snapshot was
-        # taken after the sync layer had tentatively made B current, so A exists
-        # again but the outer layer must still restore current=A.
-        rollback()
+        # The inner rollback may restore the exact object, find no A, or find
+        # a replacement using the same display name. Only the first permits
+        # compensation after the already-published fallback.
+        if restored_uid is None:
+            del chars['猫娘']['A']
+        else:
+            chars['猫娘']['A']['_reserved']['character_uid'] = restored_uid
         return {'success': False}
 
     manager.asave_characters = save
@@ -469,15 +482,62 @@ async def test_synced_delete_rollback_compensates_published_fallback_revision(mo
 
     assert await crud._delete_synced_character(uid, AsyncMock()) is False
 
-    assert chars['当前猫娘'] == 'A'
-    assert 'A' in chars['猫娘']
+    expected = 'A' if restored_uid == uid else 'B'
+    assert chars['当前猫娘'] == expected
     websocket.send_text.assert_awaited_once()
     frame = json.loads(websocket.send_text.await_args.args[0])
-    assert frame['old_catgirl'] == 'B'
-    assert frame['new_catgirl'] == 'A'
-    assert frame['switch_revision'] > observed['fallback_revision']
+    assert frame['old_catgirl'] == ('B' if expected == 'A' else 'A')
+    assert frame['new_catgirl'] == expected
+    if expected == 'A':
+        assert frame['switch_revision'] > observed['fallback_revision']
+    else:
+        assert frame['switch_revision'] == observed['fallback_revision']
     assert frame['switch_revision'] == crud._catgirl_switch_revision
-    assert crud._catgirl_switch_revision_target == 'A'
+    assert crud._catgirl_switch_revision_target == expected
+
+
+@pytest.mark.asyncio
+async def test_synced_delete_publishes_surviving_authority_when_inner_rollback_cannot_restore(monkeypatch):
+    uid = 'a' * 32
+    chars = {'当前猫娘': 'A', '猫娘': {'A': {'_reserved': {'character_uid': uid}}, 'B': {}}}
+    websocket = AsyncMock()
+    manager = SimpleNamespace(aload_characters=AsyncMock(side_effect=lambda **_kwargs: copy.deepcopy(chars)))
+
+    async def save(updated):
+        chars.clear()
+        chars.update(copy.deepcopy(updated))
+
+    async def failed_delete_before_observer(_name):
+        # The real transaction can reach this shape after characters.json was
+        # saved without A, a later step failed, and restoring that snapshot also
+        # failed. Its normal commit observer has not fired yet.
+        chars['猫娘'].pop('A', None)
+        return {'success': False, 'error': 'characters restore failed'}
+
+    manager.asave_characters = save
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {'A': SimpleNamespace(websocket=websocket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', failed_delete_before_observer)
+
+    assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    assert chars == {'当前猫娘': 'B', '猫娘': {'B': {}}}
+    websocket.send_text.assert_awaited_once()
+    frame = json.loads(websocket.send_text.await_args.args[0])
+    assert (frame['old_catgirl'], frame['new_catgirl']) == ('A', 'B')
+    assert frame['switch_revision'] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == 'B'
+
+    # A later reader must observe the exact publication, not mint a repair
+    # revision because delivery and ordering were left stale.
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {'current_catgirl': 'B', 'switch_revision': frame['switch_revision']}
 
 
 @pytest.mark.asyncio
