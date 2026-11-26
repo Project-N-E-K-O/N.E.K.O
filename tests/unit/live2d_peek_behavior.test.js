@@ -4155,3 +4155,74 @@ test('host-staged reveal of a rotated or mirrored model stays inside the reporte
         assertClose(final.bottom, detail.visibleBounds.bottom, `${item.label} final bottom`);
     }
 });
+
+test('a host promise that rejects after the peek was cleared inside prepare is not left unhandled', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+        installPeekHostStage(harness, () => {
+            manager.clearLive2DPeek('widget-mode-disabled');
+            return Promise.reject(new Error('host failed after cancel'));
+        });
+        assert.equal(await manager._tryApplyLive2DPeek(model), false);
+        // unhandledRejection 在微任务清空之后的那一轮才派发。
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+    }
+    assert.deepEqual(unhandled, []);
+    assert.equal(model.x, 0);
+});
+
+test('a visibility change started inside prepare owns the anchor: no parking and no stuck wait flag', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    // 宿主在 prepare 里同步触发了一次探出（比如它顺手派发了互动事件），然后仍然返回 Promise。
+    installPeekHostStage(harness, () => {
+        void manager._setLive2DPeekVisibility(true, 'interaction-state');
+        return Promise.resolve(true);
+    });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    const state = manager._live2DPeekState;
+    assert.equal(state.phase, 'revealing', 'the in-flight reveal keeps the anchor');
+    assert.equal(model.x, 0, 'the model is not parked under a running animation');
+    assert.notEqual(state.hostStagePending, true);
+    assert.equal(await enterPromise, false);
+    assert.notEqual(state.hostStagePending, true);
+
+    flushNextFrame(harness);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(state.phase, 'peeking');
+    // 之后的探出、隐藏照常响应。
+    void manager._setLive2DPeekVisibility(false, 'interaction-state');
+    assert.equal(state.phase, 'hiding');
+});
+
+test('the wait flag is cleared even when the staged anchor lost its transition during the wait', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const hostReady = createDeferred();
+    installPeekHostStage(harness, () => hostReady.promise);
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    const state = manager._live2DPeekState;
+    assert.equal(state.hostStagePending, true);
+    // 等待期间这个落点的转换被别处接手（转换号变了，落点对象还是同一个）。
+    manager._live2DPeekTransitionId += 1;
+    state.transitionId = manager._live2DPeekTransitionId;
+
+    hostReady.resolve(true);
+    assert.equal(await enterPromise, false);
+    assert.equal(state.hostStagePending, false, 'a stuck flag would block every later reveal or hide');
+    void manager._setLive2DPeekVisibility(true, 'interaction-state');
+    assert.equal(state.phase, 'revealing');
+});

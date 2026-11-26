@@ -1484,12 +1484,14 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model, edgeContact
     const hostStage = this._beginLive2DPeekHostStage(model, anchorState);
     if (hostStage) {
         await hostStage;
-        // 等待期间探身被清掉或被新的落点替换（关掉贴边探身、换显示器、切模型）：不再往下走。
+        // 等待已经结束，不管下面的检查过不过都先撤掉标记：留着的话这个落点之后的探出、隐藏全被挡住。
+        anchorState.hostStagePending = false;
+        // 等待期间探身被清掉、被新的落点替换（关掉贴边探身、换显示器、切模型），
+        // 或者这个落点的转换被别处接手：不再往下走。
         if (this._live2DPeekState !== anchorState || !anchorState.active ||
                 anchorState.transitionId !== transitionId || model.destroyed) {
             return false;
         }
-        anchorState.hostStagePending = false;
         if (!shouldRevealLive2DPeek()) {
             // 保持隐藏：模型已经在隐藏位，下面的 _setLive2DPeekVisibility 不会再播动画、也不发通知。
             // 照不分段时的做法发一次落定通知，只认 anchor-created 的监听（首次探身提示等）照常收到。
@@ -1556,6 +1558,7 @@ Live2DManager.prototype._beginLive2DPeekHostStage = function (model, state) {
     const api = getLive2DPeekHostStageApi();
     const info = api && model && !model.destroyed ? this.getLive2DPeekHostStageInfo() : null;
     if (!info) return null;
+    const transitionId = state.transitionId;
     let pending = null;
     try {
         pending = api.prepare(Object.assign(info, { reveal: shouldRevealLive2DPeek() }));
@@ -1563,9 +1566,15 @@ Live2DManager.prototype._beginLive2DPeekHostStage = function (model, state) {
         return null;
     }
     if (!pending || typeof pending.then !== 'function') return null;
-    // prepare 是宿主的回调，它执行期间探身可能已经被清掉（比如宿主顺手派发了关掉贴边探身的事件）。
-    // 这时别把清掉的落点写回隐藏位；调用方等这个 Promise 之后的检查会让这次进场返回 false。
-    if (this._live2DPeekState !== state || !state.active || model.destroyed) return Promise.resolve();
+    // prepare 是宿主的回调，它执行期间探身可能已经被清掉，或者已经开始了一次探出/隐藏
+    // （比如宿主顺手派发了关掉贴边探身、互动状态的事件）。这时别把落点写回隐藏位：清掉的不该再动，
+    // 正在播的动画下一帧就会把它写回去。调用方等这个 Promise 之后的检查会让这次进场返回 false。
+    if (this._live2DPeekState !== state || !state.active ||
+            state.transitionId !== transitionId || model.destroyed) {
+        // 宿主的 Promise 之后被拒绝也不该变成未处理的拒绝。
+        Promise.resolve(pending).catch(() => {});
+        return Promise.resolve();
+    }
 
     state.hostStaged = true;
     state.hostStagePending = true;
