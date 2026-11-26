@@ -2758,7 +2758,7 @@ async def _no_quota_left(commission_id: str) -> bool:
 
 
 async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> SimpleNamespace:
-    """A commission at work, with its session, and fifteen task agents it started, each stopped its own way.
+    """A commission at work, with its session, and eighteen task agents it started, each stopped its own way.
 
     One cannot be stopped (its runtime does not answer, however often it is asked), one is
     stopped when it is asked again (the ledger was locked as it was stopped); one cannot have
@@ -2767,7 +2767,9 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
     worktree for the user to have it landed (stuck over that alone); one was read at work and
     waits so by the time its stop is written; one is being landed at the user's word; one
     waits so and cannot have its stop written either; one waited so and was taken up again
-    (queued, its worktree on record as it was left). A landing writes how two end this moment: one
+    (queued, its worktree on record as it was left). Three cannot have their stop written, and
+    stand otherwise by then than as they were read: one waited so and is taken up again, one was
+    at work and waits so, one waits so and cannot be read again either. A landing writes how two end this moment: one
     is being left for the user (its worktree on record as waiting, itself not stuck yet), the
     other's landing gives way to more that was said to it. One is gone from the ledger by the time
     its stop is written; one was read at work and is done by then, and one was read at work
@@ -2793,6 +2795,9 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
         "waits by then",
         "being landed",
         "waits and cannot be written",
+        "taken up again, cannot be written",
+        "stuck by then, cannot be written",
+        "waits, cannot be read or written",
         "taken up again",
         "on its way to wait",
         "landing gave way",
@@ -2841,6 +2846,8 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
     monkeypatch.setattr(manager, "_landing_end_written", end_written)
     await waits("waits in its worktree", "held")
     await waits("waits and cannot be written", "held")
+    await waits("taken up again, cannot be written", "held")
+    await waits("waits, cannot be read or written", "held")
     # More was said to it: queued for a place (``_requeue``), its worktree on record as it was left
     # until it is at work in it (``_tree_at_work``).
     await waits("taken up again", "held")
@@ -2853,15 +2860,29 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
     seen = await host.ledger.select(parent_id=parent.id, oldest_first=True)
     assert [child.id for child in seen] == list(members.values())
     await waits("waits by then", "unlanded")
+    # Read stuck, taken up again since; read at work, stuck over its worktree since.
+    await host.ledger.transition(members["taken up again, cannot be written"], "queued", reason="test")
+    await waits("stuck by then, cannot be written", "unlanded")
     await host.ledger.transition(members["done meanwhile"], "done", reason="test")
     await host.ledger.transition(members["stopped meanwhile"], "cancelled", reason="test")
     team = SimpleNamespace(
-        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], read_failures=1
+        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], read_failures=1,
+        unreadable={members["waits, cannot be read or written"]},
     )
-    select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
+    select, transition, abort, get = manager._ledger.select, manager._ledger.transition, manager.abort, manager._ledger.get
     unwritten = {members["written when asked again"]}
     unstopped = {members["closed when asked again"]}
-    never_written = {members["cannot be written"], members["waits and cannot be written"]}
+    never_written = {
+        members[name] for name in (
+            "cannot be written", "waits and cannot be written", "taken up again, cannot be written",
+            "stuck by then, cannot be written", "waits, cannot be read or written",
+        )
+    }
+
+    async def look(commission_id: str) -> Any:
+        if commission_id in team.unreadable:
+            raise RuntimeError("the ledger cannot be read")
+        return await get(commission_id)
 
     async def read(**criteria: Any) -> Any:
         if criteria.get("parent_id") == parent.id:
@@ -2897,6 +2918,7 @@ async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> Simple
 
     monkeypatch.setattr(manager._ledger, "select", read)
     monkeypatch.setattr(manager._ledger, "transition", locked)
+    monkeypatch.setattr(manager._ledger, "get", look)
     monkeypatch.setattr(manager, "abort", recorded)
     monkeypatch.setattr(manager, "_close_session", close_session)
     monkeypatch.setattr(manager, "_note_usage", not_noted)
@@ -2918,6 +2940,7 @@ async def _ended_for_what_it_used(manager: Any, team: SimpleNamespace, end: str)
         team.session.wind_up_left = 0
         return await manager._wind_up_step(team.session)
     finally:
+        team.unreadable.clear()
         for one in (team.parent.id, *team.members.values()):
             manager._sessions.pop(one, None)
             manager._landing_ends.pop(one, None)
@@ -2953,11 +2976,15 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
     # its worktree came to wait is stopped as any other. A landing that writes how one ends is
     # waited for: one it leaves to wait for the user waits, one it gives way with is stopped. One
     # gone from the ledger meanwhile is closed all the same; one that ended meanwhile is not
-    # closed, one that was stopped meanwhile is closed all the same.
+    # closed, one that was stopped meanwhile is closed all the same. Those whose stop cannot be
+    # written are looked at as they stand by then: one taken up again since it was read is
+    # stopped, one stuck over its worktree since is not, and one that cannot be read again either
+    # is taken as it was read (stuck).
     members = team.members
     assert team.read_failures == 0
     waiting = (
         "waits in its worktree", "waits by then", "being landed", "waits and cannot be written", "on its way to wait",
+        "stuck by then, cannot be written", "waits, cannot be read or written",
     )
     left = (*waiting, "done meanwhile")
     asked = {"cannot be closed": 3, "closed when asked again": 2}
@@ -2970,6 +2997,7 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         "written when asked again": "cancelled",
         "at work": "cancelled",
         **dict.fromkeys(waiting, "blocked"),
+        "taken up again, cannot be written": "queued",
         "taken up again": "cancelled",
         "landing gave way": "cancelled",
         "gone meanwhile": "working",
@@ -2988,6 +3016,7 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
     assert trees == {
         "waits in its worktree": "held", "waits by then": "unlanded", "being landed": "landing",
         "waits and cannot be written": "held", "on its way to wait": "unlanded",
+        "stuck by then, cannot be written": "unlanded", "waits, cannot be read or written": "held",
     }
     # Nothing goes on their record for it: a stop refused over the worktree is not noted.
     for name in waiting:
@@ -3001,6 +3030,7 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         "cannot be written",
         "written when asked again",
         "at work",
+        "taken up again, cannot be written",
         "taken up again",
         "landing gave way",
         "gone meanwhile",

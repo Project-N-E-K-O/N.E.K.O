@@ -5473,7 +5473,7 @@ class TaskAgentManager(TreeWork):
         meanwhile is not passed by, and a ledger that cannot be read does
         not make it look like none. Where its stop cannot be written at all,
         one that is stuck may be such a one, and is left as it is (it is not
-        at work).
+        at work): as it stands then, read again (``_stands_stuck``).
         """
         what = "for a commission that is over"
         try:
@@ -5492,12 +5492,11 @@ class TaskAgentManager(TreeWork):
                 raise
             except Exception:  # noqa: BLE001 - see below
                 logger.warning("writing that commission %s stopped with its parent failed", child.id, exc_info=True)
-                if child.status == "blocked":
+                if await self._stands_stuck(child):
                     # Stuck, so not at work: it may be one whose changes wait in its worktree for
                     # the user, which cannot be told with the ledger as it is. It is left as it is.
                     continue
-                # Else it is closed all the same. (As it was read: one that came to be stuck
-                # over its worktree since is closed too, the ledger being of no help to tell.)
+                # Else it is closed all the same.
             else:
                 if moved is None:
                     # The user's decision on its worktree is being carried out this moment.
@@ -5515,6 +5514,23 @@ class TaskAgentManager(TreeWork):
                 raise
             except Exception:  # noqa: BLE001 - the others are stopped all the same
                 logger.warning("stopping commission %s with its parent failed", child.id, exc_info=True)
+
+    async def _stands_stuck(self, child: Commission) -> bool:
+        """Whether a task agent whose stop could not be written stands stuck now; as it was read where that cannot be told.
+
+        Read again, once: taken up again since it was read (queued, or at
+        work), it is to be stopped, and one that came to be stuck since is
+        not. Where it cannot be read either, it is taken as it was read;
+        gone from the ledger, it is not stuck.
+        """
+        try:
+            current = await self._ledger.get(child.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - taken as it was read
+            logger.warning("reading commission %s again failed; it is taken as it was read", child.id, exc_info=True)
+            return child.status == "blocked"
+        return current is not None and current.status == "blocked"
 
     async def _stopped_with_parent(self, commission_id: str) -> Transition | None:
         """Write that a task agent stopped with its parent, unless its changes wait in its worktree for the user.
