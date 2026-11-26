@@ -241,3 +241,39 @@ test('the HUD goes as the crop starts, and is weighed again as it ends', () => {
     h.cropApplied();
     assert.deepEqual(h.toggled, ['check'], 'and only once, not with every state applied');
 });
+
+// checkAndToggleTaskHUD 在开关已关、还有任务时什么都不做（这里的替身也什么都不做）：裁剪结束时自己叫回来（评审 #4147）。
+test('as the crop ends, a task still under way brings the HUD back even with the switches off', () => {
+    for (const status of ['running', 'queued', 'waiting_user']) {
+        let active = true;
+        const h = load({ crop: { isActive: () => active }, peekHostStage: true });
+        h.window._agentTaskMap = new Map([['t1', { id: 't1', status }]]);
+        h.window.AgentHUD.showAgentTaskHUD();
+        assert.equal(h.hud.style.opacity, '0', status);
+        active = false;
+        h.cropApplied();
+        assert.equal(h.hud.style.opacity, '1', status);
+    }
+});
+
+test('as the crop ends, nothing under way leaves the HUD to the usual rules', () => {
+    for (const tasks of [[], [['t1', { id: 't1', status: 'completed' }]]]) {
+        let active = true;
+        const h = load({ crop: { isActive: () => active }, peekHostStage: true });
+        h.window._agentTaskMap = new Map(tasks);
+        h.window.AgentHUD.showAgentTaskHUD();
+        active = false;
+        h.cropApplied();
+        assert.equal(h.hud.style.opacity, '0', JSON.stringify(tasks));
+    }
+});
+
+test('as the crop ends, the floating-window switch turned off keeps it away', () => {
+    let active = true;
+    const h = load({ crop: { isActive: () => active }, peekHostStage: true });
+    h.window.localStorage.getItem = (key) => (key === 'neko-agent-taskhud-visible' ? 'false' : null);
+    h.window._agentTaskMap = new Map([['t1', { id: 't1', status: 'running' }]]);
+    active = false;
+    h.cropApplied();
+    assert.equal(h.hud.style.opacity, '0');
+});

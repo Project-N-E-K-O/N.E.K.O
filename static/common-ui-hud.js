@@ -1238,10 +1238,14 @@ window.AgentHUD.onPetPowerSaveCropStateApplied = function () {
         return;
     }
     if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
-    if (window.NekoPluginViews && typeof window.NekoPluginViews.hasContent === 'function'
-        && window.NekoPluginViews.hasContent()) {
-        this.showAgentTaskHUD();
-    }
+    // 开关已关、还有任务在办或在等回话时，checkAndToggleTaskHUD 什么都不做（它当悬浮窗本来就开着），
+    // 可悬浮窗刚被裁剪藏起：这里自己叫回来。「显示悬浮窗」开关和告别模式由 showAgentTaskHUD 把关。
+    const taskMap = window._agentTaskMap;
+    const underWay = !!(taskMap && typeof taskMap.values === 'function') && Array.from(taskMap.values()).some(task =>
+        task && (task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user'));
+    const hasPluginContent = !!(window.NekoPluginViews && typeof window.NekoPluginViews.hasContent === 'function'
+        && window.NekoPluginViews.hasContent());
+    if (underWay || hasPluginContent) this.showAgentTaskHUD();
 };
 window.addEventListener('neko:niri-pet-physical-crop-state-applied', () => {
     window.AgentHUD.onPetPowerSaveCropStateApplied();
