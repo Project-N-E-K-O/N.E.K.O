@@ -627,6 +627,25 @@ def test_json_download_of_a_disabled_current_theme_stays_disabled(studio):
 
 
 @pytest.mark.unit
+def test_json_download_keeps_a_switch_only_materials_patch(studio):
+    import json
+
+    result = theme_studio.run_entry_sync("export_to_file", {"kind": "json", "theme_id": "amber-dusk"})
+    assert result.ok, result.error
+    payload = base64.b64decode(result.value["data"]).decode("utf-8")
+    assert json.loads(payload)["materials"] == {"enabled": False}
+
+    on = theme_studio.run_entry_sync("apply_saved_theme", {"id": "amber-dusk-material"})
+    assert on.ok and on.value["material_enabled"] is True
+    tuned = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    imported = theme_studio.run_entry_sync("import_theme", {"payload": payload})
+    assert imported.ok, imported.error
+    after = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert after["enabled"] is False
+    assert after.get("preset") == tuned.get("preset")
+
+
+@pytest.mark.unit
 def test_library_backup_reports_backgrounds_deleted_before_the_backup(studio):
     gif = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
     filename = studio._save_background_bytes(gif)

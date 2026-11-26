@@ -5183,8 +5183,16 @@ class ThemeStudioService(NekoPluginBase):
                     "updated_at": _now_iso(),
                     "vars": vars_map,
                     "dark_vars": dark_map,
-                    "materials": _materials.normalize_materials(materials_map)[0],
                 }
+                # Same materials shape as theme_json and the ZIP bundle: the full
+                # tree only when enabled, the switch-only patch {"enabled": false}
+                # when explicitly off (import then keeps the recipient's tuned
+                # sections), and nothing when the source has no materials.
+                if isinstance(materials_map, dict) and materials_map:
+                    clean_materials = _materials.normalize_materials(materials_map)[0]
+                    doc["materials"] = (
+                        clean_materials if clean_materials.get("enabled") else {"enabled": False}
+                    )
                 payload = json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
                 filename = f"{_safe_archive_name(theme_name)}.json"
         except SdkError as exc:
