@@ -664,7 +664,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "d81653020d6af09074d0457b31495366ee9028dea7c3dc23bfcb49d0a046b973"
+LOCALE_KEY_SIGNATURE = "4915fbade07a44bca4651dcc9b7ebad0b3b511329f74067bf9969948ec03a441"
 
 
 _BUMP_INSTRUCTIONS = (

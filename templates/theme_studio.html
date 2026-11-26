@@ -204,6 +204,9 @@
             <input type="file" id="lib-backup-file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept=".zip,application/zip">
             <button type="button" class="btn btn-sm btn-ghost" id="btn-wallpaper" title="选一张壁纸，按它的主色自动生成一整套亮色/暗色配色（只填到面板，点「应用」才生效）" data-i18n-title="themeStudio.page.library.wallpaperTitle" data-i18n="themeStudio.page.library.wallpaper">壁纸配色</button>
             <button type="button" class="btn btn-sm btn-ghost" id="btn-variants" title="在当前配色基础上换一种气质：更暖 / 更冷 / 更亮 / 更深（可 Ctrl+Z 撤销）" data-i18n-title="themeStudio.page.library.variantsTitle" data-i18n="themeStudio.page.library.variants">变体</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-random-tweak" title="在当前配色基础上随机做一点小幅度的色相 / 饱和度 / 明度调整（可 Ctrl+Z 撤销）" data-i18n-title="themeStudio.page.library.randomTweakTitle" data-i18n="themeStudio.page.library.randomTweak">随机微调</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-select" aria-pressed="false" title="勾选多个自定义主题一起删除（会移进回收站）" data-i18n-title="themeStudio.page.library.selectTitle" data-i18n="themeStudio.page.library.select">多选</button>
+            <button type="button" class="btn btn-sm btn-danger" id="btn-lib-delete-selected" hidden data-i18n="themeStudio.page.library.deleteSelected">删除所选</button>
             <input type="file" id="wallpaper-file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept="image/png,image/jpeg,image/webp,image/gif">
           </div>
           <div class="lib-family-tabs" id="lib-family-tabs" role="group" aria-label="按风格族筛选主题" data-i18n-aria="themeStudio.page.library.familyAria" hidden></div>

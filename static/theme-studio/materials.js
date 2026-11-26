@@ -804,6 +804,77 @@
     });
   }
 
+  /** Move (rename) or copy a custom preset inside the draft; other draft presets are untouched. */
+  function moveDraftPreset(oldName, newName, keepSource) {
+    if (!CURRENT.custom_presets || typeof CURRENT.custom_presets !== 'object') CURRENT.custom_presets = {};
+    var params = CURRENT.custom_presets[oldName];
+    if (params === undefined) return;
+    CURRENT.custom_presets[newName] = clone(params);
+    if (!keepSource) {
+      delete CURRENT.custom_presets[oldName];
+      if (CURRENT.preset === oldName) CURRENT.preset = newName;
+    }
+  }
+
+  /**
+   * Rename (keepSource=false) or duplicate (keepSource=true) a custom preset.
+   * Presets that exist only in the draft are handled locally; saved ones go
+   * through rename_material_preset / duplicate_material_preset, which persist
+   * immediately (apply's merge-by-name would otherwise keep the old name).
+   */
+  function renameOrCopyPreset(name, keepSource) {
+    if (!name) return;
+    var suggestion = keepSource
+      ? name + ' ' + T('materials.presets.copySuffix', '副本')
+      : name;
+    var answer = window.prompt(keepSource
+      ? T('materials.presets.duplicatePrompt', '复制「{{name}}」为：', { name: name })
+      : T('materials.presets.renamePrompt', '把「{{name}}」改名为：', { name: name }), suggestion.slice(0, 40));
+    if (answer === null) return;
+    var target = String(answer).trim().slice(0, 40);
+    if (!target) { toast(T('materials.toast.presetNameEmpty', '先给预设起个名字。'), 'warn'); return; }
+    if (!keepSource && target === name) return;
+    if (SPEC && SPEC.presets && SPEC.presets[target.toLowerCase()]) {
+      toast(T('materials.toast.presetNameTaken', '「{{name}}」和内置预设重名了，换一个。', { name: target }), 'warn');
+      return;
+    }
+    if (CURRENT.custom_presets && HAS.call(CURRENT.custom_presets, target)) {
+      toast(T('materials.toast.presetNameExists', '已经有名为「{{name}}」的预设了。', { name: target }), 'warn');
+      return;
+    }
+    var doneText = keepSource
+      ? T('materials.toast.presetDuplicated', '已复制为「{{name}}」。', { name: target })
+      : T('materials.toast.presetRenamed', '已改名为「{{name}}」。', { name: target });
+    var saved = !!(BASELINE && BASELINE.custom_presets && HAS.call(BASELINE.custom_presets, name));
+    if (!saved) {
+      moveDraftPreset(name, target, keepSource);
+      markDirty();
+      renderPane();
+      renderHeadState();
+      toast(doneText, 'ok');
+      return;
+    }
+    callEntry(keepSource ? 'duplicate_material_preset' : 'rename_material_preset',
+      { name: name, new_name: target }).then(function (data) {
+      var materials = (data && data.materials) || null;
+      var finalName = (data && data.name) || target;
+      // The draft keeps its unapplied edits: move this preset's draft params under the new name.
+      moveDraftPreset(name, finalName, keepSource);
+      if (BASELINE && materials) {
+        BASELINE.custom_presets = clone(materials.custom_presets || {});
+        BASELINE.preset = materials.preset || 'custom';
+      }
+      markDirty();
+      renderPane();
+      renderHeadState();
+      toast(doneText, 'ok');
+    }).catch(function (error) {
+      toast(T('materials.toast.presetRenameFailed', '操作预设失败：{{error}}', {
+        error: error && error.message ? error.message : error
+      }), 'warn');
+    });
+  }
+
   function renderPresets(pane) {
     pane.appendChild(el('div', { class: 'mt-sub', text: T('materials.presets.builtin', '材质预设') }));
     var grid = el('div', { class: 'mt-grid' });
@@ -824,7 +895,21 @@
           if (event && event.stopPropagation) event.stopPropagation();
           deleteCustomPreset(id);
         });
-        wrap.appendChild(del);
+        var rename = el('button', { class: 'mt-mini mt-preset-rename', type: 'button', text: T('materials.presets.rename', '改名') });
+        rename.addEventListener('click', function (event) {
+          if (event && event.stopPropagation) event.stopPropagation();
+          renameOrCopyPreset(id, false);
+        });
+        var dup = el('button', { class: 'mt-mini mt-preset-dup', type: 'button', text: T('materials.presets.duplicate', '复制') });
+        dup.addEventListener('click', function (event) {
+          if (event && event.stopPropagation) event.stopPropagation();
+          renameOrCopyPreset(id, true);
+        });
+        var actions = el('div', { class: 'mt-preset-actions' });
+        actions.appendChild(rename);
+        actions.appendChild(dup);
+        actions.appendChild(del);
+        wrap.appendChild(actions);
         customGrid.appendChild(wrap);
       });
       pane.appendChild(customGrid);

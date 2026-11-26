@@ -4729,7 +4729,9 @@ var libraryState = {
   query: '',     // search text
   favorites: [], // favorite id list (synced with localStorage)
   tagsExpanded: false, // tag filter bar shows every tag instead of the first LIB_TAG_VISIBLE
-  lastShuffle: null
+  lastShuffle: null,
+  selecting: false,    // batch-delete selection mode
+  selected: Object.create(null) // id -> true for selected user entries
 };
 /** Switch to the "Custom" tab to show an action's result (save / import / restore). Tag filter
  *  and search are cleared too, so a leftover query can't hide the entry just added. */
@@ -4865,7 +4867,9 @@ function libraryCardSig(item) {
     String(item && item.dark || 0),
     item && item.has_image ? '1' : '0',
     item && item.material ? String(item.material.preset || '') + '/' + String(item.material.quality || '') : '',
-    tags.join('\u0001')
+    tags.join('\u0001'),
+    libraryState.selecting && !(item && item.builtin)
+      ? (libraryState.selected[String(item.id)] ? 'sel1' : 'sel0') : ''
   ].join('\u0000');
 }
 
@@ -5043,6 +5047,26 @@ function buildLibraryItem(item) {
     el('div', { class: 'lib-btns' }, libBtns)
   ]);
   row.setAttribute('data-id', String(item.id || ''));
+  if (libraryState.selecting && !item.builtin) {
+    var itemId = String(item.id || '');
+    var pick = el('input', {
+      type: 'checkbox', class: 'lib-select',
+      'aria-label': tsT('library.delete.batchSelectAria', '选择主题 {{name}}', { name: name })
+    });
+    pick.checked = !!libraryState.selected[itemId];
+    pick.addEventListener('click', function (event) { event.stopPropagation(); });
+    pick.addEventListener('change', function () {
+      if (pick.checked) libraryState.selected[itemId] = true;
+      else delete libraryState.selected[itemId];
+      row.classList.toggle('is-selected', pick.checked);
+      // Keep the cache signature in step without rebuilding the card.
+      var cached = libraryCardCache[itemId];
+      if (cached) cached.sig = libraryCardSig(item);
+      syncLibrarySelectionControls();
+    });
+    row.classList.toggle('is-selected', pick.checked);
+    row.insertBefore(pick, row.firstChild);
+  }
   // Hover / focus preview: the right-hand preview switches to this theme while the
   // pointer or keyboard focus is on the card, and restores on leave. (Hovering the
   // card's buttons bubbles up to the card too, which is fine: previewing it while the
@@ -5559,6 +5583,83 @@ async function deleteLibraryItem(item, button) {
   } finally {
     setBusy(false);
   }
+}
+
+/* ---- Batch delete: a selection mode on user library cards (built-ins are never selectable). */
+
+function selectedLibraryIds() {
+  var ids = [];
+  libraryState.items.forEach(function (item) {
+    var id = String(item && item.id !== undefined ? item.id : '');
+    if (id && !item.builtin && libraryState.selected[id]) ids.push(id);
+  });
+  return ids;
+}
+
+function syncLibrarySelectionControls() {
+  var toggle = $('btn-lib-select');
+  var del = $('btn-lib-delete-selected');
+  var count = selectedLibraryIds().length;
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', libraryState.selecting ? 'true' : 'false');
+    toggle.classList.toggle('is-active', libraryState.selecting);
+  }
+  if (del) {
+    del.hidden = !libraryState.selecting;
+    del.disabled = !count;
+    del.textContent = tsT('library.delete.batchCount', '删除所选（{{count}}）', { count: count });
+  }
+}
+
+function setLibrarySelecting(on) {
+  libraryState.selecting = !!on;
+  libraryState.selected = Object.create(null);
+  renderLibrary();
+  syncLibrarySelectionControls();
+}
+
+async function deleteSelectedLibraryItems() {
+  if (state.busy) return;
+  var ids = selectedLibraryIds();
+  if (!ids.length) return;
+  if (!window.confirm(tsT('library.delete.batchConfirm',
+    '把选中的 {{count}} 个主题移进回收站？之后可以在「运行状态」的回收站里恢复。', { count: ids.length }))) return;
+  setBusy(true, tsT('library.delete.busy', '正在删除…'));
+  try {
+    var result = await callPlugin('delete_themes', { theme_ids: ids });
+    var deleted = (result && result.deleted) || [];
+    var failed = (result && result.failed) || [];
+    libraryState.selecting = false;
+    libraryState.selected = Object.create(null);
+    await refreshLibrary();
+    if (scheduleState.loaded) await refreshSchedule();
+    syncLibrarySelectionControls();
+    if (failed.length) {
+      showNotice('warn', tsT('library.delete.batchPartial', '已将 {{deleted}} 个主题移入回收站，{{failed}} 个没删掉：{{error}}', {
+        deleted: deleted.length, failed: failed.length, error: String(failed[0].error || failed[0].id)
+      }));
+    } else {
+      showNotice('ok', tsT('library.delete.batchDone', '已将 {{count}} 个主题移入回收站，可在「运行状态」的回收站里恢复。',
+        { count: deleted.length }));
+    }
+    setStatus(tsT('library.delete.doneStatus', '已删除仓库条目'), 'ok');
+    refreshHealth({});
+  } catch (error) {
+    showNotice('error', tsT('library.delete.failedNotice', '删除失败：{{error}}', { error: pluginErrorMessage(error) }));
+    showToast(tsT('library.delete.failed', '删除失败'), 'error');
+  } finally {
+    setBusy(false);
+  }
+}
+
+function initLibrarySelection() {
+  if ($('btn-lib-select')) {
+    $('btn-lib-select').addEventListener('click', function () { setLibrarySelecting(!libraryState.selecting); });
+  }
+  if ($('btn-lib-delete-selected')) {
+    $('btn-lib-delete-selected').addEventListener('click', deleteSelectedLibraryItems);
+  }
+  syncLibrarySelectionControls();
 }
 
 /** Read a local zip / json file and import it into the library (library only, not applied). */
@@ -7543,6 +7644,30 @@ function applyNextVariant() {
   else variantState.lastLabel = step.label;
 }
 
+/**
+ * A small random step for "random tweak": hue within ±12°, saturation within
+ * ±0.06 and lightness within ±0.05. Pure (takes the random source) so it can be
+ * tested; the result goes through the same path as the named variants.
+ */
+function randomVariantStep(random) {
+  var rnd = typeof random === 'function' ? random : Math.random;
+  function spread(limit) { return (rnd() * 2 - 1) * limit; }
+  return {
+    id: 'random',
+    label: '随机微调',
+    dh: Math.round(spread(12)),
+    ds: Math.round(spread(0.06) * 1000) / 1000,
+    dl: Math.round(spread(0.05) * 1000) / 1000
+  };
+}
+
+function applyRandomTweak() {
+  var step = randomVariantStep();
+  var palette = buildVariantPalette(step);
+  var changed = applyWallpaperPalette(palette, tsT('misc.variant.random', '随机微调'));
+  if (!changed) showToast(tsT('misc.variantNoColors', '当前配色里没有可调整的颜色变量'), 'warn');
+}
+
 function initWallpaperFeature() {
   if ($('btn-wallpaper')) $('btn-wallpaper').addEventListener('click', openWallpaperPicker);
   if ($('wallpaper-file')) {
@@ -7553,6 +7678,7 @@ function initWallpaperFeature() {
     });
   }
   if ($('btn-variants')) $('btn-variants').addEventListener('click', applyNextVariant);
+  if ($('btn-random-tweak')) $('btn-random-tweak').addEventListener('click', applyRandomTweak);
 }
 
 /* ===== WALLPAPER_END ===== */
@@ -7766,6 +7892,7 @@ function wireEvents() {
   if ($('btn-css-snippet')) $('btn-css-snippet').addEventListener('click', copyCssSnippet);
   if ($('btn-revert-all')) $('btn-revert-all').addEventListener('click', revertAllChanges);
   initWallpaperFeature();
+  initLibrarySelection();
   initQuickPresets();
   if ($('btn-undo')) $('btn-undo').addEventListener('click', undoStep);
   if ($('btn-redo')) $('btn-redo').addEventListener('click', redoStep);
@@ -8025,6 +8152,7 @@ function refreshGeneratedTexts() {
     refreshHealth({});
     applyDumpCollapsed();
     updateScheduleDirtyHint();
+    syncLibrarySelectionControls();
   } catch (error) {
     // A partial refresh must never break the panel; the next reopen is fully translated.
   }

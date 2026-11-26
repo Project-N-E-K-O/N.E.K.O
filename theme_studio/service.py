@@ -2019,6 +2019,9 @@ class ThemeStudioService(NekoPluginBase):
                 {"id": "save_theme", "entry_id": "save_theme"},
                 {"id": "apply_saved_theme", "entry_id": "apply_saved_theme"},
                 {"id": "delete_theme", "entry_id": "delete_theme"},
+                {"id": "delete_themes", "entry_id": "delete_themes"},
+                {"id": "rename_material_preset", "entry_id": "rename_material_preset"},
+                {"id": "duplicate_material_preset", "entry_id": "duplicate_material_preset"},
                 {"id": "restore_theme", "entry_id": "restore_theme"},
                 {"id": "clear_trash", "entry_id": "clear_trash"},
                 {"id": "update_theme_meta", "entry_id": "update_theme_meta"},
@@ -2350,6 +2353,118 @@ class ThemeStudioService(NekoPluginBase):
             return Err(SdkError(str(exc)))
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("theme.preset.deleteFailed", error=exc)))
+
+    def _check_preset_title(self, raw: Any) -> str:
+        """Validate a custom preset name the same way save_material_preset does."""
+        title = str(raw or "").strip()
+        if not title:
+            raise SdkError(_msg("theme.preset.nameEmpty"))
+        if len(title) > 40:
+            raise SdkError(_msg("theme.preset.nameTooLong", length=len(title)))
+        if _materials.is_reserved_preset_name(title):
+            raise SdkError(_msg("theme.preset.nameReserved", name=title))
+        return title
+
+    def _copy_material_preset(self, source: Any, target: Any, *, keep_source: bool) -> dict[str, Any]:
+        """Copy (``keep_source``) or move a saved custom preset under ``_WRITE_LOCK``.
+
+        Writes theme.json directly, like delete_material_preset: going through
+        _apply_and_store would merge the preset library by name and bring a
+        renamed preset back under its old name.
+        """
+        old = str(source or "").strip()[:40]
+        if not old:
+            raise SdkError(_msg("theme.preset.nameEmpty"))
+        with _WRITE_LOCK:
+            palette = self._read_unlocked(strict=True)
+            clean, _warnings = _materials.normalize_materials(palette.get("materials"))
+            stored = dict(clean.get("custom_presets") or {})
+            if old not in stored:
+                raise SdkError(_msg("theme.preset.notFound", name=old))
+            if target is None or not str(target).strip():
+                suffix = _msg("theme.preset.copySuffix")
+                base = f"{old} {suffix}"[:40].strip()
+                new, counter = base, 2
+                while new in stored or _materials.is_reserved_preset_name(new):
+                    tail = f" {counter}"
+                    new = base[: 40 - len(tail)] + tail
+                    counter += 1
+            else:
+                new = self._check_preset_title(target)
+            if new in stored and (keep_source or new != old):
+                raise SdkError(_msg("theme.preset.nameTaken", name=new))
+            stored[new] = {
+                section: dict(values) if isinstance(values, dict) else values
+                for section, values in stored[old].items()
+            }
+            if not keep_source and new != old:
+                stored.pop(old, None)
+                if clean.get("preset") == old:
+                    # The preset in use keeps being used under its new name.
+                    clean["preset"] = new
+            clean["custom_presets"] = stored
+            palette["materials"] = clean
+            palette["updated_at"] = _now_iso()
+            self._write_unlocked(palette)
+        current = palette.get("materials") or {}
+        return {
+            "name": new,
+            "from": old,
+            "names": sorted((current.get("custom_presets") or {}).keys()),
+            "materials": current,
+        }
+
+    @plugin_entry(
+        id="rename_material_preset",
+        name=tr("entries.rename_material_preset.name", default="重命名自定义材质预设"),
+        description=tr(
+            "entries.rename_material_preset.description",
+            default="给一份已保存的自定义预设改名；正在使用它时跟着改名。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "原预设名"},
+                "new_name": {"type": "string", "description": "新预设名（1-40 字符）"},
+            },
+            "required": ["name", "new_name"],
+        },
+    )
+    async def rename_material_preset(self, name: Any = None, new_name: Any = None, **_):
+        try:
+            return Ok(self._copy_material_preset(name, self._check_preset_title(new_name), keep_source=False))
+        except SdkError as exc:
+            return Err(exc)
+        except _ThemeUnreadable as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("theme.preset.saveFailed", error=exc)))
+
+    @plugin_entry(
+        id="duplicate_material_preset",
+        name=tr("entries.duplicate_material_preset.name", default="复制自定义材质预设"),
+        description=tr(
+            "entries.duplicate_material_preset.description",
+            default="把一份已保存的自定义预设复制成新预设；不给新名字时自动加「副本」后缀。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "原预设名"},
+                "new_name": {"type": "string", "description": "可选；新预设名"},
+            },
+            "required": ["name"],
+        },
+    )
+    async def duplicate_material_preset(self, name: Any = None, new_name: Any = None, **_):
+        try:
+            return Ok(self._copy_material_preset(name, new_name, keep_source=True))
+        except SdkError as exc:
+            return Err(exc)
+        except _ThemeUnreadable as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(_msg("theme.preset.saveFailed", error=exc)))
 
     @plugin_entry(
         id="loader_report",
@@ -4652,68 +4767,126 @@ class ThemeStudioService(NekoPluginBase):
             return Err(SdkError(_msg("library.delete.invalidId", theme_id=repr(requested))))
         try:
             with _WRITE_LOCK:
-                if self._preset_path(requested).is_file():
-                    raise SdkError(_msg("library.delete.builtin"))
-                directory = self._library_dir()
-                trash = self._trash_dir()
-                path = directory / f"{requested}.json"
-                if path.is_symlink() or directory.is_symlink() or trash.is_symlink():
-                    raise SdkError(_msg("library.delete.outsideDir"))
-                if not path.is_file():
-                    raise SdkError(_msg("library.entry.notFound", theme_id=requested))
-                # The body is only read for its display name: a damaged entry can still be deleted.
-                record = _trash.read_record(path)
-                # The schedule is only read to remember which zones used this
-                # theme (for restore); this path never writes it, so a corrupt or
-                # locked schedule.json must not block the delete.
-                try:
-                    schedule = self._read_schedule(drop_missing=False, strict=True)
-                    refs = {
-                        key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
-                        for key in ("zones", "weekend_zones")
-                    }
-                except (OSError, ValueError) as exc:
-                    self._log("warning", f"Schedule unreadable, deleting without zone refs: {exc}")
-                    refs = {"zones": {}, "weekend_zones": {}}
-                trash.mkdir(parents=True, exist_ok=True)
-                now = datetime.now()
-                # The stamp orders the bin (newest first, pruning drops the oldest). The clock can be
-                # coarse (about 15 ms on some Windows builds), so keep it strictly after the newest batch.
-                existing = _trash.batches(trash)
-                latest = existing[0][0] if existing else ""
-                stamp = now.strftime("%Y%m%d-%H%M%S-%f")
-                if stamp <= latest:
-                    fmt = "%Y%m%d-%H%M%S-%f" if latest.count("-") == 2 else "%Y%m%d-%H%M%S"
-                    try:
-                        later = datetime.strptime(latest, fmt) + timedelta(microseconds=1)
-                        stamp = later.strftime("%Y%m%d-%H%M%S-%f")
-                    except ValueError:
-                        pass  # A hand-made name that is not a real date; ordering is best effort.
-                base = requested + "__" + stamp
-                body = trash / (base + ".json")
-                sidecar = trash / (base + ".meta.json")
-                if body.exists() or sidecar.exists():
-                    raise FileExistsError(base)
-                # Sidecar first: if the move then fails, it is removed again and the entry stays in the library.
-                _write_json_atomic(sidecar, {
-                    "id": requested, "name": _clip_name(record.get("name"), requested),
-                    "deleted_at": now.isoformat(), "schedule": refs,
-                })
-                try:
-                    path.replace(body)
-                except OSError:
-                    sidecar.unlink(missing_ok=True)
-                    raise
-                for _, _, old_body, old_sidecar in _trash.batches(trash)[TRASH_LIMIT:]:
-                    try:
-                        _trash.remove_batch(old_body, old_sidecar)
-                    except OSError as exc:
-                        self._log("warning", f"Could not prune theme trash: {exc}")
+                self._trash_library_entry_unlocked(requested)
         except SdkError as exc:
             return Err(exc)
         except Exception as exc:  # noqa: BLE001
             return Err(SdkError(_msg("library.delete.failed", error=exc)))
         return Ok({"deleted": True, "theme_id": requested, "undo": True})
+
+    def _trash_library_entry_unlocked(self, requested: str) -> None:
+        """Move one library entry into the recycle bin. Caller holds ``_WRITE_LOCK``.
+
+        Raises ``SdkError`` for refusals (built-in, outside the library, missing)
+        and lets IO errors propagate so callers report them per entry.
+        """
+        if self._preset_path(requested).is_file():
+            raise SdkError(_msg("library.delete.builtin"))
+        directory = self._library_dir()
+        trash = self._trash_dir()
+        path = directory / f"{requested}.json"
+        if path.is_symlink() or directory.is_symlink() or trash.is_symlink():
+            raise SdkError(_msg("library.delete.outsideDir"))
+        if not path.is_file():
+            raise SdkError(_msg("library.entry.notFound", theme_id=requested))
+        # The body is only read for its display name: a damaged entry can still be deleted.
+        record = _trash.read_record(path)
+        # The schedule is only read to remember which zones used this
+        # theme (for restore); this path never writes it, so a corrupt or
+        # locked schedule.json must not block the delete.
+        try:
+            schedule = self._read_schedule(drop_missing=False, strict=True)
+            refs = {
+                key: {zone: theme for zone, theme in schedule[key].items() if theme == requested}
+                for key in ("zones", "weekend_zones")
+            }
+        except (OSError, ValueError) as exc:
+            self._log("warning", f"Schedule unreadable, deleting without zone refs: {exc}")
+            refs = {"zones": {}, "weekend_zones": {}}
+        trash.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        # The stamp orders the bin (newest first, pruning drops the oldest). The clock can be
+        # coarse (about 15 ms on some Windows builds), so keep it strictly after the newest batch.
+        existing = _trash.batches(trash)
+        latest = existing[0][0] if existing else ""
+        stamp = now.strftime("%Y%m%d-%H%M%S-%f")
+        if stamp <= latest:
+            fmt = "%Y%m%d-%H%M%S-%f" if latest.count("-") == 2 else "%Y%m%d-%H%M%S"
+            try:
+                later = datetime.strptime(latest, fmt) + timedelta(microseconds=1)
+                stamp = later.strftime("%Y%m%d-%H%M%S-%f")
+            except ValueError:
+                pass  # A hand-made name that is not a real date; ordering is best effort.
+        base = requested + "__" + stamp
+        body = trash / (base + ".json")
+        sidecar = trash / (base + ".meta.json")
+        if body.exists() or sidecar.exists():
+            raise FileExistsError(base)
+        # Sidecar first: if the move then fails, it is removed again and the entry stays in the library.
+        _write_json_atomic(sidecar, {
+            "id": requested, "name": _clip_name(record.get("name"), requested),
+            "deleted_at": now.isoformat(), "schedule": refs,
+        })
+        try:
+            path.replace(body)
+        except OSError:
+            sidecar.unlink(missing_ok=True)
+            raise
+        for _, _, old_body, old_sidecar in _trash.batches(trash)[TRASH_LIMIT:]:
+            try:
+                _trash.remove_batch(old_body, old_sidecar)
+            except OSError as exc:
+                self._log("warning", f"Could not prune theme trash: {exc}")
+
+    @plugin_entry(
+        id="delete_themes",
+        name=tr("entries.delete_themes.name", default="批量删除仓库主题"),
+        description=tr(
+            "entries.delete_themes.description",
+            default="把多个仓库主题一起移进回收站；内置主题和不存在的条目逐个报告失败。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "theme_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "maxItems": LIBRARY_MAX_ITEMS,
+                },
+            },
+            "required": ["theme_ids"],
+        },
+    )
+    async def delete_themes(self, theme_ids: Any = None, **_):
+        """Move several library entries to the recycle bin in one locked pass.
+
+        Each id is handled like ``delete_theme``; refusals and IO errors are
+        reported per id instead of aborting the batch.
+        """
+        if not isinstance(theme_ids, list) or not theme_ids:
+            return Err(SdkError(_msg("library.deleteMany.invalid")))
+        if len(theme_ids) > LIBRARY_MAX_ITEMS:
+            return Err(SdkError(_msg("library.deleteMany.tooMany", limit=LIBRARY_MAX_ITEMS)))
+        deleted: list[str] = []
+        failed: list[dict[str, str]] = []
+        seen: set[str] = set()
+        with _WRITE_LOCK:
+            for raw in theme_ids:
+                requested = str(raw or "").strip() if isinstance(raw, str) else ""
+                if requested in seen:
+                    continue
+                seen.add(requested)
+                if not RE_THEME_ID.fullmatch(requested):
+                    failed.append({"id": requested, "error": _msg("library.delete.invalidId", theme_id=repr(requested))})
+                    continue
+                try:
+                    self._trash_library_entry_unlocked(requested)
+                    deleted.append(requested)
+                except SdkError as exc:
+                    failed.append({"id": requested, "error": str(exc)})
+                except Exception as exc:  # noqa: BLE001
+                    failed.append({"id": requested, "error": _msg("library.delete.failed", error=exc)})
+        return Ok({"deleted": deleted, "failed": failed, "undo": bool(deleted)})
 
     @plugin_entry(
         id="restore_theme",
