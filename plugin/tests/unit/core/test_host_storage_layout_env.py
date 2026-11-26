@@ -4727,6 +4727,8 @@ def test_profile_refresh_waits_for_in_flight_write_across_temporary_host_rollbac
 
         profile_task = asyncio.create_task(ctx.set_own_active_profile("work", timeout=5.0))
         write_task: asyncio.Task[dict[str, object]] | None = None
+        write_lock = ctx._get_config_write_lock()
+        orig_acquire = write_lock.acquire
         try:
             await _wait_for_checkpoint_or_task_failure(first_get_started, profile_task)
             assert ctx._effective_config is None
@@ -4756,10 +4758,16 @@ def test_profile_refresh_waits_for_in_flight_write_across_temporary_host_rollbac
             assert ctx._effective_config_uncertain is True
             assert ctx._config_write_in_progress is True
 
+            refresh_waiting_on_write_lock = asyncio.Event()
+
+            async def _tracked_acquire(*, deadline: float | None = None) -> None:
+                if asyncio.current_task() is profile_task:
+                    refresh_waiting_on_write_lock.set()
+                await orig_acquire(deadline=deadline)
+
+            write_lock.acquire = _tracked_acquire  # type: ignore[method-assign]
             release_first_get.set()
-            for _ in range(5):
-                await asyncio.sleep(0)
-            assert not profile_task.done()
+            await _wait_for_checkpoint_or_task_failure(refresh_waiting_on_write_lock, profile_task)
 
             release_write_rpc.set()
             res = await write_task
@@ -4782,6 +4790,7 @@ def test_profile_refresh_waits_for_in_flight_write_across_temporary_host_rollbac
                 assert ctx._effective_config is None
                 assert ctx._effective_config_uncertain is True
         finally:
+            write_lock.acquire = orig_acquire  # type: ignore[method-assign]
             release_first_get.set()
             release_write_rpc.set()
             for t in (write_task, profile_task):
@@ -4792,6 +4801,91 @@ def test_profile_refresh_waits_for_in_flight_write_across_temporary_host_rollbac
                 return_exceptions=True,
             )
 
+    async def _run_same_gen_in_progress_case(first_get_outcome: str) -> None:
+        import time
+
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / f"demo_pr_same_gen_{first_get_outcome}" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance = _RecordingInstance()
+        ctx._instance = instance
+        ctx._set_effective_config_cache({"profile": "home"})
+
+        first_get_started = asyncio.Event()
+        release_first_get = asyncio.Event()
+        get_calls = 0
+
+        async def _fake_rpc(
+            *,
+            method_name: str = "",
+            request_type: str = "",
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            nonlocal get_calls
+            if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+                return {"config_profiles": {"active": "work"}}
+            if request_type == "PLUGIN_CONFIG_GET" or method_name == "get_own_config":
+                get_calls += 1
+                if get_calls == 1:
+                    first_get_started.set()
+                    await release_first_get.wait()
+                    if first_get_outcome == "fails":
+                        raise RuntimeError("transient read failure during same-gen write")
+                return {"plugin_id": "demo", "config": {"profile": "work"}}
+            raise AssertionError(f"Unexpected RPC {request_type or method_name}")
+
+        ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+
+        profile_task = asyncio.create_task(ctx.set_own_active_profile("work", timeout=5.0))
+        write_lock = ctx._get_config_write_lock()
+        orig_acquire = write_lock.acquire
+        held_write_lock = False
+        try:
+            await _wait_for_checkpoint_or_task_failure(first_get_started, profile_task)
+            assert ctx._effective_config is None
+
+            await write_lock.acquire(deadline=time.monotonic() + 5.0)
+            held_write_lock = True
+            with ctx._get_config_state_lock():
+                ctx._config_write_in_progress = True
+
+            refresh_waiting_on_write_lock = asyncio.Event()
+
+            async def _tracked_acquire(*, deadline: float | None = None) -> None:
+                if asyncio.current_task() is profile_task:
+                    refresh_waiting_on_write_lock.set()
+                await orig_acquire(deadline=deadline)
+
+            write_lock.acquire = _tracked_acquire  # type: ignore[method-assign]
+            release_first_get.set()
+            await _wait_for_checkpoint_or_task_failure(refresh_waiting_on_write_lock, profile_task)
+
+            with ctx._get_config_state_lock():
+                ctx._config_write_in_progress = False
+            held_write_lock = False
+            write_lock.release()
+
+            await profile_task
+            assert get_calls == 2
+            assert ctx._effective_config == {"profile": "work"}
+            assert ctx._effective_config_uncertain is False
+            assert instance.refreshed[-1] == {"profile": "work"}
+        finally:
+            write_lock.acquire = orig_acquire  # type: ignore[method-assign]
+            release_first_get.set()
+            with ctx._get_config_state_lock():
+                ctx._config_write_in_progress = False
+            if held_write_lock:
+                write_lock.release()
+            if not profile_task.done():
+                profile_task.cancel()
+            await asyncio.gather(profile_task, return_exceptions=True)
+
     for first_get_outcome in ("returns", "fails"):
         for write_outcome in ("persisted_false", "committed", "timed_out"):
             asyncio.run(_run_case(first_get_outcome, write_outcome))
+    for first_get_outcome in ("returns", "fails"):
+        asyncio.run(_run_same_gen_in_progress_case(first_get_outcome))

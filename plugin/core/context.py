@@ -3398,6 +3398,7 @@ class PluginContext:
                     getattr(self, "_effective_config_uncertain", False)
                 ):
                     return
+                attempt_gen = self._current_effective_config_gen()
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
                 return
@@ -3409,7 +3410,6 @@ class PluginContext:
                     return
                 write_lock.release()
                 continue
-            attempt_gen = self._current_effective_config_gen()
             try:
                 await self.get_own_config(timeout=remaining)
             except Exception:
@@ -3417,6 +3417,7 @@ class PluginContext:
                     if (
                         self._current_effective_config_gen() == attempt_gen
                         and self._effective_config is None
+                        and not bool(getattr(self, "_config_write_in_progress", False))
                     ):
                         self._record_effective_config_locked(None, uncertain=False)
                         return
@@ -3438,7 +3439,10 @@ class PluginContext:
                     getattr(self, "_effective_config_uncertain", False)
                 ):
                     return
-                if self._current_effective_config_gen() == attempt_gen:
+                if (
+                    self._current_effective_config_gen() == attempt_gen
+                    and not bool(getattr(self, "_config_write_in_progress", False))
+                ):
                     return
 
     async def upsert_own_profile_config(
