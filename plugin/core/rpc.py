@@ -369,8 +369,9 @@ class RpcPeer:
             request["_request_deadline_monotonic"] = deadline
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        # Set once the request is handed to the transport; until then a
-        # deadline means the peer never saw it.
+        # Set just before the send starts, so a request whose send was started
+        # but not finished counts as sent (the safe side); while it is False a
+        # deadline means the peer never saw the request.
         send_started = False
         with self._lock:
             if self._closed:
@@ -434,17 +435,23 @@ class RpcPeer:
                         "message": f"{operation} transport timed out",
                     }
                 ) from None
+            if not send_started:
+                # The peer never saw this request: nothing to cancel there.
+                self._logger.warning(
+                    f"RPC not sent, deadline expired: operation={operation}, request_id={request_id}, "
+                    f"trace_id={request['_rpc_trace_id']}"
+                )
+                raise RpcDeadlineExpiredBeforeSendError(
+                    f"{operation} not sent: the request deadline expired before send"
+                ) from None
             self._logger.error(
                 f"RPC timed out: operation={operation}, request_id={request_id}, "
                 f"trace_id={request['_rpc_trace_id']}, elapsed={time.monotonic() - started:.3f}s"
             )
             self._send_cancel(request)
-            error = (
-                RpcDeadlineExceededError
-                if send_started
-                else RpcDeadlineExpiredBeforeSendError
-            )
-            raise error(f"{operation} timed out after {timeout}s") from None
+            raise RpcDeadlineExceededError(
+                f"{operation} timed out after {timeout}s"
+            ) from None
         except asyncio.CancelledError:
             self._send_cancel(request)
             raise

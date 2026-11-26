@@ -645,7 +645,9 @@ Local state follows `ok`, so the plugin and the host agree:
   remaining time; a request that is not sent because the entry's time is
   used up reports `busy` (nothing reached the host; for a cleanup,
   `cleanup` then reports `busy`), while one that was sent but got no answer
-  in time still reports `timeout`.
+  in time still reports `timeout`. A request that reached the host but
+  expired in the host's queue before it was handled also reports `timeout`:
+  the host answers it like any deadline it ran out of.
 
 Argument errors raise like the sync calls (`ValueError`, `TypeError`,
 `EntryConflictError`). The async calls also raise `ValueError` for a

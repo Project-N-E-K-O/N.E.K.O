@@ -212,11 +212,15 @@ async def test_request_not_sent_because_the_parent_deadline_passed_says_so(delta
     """The caller can tell "never reached the peer" from "sent, no answer":
     same type and code as before, plus ``sent=False``."""
     sent = []
+    cancelled = []
 
     async def send(request, timeout):
         sent.append(request)
 
-    peer = RpcPeer(send)
+    async def cancel(request):
+        cancelled.append(request)
+
+    peer = RpcPeer(send, cancel=cancel)
     try:
         with request_scope({
             "request_id": "entry", "_request_deadline_monotonic": time.monotonic() + delta,
@@ -227,6 +231,10 @@ async def test_request_not_sent_because_the_parent_deadline_passed_says_so(delta
         assert isinstance(caught.value, RpcDeadlineExceededError)
         assert caught.value.code == "DEADLINE_EXCEEDED"
         assert caught.value.sent is False
+        assert "not sent" in str(caught.value)
+        await asyncio.sleep(0)
+        # Nothing reached the peer, so no cancel is sent for it either.
+        assert cancelled == []
     finally:
         await peer.aclose()
 
