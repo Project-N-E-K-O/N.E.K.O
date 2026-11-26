@@ -500,10 +500,17 @@ class PluginPermissionStore:
                 known is not None and current is not None and known != current
             )
             had_reset = GRANTS_RESET in record
+            saved_change = record.get("source_changed_at")
             self._apply_source(record, current)
             if GRANTS_RESET in record and not had_reset:
                 # Not saved yet: no time to show (it would move on every read).
                 record[GRANTS_RESET] = {**record[GRANTS_RESET], "at": None}
+            # Only a saved source change time counts (it is a cutoff for
+            # earlier refusals); an unsaved one would be "now" on every read.
+            if saved_change is None:
+                record.pop("source_changed_at", None)
+            else:
+                record["source_changed_at"] = saved_change
         return record
 
     def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
@@ -815,7 +822,10 @@ class PluginPermissionStore:
             if record == self._document["plugins"].get(plugin_id):
                 return copy.deepcopy(record)
             record["updated_at"] = now
-            record[LEGACY_DECIDED_AT] = now
+            if decision != "approved":
+                # Deny / revoke answer every permission the dialog covers; an
+                # approval answers only what it granted (their decided_at).
+                record[LEGACY_DECIDED_AT] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
 
@@ -838,6 +848,8 @@ class PluginPermissionStore:
             now = _now()
             if _had_decisions(record):
                 _mark_reset(record, now)
+                # The code changed: refusals up to now came from the old code.
+                record["source_changed_at"] = now
             _drop_for_source_change(record)
             if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
                 if not record.get(GRANTS_RESET):

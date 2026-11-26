@@ -1123,3 +1123,40 @@ def test_forgetting_a_refusal_does_not_read_the_audit_files(tmp_path):
     index = _index(tmp_path)
     index.forget_refused("a", MEMORY)
     assert index._seeded is False
+
+
+def test_a_reset_with_a_kept_denial_is_still_asked_in_full(env):
+    _weather(env)
+    env.store.apply_legacy_decision("weather", "denied", source=MARKET)
+    env.store.decide("weather", SPAWN, "granted", source=MARKET)
+    env.sources["weather"] = MANUAL
+    env.store.sync_source("weather", MANUAL)  # keeps legacy_denied, resets the rest
+    result = permission_panel.pending(index=env.index)
+    assert [row["plugin_id"] for row in result["to_confirm"]] == ["weather"]
+    assert result["upgraded"] == []
+
+
+def test_an_approval_answers_only_what_it_granted(env):
+    env.plugin("p", manifest=None, report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.index.observe(_decision("p", CONVERSATIONS, verdict="would_deny", reason="self_not_approved", ts=before))
+    env.store.apply_legacy_decision("p", "approved", ["memory.read"])
+    assert [row["permission"] for row in permission_panel.pending(index=env.index)["first_use"]] == [CONVERSATIONS]
+
+
+def test_an_unsaved_source_change_does_not_move_the_cutoff(store):
+    store.decide("x", MEMORY, "granted", source=MARKET)
+    assert "source_changed_at" not in store.view("x", MANUAL)
+    store.sync_source("x", MANUAL)
+    saved = store.read("x")["source_changed_at"]
+    store.decide("x", MEMORY, "granted", source=MANUAL)
+    assert store.view("x", MARKET)["source_changed_at"] == saved
+
+
+def test_dropping_grants_keeps_a_cutoff_for_the_old_code(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.store.decide("p", SPAWN, "granted")
+    env.store.drop_grants("p")
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert permission_panel.pending(index=env.index)["first_use"] == []

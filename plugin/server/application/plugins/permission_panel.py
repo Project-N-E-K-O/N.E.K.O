@@ -500,7 +500,9 @@ def _pending(plugins: list[tuple[_PluginInputs, list[dict]]], index: UsageIndex)
                 # and it is asked in full, so it is listed in to_confirm; the
                 # panel's ``grants_reset`` tells the UI to say why. A version
                 # update from the same source is no source change.
-                target = upgraded if _has_decision(inputs.record) else to_confirm
+                # A reset not answered yet wins over decisions a source change keeps.
+                fresh = _grants_reset(inputs.record) is not None or not _has_decision(inputs.record)
+                target = to_confirm if fresh else upgraded
                 target.append({"plugin_id": inputs.plugin_id, "items": items})
         # Used while the user has not decided: not asked in a dialog, listed
         # here instead. Whatever the declaration and the scan say.
