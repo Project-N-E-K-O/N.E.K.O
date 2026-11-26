@@ -41,7 +41,8 @@ status becomes a ``task_update`` event, the one the task HUD has always been
 fed with. ``hud`` keeps this process's view of them, so the status snapshot
 and ``GET /tasks`` answer without touching the ledger. A task that waits for
 the user carries what it asks (``question``), for the HUD to show with the
-ways to answer. A commission that stops waiting for the user, shown on the
+ways to answer; what a task agent's own task agents ask is carried by the
+task shown above them (``sub_questions``), as they are not shown. A commission that stops waiting for the user, shown on the
 HUD or not, is told as a ``nekopower_question`` event with no question and
 the id of the one it asked (``question_id``): the card of that question is
 closed wherever it is shown.
@@ -150,24 +151,79 @@ def _page_question(commission: Any) -> Optional[Dict[str, Any]]:
 
 
 class HudTasks:
-    """This process's view of the host's commissions, for the task HUD."""
+    """This process's view of the host's commissions, for the task HUD.
+
+    A task agent's own task agents are not shown as tasks. What one of them
+    asks while it waits for the user is shown with the task it was started
+    for, the one the HUD shows (``sub_questions``, the one that asked first
+    first): it is the user who is asked, and the HUD has nothing else to say
+    that somebody there waits for her.
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._tasks: Dict[str, Dict[str, Any]] = {}
         self._ended_at: Dict[str, float] = {}
+        # The task agent each one that a task agent started was started by.
+        self._parents: Dict[str, str] = {}
+        # By the task shown: what the task agents under it ask, by their ids.
+        self._asked_below: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     def _prune(self) -> None:
         cutoff = self._clock() - HUD_RETENTION_SECONDS
-        for task_id in [task_id for task_id, ended in self._ended_at.items() if ended < cutoff]:
+        gone = {task_id for task_id, ended in self._ended_at.items() if ended < cutoff}
+        for task_id in gone:
             self._ended_at.pop(task_id, None)
             self._tasks.pop(task_id, None)
+            self._asked_below.pop(task_id, None)
+        if gone:
+            for child_id in [child_id for child_id in self._parents if self._top(child_id) in gone]:
+                self._parents.pop(child_id, None)
+
+    def _top(self, commission_id: str) -> str:
+        """Return the commission no task agent started that one descends from, as far as it is known here."""
+        seen = {commission_id}
+        while commission_id in self._parents:
+            commission_id = self._parents[commission_id]
+            if commission_id in seen:
+                break
+            seen.add(commission_id)
+        return commission_id
+
+    def _below(self, commission: Any) -> Optional[Dict[str, Any]]:
+        """Take in the state of a task agent's own task agent; returns the task shown above it if what it shows changed."""
+        self._parents[commission.id] = commission.parent_id
+        top = self._top(commission.id)
+        asked = self._asked_below.setdefault(top, {})
+        question = _page_question(commission) if commission.status == "waiting_user" else None
+        if question is not None:
+            entry = {"id": commission.id, "name": commission.name or "", "title": commission.title or "", "question": question}
+            if asked.get(commission.id) == entry:
+                return None
+            asked[commission.id] = entry
+        elif asked.pop(commission.id, None) is None:
+            return None
+        if not asked:
+            self._asked_below.pop(top, None)
+        task = self._tasks.get(top)
+        if task is None:
+            return None
+        task["sub_questions"] = list(asked.values())
+        return task
 
     def update(self, commission: Any) -> Optional[Dict[str, Any]]:
-        """Take in a commission's current state; returns its task, or None if it is not shown."""
+        """Take in a commission's current state; returns the task the HUD is to be told of, or None.
+
+        That is its own task; for a task agent's own task agent, the task
+        shown above it, when what that one shows of it changed.
+        """
+        if commission.parent_id is not None:
+            return self._below(commission)
         task = hud_task(commission)
         if task is None:
             return None
+        # Always said, if only as none: the page merges what it is sent into what it has.
+        task["sub_questions"] = list(self._asked_below.get(task["id"], {}).values())
         previous = self._tasks.get(task["id"])
         if previous is not None:
             # The plugin's display name was looked up once already.
@@ -208,6 +264,8 @@ class HudTasks:
     def clear(self) -> None:
         self._tasks.clear()
         self._ended_at.clear()
+        self._parents.clear()
+        self._asked_below.clear()
 
 
 hud = HudTasks()

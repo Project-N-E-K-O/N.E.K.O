@@ -249,3 +249,176 @@ describe('the task HUD and what a task asks', () => {
     expect(card('c1').querySelector('[data-choice="once"]').disabled).toBe(false);
   });
 });
+
+// A task agent's own task agents are not shown as tasks: what they ask comes with the task shown
+// above them (`sub_questions`, the one that asked first first), hung under its card by a line.
+describe('what the task agents a task agent started ask', () => {
+  const below = (id, question, over = {}) => ({ id, name: `agent-${id}`, title: `job ${id}`, question, ...over });
+  const asking = (id, subs, over = {}) => task(id, { sub_questions: subs, ...over });
+  const block = id => document.querySelector(`.task-sub-asks[data-task-id="${id}"]`);
+  const row = (id, sub) => block(id)?.querySelector(`.task-sub-ask[data-sub-id="${sub}"]`);
+  const subs = id => [...(block(id)?.querySelectorAll('.task-sub-ask') || [])].map(node => node.dataset.subId);
+  const opened = (id, sub) => {
+    const box = row(id, sub)?.querySelector('.task-ask');
+    return box && box.style.display !== 'none' ? box : null;
+  };
+  const head = (id, sub) => row(id, sub).querySelector('.task-sub-ask-head');
+  const list = () => [...document.getElementById('agent-task-list').children].filter(node => node.id !== 'agent-task-empty');
+
+  it('hangs what one asks under the card of the task, outside it, while it waits', () => {
+    show([asking('c1', [below('c2', permission('q2'))]), task('c5')]);
+    // Not in the card, which goes on saying the task is at work: right under it.
+    expect(card('c1').querySelector('.task-ask')).toBeNull();
+    expect(card('c1').querySelector('.task-status-badge').textContent).toBe('运行中');
+    expect(list()).toEqual([card('c1'), block('c1'), card('c5')]);
+    // Who asks, and what, with the ways to answer.
+    expect(row('c1', 'c2').querySelector('.task-sub-ask-who').textContent).toBe('job c2 · agent-c2');
+    expect(row('c1', 'c2').querySelector('.task-sub-ask-badge').textContent).toBe('等你回话');
+    expect(opened('c1', 'c2').querySelector('.task-ask-line').textContent).toBe('run the command npm test');
+    expect(opened('c1', 'c2').querySelector('[data-choice="once"]').disabled).toBe(false);
+    expect(block('c5')).toBeNull();
+
+    // Answered (it asks no more): taken away. And with the task, once that is gone.
+    show([asking('c1', []), task('c5')]);
+    expect(block('c1')).toBeNull();
+    show([asking('c1', [below('c2', permission('q2'))]), task('c5')]);
+    show([task('c5')]);
+    expect(document.querySelectorAll('.task-sub-asks').length).toBe(0);
+    // Nothing a card can show is not drawn.
+    show([asking('c1', [below('c3', null), { name: 'x' }, null])]);
+    expect(block('c1')).toBeNull();
+  });
+
+  it('sends the answer to the task agent that asked, against its question', async () => {
+    const sent = [];
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      sent.push([url, JSON.parse(init.body)]);
+      return { ok: true, status: 200, json: async () => ({ success: true, note_taken: true }) };
+    }));
+    try {
+      show([asking('c1', [below('c2', permission('q2'))])]);
+      opened('c1', 'c2').querySelector('.task-ask-input').value = 'use pnpm';
+      opened('c1', 'c2').querySelector('[data-choice="once"]').click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(sent).toEqual([['/api/agent/commissions/c2/answer', { question_id: 'q2', choice: 'once', note: 'use pnpm' }]]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('says on the card of the task that a sentence added to the answer was not taken', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, note_taken: false }) })));
+    try {
+      show([asking('c1', [below('c2', permission('q2'))])]);
+      opened('c1', 'c2').querySelector('.task-ask-input').value = 'use pnpm';
+      opened('c1', 'c2').querySelector('[data-choice="deny"]').click();
+      // It goes on at once, and what it asked is taken away before the answer is back.
+      show([asking('c1', [])]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(card('c1').querySelector('.task-ask-notice')?.textContent).toBe('回答送到了，补的那句没送到。');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('opens the one that asked first and folds the others into a line each, opened by a press', () => {
+    show([asking('c1', [below('c2', permission('q2')), below('c3', permission('q3', 'git push')), below('c4', permission('q4'))])]);
+    expect(subs('c1')).toEqual(['c2', 'c3', 'c4']);
+    expect(opened('c1', 'c2')).toBeTruthy();
+    // The others are a line each, nothing drawn in them until they are opened.
+    expect(row('c1', 'c3').querySelector('.task-ask')).toBeNull();
+    expect(row('c1', 'c4').querySelector('.task-ask')).toBeNull();
+    expect([head('c1', 'c2'), head('c1', 'c3')].map(node => node.getAttribute('aria-expanded'))).toEqual(['true', 'false']);
+    // The line goes on down past every one but the last.
+    expect(['c2', 'c3', 'c4'].map(id => row('c1', id).querySelector('.task-sub-ask-trunk').style.display)).toEqual(['', '', 'none']);
+
+    const typed = opened('c1', 'c2').querySelector('.task-ask-input');
+    typed.value = 'half a sen';
+    head('c1', 'c3').click();
+    expect(opened('c1', 'c2')).toBeNull();
+    expect(opened('c1', 'c3').querySelector('.task-ask-line').textContent).toBe('run the command git push');
+    // Opened by a press on its line, not put in the place of another under the pointer: not held back.
+    expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(false);
+    // Told again as it stands: the one opened stays open.
+    show([asking('c1', [below('c2', permission('q2')), below('c3', permission('q3', 'git push')), below('c4', permission('q4'))], { progress: 0.3 })]);
+    expect(opened('c1', 'c3')).toBeTruthy();
+    expect(document.querySelectorAll('.task-sub-ask .task-ask:not([style*="display: none"])').length).toBe(1);
+    // Folded, not drawn anew: what was typed is still there.
+    head('c1', 'c2').click();
+    expect(opened('c1', 'c2').querySelector('.task-ask-input')).toBe(typed);
+    expect(typed.value).toBe('half a sen');
+  });
+
+  it('says who asks by what it does, and by its name where that says more', () => {
+    show([asking('c1', [below('c2', permission('q2'), { title: 'agent-c2' }), below('c3', permission('q3'), { title: '', name: '' })])]);
+    expect(row('c1', 'c2').querySelector('.task-sub-ask-who').textContent).toBe('agent-c2');
+    expect(row('c1', 'c3').querySelector('.task-sub-ask-who').textContent).toBe('使魔');
+  });
+
+  it('puts the next one up with its buttons held back once the one open is answered', () => {
+    vi.useFakeTimers();
+    const two = [below('c2', permission('q2')), below('c3', permission('q3', 'git push'))];
+    show([asking('c1', two)]);
+    show([asking('c1', two.slice(1))]);
+    // In the place of the one answered, under the pointer: a press on its way there does not approve this.
+    expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(true);
+    vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
+    expect(opened('c1', 'c3').querySelector('[data-choice="once"]').disabled).toBe(false);
+
+    // Drawn while it was open before, folded since, with words typed in it: shown as it was, held back the same.
+    const three = [below('c4', permission('q4')), below('c5', permission('q5')), below('c6', permission('q6'))];
+    show([asking('c1', three)]);
+    head('c1', 'c5').click();
+    opened('c1', 'c5').querySelector('.task-ask-input').value = 'half a sen';
+    head('c1', 'c4').click();
+    show([asking('c1', three.slice(1))]);
+    const box = opened('c1', 'c5');
+    expect(box.querySelector('.task-ask-input').value).toBe('half a sen');
+    expect([box.dataset.settling, box.style.pointerEvents]).toEqual(['true', 'none']);
+    vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
+    expect([box.dataset.settling, box.style.pointerEvents]).toEqual([undefined, '']);
+  });
+
+  it('shows what one asks anew in place of what it asked with the buttons held back', () => {
+    vi.useFakeTimers();
+    show([asking('c1', [below('c2', permission('q2'))])]);
+    show([asking('c1', [below('c2', permission('q7', 'rm -rf dist'))])]);
+    expect(row('c1', 'c2').querySelectorAll('.task-ask').length).toBe(1);
+    expect(opened('c1', 'c2').querySelector('.task-ask-line').textContent).toBe('run the command rm -rf dist');
+    expect(opened('c1', 'c2').querySelector('[data-choice="once"]').disabled).toBe(true);
+    vi.advanceTimersByTime(window.NekoPowerAsk.SETTLE_MS);
+    // Back at work for a moment, and asking the next thing: held back all the same.
+    show([asking('c1', [])]);
+    show([asking('c1', [below('c2', permission('q8', 'git push'))])]);
+    expect(opened('c1', 'c2').querySelector('[data-choice="once"]').disabled).toBe(true);
+  });
+
+  it('leaves the line being typed into alone while the tasks are updated', async () => {
+    const two = [below('c2', permission('q2')), below('c3', permission('q3'))];
+    show([asking('c1', two), task('c5')]);
+    const input = opened('c1', 'c2').querySelector('.task-ask-input');
+    const taken = [];
+    const watch = new MutationObserver(records => records.forEach(record => taken.push(...record.removedNodes)));
+    watch.observe(document.getElementById('agent-task-list'), { childList: true, subtree: true });
+    input.focus();
+    input.value = 'use pn';
+    show([asking('c1', two, { progress: 0.5 }), task('c5', { progress: 0.4 })]);
+    show([task('c6'), asking('c1', two, { progress: 0.6 }), task('c5', { progress: 0.4 })]);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('use pn');
+    await Promise.resolve();
+    expect(taken.includes(block('c1')) || taken.includes(row('c1', 'c2'))).toBe(false);
+    watch.disconnect();
+  });
+
+  it('neither moves the HUD nor counts as a press on the card when pressed', () => {
+    show([asking('c1', [below('c2', permission('q2'))])]);
+    const pressed = vi.fn();
+    document.getElementById('agent-task-list').addEventListener('mousedown', pressed);
+    document.getElementById('agent-task-list').addEventListener('click', pressed);
+    head('c1', 'c2').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    head('c1', 'c2').click();
+    expect(pressed).not.toHaveBeenCalled();
+  });
+});
