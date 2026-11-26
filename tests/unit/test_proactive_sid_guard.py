@@ -1192,9 +1192,14 @@ def test_proactive_chat_releases_turns_only_through_the_owned_helper():
     assert offenders == []
 
 
-async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover():
+async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover(monkeypatch):
     """With the real _clear_tts_pipeline: a user who takes the turn during
-    the interrupt wait keeps the audio and text already queued for it."""
+    the interrupt wait keeps the audio and text already queued for it.
+
+    The takeover is pinned inside that wait: the wait signals entry, the
+    user takes over, and only then does the cleanup resume.
+    """
+    import main_logic.core.tts_runtime as tts_runtime
     from main_logic.proactive_chat.state import _release_proactive_turn
 
     mgr = _release_mgr()
@@ -1209,23 +1214,37 @@ async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover()
     mgr._tts_runtime = runtime
     mgr._snapshot_tts_runtime = lambda: runtime
     mgr.tts_pending_chunks.append(("s_proactive", "旧的主动搭话"))
+    monkeypatch.setattr(tts_runtime.GAME_SPEECH_AUDIO_CACHE, "discard_owner", lambda _owner: None)
 
-    async def _user_takes_over_mid_wait():
-        await asyncio.sleep(0.005)  # inside the 20ms interrupt wait
-        mgr.current_speech_id = "s_user"
-        mgr.state.preempted = True
-        mgr.tts_response_queue.put(("s_user", b"user-audio"))
-        mgr.tts_pending_chunks.append(("s_user", "用户回复"))
+    wait_entered = asyncio.Event()
+    takeover_done = asyncio.Event()
 
-    import main_logic.core.tts_runtime as tts_runtime
-    original_discard = tts_runtime.GAME_SPEECH_AUDIO_CACHE.discard_owner
-    tts_runtime.GAME_SPEECH_AUDIO_CACHE.discard_owner = lambda _owner: None
-    try:
-        takeover = asyncio.create_task(_user_takes_over_mid_wait())
-        assert await _release_proactive_turn(mgr, "s_proactive") is True
-        await takeover
-    finally:
-        tts_runtime.GAME_SPEECH_AUDIO_CACHE.discard_owner = original_discard
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        if delay != 0.02:
+            return await real_sleep(delay, *args, **kwargs)
+        # The interrupt wait inside the real _let_tts_interrupt_land.
+        wait_entered.set()
+        await takeover_done.wait()
+
+    class _AsyncioWithPinnedWait:
+        sleep = staticmethod(_sleep)
+
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+    monkeypatch.setattr(tts_runtime, "asyncio", _AsyncioWithPinnedWait())
+
+    release = asyncio.create_task(_release_proactive_turn(mgr, "s_proactive"))
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+    assert not release.done()
+    mgr.current_speech_id = "s_user"
+    mgr.state.preempted = True
+    mgr.tts_response_queue.put(("s_user", b"user-audio"))
+    mgr.tts_pending_chunks.append(("s_user", "用户回复"))
+    takeover_done.set()
+    assert await asyncio.wait_for(release, timeout=1) is True
 
     assert mgr.current_speech_id == "s_user"
     assert mgr.tts_response_queue.get_nowait() == ("s_user", b"user-audio")
