@@ -124,7 +124,8 @@ class PermissionSwitchStore:
             if self._generation != generation:
                 return self._value if self._value is not None else False
             if value is None:
-                self._failed_at = self._clock()
+                # Unreadable means checks on, also over an earlier value.
+                self._value, self._failed_at = None, self._clock()
                 result = False
             else:
                 self._value, self._failed_at = value, None

@@ -604,3 +604,42 @@ def test_a_load_after_a_write_does_not_push_again(manager):
     store.set_disabled(True)
     assert store.load() is True
     assert pushes == []
+
+
+def test_an_unreadable_setting_on_a_later_start_turns_checks_back_on(manager):
+    pushes = []
+    store = _switch(manager, pushes=pushes)
+    manager.root.mkdir(parents=True)
+    path = manager.root / permission_switch.FILENAME
+    path.write_text(json.dumps({"checks_disabled": True}), encoding="utf-8")
+    assert store.load() is True
+    path.write_text("{broken", encoding="utf-8")  # restart in the same process
+
+    assert store.load() is False
+    assert store.disabled() is False
+    assert pushes == [True, True]  # on, then back off
+
+
+def test_a_legacy_file_that_appeared_after_the_store_is_not_marked(manager):
+    PluginPermissionStore(manager).read("x")  # created without a legacy file
+    _legacy(manager)
+    PluginPermissionStore(manager).read("x")
+    assert not _marker(manager).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_switch_change_is_not_logged_as_accepted(switch_env, monkeypatch):
+    accepted = []
+    monkeypatch.setattr(mutation_auth, "_authorize_mutation", lambda *args, **kwargs: accepted.append(True))
+    response = await _request("PUT", {"disabled": True}, {})
+    assert response.status_code == 403 and accepted == []
+
+
+@pytest.mark.asyncio
+async def test_a_switch_change_is_logged(switch_env, monkeypatch):
+    from plugin.server.routes import plugin_permission_switch
+
+    log = Logged()
+    monkeypatch.setattr(plugin_permission_switch, "logger", log)
+    await _request("PUT", {"disabled": True}, TOKEN)
+    assert log.lines == [("warning", "permission master switch host setting set: checks_disabled=True")]

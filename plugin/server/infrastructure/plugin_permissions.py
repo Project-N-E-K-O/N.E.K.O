@@ -99,7 +99,7 @@ class _ErrorLog:
             if state is None:
                 if len(self._seen) > 256:
                     self._seen.clear()
-                state = self._seen[(operation, error)] = [now, 0, 1]
+                self._seen[(operation, error)] = [now, 0, 1]
                 suppressed = None
             else:
                 state[2] += 1
@@ -414,6 +414,10 @@ class PluginPermissionStore:
         holding the import is on disk. Best effort: a failed write is retried
         on the next load."""
         legacy = path.with_name(LEGACY_FILENAME)
+        if (document.get("legacy_import") or {}).get("status") == "absent":
+            # The store was created without a legacy file: there was nothing
+            # to import, so a file that appeared since is not marked.
+            return
         try:
             if not os.path.isfile(legacy) or _marker_present(path):
                 return

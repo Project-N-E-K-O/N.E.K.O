@@ -45,6 +45,8 @@ def _write(disabled: bool) -> dict:
     from plugin.server.infrastructure.permission_switch import switch_store
 
     switch_store.set_disabled(disabled)
+    # A security-relevant toggle: leave a trace of every change.
+    logger.warning("permission master switch host setting set: checks_disabled={}", disabled)
     # Every plugin's resolved states carry ``enforced``: send them again. The
     # grants did not change, so this is not a store change notification.
     permission_push_service.notify(None)

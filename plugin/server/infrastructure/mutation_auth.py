@@ -202,9 +202,10 @@ def require_plugin_mutation_access(request: Request) -> None:
 def require_plugin_token_mutation_access(request: Request) -> None:
     """Authorize a mutation only with a valid ``X-CSRF-Token``, also from an
     originless local caller. For settings that switch protections off."""
-    _authorize_mutation(request, browser_token_required=True)
+    # Checked first, so a refused call is never logged as accepted.
     if not _valid_token(request):
         _deny(token_invalid=True)
+    _authorize_mutation(request, browser_token_required=True)
 
 
 def _page_token_required() -> bool:
