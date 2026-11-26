@@ -2789,3 +2789,33 @@ def test_resolved_references_keep_the_legacy_spelling():
     walker = capability_analysis._AnalysisWalker(Event())
     methods = {method for _node, (method, external) in capability_analysis._resolved_references(tree, walker) if not external}
     assert "getattr()().push_message" in methods
+
+
+_UNIX_SERVER = "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind(('', 8080))\ns.listen()\n"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "socket.AF_UNIX = 2\n",
+        "socket.AF_UNIX += 0\n",
+        "setattr(socket, 'AF_UNIX', 2)\n",
+        "del socket.AF_UNIX\n",
+        "socket.AddressFamily = object\n",
+    ],
+)
+def test_a_rewritten_family_constant_is_not_trusted(tmp_path, write):
+    # One import only, so the family write alone decides.
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + write, 1))
+    # As on main: definite evidence.
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_family_constant_rewritten_in_another_file_is_not_trusted(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"setup.py": "import socket\nsocket.AF_UNIX = 2\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_comparing_with_the_family_constant_is_not_a_write(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER + "if s.family == socket.AF_UNIX:\n    pass\n")
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}

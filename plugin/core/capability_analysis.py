@@ -366,6 +366,25 @@ def _untrusted(name: str, bindings) -> bool:
     return _UNTRUSTED + name in bindings
 
 
+# Bindings key set when the plugin may change the family constants
+# themselves (socket.AF_UNIX = 2); no family is trusted then.
+_FAMILIES_WRITTEN = _UNTRUSTED + "*families"
+# A write to a family attribute anywhere in the plugin: assignment or
+# augmented assignment to .AF_UNIX / .AddressFamily, del, or setattr with
+# that literal name. Read on the raw text, so a match inside a string or a
+# comment only makes the scan stricter.
+_FAMILY_WRITE = re.compile(
+    r"\.\s*(?:AF_UNIX|AddressFamily)\s*(?:\*\*|//|<<|>>|[-+*/%&|^@])?=(?!=)"
+    r"|\bdel\b[^\n]*\.\s*(?:AF_UNIX|AddressFamily)\b"
+    r"|\bsetattr\s*\([^,]*,\s*[rbuRBU]*['\"](?:AF_UNIX|AddressFamily)['\"]"
+)
+
+
+def _families_written(sources) -> bool:
+    """The plugin's own code may rebind a socket family constant."""
+    return any(_FAMILY_WRITE.search(source) for _relative, source in sources)
+
+
 def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bool:
     """The family argument is spelled AF_UNIX (socket.AF_UNIX, AF_UNIX) and
     statically resolves to it, through names that are not rebound (for
@@ -373,7 +392,7 @@ def _unix_family(call: ast.Call, index: int | None, bindings, walker=None) -> bo
     followed: only these few spellings are trusted."""
     argument = _call_argument(call, index, "family")
     # Cheap test first: this runs at every call level of every chain.
-    if not (
+    if _FAMILIES_WRITTEN in bindings or not (
         (isinstance(argument, ast.Name) and argument.id == "AF_UNIX")
         or (isinstance(argument, ast.Attribute) and argument.attr == "AF_UNIX")
     ):
@@ -633,7 +652,7 @@ def _resolved_references(tree, walker: _AnalysisWalker):
             yield reference.node, _legacy(reference.method, reference.external)
 
 
-def _references(tree, walker: _AnalysisWalker):
+def _references(tree, walker: _AnalysisWalker, families_trusted: bool = True):
     def scope(body, inherited, parameters=(), function="", outer_rebound=frozenset()):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
@@ -733,7 +752,7 @@ def _references(tree, walker: _AnalysisWalker):
             yield reference
 
     shared = _shared_names(tree, walker)
-    yield from scope(tree.body, {})
+    yield from scope(tree.body, {} if families_trusted else {_FAMILIES_WRITTEN: (None, False)})
 
 
 def _shared_names(tree, walker) -> frozenset[str]:
@@ -2141,6 +2160,8 @@ def analyze_capabilities(
     warnings = list(sources.warnings)
     collector = _PermissionCollector()
     count = 0
+    # The socket module is shared by every file of the plugin.
+    families_trusted = not _families_written(sources.files)
     try:
         for relative, source in sources.files:
             walker.check()
@@ -2152,7 +2173,7 @@ def analyze_capabilities(
             count += 1
             walker.check()
             seen: set[tuple[str, int]] = set()
-            for reference in _references(tree, walker):
+            for reference in _references(tree, walker, families_trusted):
                 collector.scan(relative, reference)
                 if isinstance(reference.node, (ast.Import, ast.ImportFrom)):
                     continue
