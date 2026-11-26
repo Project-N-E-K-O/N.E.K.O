@@ -754,6 +754,22 @@ describe('the commissions', () => {
     expect(api.listCommissions).toHaveBeenLastCalledWith({ status: ['waiting_user'], loose: true, project: null, days: 0 })
   })
 
+  it('says above the list that a sentence added to an answer was not taken, with which commission it was', async () => {
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c3"]'))
+    const title = document.querySelector('[data-commission="c3"]')?.textContent ?? ''
+    // Read again once it is answered: it does not wait any more, and is gone from what is listed.
+    api.listCommissions.mockResolvedValue({ commissions: [], more: false })
+    await click(document.querySelector('[data-detail="c3"] [data-choice="once"]'))
+    await flush()
+    expect(document.querySelector('[data-detail="c3"]')).toBeNull()
+    const said = byTest('commission-answer-note')?.textContent ?? ''
+    expect(said).toContain(words.ask.noteLost)
+    // Which commission: by what it is called in the list.
+    expect(title).toContain(said.split(':')[0].trim())
+  })
+
   it('opens one to what it used and what it asks, whole, and answers it from there', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(Commissions)

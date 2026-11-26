@@ -39,7 +39,12 @@ What this process gives the host:
 What it takes from the host: every commission that is filed or changes its
 status becomes a ``task_update`` event, the one the task HUD has always been
 fed with. ``hud`` keeps this process's view of them, so the status snapshot
-and ``GET /tasks`` answer without touching the ledger.
+and ``GET /tasks`` answer without touching the ledger. A task that waits for
+the user carries what it asks (``question``), for the HUD to show with the
+ways to answer. A commission that stops waiting for the user, shown on the
+HUD or not, is told as a ``nekopower_question`` event with no question and
+the id of the one it asked (``question_id``): the card of that question is
+closed wherever it is shown.
 """
 
 import asyncio
@@ -130,7 +135,18 @@ def hud_task(commission: Any) -> Optional[Dict[str, Any]]:
         task["end_time"] = _iso(commission.ended_at or commission.updated_at)
     if status in ("failed", "blocked", "cancelled"):
         task["error"] = commission.status_reason or None
+    # What it asks while it waits for the user, with the answers on offer.
+    # Said as None otherwise: the page merges what it is sent into what it
+    # has, and a question left out would stay on the card once answered.
+    task["question"] = _page_question(commission) if status == "waiting_user" else None
     return task
+
+
+def _page_question(commission: Any) -> Optional[Dict[str, Any]]:
+    """Return what a commission asks as a card shows it, in the commission's language."""
+    from nekopower.host.reports import page_question
+
+    return page_question(commission.question(), commission.lang or "en")
 
 
 class HudTasks:
@@ -196,7 +212,13 @@ class HudTasks:
 
 hud = HudTasks()
 
-# task_update events go out one at a time, in the order the changes happened.
+# task_update events go out one at a time, in the order the changes happened;
+# that a commission stopped waiting for the user goes out among them.
+_QUESTION_CLOSED = "question_closed"
+# The id of what each commission that waits for the user asks. The ledger
+# lets go of the question as the commission stops waiting; which one that
+# was is said then, so that a card of the next one, shown already, stays.
+_asked: Dict[str, str] = {}
 _updates: Optional["asyncio.Queue[Dict[str, Any]]"] = None
 _updates_worker: Optional["asyncio.Task[None]"] = None
 
@@ -208,6 +230,15 @@ async def _send_updates() -> None:
     while True:
         task = await _updates.get()
         try:
+            if task.get("type") == _QUESTION_CLOSED:
+                await _emit_main_event(
+                    "nekopower_question",
+                    task.get("lanlan_name"),
+                    task_id=task.get("id"),
+                    question_id=task.get("question_id") or "",
+                    question=None,
+                )
+                continue
             params = task.get("params") or {}
             plugin_id = params.get("plugin_id")
             if task.get("type") == "user_plugin" and plugin_id and not params.get("plugin_name"):
@@ -244,11 +275,27 @@ def _queue_update(task: Dict[str, Any]) -> None:
 
 
 def _on_commission_change(commission: Any, previous: Optional[str]) -> None:
-    """A commission was filed or changed its status: the HUD is told."""
-    del previous
+    """A commission was filed or changed its status: the HUD is told.
+
+    One that waited for the user and does not any more (answered here or
+    elsewhere, stopped, over) has the card of its question closed: also one
+    the HUD does not show, a task agent's own task agent, whose question the
+    user is shown all the same.
+    """
     task = hud.update(commission)
     if task is not None:
         _queue_update(task)
+    if commission.status == "waiting_user":
+        _asked[commission.id] = str((commission.question() or {}).get("id") or "")
+    elif previous == "waiting_user":
+        _queue_update(
+            {
+                "type": _QUESTION_CLOSED,
+                "id": commission.id,
+                "question_id": _asked.pop(commission.id, ""),
+                "lanlan_name": commission.lanlan_name,
+            }
+        )
 
 
 def _on_progress(commission: Any, update: Dict[str, Any]) -> None:
@@ -293,6 +340,14 @@ async def send_report(item: Any) -> bool:
         "metadata": {"nekopower_kind": item.kind, "nekopower_reason": reason},
         "timestamp": _now_iso(),
     }
+    question = payload.get("card") or payload.get("question")
+    if item.kind == "question" and task_id and isinstance(question, dict):
+        # The parts of what is asked, for a card with the ways to answer; the
+        # sentence above is hers to pass on all the same.
+        event["question"] = question
+        event["title"] = str(payload.get("title") or "")
+        # Who does the work: a plugin called directly takes no sentence added to an approval.
+        event["route"] = payload.get("route")
     return await _send_main_event(event)
 
 
@@ -576,6 +631,7 @@ async def shutdown_nekopower_host() -> None:
     _filled_from = None
     _restore_failed_at = None
     hud.clear()
+    _asked.clear()
 
 
 _lingering: "set[asyncio.Future[Any]]" = set()

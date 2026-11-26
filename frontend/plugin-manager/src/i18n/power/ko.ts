@@ -388,6 +388,10 @@ const messages: PowerMessages = {
     },
   },
   colony: {
+    askLabel: '{name}이(가) 묻고 있어요',
+    say: '답하기…',
+    more: '더 보기…',
+    sayPlaceholder: '한마디 답하기…',
     catLabel: '{name}, {state}. Enter 키로 열고, 방향키로 자리를 옮겨요.',
     waitingBubble: '대답 기다리는 중 ❗',
     answer: '답하기…',
@@ -486,6 +490,12 @@ const messages: PowerMessages = {
     },
   },
   ask: {
+    notePlaceholder: '한마디 덧붙이려면 여기에 쓰고 위의 버튼을 누르세요',
+    noteLabel: '답과 함께 전할 한마디',
+    addPlaceholder: '글로 답하거나, 한마디 덧붙이고 위의 선택지를 누르세요',
+    confirm: { yes: '네, 진행해요', no: '아니요' },
+    stale: '전달되지 않았어요. 이 질문은 이미 답했거나 새 질문으로 바뀌었어요. 지금 보이는 것이 최신 상황이에요.',
+    noteLost: '답은 전달됐지만 덧붙인 한마디는 전달되지 않았어요. 지금은 말을 받을 수 없는 상태예요.',
     command: '전체 명령',
     path: '전체 경로',
     copy: '복사',

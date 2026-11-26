@@ -79,6 +79,8 @@
             }
             if (_agentTaskReconcileInFlight) return;
             _agentTaskReconcileInFlight = true;
+            // 发请求时每个任务是哪一份：请求在途时连接上又更新过的任务（换成了新的一份），服务端这次答的比它旧。
+            var askedWith = new Map(taskMap);
             try {
                 var result = await fetch('/api/agent/tasks', { cache: 'no-store' });
                 if (!result.ok) return;
@@ -113,7 +115,19 @@
                         return;
                     }
                     _agentTaskMissingCounts.delete(id);
-                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) return;
+                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) {
+                        // 还在办的任务：等不等用户回话、问的是哪条，按服务端的来。问话的推送漏了（连接断过）
+                        // 的话，悬浮窗上会一直留着上一条问话。
+                        // 请求在途时连接上刚更新过的不动：那边的更新，把正在输入的问话卡换掉会丢掉打到一半的字。
+                        if (askedWith.get(id) !== task) return;
+                        var askedNow = current.question && current.question.id;
+                        var askedHere = task.question && task.question.id;
+                        if (current.status !== task.status || askedNow !== askedHere) {
+                            taskMap.set(id, Object.assign({}, task, current));
+                            changed = true;
+                        }
+                        return;
+                    }
                     var terminalAt = Date.now();
                     taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
                     changed = true;
@@ -3011,6 +3025,8 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // 连接断开期间挂起的问话不会补发：连上时读一次现在还在等的。
+            if (window.NekoPowerAsk) { try { window.NekoPowerAsk.sync(); } catch (_) {} }
             // session_ended_by_server latches suppressAssistantStreamUntilNextSession
             // so late chunks of the ended session are dropped; only session_started
             // used to clear it. A fresh socket (reconnect, or the character switch
@@ -3342,6 +3358,12 @@
 
                 if (response.type === 'plugin_view') {
                     if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
+                }
+
+                // 喵能力的委托在问用户：聊天窗里出一张能直接作答的卡片；没带问题的是「不等了」，卡片收起。
+                if (response.type === 'nekopower_question') {
+                    if (window.NekoPowerAsk) window.NekoPowerAsk.receive(response);
                     return;
                 }
 

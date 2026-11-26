@@ -1219,7 +1219,13 @@ class TaskBrain:
         return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
 
     async def answer(
-        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+        self,
+        commission_id: str,
+        text: str,
+        *,
+        choice: str | None = None,
+        question_id: str | None = None,
+        selected: dict[str, list[str]] | None = None,
     ) -> bool:
         """Give the user's answer to a commission that waits for one.
 
@@ -1229,7 +1235,7 @@ class TaskBrain:
         """
         if self._task_agents is None:
             return False
-        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id)
+        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id, selected=selected)
 
     # -- query ------------------------------------------------------------
 

@@ -250,6 +250,23 @@ const proactiveRecommendationBlockSchema = z.object({
   expiresAt: z.number().finite().nonnegative().optional(),
 });
 
+// What a NekoPower commission asks the user, answered on the card (NekoPowerAskBlock). The
+// question is handed over as the agent process has it; the card reads what it knows of it.
+// `state` is the host's: it sends the answer and says how that fared.
+const nekopowerAskBlockSchema = z.object({
+  type: z.literal('nekopower_ask'),
+  taskId: z.string().min(1),
+  questionId: z.string(),
+  title: z.string(),
+  question: z.record(z.string(), z.unknown()),
+  state: z.enum(['pending', 'sending', 'answered', 'closed']),
+  // What it was answered with, in words; and what there is to say of how that went.
+  answer: z.string().optional(),
+  notice: z.string().optional(),
+  // Nothing can take a sentence added to an approval (a plugin does the work).
+  noNote: z.boolean().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   // A sent voice message. The recording itself is not stored; audioUrl is an
@@ -268,6 +285,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   htmlCardBlockSchema,
   musicRecommendationBlockSchema,
   proactiveRecommendationBlockSchema,
+  nekopowerAskBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {

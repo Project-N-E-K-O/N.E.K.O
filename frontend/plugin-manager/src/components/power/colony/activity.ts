@@ -229,8 +229,10 @@ export function describeEntry(
   let text = entry.text
   // What a tool asked answered with a choice (allow once, deny): said in words.
   const choice = entry.detail?.choice
-  if (entry.kind === 'answered' && !text && typeof choice === 'string' && te(`power.space.familiars.choices.${choice}`)) {
-    text = t(`power.space.familiars.choices.${choice}`)
+  if (entry.kind === 'answered' && !text && typeof choice === 'string') {
+    // An approval by its choice; a plugin's request for confirmation by yes or no.
+    const key = [`power.space.familiars.choices.${choice}`, `power.ask.confirm.${choice}`].find(each => te(each))
+    if (key) text = t(key)
   }
   if (entry.kind === 'asked_user' && entry.detail?.question_kind === 'permission') {
     // A request for approval is recorded by its kind (and, of an MCP server, which): said in words here.
