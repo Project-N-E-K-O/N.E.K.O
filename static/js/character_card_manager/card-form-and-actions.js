@@ -2572,8 +2572,7 @@ async function applyCurrentCatgirlSelection(name, options = {}) {
 
     if (oldCatgirl === targetName) {
         // A no-op preflight is still a read and may predate a newer switch POST.
-        applyWorkshopCurrentCatgirlSnapshot(targetName, oldRevision);
-        return true;
+        return applyWorkshopCurrentCatgirlSnapshot(targetName, oldRevision);
     }
 
     const response = await fetch('/api/characters/current_catgirl', {
@@ -2592,7 +2591,7 @@ async function applyCurrentCatgirlSelection(name, options = {}) {
     const switchRevision = Number.isSafeInteger(result.switch_revision) && result.switch_revision > 0
         ? result.switch_revision
         : 0;
-    if (!applyWorkshopCurrentCatgirlSnapshot(targetName, switchRevision)) return true;
+    if (!applyWorkshopCurrentCatgirlSnapshot(targetName, switchRevision)) return false;
     renderCharaCardsView();
     _refreshOpenCatgirlPanelActions();
 

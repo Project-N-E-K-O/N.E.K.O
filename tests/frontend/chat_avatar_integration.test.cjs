@@ -46,7 +46,7 @@ function harness() {
         window, document, console: { log() {}, info() {}, warn() {}, error() {} },
         Event: class { constructor(type) { this.type = type; } },
         CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
-        WebSocket: { OPEN: 1, CLOSING: 2, CLOSED: 3 },
+        WebSocket: { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 },
         setTimeout(callback, delay) {
             const id = ++timerId;
             if (delay === 100) queueMicrotask(callback);
@@ -172,6 +172,53 @@ test('same-current VRM event recovers when the configured VRM instance is missin
         ['rollback', 1]
     ], 'missing VRM must bypass same-current dedupe and enter recovery flow');
 });
+
+test('same-current receipt does not restart an active cold VRM load, but retries after it fails', async () => {
+    const h = harness(), calls = avatarCalls(h);
+    h.window.location.pathname = '/';
+    h.window.lanlan_config = { lanlan_name: 'A', model_type: 'live3d', live3d_sub_type: 'vrm' };
+    h.window.vrmManager = { currentModel: null, _isLoadingModel: true };
+    h.context.fetch = async () => { throw new Error('stop after dedupe gate'); };
+    h.load('static/app/app-character.js');
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 10 });
+    assert.deepEqual(calls, []);
+    h.window.vrmManager._isLoadingModel = false;
+    await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 10 });
+    assert.deepEqual(calls, [['begin', 1], ['rollback', 1]]);
+});
+
+for (const incoming of ['A', 'B']) {
+    test('VRM startup awaiting metadata yields only to a different committed character: ' + incoming, async () => {
+        const h = harness(), w = h.window, calls = avatarCalls(h), entered = deferred(), release = deferred();
+        w.location.pathname = '/'; w.location.href = 'https://example.test/'; h.context.document.querySelector = () => null;
+        h.context.requestAnimationFrame = () => 0; h.context.URL = URL; w.vrmModuleLoaded = true; w.VRMCore = {};
+        w.lanlan_config = { lanlan_name: 'A', model_type: 'live3d', live3d_sub_type: 'vrm', switch_revision: 810 };
+        w.vrmModel = '/static/vrm/A.vrm';
+        const role = n => ({ model_type: 'live3d', live3d_sub_type: 'vrm', vrm: '/static/vrm/' + n + '.vrm',
+            _reserved: { character_uid: n === 'A' ? UID_A : UID_B } });
+        h.context.fetch = async url => {
+            if (url.startsWith('/api/model/vrm/config')) { entered.resolve(); await release.promise; }
+            return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { A: role('A'), B: role('B') } } : {} };
+        };
+        h.load('static/vrm/vrm-manager.js'); h.load('static/vrm/vrm-init.js');
+        const manager = Object.create(w.VRMManager.prototype), loads = [];
+        Object.assign(manager, { currentModel: null, _pendingModelLoadCount: 0, _activeLoadToken: 0,
+            initThreeJS: async () => {}, pauseRendering() {}, resumeRendering() {}, cleanupUI() {},
+            async _loadModelInternal(url, options, token) {
+                loads.push(url.split('/').pop());
+                if (this._isLoadTokenActive(token)) this.currentModel = { url, vrm: { name: loads.at(-1) } };
+                return this.currentModel;
+            } });
+        w.vrmManager = manager; h.load('static/app/app-character.js');
+        const boot = w.initVRMModel(); await entered.promise;
+        await w.handleCatgirlSwitch(incoming, 'A', { switchRevision: incoming === 'A' ? 810 : 811 });
+        release.resolve(); await boot;
+        assert.deepEqual(loads, [incoming + '.vrm']);
+        assert.equal(w.lanlan_config.lanlan_name, incoming);
+        assert.equal(w.vrmManager.currentModel.vrm.name, incoming + '.vrm');
+        assert.equal(calls.filter(c => c[0] === 'begin').length, incoming === 'A' ? 0 : 1);
+    });
+}
 
 test('same-current VRM event remains deduped when the VRM instance is healthy', async () => {
     const h = harness(); const calls = avatarCalls(h);
@@ -357,11 +404,7 @@ test('latest intent matching a successful in-flight target cancels an older pend
     ], 'successful in-flight B already satisfies the latest B intent without a second attempt');
 });
 
-test('BroadcastChannel dedupe distinguishes same-millisecond character commits by switch revision', async () => {
-    const h = harness(); const forwarded = [];
-    h.window.handleCatgirlSwitch = (next, previous, options) => {
-        forwarded.push([next, previous, options?.switchRevision || 0]);
-    };
+function loadSwitchRelay(h) {
     h.load('static/app/app-interpage/bootstrap-resources-and-model-reload.js');
     Object.assign(h.window.__appInterpageParts, {
         isIcebreakerBridgeAction: () => false,
@@ -381,20 +424,28 @@ test('BroadcastChannel dedupe distinguishes same-millisecond character commits b
     };
     h.load('static/app/app-interpage/guide-message-relay.js');
 
-    const parts = h.window.__appInterpageParts;
+    return h.window.__appInterpageParts.handleNekoBroadcastMessage;
+}
+
+test('BroadcastChannel forwards distinct commits even when they share a timestamp', async () => {
+    const h = harness(); const forwarded = [];
+    h.window.handleCatgirlSwitch = (next, previous, options) => {
+        forwarded.push([next, previous, options?.switchRevision || 0]);
+    };
+    const deliver = loadSwitchRelay(h);
     const timestamp = 1700000000000;
-    await parts.handleNekoBroadcastMessage({ data: {
+    await deliver({ data: {
         action: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A',
         switch_revision: 600, timestamp
     } });
-    await parts.handleNekoBroadcastMessage({ data: {
+    await deliver({ data: {
         action: 'catgirl_switched', new_catgirl: 'C', old_catgirl: 'B',
         switch_revision: 601, timestamp
     } });
     assert.deepEqual(forwarded, [
         ['B', 'A', 600],
         ['C', 'B', 601]
-    ], 'distinct revisions sharing one millisecond must both pass; duplicate revision must be absorbed');
+    ], 'distinct revisions sharing one millisecond must both pass');
 });
 
 test('page-config switch revision seeds central ordering before any live switch event', async () => {
@@ -486,6 +537,32 @@ test('WebSocket catgirl_switched forwards authoritative switch revision', () => 
         type: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A', switch_revision: 500
     }) });
     assert.deepEqual(forwarded, [['B', 'A', 500]]);
+});
+
+test('WS-only newer B-to-B notification reaches a frontend still on A before delayed A-to-B', async () => {
+    const h = harness(), w = h.window, calls = avatarCalls(h);
+    w.location.protocol = 'http:'; w.location.host = 'fixture.test';
+    w.t = key => key; w.appConst = { HEARTBEAT_INTERVAL: 30000 };
+    h.context.Blob = Blob;
+    h.context.WebSocket = class {
+        static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+        constructor(url) { this.url = url; this.readyState = 0; }
+        send() {}
+        close() { this.readyState = 3; }
+    };
+    h.load('static/app/app-character.js'); h.load('static/app/app-websocket.js');
+    w.connectWebSocket();
+    const original = w.appState.socket;
+    const receipt = (socket, previous, revision) => socket.onmessage({ data: JSON.stringify({
+        type: 'catgirl_switched', new_catgirl: 'B', old_catgirl: previous, switch_revision: revision,
+    }) });
+    receipt(original, 'B', 101); receipt(original, 'A', 100);
+    await new Promise(setImmediate);
+    receipt(w.appState.socket, 'B', 101);
+    await new Promise(setImmediate);
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+    assert.equal(w.lanlan_config.lanlan_name, 'B');
+    assert.equal(w.lanlan_config.switch_revision, 101);
 });
 
 for (const pathname of ['/chat', '/chat/', '/chat_full', '/chat_full/']) {
@@ -1118,6 +1195,491 @@ for (const delay of ['headers', 'body']) {
     });
 }
 
+for (const explicit of [false, true]) for (const delay of ['headers', 'body']) {
+    test('mismatched desktop IPC keeps verified identity and hydrates a slow ' + delay + ' (' + (explicit ? 'preview' : 'current') + ')', async () => {
+        const h = harness(), started = deferred(), finish = deferred();
+        const target = explicit ? 'Preview' : 'B', revision = explicit ? 0 : 82;
+        h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+        h.window.location.search = explicit ? '?lanlan_name=Preview' : '';
+        h.window.__nekoInjectedConfig = { lanlan_name: 'A', lighting: { wrong: true }, avatarDataUrl: 'wrong-avatar' };
+        h.context.fetch = async url => {
+            if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: target, switch_revision: revision }) };
+            if (delay === 'headers') { started.resolve(); await finish.promise; }
+            return { json: async () => {
+                if (delay === 'body') { started.resolve(); await finish.promise; }
+                return { success: true, lanlan_name: target, switch_revision: revision, model_type: 'live2d', model_path: '/correct.model3.json' };
+            } };
+        };
+        h.load('static/js/index.js'); h.load('static/app/app-character.js');
+        const loading = h.window.startPageConfigLoad();
+        await started.promise;
+        let ready = 'pending';
+        h.window.pageConfigReady.then(result => { ready = result; });
+        for (const t of [...h.timers.values()]) if (t.delay === 1500) t.callback();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(ready, 'pending', 'paired identity is not verified page readiness');
+        const cfg = h.window.lanlan_config;
+        assert.deepEqual([cfg.lanlan_name, cfg.switch_revision], [target, revision]);
+        assert.ok(!cfg.lighting && !h.window.__nekoPendingAvatar && !h.window.cubism4Model);
+        finish.resolve();
+        assert.equal(await loading, true);
+        assert.equal(h.window.cubism4Model, '/correct.model3.json');
+    });
+}
+
+
+function startDesktopAvatarBootstrap(h, injected, fetch, live2d = false) {
+    const w = h.window, c = h.context, loads = [];
+    w.location = { pathname: '/web_chat_compact', search: '', href: 'https://example.test/web_chat_compact' };
+    c.URL = URL; c.URLSearchParams = URLSearchParams; c.requestAnimationFrame = () => 0;
+    c.document.querySelector = () => null;
+    c.fetch = fetch;
+    w.__NEKO_MULTI_WINDOW__ = true; w.__nekoInjectedConfig = injected;
+    w.mmdModuleLoaded = w.vrmModuleLoaded = true;
+    w.VRMCore = {};
+    c.MMDManager = class {
+        async init() { this.renderer = {}; this.scene = {}; this._activeLoadToken = 0; }
+        async loadModel(url) { this._activeLoadToken++; loads.push(url); return (this.currentModel = { url, mesh: {} }); }
+        async waitForRenderFrame() {}
+    };
+    const loadLive2D = () => {
+        const getElementById = c.document.getElementById;
+        c.document.getElementById = id => id === 'live2d-canvas' ? { style: {} } : getElementById(id);
+        c.Live2DManager = class {
+            currentModel = null; pixi_app = { renderer: {} };
+            getCurrentModel() { return this.currentModel; }
+            removeModel() { this.currentModel = null; }
+            async ensurePIXIReady() {}
+            async loadUserPreferences() { return []; }
+            async loadModel(input) {
+                const url = typeof input === 'string' ? input : input.url;
+                loads.push(url);
+                return (this.currentModel = { url });
+            }
+        };
+        h.load('static/live2d/live2d-init.js');
+    };
+    if (live2d === 'before-index') loadLive2D();
+    h.load('static/js/index.js'); h.load('static/vrm/vrm-manager.js'); h.load('static/vrm/vrm-init.js');
+    w.vrmManager = Object.assign(Object.create(w.VRMManager.prototype), {
+        _activeLoadToken: 0, _pendingModelLoadCount: 0, initThreeJS: async () => {},
+        pauseRendering() {}, resumeRendering() {}, cleanupUI() {},
+        async _loadModelInternal(url, _options, token) {
+            loads.push(url);
+            if (this._isLoadTokenActive(token)) this.currentModel = { url, vrm: {} };
+            return this.currentModel;
+        }
+    });
+    h.load('static/mmd/mmd-init.js'); h.load('static/app/app-character.js');
+    if (live2d && live2d !== 'before-index') loadLive2D();
+    return { loads, ready: w.startPageConfigLoad(), vrmBoot: w.initVRMModel() };
+}
+
+function desktopAvatarConfig(name, kind, revision, modelPath) {
+    return { success: true, lanlan_name: name, switch_revision: revision,
+        model_type: kind === 'live2d' ? kind : 'live3d', live3d_sub_type: kind === 'live2d' ? '' : kind,
+        model_path: modelPath, _reserved: { character_uid: name === 'C' ? 'c'.repeat(32) : UID_B } };
+}
+
+for (const kind of ['mmd', 'vrm']) {
+    test('desktop ' + kind + ' boot waits for real model config instead of loading a guessed fallback', async () => {
+        const h = harness(), slow = deferred(), started = deferred();
+        const path = kind === 'mmd' ? '/static/mmd/B/B.pmx' : '/static/vrm/B.vrm';
+        const model = desktopAvatarConfig('B', kind, 82, path);
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
+            if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+            if (url === '/api/config/page_config') { started.resolve(); await slow.promise; return { json: async () => model }; }
+            return { ok: true, json: async () => ({}) };
+        });
+        await started.promise;
+        for (const t of [...h.timers.values()]) if (t.delay === 1500) t.callback();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+        assert.deepEqual(startup.loads, []);
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 });
+        assert.deepEqual(startup.loads, [], 'a valid in-flight read still owns the renderer');
+        slow.resolve();
+        assert.equal(await startup.ready, true);
+        await startup.vrmBoot;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(startup.loads, [path]);
+    });
+}
+
+test('matching desktop IPC still needs asset config on a local model host', async () => {
+    const h = harness(), path = '/static/mmd/B/B.pmx';
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' }, async url => ({
+        ok: true, json: async () => url === '/api/config/page_config' ? desktopAvatarConfig('B', 'mmd', 82, path) : {}
+    }));
+    assert.equal(await startup.ready, true);
+    await startup.vrmBoot; await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(startup.loads, [path]);
+});
+
+test('a verified MMD role with no configured path may use the normal MMD default', async () => {
+    const h = harness();
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' }, async url => ({
+        ok: true, json: async () => url === '/api/config/page_config' ? desktopAvatarConfig('B', 'mmd', 82, '') : {}
+    }));
+    h.window.mmdModel = '/A/stale.pmx';
+    assert.equal(await startup.ready, true);
+    await startup.vrmBoot; await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(startup.loads, ['/static/mmd/Miku/Miku.pmx']);
+});
+
+test('pinned multi-window preview rejects a successful config response for another character', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.search = '?lanlan_name=Preview';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'A' };
+    h.context.fetch = async () => ({ json: async () => desktopAvatarConfig('A', 'mmd', 0, '/A/wrong.pmx') });
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), false);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
+    assert.ok(!h.window.mmdModel);
+});
+
+test('failed model bootstrap preserves identity and a real same-revision receipt recovers it', async () => {
+    const h = harness();
+    const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
+        if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+        if (url === '/api/config/page_config') return { ok: false, status: 503 };
+        return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, vrm: path } } } : {} };
+    });
+    await new Promise(setImmediate);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.deepEqual(startup.loads, []);
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+    assert.equal(await startup.ready, false, 'the committed live switch retires the unused boot payload');
+    await startup.vrmBoot;
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+    assert.deepEqual(startup.loads, [path]);
+});
+
+async function advanceModelBootTimer(h, delay) {
+    const entry = [...h.timers.entries()].find(([, timer]) => timer.delay === delay);
+    assert.ok(entry, 'expected active model timer ' + delay);
+    const [id, timer] = entry;
+    h.timers.delete(id);
+    timer.callback();
+    await new Promise(setImmediate);
+}
+
+for (const [kind, path] of [['live2d', '/B.model3.json'], ['mmd', '/static/mmd/B/B.pmx'], ['vrm', '/static/vrm/B.vrm']]) {
+    test('single model config authority recovers first 503 for ' + kind, async () => {
+        const h = harness(); let reads = 0;
+        const cfg = desktopAvatarConfig('B', kind, 82, path);
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+            if (url === '/api/config/page_config') {
+                return ++reads === 1 ? { ok: false, status: 503 } : { json: async () => cfg };
+            }
+            return { ok: true, json: async () => ({}) };
+        }, kind === 'live2d');
+        let readiness = 'pending';
+        h.window.pageConfigReady.then(result => { readiness = result; });
+        await new Promise(setImmediate);
+        assert.equal(readiness, 'pending');
+        assert.deepEqual(startup.loads, []);
+        assert.equal(reads, 1);
+        await advanceModelBootTimer(h, 600);
+        assert.equal(await startup.ready, true);
+        await startup.vrmBoot; await new Promise(setImmediate);
+        assert.deepEqual(startup.loads, [path]);
+        assert.equal(reads, 2);
+    });
+}
+
+for (const [phase, early] of [['headers', false], ['body', true]]) {
+    test('stalled model read yields to its signed same-current receipt (' + phase + ')', async () => {
+        const h = harness(), entered = deferred(), complete = deferred(), calls = avatarCalls(h);
+        h.context.AbortController = AbortController;
+        const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
+        let signal, reads = 0;
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async (url, options) => {
+            if (url === '/api/config/page_config') {
+                signal = options.signal; reads++;
+                if (phase === 'headers') { entered.resolve(); await complete.promise; }
+                return { json: async () => {
+                    if (phase === 'body') { entered.resolve(); await complete.promise; }
+                    return { ...model, model_path: '/stale/B.vrm' };
+                } };
+            }
+            return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, vrm: path } } } : {} };
+        });
+        await entered.promise;
+        if (early) await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 });
+        assert.deepEqual(calls, []);
+        await advanceModelBootTimer(h, 32000);
+        assert.equal(signal?.aborted, true);
+        if (!early) await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 });
+        assert.equal(await startup.ready, false);
+        await startup.vrmBoot;
+        complete.resolve(); await new Promise(setImmediate);
+        assert.deepEqual(startup.loads, [path]);
+        assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+        assert.equal(reads, 1, 'a live commit cancels the scheduled retry');
+    });
+}
+
+test('newer C retires the held B page request before a stale body can mutate anything', async () => {
+    const h = harness(), entered = deferred(), complete = deferred(), calls = avatarCalls(h);
+    h.context.AbortController = AbortController;
+    const path = '/static/mmd/C/C.pmx', model = desktopAvatarConfig('C', 'mmd', 83, path);
+    let signal;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async (url, options) => {
+        if (url === '/api/config/page_config') {
+            signal = options.signal;
+            return { json: async () => { entered.resolve(); await complete.promise; return desktopAvatarConfig('B', 'mmd', 82, '/wrong/B.pmx'); } };
+        }
+        return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { C: { ...model, mmd: path } } } : {} };
+    });
+    await entered.promise;
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 });
+    assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), true);
+    await new Promise(setImmediate);
+    assert.equal(signal?.aborted, true);
+    assert.equal(await startup.ready, false);
+    complete.resolve(); await startup.vrmBoot; await new Promise(setImmediate);
+    await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 });
+    assert.deepEqual(startup.loads, [path]);
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'C');
+    assert.equal(h.window.lanlan_config.switch_revision, 83);
+});
+
+test('central model bootstrap preserves recovery through a fourth successful read', async () => {
+    const h = harness(); let reads = 0;
+    const path = '/B.model3.json', cfg = desktopAvatarConfig('B', 'live2d', 82, path);
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+        if (url === '/api/config/page_config') {
+            reads++;
+            return reads <= 3 ? { ok: false, status: 503 } : { json: async () => cfg };
+        }
+        return { ok: true, json: async () => ({}) };
+    }, true);
+    await new Promise(setImmediate);
+    await advanceModelBootTimer(h, 600);
+    await advanceModelBootTimer(h, 1200);
+    await advanceModelBootTimer(h, 1800);
+    assert.equal(await startup.ready, true);
+    await startup.vrmBoot; await new Promise(setImmediate);
+    assert.equal(reads, 4);
+    assert.deepEqual(startup.loads, [path]);
+});
+test('bootstrap exhaustion is finite and still permits an authoritative receipt', async () => {
+    const h = harness(), calls = avatarCalls(h); let reads = 0;
+    const path = '/static/mmd/B/B.pmx', model = desktopAvatarConfig('B', 'mmd', 82, path);
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+        if (url === '/api/config/page_config') { reads++; return { ok: false, status: 503 }; }
+        return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, mmd: path } } } : {} };
+    });
+    await new Promise(setImmediate);
+    for (const delay of [600, 1200, 1800, 2400, 3000, 3600]) {
+        await advanceModelBootTimer(h, delay);
+    }
+    assert.equal(await startup.ready, false);
+    await startup.vrmBoot;
+    assert.equal(reads, 7);
+    assert.deepEqual(startup.loads, []);
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 81 }), false);
+    await h.window.handleCatgirlSwitch('B', 'A');
+    assert.deepEqual(calls, [], 'a legacy unstamped message cannot take over a verified identity');
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+    assert.deepEqual(startup.loads, [path]);
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+});
+
+for (const kind of ['vrm', 'mmd']) {
+    test('late legacy identity bootstrap recognizes a committed healthy ' + kind, async () => {
+        const h = harness(), entered = deferred(), identity = deferred(), calls = avatarCalls(h);
+        const path = kind === 'vrm' ? '/static/vrm/B.vrm' : '/static/mmd/B/B.pmx';
+        const model = desktopAvatarConfig('B', kind, 82, path);
+        let fullReads = 0;
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A' }, async url => {
+            if (url === '/api/characters/current_catgirl') {
+                entered.resolve(); await identity.promise;
+                return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+            }
+            if (url === '/api/config/page_config') { fullReads++; return { ok: false, status: 503 }; }
+            return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, [kind]: path } } } : {} };
+        });
+        await entered.promise;
+        assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+        identity.resolve(); await new Promise(setImmediate);
+        assert.equal(fullReads, 0, 'a healthy committed role must not get a second boot owner');
+        assert.equal(await startup.ready, true);
+        await startup.vrmBoot; await new Promise(setImmediate);
+        await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 82 });
+        assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+        assert.deepEqual(startup.loads, [path]);
+    });
+}
+
+test('a truly missing previously committed model still permits verified bootstrap and receipt recovery', async () => {
+    const h = harness(), entered = deferred(), identity = deferred(), calls = avatarCalls(h);
+    const path = '/static/mmd/B/B.pmx', model = desktopAvatarConfig('B', 'mmd', 82, path);
+    let fullReads = 0;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A' }, async url => {
+        if (url === '/api/characters/current_catgirl') {
+            entered.resolve(); await identity.promise;
+            return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+        }
+        if (url === '/api/config/page_config') { fullReads++; return { ok: false, status: 503 }; }
+        return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, mmd: path } } } : {} };
+    });
+    await entered.promise;
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+    h.window.mmdManager.currentModel = null;
+    identity.resolve(); await new Promise(setImmediate);
+    assert.equal(fullReads, 1);
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 82 }), true);
+    assert.equal(await startup.ready, false);
+    await startup.vrmBoot;
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit', 'begin', 'commit']);
+    assert.deepEqual(startup.loads, [path, path], 'one original load plus one genuine recovery');
+});
+
+for (const alreadyLoading of [false, true]) {
+    test('verified snapshot alone recovers a lost committed VRM, excluding a real load: ' + alreadyLoading, async () => {
+        const h = harness(), entered = deferred(), identity = deferred(), calls = avatarCalls(h);
+        const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
+        let reads = 0;
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A' }, async url => {
+            if (url === '/api/characters/current_catgirl') {
+                entered.resolve(); await identity.promise;
+                return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+            }
+            if (url === '/api/config/page_config') {
+                return ++reads === 1 ? { ok: false, status: 503 } : { json: async () => model };
+            }
+            return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, vrm: path } } } : {} };
+        });
+        await entered.promise;
+        assert.equal(await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 }), true);
+        h.window.vrmManager.currentModel = null;
+        h.window.vrmManager._isLoadingModel = alreadyLoading;
+        identity.resolve(); await new Promise(setImmediate);
+        await advanceModelBootTimer(h, 600);
+        assert.equal(await startup.ready, true);
+        await startup.vrmBoot;
+        assert.equal(reads, 2);
+        assert.deepEqual(startup.loads, alreadyLoading ? [path] : [path, path]);
+        assert.deepEqual(calls.map(c => c[0]), alreadyLoading ? ['begin', 'commit'] : ['begin', 'commit', 'begin', 'commit']);
+    });
+}
+
+test('pre-index Live2D startup does not refetch or reload after C has committed', async () => {
+    const h = harness(), calls = avatarCalls(h); let reads = 0;
+    const domReady = [];
+    h.context.document.addEventListener = (event, listener) => {
+        if (event === 'DOMContentLoaded') domReady.push(listener);
+    };
+    const path = '/C.model3.json', config = desktopAvatarConfig('C', 'live2d', 83, path);
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+        if (url === '/api/config/page_config') { reads++; return { ok: false, status: 503 }; }
+        if (url.includes('/current_live2d_model')) return { ok: true, json: async () => ({
+            success: true, model_info: { path },
+        }) };
+        return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { C: config } } : {} };
+    }, 'before-index');
+    await new Promise(setImmediate);
+    assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), true);
+    assert.equal(await startup.ready, false);
+    for (const ready of domReady) ready();
+    if ([...h.timers.values()].some(timer => timer.delay === 1000)) await advanceModelBootTimer(h, 1000);
+    for (const [, timer] of [...h.timers]) if (timer.delay <= 4000) timer.callback();
+    await new Promise(setImmediate);
+    assert.equal(reads, 1);
+    assert.deepEqual(startup.loads, [path]);
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'commit']);
+});
+
+test('Live2D loaded ahead of index waits past the old 5-second local fallback for the shared retry', async () => {
+    const h = harness(), delayed = deferred(), domReady = [];
+    h.context.document.addEventListener = (event, listener) => {
+        if (event === 'DOMContentLoaded') domReady.push(listener);
+    };
+    let reads = 0;
+    const path = '/B.model3.json';
+    const cfg = desktopAvatarConfig('B', 'live2d', 82, path);
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+        if (url === '/api/config/page_config') {
+            if (++reads === 1) return { ok: false, status: 503 };
+            await delayed.promise;
+            return { json: async () => cfg };
+        }
+        return { ok: true, json: async () => ({}) };
+    }, 'before-index');
+    for (const ready of domReady) ready();
+    await new Promise(setImmediate);
+    await advanceModelBootTimer(h, 600);
+    if ([...h.timers.values()].some(timer => timer.delay === 1000)) await advanceModelBootTimer(h, 1000);
+    for (const [id, timer] of [...h.timers]) if (timer.delay === 5000) {
+        h.timers.delete(id);
+        timer.callback();
+    }
+    await new Promise(setImmediate);
+    assert.deepEqual(startup.loads, []);
+    delayed.resolve();
+    assert.equal(await startup.ready, true);
+    await startup.vrmBoot; await new Promise(setImmediate);
+    assert.deepEqual(startup.loads, [path]);
+    assert.equal(reads, 2);
+});
+
+for (const rejectBeforeTakeover of [false, true]) {
+    test('late MMD settings respect the renderer owner (C succeeds: ' + !rejectBeforeTakeover + ')', async () => {
+        const h = harness(), settings = deferred(), started = deferred(), canvas = { style: {}, dataset: {} };
+        h.context.document.getElementById = id => id === 'mmd-canvas' ? canvas : null;
+        const pathB = '/static/mmd/B/B.pmx', pathC = '/static/mmd/C/C.pmx';
+        const modelB = desktopAvatarConfig('B', 'mmd', 82, pathB);
+        const modelC = desktopAvatarConfig('C', 'mmd', 83, pathC);
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
+            if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (url.endsWith('/B/mmd_settings')) { started.resolve(); await settings.promise; }
+            if (url === '/api/characters' && rejectBeforeTakeover) return { ok: false, status: 503 };
+            return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { C: { ...modelC, mmd: pathC } } } : {} };
+        });
+        assert.equal(await startup.ready, true);
+        await started.promise;
+        assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), !rejectBeforeTakeover);
+        settings.resolve(); await startup.vrmBoot;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(h.window.lanlan_config.lanlan_name, rejectBeforeTakeover ? 'B' : 'C');
+        assert.deepEqual(startup.loads, [rejectBeforeTakeover ? pathB : pathC]);
+        assert.equal(canvas.style.visibility, 'visible');
+        assert.equal(canvas.style.pointerEvents, 'auto');
+    });
+}
+
+test('VRM boot applies its own outline after a different switch fails before takeover', async () => {
+    const h = harness(), metadata = deferred(), entered = deferred(), outlined = [];
+    const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
+    const lighting = { outlineWidthScale: 1.75 };
+    let failNextRoles = true;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
+        if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
+        if (url === '/api/config/page_config') return { json: async () => ({ ...model, lighting }) };
+        if (url === '/api/model/vrm/config') { entered.resolve(); await metadata.promise; }
+        if (url === '/api/characters' && failNextRoles) {
+            failNextRoles = false;
+            return { ok: false, status: 503 };
+        }
+        return { ok: true, json: async () => ({ '猫娘': { B: { ...model, lighting } } }) };
+    });
+    h.context.requestAnimationFrame = callback => { queueMicrotask(callback); return 0; };
+    h.window.vrmManager.core = { applyOutlineWidth: value => outlined.push(value) };
+    assert.equal(await startup.ready, true);
+    await entered.promise;
+    assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), false);
+    metadata.resolve(); await startup.vrmBoot;
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.deepEqual(startup.loads, [path]);
+    assert.deepEqual(outlined, [1.75]);
+});
+
 test('a newer page snapshot supersedes an older switch already loading', async () => {
     const h = harness(); const calls = avatarCalls(h);
     h.context.URLSearchParams = URLSearchParams;
@@ -1139,10 +1701,283 @@ test('a newer page snapshot supersedes an older switch already loading', async (
     pageReply.resolve({ json: async () => ({
         success: true, lanlan_name: 'A', switch_revision: 923, model_type: 'live2d'
     }) });
-    await loading;
+    assert.equal(await loading, false, 'a queued target is not yet applied');
     roleReply.resolve(); await older;
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(h.window.lanlan_config.lanlan_name, 'A');
     assert.equal(h.window.lanlan_config.switch_revision, 923);
     assert.equal(calls.filter(x => x[0] === 'commit').at(-1)[2].name, 'A');
+});
+
+test('same-name backend re-selection retries the frontend rollback', async () => {
+    const h = harness(), calls = avatarCalls(h), fetch = h.context.fetch;
+    h.load('static/app/app-character.js');
+    h.context.fetch = async () => { throw new Error('temporary role failure'); };
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 10 });
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    h.context.fetch = fetch;
+    await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 11 });
+    await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 11 });
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'rollback', 'begin', 'commit']);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+});
+
+for (const failFirst of [false, true]) {
+    test('same revision BC duplicate after settlement: first attempt ' + (failFirst ? 'failed' : 'committed'), async () => {
+        const h = harness(), calls = avatarCalls(h), fetch = h.context.fetch;
+        h.load('static/app/app-character.js');
+        const deliver = loadSwitchRelay(h);
+        if (failFirst) h.context.fetch = async () => { throw new Error('offline'); };
+        const send = async () => {
+            await deliver({ data: { action: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A',
+                switch_revision: 20, timestamp: 123 } });
+            await new Promise(setImmediate);
+        };
+        await send();
+        h.context.fetch = fetch;
+        await send(); await send();
+        assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+        assert.deepEqual(calls.map(c => c[0]), failFirst ? ['begin', 'rollback', 'begin', 'commit'] : ['begin', 'commit']);
+    });
+}
+
+for (const renderer of ['live2d', 'mmd']) {
+    test('same-current ' + renderer + ' recovery after real cleanup and rollback, not during cold boot', async () => {
+        const h = harness(), calls = avatarCalls(h);
+        h.window.location.pathname = '/';
+        h.window.lanlan_config = { lanlan_name: 'A', model_type: renderer };
+        h.load('static/app/app-character.js');
+        await h.window.handleCatgirlSwitch('A', 'A', { switchRevision: 30 });
+        assert.deepEqual(calls, [], 'a cold renderer is not a failed switch');
+        const manager = renderer === 'mmd'
+            ? { currentModel: { mesh: {} }, dispose() { this.currentModel = null; } }
+            : { currentModel: {}, async removeModel() { this.currentModel = null; } };
+        h.window[renderer + 'Manager'] = manager;
+        // Fetch the target B, then disconnect after cleanup but before its model is usable.
+        h.context.fetch = async () => ({ ok: true, json: async () => ({ '猫娘': { B: { model_type: renderer } } }) });
+        h.window.connectWebSocket = () => { throw new Error('disconnected after old renderer teardown'); };
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 31 });
+        assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+        assert.equal(manager.currentModel, null);
+        const before = calls.length;
+        await h.window.handleCatgirlSwitch('A', 'B', { switchRevision: 32 });
+        assert.equal(calls[before]?.[0], 'begin', 'the real lost model requires recovery');
+    });
+}
+
+for (const path of ['cached', 'event']) {
+    test('IPC ' + path + ' avatar error settles both readiness promises', async () => {
+        const h = harness();
+        h.context.URLSearchParams = URLSearchParams;
+        h.window.__NEKO_MULTI_WINDOW__ = true;
+        h.window.appChatAvatar = { setExternalAvatar() { throw new Error('avatar unavailable'); } };
+        const detail = { lanlan_name: 'A', switch_revision: 40, avatarDataUrl: 'data:image/png;base64,YQ==' };
+        if (path === 'cached') h.window.__nekoInjectedConfig = detail;
+        h.load('static/js/index.js');
+        const result = h.window.startPageConfigLoad();
+        if (path === 'event') {
+            await new Promise(setImmediate);
+            h.window.dispatchEvent({ type: 'neko:config-injected', detail });
+        }
+        assert.equal(await result, false);
+        assert.equal(await h.window.pageConfigReady, false);
+    });
+}
+
+for (const route of ['HTTP', 'IPC']) {
+    test(route + ' handoff reports an actual failed switch as not applied', async () => {
+        const h = harness();
+        h.context.URLSearchParams = URLSearchParams;
+        h.load('static/js/index.js'); h.load('static/app/app-character.js');
+        await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 50 });
+        const detail = { success: true, lanlan_name: 'A', switch_revision: 51, model_type: 'live2d' };
+        h.window.__NEKO_MULTI_WINDOW__ = route === 'IPC';
+        h.window.__nekoInjectedConfig = detail;
+        h.context.fetch = async url => {
+            if (url.startsWith('/api/config/page_config')) return { ok: true, json: async () => detail };
+            throw new Error('new role load failed');
+        };
+        assert.equal(await h.window.startPageConfigLoad(), false);
+        assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    });
+}
+
+for (const settlement of ['finally', 'watchdog']) {
+    test(settlement + ' replay cannot replace a newer receipt already queued on the microtask queue', async () => {
+        const h = harness(), calls = avatarCalls(h), firstRead = deferred();
+        h.load('static/app/app-character.js');
+        const config = { ok: true, json: async () => ({ '猫娘': {
+            B: { model_type: 'live2d' }, C: { model_type: 'live2d' }, D: { model_type: 'live2d' }
+        } }) };
+        let first = true;
+        h.context.fetch = () => {
+            if (!first) return Promise.resolve(config);
+            first = false;
+            return firstRead.promise;
+        };
+        const send = (name, revision) => h.window.handleCatgirlSwitch(name, 'A', { switchRevision: revision });
+        const firstAttempt = send('B', 31);
+        await send('C', 32);
+        const enqueueD = () => queueMicrotask(() => send('D', 33));
+        if (settlement === 'watchdog') {
+            enqueueD();
+            [...h.timers.values()].find(t => t.delay === 45000).callback();
+        } else {
+            const commit = h.window.appChatAvatarState.commitCharacterSwitch;
+            h.window.appChatAvatarState.commitCharacterSwitch = (id, info) => {
+                commit(id, info);
+                if (id === 1) enqueueD();
+            };
+        }
+        firstRead.resolve(config);
+        await firstAttempt;
+        await new Promise(setImmediate);
+        assert.equal(h.window.appState._latestCatgirlSwitchRevision, 33);
+        assert.equal(h.window.lanlan_config.lanlan_name, 'D');
+        assert.equal(calls.filter(c => c[0] === 'commit' && c[2].name === 'C').length, 0);
+    });
+}
+
+for (const initiallyMounted of [true, false]) {
+    test('rollback distinguishes an incoming MMD mesh from the original: mounted=' + initiallyMounted, async () => {
+        const h = harness(), w = h.window, calls = avatarCalls(h), mountedB = deferred(), animation = deferred();
+        w.location.pathname = '/';
+        w.lanlan_config = { lanlan_name: 'A', model_type: 'live3d', live3d_sub_type: 'mmd' };
+        const manager = name => ({
+            currentModel: name ? { mesh: { name } } : null, scene: {}, renderer: {},
+            dispose() { this.currentModel = null; },
+            async loadModel(url) { this.currentModel = { mesh: { name: url.slice(1, -4) } }; },
+            loadAnimation() { mountedB.resolve(); return animation.promise; }, playAnimation() {}
+        });
+        w.mmdManager = initiallyMounted ? manager('A') : null;
+        w.initMMDModel = async () => (w.mmdManager = manager(''));
+        h.context.fetch = async url => ({ ok: true, json: async () => url === '/api/characters'
+            ? { '猫娘': { A: { model_type: 'mmd', mmd: '/A.pmx' },
+                B: { model_type: 'mmd', mmd: '/B.pmx', mmd_idle_animation: '/B.vmd' } } }
+            : { success: false } });
+        h.load('static/app/app-character.js');
+        // A failed lookup before teardown cannot displace a mounted A or take over a cold boot.
+        const read = h.context.fetch;
+        h.context.fetch = async () => { throw new Error('offline'); };
+        await w.handleCatgirlSwitch('B', 'A', { switchRevision: 100 });
+        const before = calls.length;
+        await w.handleCatgirlSwitch('A', 'B', { switchRevision: 101 });
+        assert.equal(calls.length, before);
+        h.context.fetch = read;
+        const first = w.handleCatgirlSwitch('B', 'A', { switchRevision: 102 });
+        await mountedB.promise;
+        [...h.timers.values()].find(t => t.delay === 45000).callback();
+        assert.equal(w.lanlan_config.lanlan_name, 'A');
+        assert.equal(w.mmdManager.currentModel.mesh.name, 'B');
+        // Another failed attempt before teardown must not promote B to A's rollback identity.
+        h.context.fetch = async () => { throw new Error('offline again'); };
+        await w.handleCatgirlSwitch('A', 'B', { switchRevision: 103 });
+        h.context.fetch = read;
+        await w.handleCatgirlSwitch('A', 'B', { switchRevision: 103 });
+        animation.resolve(); await first;
+        assert.equal(w.mmdManager.currentModel.mesh.name, 'A');
+        assert.equal(calls.filter(c => c[0] === 'commit' && c[2].name === 'A').length, 1);
+    });
+}
+
+test('a cold MMD renderer is not treated as replaced if a failed switch never installs a model', async () => {
+    const h = harness(), calls = avatarCalls(h), w = h.window;
+    w.location.pathname = '/';
+    w.lanlan_config = { lanlan_name: 'A', model_type: 'mmd' };
+    h.context.fetch = async () => ({ ok: true, json: async () => ({ '猫娘': { B: { model_type: 'mmd' } } }) });
+    w.clearAudioQueue = async () => { throw new Error('stopped after cleanup, before model load'); };
+    h.load('static/app/app-character.js');
+    await w.handleCatgirlSwitch('B', 'A', { switchRevision: 200 });
+    await w.handleCatgirlSwitch('A', 'B', { switchRevision: 201 });
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'rollback']);
+});
+
+for (const rolledBack of [false, true]) {
+    test('Live2D self-healing reconciles the active socket, rolledBack=' + rolledBack, async () => {
+        const h = harness(), w = h.window, calls = avatarCalls(h);
+        h.context.URLSearchParams = URLSearchParams;
+        w.location.pathname = '/';
+        const socket = name => ({ name, url: 'ws://app/ws/' + encodeURIComponent(name), readyState: 1, close() { this.readyState = 3; } });
+        w.appState.socket = socket('A');
+        w.connectWebSocket = () => { w.appState.socket = socket(w.lanlan_config.lanlan_name); };
+        let active = 'A', reads = 0, mounts = 0, revision = 701, failTargetB = false;
+        h.context.fetch = async url => {
+            if (url.startsWith('/api/config/page_config')) {
+                reads++;
+                return { ok: true, json: async () => ({ success: true, lanlan_name: active,
+                    switch_revision: revision, model_type: 'live2d',
+                    model_path: revision === 701 ? '' : '/' + active + '.model3.json' }) };
+            }
+            if (url === '/api/characters') return { ok: true, json: async () => ({
+                '猫娘': { A: { model_type: 'live2d' }, B: { model_type: 'live2d' } }
+            }) };
+            if (url.includes('/current_live2d_model')) {
+                if (failTargetB && url.endsWith('=B')) return { ok: false, status: 503 };
+                return { ok: true, json: async () => ({ success: true, model_info: { path: '/' + active + '.model3.json' } }) };
+            }
+            return { ok: true, json: async () => ({}) };
+        };
+        h.context.Live2DManager = class {
+            currentModel = null; pixi_app = { renderer: {} };
+            getCurrentModel() { return this.currentModel; }
+            getEmotionMapping() { return {}; }
+            removeModel() { this.currentModel = null; }
+            loadUserPreferences() { return []; }
+            loadModel() { mounts++; this.currentModel = {}; }
+        };
+        h.load('static/js/index.js'); h.load('static/app/app-character.js');
+        assert.equal(await w.startPageConfigLoad(), true);
+        h.load('static/live2d/live2d-init.js');
+        await new Promise(setImmediate);
+        const retry = [...h.timers.values()].find(t => t.delay === 600);
+        assert.ok(retry, 'the real boot entry scheduled a retry for the empty A model path');
+        // Count attempts to start the bootstrap loader again, not the owned central loader.
+        vm.runInContext('const originalInit = initLive2DModel; window.retryInits = 0; '
+            + 'initLive2DModel = (...args) => { window.retryInits++; return originalInit(...args); }', h.context);
+        if (rolledBack) {
+            failTargetB = true;
+            await w.handleCatgirlSwitch('B', 'A', { switchRevision: 702 });
+            assert.equal(w.lanlan_config.lanlan_name, 'A');
+            assert.equal(w.appState.socket.name, 'B', 'the target socket already opened before the load failed');
+            revision = 703;
+        } else {
+            active = 'B'; revision = 702;
+        }
+        await retry.callback(); await new Promise(setImmediate);
+        assert.equal(w.appState.socket.name, active, 'the HTTP snapshot alone must repair the connection');
+        await w.handleCatgirlSwitch(active, rolledBack ? 'B' : 'A', { switchRevision: revision });
+        assert.equal(reads, 2);
+        assert.deepEqual(calls.map(c => c[0]), rolledBack ? ['begin', 'rollback', 'begin', 'commit'] : ['begin', 'commit']);
+        assert.equal(w.appState.socket.name, active);
+        assert.equal(w.lanlan_config.lanlan_name, active);
+        assert.equal(mounts, 1);
+        assert.equal(w.retryInits, 0, 'central already owns the mounted model; do not boot it again');
+    });
+}
+
+test('healthy same-current chat socket is not replaced, including encoded names and non-character transports', async () => {
+    for (const [url, readyState] of [['wss://example.test/ws/%E7%8C%AB', 1],
+        ['ws://example.test/ws/%E7%8C%AB', 0], ['ws://example.test/bridge', 1], ['ws://example.test/ws/B', 3]]) {
+        const h = harness(), calls = avatarCalls(h);
+        h.window.lanlan_config.lanlan_name = '猫';
+        h.window.appState.socket = { url, readyState };
+        h.load('static/app/app-character.js');
+        assert.equal(await h.window.handleCatgirlSwitch('猫', '猫', { switchRevision: 700 }), true);
+        assert.deepEqual(calls, []);
+    }
+});
+
+test('same-character HTTP refresh still fills a cold VRM model path without a switch attempt', async () => {
+    const h = harness(), calls = avatarCalls(h);
+    h.context.URLSearchParams = URLSearchParams;
+    h.window.location.pathname = '/';
+    let path = '';
+    h.context.fetch = async () => ({ ok: true, json: async () => ({ success: true, lanlan_name: 'A',
+        switch_revision: 710, model_type: 'live3d', live3d_sub_type: 'vrm', model_path: path }) });
+    h.load('static/js/index.js'); h.load('static/app/app-character.js');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    path = '/A.vrm';
+    assert.equal(await h.window.reloadPageConfig(), true);
+    assert.equal(h.window.vrmModel, path);
+    assert.deepEqual(calls, []);
 });

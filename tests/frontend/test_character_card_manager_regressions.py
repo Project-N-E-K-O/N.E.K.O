@@ -2671,7 +2671,7 @@ def test_character_card_manager_ignores_older_switch_response_after_newer_commit
             resolveC(new Response(JSON.stringify({ success: true, switch_revision: 802 }), {
                 status: 200, headers: { 'Content-Type': 'application/json' }
             }));
-            await second;
+            const newerApplied = await second;
             const afterC = {
                 name: window._workshopCurrentCatgirl,
                 revision: window._workshopCurrentCatgirlRevision
@@ -2680,7 +2680,7 @@ def test_character_card_manager_ignores_older_switch_response_after_newer_commit
             resolveB(new Response(JSON.stringify({ success: true, switch_revision: 801 }), {
                 status: 200, headers: { 'Content-Type': 'application/json' }
             }));
-            await first;
+            const olderApplied = await first;
             const finalState = {
                 name: window._workshopCurrentCatgirl,
                 revision: window._workshopCurrentCatgirlRevision,
@@ -2691,11 +2691,13 @@ def test_character_card_manager_ignores_older_switch_response_after_newer_commit
             };
             window.fetch = originalFetch;
             window.BroadcastChannel = NativeBroadcastChannel;
-            return { afterC, finalState };
+            return { afterC, finalState, newerApplied, olderApplied };
         }
         """
     )
 
+    assert state['newerApplied'] is True
+    assert state['olderApplied'] is False
     assert state['afterC'] == {'name': 'C', 'revision': 802}
     assert state['finalState']['name'] == 'C'
     assert state['finalState']['revision'] == 802
@@ -2715,6 +2717,9 @@ def test_cards_refresh_cannot_erase_newer_switch_receipt(
         """
         async lateSnapshot => {
             const originalFetch = window.fetch.bind(window);
+            const originalMessage = window.showMessage;
+            const successes = [];
+            window.showMessage = (...args) => { if (args[1] === 'success') successes.push(args[0]); };
             const response = data => new Response(JSON.stringify(data), {
                 status: 200, headers: { 'Content-Type': 'application/json' }
             });
@@ -2745,9 +2750,10 @@ def test_cards_refresh_cannot_erase_newer_switch_receipt(
                 const afterSwitch = [window._workshopCurrentCatgirl, window._workshopCurrentCatgirlRevision];
                 releaseSnapshot();
                 await refresh;
-                return { afterSwitch, afterRefresh: [window._workshopCurrentCatgirl, window._workshopCurrentCatgirlRevision] };
+                return { afterSwitch, successes, afterRefresh: [window._workshopCurrentCatgirl, window._workshopCurrentCatgirlRevision] };
             } finally {
                 window.fetch = originalFetch;
+                window.showMessage = originalMessage;
             }
         }
         """,
@@ -2755,3 +2761,5 @@ def test_cards_refresh_cannot_erase_newer_switch_receipt(
     )
     assert state["afterSwitch"] == ["C", 802]
     assert state["afterRefresh"] == ["C", 802]
+    if late_snapshot == "preflight":
+        assert state["successes"] == [], "stale no-op preflight did not apply A"

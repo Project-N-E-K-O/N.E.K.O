@@ -422,6 +422,11 @@ window.addEventListener('vrm-modules-ready', () => {
     }
 });
 
+// A startup load can wait for config before VRMManager has a load token.
+// Let same-character receipts recognize that phase, and yield to a later switch.
+let ownsVRMStartup = null;
+window.isVRMStartupFor = name => !!name && !!ownsVRMStartup?.(name);
+
 // 自动初始化函数
 async function initVRMModel() {
     // 防止重复进入：使用共享锁，避免与 checkAndLoadVRM 并发
@@ -432,6 +437,18 @@ async function initVRMModel() {
     try {
         // 标记开始（共享锁）- 放在 try 块内确保 finally 能正确释放
         window._isVRMLoading = true;
+        let startupName = window.lanlan_config?.lanlan_name || '';
+        const initialAttempt = window.appState?._switchAttemptCounter || 0;
+        let startupManager, loadToken;
+        let loadStarted = false;
+        const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
+            && (!startupName || startupName === window.lanlan_config?.lanlan_name)
+            && (!startupManager || window.vrmManager === startupManager)
+            && (loadStarted ? startupManager._activeLoadToken === loadToken
+                : (window.appState?._switchAttemptCounter || 0) === initialAttempt || (startupName
+                    && (!window.vrmManager?.currentModel?.vrm
+                        || window.appCharacter?.needsCurrentCharacterRecovery?.(startupName, { fromSnapshot: true }))));
+        ownsVRMStartup = name => name === (startupName || window.lanlan_config?.lanlan_name) && stillOwnsStartup();
         if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             await window.__nekoStorageLocationStartupBarrier;
         }
@@ -448,8 +465,11 @@ async function initVRMModel() {
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;
         }
-        // 在此处同步后端路径配置 
+        if (window.__nekoPageModelConfigPending || !stillOwnsStartup()) return;
+        startupName ||= window.lanlan_config?.lanlan_name || '';
+        // 在此处同步后端路径配置
         await fetchVRMConfig();
+        if (!stillOwnsStartup()) return;
 
         // 主动去服务器拉取最新的角色详情（包含光照）
         try {
@@ -465,6 +485,7 @@ async function initVRMModel() {
                         console.error('[VRM Init] JSON 解析失败:', parseError);
                         throw new Error('角色数据格式错误');
                     }
+                    if (!stillOwnsStartup()) return;
                     // 提取当前角色的数据
                     const charData = data['猫娘']?.[currentName];
                     if (charData) {
@@ -494,6 +515,7 @@ async function initVRMModel() {
                 console.warn('[VRM Init] 网络请求失败，将使用默认设置:', e);
             }
         }
+        if (!stillOwnsStartup()) return;
         // 2. 获取并确定模型路径
         // 如果是模型管理页面，不自动加载模型，直接返回
         if (isModelManagerPage()) {
@@ -617,7 +639,9 @@ async function initVRMModel() {
 
         // 初始化 Three.js 场景，传入光照配置（如果存在）
         const lightingConfig = window.lanlan_config?.lighting || null;
-        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
+        startupManager = window.vrmManager;
+        await startupManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
+        if (!stillOwnsStartup()) return;
 
         // 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(targetModelPath);
@@ -625,7 +649,11 @@ async function initVRMModel() {
 
         // 朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
-        await window.vrmManager.loadModel(modelUrl);
+        const loading = startupManager.loadModel(modelUrl);
+        loadToken = startupManager._activeLoadToken;
+        loadStarted = true;
+        await loading;
+        if (!stillOwnsStartup()) return;
 
         // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
         _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);
@@ -638,7 +666,7 @@ async function initVRMModel() {
         const outlineScale = window.lanlan_config?.lighting?.outlineWidthScale;
         requestAnimationFrame(() => {
             // 防止竞态条件：验证模型是否仍然是同一个
-            if (window.vrmManager?.currentModel !== currentModelRef) {
+            if (!stillOwnsStartup() || startupManager.currentModel !== currentModelRef) {
                 console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
                 return;
             }
@@ -651,6 +679,7 @@ async function initVRMModel() {
         console.error('[VRM Init] 错误详情:', error.stack);
     } finally {
         // 无论成功还是失败，包括所有早期返回，最后都释放锁（共享锁）
+        ownsVRMStartup = null;
         window._isVRMLoading = false;
     }
 }
@@ -781,7 +810,7 @@ window.forceUnlockVRM = function () {
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function () {
     // 角色卡导出页不自动加载
-    if (window._cardExportPage) return;
+    if (window._cardExportPage || window.__nekoPageModelConfigPending) return;
     // 使用共享锁，避免与 initVRMModel 并发
     if (window._isVRMLoading) return;
     window._isVRMLoading = true;

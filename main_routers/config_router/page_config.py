@@ -25,9 +25,9 @@ import json
 import urllib.parse
 from fastapi import Response
 from ..shared_state import get_config_manager
-from ..characters_router import get_current_live2d_model, ensure_current_catgirl_switch_revision
+from ..characters_router import get_current_live2d_model
+from ..characters_router.crud import read_current_catgirl_snapshot, wait_for_current_catgirl_snapshot_settlement
 from utils.config_manager import get_reserved
-from utils.character_memory import character_config_mutation_lock
 from config import (
     AUTOSTART_CSRF_TOKEN,
     CHARACTER_SYSTEM_RESERVED_FIELDS,
@@ -241,12 +241,25 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
 
         # Retrieve character data.
         _config_manager = get_config_manager()
-        # Current-character identity and its commit revision must come from one
-        # serialized snapshot. Otherwise a newly opened model page can learn C
-        # but start at revision 0 and later accept a delayed B receipt.
-        async with character_config_mutation_lock:
-            master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
-            current_switch_revision = ensure_current_catgirl_switch_revision(her_name)
+        # The heavy lifecycle lock can span a remote memory reload. Pair each
+        # read with the committed identity without waiting for that operation.
+        for attempt in range(3):
+            data, her_name, current_switch_revision = await read_current_catgirl_snapshot(
+                _config_manager.aget_character_data, lambda value: value[1],
+            )
+            master_name, observed_name, master_basic_config, lanlan_basic_config = data[:4]
+            if (lanlan_name and lanlan_name != her_name) or her_name == observed_name or her_name in lanlan_basic_config:
+                break
+            if attempt == 1:
+                # A rename may temporarily remove the committed entry from the
+                # file. Stay on this request until it settles so a rollback
+                # needs no extra switch event to finish the original boot.
+                await wait_for_current_catgirl_snapshot_settlement()
+        else:
+            # A provisional rename may have already removed A from disk. Do not
+            # present another character's assets as A before it actually commits.
+            return {"success": False, "lanlan_name": her_name, "switch_revision": current_switch_revision,
+                    "error": "Current character configuration is changing"}
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # Use lanlan_name when provided; otherwise use the current character.

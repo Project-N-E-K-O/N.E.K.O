@@ -36,22 +36,18 @@
                     return;
                 }
 
-                // Deduplicate: same message arrives via both BC and postMessage.
-                // Character switches already carry backend commit order; use that
-                // identity instead of Date.now(), where distinct commits can share
-                // the same millisecond and one would otherwise be dropped.
-                var dedupTimestamp = message.action === 'catgirl_switched'
-                    && Number.isSafeInteger(message.switch_revision)
-                    && message.switch_revision > 0
-                    ? message.switch_revision
-                    : message.timestamp;
+                // Only the switch handler knows whether a stamped receipt is already satisfied
+                // or must retry a failed load. Keep legacy and other message dedupe unchanged.
+                var stampedSwitch = message.action === 'catgirl_switched'
+                    && Number.isSafeInteger(message.switch_revision) && message.switch_revision > 0;
                 if (
+                    !stampedSwitch &&
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
                     && I.isDuplicateMessage(
                         message.action,
-                        dedupTimestamp,
+                        message.timestamp,
                         message.lifecycleSequence
                     )
                 ) {

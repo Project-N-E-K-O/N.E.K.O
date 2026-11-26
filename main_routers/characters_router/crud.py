@@ -171,6 +171,35 @@ def ensure_current_catgirl_switch_revision(current_catgirl: str) -> int:
     return _catgirl_switch_revision
 
 
+async def read_current_catgirl_snapshot(read, name_from):
+    """Read without waiting behind a lifecycle transaction's memory/IO work.
+
+    A committed switch may run while the configuration read is suspended. An
+    active rename/delete may also have written a tentative name it can roll
+    back. In either case the already published identity/revision wins; never
+    mint a new revision for an old or provisional read. There is no await
+    between sampling the publication and returning the paired result.
+    """
+    lock = character_config_mutation_lock
+    before, generation = _catgirl_switch_revision, getattr(lock, 'generation', 0)
+    started_locked = lock.locked()
+    data = await read()
+    crossed_mutation = started_locked or lock.locked() or generation != getattr(lock, 'generation', 0)
+    if _catgirl_switch_revision and (before != _catgirl_switch_revision or crossed_mutation):
+        return data, _catgirl_switch_revision_target, _catgirl_switch_revision
+    name = name_from(data)
+    return data, name, ensure_current_catgirl_switch_revision(name)
+
+
+async def wait_for_current_catgirl_snapshot_settlement():
+    # Only the startup reader missing its committed profile uses this barrier.
+    # It observes completion without joining the writers' lock queue.
+    try:
+        await asyncio.wait_for(character_config_mutation_lock.wait_for_release(), timeout=30)
+    except asyncio.TimeoutError:
+        pass  # One final read can still succeed; a stuck mutation cannot hang boot forever.
+
+
 def _get_new_catgirl_default_voice_id() -> str:
     """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 
@@ -1449,6 +1478,8 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     # If renaming the active neko, cache its WebSocket first;
     # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.
     is_current_catgirl = characters.get('当前猫娘') == old_name
+    if is_current_catgirl:
+        ensure_current_catgirl_switch_revision(old_name)  # keep the committed name visible through rollback
 
     # Check whether the current character has an active voice session.
     if is_current_catgirl and old_name in session_manager:
@@ -1942,10 +1973,12 @@ async def _rename_catgirl_transaction(
 
 async def current_catgirl_switch_snapshot(config_manager):
     """Read the current identity and its ordering evidence as one snapshot."""
-    async with character_config_mutation_lock:
-        characters = await config_manager.aload_characters()
-        current_catgirl = characters.get('当前猫娘', '')
-        return current_catgirl, ensure_current_catgirl_switch_revision(current_catgirl)
+    if character_config_mutation_lock.locked() and _catgirl_switch_revision:
+        return _catgirl_switch_revision_target, _catgirl_switch_revision
+    _, name, revision = await read_current_catgirl_snapshot(
+        config_manager.aload_characters, lambda data: data.get('当前猫娘', ''),
+    )
+    return name, revision
 
 
 @router.get('/current_catgirl')
@@ -1985,6 +2018,7 @@ async def set_current_catgirl(request: Request):
         if catgirl_name not in latest_characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
         old_catgirl = latest_characters.get('当前猫娘', '')
+        ensure_current_catgirl_switch_revision(old_catgirl)
         if old_catgirl and old_catgirl in session_manager:
             mgr = session_manager[old_catgirl]
             if mgr.is_active:
@@ -2509,6 +2543,8 @@ async def _delete_synced_character(uid: str, before_delete):
             return False
         previous_current = characters.get('当前猫娘', '')
         switched = previous_current == name
+        if switched:
+            ensure_current_catgirl_switch_revision(previous_current)
         fallback = None
         created_fallback = False
         success = False
