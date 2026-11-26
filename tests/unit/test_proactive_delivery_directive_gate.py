@@ -174,7 +174,7 @@ async def test_phase2_commit_blocks_ban_in_line_or_card(monkeypatch, text, tag, 
     mgr.feed_tts_chunk.assert_not_awaited()
     mgr.finish_proactive_delivery.assert_not_awaited()
     # The claimed turn is released, as the Phase 2 output gate does.
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -298,7 +298,7 @@ async def test_break_reminder_blocks_ban_before_anti_repeat(monkeypatch, channel
     assert result.delivered_text is None
     mgr.feed_tts_chunk.assert_not_awaited()
     mgr.finish_proactive_delivery.assert_not_awaited()
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     # Ahead of the anti-repeat checks, whose records persist draft fragments.
     corpus.score_unanswered_proactive_draft.assert_not_called()
     record_decision.assert_not_called()
@@ -502,7 +502,7 @@ async def test_combo_reminder_fallback_that_also_hits_is_consumed(monkeypatch):
     assert break_reminders.create_chat_llm_async.await_count == 2
     mgr.feed_tts_chunk.assert_not_awaited()
     mgr.finish_proactive_delivery.assert_not_awaited()
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     corpus.score_unanswered_proactive_draft.assert_not_called()
 
 

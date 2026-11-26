@@ -36,7 +36,7 @@ from main_logic.proactive_chat.directive_gate import (
 )
 from main_logic.proactive_chat.state import (
     _proactive_feed_rejected_for_takeover,
-    _proactive_turn_still_owned,
+    _release_proactive_turn,
     _record_proactive_chat,
 )
 from memory.anti_repeat import get_anti_repeat_corpus
@@ -476,8 +476,7 @@ async def _deliver_break_reminder_via_llm(
             aborted = True
 
         if aborted or not full_text.strip():
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult()
 
         text = full_text.strip()
@@ -490,8 +489,7 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder abandoned after user interaction during generation",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult()
 
         # A first draft that hits a ban switches to the fallback in the same
@@ -618,19 +616,16 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder abandoned after user interaction during regen",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
         if "[PASS]" in cleaned.upper():
             record_break_repeat_effect("break_reminder_suppressed")
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult(repeat_suppressed=True, dropped_channel=channel)
         if not cleaned or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS:
             record_break_repeat_effect("regen_failed")
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult()
 
         # A rewrite can introduce a banned term. No repeat-effect record here:
@@ -664,8 +659,7 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder regen still repeats unanswered content; drop",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return BreakReminderDeliveryResult(repeat_suppressed=True, dropped_channel=channel)
         record_break_repeat_effect("regen_guard_passed")
         text = cleaned
@@ -694,8 +688,7 @@ async def _deliver_break_reminder_via_llm(
             type(exc).__name__,
             exc,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return BreakReminderDeliveryResult()
     if tts_accepted is False and _proactive_feed_rejected_for_takeover(
         mgr,
@@ -706,8 +699,7 @@ async def _deliver_break_reminder_via_llm(
             "[%s] break reminder TTS dropped after user interaction or takeover",
             lanlan_name,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return BreakReminderDeliveryResult()
     if tts_accepted is False:
         logger.warning(
@@ -723,10 +715,9 @@ async def _deliver_break_reminder_via_llm(
         **delivery_round,
     )
     if not committed:
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            # The guarded feed already queued this reminder. A UI interaction
-            # before commit must retract that stale TTS as well as skip display.
-            await mgr.handle_new_message()
+        # The guarded feed already queued this reminder. A UI interaction
+        # before commit must retract that stale TTS as well as skip display.
+        await _release_proactive_turn(mgr, proactive_sid)
         return BreakReminderDeliveryResult()
 
     _record_proactive_chat(lanlan_name, text, channel=channel)

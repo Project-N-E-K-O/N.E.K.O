@@ -384,8 +384,16 @@ class MirrorSpeechStream:
 class TurnMixin:
     """Conversation turn pipeline methods (see module docstring)."""
 
-    async def handle_new_message(self):
-        """Handle new model output: clear the TTS queue and notify the frontend"""
+    async def handle_new_message(self, *, still_owned: Callable[[], bool] | None = None):
+        """Handle new model output: clear the TTS queue and notify the frontend
+
+        ``still_owned`` is passed by a proactive round releasing a turn it
+        claimed. It is checked again after every suspension point and under
+        ``self.lock``: if the user took the turn meanwhile, the user's own
+        call has already cleared the pipeline and set a fresh sid, so the
+        remaining resets and the sid rotation are skipped rather than applied
+        to the user's turn. User input passes nothing and always rotates.
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -393,6 +401,8 @@ class TurnMixin:
         # Reset streaming resampler; new-round audio must not continue the old round's state.
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
+        if still_owned is not None and not still_owned():
+            return
         # _clear_tts_pipeline already authoritatively resets _tts_done_queued_for_turn at entry,
         # synchronously with __interrupt__ enqueue; cancellation during internal sleep cannot leave
         # interrupted workers falsely marked queued. Redundant reset here catches concurrent
@@ -411,6 +421,10 @@ class TurnMixin:
         # Even if handle_input_transcript precedes handle_new_message,
         # new-reply audio_chunks are not wrongly discarded.
         async with self.lock:
+            # User input writes its sid under this same lock, so this check
+            # and the rotation below cannot interleave with it.
+            if still_owned is not None and not still_owned():
+                return
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
             # Synchronously set _preempted under self.lock, making new sid+preempt atomically visible

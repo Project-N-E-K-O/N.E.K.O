@@ -59,7 +59,7 @@ from .state import (
     _ensure_proactive_chat_totals_loaded,
     _get_proactive_chat_total,
     _proactive_feed_rejected_for_takeover,
-    _proactive_turn_still_owned,
+    _release_proactive_turn,
     _record_invite_delivery_persistent,
     _record_proactive_chat,
     _was_invite_ever_delivered,
@@ -714,8 +714,7 @@ async def _attempt_mini_game_invite_delivery(
         proactive_sid,
         expected_user_engagement_time,
     ):
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
             message="mini-game invite skipped: user became active before TTS",
@@ -732,8 +731,7 @@ async def _attempt_mini_game_invite_delivery(
         **delivery_round,
     )
     if not committed:
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
             message="mini-game invite skipped: user took over before delivery",

@@ -1073,3 +1073,120 @@ async def test_the_end_of_a_proactive_speech_is_only_for_its_own_turn():
     mgr._request_tts_done_for_turn.assert_awaited_once_with(
         "finish_proactive_delivery", expected_speech_id="s_proactive"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Proactive turn release: ownership rechecked across handle_new_message's
+# suspension points (#3888 / CodeRabbit 4649518442).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ReleaseState:
+    """The ownership surface _proactive_turn_still_owned reads, plus the
+    hooks handle_new_message calls under the lock and after it."""
+
+    def __init__(self, proactive_sid):
+        self.proactive_sid = proactive_sid
+        self.preempted = False
+        self.fire = AsyncMock()
+
+    def is_proactive_preempted(self, _claim_token=None):
+        return self.preempted
+
+    def mark_user_input_preempt(self):
+        self.preempted = True
+
+
+def _release_mgr(takeover_at=None):
+    """A manager whose proactive turn ``s_proactive`` is still owned.
+
+    ``takeover_at`` names the suspension point (``"clear"`` or
+    ``"activity"``) during which the user's own handle_new_message lands:
+    it rotates the sid to ``s_user`` and raises the preempt flag.
+    """
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.state = _ReleaseState("s_proactive")
+    mgr.audio_resampler = MagicMock()
+    mgr._reset_ai_turn_buffer = MagicMock()
+    mgr._discarded_turn_open = False
+
+    def _user_takes_over():
+        mgr.current_speech_id = "s_user"
+        mgr.state.preempted = True
+
+    async def _clear():
+        if takeover_at == "clear":
+            _user_takes_over()
+
+    async def _activity():
+        if takeover_at == "activity":
+            _user_takes_over()
+
+    mgr._clear_tts_pipeline = AsyncMock(side_effect=_clear)
+    mgr.send_user_activity = AsyncMock(side_effect=_activity)
+    return mgr
+
+
+async def test_proactive_release_rotates_sid_while_still_owned():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    assert await _release_proactive_turn(mgr, "s_proactive") is True
+    assert mgr.current_speech_id not in ("s_proactive", "s_user")
+    mgr.state.fire.assert_awaited_once_with(SessionEvent.USER_INPUT, sid=mgr.current_speech_id)
+
+
+@pytest.mark.parametrize("takeover_at", ["clear", "activity"])
+async def test_proactive_release_keeps_user_sid_after_mid_cleanup_takeover(takeover_at):
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr(takeover_at)
+    assert await _release_proactive_turn(mgr, "s_proactive") is True
+    # The user's turn keeps its sid, so its reply audio is not dropped, and
+    # the proactive cleanup fires no second USER_INPUT for it.
+    assert mgr.current_speech_id == "s_user"
+    mgr.state.fire.assert_not_awaited()
+    if takeover_at == "clear":
+        # The user's own call does these resets for its turn.
+        mgr.send_user_activity.assert_not_awaited()
+        mgr._reset_ai_turn_buffer.assert_not_called()
+
+
+async def test_proactive_release_skips_cleanup_when_not_owned_at_entry():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    mgr.current_speech_id = "s_user"
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
+    assert await _release_proactive_turn(mgr, None) is False
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr.current_speech_id == "s_user"
+
+
+async def test_user_input_new_message_rotates_regardless_of_proactive_ownership():
+    """Without ``still_owned`` (user input) the rotation stays unconditional."""
+    mgr = _release_mgr("clear")
+    await LLMSessionManager.handle_new_message(mgr)
+    assert mgr.current_speech_id not in ("s_proactive", "s_user")
+    mgr.state.fire.assert_awaited_once()
+
+
+def test_proactive_chat_releases_turns_only_through_the_owned_helper():
+    """A bare ``mgr.handle_new_message()`` in proactive code would rotate the
+    sid without the in-lock ownership recheck."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "main_logic" / "proactive_chat"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "handle_new_message"
+                and not any(kw.arg == "still_owned" for kw in node.keywords)
+            ):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []

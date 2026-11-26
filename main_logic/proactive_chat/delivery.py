@@ -41,7 +41,7 @@ from .state import (
     _increment_proactive_chat_total,
     _proactive_feed_rejected_for_takeover,
     _proactive_material_key,
-    _proactive_turn_still_owned,
+    _release_proactive_turn,
     _record_proactive_chat,
     _record_proactive_material,
     _record_reminiscence_usage,
@@ -335,8 +335,7 @@ async def _commit_proactive_delivery(
                 "[%s] buffered proactive TTS dropped after user interaction or takeover",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return DeliveryCommit(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -369,9 +368,7 @@ async def _commit_proactive_delivery(
             lanlan_name,
             exc,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        else:
+        if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
                 "[%s] buffered delivery failed after user takeover; skip TTS cleanup",
                 lanlan_name,
@@ -391,10 +388,9 @@ async def _commit_proactive_delivery(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            # The TTS chunk was accepted before the final engagement check.
-            # Retract it when UI-only engagement invalidates the commit.
-            await mgr.handle_new_message()
+        # The TTS chunk was accepted before the final engagement check.
+        # Retract it when UI-only engagement invalidates the commit.
+        await _release_proactive_turn(mgr, proactive_sid)
         return DeliveryCommit(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(

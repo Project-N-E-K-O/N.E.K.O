@@ -44,7 +44,7 @@ from typing import Any
 
 from .contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE, _proactive_pass_body
 from .generation import _proactive_directive_hits
-from .state import _proactive_turn_still_owned
+from .state import _release_proactive_turn
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -130,8 +130,7 @@ async def _proactive_delivery_directive_block(
         f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
         f"(channel={channel}, {hit_count} 项)"
     )
-    if proactive_sid is not None and _proactive_turn_still_owned(mgr, proactive_sid):
-        await mgr.handle_new_message()
+    await _release_proactive_turn(mgr, proactive_sid)
     return _proactive_pass_body(
         PROACTIVE_REASON_PASS_USER_DIRECTIVE,
         message="主动搭话命中用户明确要求回避的话题，已拦截",
