@@ -300,6 +300,8 @@
      * Draw a question with the ways to answer it. `options`: `taskId`, `question`,
      * `noNote` (nothing can take a sentence added to a choice: a plugin does the work),
      * `settle` (it took the place of another question a moment ago: its buttons wait).
+     * The box has `settle()`, for one drawn earlier and kept out of sight that is put in the
+     * place of another later: its buttons wait the same, and nothing is sent meanwhile.
      */
     function render(options) {
         var shown = view(options.question);
@@ -514,7 +516,15 @@
         status.setAttribute('role', 'status');
         box.appendChild(status);
 
-        if (settling) setTimeout(function () { settling = false; refresh(); }, SETTLE_MS);
+        var settleTimer = null;
+        function settle() {
+            settling = true;
+            refresh();
+            clearTimeout(settleTimer);
+            settleTimer = setTimeout(function () { settling = false; refresh(); }, SETTLE_MS);
+        }
+        if (settling) settle();
+        box.settle = settle;
         refresh();
         return box;
     }

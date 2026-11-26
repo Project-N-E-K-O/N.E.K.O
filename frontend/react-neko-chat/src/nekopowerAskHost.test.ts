@@ -344,6 +344,27 @@ describe('the question inside a card of the task HUD', () => {
     expect(once.disabled).toBe(false);
   });
 
+  it('holds back anew when one drawn earlier is put in the place of another, the keyboard as well', async () => {
+    vi.useFakeTimers();
+    const words = draw({ kind: 'report', id: 'q5', question: 'Which file?' }, { settle: true });
+    const send = words.querySelector('[data-ask-send]') as HTMLButtonElement;
+    const input = words.querySelector('.task-ask-input') as HTMLInputElement;
+    // Put up again before the first wait is over: it waits the whole time from then.
+    vi.advanceTimersByTime(asks.SETTLE_MS - 100);
+    (words as HTMLElement & { settle: () => void }).settle();
+    vi.advanceTimersByTime(200);
+    expect(send.disabled).toBe(true);
+    input.value = 'the newest';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(asks.SETTLE_MS);
+    expect(send.disabled).toBe(false);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map(call => call.body)).toEqual([{ question_id: 'q5', text: 'the newest' }]);
+  });
+
   it('answers yes or no, what was picked, or words; not while a word is being composed', async () => {
     const yesNo = draw(confirmation);
     (yesNo.querySelector('.task-ask-input') as HTMLInputElement).value = 'only two';
