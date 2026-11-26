@@ -8891,6 +8891,7 @@
                 "different": "다른 항목: {{count}}/{{total}}개",
                 "failures": "{{side}} 기준 미달: {{count}}개",
                 "visible": "색상 쌍 {{count}}개 표시",
+                "compactHistory": "간략 기록 · {{label}}",
                 "compareFailed": "테마를 비교할 수 없습니다: {{error}}"
             }
         },

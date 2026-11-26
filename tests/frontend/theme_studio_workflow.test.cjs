@@ -213,3 +213,72 @@ test('an idle second window preserves changes saved by the original editor', () 
   panel.saveDraftNow();
   assert.equal(storage.get(panel.DRAFT_KEY), raw);
 });
+
+test('a background upload updates the mode in which the user picked the file', async () => {
+  const { panel, notices } = editor();
+  const key = '--nts-chat-bg-image';
+  let reader;
+  panel.FileReader = class {
+    readAsDataURL() { reader = this; }
+  };
+  const uploaded = new Promise(resolve => {
+    panel.callPlugin = async (entry, args) => {
+      assert.equal(entry, 'import_background');
+      assert.deepEqual({...args}, {filename: 'wall.png', data: 'YWJj'});
+      resolve();
+      return {url: '/api/theme_studio/backgrounds/wall.png'};
+    };
+  });
+  const finished = new Promise(resolve => {
+    panel.setBusy = busy => { panel.state.busy = busy; if (!busy) resolve(); };
+  });
+  const input = {value: 'wall.png'};
+  panel.pickBackgroundImage({key}, {name: 'wall.png'}, input);
+  panel.setMode('dark');
+  reader.result = 'data:image/png;base64,YWJj';
+  reader.onload();
+  await Promise.all([uploaded, finished]);
+  assert.equal(panel.state.mode, 'dark');
+  assert.equal(panel.state.edited.light[key], 'url("/api/theme_studio/backgrounds/wall.png")');
+  assert.equal(panel.state.edited.dark[key], undefined);
+  assert.equal(input.value, '');
+  assert.equal(notices.length, 0);
+});
+
+test('a scheduled theme switch preserves a material edit made during its readback', async () => {
+  const { panel, element, notices } = editor();
+  panel.scheduleState.loaded = true;
+  element('schedule-enabled').checked = true;
+  element('schedule-enabled').dataset = {};
+  element('schedule-weekend').dataset = {};
+  panel.renderSchedule = () => {};
+  panel.renderPaletteHint = () => {};
+  panel.renderAudit = () => {};
+  panel.refreshHealth = () => {};
+  let read, finish;
+  const reading = new Promise(resolve => { read = resolve; });
+  const result = new Promise(resolve => { finish = resolve; });
+  let dirty = false;
+  let syncs = 0;
+  panel.NekoMaterials = {diffCount: () => dirty ? 1 : 0, sync() { syncs++; }};
+  panel.callPlugin = async (entry, args) => {
+    if (entry === 'save_schedule') {
+      assert.equal(args.enabled, true);
+      return {schedule: {enabled: true, zones: {}}, applied: {action: 'applied', theme_id: 'night'}};
+    }
+    assert.equal(entry, 'get_theme');
+    read();
+    return result;
+  };
+  // If an entry fails before readback starts, let the assertion fail instead of waiting.
+  const saving = panel.saveSchedule();
+  await Promise.race([reading, saving]);
+  dirty = true;
+  finish({revision: 'night', name: 'Night', enabled: true, vars: {}, dark_vars: {}, materials: {preset: 'smoke'}});
+  await saving;
+  assert.equal(panel.state.palette.revision, 'night');
+  assert.equal(syncs, 0);
+  assert.equal(panel.externalSyncState.materialsDeferred, true);
+  assert.equal(panel.externalSyncState.lastSignature, '');
+  assert.equal(notices.filter(n => n.kind === 'error').length, 0);
+});

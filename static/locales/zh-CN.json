@@ -8891,6 +8891,7 @@
                 "different": "差异 {{count}}/{{total}}",
                 "failures": "{{side}}未达标：{{count}} 项",
                 "visible": "显示 {{count}} 组配色",
+                "compactHistory": "紧凑聊天记录 · {{label}}",
                 "compareFailed": "无法比较主题：{{error}}"
             }
         },

@@ -3,7 +3,7 @@
 A badly tuned palette never raises an error or drops a frame; the only symptom
 is a user quietly switching back to the default theme. ``theme_studio/contrast.py``
 defines 17 text/surface pairs, each composited the way the chat window paints
-it, and this module turns "every preset x light/dark x 17 pairs" into a
+it, and this module turns "every preset x light/dark x every pair" into a
 regression check that every change has to pass.
 
 When a pair fails, the usual cause is a text colour that was not adjusted
@@ -30,7 +30,7 @@ def test_presets_dir_exists():
 
 
 def test_all_presets_meet_contrast_floors():
-    """Every preset, in both light and dark mode, passes all 17 pairs."""
+    """Every preset, in both light and dark mode, passes every pair in ``contrast.PAIRS``."""
     themes, fails, pair_checks = contrast.audit_dir(str(PRESETS))
     assert pair_checks > 3000, f"too few pair checks ({pair_checks}); presets may not have loaded"
     if fails:
@@ -78,6 +78,19 @@ def test_glass_tint_replaces_bubble_colour():
     }
     surface = contrast.resolve_surface(vars_map, contrast.AI_BUBBLE, "--nts-ai-bubble-bg")
     assert surface[:3] == (51, 51, 51)
+
+
+def test_compact_history_bubbles_ignore_the_glass_tint():
+    """Compact chat history keeps the plain bubble colour, so it is checked separately."""
+    vars_map = {
+        "--nts-chat-bg": "#000000",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-bubble-glass-tint": "rgba(0, 0, 0, 0.5)",
+    }
+    surface = contrast.resolve_surface(
+        vars_map, contrast.COMPACT_USER_BUBBLE, "--nts-user-bubble-bg"
+    )
+    assert surface[:3] == (255, 255, 255)
 
 
 def test_contrast_extremes():

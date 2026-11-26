@@ -8891,6 +8891,7 @@
                 "different": "差異 {{count}}/{{total}}",
                 "failures": "{{side}}未達標：{{count}} 項",
                 "visible": "顯示 {{count}} 組配色",
+                "compactHistory": "精簡聊天記錄 · {{label}}",
                 "compareFailed": "無法比較主題：{{error}}"
             }
         },

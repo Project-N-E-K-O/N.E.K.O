@@ -8891,6 +8891,7 @@
                 "different": "Different: {{count}}/{{total}}",
                 "failures": "{{side}} failures: {{count}}",
                 "visible": "Showing {{count}} pairs",
+                "compactHistory": "Compact history · {{label}}",
                 "compareFailed": "Could not compare themes: {{error}}"
             }
         },

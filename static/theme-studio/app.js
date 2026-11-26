@@ -2009,7 +2009,7 @@ function renderLivePrecheckRow(list) {
   var row = el('li', {class: 'change-row change-precheck is-warn'});
   row.appendChild(el('span', {class: 'change-mode', text: tsT('workflow.contrast', 'Readability')}));
   row.appendChild(el('span', {class: 'change-label', text: tsT('workflow.below', 'Below target: {{count}}', {count: fails.length})}));
-  row.appendChild(el('span', {class: 'change-delta', text: first.fg + ' · ' + first.ratio + ':1 / ' + first.floor + ':1'}));
+  row.appendChild(el('span', {class: 'change-delta', text: contrastPairLabel(first) + ' · ' + first.ratio + ':1 / ' + first.floor + ':1'}));
   var jump = el('button', {type: 'button', class: 'btn btn-mini', text: tsT('workflow.goto', 'Go to setting')});
   jump.addEventListener('click', function () { setMode(first.mode); focusRowByKey(first.fg); });
   row.appendChild(jump);
@@ -2020,7 +2020,7 @@ async function confirmContrast(light, dark) {
     var result = await callPlugin('check_contrast', {palette: light, dark: dark, standalone: true});
     if (!result.fails || !result.fails.length) return true;
     var details = result.fails.slice(0, 3).map(function (item) {
-      return changeModeLabel(item.mode) + ' · ' + item.fg + ' / ' + item.bg + ' · ' + item.ratio + ':1 / ' + item.floor + ':1';
+      return changeModeLabel(item.mode) + ' · ' + contrastPairLabel(item) + ' / ' + changeKeyLabel(item.bg) + ' · ' + item.ratio + ':1 / ' + item.floor + ':1';
     });
     return window.confirm(tsT('workflow.applyAnyway', 'Some text falls below its contrast target. Apply anyway?') + '\n\n' + details.join('\n'));
   } catch (error) { return true; }
@@ -2891,6 +2891,9 @@ function pickBackgroundImage(item, file, input) {
     return;
   }
   setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
+  // The light / dark tabs stay usable during the upload, so remember which
+  // mode's draft the picked image belongs to.
+  var mode = state.mode;
   var reader = new FileReader();
   reader.onload = function () {
     var raw = String(reader.result || '');
@@ -2902,7 +2905,7 @@ function pickBackgroundImage(item, file, input) {
       setBusy(false);
       return;
     }
-    uploadBackgroundImage(item, file.name, base64, input);
+    uploadBackgroundImage(item, file.name, base64, input, mode);
   };
   reader.onerror = function () {
     var why = reader.error && reader.error.message ? reader.error.message : file.name;
@@ -2915,13 +2918,21 @@ function pickBackgroundImage(item, file, input) {
 }
 
 /** Upload step; the caller (pickBackgroundImage) already holds the busy lock, released here. */
-async function uploadBackgroundImage(item, filename, base64, input) {
+async function uploadBackgroundImage(item, filename, base64, input, mode) {
   setBusy(true, tsT('editor.image.uploading', '正在上传背景图片…'));
   try {
     var result = await callPlugin('import_background', { filename: filename, data: base64 });
     var url = result && result.url ? String(result.url) : '';
     if (!url) throw new Error(tsT('editor.image.noUrl', '后端没有返回图片地址'));
-    markEdited(item.key, 'url("' + url + '")');
+    // Write into the draft of the mode the image was picked in, even if the
+    // user switched tabs meanwhile (the draft helpers all key off state.mode).
+    var shownMode = state.mode;
+    state.mode = (mode === 'dark' || mode === 'light') ? mode : shownMode;
+    try {
+      markEdited(item.key, 'url("' + url + '")');
+    } finally {
+      state.mode = shownMode;
+    }
     syncRow(item.key);
     setStatus(tsT('editor.image.selected', '已选择背景图片'), 'ok');
     showToast(tsT('editor.image.selected', '已选择背景图片'), 'ok');
@@ -4263,6 +4274,14 @@ function changeValueText(value) {
 function changeKeyLabel(key) {
   var item = CATALOG_BY_KEY[key];
   return (item && item.label) || key;
+}
+
+function contrastPairLabel(row) {
+  var label = changeKeyLabel(row.fg);
+  if (row.pair === 'compact-user-bubble' || row.pair === 'compact-ai-bubble') {
+    return tsT('library.tools.compactHistory', 'Compact history · {{label}}', { label: label });
+  }
+  return label;
 }
 
 /** Revert one change: drop the local edit/clear mark, then sync the row back to the server value. */
@@ -7025,7 +7044,10 @@ async function saveSchedule() {
     if (applied && applied.action === 'applied') {
       // The backend already switched themes while the editor still shows the old one:
       // read back, or the user's next "Apply" would overwrite the auto-switch result.
-      await reloadPalette({ silent: true });
+      // Unapplied material edits are kept, the same way external sync keeps
+      // them (the sync baseline is invalidated, so the next poll reports that
+      // the switched theme's materials are waiting behind those drafts).
+      await reloadPalette({ silent: true, keepMaterialDrafts: true });
       showToast(tsT('library.schedule.savedSwitched', '已保存，并切换到「{{name}}」',
         { name: String((applied.theme && applied.theme.name) || applied.theme_id) }), 'ok');
       setStatus(tsT('library.schedule.savedSwitchedStatus', '自动换主题已生效'), 'ok');
@@ -8005,7 +8027,7 @@ function renderThemeComparison(a, b) {
     if (rb && !rb.ok) failedB += 1;
     if ((onlyDiff && !changed) || (onlyFail && !fail)) return;
     var row = el('div', { role: 'row', class: 'cmp-row' + (changed ? ' is-diff' : ''), 'data-pair': pair });
-    row.appendChild(el('span', { class: 'cmp-label', role: 'rowheader', text: changeKeyLabel(fields.fg) }));
+    row.appendChild(el('span', { class: 'cmp-label', role: 'rowheader', text: contrastPairLabel(fields) }));
     row.appendChild(compareCell(ra, a[mode]));
     row.appendChild(compareCell(rb, b[mode]));
     body.appendChild(row);

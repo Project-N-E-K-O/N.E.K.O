@@ -8891,6 +8891,7 @@
                 "different": "Diferentes: {{count}}/{{total}}",
                 "failures": "Falhas de {{side}}: {{count}}",
                 "visible": "Exibindo {{count}} pares",
+                "compactHistory": "Histórico compacto · {{label}}",
                 "compareFailed": "Não foi possível comparar os temas: {{error}}"
             }
         },

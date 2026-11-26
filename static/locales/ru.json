@@ -8891,6 +8891,7 @@
                 "different": "Различий: {{count}}/{{total}}",
                 "failures": "{{side}}: ниже порога — {{count}}",
                 "visible": "Показано пар: {{count}}",
+                "compactHistory": "Компактная история · {{label}}",
                 "compareFailed": "Не удалось сравнить темы: {{error}}"
             }
         },

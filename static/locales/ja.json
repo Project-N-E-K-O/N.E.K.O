@@ -8891,6 +8891,7 @@
                 "different": "差分：{{count}}/{{total}} 件",
                 "failures": "{{side}} の基準未達：{{count}} 件",
                 "visible": "{{count}} 組を表示",
+                "compactHistory": "コンパクト履歴 · {{label}}",
                 "compareFailed": "テーマを比較できませんでした：{{error}}"
             }
         },
