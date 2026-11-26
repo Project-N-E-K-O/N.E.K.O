@@ -599,6 +599,32 @@ async def test_legacy_model_404_fallback_preserves_an_unconfirmed_upload(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['database', 'io', 'invalid_state', 'invalid_shape'])
+async def test_legacy_model_read_failure_records_error_and_still_cleans_cache(tmp_path, monkeypatch, failure):
+    import sqlite3
+    from unittest.mock import AsyncMock, Mock
+    from services.chat_sync.runtime import ChatSyncServiceError
+
+    runtime, _, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    read_state = runtime.models.store.get
+    error = {'database': sqlite3.OperationalError, 'io': OSError, 'invalid_state': ValueError}.get(failure)
+    cleanup = Mock(wraps=runtime.models.cleanup_cache)
+    monkeypatch.setattr(runtime.models, 'step', AsyncMock(side_effect=ChatSyncServiceError(404)))
+    unreadable = Mock(side_effect=error('private storage details')) if error else Mock(return_value=['private invalid state'])
+    monkeypatch.setattr(runtime.models.store, 'get', unreadable)
+    monkeypatch.setattr(runtime.models, 'cleanup_cache', cleanup)
+    try:
+        await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
+        state = runtime.scheduler.channel_status(DOMAIN.key())['model']
+        assert state == {'status': 'error', 'lastSuccessAt': None,
+                         'lastError': 'chat_sync_unavailable' if failure == 'io' else 'chat_sync_internal_error'}
+        assert read_state(DOMAIN.key())['pending']['operationId'] == pending['operationId']
+        cleanup.assert_called_once_with()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(tmp_path):
     runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:

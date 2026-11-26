@@ -211,9 +211,13 @@ class ChatSyncScheduler:
                 "character_profile_changed", "character_profile_name_conflict", "character_profile_unsupported_value",
                 "character_profile_conflict", "profile_revision_conflict",
                 "cloud_model_upload_unavailable", "cloud_model_download_unavailable",
+                "long_term_memory_conflict_unresolved", "long_term_memory_upload_refused",
+                "long_term_memory_upload_unsupported", "chat_sync_closing",
                 "recent_write_receipt_conflict", "invalid_recent_write_receipt",
             }
-            safe_code = code if code in safe_codes else "chat_sync_internal_error"
+            # An unclassified I/O failure does not establish an internal defect.
+            fallback = "chat_sync_unavailable" if isinstance(exc, OSError) else "chat_sync_internal_error"
+            safe_code = code if code in safe_codes else fallback
             # A cleared failure is still waiting for a new successful receipt.
             conn.execute("UPDATE scheduler_tasks SET retry_at=?,failures=?,blocked_generation=?,"
                          "blocked_session=?,last_error=?,last_success=NULL WHERE domain=? AND channel=?", (

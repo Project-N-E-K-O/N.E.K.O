@@ -402,16 +402,17 @@ def test_unconfirmed_recent_write_keeps_its_code_and_blocks_the_channel(tmp_path
     assert scheduler.ready("a", "pull", 1, "session") is False
 
 
-def test_unknown_error_text_is_still_not_stored(tmp_path):
+@pytest.mark.parametrize('kind,code', [(ValueError, 'chat_sync_internal_error'), (OSError, 'chat_sync_unavailable')])
+def test_unknown_error_text_is_still_not_stored(tmp_path, kind, code):
     scheduler = ChatSyncScheduler(tmp_path / "scheduler.sqlite3", clock=lambda: 1000)
-    scheduler.failure("a", "pull", 1, "session", ValueError("private path C:/Users/someone/recent.json"))
-    assert scheduler.last_error("a") == "chat_sync_internal_error"
+    scheduler.failure("a", "pull", 1, "session", kind("private path C:/Users/someone/recent.json"))
+    assert scheduler.last_error("a") == code
 
 
 @pytest.mark.parametrize('code', [
     'character_profile_unsupported_value', 'character_profile_name_conflict', 'character_profile_changed',
     'character_profile_conflict', 'profile_revision_conflict', 'chat_sync_not_enabled',
-    'chat_sync_character_not_found', 'chat_sync_writer_recovery_required',
+    'chat_sync_character_not_found', 'chat_sync_writer_recovery_required', 'chat_sync_closing',
     'cloud_model_upload_unavailable', 'cloud_model_download_unavailable',
 ])
 def test_known_business_failures_keep_their_specific_channel_diagnostic(tmp_path, code):
@@ -424,6 +425,25 @@ def test_known_business_failures_keep_their_specific_channel_diagnostic(tmp_path
     if remote_storage:
         with closing(scheduler._connect()) as conn:
             assert conn.execute('SELECT retry_at FROM scheduler_tasks').fetchone()[0] == 6000
+
+
+@pytest.mark.parametrize('code', [
+    'long_term_memory_conflict_unresolved', 'long_term_memory_upload_refused', 'long_term_memory_upload_unsupported',
+])
+def test_long_term_refusals_keep_their_reason_and_retry_after_backoff(tmp_path, code):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+
+    clock = [1000]
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: clock[0], uniform=lambda *_: 0)
+    assert scheduler.claim('role', 'long_term', 1, 'session')
+    scheduler.failure('role', 'long_term', 1, 'session', LongTermMemoryRetryLater(code))
+    assert scheduler.channel_status('role')['long_term'] == {
+        'status': 'error', 'lastSuccessAt': None, 'lastError': code,
+    }
+    scheduler.request_check('role', 'long_term')
+    assert not scheduler.ready('role', 'long_term', 1, 'session')
+    clock[0] = 6000
+    assert scheduler.ready('role', 'long_term', 1, 'session')
 
 
 @pytest.mark.parametrize('channel', ['pull', 'long_term', 'profile', 'model'])

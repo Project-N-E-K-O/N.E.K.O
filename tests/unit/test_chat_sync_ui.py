@@ -431,6 +431,29 @@ def test_sync_settings_separates_healthy_recent_chats_from_a_model_failure():
     """.replace('LABELS', json.dumps(labels)))
 
 
+@pytest.mark.parametrize('code,key', [
+    ('long_term_memory_conflict_unresolved', 'errorRetryLater'),
+    ('long_term_memory_upload_refused', 'errorRetryLater'),
+    ('long_term_memory_upload_unsupported', 'errorRetryLater'),
+    ('chat_sync_closing', 'errorUnavailable'),
+])
+def test_long_term_retry_and_shutdown_reasons_are_not_displayed_as_internal_errors(code, key):
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+    run_script(r"""(async()=>{
+        const labels=LABELS,code=CODE;
+        window.t=(key,values={})=>labels[key.replace('chatSync.','')].replace(/{{(.*?)}}/g,(_,name)=>values[name]);
+        global.fetch=async()=>({ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true,
+                channelStatus:{long_term:{status:'error',lastError:code}}}
+        }]})});
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].children.find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes(labels[KEY])&&shown.includes(code));
+        assert(!shown.includes(labels.errorInternal));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LABELS', json.dumps(labels)).replace('CODE', json.dumps(code)).replace('KEY', json.dumps(key)))
+
+
 @pytest.mark.parametrize('issue', ['model_load', 'model_conflict', 'profile_conflict', 'profile_pending', 'model_pending', 'model_upload_pending', 'recent_pending', 'binding_pending'])
 def test_sync_settings_does_not_report_unresolved_model_or_profile_work_as_successful(issue):
     run_script(r"""(async()=>{

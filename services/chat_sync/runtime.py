@@ -658,7 +658,13 @@ class DesktopChatSyncRuntime:
             if not await asyncio.to_thread(self.scheduler.claim, domain, "model", binding["generation"], presence):
                 continue
             try:
-                await self.models.step(uid, automatic_only=True)
+                try:
+                    await self.models.step(uid, automatic_only=True)
+                except (OSError, ValueError, sqlite3.Error) as step_error:
+                    # Legacy services can omit model endpoints. Both paths still
+                    # inspect local pending work under the same failure handling.
+                    if getattr(step_error, "status_code", None) != 404:
+                        raise
                 model_state = await asyncio.to_thread(self.models.store.get, domain)
                 await asyncio.to_thread(self.scheduler.success, domain, "model",
                                         pending=bool(model_state and model_state.get('pending')))
@@ -671,12 +677,7 @@ class DesktopChatSyncRuntime:
                 if not isinstance(exc, (OSError, ValueError, sqlite3.Error)):
                     # Only the class name: exception text may hold paths or signed URLs.
                     print(f"[chat-sync] model_step_unavailable {type(exc).__name__}")
-                if getattr(exc, "status_code", None) == 404:
-                    model_state = await asyncio.to_thread(self.models.store.get, domain)
-                    await asyncio.to_thread(self.scheduler.success, domain, "model",
-                                            pending=bool(model_state and model_state.get('pending')))
-                else:
-                    await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
+                await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
         await asyncio.to_thread(self.models.cleanup_cache)
 
 
