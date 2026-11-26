@@ -74,6 +74,12 @@ def validate_tool_name(name: str) -> str:
         raise ValueError(
             f"LLM tool name {name!r} must match {_TOOL_NAME_PATTERN.pattern}"
         )
+    # "." / ".." match the pattern but are normalised away in the callback
+    # URL path (they turn into a parent path), so such a tool could never be
+    # called. One rule for every path: decorator, sync and async calls, and
+    # the host's own check (``llm_tool_registry._valid_tool_name``).
+    if set(name) == {"."}:
+        raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
     return name
 
 
