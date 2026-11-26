@@ -73,6 +73,15 @@ def test_check_contrast_uses_current_audit_and_overlay(studio):
     assert not run(studio.check_contrast(standalone=True))["rows"]
 
 
+def test_check_contrast_uses_the_dark_compact_prompt_in_dark_mode(studio):
+    # Light text passes on the dark #252d3d prompt and fails on the light one.
+    result = run(studio.check_contrast(palette={"--nts-rec-text": "#e6ebf2"},
+                                       dark={"--nts-rec-text": "#e6ebf2"}, standalone=True))
+    rows = {row["mode"]: row for row in result["rows"] if row["pair"] == "recommendation-text"}
+    assert rows["dark"]["ok"] and rows["dark"]["surface"] == "#252d3d"
+    assert not rows["light"]["ok"] and rows["light"]["bg"] is None
+
+
 def test_draft_and_apply_both_remove_old_material_overrides(studio):
     run(studio.apply_theme(materials={"enabled": True, "dark": {"surface": {"radius": 31}}}))
     run(studio.save_material_preset("Local"))

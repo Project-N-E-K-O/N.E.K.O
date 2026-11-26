@@ -2020,7 +2020,9 @@ async function confirmContrast(light, dark) {
     var result = await callPlugin('check_contrast', {palette: light, dark: dark, standalone: true});
     if (!result.fails || !result.fails.length) return true;
     var details = result.fails.slice(0, 3).map(function (item) {
-      return changeModeLabel(item.mode) + ' · ' + contrastPairLabel(item) + ' / ' + changeKeyLabel(item.bg) + ' · ' + item.ratio + ':1 / ' + item.floor + ':1';
+      // Fixed host surfaces (e.g. the compact recommendation prompt) have no variable to name.
+      var bgLabel = item.bg ? ' / ' + changeKeyLabel(item.bg) : '';
+      return changeModeLabel(item.mode) + ' · ' + contrastPairLabel(item) + bgLabel + ' · ' + item.ratio + ':1 / ' + item.floor + ':1';
     });
     return window.confirm(tsT('workflow.applyAnyway', 'Some text falls below its contrast target. Apply anyway?') + '\n\n' + details.join('\n'));
   } catch (error) { return true; }
@@ -7988,11 +7990,13 @@ function compareCell(row, vars) {
     cell.appendChild(el('span', { class: 'cmp-ratio is-missing', text: '—' }));
     return cell;
   }
-  var swatch = el('span', { class: 'cmp-swatch', title: vars[row.bg] || '' });
-  swatch.style.backgroundColor = vars[row.bg] || 'transparent';
+  // Prefer the theme variable; fixed host surfaces only come with the resolved hex.
+  var bgColor = (row.bg && vars[row.bg]) || row.surface || '';
+  var swatch = el('span', { class: 'cmp-swatch', title: bgColor });
+  swatch.style.backgroundColor = bgColor || 'transparent';
   var text = el('span', { class: 'cmp-fg', text: vars[row.fg] || '—' });
   text.style.color = vars[row.fg] || '';
-  text.style.backgroundColor = vars[row.bg] || '';
+  text.style.backgroundColor = bgColor;
   cell.appendChild(swatch);
   cell.appendChild(text);
   cell.appendChild(el('span', { class: 'cmp-ratio' + (row.ok ? '' : ' is-fail'), text: Number(row.ratio).toFixed(2),

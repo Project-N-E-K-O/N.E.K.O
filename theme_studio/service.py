@@ -787,7 +787,7 @@ def _contrast_rows(light: dict, dark: dict) -> list[dict]:
     return [
         {"mode": mode, **row}
         for mode in ("light", "dark")
-        for row in _contrast.audit_vars(_contrast.mode_vars(doc, mode))
+        for row in _contrast.audit_vars(_contrast.mode_vars(doc, mode), mode)
         if not row.get("skip")
     ]
 

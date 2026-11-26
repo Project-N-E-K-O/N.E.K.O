@@ -273,12 +273,16 @@ def audit_vars(vars_map, mode="light"):
         if fg is None or bg is None:
             rows.append({"pair": label, "skip": True})
             continue
-        ratio = contrast(fg, resolve_surface(vars_map, kind, bg_key, mode))
+        surface = resolve_surface(vars_map, kind, bg_key, mode)
+        ratio = contrast(fg, surface)
         rows.append(
             {
                 "pair": label,
                 "fg": fg_key,
-                "bg": bg_key or kind,
+                "bg": bg_key,
+                # Hex of the resolved surface, so callers can show a swatch
+                # even for fixed host surfaces that have no variable.
+                "surface": "#%02x%02x%02x" % tuple(surface[:3]),
                 "ratio": round(ratio, 2),
                 "floor": floor,
                 "ok": ratio + 1e-9 >= floor,
