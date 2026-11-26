@@ -162,6 +162,20 @@ class Families:
                 continue
             theirs = [item for item in row.commissions if item.id != commission.id and item.parent_id is None]
             under_way = session.id in busy or any(item.status in UNDER_WAY_STATUSES for item in theirs)
+            at_hand = [item for item in theirs if item.status in UNDER_WAY_STATUSES]
+            if session.id in busy and in_project and session.kind == "line":
+                # All that is under way in a member, as whether it is busy is asked of all its
+                # commissions: an early one that still is may not be among the few latest read above.
+                try:
+                    at_hand = [
+                        item
+                        for item in await self._ledger.select(session_id=session.id, statuses=UNDER_WAY_STATUSES)
+                        if item.id != commission.id and item.parent_id is None
+                    ]
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - held against the latest only, as before it was read whole
+                    logger.warning("reading all that is under way in member %s failed", session.id, exc_info=True)
             agents.append(
                 Agent(
                     id=session.id,
@@ -183,6 +197,9 @@ class Families:
                         await self._changes_files(session)
                         if in_project and session.kind == "line" and session.project in leaders
                         else True
+                    ),
+                    at_hand=tuple(
+                        words for item in at_hand for words in (item.title, item.dispatch_text, item.user_text) if words
                     ),
                     done=tuple(
                         Done(
@@ -280,6 +297,11 @@ class Families:
             verdict = replace(
                 verdict, action=orch.TO_LEADER, agent=None, direct=False, reason="not every member was looked at"
             )
+        if verdict.apart and verdict.project and not await self._all_compared(commission, verdict.project, standing):
+            # Told apart from what the member it goes to is at without every member held against
+            # the sentence: one that was not may be the one it names, or goes on with. It goes
+            # where it was going, and no other member is opened for it (``TaskAgentManager._beside``).
+            verdict = replace(verdict, apart=False)
         if (
             settings.LEADER_IN_GIT_REPOSITORIES
             and not verdict.direct

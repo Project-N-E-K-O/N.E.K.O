@@ -19,6 +19,20 @@ function createStorage() {
     };
 }
 
+// A Date whose clock stands still, so deadline arithmetic (deadline - Date.now())
+// yields exact timer delays regardless of how slow the runner is.
+function frozenDate(nowMs) {
+    return class FrozenDate extends Date {
+        constructor(...args) {
+            super(...(args.length ? args : [nowMs]));
+        }
+
+        static now() {
+            return nowMs;
+        }
+    };
+}
+
 function loadHomeTutorialRuntime(options = {}) {
     const code = fs.readFileSync(
         path.join(ROOT, 'static/tutorial/core/home-tutorial-runtime.js'),
@@ -62,7 +76,7 @@ function loadHomeTutorialRuntime(options = {}) {
         CustomEvent: class { constructor(type, o = {}) { this.type = type; this.detail = o.detail; } },
         setTimeout: fakeSetTimeout,
         clearTimeout: fakeClearTimeout,
-        Date,
+        Date: options.frozenNow === undefined ? Date : frozenDate(options.frozenNow),
         console: { log() {}, warn() {}, error() {} },
     });
 
@@ -1708,7 +1722,9 @@ test('PR3981 #65: hung CSRF token lookup times out and enters backoff retry inst
         }
         return await server.handler(url, init, body);
     };
-    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+    const rt = loadHomeTutorialRuntime({
+        localStorage: storage, lanlanName: 'CatA', fetchHandler: handler, frozenNow: Date.now(),
+    });
     await flushMicrotasks();
     assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
 

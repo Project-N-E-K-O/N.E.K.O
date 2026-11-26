@@ -153,6 +153,30 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(sceneAt(waitingLong, 1).get('lead')).toEqual({ look: 'waiting_user', said: 'Which day?', saidAt: 100 })
   })
 
+  it('leaves one at work as it stands while the user is asked whether another is to do what waits for it', () => {
+    const of = (kind: string, session: string, commission: string, at: number, over: Partial<TimelineEntry> = {}) =>
+      entry(kind, { session_id: session, commission_id: commission, at, ...over })
+    const asked = { text: 'open_beside', peer: { type: 'user' as const }, detail: { question_kind: 'permission' } }
+    const answered = (choice: string) => ({ peer: { type: 'user' as const }, detail: { asked_by_tool: true, question_kind: 'permission', choice } })
+    // Refused: what was asked is on record at the busy one, which is at its own all along and takes it up in its turn.
+    const refused = [
+      of('started', 'shop', 'c1', 1), of('queued', 'shop', 'c9', 2), of('asked_user', 'shop', 'c9', 3, asked),
+      of('queued', 'shop', 'c9', 4), of('answered', 'shop', 'c9', 5, answered('deny')), of('ended', 'shop', 'c1', 6),
+      of('started', 'shop', 'c9', 7),
+    ]
+    for (const at of [1, 2, 3, 4]) expect(sceneAt(refused, at).get('shop')?.look).toBe('working')
+    expect(sceneAt(refused, 5).get('shop')?.look).toBe('idle')
+    expect(sceneAt(refused, 6).get('shop')?.look).toBe('working')
+    // Allowed: the one opened for it waits for the user, then for its turn, and is at work only once it starts.
+    const allowed = [
+      of('started', 'shop', 'c1', 1), of('asked_user', 'other', 'c9', 3, asked), of('queued', 'other', 'c9', 4),
+      of('answered', 'other', 'c9', 5, answered('once')), of('started', 'other', 'c9', 6),
+    ]
+    expect(sceneAt(allowed, 1).get('other')?.look).toBe('waiting_user')
+    expect(sceneAt(allowed, 3).get('other')?.look).toBe('queued')
+    expect([sceneAt(allowed, 4).get('other')?.look, sceneAt(allowed, 4).get('shop')?.look]).toEqual(['working', 'working'])
+  })
+
   it('leaves one at work as it stands when another commission waits for its turn in it or is called off', () => {
     const of = (kind: string, commission: string, at: number) => entry(kind, { commission_id: commission, at })
     const turns = [of('started', 'c1', 1), of('queued', 'c2', 2), of('ended', 'c2', 3), of('ended', 'c1', 4), of('queued', 'c3', 5)]
@@ -1040,6 +1064,94 @@ describe('the colony on the home page', () => {
     expect(byTest('timeline-capped')).toBeNull()
   })
 
+  it('says from the start that only the latest are kept when more came before than reading from the beginning would hold', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2999, scene: [] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    // 2999 before and 2 held: from the beginning would be more than is kept, and end the same.
+    expect(byTest('replay-whole')).toBeNull()
+    expect(byTest('timeline-capped')?.textContent).toBe(words.activity.onlyLatest.replace('{count}', '3000'))
+    cleanup?.()
+    // As many as are kept: offered.
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2998, scene: [] })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    expect(byTest('replay-whole')).toBeTruthy()
+    expect(byTest('timeline-capped')).toBeNull()
+  })
+
+  it('having read from the beginning, does not take what lay before where it began for more than is kept', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 2998, scene: [] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 2), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    api.getTimeline.mockResolvedValueOnce({ entries: story.slice(0, 3), next: 'e99.m9', more: false, latest: 'e99.m9' })
+    byTest('replay-whole')!.click()
+    await flush()
+    // All of it is held: nothing is said of only the latest being kept.
+    expect(byTest('timeline-capped')).toBeNull()
+  })
+
+  it('no longer replays from where the entries began once the first of them were let go', async () => {
+    const step = (n: number) => entry('reported', { session_id: 'kid', commission_id: 'c2', at: n, cursor: `e${n}.m0`, text: `step ${n}` })
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 0, scene: [
+      { session_id: 'lead', commission_id: 'c1', look: 'waiting_user', since: 1 },
+    ] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 3001 }, (_, n) => step(n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // What it was at where the entries began is not where they begin now.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('idle')
+  })
+
+  it('replays from how the familiars stood where the entries begin', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9', before: 40, scene: [
+      { session_id: 'lead', commission_id: 'c1', look: 'waiting_user', since: 1 },
+      { session_id: 'kid', commission_id: 'c2', look: 'working', since: 2 },
+    ] })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      entry('reported', { session_id: 'kid', commission_id: 'c2', at: 10, cursor: 'e60.m0', text: 'the template is in' }),
+      entry('answered', { at: 20, cursor: 'e61.m0', detail: { asked_by_tool: true, choice: 'once' } }),
+    ] })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Asking and at work already when the entries begin, not idle.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('waiting_user')
+    expect(cat('kid')?.getAttribute('data-look')).toBe('working')
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Answered: at work again.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('working')
+    // Read from the beginning: how they stood where the last stretch began is no part of it.
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      entry('reported', { session_id: 'lead', commission_id: 'c1', at: 1, cursor: 'e1.m0', text: 'first' }),
+      entry('reported', { session_id: 'lead', commission_id: 'c1', at: 2, cursor: 'e2.m0', text: 'second' }),
+    ] })
+    // Back to now first: while a moment is shown, that is what is offered.
+    byTest('replay-now')!.click()
+    await flush()
+    byTest('replay-whole')!.click()
+    await flush()
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('kid')?.getAttribute('data-look')).toBe('idle')
+  })
+
   it('says that only the latest are kept, and offers no reading from the beginning, when more happened than is held', async () => {
     const step = (n: number) => entry('reported', { at: n, cursor: `e${n}.m0`, text: `step ${n}` })
     api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
@@ -1086,5 +1198,154 @@ describe('the colony on the home page', () => {
     state.props = { entries: some(7), current: null, nameOf }
     await flush()
     expect(top).toBe(1000)
+  })
+})
+
+describe('several familiars at work in one project', () => {
+  const look = (key: string) => key.split('.').slice(1).reduce<unknown>((at, part) => (at as Record<string, unknown> | undefined)?.[part], words)
+  const t = (key: string, named: Record<string, unknown> = {}) =>
+    String(look(key) ?? key).replace(/\{(\w+)\}/g, (_, name: string) => String(named[name] ?? ''))
+  const te = (key: string) => look(key) !== undefined
+  const nameOf = (id: string | null | undefined) => (id === 'kid' ? 'Kid' : id === 'lead' ? 'Blog' : 'someone')
+
+  it('tells what came of what a familiar changed in its worktree, why, and whether the user had it done', () => {
+    const files = [{ path: 'a' }, { path: 'b' }]
+    const landed = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 1, lines_added: 7, lines_deleted: 2, by_user: false } }), nameOf, t, te)
+    expect(landed).toBe(t('power.activity.kinds.landed', { who: 'Kid', files: 3, added: 7, deleted: 2 }))
+    const byUser = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 0, lines_added: 1, lines_deleted: 0, by_user: true } }), nameOf, t, te)
+    expect(byUser).toBe(t('power.activity.kinds.landed_user', { who: 'Kid', files: 2, added: 1, deleted: 0 }))
+    const clash = describeEntry(entry('landing_conflict', { session_id: 'kid', detail: { conflicts: ['a', 'b'], round: 2, by_user: false } }), nameOf, t, te)
+    expect(clash).toBe(t('power.activity.kinds.landing_conflict', { who: 'Kid', conflicts: 2, round: 2 }))
+    for (const reason of ['conflict', 'failed', 'inspection', 'stopped', 'restart']) {
+      const said = describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt/t1', detail: { reason } }), nameOf, t, te)
+      expect(said).toBe(t(`power.activity.kinds.not_landed_${reason}`, { who: 'Kid', text: 'D:/wt/t1' }))
+    }
+    // A reason the page has no words for: the words of the kind.
+    expect(describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt', detail: { reason: 'new' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.not_landed', { who: 'Kid', text: 'D:/wt' }))
+    // What landed outside the project folder, and what was not carried over, is said after it.
+    const outside = describeEntry(entry('landed', { session_id: 'kid', detail: { files, more: 0, lines_added: 1, lines_deleted: 0, outside: ['x', 'y'], skipped: ['z'] } }), nameOf, t, te)
+    expect(outside).toBe([
+      t('power.activity.kinds.landed', { who: 'Kid', files: 2, added: 1, deleted: 0 }),
+      t('power.activity.landedOutside', { count: 2 }), t('power.activity.landedSkipped', { count: 1 }),
+    ].join(' '))
+    expect(describeEntry(entry('not_landed', { session_id: 'kid', text: 'D:/wt', detail: { reason: 'skipped' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.not_landed_skipped', { who: 'Kid', text: 'D:/wt' }))
+    for (const verdict of ['pass', 'fail', 'none']) {
+      const said = describeEntry(entry('inspected', { session_id: 'kid', detail: { verdict, round: 1 } }), nameOf, t, te)
+      expect(said).toBe(t(`power.activity.kinds.inspected_${verdict}`, { who: 'Kid', round: 1 }))
+    }
+    for (const kind of ['landing_held', 'tree_discarded', 'tree_kept']) {
+      expect(describeEntry(entry(kind, { session_id: 'kid', text: 'D:/wt' }), nameOf, t, te)).not.toContain(kind)
+    }
+  })
+
+  it('tells who formed a team, how many and of what kinds, and that a leader was reminded', () => {
+    const members = [{ name: 'Blog/worker', preset: 'worker' }, { name: 'Blog/x', preset: 'translator' }, 'not one']
+    const team = describeEntry(entry('team_formed', { detail: { members, inspect: false } }), nameOf, t, te)
+    expect(team).toBe(t('power.activity.kinds.team_formed', { who: 'Blog', count: 2, names: `${words.home.presets.worker} · Blog/x` }))
+    expect(describeEntry(entry('stall_reminded', { detail: { members: 3 } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.stall_reminded', { who: 'Blog' }))
+  })
+
+  it('replays one whose changes clashed, waited for the user, and were decided on', () => {
+    const kid = { session_id: 'kid', commission_id: 'k1' }
+    const lines = [
+      entry('started', { ...kid }),
+      entry('landing_conflict', { ...kid, detail: { round: 1 } }),
+      entry('not_landed', { ...kid, detail: { reason: 'conflict' } }),
+      entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('landed', { ...kid, detail: { by_user: true } }),
+    ]
+    expect(sceneAt(lines, 1).get('kid')?.look).toBe('resolving')
+    expect(sceneAt(lines, 2).get('kid')?.look).toBe('unlanded')
+    // Stuck over it: still drawn as waiting for the user.
+    expect(sceneAt(lines, 3).get('kid')?.look).toBe('unlanded')
+    expect(sceneAt(lines, 4).get('kid')?.look).toBe('idle')
+    const held = [
+      entry('started', { ...kid }), entry('landing_held', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('tree_discarded', { ...kid }),
+    ]
+    expect(sceneAt(held, 2).get('kid')?.look).toBe('held')
+    expect(sceneAt(held, 3).get('kid')?.look).toBe('idle')
+    // Of one at another commission by then, that one says how it stands.
+    const later = [
+      entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'blocked' } }),
+      entry('started', { session_id: 'kid', commission_id: 'k2' }), entry('tree_kept', { ...kid }), entry('landing_held', { ...kid }),
+      entry('not_landed', { ...kid }), entry('landing_conflict', { ...kid }),
+    ]
+    for (const at of [4, 5, 6, 7]) expect(sceneAt(later, at).get('kid')?.look).toBe('working')
+    // A member of a team hands its work back stuck over its worktree: waiting for the user as well.
+    const member = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'blocked' } })]
+    expect(sceneAt(member, 2).get('kid')?.look).toBe('unlanded')
+    // One handed back of another commission than the one it is at changes nothing.
+    const atAnother = [entry('started', { ...kid }), entry('child_returned', { session_id: 'kid', commission_id: 'k9', detail: { outcome: 'done' } })]
+    expect(sceneAt(atAnother, 1).get('kid')?.look).toBe('working')
+    // Its worktree decided on afterwards: at rest, its commission being over.
+    expect(sceneAt([...member, entry('tree_kept', { ...kid })], 3).get('kid')?.look).toBe('idle')
+    const handedBack = [entry('started', { ...kid }), entry('not_landed', { ...kid }), entry('child_returned', { ...kid, detail: { outcome: 'done' } })]
+    expect(sceneAt(handedBack, 2).get('kid')?.look).toBe('idle')
+    // Ended otherwise: at rest, whatever it was before.
+    const done = [entry('started', { ...kid }), entry('landing_conflict', { ...kid }), entry('ended', { ...kid, detail: { outcome: 'failed' } })]
+    expect(sceneAt(done, 2).get('kid')?.look).toBe('idle')
+  })
+
+  it('replays from how they stood where the entries begin, and an answer to what a tool asked puts it back to work', () => {
+    const base = [
+      { session_id: 'kid', commission_id: 'k1', look: 'waiting_user', since: 1 },
+      { session_id: 'queued', commission_id: 'q1', look: 'queued', since: 1 },
+      { session_id: 'odd', commission_id: 'o1', look: 'dancing', since: 1 },
+      { session_id: '', commission_id: 'x', look: 'working', since: 1 },
+    ]
+    const lines = [
+      entry('reported', { session_id: 'lead', text: 'x' }),
+      entry('answered', { session_id: 'kid', commission_id: 'k1', detail: { asked_by_tool: true, choice: 'once' } }),
+      entry('ended', { session_id: 'kid', commission_id: 'k1', detail: { outcome: 'done' } }),
+    ]
+    const first = sceneAt(lines, 0, base)
+    expect(first.get('kid')?.look).toBe('waiting_user')
+    expect(first.get('queued')?.look).toBe('queued')
+    // What the host has no look for, or names nobody, is passed over.
+    expect(first.has('odd')).toBe(false)
+    expect(first.has('')).toBe(false)
+    expect(sceneAt(lines, 1, base).get('kid')?.look).toBe('working')
+    // Ended from what it was at where the entries begin.
+    expect(sceneAt(lines, 2, base).get('kid')?.look).toBe('idle')
+    // Without where they stood: not there until named.
+    expect(sceneAt(lines, 0).has('kid')).toBe(false)
+    // An answer of another commission than the one it is at changes nothing.
+    const other = [entry('answered', { session_id: 'kid', commission_id: 'k9' })]
+    expect(sceneAt(other, 0, base).get('kid')?.look).toBe('waiting_user')
+    // A choice is said in words.
+    const said = describeEntry(entry('answered', { session_id: 'kid', text: '', detail: { choice: 'once' } }), nameOf, t, te)
+    expect(said).toBe(t('power.activity.kinds.answered', { who: 'Kid', text: words.space.familiars.choices.once }))
+    // Words that were answered are said as they are.
+    expect(describeEntry(entry('answered', { session_id: 'kid', text: 'the blue one', detail: { choice: 'once' } }), nameOf, t, te))
+      .toBe(t('power.activity.kinds.answered', { who: 'Kid', text: 'the blue one' }))
+  })
+
+  it('frames those of one team together, and none for a team of one or of nobody', async () => {
+    const lead = member({ team: 'c1' })
+    const kid = member({ id: 'kid', name: 'Kid', leader: false, parent: 'lead', look: 'resolving', team: 'c1' })
+    const other = member({ id: 'other', name: 'Other', leader: false, look: 'unlanded', team: null })
+    const alone = member({ id: 'alone', name: 'Alone', leader: false, look: 'held', team: 'c9' })
+    const { state } = await mount(ColonyTerritory, { territory: territory([lead, kid, other, alone]) })
+    const frames = [...document.querySelectorAll('[data-team]')]
+    expect(frames.map(frame => frame.getAttribute('data-team'))).toEqual(['c1'])
+    expect(frames[0].textContent).toContain(words.colony.team)
+    expect(cat('kid')?.getAttribute('data-look')).toBe('resolving')
+    expect(cat('other')?.classList.contains('cat--unlanded')).toBe(true)
+    // Waiting for the user to merge, or not merged: drawn as waiting for the user; merging: as at work.
+    expect(cat('other')?.classList.contains('cat--waits')).toBe(true)
+    expect(cat('alone')?.classList.contains('cat--waits')).toBe(true)
+    expect(cat('kid')?.classList.contains('cat--waits')).toBe(false)
+    expect(cat('kid')?.querySelector('.figure--working')).toBeTruthy()
+    expect(cat('other')?.querySelector('.figure--working')).toBeNull()
+    // Being dragged is not what one waiting for the user to merge looks like.
+    expect(document.querySelector('.cat--grabbed')).toBeNull()
+    // One that is not there at the moment shown is not framed.
+    state.props = { territory: territory([lead, { ...kid, hidden: true }, other]) }
+    await flush()
+    expect(document.querySelector('[data-team]')).toBeNull()
   })
 })

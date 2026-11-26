@@ -25,6 +25,7 @@ from tests.support.asr_fakes import (
     _selection,
 )
 
+from tests.support.task_sets import wait_task_set_empty
 from tests.unit.asr_runtime._scenarios import (
     _start_runtime_with_callback_candidates,
 )
@@ -420,11 +421,7 @@ async def test_adopted_restart_cancellation_fails_closed_and_propagates(
     component._asr_transport_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await restarting
-    while component._asr_close_tasks:
-        await asyncio.gather(
-            *tuple(component._asr_close_tasks),
-            return_exceptions=True,
-        )
+    await wait_task_set_empty(component._asr_close_tasks, return_exceptions=True)
 
     on_failure.assert_awaited_once()
     failure = on_failure.await_args.args[0]
@@ -477,11 +474,7 @@ async def test_adopted_restart_exception_fails_closed_without_retry(
     )
 
     await component._restart_transport(max_attempts=3)
-    while component._asr_close_tasks:
-        await asyncio.gather(
-            *tuple(component._asr_close_tasks),
-            return_exceptions=True,
-        )
+    await wait_task_set_empty(component._asr_close_tasks, return_exceptions=True)
 
     assert len(callbacks) == 2
     sessions[0].close.assert_awaited_once_with()

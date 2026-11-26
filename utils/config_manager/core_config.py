@@ -110,8 +110,8 @@ from utils.http.url import same_endpoint
 _warned_invalid_workspace_fields: set[str] = set()
 
 
-def _warn_invalid_workspace_id_once(field: str) -> None:
-    """Warn once per field about an invalid stored workspace ID (the config is re-read on every lookup)."""
+def _warn_invalid_workspace_host_once(field: str) -> None:
+    """Warn once per field about an invalid stored workspace host (the config is re-read on every lookup)."""
     if field in _warned_invalid_workspace_fields:
         return
     _warned_invalid_workspace_fields.add(field)
@@ -154,8 +154,42 @@ class CoreConfigMixin:
         aget_core_config): resolution is then pure dict work and needs no thread hop.
         """
         if core_config is not None:
-            return self.get_model_api_config(model_type, _core_config=core_config)
-        return await asyncio.to_thread(self.get_model_api_config, model_type)
+            result = self.get_model_api_config(model_type, _core_config=core_config)
+        else:
+            result = await asyncio.to_thread(self.get_model_api_config, model_type)
+        if model_type == 'decision' and isinstance(result, dict):
+            # Whether an OpenRouter model is a decision model was just decided from the
+            # catalog; keep it current for later lookups. Scheduled here, on the event loop
+            # (resolution ran in a thread), because callers such as memory recall only call
+            # the decision client once the slot already resolved to a native protocol.
+            from utils.decision_client.openrouter_catalog import (
+                is_openrouter_url,
+                schedule_refresh_if_stale,
+            )
+
+            if is_openrouter_url(result.get('decision_url') or result.get('base_url')):
+                schedule_refresh_if_stale()
+        return result
+
+    def _read_core_config_file(self):
+        """Parsed ``core_config.json`` (runtime copy, else the bundled one).
+
+        Goes through the in-process read cache (``read_cache``): a chat turn
+        reads the snapshot dozens of times and must not hit the disk each time.
+        Raises ``FileNotFoundError`` when neither copy exists, like the plain
+        read it replaces. With the cache switched off this is exactly the old
+        ``get_config_path`` + ``open`` read.
+        """
+        from . import read_cache
+
+        if not read_cache.enabled():
+            with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        for path in (self.config_dir / 'core_config.json', self.project_config_dir / 'core_config.json'):
+            text = read_cache.read_text(path)
+            if text is not None:
+                return json.loads(text)
+        raise FileNotFoundError('core_config.json')
 
     # --- Core config helpers ---
 
@@ -1096,8 +1130,8 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_DOUBAO_TTS': '',
             'ASSIST_API_KEY_QWEN_TOKEN_PLAN': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
-            'ASSIST_WORKSPACE_ID_QWEN': '',
-            'ASSIST_WORKSPACE_ID_QWEN_INTL': '',
+            'ASSIST_WORKSPACE_HOST_QWEN': '',
+            'ASSIST_WORKSPACE_HOST_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_MIMO': '',
@@ -1145,8 +1179,7 @@ class CoreConfigMixin:
         core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
 
         try:
-            with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
-                file_data = json.load(f)
+            file_data = self._read_core_config_file()
             if isinstance(file_data, dict):
                 # Old tier names (emotion / summary) are read under the new ones; startup
                 # persists this, but a file restored or edited later must read the same.
@@ -1223,19 +1256,19 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
         config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
         config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
-        # Bailian workspace IDs end up inside a hostname: a hand-edited invalid
-        # value is ignored (treated as unset) instead of being trusted here.
-        from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
-        from utils.decision_client.workspace import (
-            InvalidWorkspaceIdError,
-            normalize_workspace_id,
-        )
-        for _ws_file_field, _ws_config_key in ASSIST_WORKSPACE_ID_FIELDS.values():
-            try:
-                config[_ws_config_key] = normalize_workspace_id(core_cfg.get(_ws_file_field, ''))
-            except InvalidWorkspaceIdError:
-                config[_ws_config_key] = ''
-                _warn_invalid_workspace_id_once(_ws_file_field)
+        # Bailian workspace hosts end up inside a hostname: a hand-edited invalid
+        # value is ignored (treated as unset) instead of being trusted here. A
+        # file saved before hosts were stored still has the ID-only field.
+        from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS
+        from utils.decision_client.workspace import stored_workspace_host
+        for _ws_file_field, _ws_legacy_field, _ws_config_key in ASSIST_WORKSPACE_HOST_FIELDS.values():
+            config[_ws_config_key] = stored_workspace_host(core_cfg, _ws_file_field, _ws_legacy_field)
+            if not config[_ws_config_key]:
+                for _ws_field in (_ws_file_field, _ws_legacy_field):
+                    _ws_raw = core_cfg.get(_ws_field)
+                    if isinstance(_ws_raw, str) and _ws_raw.strip():
+                        _warn_invalid_workspace_host_once(_ws_field)
+                        break
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1904,6 +1937,21 @@ class CoreConfigMixin:
             ("assistApiKeyQwenIntl", "ASSIST_API_KEY_QWEN_INTL"),
         ):
             config["IMAGE_GENERATION_CONFIG"][field] = config.get(resolved_field, "")
+        # Subscriptions & plans: tiers an enabled subscription takes over, resolved
+        # here so get_model_api_config stays pure dict work on this snapshot.
+        from utils.subscriptions.overlay import TIER_PREFIX, load_overlay
+
+        config["SUBSCRIPTION_OVERLAY"] = load_overlay(self, config)
+        # Whether each text tier's address and model were saved by the user, before
+        # any fallback fills them in: a tier keeps its own setting over a subscription
+        # only when both were actually entered.
+        config["TIER_SAVED_FIELDS"] = {
+            prefix: (
+                bool(str(core_cfg.get(f"{prefix}ModelUrl") or "").strip()),
+                bool(str(core_cfg.get(f"{prefix}ModelId") or "").strip()),
+            )
+            for prefix in TIER_PREFIX.values()
+        }
         return config
 
     def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
@@ -2078,6 +2126,26 @@ class CoreConfigMixin:
         
         mapping = model_type_mapping[model_type]
 
+        # Subscriptions & plans. Precedence: the tier's own per-feature setting when
+        # set up in full, then a subscription that takes the tier, then everything
+        # below (follow options, general providers). Followers reach the followed
+        # tier's subscription through the delegations below, which resolve that tier
+        # the same way.
+        subscription = (core_config.get('SUBSCRIPTION_OVERLAY') or {}).get(model_type)
+        if subscription:
+            from utils.subscriptions.overlay import tier_setting_in_effect
+
+            if not tier_setting_in_effect(model_type, core_config, treat_as_custom):
+                return {
+                    'model': subscription['model'],
+                    'api_key': subscription['api_key'],
+                    'base_url': subscription['base_url'],
+                    'is_custom': True,
+                    'provider_type': subscription['provider_type'],
+                    'api_type': None,
+                    'subscription': subscription['subscription'],
+                }
+
         def _normalize_provider_type_value(value: object) -> str:
             provider_type = str(value or 'openai_compatible').strip().lower()
             if provider_type not in ('openai_compatible', 'anthropic', 'websocket', 'chatgpt'):
@@ -2220,10 +2288,20 @@ class CoreConfigMixin:
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
                 return self.get_model_api_config('conversation', _core_config=core_config)
+            if provider == 'follow_memory':
+                # Following the other tier resolves field by field below, from that tier's
+                # own settings; a subscription that took that tier is inherited instead.
+                followed = self.get_model_api_config('memory', _core_config=core_config)
+                if followed.get('subscription'):
+                    return followed
         elif model_type == 'game_summary':
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_memory').strip()
             if not treat_as_custom or provider == 'follow_memory':
                 return self.get_model_api_config('memory', _core_config=core_config)
+            if provider == 'follow_conversation':
+                followed = self.get_model_api_config('conversation', _core_config=core_config)
+                if followed.get('subscription'):
+                    return followed
         else:
             whole_follow = next(
                 (
@@ -2312,11 +2390,12 @@ class CoreConfigMixin:
                 profile_model=profile_model,
             )
             # Workspace-only native endpoints (Bailian decision-model-preview): the
-            # profile carries a host template that needs the user's workspace ID.
-            # It applies only while the slot still targets the profile's primary
-            # service; a hand-entered URL (custom provider or gateway) wins, and a
-            # different regional host (e.g. DashScope US) has no documented
-            # decision endpoint and would reject that region's key anyway.
+            # profile carries a host template filled with the user's saved
+            # workspace API Host. It applies only while the slot still targets the
+            # profile's own service; a hand-entered URL (custom provider or
+            # gateway) wins. A saved bare workspace ID takes its region from the
+            # chat endpoint the key resolved to, and a region without a documented
+            # decision endpoint (e.g. DashScope US) decides with chat instead.
             native_unavailable_reason = ''
             decision_url_template = str(profile.get('DECISION_URL_TEMPLATE') or '').strip()
             if (
@@ -2325,19 +2404,16 @@ class CoreConfigMixin:
                 and base_url_matches_profile
                 and not profile_decision_url
             ):
-                primary_url = str(profile.get('OPENROUTER_URL') or '').strip()
-                workspace_url = ''
-                if not base_url or not primary_url or same_endpoint(base_url, primary_url):
-                    from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
-                    from utils.decision_client.workspace import build_workspace_decision_url
+                from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS
+                from utils.decision_client.workspace import resolve_workspace_decision_url
 
-                    workspace_fields = ASSIST_WORKSPACE_ID_FIELDS.get(effective_provider)
-                    workspace_id = core_config.get(workspace_fields[1], '') if workspace_fields else ''
-                    workspace_url = build_workspace_decision_url(decision_url_template, workspace_id)
-                    native_unavailable_reason = '' if workspace_url else 'workspace_missing'
-                else:
-                    native_unavailable_reason = 'region_unsupported'
-                profile_decision_url = workspace_url
+                workspace_fields = ASSIST_WORKSPACE_HOST_FIELDS.get(effective_provider)
+                stored_workspace = core_config.get(workspace_fields[2], '') if workspace_fields else ''
+                profile_decision_url, native_unavailable_reason = resolve_workspace_decision_url(
+                    decision_url_template,
+                    stored_workspace,
+                    base_url or str(profile.get('OPENROUTER_URL') or '').strip(),
+                )
 
             decision_url = resolve_decision_endpoint(
                 decision_protocol,

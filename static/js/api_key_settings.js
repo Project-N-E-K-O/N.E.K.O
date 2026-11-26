@@ -395,32 +395,43 @@ function updateMimoTokenPlanControls() {
     keepApiSettingsBottomIfNeeded(wasAtBottom);
 }
 
-// ==================== 百炼业务空间 ID（决策模型原生接口） ====================
-// 百炼的原生决策接口只挂在带业务空间 ID 的专属域名上；没填时后端用普通聊天模型代替。
+// ==================== 百炼业务空间 API Host（决策模型原生接口） ====================
+// 百炼的原生决策接口只挂在业务空间专属域名（API Host）上；没填时后端用普通聊天模型代替。
 // 北京（qwen）和新加坡（qwen_intl）各存一份，输入框只编辑决策模型当前实际用的那一份。
-const BAILIAN_WORKSPACE_ID_FIELDS = {
-    qwen: 'assistWorkspaceIdQwen',
-    qwen_intl: 'assistWorkspaceIdQwenIntl',
+const BAILIAN_WORKSPACE_HOST_FIELDS = {
+    qwen: 'assistWorkspaceHostQwen',
+    qwen_intl: 'assistWorkspaceHostQwenIntl',
 };
-// 与后端 utils/decision_client/workspace.py 一致：单个 DNS 标签，字母数字和 -，最长 63。
-const BAILIAN_WORKSPACE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const _bailianWorkspaceIds = { assistWorkspaceIdQwen: '', assistWorkspaceIdQwenIntl: '' };
-// 决定决策模型实际服务商的控件；任一变化都要刷新业务空间 ID 行。
+// 与后端 utils/decision_client/workspace.py 一致：业务空间 ID 和地域都是单个 DNS 标签，
+// API Host 形如 {业务空间 ID}.{地域}.maas.aliyuncs.com；也可只填 ID，地域随 Key 所在地域。
+const BAILIAN_DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const BAILIAN_WORKSPACE_HOST_SUFFIX = '.maas.aliyuncs.com';
+const BAILIAN_WORKSPACE_HOST_INPUT_MAX_LENGTH = 512;
+// 百炼决策模型文档只列了这两个地域。
+const BAILIAN_DECISION_REGIONS = new Set(['cn-beijing', 'ap-southeast-1']);
+const _bailianWorkspaceHosts = { assistWorkspaceHostQwen: '', assistWorkspaceHostQwenIntl: '' };
+// 决定决策模型实际服务商的控件；任一变化都要刷新 API Host 行。
 const BAILIAN_WORKSPACE_PROVIDER_SELECTS = ['assistApiSelect', 'coreApiSelect', 'decisionModelProvider', 'enableCustomApi'];
 let _bailianWorkspaceActiveField = '';
 
-// 用户常直接粘贴整个 API Host（llm-xxx.cn-beijing.maas.aliyuncs.com，可带 https:// 和路径），取最前面那段。
-const BAILIAN_API_HOST_PATTERN = /^(?:https:\/\/)?([^./:\s]+)\.[a-z0-9-]+\.maas\.aliyuncs\.com(?:[/:?#].*)?$/i;
-
-function normalizeBailianWorkspaceId(value) {
-    let raw = String(value || '').trim();
-    if (!raw) return { value: '', valid: true };
-    const hostMatch = BAILIAN_API_HOST_PATTERN.exec(raw);
-    if (hostMatch) raw = hostMatch[1];
-    const lowered = raw.toLowerCase();
+/**
+ * 解析用户填的业务空间：API Host、带 https:// 和路径的地址、或只有业务空间 ID。
+ * 返回 { value: 规范写法（API Host 或 ID）, valid, region: Host 里的地域（只填 ID 时为空） }。
+ */
+function parseBailianWorkspaceHost(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return { value: '', valid: true, region: '' };
+    const invalid = { value: raw, valid: false, region: '' };
     // eslint-disable-next-line no-control-regex
-    const ascii = /^[\x00-\x7f]*$/.test(raw);
-    return { value: lowered, valid: ascii && BAILIAN_WORKSPACE_ID_PATTERN.test(lowered) };
+    if (!/^[\x00-\x7f]*$/.test(raw) || raw.length > BAILIAN_WORKSPACE_HOST_INPUT_MAX_LENGTH) return invalid;
+    const host = raw.toLowerCase().replace(/^https?:\/\//, '').split(/[/?#]/, 1)[0];
+    if (!host.includes('.')) {
+        return BAILIAN_DNS_LABEL_PATTERN.test(host) ? { value: host, valid: true, region: '' } : invalid;
+    }
+    if (!host.endsWith(BAILIAN_WORKSPACE_HOST_SUFFIX)) return invalid;
+    const labels = host.slice(0, -BAILIAN_WORKSPACE_HOST_SUFFIX.length).split('.');
+    if (labels.length !== 2 || !labels.every(label => BAILIAN_DNS_LABEL_PATTERN.test(label))) return invalid;
+    return { value: host, valid: true, region: labels[1] };
 }
 
 function getDecisionEffectiveProviderKey() {
@@ -439,13 +450,21 @@ function getDecisionEffectiveProviderKey() {
     return selected;
 }
 
-function getBailianWorkspaceIdForProvider(providerKey) {
-    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey];
+function getBailianWorkspaceHostForProvider(providerKey) {
+    const field = BAILIAN_WORKSPACE_HOST_FIELDS[providerKey];
     if (!field) return '';
-    const raw = String(_bailianWorkspaceIds[field] || '').trim();
-    const { value, valid } = normalizeBailianWorkspaceId(raw);
+    const raw = String(_bailianWorkspaceHosts[field] || '').trim();
+    const { value, valid } = parseBailianWorkspaceHost(raw);
     // 非法值原样交给后端，由后端返回 invalid_workspace_id，不在前端悄悄改写。
     return valid ? value : raw;
+}
+
+function getBailianWorkspaceConsoleUrl(providerKey) {
+    // 业务空间管理页的「API Host」列就是要填的值。
+    if (providerKey === 'qwen') {
+        return 'https://bailian.console.aliyun.com/cn-beijing/settings/workspace';
+    }
+    return 'https://modelstudio.console.alibabacloud.com/ap-southeast-1/settings/workspace';
 }
 
 function getBailianWorkspaceDocUrl(providerKey) {
@@ -463,50 +482,65 @@ function updateBailianWorkspaceControls() {
     const input = document.getElementById('bailianWorkspaceIdInput');
     if (!row || !input) return;
     const providerKey = getDecisionEffectiveProviderKey();
-    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey] || '';
+    const field = BAILIAN_WORKSPACE_HOST_FIELDS[providerKey] || '';
     if (field !== _bailianWorkspaceActiveField) {
-        input.value = field ? (_bailianWorkspaceIds[field] || '') : '';
+        input.value = field ? (_bailianWorkspaceHosts[field] || '') : '';
         _bailianWorkspaceActiveField = field;
     }
     row.style.display = field ? 'flex' : 'none';
-    const link = document.getElementById('bailianWorkspaceIdDocLink');
-    if (link && field) link.href = getBailianWorkspaceDocUrl(providerKey);
+    if (field) {
+        const consoleLink = document.getElementById('bailianWorkspaceConsoleLink');
+        if (consoleLink) consoleLink.href = getBailianWorkspaceConsoleUrl(providerKey);
+        const docLink = document.getElementById('bailianWorkspaceIdDocLink');
+        if (docLink) docLink.href = getBailianWorkspaceDocUrl(providerKey);
+    }
     updateBailianWorkspaceValidity();
 }
 
 function updateBailianWorkspaceValidity() {
     const input = document.getElementById('bailianWorkspaceIdInput');
     const errorEl = document.getElementById('bailianWorkspaceIdError');
+    const regionEl = document.getElementById('bailianWorkspaceRegionNote');
     if (!input) return true;
-    const { valid } = normalizeBailianWorkspaceId(input.value);
+    const { valid, region } = parseBailianWorkspaceHost(input.value);
     if (errorEl) errorEl.style.display = valid ? 'none' : 'block';
     input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    if (regionEl) {
+        // 只看 Host 里写明的地域；只填 ID 时地域随 Key，由连通性检测提示。
+        const unsupported = valid && !!region && !BAILIAN_DECISION_REGIONS.has(region);
+        regionEl.style.display = unsupported ? 'block' : 'none';
+        if (unsupported) {
+            regionEl.textContent = window.t
+                ? window.t('api.bailianWorkspaceRegionUnsupported', { region })
+                : `这个 API Host 所在地域（${region}）没有决策模型，决策会改用聊天模型`;
+        }
+    }
     return valid;
 }
 
 function onBailianWorkspaceInput() {
     const input = document.getElementById('bailianWorkspaceIdInput');
     if (!input || !_bailianWorkspaceActiveField) return;
-    _bailianWorkspaceIds[_bailianWorkspaceActiveField] = input.value.trim();
+    _bailianWorkspaceHosts[_bailianWorkspaceActiveField] = input.value.trim();
     updateBailianWorkspaceValidity();
 }
 
-function applyLoadedBailianWorkspaceIds(data) {
-    Object.values(BAILIAN_WORKSPACE_ID_FIELDS).forEach(field => {
-        _bailianWorkspaceIds[field] = typeof data[field] === 'string' ? data[field] : '';
+function applyLoadedBailianWorkspaceHosts(data) {
+    Object.values(BAILIAN_WORKSPACE_HOST_FIELDS).forEach(field => {
+        _bailianWorkspaceHosts[field] = typeof data[field] === 'string' ? data[field] : '';
     });
     _bailianWorkspaceActiveField = '';
     updateBailianWorkspaceControls();
 }
 
 /**
- * 保存用：提交合法的业务空间 ID。当前显示的那份非法时返回 null 让保存中止；
+ * 保存用：提交合法的 API Host（或业务空间 ID）。当前显示的那份非法时返回 null 让保存中止；
  * 切走后看不到的那份非法值不提交（服务端保留原值），免得用户看不到原因却存不了。
  */
 function bailianWorkspacePayload() {
     const payload = {};
-    for (const field of Object.values(BAILIAN_WORKSPACE_ID_FIELDS)) {
-        const { value, valid } = normalizeBailianWorkspaceId(_bailianWorkspaceIds[field]);
+    for (const field of Object.values(BAILIAN_WORKSPACE_HOST_FIELDS)) {
+        const { value, valid } = parseBailianWorkspaceHost(_bailianWorkspaceHosts[field]);
         if (valid) {
             payload[field] = value;
         } else if (field === _bailianWorkspaceActiveField) {
@@ -1030,7 +1064,7 @@ function buildProviderSelectDropdownMenu(select) {
 }
 
 function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
-    // 下拉框被程序改值（加载配置、联动）时不会触发 change，这里顺手刷新业务空间 ID 行。
+    // 下拉框被程序改值（加载配置、联动）时不会触发 change，这里顺手刷新 API Host 行。
     if (!targetSelect || BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(targetSelect.id)) {
         updateBailianWorkspaceControls();
     }
@@ -1474,9 +1508,11 @@ function isKeyBookBackedTtsProvider(providerKey) {
  * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
  * 也不要把用户正在用的服务商从下拉里藏掉。
  */
-function isProviderCapableForModelType(providerKey, modelType) {
+function isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly = false } = {}) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    // Subscriptions (ChatGPT) are chosen in the Subscriptions & plans panel, not per slot.
+    if (!allowPanelOnly && isProviderFlagEnabled(getProviderInfo(pk).subscription_panel_only)) return false;
     const supportedTypes = getProviderInfo(pk).supported_model_types;
     if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
@@ -1512,6 +1548,65 @@ function isProviderCapableForModelType(providerKey, modelType) {
 function getProviderInfo(providerKey) {
     if (!providerKey) return {};
     return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+}
+
+// Whether a slot's saved provider is one to keep read-only: chosen in the panel now,
+// and one the slot could use otherwise (others drop to the slot's default as before).
+function keepsPanelOnlyChoice(providerKey, modelType) {
+    return isProviderFlagEnabled(getProviderInfo(providerKey).subscription_panel_only)
+        && isProviderCapableForModelType(providerKey, modelType, { allowPanelOnly: true });
+}
+
+// A slot saved with a provider the dropdown no longer lists because it is chosen in
+// the Subscriptions & plans panel (ChatGPT, chosen per slot in nightly builds): the
+// saved choice stays, read-only, so the page shows what requests use and saving the
+// settings does not quietly change it. Picking anything else drops it for good.
+function keepPanelOnlyProvider(sel, modelType, providerKey) {
+    let option = Array.from(sel.options).find(opt => opt.value === providerKey);
+    if (!option) {
+        option = document.createElement('option');
+        option.value = providerKey;
+        option.disabled = true;
+        const nameKey = `api.assistProviderNames.${providerKey}`;
+        const translated = window.t ? window.t(nameKey) : nameKey;
+        option.textContent = (translated && translated !== nameKey)
+            ? translated : (getProviderInfo(providerKey).name || providerKey);
+        sel.appendChild(option);
+    }
+    sel.value = providerKey;
+    syncProviderSelectDropdowns(sel, { rebuild: true });
+
+    const hintId = `${modelType}PanelOnlyProviderHint`;
+    let hint = document.getElementById(hintId);
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.id = hintId;
+        hint.className = 'field-row panel-only-provider-hint';
+        const text = document.createElement('em');
+        text.style.cssText = 'font-weight: normal; color: #c0392b; font-size: 0.85em;';
+        hint.appendChild(text);
+        const row = sel.closest('.field-row');
+        if (row && row.parentNode) row.parentNode.insertBefore(hint, row.nextSibling);
+    }
+    const params = { provider: option.textContent };
+    hint.firstChild.textContent = window.t
+        ? window.t('api.subscriptions.panelOnlySlotHint', params)
+        : `${option.textContent} is now set up under Subscriptions & plans.`;
+
+    if (!sel.dataset.panelOnlyWatch) {
+        sel.dataset.panelOnlyWatch = 'true';
+        const drop = () => {
+            if (sel.value === providerKey) return;
+            sel.removeEventListener('change', drop);
+            const stale = Array.from(sel.options).find(opt => opt.value === providerKey);
+            if (stale) stale.remove();
+            const shown = document.getElementById(hintId);
+            if (shown) shown.remove();
+            delete sel.dataset.panelOnlyWatch;
+            syncProviderSelectDropdowns(sel, { rebuild: true });
+        };
+        sel.addEventListener('change', drop);
+    }
 }
 
 function isProviderFlagEnabled(value) {
@@ -2406,6 +2501,15 @@ function buildCustomModelListRequest(url, apiKey, modelType) {
 }
 
 function resolveSlotModelPickerRequest(modelType) {
+    const request = resolveSlotModelPickerTarget(modelType);
+    // 决策槽位让后端补上 OpenRouter 的决策模型：它们不在 OpenRouter 的默认模型列表里。
+    if (modelType === 'decision' && request.body && !request.body.model_type) {
+        request.body.model_type = 'decision';
+    }
+    return request;
+}
+
+function resolveSlotModelPickerTarget(modelType) {
     const providerSel = document.getElementById(`${modelType}ModelProvider`);
     const provider = providerSel ? providerSel.value : '';
     if (!provider) return { reason: 'noProvider' };
@@ -2496,7 +2600,12 @@ async function fetchModelList(body) {
 
     const models = (Array.isArray(result.models) ? result.models : [])
         .filter(model => model && typeof model.id === 'string' && model.id.trim())
-        .map(model => ({ id: model.id.trim(), name: typeof model.name === 'string' ? model.name.trim() : '' }));
+        .map(model => {
+            const entry = { id: model.id.trim(), name: typeof model.name === 'string' ? model.name.trim() : '' };
+            // 后端给 OpenRouter 的原生决策模型打的标记，选择器里显示成标签。
+            if (model.decision === true) entry.decision = true;
+            return entry;
+        });
     if (models.length === 0) return { success: false, error_code: 'empty', error: '' };
 
     const normalized = { success: true, models };
@@ -2548,6 +2657,12 @@ function renderModelIdPickerOptions(picker) {
         item.setAttribute('role', 'option');
         item.dataset.value = model.id;
         item.textContent = model.id;
+        if (model.decision) {
+            const tag = document.createElement('span');
+            tag.className = 'model-id-picker-option-name';
+            tag.textContent = translateModelPickerText('api.modelPicker.decisionTag', '原生决策');
+            item.appendChild(tag);
+        }
         if (model.name && model.name !== model.id) {
             const name = document.createElement('span');
             name.className = 'model-id-picker-option-name';
@@ -3052,7 +3167,7 @@ async function loadCurrentApiKey() {
                 setSecretInputValue('mimoTokenPlanKeyInput', data.assistApiKeyMimoTokenPlan);
             }
             updateMimoTokenPlanControls();
-            applyLoadedBailianWorkspaceIds(data);
+            applyLoadedBailianWorkspaceHosts(data);
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -3209,6 +3324,11 @@ async function loadCurrentApiKey() {
                 // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
                 if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
                     sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
+                if (data[providerField] && keepsPanelOnlyChoice(data[providerField], mt)) {
+                    keepPanelOnlyProvider(sel, mt, data[providerField]);
                     onCustomModelProviderChange(mt);
                     return;
                 }
@@ -3811,9 +3931,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
     if (bailianWorkspaceInput) {
         bailianWorkspaceInput.addEventListener('input', onBailianWorkspaceInput);
-        // 失焦时把粘贴的 API Host 等写法收成规范 ID，让用户看到实际会保存的值。
+        // 失焦时把粘贴的完整地址等写法收成规范的 API Host（或 ID），让用户看到实际会保存的值。
         bailianWorkspaceInput.addEventListener('blur', () => {
-            const { value, valid } = normalizeBailianWorkspaceId(bailianWorkspaceInput.value);
+            const { value, valid } = parseBailianWorkspaceHost(bailianWorkspaceInput.value);
             if (valid && value !== bailianWorkspaceInput.value) {
                 bailianWorkspaceInput.value = value;
                 onBailianWorkspaceInput();
@@ -3893,7 +4013,7 @@ async function save_button_down(e) {
             workspaceInput.scrollIntoView({ block: 'center' });
             workspaceInput.focus();
         }
-        showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符', 'error');
+        showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼 API Host 格式不对：请粘贴控制台里的 API Host（如 ws-xxxx.cn-beijing.maas.aliyuncs.com），或只填业务空间 ID', 'error');
         return;
     }
 
@@ -4396,6 +4516,11 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
+                // The subscriptions panel marks which features a subscription took; a
+                // feature's own setting saved just now may win over it.
+                if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                    window.dispatchEvent(new CustomEvent('neko:core-config-saved'));
+                }
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -5098,7 +5223,7 @@ function getDecisionFallbackNote(reason) {
     if (reason === 'workspace_missing') {
         return window.t
             ? window.t('connectivity.decisionFallback.workspace_missing')
-            : '未填百炼业务空间 ID，决策模型暂用聊天模型';
+            : '未填百炼 API Host，决策模型暂用聊天模型';
     }
     if (reason === 'region_unsupported') {
         return window.t
@@ -5173,9 +5298,9 @@ function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
         if (scope === 'decision') {
-            // 百炼的决策地址由业务空间 ID 决定，换 ID 必须换一份检测结果。
-            const workspaceId = getBailianWorkspaceIdForProvider(providerKey);
-            return `${scope}|${providerKey}|${key || ''}|${model || ''}|${workspaceId}`;
+            // 百炼的决策地址由 API Host 决定，换 Host 必须换一份检测结果。
+            const workspaceHost = getBailianWorkspaceHostForProvider(providerKey);
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}|${workspaceHost}`;
         }
         return `${scope}|${providerKey}|${key || ''}`;
     }
@@ -5642,11 +5767,11 @@ const ConnectivityManager = {
                     if (provider_scope === 'decision' && model) {
                         body.model = model;
                     }
-                    if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
-                        // 批量检测在收集配置时已记下 ID 快照（与缓存键一致）；单独检测时取当前值。
-                        body.workspace_id = typeof params.workspace_id === 'string'
-                            ? params.workspace_id
-                            : getBailianWorkspaceIdForProvider(provider_key);
+                    if (provider_scope === 'decision' && BAILIAN_WORKSPACE_HOST_FIELDS[provider_key]) {
+                        // 批量检测在收集配置时已记下 Host 快照（与缓存键一致）；单独检测时取当前值。
+                        body.workspace_host = typeof params.workspace_host === 'string'
+                            ? params.workspace_host
+                            : getBailianWorkspaceHostForProvider(provider_key);
                         // 带上 Key 实际解析到的聊天端点（如国际版落在美国地域），
                         // 后端按运行时同一规则判断能否走业务空间专属域名。
                         if (url) body.url = url;
@@ -5824,9 +5949,9 @@ const ConnectivityManager = {
                         voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
-                    if (customResult.providerScope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[customResult.providerKey]) {
-                        // 与 cacheId 里的业务空间 ID 同一份快照，检测期间改了输入框也不会串到别的缓存。
-                        keyConfigs[customCacheId].workspace_id = getBailianWorkspaceIdForProvider(customResult.providerKey);
+                    if (customResult.providerScope === 'decision' && BAILIAN_WORKSPACE_HOST_FIELDS[customResult.providerKey]) {
+                        // 与 cacheId 里的 API Host 同一份快照，检测期间改了输入框也不会串到别的缓存。
+                        keyConfigs[customCacheId].workspace_host = getBailianWorkspaceHostForProvider(customResult.providerKey);
                     }
                 }
             });
@@ -5852,7 +5977,7 @@ const ConnectivityManager = {
         // 并发测试所有唯一配置。百炼决策检测要用辅助 API 实际解析到的地域端点
         // （国际版可能落在美国），所以等第一批检测跑完、解析结果记下来之后再测。
         const isBailianDecision = (config) => config.provider_scope === 'decision'
-            && !!BAILIAN_WORKSPACE_ID_FIELDS[config.provider_key];
+            && !!BAILIAN_WORKSPACE_HOST_FIELDS[config.provider_key];
         const runOne = async ([cacheId, config]) => {
             const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
@@ -6563,7 +6688,7 @@ function initConnectivityLights() {
         });
     });
 
-    // 百炼业务空间 ID 决定决策模型的检测地址：改 ID 后重新登记决策槽位的灯。
+    // 百炼 API Host 决定决策模型的检测地址：改 Host 后重新登记决策槽位的灯。
     const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
     if (bailianWorkspaceInput) {
         const handleBailianWorkspaceChange = debounce(() => {
@@ -6939,7 +7064,14 @@ async function initializePage() {
             MODEL_TYPES.forEach(mt => {
                 const sel = document.getElementById(`${mt}ModelProvider`);
                 if (sel && modelProviderSnapshot[mt] !== undefined) {
-                    sel.value = modelProviderSnapshot[mt];
+                    const kept = modelProviderSnapshot[mt];
+                    if (kept && keepsPanelOnlyChoice(kept, mt)) {
+                        // The rebuilt list leaves it out: put the kept choice back, its hint
+                        // in the new language.
+                        keepPanelOnlyProvider(sel, mt, kept);
+                    } else {
+                        sel.value = kept;
+                    }
                     onCustomModelProviderChange(mt);
                 }
             });

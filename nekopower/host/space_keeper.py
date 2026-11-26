@@ -611,6 +611,11 @@ class SpaceKeeper:
         """Wait until everything started so far is done. For tests."""
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # Yield once before looking at the set again. Since Python 3.12, gather() over
+            # tasks that are all done completes without yielding, so the done-callbacks those
+            # tasks queued (the set's discard, and any that start follow-up work) would never
+            # run and this loop would spin forever.
+            await asyncio.sleep(0)
 
     async def aclose(self) -> None:
         """Stop what is under way. A review cut off here is made by a later round of tidying.

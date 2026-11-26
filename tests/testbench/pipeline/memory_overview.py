@@ -851,7 +851,7 @@ async def build_ai_report(session, character: str) -> dict[str, Any]:
             type(exc).__name__, exc)
 
     try:
-        llm = _llm_for_memory(session, temperature=0.2)
+        llm = _llm_for_memory(session)
         raw = ""
         try:
             resp = await llm.ainvoke(prompt)
@@ -939,7 +939,7 @@ async def judge_contradictions(session, character: str, *, max_items: int = 20) 
 
     verdicts: list[dict[str, Any]] = []
     try:
-        llm = _llm_for_memory(session, temperature=0.0)
+        llm = _llm_for_memory(session)
         raw = ""
         try:
             resp = await llm.ainvoke(prompt)

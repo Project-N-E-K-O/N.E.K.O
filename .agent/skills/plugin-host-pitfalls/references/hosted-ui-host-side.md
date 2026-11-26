@@ -48,7 +48,7 @@ uv run pytest plugin/tests/unit/server/test_plugin_ui_query_service.py -q
 
 surface 的 iframe 是 `sandbox="allow-scripts"`，没有 `allow-same-origin`，来源是不透明的。
 
-- **直接 `fetch('/runs')` 在浏览器里一定失败。** 请求带的是 `Origin: null`，而插件服务的 CORS 只放行配置的来源和 localhost，并且带凭据（`plugin/server/http_app.py`）。桌面端窗口里能不能通，取决于壳的窗口安全设置，不要依赖它。仓库里 `plugin/plugins/game_agent_minecraft/surfaces/quickstart.tsx` 的注释记了这件事。
+- **直接 `fetch('/runs')` 在浏览器里一定失败。** 请求带的是 `Origin: null`，而插件服务的 CORS 只放行配置的来源和 localhost，并且带凭据（`plugin/server/http_app.py`）。桌面端窗口里能不能通，取决于壳的窗口安全设置，不要依赖它。同一结论在 `.agent/skills/neko-plugin/references/hosted-ui-authoring.md` 的 What The Sandbox Does Not Have 一节也有。
 - **支持的路径是 `props.api.call(actionId, args)`。** 它经 `postMessage` 交给宿主页面，再打到 `POST /plugin/{id}/hosted-ui/action/{action_id}`。
 - 桥的后端（`ui_query_service.call_surface_action`）有授权门 `_resolve_authorized_action_entry_id`：只放行出现在这个 surface 的 UI context `actions` 列表里的 action。而 `actions` 列表由 `host._collect_ui_actions()` 生成，它**只收带 `@ui.action` 元数据的入口**。普通的 `@plugin_entry` 不在里面，调它得到 403 `PLUGIN_UI_ACTION_FORBIDDEN`。
 

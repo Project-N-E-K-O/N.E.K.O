@@ -8,6 +8,9 @@ plugin-supplied ``_ctx`` or views. It runs whatever the master switch says,
 and never refuses a call yet (``REFUSES_CALLS``); a failure in here is logged
 by type and ignored, so the caller sees exactly what it saw before.
 Permission ids come from ``plugin.sdk.shared.permissions``.
+
+``record_system_uses`` writes what a plugin process reports about its own
+``system.*`` uses (``plugin/core/system_audit.py``) to the same audit.
 """
 
 from __future__ import annotations
@@ -263,3 +266,116 @@ def capability_checked(capability: str, handler):
 
     checked.__capability__ = capability
     return checked
+
+
+# What a plugin process may report about its own system.* uses. The report is
+# the plugin's own word (its process could also stay silent, and it can write
+# files anyway): it is bounded and reduced to fixed vocabularies before it
+# reaches the audit file, but the privacy reduction of a path target is the
+# SDK's (system_audit.redact_path) and is not redone here.
+SYSTEM_USE_PERMISSIONS = frozenset({
+    PERMISSIONS["system.network:connect"].id,
+    PERMISSIONS["system.process:spawn"].id,
+    PERMISSIONS["system.fs:read"].id,
+    PERMISSIONS["system.fs:write"].id,
+})
+_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
+_SYSTEM_USE_BATCH_LIMIT = 100
+_SYSTEM_USE_PER_MINUTE = 600
+_SYSTEM_USE_WINDOW = 60.0
+_SYSTEM_USE_REASONS = frozenset({"denied", "undecided"})
+# plugin_id -> [window start, entries written, lost not yet reported, loss reported in this window]
+_system_use_budget: dict[str, list] = {}
+# Printable text without line breaks or quotes that could fake a log line.
+_TARGET = re.compile(r"[^\x00-\x1f\x7f\"\\]{1,200}")
+
+
+def _system_use_target(value: object) -> str:
+    return value if isinstance(value, str) and _TARGET.fullmatch(value) else "<invalid>"
+
+
+def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
+    """The audit entry for one reported use, or None when it is malformed."""
+    if not isinstance(item, dict):
+        return None
+    permission = item.get("permission")
+    # isinstance first: an unhashable value must not reach the set lookups.
+    if not isinstance(permission, str) or permission not in SYSTEM_USE_PERMISSIONS:
+        return None
+    would_deny = item.get("verdict") == "would_deny"
+    reason = item.get("reason")
+    flags = item.get("flags")
+    flags = {flag for flag in flags if isinstance(flag, str) and flag in _SYSTEM_USE_FLAGS} if isinstance(flags, list) else set()
+    return {
+        "kind": "system_use", "mode": mode,
+        # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).
+        "enforcing": would_deny and item.get("enforcing") is True,
+        "plugin": plugin_id, "capability": permission,
+        "operation": _identifier(item.get("event")),
+        "target": _system_use_target(item.get("target")),
+        "verdict": "would_deny" if would_deny else "allow",
+        "reason": reason if would_deny and isinstance(reason, str) and reason in _SYSTEM_USE_REASONS else None,
+        "flags": sorted(flags) + ["plugin_reported"],
+    }
+
+
+def flush_system_use_loss(plugin_id: str) -> None:
+    """Report what is still counted as lost for ``plugin_id`` (its connection
+    is closing, so no later batch would carry it). Never raises."""
+    try:
+        state = _system_use_budget.pop(plugin_id, None)
+        if state is not None and state[2]:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": state[2]})
+    except Exception as exc:
+        logger.warning("system use loss flush failed: error_type={}", type(exc).__name__)
+
+
+def record_system_uses(plugin_id: str, message: object) -> int:
+    """Audit one ``SYSTEM_AUDIT`` batch from ``plugin_id``'s process.
+
+    Returns how many entries were written. Never raises. Malformed items are
+    skipped one by one. Per plugin and minute at most ``_SYSTEM_USE_PER_MINUTE``
+    uses are written; the rest, items past ``_SYSTEM_USE_BATCH_LIMIT`` and what
+    the process itself could not send are counted, and reported in at most one
+    ``system_use_lost`` entry a minute.
+    """
+    now = time.monotonic()
+    state = _system_use_budget.get(plugin_id)
+    if state is None or now - state[0] >= _SYSTEM_USE_WINDOW:
+        state = [now, 0, state[2] if state is not None else 0, False]
+    written = 0
+    try:
+        if not isinstance(message, dict):
+            return 0
+        items = message.get("items")
+        items = items if isinstance(items, list) else []
+        lost = message.get("dropped")
+        if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0:
+            state[2] += lost
+        state[2] += max(0, len(items) - _SYSTEM_USE_BATCH_LIMIT)
+        mode = current_mode()
+        for item in items[:_SYSTEM_USE_BATCH_LIMIT]:
+            try:
+                entry = _system_use_entry(plugin_id, item, mode)
+            except Exception:
+                entry = None  # a malformed item is skipped, the rest still count
+            if entry is None:
+                continue
+            if state[1] >= _SYSTEM_USE_PER_MINUTE:
+                state[2] += 1
+                continue
+            state[1] += 1
+            call_audit.record(entry)
+            written += 1
+        if state[2] and not state[3]:
+            call_audit.record({"kind": "system_use_lost", "plugin": plugin_id, "count": state[2]})
+            state[2], state[3] = 0, True
+        return written
+    except Exception as exc:
+        logger.warning("system use audit failed: error_type={}", type(exc).__name__)
+        return written
+    finally:
+        # Saved whatever happened above, so a failing batch still uses budget.
+        if plugin_id not in _system_use_budget and len(_system_use_budget) > 1024:
+            _system_use_budget.clear()
+        _system_use_budget[plugin_id] = state

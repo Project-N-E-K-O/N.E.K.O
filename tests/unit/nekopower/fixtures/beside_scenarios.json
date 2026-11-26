@@ -1,0 +1,110 @@
+{
+  "_about": "Sentences said of a project while the member that works there is busy, each with whether it goes on with that member's work (same) or is about something else (else). For the rule that tells the two apart with no model (orchestrator.apart_from). Words of the user's own kind: short, some naming nothing, in the languages the app is used in.",
+  "members": {
+    "thesis": {
+      "project": "thesis",
+      "title": "Chapter three",
+      "duty": "Writes and revises the chapters of the master's thesis",
+      "summary": "Drafted the survey of related work; chapter three on the method is half written",
+      "done": [
+        {"title": "draft the survey of related work", "result": "twelve pages, forty references, grouped by approach"}
+      ],
+      "at_hand": ["tighten the survey of related work", "cut the survey of related work down to eight pages and keep the comparison table"]
+    },
+    "shop": {
+      "project": "店铺装修",
+      "title": "首页装修",
+      "duty": "负责店铺首页的版式、横幅和轮播图",
+      "summary": "首页改成了三栏，横幅放在最上面",
+      "done": [
+        {"title": "把首页改成三栏布局", "result": "三栏已改好，横幅置顶，轮播图放在第二屏"}
+      ],
+      "at_hand": ["把首页的横幅换成新年款", "首页横幅换成新年主题，轮播图也换三张新年的图"]
+    },
+    "ledger": {
+      "project": "记账小程序",
+      "title": "",
+      "duty": "",
+      "summary": "记账小程序：记一笔、分类、按月统计",
+      "done": [
+        {"title": "记账小程序加个按月统计", "result": "加了按月统计页，按分类汇总支出和收入"}
+      ],
+      "at_hand": ["给按月统计加一个导出成表格的按钮", "按月统计页加导出 Excel 的按钮，文件名带月份"]
+    },
+    "n2": {
+      "project": "JLPT N2",
+      "title": "N2 単語帳",
+      "duty": "N2 の単語と例文を単語帳にまとめる",
+      "summary": "先週の単語を 120 語追加した",
+      "done": [
+        {"title": "N2 の単語を追加する", "result": "動詞と形容詞を 120 語、例文つきで追加"}
+      ],
+      "at_hand": ["今週の単語を追加する", "今週の N2 の単語 80 語を例文つきで単語帳に追加する"]
+    },
+    "blog": {
+      "project": "neko-blog",
+      "title": "Rendering",
+      "duty": "The markdown rendering of the blog engine and its themes",
+      "summary": "Code blocks are highlighted; footnotes render at the end of a post",
+      "done": [
+        {"title": "highlight code blocks in posts", "result": "syntax highlighting for twelve languages, dark and light theme"}
+      ],
+      "at_hand": ["render footnotes in posts", "render markdown footnotes as links at the end of each post, with a way back"]
+    },
+    "recipes": {
+      "project": "레시피 박스",
+      "title": "",
+      "duty": "레시피를 재료와 조리 시간으로 정리한다",
+      "summary": "한식 레시피 30개를 재료별로 정리했다",
+      "done": [
+        {"title": "한식 레시피를 재료별로 정리", "result": "레시피 30개를 주재료와 조리 시간으로 분류"}
+      ],
+      "at_hand": ["레시피에 조리 시간 필터 추가", "레시피 목록에 조리 시간으로 거르는 필터를 추가한다"]
+    }
+  },
+  "cases": [
+    {"id": "thesis-1", "lang": "en", "member": "thesis", "sentence": "in the survey of related work, add the three papers from last week to the comparison table", "truth": "same"},
+    {"id": "thesis-2", "lang": "en", "member": "thesis", "sentence": "keep it at eight pages but move the table to the end", "truth": "same"},
+    {"id": "thesis-3", "lang": "en", "member": "thesis", "sentence": "Chapter three, also check the references are in order", "truth": "same"},
+    {"id": "thesis-4", "lang": "en", "member": "thesis", "sentence": "set up a script that backs the whole folder up to the cloud every night", "truth": "else"},
+    {"id": "thesis-5", "lang": "en", "member": "thesis", "sentence": "make the slides for the defense, fifteen minutes, from the abstract", "truth": "else"},
+    {"id": "thesis-6", "lang": "en", "member": "thesis", "sentence": "convert the figures in the results chapter from png to vector graphics", "truth": "else"},
+    {"id": "thesis-7", "lang": "en", "member": "thesis", "sentence": "and the same for the next one", "truth": "same"},
+
+    {"id": "shop-1", "lang": "zh", "member": "shop", "sentence": "首页横幅的文字再大一点，轮播图换成五张", "truth": "same"},
+    {"id": "shop-2", "lang": "zh", "member": "shop", "sentence": "新年款的横幅用红色那一版", "truth": "same"},
+    {"id": "shop-3", "lang": "zh", "member": "shop", "sentence": "再改一下，别太花", "truth": "same"},
+    {"id": "shop-4", "lang": "zh", "member": "shop", "sentence": "把客服自动回复的话术整理成一份表格", "truth": "else"},
+    {"id": "shop-5", "lang": "zh", "member": "shop", "sentence": "统计一下上个月每个商品的退货率", "truth": "else"},
+    {"id": "shop-6", "lang": "zh", "member": "shop", "sentence": "商品详情页底部加一个尺码对照表", "truth": "else"},
+    {"id": "shop-7", "lang": "zh", "member": "shop", "sentence": "首页装修那边顺便把第二屏的间距调小", "truth": "same"},
+
+    {"id": "ledger-1", "lang": "zh", "member": "ledger", "sentence": "按月统计导出的表格里加一列备注", "truth": "same"},
+    {"id": "ledger-2", "lang": "zh", "member": "ledger", "sentence": "导出按钮放到右上角", "truth": "same"},
+    {"id": "ledger-3", "lang": "zh", "member": "ledger", "sentence": "顺便也加上按年的", "truth": "same"},
+    {"id": "ledger-4", "lang": "zh", "member": "ledger", "sentence": "给小程序换一个图标，要猫的", "truth": "else"},
+    {"id": "ledger-5", "lang": "zh", "member": "ledger", "sentence": "写一份使用说明，发给家里人看", "truth": "else"},
+    {"id": "ledger-6", "lang": "zh", "member": "ledger", "sentence": "登录改成用手机号验证码", "truth": "else"},
+
+    {"id": "n2-1", "lang": "ja", "member": "n2", "sentence": "今週の単語に例文をもう一つずつ追加して", "truth": "same"},
+    {"id": "n2-2", "lang": "ja", "member": "n2", "sentence": "N2の単語、今週の分も追加して", "truth": "same"},
+    {"id": "n2-3", "lang": "ja", "member": "n2", "sentence": "それも入れておいて", "truth": "same"},
+    {"id": "n2-4", "lang": "ja", "member": "n2", "sentence": "聴解の練習問題を十問つくって", "truth": "else"},
+    {"id": "n2-5", "lang": "ja", "member": "n2", "sentence": "試験日までの勉強の予定表を作って", "truth": "else"},
+    {"id": "n2-6", "lang": "ja", "member": "n2", "sentence": "文法のまとめノートを PDF にして", "truth": "else"},
+
+    {"id": "blog-1", "lang": "en", "member": "blog", "sentence": "footnotes should also render in the post preview on the index page", "truth": "same"},
+    {"id": "blog-2", "lang": "en", "member": "blog", "sentence": "make the highlighted code blocks scroll sideways instead of wrapping", "truth": "same"},
+    {"id": "blog-3", "lang": "en", "member": "blog", "sentence": "do that for tables too", "truth": "same"},
+    {"id": "blog-4", "lang": "en", "member": "blog", "sentence": "write a deploy script that pushes the site to the server over ssh", "truth": "else"},
+    {"id": "blog-5", "lang": "en", "member": "blog", "sentence": "add an RSS feed with the last twenty entries", "truth": "else"},
+    {"id": "blog-6", "lang": "en", "member": "blog", "sentence": "the comment form needs a spam check", "truth": "else"},
+
+    {"id": "recipes-1", "lang": "ko", "member": "recipes", "sentence": "조리 시간 필터에 30분 이하 옵션도 넣어 줘", "truth": "same"},
+    {"id": "recipes-2", "lang": "ko", "member": "recipes", "sentence": "레시피 목록 필터를 재료로도 거를 수 있게 해 줘", "truth": "same"},
+    {"id": "recipes-3", "lang": "ko", "member": "recipes", "sentence": "그것도 같이 해 줘", "truth": "same"},
+    {"id": "recipes-4", "lang": "ko", "member": "recipes", "sentence": "이번 주 장보기 목록을 만들어 줘", "truth": "else"},
+    {"id": "recipes-5", "lang": "ko", "member": "recipes", "sentence": "사진을 한 폴더로 모아서 이름을 날짜로 바꿔 줘", "truth": "else"},
+    {"id": "recipes-6", "lang": "ko", "member": "recipes", "sentence": "영양 성분 표를 각 요리에 붙여 줘", "truth": "else"}
+  ]
+}

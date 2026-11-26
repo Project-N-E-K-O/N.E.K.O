@@ -60,7 +60,7 @@
 
 ## 6. 插件这一侧
 
-- ⚠️ 插件里查 `config/prompts` 的表，**不要直接用 `get_global_language_full()` 的返回值当键**：简体会变成 `zh-CN`，在短码键的表里查不到、掉英文，比不做本地化更糟。统一走 `prompts_sys.normalize_sys_prompt_locale`。现成例子：`plugin/plugins/game_agent_minecraft/prompts.py` 的 `user_lang()`。
+- ⚠️ 插件里查 `config/prompts` 的表，**不要直接用 `get_global_language_full()` 的返回值当键**：简体会变成 `zh-CN`，在短码键的表里查不到、掉英文，比不做本地化更糟。统一走 `prompts_sys.normalize_sys_prompt_locale`。目前仓库里没有内置插件用到它，调用写法可参考 `knowledge/render.py` 的 `render_reference_block`（`lang = normalize_sys_prompt_locale(language)`）。
 - ⚠️ **这类改动的测试必须同时覆盖简体和繁体。** 只测繁体的话，「把简体打到英文」的错误修法照样全绿。
 - 插件自带的多语言表要加繁体时，三处一起改：表里加 `zh-TW` 行、支持语言清单加上 `zh-TW`、取用户语言的函数改成返回完整 locale。缺一处都不生效。
 - `plugin/sdk/shared/i18n.py` 的 `PluginI18n` 的默认语言是构造时给的固定值，不跟着用户语言变。`t(key)` 不传 locale 时永远查默认语言那一本。

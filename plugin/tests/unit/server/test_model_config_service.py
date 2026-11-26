@@ -169,13 +169,11 @@ def test_endpoint_change_does_not_reuse_previous_credential(config_env, change):
 
 def test_partial_defaults_update_preserves_omitted_fields(config_env):
     _, service, _ = config_env
-    slot_id = service.create_slot(slot_payload(defaults={"temperature": 0.7, "max_output_tokens": 8192}))["id"]
-    service.update_slot(slot_id, {"defaults": {"temperature": 0.2}})
-    defaults = service.store.read().slots[slot_id].defaults
-    assert (defaults.temperature, defaults.max_output_tokens) == (0.2, 8192)
+    slot_id = service.create_slot(slot_payload(defaults={"max_output_tokens": 8192}))["id"]
+    service.update_slot(slot_id, {"name": "Renamed"})
+    assert service.store.read().slots[slot_id].defaults.max_output_tokens == 8192
     service.update_slot(slot_id, {"defaults": {"max_output_tokens": None}})
-    defaults = service.store.read().slots[slot_id].defaults
-    assert (defaults.temperature, defaults.max_output_tokens) == (0.2, None)
+    assert service.store.read().slots[slot_id].defaults.max_output_tokens is None
 
 
 def test_binding_must_be_declared_and_meet_capabilities(config_env):
@@ -731,48 +729,83 @@ def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch, autobind_env):
     assert done.wait(5)
 
 
-def test_host_follow_save_rejects_temperature_above_protocol_intersection(config_env):
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings: list[tuple] = []
+
+    def warning(self, message, *args):
+        self.warnings.append((message, *args))
+
+
+@pytest.fixture
+def config_logs(monkeypatch):
+    service_log, store_log = _RecordingLogger(), _RecordingLogger()
+    monkeypatch.setattr("plugin.server.application.model_config_service.logger", service_log)
+    monkeypatch.setattr("plugin.server.infrastructure.model_config_store.logger", store_log)
+    monkeypatch.setattr("plugin.server.infrastructure.model_config_store._reported_retired", set())
+    return service_log, store_log
+
+
+@pytest.mark.parametrize("payload", ["manual", "host_follow"])
+def test_saving_a_default_temperature_is_accepted_and_dropped_with_a_warning(config_env, config_logs, payload):
+    # An older plugin manager may still send one: no 422, nothing stored.
     _, service, _ = config_env
-    # A successful save must never produce a slot that fails every call once
-    # the main app resolves to Anthropic: >1 is rejected at save time.
-    with pytest.raises(ServerDomainError) as error:
-        service.create_slot(host_payload(defaults={"temperature": 1.5}))
-    assert error.value.code == "MODEL_SLOT_INVALID"
-    created = service.create_slot(host_payload(defaults={"temperature": 1.0}))
-    with pytest.raises(ServerDomainError) as error:
-        service.update_slot(created["id"], {"defaults": {"temperature": 2}})
-    assert error.value.code == "MODEL_SLOT_INVALID"
-    # Manual OpenAI slots keep their own 0–2 range.
-    manual = service.create_slot(slot_payload(defaults={"temperature": 1.5}))
-    assert manual["defaults"]["temperature"] == 1.5
+    service_log, _ = config_logs
+    make = slot_payload if payload == "manual" else host_payload
+    created = service.create_slot(make(defaults={"temperature": 1.5, "max_output_tokens": 600}))
+    assert created["defaults"] == {"max_output_tokens": 600}
+    assert len(service_log.warnings) == 1
+    updated = service.update_slot(created["id"], {"defaults": {"temperature": 2}})
+    assert updated["defaults"] == {"max_output_tokens": 600}
+    assert len(service_log.warnings) == 2
+    assert service.store.read().slots[created["id"]].defaults.model_dump() == {"max_output_tokens": 600}
 
 
-def test_legacy_high_temperature_document_stays_readable_and_updatable(config_env):
+def test_rejected_slot_save_does_not_report_a_default_temperature(config_env, config_logs):
+    _, service, _ = config_env
+    service_log, _ = config_logs
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(base_url="", defaults={"temperature": 1.5}))
+    with pytest.raises(ServerDomainError):
+        service.update_slot("slot_" + "f" * 32, {"defaults": {"temperature": 1.5}})
+    # Rejected later, inside the save: a missing fallback slot (404) and an
+    # endpoint change without a key update (409).
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(fallback_slot_id="slot_" + "d" * 32, defaults={"temperature": 1.5}))
+    created = service.create_slot(slot_payload())
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(created["id"], {"base_url": "https://other.example/v1", "defaults": {"temperature": 1.5}})
+    assert error.value.code == "MODEL_CREDENTIAL_UPDATE_REQUIRED"
+    assert service_log.warnings == []
+    # The save that succeeds reports it once.
+    service.update_slot(created["id"], {"name": "Renamed", "defaults": {"temperature": 1.5}})
+    assert len(service_log.warnings) == 1
+
+
+def test_saved_default_temperature_is_ignored_reported_once_and_removed_on_save(config_env, config_logs):
     cm, service, _ = config_env
+    _, store_log = config_logs
     slot_id = "slot_" + "e" * 32
     cm.config_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+    path = cm.get_runtime_config_path(CONFIG_FILENAME)
+    atomic_write_json(path, {
         "schema_version": 1, "seed_version": 1,
         "slots": {slot_id: {
             "name": "Legacy host", "source": "host_follow", "host_api": "agent",
-            "defaults": {"temperature": 1.5},
+            "defaults": {"temperature": 1.5, "max_output_tokens": 700},
         }},
         "bindings": {}, "binding_versions": {},
     })
-    # Reading must not reject the whole document over an unused legacy default.
-    listed = service.list_slots()
-    legacy = next(slot for slot in listed["slots"] if slot["id"] == slot_id)
-    assert legacy["defaults"]["temperature"] == 1.5
-    # An unrelated edit preserves the untouched legacy value.
-    renamed = service.update_slot(slot_id, {"name": "Renamed legacy"})
-    assert renamed["defaults"]["temperature"] == 1.5
-    assert service.store.read().slots[slot_id].defaults.temperature == 1.5
-    # Explicitly changing the default enforces the save-time intersection.
-    with pytest.raises(ServerDomainError) as error:
-        service.update_slot(slot_id, {"defaults": {"temperature": 1.8}})
-    assert error.value.code == "MODEL_SLOT_INVALID"
-    fixed = service.update_slot(slot_id, {"defaults": {"temperature": 0.7}})
-    assert fixed["defaults"]["temperature"] == 0.7
+    # The whole document stays readable; the retired value is not exposed.
+    for _ in range(3):
+        legacy = next(slot for slot in service.list_slots()["slots"] if slot["id"] == slot_id)
+        assert legacy["defaults"] == {"max_output_tokens": 700}
+    assert len(store_log.warnings) == 1 and slot_id in store_log.warnings[0]
+    # Any save rewrites the document without it.
+    service.update_slot(slot_id, {"name": "Renamed legacy"})
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["slots"][slot_id]["defaults"] == {"max_output_tokens": 700}
+    assert len(store_log.warnings) == 1
 
 
 @pytest.mark.host_model_autobind

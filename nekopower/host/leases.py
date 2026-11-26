@@ -223,3 +223,8 @@ class BuiltinLeases:
         """Wait for the cleanups started by releases so far."""
         while self._cleanups:
             await asyncio.gather(*list(self._cleanups), return_exceptions=True)
+            # Yield once before looking at the set again. Since Python 3.12, gather() over
+            # tasks that are all done completes without yielding, so the done-callbacks those
+            # tasks queued (the set's discard, and any that start follow-up work) would never
+            # run and this loop would spin forever.
+            await asyncio.sleep(0)

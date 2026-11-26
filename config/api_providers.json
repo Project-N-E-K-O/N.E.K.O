@@ -85,7 +85,7 @@
       "recognition_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
-      "decision_url_template": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+      "decision_url_template": "https://{workspace_host}/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
@@ -103,7 +103,7 @@
       "recognition_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
-      "decision_url_template": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone",
+      "decision_url_template": "https://{workspace_host}/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
@@ -114,6 +114,7 @@
       "provider_type": "chatgpt",
       "auth_type": "oauth",
       "model_slot_only": true,
+      "subscription_panel_only": true,
       "supported_model_types": ["conversation", "memory", "gameMain", "gameSummary", "recognition", "gameRecognition", "agent", "agentSmall", "agentAdvanced"],
       "openrouter_url": "https://api.openai.com/v1"
     },
@@ -164,8 +165,9 @@
       "conversation_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "memory_model": "deepseek-ai/DeepSeek-V4-Flash",
       "recognition_model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-      "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
-      "decision_protocol": "chat_fallback",
+      "decision_model": "Kev-4B",
+      "decision_protocol": "systemone",
+      "decision_url": "https://api.siliconflow.cn/v1/systemone",
       "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "agent_model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },
@@ -266,7 +268,7 @@
     "mimo": {
       "key": "mimo",
       "name": "MiMo（小米）",
-      "description": "小米 MiMo 辅助 API，支持 V2.5 文本/多模态与 MiMo-V2.5-TTS",
+      "description": "小米 MiMo 辅助 API，支持 V2.6 文本/多模态与 MiMo-V2.5-TTS",
       "openrouter_url": "https://api.xiaomimimo.com/v1",
       "token_plan_openrouter_url": "https://token-plan-cn.xiaomimimo.com/v1",
       "token_plan_openrouter_urls": [
@@ -274,13 +276,13 @@
         "https://token-plan-sgp.xiaomimimo.com/v1",
         "https://token-plan-ams.xiaomimimo.com/v1"
       ],
-      "conversation_model": "mimo-v2.5",
-      "memory_model": "mimo-v2.5",
-      "recognition_model": "mimo-v2.5",
-      "decision_model": "mimo-v2.5",
+      "conversation_model": "mimo-v2.6-flash",
+      "memory_model": "mimo-v2.6-flash",
+      "recognition_model": "mimo-v2.6-flash",
+      "decision_model": "mimo-v2.6-flash",
       "decision_protocol": "chat_fallback",
-      "vision_model": "mimo-v2.5",
-      "agent_model": "mimo-v2.5"
+      "vision_model": "mimo-v2.6-flash",
+      "agent_model": "mimo-v2.6-flash"
     },
     "claude": {
       "key": "claude",
@@ -754,6 +756,514 @@
         "english male": "Milo",
         "英文男": "Milo"
       }
+    }
+  },
+  "_comment_subscription_plans": "Subscriptions & plans panel (utils/subscriptions). Each plan lists the text tiers it may take over (decided plan by plan from the models it includes), where requests go and how it signs in. verified=false: not yet tested with a real subscription.",
+  "subscription_plans": {
+    "chatgpt": {
+      "name": "ChatGPT",
+      "auth": "chatgpt_oauth",
+      "provider_type": "chatgpt",
+      "base_url": "https://api.openai.com/v1",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": "account",
+      "info_url": "https://chatgpt.com/settings/usage",
+      "verified": true
+    },
+    "mimo_token_plan": {
+      "name": "MiMo Token Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://token-plan-cn.xiaomimimo.com/v1",
+        "sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+        "ams": "https://token-plan-ams.xiaomimimo.com/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro-ultraspeed"
+      ],
+      "default_models": {
+        "conversation": "mimo-v2.6-pro",
+        "memory": "mimo-v2.6-pro",
+        "recognition": "mimo-v2.6-flash",
+        "agent": "mimo-v2.6-pro",
+        "agent_small": "mimo-v2.6-flash",
+        "agent_advanced": "mimo-v2.6-pro",
+        "game_main": "mimo-v2.6-pro",
+        "game_summary": "mimo-v2.6-pro",
+        "game_recognition": "mimo-v2.6-flash"
+      },
+      "key_prefix": "tp-",
+      "key_fallback": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
+      "info_url": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+      "verified": false
+    },
+    "kimi_code": {
+      "name": "Kimi Code",
+      "auth": "api_key",
+      "provider_type": "anthropic",
+      "regions": {
+        "cn": "https://api.kimi.com/coding",
+        "intl": "https://api.kimi.ai/coding"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
+        "k3.1-pro",
+        "k3.1-pro-highspeed",
+        "k3",
+        "k3-256k"
+      ],
+      "default_models": {
+        "conversation": "kimi-for-coding",
+        "memory": "kimi-for-coding",
+        "recognition": "kimi-for-coding",
+        "agent": "kimi-for-coding",
+        "agent_small": "kimi-for-coding",
+        "agent_advanced": "kimi-for-coding",
+        "game_main": "kimi-for-coding",
+        "game_summary": "kimi-for-coding",
+        "game_recognition": "kimi-for-coding"
+      },
+      "key_fallback": "ASSIST_API_KEY_KIMI_CODE",
+      "info_url": "https://www.kimi.com/code/docs/kimi-code/models.html",
+      "verified": false
+    },
+    "minimax_m_plan": {
+      "name": "MiniMax M Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://api.minimax.cn/v1",
+        "intl": "https://api.minimax.io/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "MiniMax-M3.1-Flash"
+      ],
+      "default_models": {
+        "conversation": "MiniMax-M3.1-Flash",
+        "memory": "MiniMax-M3.1-Flash",
+        "recognition": "MiniMax-M3.1-Flash",
+        "agent": "MiniMax-M3.1-Flash",
+        "agent_small": "MiniMax-M3.1-Flash",
+        "agent_advanced": "MiniMax-M3.1-Flash",
+        "game_main": "MiniMax-M3.1-Flash",
+        "game_summary": "MiniMax-M3.1-Flash",
+        "game_recognition": "MiniMax-M3.1-Flash"
+      },
+      "info_url": "https://platform.minimax.io/docs/m-plan/intro.md",
+      "verified": false
+    },
+    "bailian_token_plan": {
+      "name": "Alibaba Cloud Model Studio Token Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "intl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "qwen3.8-flash",
+        "qwen3.8-max",
+        "qwen4-max",
+        "qwen3.7-plus",
+        "qwen3.6-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "glm-5.3"
+      ],
+      "default_models": {
+        "conversation": "qwen3.8-flash",
+        "memory": "qwen3.8-flash",
+        "recognition": "qwen3.6-flash",
+        "agent": "qwen3.8-flash",
+        "agent_small": "qwen3.6-flash",
+        "agent_advanced": "qwen3.8-max",
+        "game_main": "qwen3.8-flash",
+        "game_summary": "qwen3.8-flash",
+        "game_recognition": "qwen3.6-flash"
+      },
+      "key_prefix": "sk-sp-",
+      "info_url": "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
+      "verified": false
+    },
+    "bailian_coding_plan": {
+      "name": "Alibaba Cloud Model Studio Coding Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://coding.dashscope.aliyuncs.com/v1",
+        "intl": "https://coding-intl.dashscope.aliyuncs.com/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "kimi-k2.5",
+        "glm-5"
+      ],
+      "default_models": {
+        "conversation": "qwen3.7-plus",
+        "memory": "qwen3.7-plus",
+        "recognition": "qwen3.7-plus",
+        "agent": "qwen3.7-plus",
+        "agent_small": "qwen3.7-plus",
+        "agent_advanced": "qwen3.7-plus",
+        "game_main": "qwen3.7-plus",
+        "game_summary": "qwen3.7-plus",
+        "game_recognition": "qwen3.7-plus"
+      },
+      "key_prefix": "sk-sp-",
+      "info_url": "https://help.aliyun.com/zh/model-studio/coding-plan",
+      "verified": false
+    },
+    "ark_coding_plan": {
+      "name": "Volcengine Ark Coding Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "doubao-seed-2.1-lite",
+        "doubao-seed-2.1-pro",
+        "doubao-seed-2.0-mini",
+        "ark-code-latest",
+        "glm-5.3",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "kimi-k3.1-pro",
+        "kimi-k2.8-preview"
+      ],
+      "default_models": {
+        "conversation": "doubao-seed-2.1-lite",
+        "memory": "doubao-seed-2.1-lite",
+        "recognition": "doubao-seed-2.0-mini",
+        "agent": "doubao-seed-2.1-lite",
+        "agent_small": "doubao-seed-2.0-mini",
+        "agent_advanced": "doubao-seed-2.1-pro",
+        "game_main": "doubao-seed-2.1-lite",
+        "game_summary": "doubao-seed-2.1-lite",
+        "game_recognition": "doubao-seed-2.0-mini"
+      },
+      "key_fallback": "ASSIST_API_KEY_DOUBAO",
+      "info_url": "https://docs.volcengine.com/docs/ark/coding-plan-personal-plan-overview?lang=zh",
+      "verified": false
+    },
+    "glm_coding_plan": {
+      "name": "Z.ai GLM Coding Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "intl": "https://api.z.ai/api/coding/paas/v4"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "glm-5.4",
+        "glm-5.3",
+        "glm-5.3-flash"
+      ],
+      "default_models": {
+        "memory": "glm-5.3",
+        "recognition": "glm-5.3-flash",
+        "agent": "glm-5.3",
+        "agent_small": "glm-5.3-flash",
+        "agent_advanced": "glm-5.4",
+        "game_summary": "glm-5.3",
+        "game_recognition": "glm-5.3-flash"
+      },
+      "info_url": "https://docs.bigmodel.cn/cn/coding-plan/overview",
+      "verified": false
+    },
+    "step_plan": {
+      "name": "StepFun Step Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "regions": {
+        "cn": "https://api.stepfun.com/step_plan/v1",
+        "intl": "https://api.stepfun.ai/step_plan/v1"
+      },
+      "default_region": "cn",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "step-3.7-flash",
+        "step-5-preview",
+        "step-3.5-flash"
+      ],
+      "default_models": {
+        "conversation": "step-3.7-flash",
+        "memory": "step-3.7-flash",
+        "recognition": "step-3.5-flash",
+        "agent": "step-3.7-flash",
+        "agent_small": "step-3.5-flash",
+        "agent_advanced": "step-5-preview",
+        "game_main": "step-3.7-flash",
+        "game_summary": "step-3.7-flash",
+        "game_recognition": "step-3.5-flash"
+      },
+      "key_fallback": "ASSIST_API_KEY_STEP",
+      "info_url": "https://platform.stepfun.com/docs/zh/step-plan/pricing.md",
+      "verified": false
+    },
+    "qianfan_token_plan": {
+      "name": "Baidu Qianfan Token Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "base_url": "https://qianfan.baidubce.com/v2/tokenplan/personal",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
+        "deepseek-v4-pro",
+        "glm-5.3"
+      ],
+      "default_models": {
+        "conversation": "deepseek-v4.1-flash",
+        "memory": "deepseek-v4.1-flash",
+        "recognition": "glm-5.3-flash",
+        "agent": "deepseek-v4.1-flash",
+        "agent_small": "glm-5.3-flash",
+        "agent_advanced": "deepseek-v4-pro",
+        "game_main": "deepseek-v4.1-flash",
+        "game_summary": "deepseek-v4.1-flash",
+        "game_recognition": "glm-5.3-flash"
+      },
+      "info_url": "https://cloud.baidu.com/doc/qianfan/s/Dmrabu8b6",
+      "verified": false
+    },
+    "tencent_token_plan": {
+      "name": "Tencent Cloud Token Plan",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "base_url": "https://tokenhub.tencentmaas.com/plan/v3",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "kimi-k3",
+        "deepseek-v4.1-flash-1017",
+        "deepseek-v4-pro-0813",
+        "glm-5.3",
+        "minimax-m3",
+        "mimo-v2.6-flash",
+        "hy4",
+        "tc-code-latest"
+      ],
+      "default_models": {
+        "conversation": "kimi-k3",
+        "memory": "kimi-k3",
+        "recognition": "mimo-v2.6-flash",
+        "agent": "kimi-k3",
+        "agent_small": "mimo-v2.6-flash",
+        "agent_advanced": "deepseek-v4-pro-0813",
+        "game_main": "kimi-k3",
+        "game_summary": "kimi-k3",
+        "game_recognition": "mimo-v2.6-flash"
+      },
+      "key_prefix": "sk-tp-",
+      "info_url": "https://cloud.tencent.com/document/product/1823/130060",
+      "verified": false
+    },
+    "opencode_go": {
+      "name": "OpenCode Go",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "base_url": "https://opencode.ai/inference/go/openai/v1",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "kimi-k3",
+        "kimi-k3.1-pro",
+        "glm-5.3",
+        "qwen3.8-max",
+        "minimax-m3",
+        "deepseek-v4-pro"
+      ],
+      "default_models": {
+        "conversation": "kimi-k3",
+        "memory": "kimi-k3",
+        "recognition": "glm-5.3",
+        "agent": "kimi-k3",
+        "agent_small": "glm-5.3",
+        "agent_advanced": "kimi-k3.1-pro",
+        "game_main": "kimi-k3",
+        "game_summary": "kimi-k3",
+        "game_recognition": "glm-5.3"
+      },
+      "fetch_models": true,
+      "info_url": "https://opencode.ai/docs/go",
+      "verified": false
+    },
+    "ollama_cloud": {
+      "name": "Ollama Cloud",
+      "auth": "api_key",
+      "provider_type": "openai_compatible",
+      "base_url": "https://ollama.com/v1",
+      "tiers": [
+        "conversation",
+        "memory",
+        "recognition",
+        "agent",
+        "agent_small",
+        "agent_advanced",
+        "game_main",
+        "game_summary",
+        "game_recognition"
+      ],
+      "models": [
+        "kimi-k3",
+        "kimi-k3.1-pro",
+        "glm-5.3",
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "minimax-m3",
+        "mimo-v2.6-pro",
+        "gpt-oss:120b",
+        "gemma4",
+        "mistral-large-4"
+      ],
+      "default_models": {
+        "conversation": "kimi-k3",
+        "memory": "kimi-k3",
+        "recognition": "deepseek-v4.1-flash",
+        "agent": "kimi-k3",
+        "agent_small": "deepseek-v4.1-flash",
+        "agent_advanced": "kimi-k3.1-pro",
+        "game_main": "kimi-k3",
+        "game_summary": "kimi-k3",
+        "game_recognition": "deepseek-v4.1-flash"
+      },
+      "fetch_models": true,
+      "info_url": "https://ollama.com/pricing",
+      "verified": false
     }
   }
 }

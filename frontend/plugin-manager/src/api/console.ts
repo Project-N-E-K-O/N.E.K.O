@@ -271,6 +271,77 @@ export interface BoardCard {
   context_tokens?: number
   last_active_at?: number | null
   commission: BoardCommission | null
+  /** The same for a project's leader and those it started for the commission it has in hand: one team. */
+  team?: string | null
+  /** The git worktree of its own it works in, or left for the user to decide on; see `Worktree`. */
+  tree?: BoardTree | null
+}
+
+/** Where a git worktree stands: `held`, `unlanded` and `kept` are the user's to decide on. */
+export type TreeState = 'making' | 'active' | 'landing' | 'resolving' | 'held' | 'unlanded' | 'kept' | (string & {})
+
+/** A git worktree a familiar works in, as its card has it. */
+export interface BoardTree {
+  id: string
+  path: string
+  /** The project's directory within it. */
+  workdir: string
+  state: TreeState
+  /** How many times what clashed went back to the familiar to merge. */
+  rounds: number
+  /** How many times an inspector looked at it. */
+  checks: number
+  conflicts: string[]
+  /** Why it was not landed: `conflict`, `failed`, `inspection`, `ask`, `stopped`, `restart`, `skipped`; empty while it is at work. */
+  reason: string
+  project_dir: string
+  commission_id: string | null
+}
+
+/** A git worktree on record, as the list of them has it. */
+export interface Worktree extends BoardTree {
+  session_id: string | null
+  lanlan_name: string
+  project: string | null
+  created_at: number
+  updated_at: number
+  /** What its commission is called. */
+  title: string
+  session_name: string
+}
+
+/** What came of landing a worktree as the user asked. */
+export interface Landing {
+  status: 'landed' | 'unchanged' | 'conflict' | 'failed' | (string & {})
+  files: Array<{ path: string; status: string; added: number | null; deleted: number | null }>
+  more: number
+  conflicts: string[]
+  /** Whether what clashed went back to its familiar to merge. */
+  resolving: boolean
+  detail: string
+  kept_copies?: string[]
+  /** Changed outside the project's directory, elsewhere in its repository: landed with the rest. */
+  outside?: string[]
+  /** Not carried over (too large, a repository of their own): still in the worktree, which stays. */
+  skipped?: string[]
+}
+
+/**
+ * What becomes of work that waits for a familiar busy with something else, in a project without a
+ * leader: `ask` the user whether another is to do it in a worktree of its own, `open` another
+ * without asking, `queue` it behind the busy one.
+ */
+export type BesideChoice = 'ask' | 'open' | 'queue'
+
+export interface LandingSettings {
+  /** `auto`: what a familiar changed is merged as soon as it is done; `ask`: it waits for the user. */
+  mode: 'auto' | 'ask'
+  /** Whether an inspector looks at what was changed before every landing. */
+  inspect: boolean
+  /** Missing where the service has no such setting. */
+  beside?: BesideChoice
+  /** How many worktrees a project may have, those the user sees to included; no setting of the user's. */
+  worktrees_per_project?: number
 }
 
 export interface BoardProject {
@@ -320,7 +391,9 @@ export const getProjectBoard = (project: string | null, knownRevision?: string) 
   if (knownRevision) params.known_revision = knownRevision
   return get<Board>('/console/board', params)
 }
-export const getTemplates = () => get<{ templates: FamiliarTemplate[] }>('/console/templates')
+/** The kinds to choose from; of a project, with the templates only it has, as that project has them. */
+export const getTemplates = (project?: string | null) =>
+  get<{ templates: FamiliarTemplate[] }>('/console/templates', project ? { project } : undefined)
 export const draftFamiliar = (text: string, workdir?: string) =>
   send<{ draft: FamiliarForm }>('post', '/console/familiars/draft', { text, workdir: workdir || undefined }, undefined, DRAFT_TIMEOUT_MS)
 export const makeFamiliar = (form: FamiliarForm & { workdir?: string }) =>
@@ -331,10 +404,50 @@ export const describeProject = (project: string, description: string) =>
   send<{ project: SpaceProject }>('post', '/console/space/projects/description', { project, description })
 export const tellCommission = (commissionId: string, text: string) =>
   send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/tell`, { text })
-export const answerCommission = (commissionId: string, answer: { text?: string; choice?: string; question_id?: string }) =>
-  send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
+/**
+ * Answer what a familiar asks: `choice` for a request for approval, `text` for words, `selected`
+ * for the options of its questions that were picked (by each question's id). `note` is a sentence
+ * added to a choice, passed on to the familiar once the answer is in: `note_taken` says whether it was
+ * (null: it took longer than the route waits for it, and is still being passed on).
+ */
+export interface CommissionAnswer {
+  text?: string
+  choice?: string
+  question_id?: string
+  selected?: Record<string, string[]>
+  note?: string
+}
+export const answerCommission = (commissionId: string, answer: CommissionAnswer) =>
+  send<{ success: boolean; note_taken?: boolean | null }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
 export const stopCommission = (commissionId: string) =>
   send<{ status: string }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/stop`)
+
+// -- more familiars for a project that is there -------------------------------------
+
+/** Add a familiar to a project: whether it works in a worktree of its own (`seat` "tree") is the service's to tell. */
+export const addMember = (project: string, form: { preset?: string; title?: string; duty?: string; lanlan_name?: string | null }) =>
+  send<{ session_id: string; seat: string }>('post', '/console/familiars/member', {
+    project, preset: form.preset || undefined, title: form.title || undefined, duty: form.duty || undefined,
+    lanlan_name: form.lanlan_name || undefined,
+  })
+/** Give a project its leader; `made` false when it had one. */
+export const giveLeader = (project: string, lanlanName?: string | null) =>
+  send<{ session_id: string; made: boolean }>('post', '/console/space/projects/leader', { project, lanlan_name: lanlanName || undefined })
+
+// -- the git worktrees familiars work in, and landing what they changed ------------------
+
+const tree = (id: string, action: string) => `/console/worktrees/${encodeURIComponent(id)}/${action}`
+export const listWorktrees = (project?: string | null) =>
+  get<{ worktrees: Worktree[] }>('/console/worktrees', project ? { project } : undefined)
+/** Merge what it holds into the project's directory: once more, or the first time where the user is asked first. */
+export const landWorktree = (id: string) => send<Landing>('post', tree(id, 'land'))
+/** Remove it with what it holds. */
+export const discardWorktree = (id: string) => send<{ removed: boolean }>('post', tree(id, 'discard'))
+/** Leave it to the user: nothing reminds of it any more. */
+export const keepWorktree = (id: string) => send<{ worktree: Worktree }>('post', tree(id, 'keep'))
+export const openWorktree = (id: string) => send<{ success: boolean }>('post', tree(id, 'open'))
+export const getLanding = () => get<LandingSettings>('/console/landing')
+export const setLanding = (changes: Partial<LandingSettings>) => send<LandingSettings>('post', '/console/landing', changes)
 
 // -- what happened among the familiars, and who waits for whom ----------------------
 
@@ -386,8 +499,21 @@ export const getTimeline = (params: { project?: string | null; after?: string; l
   if (params.limit) query.limit = params.limit
   return get<TimelinePage>('/console/timeline', query)
 }
-/** Where to begin reading for what happened lately: `after` is empty when that is the beginning of the record. */
-export const getTimelineStart = () => get<{ after: string; latest: string }>('/console/timeline/start')
+/** How a familiar stood where a page begins reading: it was at something already. */
+export interface SceneStanding {
+  session_id: string
+  commission_id: string
+  look: 'working' | 'waiting_user' | 'resting' | 'queued' | (string & {})
+  since: number
+}
+
+/**
+ * Where to begin reading for what happened lately: `after` is empty when that is the beginning of
+ * the record. `before` is how many entries come before it, `scene` how the familiars stood there.
+ * (Missing from a service from before they were added.)
+ */
+export const getTimelineStart = () =>
+  get<{ after: string; latest: string; before?: number; scene?: SceneStanding[] }>('/console/timeline/start')
 export const getWaits = (project?: string | null) =>
   get<{ waits: Wait[]; more: boolean }>('/console/waits', project ? { project } : undefined)
 
@@ -455,6 +581,30 @@ export interface CommissionUsage {
   session: (UsageCount & { context_tokens: number }) | null
   window: { window: number; compact_at?: number } | null
 }
+
+/** One place in what was said where the words looked for occur. */
+export interface TranscriptHit {
+  /** Opened whole with `getTranscript(id, { at })`. */
+  at: number
+  role: TranscriptEntry['role']
+  tool: string | null
+  excerpt: string
+  time: number | null
+}
+
+export interface TranscriptSearch {
+  readable: boolean
+  reason?: 'dsh' | 'empty' | (string & {})
+  /** The latest first. */
+  hits: TranscriptHit[]
+  /** How many places there are in all. */
+  total: number
+  /** False when the record is so long that only its end was looked through. */
+  whole: boolean
+}
+
+export const searchTranscript = (sessionId: string, query: string) =>
+  get<TranscriptSearch>(`/console/familiars/${encodeURIComponent(sessionId)}/transcript/search`, { q: query })
 
 export const getSessionUsage = (sessionId: string) =>
   get<SessionUsage>(`/console/familiars/${encodeURIComponent(sessionId)}/usage`)

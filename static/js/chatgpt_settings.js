@@ -1,6 +1,7 @@
 /* Copyright 2025-2026 Project N.E.K.O. Team; SPDX-License-Identifier: Apache-2.0 */
-// ChatGPT account panel: sign in, add, switch and sign out accounts. Which model
-// slots use ChatGPT is chosen per slot under Per-Feature Models, like any provider.
+// ChatGPT account controls inside the Subscriptions & plans panel: sign in, add,
+// switch and sign out accounts. Which features use ChatGPT is chosen on its card
+// (static/js/subscription_settings.js), which this script tells about account changes.
 (() => {
     'use strict';
     const account = document.getElementById('chatgpt-account');
@@ -10,13 +11,6 @@
     const add = document.getElementById('chatgpt-add');
     const logout = document.getElementById('chatgpt-logout');
     const authorization = document.getElementById('chatgpt-authorization');
-    const disclosure = document.getElementById('chatgpt-toggle-btn');
-    const panel = document.getElementById('chatgpt-options');
-    disclosure.addEventListener('click', () => {
-        panel.hidden = !panel.hidden;
-        disclosure.setAttribute('aria-expanded', String(!panel.hidden));
-        disclosure.classList.toggle('rotated', !panel.hidden);
-    });
     let timer;
     let suspended = false;
     let refreshGeneration = 0;
@@ -58,6 +52,10 @@
         if (typeof invalidateModelLists === 'function') invalidateModelLists();
         if (typeof ConnectivityManager !== 'undefined' && typeof ConnectivityManager.invalidateChatGPTAccount === 'function') {
             ConnectivityManager.invalidateChatGPTAccount();
+        }
+        // The ChatGPT card lists this account's models and can only be switched on while signed in.
+        if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('neko:chatgpt-account-changed'));
         }
     };
     async function refresh() {
@@ -111,7 +109,7 @@
         logout.disabled = pending || busy || !account.value;
         status.textContent = data.error || (pending ? t('pending', 'Complete sign-in in your browser.') :
             data.login_status === 'expired' ? t('expired', 'Sign-in timed out. Please try again.') :
-            connected ? t('connected', 'ChatGPT connected. In Per-Feature Models below, choose ChatGPT (subscription) as the provider of the model slots that should use it.')
+            connected ? t('connected', 'ChatGPT connected. Tick the features that should use it below, pick their models and switch the subscription on.')
                 : t('signedOut', 'ChatGPT is not connected.'));
         if (pending) timer = setTimeout(() => refresh().catch(report), 1500);
         else {
@@ -185,9 +183,14 @@
         let result;
         try { result = await api('logout', { account_id: account.value }); }
         finally { await refresh(); }
+        const notes = [];
         if (!result.revocation_confirmed) {
-            status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
+            notes.push(t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.'));
         }
+        if (result.subscription_turned_off) {
+            notes.push(t('subscriptionTurnedOff', 'No ChatGPT account is signed in, so the ChatGPT subscription is off and its features use your own settings again.'));
+        }
+        if (notes.length) status.textContent = notes.join(' ');
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
     window.addEventListener('pagehide', () => {

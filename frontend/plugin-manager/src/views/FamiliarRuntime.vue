@@ -19,6 +19,7 @@
       </el-tab-pane>
       <el-tab-pane :label="t('power.runtime.tabs.permissions')" name="permissions" lazy>
         <PermissionsTab />
+        <LandingCard />
       </el-tab-pane>
       <el-tab-pane :label="t('power.runtime.tabs.roles')" name="roles" lazy>
         <RoleModelsTab />
@@ -41,6 +42,7 @@ import { useRoute, useRouter } from 'vue-router'
 import type { RuntimeView } from '@/api/console'
 import BuiltinTab from '@/components/power/BuiltinTab.vue'
 import DshPluginsTab from '@/components/power/DshPluginsTab.vue'
+import LandingCard from '@/components/power/LandingCard.vue'
 import PermissionsTab from '@/components/power/PermissionsTab.vue'
 import PlacesTab from '@/components/power/PlacesTab.vue'
 import RoleModelsTab from '@/components/power/RoleModelsTab.vue'

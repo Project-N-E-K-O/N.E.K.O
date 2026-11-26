@@ -57,7 +57,7 @@ from storage import TelemetryStorage, normalize_steam_id, normalize_device_hw
 
 HMAC_SECRET = os.getenv("TELEMETRY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("TELEMETRY_DB_PATH", "./data/telemetry.db")
-ADMIN_TOKEN = os.getenv("TELEMETRY_ADMIN_TOKEN", "")
+ADMIN_TOKEN = os.getenv("TELEMETRY_ADMIN_TOKEN", "").strip()
 MAX_BODY_SIZE = 512 * 1024  # 512 KB wire-byte limit, usually <=50 KB after gzip.
 # Decompressed-byte limit. Typical client payloads are 5-50 KB raw, and future telemetry still fits 1 MB;
 # allow 2 MB headroom while bounding gzip bombs, even with 1:1000 ratios, to 2 MB.
@@ -129,27 +129,59 @@ def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
         raise HTTPException(400, f"Invalid gzip body: {e}")
 
 
+_INSECURE_PLACEHOLDER_TOKENS = frozenset({"please-change-me", "changeme"})
+
+
+def _is_admin_token_configured(admin_token: str) -> bool:
+    normalized = (admin_token or "").strip().lower()
+    return bool(normalized) and normalized not in _INSECURE_PLACEHOLDER_TOKENS
+
+
 def _extract_token(request: Request) -> str:
-    """Extract the admin token from the header or the URL ?token= param."""
-    # Prefer URL parameters for direct browser dashboard access.
-    url_token = request.query_params.get("token", "").strip()
-    if url_token:
-        return url_token
-    # Then try the Authorization header.
+    """Extract the admin token from the Authorization header."""
     auth = request.headers.get("Authorization", "")
     return (auth[len("Bearer "):] if auth.startswith("Bearer ") else auth).strip()
 
 
 def require_admin(request: Request):
-    if not ADMIN_TOKEN:
-        raise HTTPException(503, "Admin API not configured (set TELEMETRY_ADMIN_TOKEN env var on server)")
+    expected_token = (ADMIN_TOKEN or "").strip()
+    if not _is_admin_token_configured(expected_token):
+        raise HTTPException(503, "Admin API not configured (set a non-placeholder TELEMETRY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
     # Constant-time comparison: the admin endpoint exposes device_id / steam_user_id,
     # and a plain != leaks byte-by-byte match progress to a timing side channel.
     # compare_digest eliminates that. Guard non-ASCII first: compare_digest raises
-    # TypeError on non-ASCII str, otherwise ?token=é turns a 401 into a 500.
-    if not token or not token.isascii() or not ADMIN_TOKEN.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
+    # TypeError on non-ASCII str, otherwise a non-ASCII Authorization header turns a 401 into a 500.
+    if (
+        not token
+        or not expected_token
+        or not token.isascii()
+        or not expected_token.isascii()
+        or not hmac.compare_digest(token, expected_token)
+    ):
         raise HTTPException(401, "Invalid admin token")
+
+
+async def _read_limited_body(request: Request, max_bytes: int) -> bytes:
+    """Stream request body chunks and enforce max_bytes before buffering."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(413, "Payload too large")
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "Payload too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +191,8 @@ def require_admin(request: Request):
 @app.post("/api/v1/telemetry", response_model=SubmitResponse)
 async def submit_telemetry(request: Request):
     """Receive telemetry. Validation flow: body size → decompress → timestamp → HMAC signature → rate limit → store."""
-    # Wire-body limit: usually <=50 KB gzipped, with 512 KB headroom.
-    body_bytes = await request.body()
-    if len(body_bytes) > MAX_BODY_SIZE:
-        raise HTTPException(413, "Payload too large")
+    # Wire-body limit: usually <=50 KB gzipped, with 512 KB headroom; stream-bounded to prevent chunked OOM.
+    body_bytes = await _read_limited_body(request, MAX_BODY_SIZE)
 
     # Decompress Content-Encoding: gzip; pass older clients without the header through unchanged.
     body_bytes = _decompress_if_gzip(body_bytes, request.headers.get("Content-Encoding", ""))
@@ -402,8 +432,10 @@ async def on_startup():
     asyncio.create_task(_periodic_rate_limiter_cleanup())
     asyncio.create_task(_periodic_canonical_rebuild())
     logger.info(f"Telemetry server started. DB={DB_PATH}")
-    if not ADMIN_TOKEN:
+    if not ADMIN_TOKEN or not ADMIN_TOKEN.strip():
         logger.warning("⚠ TELEMETRY_ADMIN_TOKEN not set — admin API disabled")
+    elif ADMIN_TOKEN.strip().lower() in _INSECURE_PLACEHOLDER_TOKENS:
+        logger.warning("⚠ TELEMETRY_ADMIN_TOKEN uses an insecure placeholder value — admin API disabled")
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +455,7 @@ if __name__ == "__main__":
         Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         storage = TelemetryStorage(DB_PATH)
     if args.admin_token:
-        ADMIN_TOKEN = args.admin_token
+        ADMIN_TOKEN = args.admin_token.strip()
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

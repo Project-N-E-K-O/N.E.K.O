@@ -19,7 +19,7 @@ from playwright.sync_api import Page, expect
 def _goto_and_wait(mock_page: Page, running_server: str):
     """Navigate to /api_key, skip tutorial, and wait for loading overlay to disappear."""
     # Skip the tutorial overlay that blocks interactions
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)

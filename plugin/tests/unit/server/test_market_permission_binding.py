@@ -67,7 +67,7 @@ def registry_lookup_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     def busy(_plugin_id: str):
         raise TimeoutError("registry read lock busy")
 
-    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", busy)
     monkeypatch.setattr(
         market_bridge, "manual_takeover_snapshot_sha256", lambda **_kwargs: SNAPSHOT
     )

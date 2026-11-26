@@ -6,7 +6,7 @@ import ElementPlus, { ElMessageBox } from 'element-plus'
 import type { MessageBoxData } from 'element-plus'
 import ModelApi from './ModelApi.vue'
 import modelApiEnUs from '@/i18n/model-api/en-US'
-import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate, temperatureLimit } from './model-api-form'
+import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate } from './model-api-form'
 import type { ModelSlot, ModelUsageResult } from '@/types/model-api'
 
 const modelApiMessages = { 'en-US': modelApiEnUs }
@@ -16,7 +16,7 @@ vi.mock('@/api/models', () => api)
 vi.mock('@/utils/request', () => ({ formatHttpError: (error: Error) => error.message }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
-const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', source: 'manual', host_api: null, protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision', version: 0 }] }
+const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', source: 'manual', host_api: null, protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision', version: 0 }] }
 const emptyUsage: ModelUsageResult = { requests: [], filters: { plugin_id: null, slot_id: null }, summary: { window: 'recent_retained', retained_request_count: 0, logical_request_count: 0, upstream_attempt_count: 0, usage_counts: { reported: 0, partial: 0, unknown: 0 }, status_counts: { success: 0, error: 0, timeout: 0, cancelled: 0 }, tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 } } }
 let cleanup: (() => void) | undefined
 const NativeMutationObserver = globalThis.MutationObserver
@@ -75,12 +75,11 @@ describe('model slot credentials', () => {
     form.api_key = form.initial_api_key; form.key_edited = false; form.base_url = saved.base_url; form.protocol = 'anthropic_messages'
     expect(needsModelKeyUpdate(form, saved)).toBe(true)
   })
-  it('accepts a normalized equivalent endpoint and preserves explicit zero temperature', () => {
+  it('accepts a normalized equivalent endpoint and sends no default temperature', () => {
     const form = modelSlotForm(saved)
     form.base_url = 'https://EXAMPLE.test:443/v1/'
-    form.temperature = 0
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
-    expect(modelSlotPayload(form).defaults).toEqual({ temperature: 0, max_output_tokens: null })
+    expect(modelSlotPayload(form).defaults).toEqual({ max_output_tokens: null })
   })
   it('builds a host-follow payload without endpoint, model or credentials', () => {
     const form = modelSlotForm()
@@ -105,19 +104,6 @@ describe('model slot credentials', () => {
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
     expect(modelSlotPayload(form).api_key).toBeUndefined()
   })
-  it('caps a host-follow temperature at the protocol intersection regardless of the current resolution', () => {
-    const form = modelSlotForm()
-    form.source = 'host_follow'
-    // The main app may switch to Anthropic at any time: ≤1 is always the limit.
-    expect(temperatureLimit(form, null)).toBe(1)
-    const hostSlot: ModelSlot = { ...saved, source: 'host_follow', host_api: 'agent', base_url: '', model: '', api_key: '', host_status: { configured: true, model: 'm', protocol: 'openai_chat', free: false } }
-    expect(temperatureLimit(modelSlotForm(hostSlot), hostSlot)).toBe(1)
-    // Manual slots keep their own protocol's range.
-    const manual = modelSlotForm(saved)
-    expect(temperatureLimit(manual, saved)).toBe(2)
-    manual.protocol = 'anthropic_messages'
-    expect(temperatureLimit(manual, saved)).toBe(1)
-  })
 })
 
 describe('Plugin API page', () => {
@@ -130,6 +116,27 @@ describe('Plugin API page', () => {
     expect(api.createModelSlot).not.toHaveBeenCalled()
     expect(container.querySelector('.usage-summary strong')?.textContent).toBe('0')
     expect(container.querySelectorAll('.usage-summary strong')[2]?.textContent).toBe('—')
+  })
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not filter usage at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const container = await mount()
+    const filter = container.querySelector('.usage-filters input') as HTMLInputElement
+    expect(filter).toBeTruthy()
+    const before = api.getModelUsage.mock.calls.length
+    filter.value = '示例'; filter.dispatchEvent(new Event('input', { bubbles: true })); await flush()
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before)
+    // Enter once more, with no word left to pick: now it filters.
+    filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    filter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.getModelUsage.mock.calls.length).toBe(before + 1)
+    expect(api.getModelUsage.mock.calls.at(-1)?.[0]).toMatchObject({ plugin_id: '示例' })
   })
   it('renames the same slot while preserving the saved key and bindings', async () => {
     await mount(); await clickText('Edit')
@@ -188,7 +195,7 @@ describe('Plugin API page', () => {
     expect(container.textContent).not.toContain('not an HTTP chat endpoint')
   })
   it('falls back to the server message only for unknown error codes', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Familiar', source: 'host_follow', host_api: 'agent', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'future_error_code', message: 'An actionable server explanation.' }, bound_by: [] }
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Familiar', source: 'host_follow', host_api: 'agent', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { max_output_tokens: null }, host_status: { configured: false, error_code: 'future_error_code', message: 'An actionable server explanation.' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
     expect(container.textContent).toContain('An actionable server explanation.')

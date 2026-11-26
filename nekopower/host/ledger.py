@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from nekopower.host import call_audit
-from nekopower.host.timeline import parse_cursor, question_text, read_timeline, read_waits
+from nekopower.host.timeline import parse_cursor, question_text, read_before, read_timeline, read_waits
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,9 @@ ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "bloc
 _ENDED_MARKS = ", ".join("?" for _ in ENDED_STATUSES)
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    "queued": frozenset({"working", "failed", "cancelled"}),
+    # Waiting for the user before it ever started: asked whether another
+    # member is to do it beside the busy one it waits for (``TaskAgentManager._beside``).
+    "queued": frozenset({"working", "waiting_user", "failed", "cancelled"}),
     # Queued again when its idle session was closed while its own task agents
     # worked, and one of their results is to take it up again.
     "working": frozenset({"waiting_user", "queued", "done", "blocked", "failed", "cancelled"}),
@@ -1982,6 +1984,67 @@ class Ledger:
         return await self.run(
             lambda conn: _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
         )
+
+    async def get_sessions(self, session_ids: Iterable[str]) -> dict[str, Session]:
+        """Return the sessions of these ids that are on record, by id; read at once, for a page that lists many."""
+        wanted = sorted({str(item) for item in session_ids if item})
+
+        def read(conn: sqlite3.Connection) -> dict[str, Session]:
+            found: dict[str, Session] = {}
+            # As many at a time as one statement takes, with room to spare.
+            for start in range(0, len(wanted), 500):
+                part = wanted[start : start + 500]
+                marks = ", ".join("?" for _ in part)
+                for row in conn.execute(f"SELECT * FROM sessions WHERE id IN ({marks})", part).fetchall():
+                    session = _session(row)
+                    if session is not None:
+                        found[session.id] = session
+            return found
+
+        if not wanted:
+            return {}
+        return await self.run(read)
+
+    async def usage_in_hand(
+        self, session_id: str
+    ) -> tuple[Session, Commission | None, Commission | None, UsageStanding | None] | None:
+        """Return a session, the commission it has in hand, its latest, and what the work in hand used; one read.
+
+        ``(session, held, latest, standing)``; None for an unknown session.
+        ``held`` is the one a board shows it at (``board_rows``): of those
+        under way in it (``UNDER_WAY_STATUSES``), one at work or waiting for
+        the user before one that rests, and that before one that waits for
+        its turn; the oldest of several. None when nothing is under way.
+        ``latest`` is ``held``, or else the commission worked on in it last.
+        ``standing`` is ``usage_standing`` of ``held``. All in one
+        transaction: what it has in hand and what that used are of one moment.
+        """
+
+        def turn(item: Commission) -> int:
+            if item.status == "queued":
+                return 2
+            return 1 if item.resting else 0
+
+        def work(
+            conn: sqlite3.Connection,
+        ) -> tuple[Session, Commission | None, Commission | None, UsageStanding | None] | None:
+            session = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+            if session is None:
+                return None
+            under_way = self._select(conn, session_id=session_id, statuses=tuple(UNDER_WAY_STATUSES), oldest_first=True)
+            held = min(under_way, key=turn) if under_way else None
+            latest = held
+            if latest is None:
+                last = self._select(conn, session_id=session_id, limit=1)
+                latest = last[0] if last else None
+            standing = None
+            if held is not None:
+                root = _commission(self._root(conn, held.id))
+                if root is not None:
+                    standing = UsageStanding(root.id, root.tokens, root.usage_allowed)
+            return session, held, latest, standing
+
+        return await self.run(work)
 
     async def project_session(self, lanlan_name: str, project: str, **values: Any) -> tuple[Session, bool]:
         """Return the leader of a project for one character, made now when there is none; and whether it was.
@@ -4355,6 +4418,11 @@ class Ledger:
         return await self.run(
             lambda conn: read_timeline(conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit)
         )
+
+    async def timeline_before(self, after: str, *, limit: int, count_most: int) -> dict[str, Any]:
+        """Return how many entries of the timeline come before a cursor and how the sessions stood there; ``timeline.read_before``."""
+        parse_cursor(after)
+        return await self.run(lambda conn: read_before(conn, after=after, limit=limit, count_most=count_most))
 
     async def waits(
         self,

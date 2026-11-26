@@ -36,6 +36,11 @@ also reimplements the accessibility-tree filtering of Puppeteer
 packages/puppeteer-core/src/cdp/Accessibility.ts), Copyright 2018 Google Inc.,
 Apache License 2.0. Both are ports to Python; no file of either is included.
 
+deps/pyncm_async-1.8.1-py3-none-any.whl and
+deps/pyncm_async-1.8.2-py3-none-any.whl vendor pyncm-async
+(https://github.com/greats3an/pyncm), Copyright greats3an, Apache License 2.0;
+see deps/README.md and deps/SHA256SUMS.
+
 ------------------------------------------------------------
 
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。

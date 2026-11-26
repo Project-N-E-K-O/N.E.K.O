@@ -1234,8 +1234,10 @@ function addTag(tagText, type = '', locked = false) {
         return;
     }
 
+    const normalizedTagText = typeof tagText === 'string' ? tagText : String(tagText ?? '');
+
     // 检查标签字数限制
-    if (tagText.length > 30) {
+    if (normalizedTagText.length > 30) {
         showMessage(window.t ? window.t('steam.tagTooLong') : '标签长度不能超过30个字符', 'error');
         return;
     }
@@ -1252,7 +1254,7 @@ function addTag(tagText, type = '', locked = false) {
         tag.textContent.replace('×', '').replace('🔒', '').trim()
     );
 
-    if (existingTagTexts.includes(tagText)) {
+    if (existingTagTexts.includes(normalizedTagText)) {
         // 如果标签已存在，直接返回（不显示错误消息，因为可能是自动添加的）
         if (locked) return;
         showMessage(window.t ? window.t('steam.tagExists') : '该标签已存在', 'error');
@@ -1261,17 +1263,25 @@ function addTag(tagText, type = '', locked = false) {
 
     const tagElement = document.createElement('div');
     tagElement.className = 'tag' + (locked ? ' tag-locked' : '');
+    tagElement.appendChild(document.createTextNode(normalizedTagText));
 
     // 根据locked和type决定是否显示删除按钮
     if (locked) {
         // 锁定的标签不能删除，显示锁定图标
         const lockedTitle = window.t ? window.t('steam.customTemplateTagLocked') : '此标签为自动添加，无法移除';
-        tagElement.innerHTML = `${tagText}<span class="tag-locked-icon" title="${lockedTitle}">🔒</span>`;
+        const lockedIcon = document.createElement('span');
+        lockedIcon.className = 'tag-locked-icon';
+        lockedIcon.title = lockedTitle;
+        lockedIcon.textContent = '🔒';
+        tagElement.appendChild(lockedIcon);
         tagElement.setAttribute('data-locked', 'true');
-    } else if (type === 'character-card') {
-        tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this, 'character-card')">×</span>`;
     } else {
-        tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
+        const removeSpan = document.createElement('span');
+        removeSpan.className = 'tag-remove';
+        removeSpan.textContent = '×';
+        const cardType = type === 'character-card' ? 'character-card' : '';
+        removeSpan.addEventListener('click', () => removeTag(removeSpan, cardType));
+        tagElement.appendChild(removeSpan);
     }
 
     // 锁定的标签插入到最前面
@@ -1534,10 +1544,10 @@ function showMessage(message, type = 'info', duration = 3000) {
 
 // HTML转义函数
 function escapeHtml(text) {
-    if (typeof text !== 'string') {
-        return String(text);
+    if (text === null || text === undefined) {
+        return '';
     }
-    return text
+    return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')

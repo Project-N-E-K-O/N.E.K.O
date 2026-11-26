@@ -69,7 +69,11 @@ from ..warmup import (
     complete_provider_warmup,
     ensure_provider_warmup_state,
 )
-from ._shared import MAX_SEGMENT_PCM_BYTES, PCM16_SAMPLE_WIDTH_BYTES
+from ._shared import (
+    MAX_SEGMENT_PCM_BYTES,
+    PCM16_SAMPLE_WIDTH_BYTES,
+    AsrRequestFailure,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -393,24 +397,31 @@ class _DaemonSerialExecutor(concurrent.futures.Executor):
 
     def _run(self) -> None:
         while True:
-            future, fn, args, kwargs = self._items.get()
-            if not future.set_running_or_notify_cancel():
-                try:
-                    fn(*args, **kwargs)
-                except Exception:
-                    logger.debug("cancelled decode call failed", exc_info=True)
-                continue
-            done = False
+            # One call per frame: while the thread waits for the next call,
+            # nothing of the previous one (whose closure may hold a recording
+            # and a model) stays referenced.
+            self._run_one(self._items.get())
+
+    @staticmethod
+    def _run_one(item: tuple[Any, ...]) -> None:
+        future, fn, args, kwargs = item
+        if not future.set_running_or_notify_cancel():
             try:
-                result = fn(*args, **kwargs)
-                done = True
-            except Exception as exc:
-                future.set_exception(exc)
-            finally:
-                if done:
-                    future.set_result(result)
-                elif not future.done():
-                    future.set_exception(RuntimeError("decode was interrupted"))
+                fn(*args, **kwargs)
+            except Exception:
+                logger.debug("cancelled decode call failed", exc_info=True)
+            return
+        done = False
+        try:
+            result = fn(*args, **kwargs)
+            done = True
+        except Exception as exc:
+            future.set_exception(exc)
+        finally:
+            if done:
+                future.set_result(result)
+            elif not future.done():
+                future.set_exception(RuntimeError("decode was interrupted"))
 
 
 @dataclass(slots=True)
@@ -1228,3 +1239,140 @@ async def faster_whisper_asr_worker(
         await response_queue.put(
             _AsrWorkerEvent(kind="closed", generation=last_generation)
         )
+
+
+async def transcribe_pcm16_locally(
+    pcm16: bytes,
+    *,
+    language: str = "auto",
+    load_timeout_seconds: float,
+    decode_timeout_seconds: float,
+    model_loader: ModelLoader | None = None,
+    model_pool: _WhisperModelPool | None = None,
+) -> str:
+    """Decode one complete recording outside any realtime session.
+
+    Shares the realtime worker's model pool (one load, idle release), its
+    process-wide decode slots and single decoder thread, and the same
+    ``_transcribe_pcm16`` decode with its hallucination filter. Failures raise
+    :class:`AsrRequestFailure`. The caller splits audio longer than one
+    segment; ``language`` is an already-normalized session language.
+    """
+
+    loader = model_loader or _load_whisper_model
+    pool = model_pool or _MODEL_POOL
+    spec = _model_spec_from_env()
+    config = AsrSessionConfig(language=language)
+    whisper_language = _session_language(config)
+    initial_prompt = _session_initial_prompt(config)
+
+    try:
+        async with asyncio.timeout(load_timeout_seconds):
+            while True:
+                model = pool.try_lease(spec)
+                if model is not None:
+                    break
+                # Shared per spec: giving up here only stops this caller from
+                # waiting; the load finishes and idles out in the pool.
+                await asyncio.shield(
+                    asyncio.wrap_future(pool.ensure_loading(spec, loader))
+                )
+    except TimeoutError as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_MODEL_LOAD_TIMEOUT",
+            "faster-whisper model was not ready in time",
+            kind="timeout",
+        ) from exc
+    except _LocalAsrFailure as exc:
+        raise AsrRequestFailure(exc.code, exc.message) from exc
+    except Exception as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_MODEL_LOAD_FAILED",
+            "faster-whisper model could not be loaded",
+        ) from exc
+
+    if not pool.try_reserve_decode():
+        pool.release(spec)
+        raise AsrRequestFailure(
+            "ASR_LOCAL_BUSY",
+            "faster-whisper has too many decodes in flight",
+            kind="rate_limited",
+        )
+
+    skip = threading.Event()
+    handoff_lock = threading.Lock()
+    started = False
+    returned = False
+    # The decoder keeps a queued call until it reaches it; holding the audio
+    # (and model) in a box lets an abandoned call drop them right away.
+    job: list[Any] = [model, pcm16]
+
+    def give_back() -> None:
+        # Exactly once: from the decoder after it ran (or skipped) the call,
+        # or from the caller when it stopped waiting before the decoder
+        # reached the call, so a backlog of abandoned calls never holds the
+        # process-wide decode slots that realtime sessions also need.
+        nonlocal returned
+        with handoff_lock:
+            if returned:
+                return
+            returned = True
+        pool.release_decode()
+        pool.release(spec)
+
+    def decode() -> str:
+        nonlocal started
+        with handoff_lock:
+            skipped = skip.is_set() or not job
+            started = not skipped
+        try:
+            if skipped:
+                return ""
+            decode_model, audio = job
+            return _transcribe_pcm16(decode_model, audio, whisper_language, initial_prompt)
+        finally:
+            job.clear()
+            give_back()
+
+    def stop_waiting() -> None:
+        with handoff_lock:
+            skip.set()
+            reached_decoder = started
+            if not reached_decoder:
+                job.clear()
+        if not reached_decoder:
+            give_back()
+
+    try:
+        concurrent_future = pool.decoder_executor().submit(decode)
+    except Exception as exc:
+        give_back()
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_FAILED",
+            "faster-whisper decoder could not be started",
+        ) from exc
+    except BaseException:
+        give_back()
+        raise
+    decode_future = asyncio.wrap_future(concurrent_future)
+    decode_future.add_done_callback(_consume_decode_outcome)
+    try:
+        async with asyncio.timeout(decode_timeout_seconds):
+            # A running native decode cannot be interrupted; one still queued
+            # is skipped cheaply once the caller stops waiting.
+            return await asyncio.shield(decode_future)
+    except TimeoutError as exc:
+        stop_waiting()
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_TIMEOUT",
+            "faster-whisper transcription timed out",
+            kind="timeout",
+        ) from exc
+    except asyncio.CancelledError:
+        stop_waiting()
+        raise
+    except Exception as exc:
+        raise AsrRequestFailure(
+            "ASR_LOCAL_TRANSCRIBE_FAILED",
+            "faster-whisper transcription failed",
+        ) from exc

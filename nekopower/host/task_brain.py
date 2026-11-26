@@ -346,6 +346,11 @@ class TaskBrain:
         """Wait for everything running in the background (second rounds, calls)."""
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # Yield once before looking at the set again. Since Python 3.12, gather() over
+            # tasks that are all done completes without yielding, so the done-callbacks those
+            # tasks queued (the set's discard, and any that start follow-up work) would never
+            # run and this loop would spin forever.
+            await asyncio.sleep(0)
         if self._task_agents is not None:
             await self._task_agents.settle()
 
@@ -1214,7 +1219,13 @@ class TaskBrain:
         return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
 
     async def answer(
-        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+        self,
+        commission_id: str,
+        text: str,
+        *,
+        choice: str | None = None,
+        question_id: str | None = None,
+        selected: dict[str, list[str]] | None = None,
     ) -> bool:
         """Give the user's answer to a commission that waits for one.
 
@@ -1224,7 +1235,7 @@ class TaskBrain:
         """
         if self._task_agents is None:
             return False
-        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id)
+        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id, selected=selected)
 
     # -- query ------------------------------------------------------------
 

@@ -808,8 +808,12 @@ async def test_asked_first_nothing_lands_until_the_user_says_so(hosts, tmp_path)
     host, trees, workdir = await _shop(hosts, tmp_path, _by_role(leader_llm, members))
     # (With how many worktrees a project may have, which is no setting of the user's: for a page to say so.)
     most = settings.WORKTREES_PER_PROJECT
-    assert await host.landing_settings() == {"mode": "auto", "inspect": False, "worktrees_per_project": most}
-    assert await host.set_landing_settings(mode="ask") == {"mode": "ask", "inspect": False, "worktrees_per_project": most}
+    assert await host.landing_settings() == {
+        "mode": "auto", "inspect": False, "beside": "ask", "worktrees_per_project": most,
+    }
+    assert await host.set_landing_settings(mode="ask") == {
+        "mode": "ask", "inspect": False, "beside": "ask", "worktrees_per_project": most,
+    }
     for wrong, code in (({"mode": "later"}, "bad_mode"), ({"inspect": "yes"}, "bad_inspect")):
         with pytest.raises(ValueError, match=code):
             await host.set_landing_settings(**wrong)

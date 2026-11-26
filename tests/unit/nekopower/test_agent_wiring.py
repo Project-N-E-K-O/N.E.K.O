@@ -80,6 +80,7 @@ class Wiring:
         monkeypatch.setattr(nekopower_mount, "_updates", None)
         monkeypatch.setattr(nekopower_mount, "_updates_worker", None)
         nekopower_mount.hud.clear()
+        nekopower_mount._asked.clear()
         api_runtime._turn_checks_seen.clear()
         mount.reset_for_tests()
         mount.configure(
@@ -939,9 +940,12 @@ def _commission(**values: Any) -> Any:
         "started_at": 1_700_000_005.0,
         "ended_at": None,
         "updated_at": 1_700_000_005.0,
+        "lang": "en",
     }
     base.update(values)
-    return SimpleNamespace(**base)
+    # What it asks while it waits for the user (``asked``), as the ledger's row reads it.
+    asked = base.pop("asked", None)
+    return SimpleNamespace(**base, question=lambda: asked)
 
 
 @pytest.mark.parametrize(
@@ -982,8 +986,60 @@ def test_hud_task_of_a_task_agent_and_of_a_task_not_yet_decided():
         "start_time": "2023-11-14T22:13:25Z",
         "params": {"description": "sort the photos", "instruction": "sort the photos by month"},
         "lanlan_name": "Lan",
+        "question": None,
     }
     assert (undecided["type"], undecided["start_time"]) == ("task", "2023-11-14T22:13:20Z")
+
+
+PERMISSION = {
+    "kind": "permission", "id": "q1", "category": "run_command", "detail": {"command": "npm run build"},
+    "options": ["always", "session", "once", "deny"],
+}
+
+
+def test_a_task_that_waits_for_the_user_carries_what_it_asks_and_no_other_does():
+    from app.agent_server.nekopower_mount import hud_task
+
+    waiting = hud_task(_commission(status="waiting_user", asked=dict(PERMISSION)))
+
+    # As a card shows it: the question, and what is to be allowed in one line.
+    assert {key: waiting["question"][key] for key in PERMISSION} == PERMISSION
+    assert "npm run build" in waiting["question"]["line"] and waiting["question"]["line_cut"] is False
+    # Said as None once it does not wait: the page merges what it is sent into what it has.
+    for status in ("queued", "working", "done", "blocked", "failed", "cancelled"):
+        task = hud_task(_commission(status=status, asked=dict(PERMISSION), ended_at=1_700_000_050.0))
+        assert "question" in task and task["question"] is None, status
+
+
+async def test_a_commission_that_stops_waiting_has_the_card_of_its_question_closed(wiring):
+    change = wiring.mount_module._on_commission_change
+    # One the HUD shows, and a task agent's own task agent, which it does not.
+    for commission_id, parent in (("c1", None), ("c2", "c1")):
+        waiting = _commission(id=commission_id, parent_id=parent, status="waiting_user", asked={**PERMISSION, "id": f"q-{commission_id}"})
+        change(waiting, "working")
+        change(_commission(id=commission_id, parent_id=parent, status="working"), "waiting_user")
+    await wait_until(lambda: len(wiring.of("nekopower_question")) == 2)
+
+    closed = wiring.of("nekopower_question")
+    assert [(event["task_id"], event["question_id"], event["question"], event["lanlan_name"]) for event in closed] == [
+        ("c1", "q-c1", None, "Lan"), ("c2", "q-c2", None, "Lan"),
+    ]
+    # In the order things happened: the task is back at work on the HUD before its card closes.
+    kinds = [event["event_type"] for event in wiring.events]
+    assert kinds.index("nekopower_question") > kinds.index("task_update")
+    assert [task["status"] for task in wiring.updates("c1")] == ["waiting_user", "running"]
+    assert wiring.updates("c2") == []
+
+
+async def test_nothing_is_closed_for_a_commission_that_did_not_wait_for_the_user(wiring):
+    change = wiring.mount_module._on_commission_change
+    change(_commission(status="working"), "queued")
+    change(_commission(status="done", ended_at=1_700_000_050.0), "working")
+    # Still waiting (written again as it waits): its card stays.
+    change(_commission(id="c5", status="waiting_user", asked=dict(PERMISSION)), "waiting_user")
+    await wait_until(lambda: len(wiring.updates()) == 3)
+
+    assert wiring.of("nekopower_question") == []
 
 
 def test_a_task_agents_own_task_agent_is_not_shown():
@@ -1088,6 +1144,40 @@ async def test_a_sentence_for_her_goes_out_as_a_message_from_the_system(wiring, 
     # For her only: an explicit empty list shows it neither in the chat nor as a HUD toast.
     assert event["visibility"] == []
     assert event["coalesce_key"] == f"nekopower:{kind}:c1"
+
+
+async def test_a_question_goes_out_with_its_parts_for_a_card_to_answer_it_on(wiring):
+    card = {**PERMISSION, "line": "run the command npm run build", "line_cut": False}
+    payload = {
+        "lanlan_name": "Lan", "task_id": "c1", "title": "build the site", "text": "what she passes on",
+        "question": dict(PERMISSION), "card": card, "route": "task_agent", "delivery_mode": "proactive",
+    }
+
+    assert await wiring.mount_module.send_report(_item("question", payload)) is True
+
+    (event,) = wiring.events
+    # One event: the card is shown when her sentence is delivered, and not without it.
+    assert event["event_type"] == "proactive_message" and event["text"] == "what she passes on"
+    assert (event["question"], event["title"], event["route"]) == (card, "build the site", "task_agent")
+
+
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        # Only a question brings one along.
+        ("correction", {"reason": "no_capability", "question": dict(PERMISSION)}),
+        # Not without the commission it is answered for, nor with something that is no question.
+        ("question", {"task_id": "", "question": dict(PERMISSION)}),
+        ("question", {"question": "allow it?"}),
+    ],
+)
+async def test_no_card_goes_out_with_anything_else(wiring, kind, payload):
+    payload = {"lanlan_name": "Lan", "task_id": "c1", "text": "something she is told", "delivery_mode": "proactive", **payload}
+
+    assert await wiring.mount_module.send_report(_item(kind, payload)) is True
+
+    (event,) = wiring.events
+    assert "question" not in event and "route" not in event
 
 
 @pytest.mark.parametrize(

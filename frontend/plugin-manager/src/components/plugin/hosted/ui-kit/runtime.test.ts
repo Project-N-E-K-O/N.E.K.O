@@ -141,20 +141,26 @@ describe('hosted ui runtime', () => {
     expect(postMessage).not.toHaveBeenCalled()
   })
 
-  it('uses the document timeout error contract when the host does not respond', async () => {
+  it('uses the document timeout error contract and sends cancel when the host does not respond', async () => {
     vi.useFakeTimers()
+    const messages: any[] = []
     Object.defineProperty(window, 'parent', {
-      value: { postMessage: vi.fn() },
+      value: { postMessage: (message: any) => messages.push(message) },
       configurable: true,
     })
     const promise = ui.api.parseDocument(
       new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
       { timeoutMs: 100 },
     )
+    const requestId = messages[0]?.requestId
     const rejection = expect(promise).rejects.toMatchObject({ code: 'document_parse_timeout' })
 
     await vi.advanceTimersByTimeAsync(100)
     await rejection
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
     vi.useRealTimers()
   })
 
@@ -952,7 +958,7 @@ describe('hosted ui runtime', () => {
       configurable: true,
     })
 
-    const promise = ui.api.call('game_agent_status')
+    const promise = ui.api.call('demo_status')
     expect(requestMessage?.type).toBe('neko-hosted-surface-request')
 
     window.dispatchEvent(new MessageEvent('message', {
@@ -962,7 +968,7 @@ describe('hosted ui runtime', () => {
         ok: false,
         error: '插件未运行',
         code: 'PLUGIN_NOT_RUNNING',
-        details: { plugin_id: 'game_agent_minecraft' },
+        details: { plugin_id: 'demo_plugin' },
         status: 409,
       },
     }))
@@ -970,7 +976,7 @@ describe('hosted ui runtime', () => {
     await expect(promise).rejects.toMatchObject({
       message: '插件未运行',
       code: 'PLUGIN_NOT_RUNNING',
-      details: { plugin_id: 'game_agent_minecraft' },
+      details: { plugin_id: 'demo_plugin' },
       status: 409,
     })
   })

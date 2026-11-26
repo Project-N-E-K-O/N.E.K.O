@@ -119,9 +119,27 @@ Object.assign(window.Jukebox, {
       }
     },
 
+    normalizeActionFormat: function(format) {
+      if (format === undefined || format === null) {
+        return 'vmd';
+      }
+      if (typeof format !== 'string') {
+        return 'other';
+      }
+      const normalized = format.trim().toLowerCase();
+      if (!normalized) {
+        return 'vmd';
+      }
+      return this.Config.allowedActionExts.includes(normalized) ? normalized : 'other';
+    },
+
     // 获取格式颜色配置
     getFormatColorConfig: function(format) {
-      return this.Config.formatColors[format?.toLowerCase()] || this.Config.formatColors.default;
+      const safeFormat = this.normalizeActionFormat(format);
+      if (Object.prototype.hasOwnProperty.call(this.Config.formatColors, safeFormat)) {
+        return this.Config.formatColors[safeFormat];
+      }
+      return this.Config.formatColors.default;
     },
 
     // 获取格式颜色（主色）
@@ -590,12 +608,12 @@ Object.assign(window.Jukebox, {
                       const action = this.data.actions[actionId];
                       if (!action) return '';
                       const isDefault = song.defaultAction === actionId;
-                      const format = action.format || 'vmd';
+                      const format = this.normalizeActionFormat(action?.format);
                       const titleText = isDefault
                         ? `${window.t('Jukebox.defaultAction', '默认动画')} - ${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
                       const actionIdJs = Jukebox.escapeJsAttr(actionId);
-                      return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format.toLowerCase()} ${isDefault ? 'sam-action-tag-default' : ''}"
+                      return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format} ${isDefault ? 'sam-action-tag-default' : ''}"
                                    data-neko-marquee
                                    data-tooltip="${Jukebox.escapeAttr(titleText)}"
                                    onclick="Jukebox.SongActionManager.setDefaultAction('${idJs}', '${actionIdJs}')"
@@ -637,7 +655,7 @@ Object.assign(window.Jukebox, {
               actions.map(([id, action]) => {
                 const idAttr = Jukebox.escapeAttr(id);
                 const idJs = Jukebox.escapeJsAttr(id);
-                const format = action.format || 'vmd';
+                const format = this.normalizeActionFormat(action?.format);
                 const formatColor = this.getFormatColor(format);
                 return `
                 <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${idAttr}" draggable="true">
@@ -726,7 +744,7 @@ Object.assign(window.Jukebox, {
                       const action = this.data.actions[actionId];
                       const isActionSelected = this.bindingSelectedActions.has(actionId);
                       const isDefault = song.defaultAction === actionId;
-                      const format = action?.format || 'vmd';
+                      const format = this.normalizeActionFormat(action?.format);
                       const formatColor = this.getFormatColor(format);
                       const offset = this.data.bindings[id]?.[actionId]?.offset || 0;
                       const titleText = isDefault
@@ -734,7 +752,7 @@ Object.assign(window.Jukebox, {
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
                       const actionIdJs = Jukebox.escapeJsAttr(actionId);
                       return action ? `
-                        <span class="sam-binding-tag-small sam-action-tag-small sam-action-tag-small-${format.toLowerCase()} ${isActionSelected ? 'sam-tag-selected' : ''} ${isDefault ? 'sam-action-tag-small-default' : ''}"
+                        <span class="sam-binding-tag-small sam-action-tag-small sam-action-tag-small-${format} ${isActionSelected ? 'sam-tag-selected' : ''} ${isDefault ? 'sam-action-tag-small-default' : ''}"
                               onclick="Jukebox.SongActionManager.setDefaultAction('${idJs}', '${actionIdJs}')"
                               data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
@@ -761,7 +779,7 @@ Object.assign(window.Jukebox, {
                 visibleActions.map(([id, action], index) => {
                   const boundSongs = this.getActionBindings(id);
                   const isSelected = this.bindingSelectedActions.has(id);
-                  const format = action.format || 'vmd';
+                  const format = this.normalizeActionFormat(action?.format);
                   const formatColor = this.getFormatColor(format);
                   const actionIndex = index + 1;
                   const idAttr = Jukebox.escapeAttr(id);

@@ -171,6 +171,13 @@ const LIVE2D_PEEK_SIDE_ROTATION_MIN_DEGREES = 28;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_START = 0.20;
 const LIVE2D_PEEK_SIDE_ROTATION_RATIO_END = 0.80;
 const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+// 脚碰到底边时，头也要落进工作区最下面这一段才算下角，否则按侧边探身处理。
+// 侧边探身的头高比例本来就覆盖到 RATIO_END，两段在这里接上。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO = LIVE2D_PEEK_SIDE_ROTATION_RATIO_END;
+// 这一段的高度还不能超过模型身高的这个比例。只按工作区算的话，模型越小，
+// 底部那一段相对它就越大，脚刚碰底边头就已经在里面，小模型几乎一贴底就进下角。
+// 0.26 约等于身子一半出了底边（头在身高 24% 处），大模型仍由工作区的那一段决定。
+const LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO = 0.26;
 // live2d-core.js performs its final cross-display renderer resize after 120ms.
 // Restore the semantic edge anchor only after that pass can no longer clear it.
 const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
@@ -181,6 +188,19 @@ const LIVE2D_PEEK_HIDDEN_MARGIN_PX = 2;
 const LIVE2D_PEEK_REVEAL_ANIMATION_MS = 300;
 const LIVE2D_PEEK_HIDE_ANIMATION_MS = 220;
 const LIVE2D_PEEK_RESTORE_ANIMATION_MS = 260;
+// 宿主把 Pet 窗口裁到模型附近时，探身落点通常不在当前窗口里。宿主通过
+// window.__nekoLive2DPeekHostStage 声明能力后，进探身分两段：先把模型直接摆到屏外的隐藏位，
+// 屏内没有模型的这段时间交给宿主挪窗口；宿主回话或超时后再照常探出或保持隐藏。
+// 超时后照常继续，宿主不回话时模型也不会一直留在屏外。
+// 对宿主的两点要求：
+// - 不管 prepare 收到的 reveal 是真是假，都按 visibleBounds 加 revealOvershootPx 留好窗口：
+//   reveal 只是来问那一刻的打算，等待期间互动状态变了，回话后可能改成探出；之后的探出、缩回
+//   也都落在这个范围里。
+// - 改窗口大小时页面视口（innerWidth/innerHeight，或裁剪契约给的虚拟视口）要保持不变：
+//   live2d-core 的 doResize 发现视口尺寸变了会清掉探身。
+const LIVE2D_PEEK_HOST_STAGE_TIMEOUT_MS = 600;
+// 探出动画（easeOutSoftBack，overshoot 0.9）最多冲过终点约 2.99%，宿主留窗口时要算上这一段。
+const LIVE2D_PEEK_REVEAL_OVERSHOOT_RATIO = 0.031;
 let live2DPeekDisplayContext = null;
 let live2DPeekDisplayReconcileId = 0;
 let live2DPeekPendingDisplayRestoreAnchor = null;
@@ -525,6 +545,31 @@ function getLive2DPeekDragEdgeIntent(options, workArea) {
     };
 }
 
+function isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea) {
+    if (!geometry || !workArea || !(workArea.height > 0)) return true;
+    const head = getLive2DPeekReliableHeadAnchor(manager) || getLive2DPeekHeadAnchor(manager);
+    const headY = head
+        ? head.y
+        : geometry.top + geometry.height * LIVE2D_PEEK_HEAD_Y_RATIO;
+    if (!Number.isFinite(headY)) return true;
+    const workAreaZone = workArea.height * (1 - LIVE2D_PEEK_BOTTOM_CORNER_HEAD_RATIO);
+    const modelZone = geometry.height > 0
+        ? geometry.height * LIVE2D_PEEK_BOTTOM_CORNER_HEAD_MODEL_RATIO
+        : workAreaZone;
+    return workArea.bottom - headY <= Math.min(workAreaZone, modelZone);
+}
+
+// 让身体留在底边外的侧边探身，只有在落位后头仍看得见时才安全。
+// 拿不到可靠头部时，侧边落位按腰部兜底，只保住腰的高度再整体转身；
+// 腰已经越过底边的话，头会被带到底边附近甚至出屏，这时退回下角。
+function isLive2DPeekSideOverflowSafe(manager, workArea) {
+    if (getLive2DPeekReliableHeadAnchor(manager)) return true;
+    const body = getLive2DPeekBodyRect(manager);
+    // 拿不到腰部时落位不走腰部兜底，会把头夹回工作区内。
+    if (!body || !workArea) return true;
+    return body.bottom <= workArea.bottom;
+}
+
 function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null) {
     const geometry = getLive2DModelGeometryBounds(manager, model);
     const fullViewport = getLive2DPeekViewport(geometry, manager);
@@ -555,6 +600,7 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     const nearTop = geometry.bottom >= workArea.top && geometry.top <= workArea.top + tolerance;
     const nearBottom = geometry.top <= workArea.bottom && geometry.bottom >= workArea.bottom - tolerance;
     let verticalEdge = '';
+    let allowBottomOverflow = false;
     if (nearTop && nearBottom) {
         const exactlyTop = Math.abs(geometry.top - workArea.top) <= tolerance;
         const exactlyBottom = Math.abs(geometry.bottom - workArea.bottom) <= tolerance;
@@ -566,12 +612,20 @@ function getLive2DPeekEdgeContact(manager, model, viewport = null, options = nul
     } else if (nearTop) {
         verticalEdge = 'top';
     } else if (nearBottom) {
-        verticalEdge = 'bottom';
+        // 模型比头高得多：只看外框的话，头还在屏幕中下部时脚就已经碰到底边，
+        // 侧边探身会被误判成下角。头在中下部时保留侧边，并让身体留在底边外。
+        if (isLive2DPeekHeadInBottomCornerZone(manager, geometry, workArea)
+                || !isLive2DPeekSideOverflowSafe(manager, workArea)) {
+            verticalEdge = 'bottom';
+        } else {
+            allowBottomOverflow = true;
+        }
     }
     return {
         edge: verticalEdge ? `${verticalEdge}-${side}` : side,
         side,
         verticalEdge,
+        allowBottomOverflow,
         geometry,
         workArea,
         displayRevision: live2DPeekDisplayContext ? live2DPeekDisplayContext.revision : 0,
@@ -626,7 +680,7 @@ function settleLive2DBaseAtEdgeContact(model, contact) {
     } else if (geometry.height <= workArea.height) {
         if (geometry.top < workArea.top) {
             dy = workArea.top - geometry.top;
-        } else if (geometry.bottom > workArea.bottom) {
+        } else if (geometry.bottom > workArea.bottom && !contact.allowBottomOverflow) {
             dy = workArea.bottom - geometry.bottom;
         }
     }
@@ -721,6 +775,8 @@ function getLive2DPeekBodyRect(manager) {
     try {
         const info = manager.getBodyScreenRectInfo();
         const rect = info && info.rect;
+        // Number(null) 是 0，缺 rect 时不能让它变成一个 (0, 0) 的假腰部。
+        if (!rect) return null;
         const centerX = Number(rect && (Number.isFinite(rect.centerX)
             ? rect.centerX
             : Number(rect.left) + Number(rect.width) * 0.5));
@@ -1298,6 +1354,9 @@ Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reas
     const state = this._live2DPeekState;
     const model = state && state.model && !state.model.destroyed ? state.model : null;
     if (!state || !state.active || !model) return false;
+    // 宿主还在挪窗口：这时探出会落在旧窗口里。等 _tryApplyLive2DPeek 收到宿主回话后
+    // 按那一刻的隐身/互动状态统一决定探出还是保持隐藏。
+    if (state.hostStagePending === true) return false;
 
     const shouldReveal = visible === true;
     if (shouldReveal && (state.phase === 'revealing' || state.phase === 'peeking')) return true;
@@ -1427,10 +1486,137 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model, edgeContact
         document.body.classList.add('neko-live2d-peek');
     }
     this._setLive2DPeekControlsSuppressed(true);
+    const anchorState = this._live2DPeekState;
+    const hostStage = this._beginLive2DPeekHostStage(model, anchorState);
+    if (hostStage) {
+        await hostStage;
+        // 等待已经结束，不管下面的检查过不过都先撤掉标记：留着的话这个落点之后的探出、隐藏全被挡住。
+        anchorState.hostStagePending = false;
+        // 等待期间探身被清掉、被新的落点替换（关掉贴边探身、换显示器、切模型），
+        // 或者这个落点的转换被别处接手：不再往下走。
+        if (this._live2DPeekState !== anchorState || !anchorState.active ||
+                anchorState.transitionId !== transitionId || model.destroyed) {
+            return false;
+        }
+        if (!shouldRevealLive2DPeek()) {
+            // 保持隐藏：模型已经在隐藏位，下面的 _setLive2DPeekVisibility 不会再播动画、也不发通知。
+            // 照不分段时的做法发一次落定通知，只认 anchor-created 的监听（首次探身提示等）照常收到。
+            try {
+                window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+                    detail: {
+                        active: true,
+                        visible: false,
+                        phase: 'hidden',
+                        edge: anchorState.edge,
+                        visibleBounds: null,
+                        reason: 'anchor-created'
+                    }
+                }));
+            } catch (_) {}
+        }
+    }
     return await this._setLive2DPeekVisibility(
         shouldRevealLive2DPeek(),
         'anchor-created'
     );
+};
+
+function getLive2DPeekHostStageApi() {
+    const api = typeof window !== 'undefined' ? window.__nekoLive2DPeekHostStage : null;
+    if (!api || typeof api !== 'object') return null;
+    const version = Number(api.version);
+    if (!Number.isFinite(version) || version < 1) return null;
+    return typeof api.prepare === 'function' ? api : null;
+}
+
+// 给宿主看的探身落点。有这个方法就表示页面支持分段进探身；没有探身时返回 null。
+// visibleBounds 是探出后模型露在屏内的范围（页面坐标）。探出、缩回动画只沿水平方向滑动，
+// 全程落在这个范围往屏内方向再加 revealOvershootPx 之内，宿主按它留窗口即可。
+// staged 表示这次落点由宿主接过分段；pending 表示还在等宿主回话（模型在屏外）。
+// 注意 prepare 收到的那一份是进入分段之前取的：staged、pending 都是 false，phase 还不是 hidden；
+// 宿主接下之后再调这个方法才是分段中的值。
+Live2DManager.prototype.getLive2DPeekHostStageInfo = function () {
+    const state = this._live2DPeekState;
+    const visibleBounds = state && state.visibleBounds;
+    if (!state || !state.active || !state.model || state.model.destroyed || !visibleBounds) return null;
+    return {
+        edge: state.edge,
+        side: state.side,
+        phase: state.phase,
+        staged: state.hostStaged === true,
+        pending: state.hostStagePending === true,
+        visibleBounds: {
+            left: visibleBounds.left,
+            top: visibleBounds.top,
+            right: visibleBounds.right,
+            bottom: visibleBounds.bottom,
+            width: visibleBounds.width,
+            height: visibleBounds.height
+        },
+        revealOvershootPx: Math.ceil(
+            Math.abs(Number(state.peekX) - Number(state.hiddenX)) * LIVE2D_PEEK_REVEAL_OVERSHOOT_RATIO
+        ) || 0
+    };
+};
+
+// 问宿主要不要分段进探身。宿主同步返回一个 Promise 表示它接了：模型当场摆到隐藏位，
+// 返回的 Promise 在宿主回话或超时后完成。宿主没声明、返回的不是 Promise 或抛错时返回 null，
+// 调用方照原样播动画，模型姿态不动。
+Live2DManager.prototype._beginLive2DPeekHostStage = function (model, state) {
+    const api = getLive2DPeekHostStageApi();
+    const info = api && model && !model.destroyed ? this.getLive2DPeekHostStageInfo() : null;
+    if (!info) return null;
+    const transitionId = state.transitionId;
+    let pending = null;
+    try {
+        pending = api.prepare(Object.assign(info, { reveal: shouldRevealLive2DPeek() }));
+    } catch (_) {
+        return null;
+    }
+    if (!pending || typeof pending.then !== 'function') return null;
+    // prepare 是宿主的回调，它执行期间探身可能已经被清掉，或者已经开始了一次探出/隐藏
+    // （比如宿主顺手派发了关掉贴边探身、互动状态的事件）。这时别把落点写回隐藏位：清掉的不该再动，
+    // 正在播的动画下一帧就会把它写回去。调用方等这个 Promise 之后的检查会让这次进场返回 false。
+    if (this._live2DPeekState !== state || !state.active ||
+            state.transitionId !== transitionId || model.destroyed) {
+        // 宿主的 Promise 之后被拒绝也不该变成未处理的拒绝。
+        Promise.resolve(pending).catch(() => {});
+        return Promise.resolve();
+    }
+
+    state.hostStaged = true;
+    state.hostStagePending = true;
+    state.phase = 'hidden';
+    model.x = state.hiddenX;
+    model.y = state.hiddenY;
+    model.rotation = state.peekRotation;
+    if (model.scale) model.scale.x = state.peekScaleX;
+    model.interactive = false;
+    this.syncLive2DEffectiveInputLock();
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+            detail: {
+                active: true,
+                visible: false,
+                phase: 'hidden',
+                edge: state.edge,
+                visibleBounds: null,
+                reason: 'host-stage'
+            }
+        }));
+    } catch (_) {}
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer = 0;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        timer = setTimeout(finish, LIVE2D_PEEK_HOST_STAGE_TIMEOUT_MS);
+        Promise.resolve(pending).then(finish, finish);
+    });
 };
 
 function clearLive2DPeek(reason, options) {

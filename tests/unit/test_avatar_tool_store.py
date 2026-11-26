@@ -48,6 +48,18 @@ class _ConfigManager:
         return True
 
 
+def _rewrite_as_another_writer(path: Path) -> None:
+    """Rewrite a file in place the way another writer would, so its identity changes.
+
+    Rewriting the same bytes changes only the modification time, and a coarse
+    file clock (about 15 ms on Windows) leaves even that unchanged when both
+    writes fall within one tick. Move the time forward explicitly.
+    """
+    before = os.stat(path)
+    path.write_bytes(path.read_bytes())
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+
 def _png(*, alpha: int = 255, size=(8, 8)) -> bytes:
     output = io.BytesIO()
     Image.new("RGBA", size, (40, 100, 180, alpha)).save(output, format="PNG")
@@ -1485,7 +1497,7 @@ def test_delete_keeps_an_unauthorized_move_for_recovery_when_it_cannot_be_restor
 
     def touch_record_then_refuse_restore(source, destination, *args, **kwargs):
         if Path(destination) == deleting:
-            (final / "record.json").write_bytes((final / "record.json").read_bytes())
+            _rewrite_as_another_writer(final / "record.json")
         elif Path(source) == deleting:
             raise OSError(errno.EACCES, "restore refused")
         return real_replace(source, destination, *args, **kwargs)
@@ -1533,8 +1545,7 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
 
     # After a crash (for example, migrating a copied store root), the moved object no longer matches authorization.
     if flavour == "identity-mismatch":
-        record_path = deleting / "record.json"
-        record_path.write_bytes(record_path.read_bytes())
+        _rewrite_as_another_writer(deleting / "record.json")
     elif flavour == "corrupt-marker":
         marker.write_bytes(b"{")
     elif flavour == "directory-marker":
@@ -5842,8 +5853,7 @@ def test_recovery_undoes_an_unverifiable_deletion_when_the_final_path_is_free(
 
     # For example, copying/migrating the store root changes st_dev/st_ino, permanently mismatching authorization.
     if flavour == "identity-mismatch":
-        record_path = deleting / "record.json"
-        record_path.write_bytes(record_path.read_bytes())
+        _rewrite_as_another_writer(deleting / "record.json")
     else:
         marker.write_bytes(b"{")
     moved_files = {path.name: path.read_bytes() for path in deleting.iterdir()}

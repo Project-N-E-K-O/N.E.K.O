@@ -258,6 +258,70 @@ characters makes four. Set where
 ten scenarios and four sentences of the measurements fall apart: those that
 go on with a member's work share four to eight, the others none or one."""
 
+BESIDE_ANSWER_WORDS_MAX = 2
+"""Most words of its own a sentence may say, beside a yes or a no, and be
+taken for the answer to whether another member is to do a queued commission
+(``decision._says_more_than_an_answer``): what says yes or no, what says it
+answers, what speaks of the choice itself (``BESIDE_ANSWER_WORD_PATTERNS``)
+and the question's own words are not counted. One that says more, or adds
+something ("also", "by the way"), is new work that says a yes or a no in passing,
+and is dispatched as such. Owner, 2026-11-25: "three and more" is new work.
+Measured with ``tests/unit/nekopower/fixtures/beside_answer_sentences.json``:
+of 40 requests written by a model that did not know the rule, none is taken
+for an answer (32 were before this was counted); of its 39 answers, 14 are
+taken for new work (3 of them say no yes or no at all, and were before). Of
+the 17 requests written beside the rule, 3 short ones are taken for answers
+(17 were before). With none allowed, 23 of the 39 answers would be new work;
+with three allowed, 7 of the 17 requests would be answers."""
+
+HAND_OVER_ANSWER_WORDS_MAX = 2
+"""The same as ``BESIDE_ANSWER_WORDS_MAX``, for the answer to whether a
+project's leader may start another member that changes files
+(``detail.tool == "hand_over"``), whose own words of the choice are
+``HAND_OVER_ANSWER_WORD_PATTERNS`` as well. Set as the owner set it for
+the other ("three and more" is new work). Measured with
+``tests/unit/nekopower/fixtures/hand_over_answer_sentences.json`` (four
+languages; 48 answers and 56 requests in each half): of the requests written
+by a model that did not know the rule, none is taken for an answer (46 were
+before, 22 of them for a yes or a no that decided the question); of its
+answers, 30 are taken for new work (10 were read wrongly before). Of the
+sentences written beside the rule, 1 request is taken for an answer (50
+were) and 2 answers for new work (1 was read wrongly). With four allowed, 2
+of the model's requests (said of the work itself, read as a yes and a no) and
+4 of the others would be answers, and 18 of the model's answers new work."""
+
+START_TEAM_ANSWER_WORDS_MAX = 2
+"""The same as ``BESIDE_ANSWER_WORDS_MAX``, for the answer to whether a
+project's leader may start a team whose members change files
+(``detail.tool == "start_team"``), whose own words of the choice are
+``HAND_OVER_ANSWER_WORD_PATTERNS`` and ``START_TEAM_ANSWER_WORD_PATTERNS``
+as well. Set as the owner set the others ("three and more" is new work).
+Measured with ``tests/unit/nekopower/fixtures/start_team_answer_sentences.json``
+(four languages; 48 answers and 56 requests in each half): of the requests
+written by a model that did not know the rule, none is taken for an answer
+(35 were before, 19 of them for a yes or a no that decided the question); of
+its answers, 25 are taken for new work (4 were read wrongly before). Of the
+sentences written beside the rule, 2 requests are taken for answers (36
+were) and 5 answers for new work (3 were read wrongly). With three or four
+allowed, none of the model's requests and 4 of the others would be answers
+(one a yes to the team), and 20 or 14 of the model's answers new work."""
+
+ORCHESTRATOR_APART_MIN_WORDS = 4
+"""A sentence is told to be about something else than what a member works
+on only when it says this many words of its own (as the retrieval counts
+them, the project's name left out) and shares fewer than
+``ORCHESTRATOR_MIN_HITS`` of them with that member's card, what it did lately
+and what it is at. One that says less ("do that for the tables too") names
+nothing by itself and goes on with what was said before. Set on the 38
+sentences of ``tests/unit/nekopower/fixtures/beside_scenarios.json``: with
+four, none of the twenty that go on with the member's work is told apart and
+none of the eighteen that are about something else is missed; with three,
+three of the twenty are told apart. (Those sentences were written by whoever
+set this. On 48 written afterwards by a model that did not know the rule, 10
+of the 24 that go on with the member's work were told apart; with sentences
+that point back or add to something left out as well, 5 of them are, and 2
+of the eighteen above are missed: ``orchestrator.apart_from``.)"""
+
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
 those that take no more work counted: the third is the leader's to start.
@@ -822,6 +886,16 @@ TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS = 300
 """How much of the question a project's session waits for the user to answer
 the message that opens a copy of it says (``TASK_AGENT_COPY_SESSION_WAITS``)."""
 
+BESIDE_JUDGE_OUTPUT_MAX_TOKENS = 64
+"""What the small model may write when it is asked whether a commission goes on
+with what a busy member is at (``LexicalDecisionModel.goes_on_with``): one
+line of JSON, with room to spare."""
+
+BESIDE_JUDGE_AT_HAND_MAX_TOKENS = 400
+"""How much of what the busy member is at the small model is shown
+(``LexicalDecisionModel.goes_on_with``): more than that, and it is not asked,
+the commission waiting for the member as it would have."""
+
 SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
 """What the small model may write when it is asked whether a commission is a
 side question (``LexicalDecisionModel.side_question``): one line of JSON, with
@@ -1052,6 +1126,30 @@ CONSOLE_TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024
 """How much of a record is read for one page at most. A page that reaches
 this ends there and says where to go on."""
 
+CONSOLE_TRANSCRIPT_SEARCH_HITS = 50
+"""Most places of a record a search from the console names
+(``NekoPowerHost.search_transcript``), the latest first; how many there are
+in all is said beside them."""
+
+CONSOLE_TRANSCRIPT_SEARCH_EXCERPT_TOKENS = 80
+"""Cap on the line shown of each place a search names."""
+
+CONSOLE_TRANSCRIPT_SEARCH_MAX_BYTES = 64 * 1024 * 1024
+"""How much of a record a search from the console reads, from its end: of a
+longer record the earliest part is not looked through, and the answer says
+so. The same as a task agent may look through (``SESSION_RECORD_MAX_BYTES``)."""
+
+CONSOLE_TIMELINE_BEFORE_COUNT_MAX = 5_000
+"""How far back the entries before where a page begins reading the timeline
+are counted (``NekoPowerHost.timeline_start``): a page needs to know only
+whether reading from the beginning would hold more than it keeps (3000), and
+counting stops here rather than going through all there ever was."""
+
+CONSOLE_TIMELINE_SCENE_MAX_ROWS = 500
+"""Most sessions told of in how things stood where a page begins reading the
+timeline (``NekoPowerHost.timeline_start``): those under way then. The task
+agents at work at one time, with what queues behind them, come to far fewer."""
+
 CONSOLE_TIMELINE_RECENT_EVENT_ROWS = 20_000
 """How far back a page that opens begins reading the timeline, in rows of the
 events (``NekoPowerHost.timeline_start``). Most rows are steps of a task
@@ -1067,6 +1165,14 @@ CONSOLE_COMMISSIONS_ROWS = 200
 
 CONSOLE_COMMISSIONS_MAX_ROWS = 1000
 """Most commissions in one listing."""
+
+CONSOLE_COMMISSIONS_QUEUED_MAX: int | None = None
+"""Most commissions waiting for their turn the page of the commissions lists
+(``NekoPowerHost.commissions``), the newest first, saying that there are more;
+None: all of them. All are listed now: nothing files many at once yet. A
+number goes here once something does (a batch of work handed out at once).
+Those at work and waiting for the user are always all listed: one that waits
+is answered from that list."""
 
 CONSOLE_COMMISSIONS_SCAN_ROWS = 20_000
 """How many commissions, the newest first, are looked through for a listing

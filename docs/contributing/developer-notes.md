@@ -50,7 +50,7 @@ Provider/backend/feature implementations remain structurally paired. Review peer
 - Blocking work must not run directly in async handlers.
 - Sync configuration writes used during startup should have an async `a*` counterpart for async paths.
 - Main package layering and `main_logic/core/` facade contracts are CI-enforced.
-- Do not pass `temperature=` to restricted LLM construction/call sites; observe output, timeout, and input budgets.
+- Repository code does not set a model `temperature`, apart from the exemptions listed with reasons in `scripts/check_no_temperature.py` such as realtime voice sessions (CI-enforced over the whole repository); observe output, timeout, and input budgets.
 
 ## Memory
 

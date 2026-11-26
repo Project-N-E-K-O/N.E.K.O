@@ -145,6 +145,7 @@ class _QueuedMicFrame:
     MAX_DURATION_MS: ClassVar[int] = 120
 
     message: dict
+    pcm16: bytes
     duration_us: int
     source_rate_hz: int
     token: VoiceIngressToken
@@ -182,9 +183,14 @@ class _QueuedMicFrame:
         # construction.
         if len(samples) * 1_000 > source_rate_hz * cls.MAX_DURATION_MS:
             raise ValueError("MIC_PCM_FRAME_TOO_LONG")
+        try:
+            pcm16 = struct.pack(f"<{len(samples)}h", *samples)
+        except (struct.error, TypeError) as exc:
+            raise ValueError("MIC_PCM_SAMPLES_INVALID") from exc
         duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
             message=message,
+            pcm16=pcm16,
             duration_us=duration_us,
             source_rate_hz=source_rate_hz,
             token=token,
@@ -3718,6 +3724,44 @@ class AsrRuntimeMixin:
             getattr(self, "session", None),
         )
 
+    def _note_queued_native_realtime_ingress_activity(
+        self,
+        frame: _QueuedMicFrame,
+    ) -> None:
+        """Expose one accepted 16 kHz Core-native frame to arbitration.
+
+        Only the ordinary Core-owned native route publishes early. 48 kHz
+        desktop PCM still waits for Core DSP and is classified by the existing
+        realtime transport path, so this signal never bypasses preprocessing.
+        """
+        if (
+            frame.source_rate_hz != 16_000
+            or frame.audio_stream_epoch != self._audio_stream_epoch
+            or frame.token != self._capture_native_ingress_token()
+            or self._asr_route_mode != "native"
+            or self._voice_lease_owner != "core"
+            or not getattr(self, "is_active", False)
+            or not self._voice_input_accepts_pcm()
+            or self._voice_session_activation_required
+            or self._voice_session_activation_degraded
+            or self._voice_session_activation_factory is not None
+            or getattr(self, "_active_session_interception_required", False)
+            or getattr(self, "_active_session_interception_bridge", None) is not None
+            or getattr(self, "_normal_capture_end_owner", None) is not None
+            or self._voice_input_pipeline_failed
+            or getattr(self, "_voice_input_pipeline_failure_token", None) is not None
+            or getattr(self, "session_closed_by_server", False)
+        ):
+            return
+        session = getattr(self, "session", None)
+        if (
+            not isinstance(session, _core_facade.OmniRealtimeClient)
+            or getattr(session, "_fatal_error_occurred", False)
+            or not callable(getattr(session, "stream_audio", None))
+        ):
+            return
+        session.note_pcm16_ingress_activity(frame.pcm16)
+
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
         if self._normal_capture_end_owner is not None:
@@ -3771,6 +3815,7 @@ class AsrRuntimeMixin:
         try:
             self._audio_stream_queue.put_nowait(frame)
             sequence_owned = False
+            self._note_queued_native_realtime_ingress_activity(frame)
         except asyncio.QueueFull:
             try:
                 await asyncio.sleep(0)
@@ -3796,6 +3841,7 @@ class AsrRuntimeMixin:
                 try:
                     self._audio_stream_queue.put_nowait(frame)
                     sequence_owned = False
+                    self._note_queued_native_realtime_ingress_activity(frame)
                 except asyncio.QueueFull:
                     self._clear_audio_stream_queue("ingress_backpressure")
                     self._audio_stream_dropped_total += 1
@@ -3867,6 +3913,8 @@ class AsrRuntimeMixin:
                     ingress_sequence=frame.ingress_sequence,
                     received_at=frame.received_at,
                     captured_at=frame.captured_at,
+                    validated_pcm16=frame.pcm16,
+                    validated_source_rate_hz=frame.source_rate_hz,
                 )
             except asyncio.CancelledError:
                 raise
@@ -4131,6 +4179,8 @@ class AsrRuntimeMixin:
         ingress_sequence: int | None = None,
         received_at: float | None = None,
         captured_at: float | None = None,
+        validated_pcm16: bytes | None = None,
+        validated_source_rate_hz: int | None = None,
     ) -> None:
         audio_received_at = (
             float(received_at)
@@ -4186,25 +4236,36 @@ class AsrRuntimeMixin:
             else None
         )
         try:
-            if not isinstance(data, list):
-                logger.error(
-                    "Microphone input rejected: expected a PCM sample list route=%s",
-                    self._asr_route_mode,
-                )
-                return
-            audio_bytes = struct.pack(f"<{len(data)}h", *data)
-            declared_rate_hz = message.get("sample_rate_hz")
-            if declared_rate_hz is None:
-                source_rate_hz = 48_000 if len(data) == 480 else 16_000
-            elif declared_rate_hz in {16_000, 48_000}:
-                source_rate_hz = int(declared_rate_hz)
+            if validated_pcm16 is not None:
+                if validated_source_rate_hz not in {16_000, 48_000}:
+                    logger.error(
+                        "Microphone input rejected: invalid prevalidated sample rate %r route=%s",
+                        validated_source_rate_hz,
+                        self._asr_route_mode,
+                    )
+                    return
+                audio_bytes = validated_pcm16
+                source_rate_hz = int(validated_source_rate_hz)
             else:
-                logger.error(
-                    "Microphone input rejected: unsupported sample rate %r route=%s",
-                    declared_rate_hz,
-                    self._asr_route_mode,
-                )
-                return
+                if not isinstance(data, list):
+                    logger.error(
+                        "Microphone input rejected: expected a PCM sample list route=%s",
+                        self._asr_route_mode,
+                    )
+                    return
+                audio_bytes = struct.pack(f"<{len(data)}h", *data)
+                declared_rate_hz = message.get("sample_rate_hz")
+                if declared_rate_hz is None:
+                    source_rate_hz = 48_000 if len(data) == 480 else 16_000
+                elif declared_rate_hz in {16_000, 48_000}:
+                    source_rate_hz = int(declared_rate_hz)
+                else:
+                    logger.error(
+                        "Microphone input rejected: unsupported sample rate %r route=%s",
+                        declared_rate_hz,
+                        self._asr_route_mode,
+                    )
+                    return
             try:
                 processed_frame = await pipeline_ref.process(
                     audio_bytes,

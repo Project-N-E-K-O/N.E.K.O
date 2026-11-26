@@ -478,7 +478,6 @@ class BaseJudger(ABC):
             model=cfg.model,
             base_url=cfg.base_url,
             api_key=cfg.api_key,
-            temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
             timeout=cfg.timeout or 90.0,  # judgers get a bit more than chat
             max_retries=1,
@@ -1180,7 +1179,6 @@ def _judge_model_summary(cfg: ModelGroupConfig) -> dict[str, Any]:
         "provider": cfg.provider,
         "base_url": cfg.base_url,
         "model": cfg.model,
-        "temperature": cfg.temperature,
         "max_tokens": cfg.max_tokens,
         "timeout": cfg.timeout,
     }

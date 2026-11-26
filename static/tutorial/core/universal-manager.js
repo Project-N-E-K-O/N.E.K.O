@@ -1707,12 +1707,15 @@ class UniversalTutorialManager {
      * @returns {string} 转义后的HTML安全文本
      */
     safeEscapeHtml(text) {
-        if (typeof text !== 'string') {
-            return String(text);
+        if (text === null || text === undefined) {
+            return '';
         }
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     shouldShowDay1SystrayIntro(endMeta, avatarFloatingEndState) {

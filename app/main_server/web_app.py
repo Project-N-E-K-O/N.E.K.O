@@ -407,6 +407,7 @@ from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
 from main_routers.vmc_router import router as vmc_router  # noqa
 from main_routers.voice_identity_router import router as voice_identity_router  # noqa
+from main_routers.audio_message_router import router as audio_message_router  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
@@ -916,33 +917,56 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.instance_access import (
+        INTERNAL_SERVICE_HEADER,
+        instance_key,
+        internal_service_proof,
+        market_internal_proof,
+        remote_instance_identity,
+        request_public_origin,
+        verify_admitted_internal_service_key,
+    )
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
-    headers.pop("x-neko-market-internal", None)
-    headers.pop("x-neko-market-public-origin", None)
+    for internal_header in ("x-neko-market-internal", "x-neko-market-public-origin", INTERNAL_SERVICE_HEADER):
+        for hdr_key in [k for k in headers if k.lower() == internal_header]:
+            headers.pop(hdr_key, None)
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
     theater_path = path.startswith("theater/")
     body = b"" if knowledge_path or theater_path else await request.body()
-    if request.scope.get("neko.instance_identity"):
+    scope_identity = request.scope.get("neko.instance_identity")
+    if scope_identity:
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        public_origin = request_public_origin(request)
         try:
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
             return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
-        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+        if scope_identity == "internal" and "neko.internal_service_key_digest" in request.scope:
+            if not verify_admitted_internal_service_key(request.scope, signing_key):
+                return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
+            upstream_url = httpx.URL(target)
+            upstream_raw_path = upstream_url.raw_path.split(b"?", 1)[0].decode("latin-1")
+            upstream_port = upstream_url.port or (443 if upstream_url.scheme == "https" else 80)
+            headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+                signing_key,
+                request.method,
+                upstream_raw_path,
+                port=upstream_port,
+            )
+        elif remote_instance_identity(request, key=signing_key) == scope_identity:
+            public_origin = request_public_origin(request)
+            headers["x-neko-market-public-origin"] = public_origin
+            headers["x-neko-market-internal"] = market_internal_proof(
+                signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
+        else:
             return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
-        headers["x-neko-market-public-origin"] = public_origin
-        headers["x-neko-market-internal"] = market_internal_proof(
-            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     if knowledge_path:
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
@@ -1046,6 +1070,7 @@ app.include_router(community_oauth_callback_router)  # Exact /oauth/callback bef
 # WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
 app.include_router(vmc_router)
 app.include_router(voice_identity_router)
+app.include_router(audio_message_router)
 app.include_router(
     cookies_login_router
 )  # Cookie-login routes go last to avoid conflicts with other API routes.

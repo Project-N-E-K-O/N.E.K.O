@@ -245,6 +245,210 @@ def _authorize_core_lease(mgr: LLMSessionManager) -> None:
     mgr._voice_input_suppressed = False
 
 
+class _ActivityInterceptionFactory:
+    is_available = True
+
+    def create(self, generation, *, ingress_token):
+        raise AssertionError("activity-eligibility test must not invoke interception")
+
+    def close(self) -> None:
+        return None
+
+
+def _make_native_realtime_activity_manager():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("native")
+    mgr.is_active = True
+    mgr.session_closed_by_server = False
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=10,
+    )
+    session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    session._client_vad_threshold = 500.0
+    session._user_recent_activity_time = 0.0
+    session._fatal_error_occurred = False
+    session.stream_audio = AsyncMock()
+    mgr.session = session
+    return mgr, session
+
+
+async def test_native_realtime_loud_ingress_publishes_activity_before_worker():
+    """Backpressured proactive delivery must see 16 kHz speech before the worker."""
+    mgr, session = _make_native_realtime_activity_manager()
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [100] * 160,
+        },
+    )
+    assert session._user_recent_activity_time == 0.0
+
+    # Desktop 48 kHz input must keep the old boundary: Core DSP runs before
+    # the realtime transport decides whether the processed PCM is loud.
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 48_000,
+            "data": [2_000] * 480,
+        },
+    )
+    assert session._user_recent_activity_time == 0.0
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [2_000] * 160,
+        },
+    )
+
+    assert session._user_recent_activity_time > 0.0
+    assert mgr._audio_stream_queue.qsize() == 3
+
+
+async def test_game_owned_native_ingress_does_not_publish_core_activity():
+    mgr, session = _make_native_realtime_activity_manager()
+    mgr._voice_lease_owner = "game"
+    # Model the built-in game consumer accepting the shared microphone route;
+    # the early Core activity signal must still stay owned by Core chat.
+    mgr._voice_input_accepts_pcm = lambda: True
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [2_000] * 160,
+        },
+    )
+
+    assert mgr._audio_stream_queue.qsize() == 1
+    assert session._user_recent_activity_time == 0.0
+
+
+async def test_native_retry_does_not_publish_after_activation_is_required():
+    mgr, session = _make_native_realtime_activity_manager()
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=10_000,
+        max_frames=1,
+    )
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [100] * 160,
+        },
+    )
+    assert mgr._audio_stream_queue.qsize() == 1
+
+    asyncio.get_running_loop().call_soon(
+        lambda: mgr.require_voice_session_activation(
+            activation_generation="replacement-required"
+        )
+    )
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [2_000] * 160,
+        },
+    )
+
+    assert mgr._voice_session_activation_required is True
+    assert mgr._voice_session_activation_degraded is True
+    assert mgr._audio_stream_queue.qsize() == 1
+    assert session._user_recent_activity_time == 0.0
+
+
+async def test_native_retry_does_not_publish_after_audio_generation_changes():
+    mgr, session = _make_native_realtime_activity_manager()
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=10_000,
+        max_frames=1,
+    )
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [100] * 160,
+        },
+    )
+    original_generation = mgr._asr_runtime._asr_audio_generation
+
+    def advance_audio_generation() -> None:
+        queued = mgr._audio_stream_queue.get_nowait()
+        mgr._audio_stream_queue.task_done()
+        mgr._complete_hot_swap_ingress_sequence(queued.ingress_sequence)
+        mgr._asr_runtime._asr_audio_generation += 1
+
+    asyncio.get_running_loop().call_soon(advance_audio_generation)
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [2_000] * 160,
+        },
+    )
+
+    queued = mgr._audio_stream_queue.get_nowait()
+    assert queued.token.audio_generation == original_generation
+    assert mgr._capture_native_ingress_token().audio_generation == original_generation + 1
+    assert session._user_recent_activity_time == 0.0
+    mgr._audio_stream_queue.task_done()
+    mgr._complete_hot_swap_ingress_sequence(queued.ingress_sequence)
+
+
+async def test_installed_optional_interception_blocks_early_core_activity():
+    mgr, session = _make_native_realtime_activity_manager()
+    assert await mgr.set_active_session_interception_factory(
+        _ActivityInterceptionFactory(),
+        interception_required=False,
+    )
+    assert mgr._active_session_interception_required is False
+    assert mgr._active_session_interception_bridge is not None
+
+    await LLMSessionManager._enqueue_audio_stream_data(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [2_000] * 160,
+        },
+    )
+
+    assert mgr._audio_stream_queue.qsize() == 1
+    assert session._user_recent_activity_time == 0.0
+
+
+@pytest.mark.parametrize("samples", [[1.5] * 160, [40_000] * 160])
+def test_queued_mic_frame_rejects_samples_outside_pcm16_contract(samples):
+    with pytest.raises(ValueError, match="MIC_PCM_SAMPLES_INVALID"):
+        QueuedMicFrame.from_message(
+            {
+                "input_type": "audio",
+                "sample_rate_hz": 16_000,
+                "data": samples,
+            },
+            token=_queue_token(),
+        )
+
+
 async def test_native_audio_without_asr_lifecycle_reaches_internal_processor():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._init_asr_runtime_state()
@@ -407,6 +611,8 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
         ingress_sequence=frame.ingress_sequence,
         received_at=frame.received_at,
         captured_at=frame.captured_at,
+        validated_pcm16=frame.pcm16,
+        validated_source_rate_hz=frame.source_rate_hz,
     )
     assert mgr._audio_stream_dropped_total == 0
 
@@ -453,6 +659,8 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
         ingress_sequence=frame.ingress_sequence,
         received_at=frame.received_at,
         captured_at=frame.captured_at,
+        validated_pcm16=frame.pcm16,
+        validated_source_rate_hz=frame.source_rate_hz,
     )
 
 
@@ -1951,13 +2159,17 @@ async def test_native_route_overflow_clears_provider_input_buffer():
     mgr._ensure_audio_stream_worker = lambda: None
     mgr._bg_tasks = set()
     mgr._asr_runtime.abort = AsyncMock()
+    mgr.session._client_vad_threshold = 500.0
+    mgr.session._user_recent_activity_time = 0.0
 
     def message(seq: int) -> dict:
         return {
             "seq": seq,
             "input_type": "audio",
             "sample_rate_hz": 16_000,
-            "data": [seq] * 160,
+            # The third frame is loud but is the frame that loses the retry;
+            # a dropped ingress frame must not suppress proactive output.
+            "data": ([2_000] if seq == 3 else [seq]) * 160,
         }
 
     for seq in (1, 2, 3):
@@ -1967,6 +2179,7 @@ async def test_native_route_overflow_clears_provider_input_buffer():
     assert mgr._audio_stream_queue.empty()
     assert mgr._audio_stream_dropped_total == 3
     assert mgr._asr_route_mode == "native"
+    assert mgr.session._user_recent_activity_time == 0.0
     mgr.session.clear_audio_buffer.assert_awaited_once()
 
 
