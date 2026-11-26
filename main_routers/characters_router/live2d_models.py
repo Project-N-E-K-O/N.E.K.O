@@ -378,9 +378,16 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         item_id: optional item ID to directly specify the model
     """
     try:
-        _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        characters = await get_config_manager().aload_characters()
+    except Exception as e:
+        logger.error(f"获取角色Live2D模型失败: {e}")
+        return JSONResponse(content={'success': False, 'error': str(e)})
+    return await resolve_live2d_model_snapshot(catgirl_name, item_id, characters)
 
+
+async def resolve_live2d_model_snapshot(catgirl_name: str, item_id: str, characters: dict):
+    """Resolve assets without taking a second snapshot of character identity."""
+    try:
         # If no character name is specified, use the current neko.
         if not catgirl_name:
             catgirl_name = characters.get('当前猫娘', '')

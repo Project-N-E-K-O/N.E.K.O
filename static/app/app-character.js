@@ -270,6 +270,88 @@
         return !/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
     }
 
+    // Rollback restores config, not necessarily its renderer. Keep weak evidence of the
+    // original mounted object: a timed-out attempt may have already mounted a different mesh.
+    let rolledBackRenderer = null;
+    let rolledBackPngtuberName = null;
+    let committedRenderer = null;
+    function getMountedRenderer(type) {
+        if (type === 'vrm') return window.vrmManager?.currentModel?.vrm;
+        if (type === 'mmd') return window.mmdManager?.currentModel?.mesh;
+        if (type === 'live2d') return window.live2dManager?.getCurrentModel?.() || window.live2dManager?.currentModel;
+        return null;
+    }
+
+    function configuredRenderer(config) {
+        const type = String(config?.model_type || '').trim().toLowerCase();
+        return type === 'live3d' ? String(config.live3d_sub_type || '').trim().toLowerCase() : type;
+    }
+    function ownsLocalRenderer() {
+        return supportsLocalModelRuntime() && !window.NekoAvatarFloatingBoot?.shouldSkipUserModelBoot?.();
+    }
+
+    function rolledBackRendererNeedsRecovery(name) {
+        if (rolledBackRenderer?.name !== name) return null;
+        const mounted = getMountedRenderer(configuredRenderer(window.lanlan_config));
+        return !rolledBackRenderer.original.has(mounted);
+    }
+
+    function confirmRestoredRenderer(name, type, mounted) {
+        const config = window.lanlan_config;
+        if (rolledBackRenderer?.name === name && !S.isSwitchingCatgirl && config?.lanlan_name === name
+            && configuredRenderer(config) === type && mounted && getMountedRenderer(type) === mounted) {
+            rolledBackRenderer = null;
+        }
+    }
+
+    function needsCurrentCharacterRecovery(name, { fromSnapshot = false, switchRevision = 0 } = {}) {
+        const config = window.lanlan_config;
+        if (!name || config?.lanlan_name !== name) return false;
+        // connectWebSocket owns /ws/<encoded character>. A failed late model load can roll
+        // back the name without rolling back that connection. Ignore absent/closing sockets
+        // and other transports whose URL does not prove a character mismatch.
+        const socket = S.socket;
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+            const route = /^wss?:\/\/[^/]+\/ws\/([^/?#]*)(?:[?#].*)?$/i.exec(socket.url || '');
+            if (route) {
+                try { if (decodeURIComponent(route[1]) !== name) return true; } catch (_) { /* unknown owner */ }
+            }
+        }
+        if (!ownsLocalRenderer()) return false;
+        const bootstrap = window.__nekoPageModelConfigPending;
+        // The current identity may be known while full desktop model config
+        // failed. Let a real receipt recover it through the normal attempt.
+        if (!fromSnapshot && bootstrap?.failed && bootstrap.name === name
+            && (!bootstrap.revision || switchRevision >= bootstrap.revision)) return true;
+        const renderer = configuredRenderer(config);
+        const mounted = getMountedRenderer(renderer);
+        if (renderer === 'pngtuber' && rolledBackPngtuberName === name) return true;
+        const rolledBackNeedsRecovery = rolledBackRendererNeedsRecovery(name);
+        if (rolledBackNeedsRecovery !== null) return rolledBackNeedsRecovery;
+        // A cold snapshot supplies the original boot's path. Only a previously
+        // committed VRM that has genuinely gone missing needs the switch loader
+        // for a same-name HTTP snapshot after that original boot was superseded.
+        const hadCommittedVrm = committedRenderer?.name === name && committedRenderer.type === 'vrm';
+        return (!fromSnapshot || hadCommittedVrm) && renderer === 'vrm' && !mounted
+            && !window.vrmManager?._isLoadingModel && !window.isVRMStartupFor?.(name);
+    }
+
+    function hasCommittedPageModel(name, revision) {
+        const config = window.lanlan_config;
+        if (!revision || config?.switch_revision !== revision || config.lanlan_name !== name
+            || committedRenderer?.name !== name
+            || (S.isSwitchingCatgirl && S._currentSwitchAttemptId !== committedRenderer.attemptId)) return false;
+        const type = configuredRenderer(config);
+        const mounted = getMountedRenderer(type);
+        return type === committedRenderer.type && !!mounted && !mounted.destroyed
+            && committedRenderer.objects.has(mounted)
+            && !needsCurrentCharacterRecovery(name, { fromSnapshot: true });
+    }
+
+    function weakRendererSet(model) {
+        return new WeakSet(model && typeof model === 'object' ? [model] : []);
+    }
+
     function emitAssistantSpeechCancel(source) {
         // 文本可能已进入下一回合；角色切换先取消实际仍在播放的语音。
         var turnId = S.assistantSpeechActiveTurnId || S.assistantTurnId || null;
@@ -325,8 +407,13 @@
      *
      * @param {string} newCatgirl - Name of the new character
      * @param {string} oldCatgirl - Name of the previous character
+     * @returns {Promise<boolean>} Whether this target was applied (not merely queued).
      */
-    async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
+    async function handleCatgirlSwitch(newCatgirl, oldCatgirl, options = {}) {
+        const forceReload = !!options.forceReload;
+        const switchRevision = Number.isSafeInteger(options.switchRevision) && options.switchRevision > 0
+            ? options.switchRevision
+            : 0;
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
@@ -385,28 +472,66 @@
             _mmdDeferredDispose = null;
         };
 
+        // forceReload bypasses same-name dedupe, never backend commit order.
+        if (switchRevision) {
+            const pageRevision = Number.isSafeInteger(window.lanlan_config?.switch_revision)
+                && window.lanlan_config.switch_revision > 0
+                ? window.lanlan_config.switch_revision
+                : 0;
+            const stateRevision = Number.isSafeInteger(S._latestCatgirlSwitchRevision)
+                ? S._latestCatgirlSwitchRevision
+                : 0;
+            if (pageRevision > stateRevision) {
+                S._latestCatgirlSwitchRevision = pageRevision;
+            }
+            const latestRevision = Math.max(pageRevision, stateRevision);
+            if (switchRevision < latestRevision) {
+                console.log('[character switch] stale revision ignored:', switchRevision, latestRevision, newCatgirl);
+                return false;
+            }
+            if (switchRevision > latestRevision) {
+                S._latestCatgirlSwitchRevision = switchRevision;
+                if (window.lanlan_config) {
+                    window.lanlan_config.switch_revision = switchRevision;
+                }
+            }
+        }
+
         if (S.isSwitchingCatgirl) {
-            console.log('[猫娘切换] 正在切换中，忽略本次请求');
-            return;
+            if (newCatgirl) {
+                const queuedSwitch = S._pendingCatgirlSwitch;
+                if (!switchRevision && queuedSwitch?.switchRevision > 0) {
+                    console.log('[猫娘切换] 保留已排队的带版本目标，忽略无版本回执:', newCatgirl);
+                    return false;
+                }
+                // 快速 A→B→A 时，旧逻辑会把第二次请求直接丢掉；而第一轮已经开始清理
+                // A 的模型，最终就可能出现“后端已回到 A、前端模型为空”。这里只保留最新
+                // 目标（last intent wins），等当前 attempt 收尾后强制重放一次。
+                S._pendingCatgirlSwitch = { newCatgirl, oldCatgirl, switchRevision };
+                console.log('[猫娘切换] 正在切换中，记录最新待切换目标:', newCatgirl);
+            } else {
+                console.log('[猫娘切换] 正在切换中且 newCatgirl 为空，忽略');
+            }
+            return false;
         }
-        if (!newCatgirl) {
-            console.log('[猫娘切换] newCatgirl为空，返回');
-            return;
+        if (!newCatgirl) return false;
+
+        const currentConfig = window.lanlan_config;
+        if (!forceReload && currentConfig?.lanlan_name === newCatgirl && !needsCurrentCharacterRecovery(newCatgirl, { switchRevision })) {
+            const bootstrap = window.__nekoPageModelConfigPending;
+            if (switchRevision && bootstrap?.name === newCatgirl && !bootstrap.failed && ownsLocalRenderer()) {
+                // A healthy read still owns boot. Remember only the confirmed
+                // identity stamp in case that single read later proves stalled.
+                bootstrap.receipt = { oldCatgirl, switchRevision };
+            }
+            return true;
         }
-        if (newCatgirl === oldCatgirl) {
-            console.log('[猫娘切换] 新旧角色相同，跳过切换');
-            return;
-        }
-        // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
-        // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
-        // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
-        // !== oldCatgirl 的 dedupe 拦不住，会重新清 chat / 关 socket / 重连 / 重加载模型。
-        // app-interpage 的 BC handler 已加同样守护作为外层防御，这里在源头再加一道，
-        // 让所有调用方（不光 BC/WS handler）自动受益。
-        if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
-            console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
-            return;
-        }
+        const renderer = configuredRenderer(currentConfig);
+        const localModelPage = ownsLocalRenderer();
+        let coldTarget = null;
+        let pngtuberHiddenByAttempt = false;
+        let previousRenderer = rolledBackRenderer?.name === currentConfig?.lanlan_name ? rolledBackRenderer : null;
+        // The backend's old and new names can match even if our last attempt rolled back.
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
@@ -424,10 +549,18 @@
             live3d_sub_type: (window.lanlan_config && window.lanlan_config.live3d_sub_type) || '',
         };
         const restorePreviousLanlanConfig = () => {
+            rolledBackRenderer = previousRenderer;
+            if (coldTarget) {
+                const occupant = getMountedRenderer(coldTarget.type);
+                if (!occupant || coldTarget.before.has(occupant)) rolledBackRenderer = null;
+            }
             if (window.lanlan_config) {
                 window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
                 window.lanlan_config.model_type = previousLanlanConfig.model_type;
                 window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+            }
+            if (pngtuberHiddenByAttempt && configuredRenderer(previousLanlanConfig) === 'pngtuber') {
+                rolledBackPngtuberName = previousLanlanConfig.lanlan_name;
             }
             window.appChatAvatarState?.rollbackCharacterSwitch(myAttemptId);
         };
@@ -627,6 +760,21 @@
                 }
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
+                const pendingSwitch = S._pendingCatgirlSwitch;
+                S._pendingCatgirlSwitch = null;
+                const pendingAlreadySatisfied = !!(
+                    switchAlreadyCompleted
+                    && pendingSwitch?.newCatgirl === newCatgirl
+                );
+                if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
+                    Promise.resolve().then(() => handleCatgirlSwitch(
+                        pendingSwitch.newCatgirl,
+                        pendingSwitch.oldCatgirl || '',
+                        { forceReload: true, queuedReason: 'watchdog', switchRevision: pendingSwitch.switchRevision || 0 }
+                    )).catch(err => console.error('[character switch] watchdog pending replay failed:', err));
+                } else if (pendingAlreadySatisfied) {
+                    console.log('[character switch] watchdog target already satisfied; skip duplicate replay:', newCatgirl);
+                }
                 if (!switchAlreadyCompleted) {
                     try {
                         showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
@@ -741,6 +889,14 @@
             }
 
             // 2. 清理旧模型资源（温和清理，保留基础设施）
+
+            // Capture at teardown: cold boot may have completed during the config read. If A is
+            // still cold, only remember a failed attempt that actually installed a different model.
+            if (!previousRenderer && localModelPage && ['live2d', 'mmd', 'vrm'].includes(renderer)) {
+                const mounted = getMountedRenderer(renderer);
+                previousRenderer = { name: previousLanlanConfig.lanlan_name, original: weakRendererSet(mounted) };
+                if (!mounted) coldTarget = { type: effectiveModelType, before: weakRendererSet(getMountedRenderer(effectiveModelType)) };
+            }
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
             try {
@@ -947,6 +1103,9 @@
             }
 
             try {
+                if (renderer === 'pngtuber' && previousLanlanConfig.lanlan_name) {
+                    pngtuberHiddenByAttempt = true;
+                }
                 if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
                     window.pngtuberManager.hide();
                 }
@@ -2013,6 +2172,19 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            rolledBackRenderer = null;
+            rolledBackPngtuberName = null;
+            const mountedType = configuredRenderer(window.lanlan_config);
+            const mounted = getMountedRenderer(mountedType);
+            committedRenderer = mounted
+                ? { name: newCatgirl, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }
+                : null;
+            const bootstrap = window.__nekoPageModelConfigPending;
+            if (bootstrap && (bootstrap.name === newCatgirl
+                || (!bootstrap.pinned && switchRevision && switchRevision >= bootstrap.revision))) {
+                window.__nekoPageModelConfigPending = null;
+                bootstrap.retire?.();
+            }
             window.appChatAvatarState?.commitCharacterSwitch(myAttemptId, {
                 uid: catgirlConfig._reserved?.character_uid || '',
                 name: newCatgirl
@@ -2186,6 +2358,23 @@
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
+                const pendingSwitch = S._pendingCatgirlSwitch;
+                S._pendingCatgirlSwitch = null;
+                const pendingAlreadySatisfied = !!(
+                    switchHasCommitted
+                    && pendingSwitch?.newCatgirl === newCatgirl
+                );
+                if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
+                    // A failed attempt may roll the name back to the pending target after
+                    // model cleanup. Keep forceReload unless this attempt already committed it.
+                    Promise.resolve().then(() => handleCatgirlSwitch(
+                        pendingSwitch.newCatgirl,
+                        pendingSwitch.oldCatgirl || '',
+                        { forceReload: true, queuedReason: 'finally', switchRevision: pendingSwitch.switchRevision || 0 }
+                    )).catch(err => console.error('[character switch] pending replay failed:', err));
+                } else if (pendingAlreadySatisfied) {
+                    console.log('[character switch] latest target already satisfied; skip duplicate replay:', newCatgirl);
+                }
                 // window._currentCatgirlSwitchId 故意不清——它是 VRM applyLighting retry loop
                 // 的 ownership token（line 794-800 用 Symbol() 标识 attempt，retry 比对
                 // !== currentSwitchId 自我退出）。retry 是 setTimeout 链，可能跨 finally 还在跑；
@@ -2210,12 +2399,18 @@
                 window.pngtuberManager._goodbyeClicked = false;
             }
         }
+        return switchHasCommitted && window.lanlan_config?.lanlan_name === newCatgirl
+            && (!switchRevision || switchRevision >= (S._latestCatgirlSwitchRevision || 0));
     }
 
     // ======================================================================
     // Public API
     // ======================================================================
     mod.handleCatgirlSwitch = handleCatgirlSwitch;
+    mod.needsCurrentCharacterRecovery = needsCurrentCharacterRecovery;
+    mod.rolledBackRendererNeedsRecovery = rolledBackRendererNeedsRecovery;
+    mod.confirmRestoredRenderer = confirmRestoredRenderer;
+    mod.hasCommittedPageModel = hasCommittedPageModel;
 
     // Backward-compatible window global so app.js call-sites work unchanged
     window.handleCatgirlSwitch = handleCatgirlSwitch;

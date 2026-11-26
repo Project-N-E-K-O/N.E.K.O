@@ -4013,7 +4013,11 @@
                     console.log(window.t('console.catgirlSwitchNotification'), oldCatgirl, window.t('console.catgirlSwitchTo'), newCatgirl);
                     console.log(window.t('console.currentFrontendCatgirl'), window.lanlan_config.lanlan_name);
                     if (typeof window.handleCatgirlSwitch === 'function') {
-                        window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+                        window.handleCatgirlSwitch(newCatgirl, oldCatgirl, {
+                            switchRevision: Number.isSafeInteger(response.switch_revision)
+                                ? response.switch_revision
+                                : 0
+                        });
                     }
 
                 // -------- focus_state (凝神 indicator) --------

@@ -25,7 +25,12 @@ import json
 import urllib.parse
 from fastapi import Response
 from ..shared_state import get_config_manager
-from ..characters_router import get_current_live2d_model
+from ..characters_router.live2d_models import resolve_live2d_model_snapshot
+from ..characters_router.crud import (
+    current_catgirl_snapshot_generation,
+    read_current_catgirl_snapshot,
+    wait_for_current_catgirl_snapshot_settlement,
+)
 from utils.config_manager import get_reserved
 from config import (
     AUTOSTART_CSRF_TOKEN,
@@ -240,11 +245,33 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
 
         # Retrieve character data.
         _config_manager = get_config_manager()
-        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
+        # The heavy lifecycle lock can span a remote memory reload. Pair each
+        # read with the committed identity without waiting for that operation.
+        for attempt in range(3):
+            snapshot_generation = current_catgirl_snapshot_generation()
+            data, her_name, current_switch_revision = await read_current_catgirl_snapshot(
+                _config_manager.aget_character_data, lambda value: value[1],
+            )
+            if data is None:
+                continue
+            master_name, observed_name, master_basic_config, lanlan_basic_config = data[:4]
+            if (lanlan_name and lanlan_name != her_name) or her_name == observed_name or her_name in lanlan_basic_config:
+                break
+            if attempt == 1:
+                # A rename may temporarily remove the committed entry from the
+                # file. Stay on this request until that exact mutation settles;
+                # a later unrelated writer must not extend this boot request.
+                await wait_for_current_catgirl_snapshot_settlement(snapshot_generation)
+        else:
+            # A provisional rename may have already removed A from disk. Do not
+            # present another character's assets as A before it actually commits.
+            return {"success": False, "lanlan_name": her_name, "switch_revision": current_switch_revision,
+                    "error": "Current character configuration is changing"}
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # Use lanlan_name when provided; otherwise use the current character.
         target_name = lanlan_name if lanlan_name else her_name
+        target_switch_revision = current_switch_revision if target_name == her_name else 0
         
         # Retrieve character configuration.
         catgirl_config = lanlan_basic_config.get(target_name, {})
@@ -316,16 +343,21 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             
             logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
         
-            model_response = await get_current_live2d_model(target_name, live2d_item_id)
-            # Extract JSONResponse content.
-            model_data = model_response.body.decode('utf-8')
-            model_json = json.loads(model_data)
+            # The catalog stays shared with the Live2D endpoint; its character
+            # binding comes from the same registry that supplied the revision.
+            # Looking up the name again can resolve a different profile after
+            # a delete or rename reuses it, even when the asset is not a fallback.
+            model_response = await resolve_live2d_model_snapshot(target_name, live2d_item_id, {
+                '当前猫娘': her_name, '猫娘': lanlan_basic_config,
+            })
+            model_json = json.loads(model_response.body.decode('utf-8'))
             model_info = model_json.get('model_info') or {}
             model_path = model_info.get('path', '')
         
         result = {
             "success": True,
             "lanlan_name": target_name,
+            "switch_revision": target_switch_revision,
             "master_name": master_name or "",
             "master_profile_name": str(master_basic_config.get('档案名', '') or '') if isinstance(master_basic_config, dict) else "",
             "master_nickname": get_character_nickname(master_basic_config),

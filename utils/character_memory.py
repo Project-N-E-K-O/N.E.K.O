@@ -275,7 +275,36 @@ MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
 # Language-sidecar and character identity operations share characters.json.
 # Reuse one transaction lock for those cooperating mutation paths so their
 # load -> mutate -> save snapshots cannot overtake each other.
-character_config_mutation_lock = asyncio.Lock()
+class _CharacterConfigMutationLock(asyncio.Lock):
+    # Even a rolled-back transaction may have temporarily changed the on-disk
+    # file. Non-blocking readers must be able to recognize a read that crossed it.
+    generation = 0
+    _settled: asyncio.Event | None = None
+
+    async def wait_for_release(self, expected_generation: int | None = None):
+        # A reader that observed generation N only needs to wait for that
+        # mutation. If N has already settled and another writer acquired the
+        # lock, do not make the reader join the unrelated writer's lifetime.
+        if expected_generation is not None and self.generation != expected_generation:
+            return
+        if not self.locked():
+            return
+        if self._settled is None:
+            self._settled = asyncio.Event()
+        settled = self._settled
+        if expected_generation is not None and self.generation != expected_generation:
+            return
+        await settled.wait()
+
+    def release(self):
+        super().release()
+        self.generation += 1
+        if self._settled is not None:
+            self._settled.set()
+            self._settled = None
+
+
+character_config_mutation_lock = _CharacterConfigMutationLock()
 
 
 def is_legacy_vector_store_dir(root: Path, name: str) -> bool:

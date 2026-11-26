@@ -485,17 +485,94 @@ async function autoInitMMDOnMainPage() {
         await window.pageConfigReady;
     }
 
+    if (window.__nekoPageModelConfigPending || window.appState?.isSwitchingCatgirl
+        || window.mmdManager?.currentModel?.mesh) return;
     const modelType = (window.lanlan_config?.model_type || '').toLowerCase();
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
     if (modelType !== 'live3d' || subType !== 'mmd') return;
 
+    // This boot is not a central character switch. Once a switch takes over,
+    // do not resume old settings/assets on the successor's (possibly reused) manager.
+    const catgirlName = window.lanlan_config?.lanlan_name;
+    const startupAttempt = window.appState?._switchAttemptCounter || 0;
+    const effectiveMmdPath = value => {
+        const raw = typeof value === 'string' ? value.trim() : '';
+        return raw && raw !== 'undefined' && raw !== 'null'
+            ? raw
+            : '/static/mmd/Miku/Miku.pmx';
+    };
+    const startupMmdPath = effectiveMmdPath(window.mmdModel);
+    let manager, loadToken;
+    let loadStarted = false;
+    let recoveryScheduled = false;
+    const currentStillTargetsMmd = () => window.lanlan_config?.lanlan_name === catgirlName
+        && (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d'
+        && (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
+    const currentMmdPath = () => effectiveMmdPath(window.mmdModel);
+    const rendererNeedsRecovery = () => window.appCharacter?.rolledBackRendererNeedsRecovery?.(catgirlName) === true;
+    const startupAttemptChanged = () => (window.appState?._switchAttemptCounter || 0) !== startupAttempt;
+    const resolvedMmdPath = value => window._mmdConvertPath ? window._mmdConvertPath(value) : value;
+    const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
+        && currentStillTargetsMmd()
+        && currentMmdPath() === startupMmdPath
+        && (!manager || (window.mmdManager === manager && !manager._isDisposed))
+        && (loadStarted
+            ? manager._activeLoadToken === loadToken
+            : !startupAttemptChanged()
+                || (!!manager && window.mmdManager === manager
+                    && !manager._isDisposed && !window.mmdManager?.currentModel?.mesh));
+    const scheduleCurrentMmdRecovery = () => {
+        if (recoveryScheduled || !currentStillTargetsMmd()) return;
+        recoveryScheduled = true;
+        const activeManager = window.mmdManager;
+        const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
+        const activeResolvedPath = activeManager?.currentModel?.url || '';
+        if (activeManager?.currentModel?.mesh && (activeResolvedPath !== desiredResolvedPath || rendererNeedsRecovery())) {
+            // A failed successor may already have mounted its mesh before a
+            // later step failed. Retire that wrong owner so the normal startup
+            // path is allowed to rebuild the rolled-back/current configuration.
+            try { activeManager.dispose?.(); } catch (error) {
+                console.warn('[MMD Init] 回滚恢复时销毁错误 MMD 实例失败:', error);
+            }
+            if (window.mmdManager === activeManager) window.mmdManager = null;
+        }
+        Promise.resolve().then(() => autoInitMMDOnMainPage()).catch(error => {
+            console.warn('[MMD Init] 回滚/路径刷新后的重新启动失败:', error);
+        });
+    };
+    const ownsStartupAfterSwitchSettlement = async () => {
+        const deadline = Date.now() + 46000;
+        while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        const owns = stillOwnsStartup();
+        if (!owns && currentStillTargetsMmd()) {
+            const activeManager = window.mmdManager;
+            const pathChanged = currentMmdPath() !== startupMmdPath;
+            const managerReplaced = !!manager && (activeManager !== manager || manager._isDisposed);
+            const startupManagerLost = !manager && startupAttemptChanged();
+            const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
+            const activeResolvedPath = activeManager?.currentModel?.url || '';
+            const wrongRenderer = rendererNeedsRecovery();
+            const activeAlreadyCurrent = !!activeManager?.currentModel?.mesh
+                && activeResolvedPath === desiredResolvedPath && !wrongRenderer;
+            if (!activeAlreadyCurrent && (pathChanged || managerReplaced || startupManagerLost || wrongRenderer)) {
+                // A same-name config refresh needs the new path; an MMD→MMD
+                // failed takeover may have disposed this startup's manager.
+                // Restart from current globals/settings instead of reviving the
+                // stale instance.
+                scheduleCurrentMmdRecovery();
+            }
+        }
+        return owns;
+    };
+
     const loadingSessionId = window._createMMDLoadingSessionId('mmd-main');
     window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
 
-    let mmdPath = window.mmdModel;
-    if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
+    let mmdPath = startupMmdPath;
+    if (!window.mmdModel || window.mmdModel === 'undefined' || window.mmdModel === 'null' || String(window.mmdModel).trim() === '') {
         console.warn('[MMD Init] MMD 模型路径为空，使用默认模型');
-        mmdPath = '/static/mmd/Miku/Miku.pmx';
     }
 
     console.log('[MMD Init] 检测到 MMD 模式，自动初始化并加载:', mmdPath);
@@ -516,15 +593,16 @@ async function autoInitMMDOnMainPage() {
 
     try {
         await window._waitForMMDModules(10000);
-        const initializedManager = await initMMDModel();
-        if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+        if (!await ownsStartupAfterSwitchSettlement()) return;
+        manager = await initMMDModel();
+        if (!await ownsStartupAfterSwitchSettlement()) return;
+        if (!manager) {
             const detail = (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败';
             window.MMDLoadingOverlay.fail(loadingSessionId, { detail });
             return;
         }
-        if (window.mmdManager) {
+        if (manager) {
             // 先获取保存的设置，预置影响加载路径的字段（如物理开关）
-            const catgirlName = window.lanlan_config?.lanlan_name;
             let savedSettings = null;
             if (catgirlName) {
                 try {
@@ -532,15 +610,16 @@ async function autoInitMMDOnMainPage() {
                     const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName) + '/mmd_settings');
                     if (settingsRes.ok) {
                         const settingsData = await settingsRes.json();
+                        if (!await ownsStartupAfterSwitchSettlement()) return;
                         if (settingsData.success && settingsData.settings) {
                             savedSettings = settingsData.settings;
                             // 预置物理开关和强度，避免 loadModel 时不必要的 Ammo 初始化，
                             // 且确保 warmup 使用正确的重力（防止 warmup 后变更重力导致拉丝）
                             if (savedSettings.physics?.enabled != null) {
-                                window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                                manager.enablePhysics = !!savedSettings.physics.enabled;
                             }
                             if (savedSettings.physics?.strength != null) {
-                                window.mmdManager.physicsStrength = Math.max(0.1, Math.min(2.0, savedSettings.physics.strength));
+                                manager.physicsStrength = Math.max(0.1, Math.min(2.0, savedSettings.physics.strength));
                             }
                         }
                     }
@@ -549,16 +628,23 @@ async function autoInitMMDOnMainPage() {
                 }
             }
 
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
-            await window.mmdManager.loadModel(resolvedPath, { loadingSessionId });
+            // Once this load starts, its own resulting mesh is not evidence of
+            // takeover. The manager's existing token already distinguishes it.
+            const loading = manager.loadModel(resolvedPath, { loadingSessionId });
+            loadToken = manager._activeLoadToken;
+            loadStarted = true;
+            await loading;
+            if (!await ownsStartupAfterSwitchSettlement()) return;
 
             // 加载完成后应用外观设置（光照/渲染/鼠标跟踪）
             // physics 已在 loadModel 前预置，不在此重复应用
             // （warmup 后变更重力或切换物理开关会导致拉丝/爆炸）
             if (savedSettings) {
                 const { physics, ...nonPhysicsSettings } = savedSettings;
-                window.mmdManager.applySettings(nonPhysicsSettings);
+                manager.applySettings(nonPhysicsSettings);
             }
 
             // 播放待机动作 & 启动轮换
@@ -567,6 +653,7 @@ async function autoInitMMDOnMainPage() {
                     const charRes = await fetch('/api/characters');
                     if (charRes.ok) {
                         const charData = await charRes.json();
+                        if (!await ownsStartupAfterSwitchSettlement()) return;
                         const catData = charData?.['猫娘']?.[catgirlName];
                         // 优先取列表，向前兼容单字符串
                         let idleList = catData?.mmd_idle_animations;
@@ -574,11 +661,12 @@ async function autoInitMMDOnMainPage() {
                             const single = catData?.mmd_idle_animation;
                             idleList = single ? [single] : [];
                         }
-                        if (idleList.length > 0 && window.mmdManager) {
+                        if (idleList.length > 0) {
                             try {
                                 window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
-                                await window.mmdManager.loadAnimation(idleList[0]);
-                                window.mmdManager.playAnimation();
+                                await manager.loadAnimation(idleList[0]);
+                                if (!await ownsStartupAfterSwitchSettlement()) return;
+                                manager.playAnimation();
                                 console.log('[MMD Init] 已播放待机动作:', idleList[0]);
                                 // 多于 1 个时启动轮换
                                 _startMmdIdleRotation(idleList);
@@ -592,18 +680,25 @@ async function autoInitMMDOnMainPage() {
                 }
             }
 
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
-            await window._waitForMMDRenderFrame(window.mmdManager);
+            await window._waitForMMDRenderFrame(manager);
+            if (!await ownsStartupAfterSwitchSettlement()) return;
             window.MMDLoadingOverlay.end(loadingSessionId);
             if (mmdCanvas) {
                 mmdCanvas.style.visibility = 'visible';
                 mmdCanvas.style.pointerEvents = 'auto';
             }
+            window.appCharacter?.confirmRestoredRenderer?.(catgirlName, 'mmd', manager.currentModel?.mesh);
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {
-        console.error('[MMD Init] MMD 自动加载失败:', e);
-        window.MMDLoadingOverlay.fail(loadingSessionId, { detail: e?.message || String(e) });
+        if (stillOwnsStartup()) {
+            console.error('[MMD Init] MMD 自动加载失败:', e);
+            window.MMDLoadingOverlay.fail(loadingSessionId, { detail: e?.message || String(e) });
+        }
+    } finally {
+        if (!stillOwnsStartup()) window.MMDLoadingOverlay.end(loadingSessionId);
     }
 }
 
@@ -794,14 +889,16 @@ async function initMMDModel() {
         window.mmdManager.dispose();
     }
 
-    window.mmdManager = new MMDManager();
-    await window.mmdManager.init('mmd-canvas', 'mmd-container');
+    const manager = window.mmdManager = new MMDManager();
+    await manager.init('mmd-canvas', 'mmd-container');
+    if (window.mmdManager !== manager || manager._isDisposed) return null;
 
     // 获取后端路径配置
     await fetchMMDConfig();
+    if (window.mmdManager !== manager || manager._isDisposed) return null;
 
     console.log('[MMD Init] MMD 管理器已初始化');
-    return window.mmdManager;
+    return manager;
 }
 
 // 导出到全局
