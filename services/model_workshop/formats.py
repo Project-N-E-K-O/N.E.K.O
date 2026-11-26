@@ -756,6 +756,9 @@ def _vrm(resources: _Resources) -> None:
             if slots:
                 _require(any("POSITION" in morph for morph in morphs), entry)
                 _require("POSITION" in primitive["attributes"], entry)
+                for semantic in ("NORMAL", "COLOR_0"):
+                    if any(semantic in morph for morph in morphs) and not all(semantic in morph for morph in morphs):
+                        _require(semantic in primitive["attributes"], entry)
                 position = accessors[primitive["attributes"]["POSITION"]]
                 for morph in morphs:
                     for semantic in ("POSITION", "NORMAL", "COLOR_0"):
@@ -1056,7 +1059,7 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
         covered += count
     _require(covered == indices, path)
     ik_work = 0
-    parents, ik_weights = [], {}
+    parents, ik_weights, grants = [], {}, {}
     bones = reader.count(minimum=26 + bone)
     for _ in range(bones):
         reader.text()
@@ -1067,7 +1070,12 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
         flags = reader.scalar("H")
         reader.skip(bone if flags & 1 else 12)
         if flags & (256 | 512):
-            reader.skip(bone + 4)
+            append = reader.index(bone)
+            # GrantSolver only reads the parent for non-local rotation grants.
+            if flags & 256 and not flags & 128:
+                _require(0 <= append < bones, path)
+            grants[len(parents) - 1] = append
+            reader.skip(4)
         if flags & 1024:
             reader.skip(12)
         if flags & 2048:
@@ -1091,6 +1099,16 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
                 if limited:
                     reader.skip(24)
     _mmd_ik_budget(resources, parents, ik_weights)
+    grant_children = {index: [] for index in grants}
+    for index, parent in grants.items():
+        if parent in grants:
+            grant_children[parent].append(index)
+    # buildGrants only walks roots; cyclic components and their children are ignored.
+    pending = [(index, 1) for index, parent in grants.items() if parent not in grants]
+    while pending:
+        index, depth = pending.pop()
+        _require(depth <= resources.limits.hierarchy_depth, path, "model_accessor_budget_exceeded")
+        pending.extend((child, depth + 1) for child in grant_children[index])
     # Each entry contains its typed index followed by the loader's fixed payload.
     morph_sizes = {0: morph + 4, 1: vertex + 12, 2: bone + 28,
                    3: vertex + 16, 4: vertex + 16, 5: vertex + 16,
