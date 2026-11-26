@@ -1745,6 +1745,40 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     expect(nekoOpenPath).toHaveBeenCalledWith({ path: `${dataRoot}/x.txt` })
   })
 
+  it('never forwards the host-only paths into the panel', async () => {
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({
+      state: { label: 'context-marker' },
+      paths: { plugin_dir: pluginRoot, data_dir: dataRoot },
+    })
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    const frame = await mountFrame(makeHostedSurface())
+    await flushPromises()
+    const srcdoc = frame.iframe()?.srcdoc || ''
+    expect(srcdoc).toContain('context-marker')
+    expect(srcdoc).not.toContain(dataRoot)
+    expect(srcdoc).not.toContain(pluginRoot)
+
+    frame.dispatchRequest({ type: 'neko-hosted-surface-request', requestId: 'refresh-1', method: 'refresh', payload: {} })
+    await flushPromises()
+    await flushPromises()
+    await frame.refreshContext()
+    await flushPromises()
+
+    const refreshed = frame.postMessage.mock.calls.find(([message]) => message?.requestId === 'refresh-1')?.[0]
+    expect(refreshed).toMatchObject({ ok: true, result: { state: { label: 'context-marker' } } })
+    expect(refreshed.result).not.toHaveProperty('paths')
+    const pushed = frame.postMessage.mock.calls.find(([message]) => message?.type === 'neko-hosted-surface-context')?.[0]
+    expect(pushed?.context).toMatchObject({ state: { label: 'context-marker' } })
+    expect(pushed.context).not.toHaveProperty('paths')
+    expect(JSON.stringify(frame.postMessage.mock.calls)).not.toContain(dataRoot)
+
+    // The host still has the scope after stripping it from the panel's copy.
+    frame.dispatchRequest(openPathMessage(`${dataRoot}/x.txt`))
+    await flushPromises()
+    await flushPromises()
+    expect(nekoOpenPath).toHaveBeenCalledWith({ path: `${dataRoot}/x.txt` })
+  })
+
   it('keeps the hosted-tsx panel sandbox without allow-modals', async () => {
     apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
     const frame = await mountFrame(makeHostedSurface())

@@ -132,3 +132,46 @@ def test_hosted_action_returns_normally_before_client_disconnect(
         "action_id": "status",
         "result": {"ok": True},
     }
+
+
+def test_hosted_context_route_reports_sdk_data_dir(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from plugin.core.state import state
+    from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+    from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui_manifest = normalize_plugin_ui_manifest(
+        {"plugin": {"ui": {"panel": [{"id": "main", "entry": "ui/panel.tsx"}]}}},
+        plugin_id="demo",
+    )
+    with state.acquire_plugins_write_lock():
+        previous = state.plugins.get("demo")
+        state.plugins["demo"] = {
+            "id": "demo",
+            "config_path": str(config_path),
+            "plugin_ui": plugin_ui_manifest,
+            "entries": [],
+        }
+    try:
+        app = FastAPI()
+        app.include_router(plugin_ui.router)
+        with TestClient(app) as client:
+            response = client.get("/plugin/demo/hosted-ui/context?kind=panel&id=main")
+    finally:
+        with state.acquire_plugins_write_lock():
+            if previous is None:
+                state.plugins.pop("demo", None)
+            else:
+                state.plugins["demo"] = previous
+
+    assert response.status_code == 200
+    paths = response.json()["paths"]
+    # Same helper the plugin's own data_path() uses.
+    assert paths["data_dir"] == str(resolve_plugin_data_dir(SimpleNamespace(plugin_id="demo")))
+    assert paths["plugin_dir"] == str(plugin_dir.resolve())

@@ -269,11 +269,16 @@ function openHostedConfirm(options: {
   })
 }
 
-function readOpenPathRoots(context: unknown): string[] {
-  const paths = (context as { paths?: unknown } | null | undefined)?.paths
-  if (!paths || typeof paths !== 'object') return []
-  const record = paths as Record<string, unknown>
-  return [record.plugin_dir, record.data_dir].filter((value): value is string => typeof value === 'string' && !!value.trim())
+// Split host-only fields off a context read. `paths` holds absolute local
+// directories (they include the OS user name); the host keeps them for the
+// open-path check and never forwards them into the panel iframe.
+function splitHostOnlyContext<T>(context: T): { context: T; roots: string[] } {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return { context, roots: [] }
+  const { paths, ...panelContext } = context as Record<string, unknown>
+  const record = paths && typeof paths === 'object' ? paths as Record<string, unknown> : {}
+  const roots = [record.plugin_dir, record.data_dir]
+    .filter((value): value is string => typeof value === 'string' && !!value.trim())
+  return { context: panelContext as T, roots }
 }
 
 function readContextInOrder() {
@@ -285,9 +290,9 @@ function readContextInOrder() {
     const controller = new AbortController()
     contextControllers.add(controller)
     try {
-      const context = await getPluginHostedSurfaceContext(pluginId, params, { signal: controller.signal, suppressErrorMessage: true })
-      if (componentMounted && generation === hostedRequestGeneration) openPathRoots = readOpenPathRoots(context)
-      return context
+      const split = splitHostOnlyContext(await getPluginHostedSurfaceContext(pluginId, params, { signal: controller.signal, suppressErrorMessage: true }))
+      if (componentMounted && generation === hostedRequestGeneration) openPathRoots = split.roots
+      return split.context
     } finally { contextControllers.delete(controller) }
   })
   contextQueue = task.catch(() => {})
@@ -579,9 +584,10 @@ async function loadHostedTsx() {
       document = (module as Awaited<ReturnType<typeof loadMarkdownRenderer>>).buildMarkdownDocument(response.source, title, requestLocale)
     } else {
       enterLoadPhase('context', loadId)
-      const context = await getPluginHostedSurfaceContext(pluginId, { kind: surface.kind, id: surface.id, locale: requestLocale }, requestConfig)
+      const split = splitHostOnlyContext(await getPluginHostedSurfaceContext(pluginId, { kind: surface.kind, id: surface.id, locale: requestLocale }, requestConfig))
       if (!isCurrent()) return
-      openPathRoots = readOpenPathRoots(context)
+      openPathRoots = split.roots
+      const context = split.context
       enterLoadPhase('render', loadId)
       document = (module as Awaited<ReturnType<typeof loadTsxRenderer>>).buildHostedTsxDocument({
         source: response.source, dependencies: response.dependencies, pluginId, surface, context, locale: requestLocale,
@@ -694,7 +700,7 @@ async function openHostedSurfacePath(rawPath: string) {
   if (roots === null) {
     // Markdown surfaces never load context, so read it on first use.
     try {
-      roots = readOpenPathRoots(await readContextInOrder())
+      await readContextInOrder()
     } catch (caught: unknown) {
       if (!componentMounted || generation !== hostedRequestGeneration) return
       ElMessage({
@@ -705,6 +711,8 @@ async function openHostedSurfacePath(rawPath: string) {
       return
     }
     if (!componentMounted || generation !== hostedRequestGeneration) return
+    // readContextInOrder stored the roots for this generation.
+    roots = openPathRoots ?? []
   }
   const target = resolvePathWithinRoots(rawPath, roots)
   if (!target) {
