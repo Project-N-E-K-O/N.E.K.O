@@ -1423,7 +1423,7 @@
     var nekoPowerAskBadgeTooltipShown = false;
 
     function nekoPowerAskWaitingLabel() {
-        return I.getI18nText('chat.nekoPowerAskWaitingBadge', '喵能力在等你回话，点开小球就能回答');
+        return I.getI18nText('chat.nekoPowerAskWaitingBadge', '喵能力在等你回话');
     }
 
     function ensureNekoPowerAskBadge(shell) {
@@ -1458,6 +1458,14 @@
         }
     };
 
+    function tellNekoPowerAskWaiting() {
+        var waiting = !!I.nekoPowerAskWaiting;
+        I.dispatchHostEvent('nekopower-ask-waiting-change', {
+            waiting: waiting,
+            label: waiting ? nekoPowerAskWaitingLabel() : ''
+        });
+    }
+
     // 作为 React 的宿主回调（z.function 校验返回值为 void），不能有返回值。
     I.handleNekoPowerAskWaitingChange = function handleNekoPowerAskWaitingChange(waiting) {
         var next = waiting === true;
@@ -1465,11 +1473,16 @@
         I.nekoPowerAskWaiting = next;
         I.syncNekoPowerAskBadge();
         if (!changed) return;
-        I.dispatchHostEvent('nekopower-ask-waiting-change', {
-            waiting: next,
-            label: next ? nekoPowerAskWaitingLabel() : ''
-        });
+        tellNekoPowerAskWaiting();
     };
+
+    // 换了界面语言：React 那边「有没有问话在等」没变就不会再报，悬停说明和给桌面壳的那句话
+    // 在这里按新语言重来一遍（事件照样叫 waiting-change，waiting 不变、label 换成新语言）。
+    window.addEventListener('localechange', function () {
+        if (!I.nekoPowerAskWaiting) return;
+        I.syncNekoPowerAskBadge();
+        tellNekoPowerAskWaiting();
+    });
 
     I.setCompactChatState = function setCompactChatState(nextCompactChatState) {
         var normalized = I.normalizeCompactChatState(nextCompactChatState);

@@ -886,7 +886,7 @@
         "reactWindowCompactShort": "Compacto",
         "reactWindowRestore": "Restaurar ventana de chat",
         "reactWindowRestoreShort": "Restaurar",
-        "nekoPowerAskWaitingBadge": "NekoPower espera tu respuesta. Abre la bola para contestar.",
+        "nekoPowerAskWaitingBadge": "NekoPower espera tu respuesta",
         "reactWindowMountFailed": "No se pudo montar la ventana de chat",
         "reactWindowLoadFailed": "No se pudieron cargar recursos de la ventana de chat",
         "reactWindowAriaLabel": "Ventana de chat de Neko",

@@ -59,6 +59,8 @@ function createHarness({ minimized = true, surfaceMode = 'minimized', withHeader
     const header = new FakeElement('div');
     if (withHeader) shell.appendChild(header);
     const emitted = [];
+    const windowListeners = new Map();
+    let waitingLabel = 'A question waits';
     const parts = {
         minimized,
         EVENT_PREFIX: 'react-chat-window:',
@@ -72,13 +74,16 @@ function createHarness({ minimized = true, surfaceMode = 'minimized', withHeader
         getCurrentCompactChatState: () => 'input',
         coerceChatSurfaceModeForHost: (mode) => mode,
         scheduleCompactMinimizeBallTracking() {},
-        getI18nText: (key, fallback) => (key === 'chat.nekoPowerAskWaitingBadge' ? 'A question waits' : fallback),
+        getI18nText: (key, fallback) => (key === 'chat.nekoPowerAskWaitingBadge' ? waitingLabel : fallback),
     };
     parts.dispatchHostEvent = (name, detail) => emitted.push({ type: parts.EVENT_PREFIX + name, detail });
     const window = {
         __appReactChatWindowParts: parts,
         reactChatWindowHost: {},
-        addEventListener() {},
+        addEventListener(type, listener) {
+            if (!windowListeners.has(type)) windowListeners.set(type, []);
+            windowListeners.get(type).push(listener);
+        },
         dispatchEvent() { return true; },
         setTimeout() { return 1; },
         clearTimeout() {},
@@ -100,6 +105,11 @@ function createHarness({ minimized = true, surfaceMode = 'minimized', withHeader
         emitted,
         badges: () => shell.all().filter((child) => child.className === 'react-chat-minimized-ask-badge'),
         setSurface(nextMinimized, nextMode) { parts.minimized = nextMinimized; surfaceMode = nextMode; },
+        // 界面语言换了：i18n 先换好文案，再在 window 上派发 localechange。
+        changeLocale(nextLabel) {
+            waitingLabel = nextLabel;
+            for (const listener of windowListeners.get('localechange') || []) listener({ type: 'localechange' });
+        },
     };
 }
 
@@ -159,6 +169,23 @@ test('the ball says what waits when hovered only while it is a ball', () => {
 
     h.setSurface(false, 'compact');
     h.parts.syncChatSurfaceModeUI();
+    assert.equal(h.header.hasAttribute('data-neko-tooltip'), false);
+});
+
+test('says it again in the new language when the language is changed while a question waits', () => {
+    const h = createHarness();
+    h.parts.handleNekoPowerAskWaitingChange(true);
+    h.changeLocale('喵能力在等你回话');
+    assert.equal(h.header.getAttribute('data-neko-tooltip'), '喵能力在等你回话');
+    assert.deepEqual(JSON.parse(JSON.stringify(h.emitted.at(-1))), {
+        type: 'react-chat-window:nekopower-ask-waiting-change',
+        detail: { waiting: true, label: '喵能力在等你回话' },
+    });
+    // Nothing waits: a change of language says nothing, and puts no hover text back.
+    h.parts.handleNekoPowerAskWaitingChange(false);
+    const told = h.emitted.length;
+    h.changeLocale('NekoPower is waiting');
+    assert.equal(h.emitted.length, told);
     assert.equal(h.header.hasAttribute('data-neko-tooltip'), false);
 });
 
