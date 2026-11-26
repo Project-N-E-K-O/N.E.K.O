@@ -3294,3 +3294,451 @@ def test_config_update_command_coordinates_with_in_flight_writes_and_profile_swi
 
     asyncio.run(_case_superseded_commit_inside_host_replace_preserves_host_guard(raises_in_cb=False))
     asyncio.run(_case_superseded_commit_inside_host_replace_preserves_host_guard(raises_in_cb=True))
+
+    # 19. Completed in-memory-only (persisted=False) and timed-out (persisted=None) writes inside a
+    #     rejecting config_change handler must rebase local patches onto the prechange snapshot.
+    async def _case_non_persisted_writes_rebase_on_host_rollback() -> None:
+        # 19a. Single & chained persisted=False update_own_config calls with replace=False and replace=True.
+        for replace in (False, True):
+            ctx = PluginContext(
+                plugin_id="demo",
+                config_path=tmp_path / f"demo_mem_rb_{replace}" / "plugin.toml",
+                logger=_FakeLogger(),  # type: ignore[arg-type]
+                status_queue=None,
+            )
+            instance = _RecordingInstance()
+            ctx._instance = instance
+            initial_cfg: dict[str, object] = {
+                "base": 1,
+                "keep": {"a": 1, "b": 2},
+                "drop_me": "keep",
+            }
+            ctx._set_effective_config_cache(initial_cfg)
+
+            orig_local_payload = ctx._get_local_config_payload
+
+            async def _disk_local_payload(
+                *,
+                payload_type: str = "config",
+                **kwargs: object,
+            ) -> dict[str, object]:
+                if (
+                    payload_type == "config"
+                    and isinstance(ctx._effective_config, dict)
+                    and not ctx._effective_config_uncertain
+                ):
+                    res = await orig_local_payload(payload_type="config", **kwargs)
+                    if isinstance(res, dict):
+                        return res
+                return {"plugin_id": "demo", "config": dict(initial_cfg)}
+
+            async def _non_persisted_rpc(**_kwargs: object) -> dict[str, object]:
+                return {"success": True, "persisted": False, "config": {}}
+
+            ctx._get_local_config_payload = _disk_local_payload  # type: ignore[method-assign]
+            ctx._send_request_and_wait_async = _non_persisted_rpc  # type: ignore[method-assign]
+            observed_reads: list[dict[str, object]] = []
+
+            async def _mem_writes_then_reject(
+                *,
+                _replace: bool = replace,
+                _ctx: PluginContext = ctx,
+                _reads: list[dict[str, object]] = observed_reads,
+                **_kwargs: object,
+            ) -> None:
+                res1 = await _ctx.update_own_config(
+                    {"timer": 3, "keep": {"c": 3}, "drop_me": "__DELETE__"}
+                )
+                assert res1["persisted"] is False
+                res2 = await _ctx.update_own_config({"timer2": 4, "keep": {"b": 20}})
+                assert res2["persisted"] is False
+                loaded = await _ctx.get_own_effective_config(None)
+                _reads.append(dict(loaded["config"]))
+                raise RuntimeError(f"reject after mem writes replace={_replace}")
+
+            sender = _FakeResponseSender()
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": f"req-mem-rb-{replace}",
+                    "config": {"host": 9, "keep": {"a": 99, "host_nested": True}},
+                    "mode": "temporary",
+                    "replace": replace,
+                },
+                ctx=ctx,
+                events_by_type={"lifecycle": {"config_change": _mem_writes_then_reject}},
+                plugin_id="demo",
+                res_sender=sender,
+                logger=_FakeLogger(),
+            )
+            assert observed_reads == [initial_cfg]
+            assert sender.payloads[-1]["success"] is False
+            assert f"reject after mem writes replace={replace}" in str(
+                sender.payloads[-1].get("error", "")
+            )
+            expected_rebased = {
+                "base": 1,
+                "keep": {"a": 1, "b": 20, "c": 3},
+                "timer": 3,
+                "timer2": 4,
+            }
+            assert ctx._effective_config == expected_rebased
+            assert ctx._effective_config_uncertain is False
+            assert instance.refreshed[-1] == expected_rebased
+            dumped = await ctx.get_own_config()
+            assert dumped["config"] == expected_rebased
+            assert ctx._host_config_change_pending == 0
+            assert not getattr(ctx, "_pending_host_config_owner_tokens", {})
+            assert not getattr(ctx, "_owner_token_host_change_root", {})
+            assert getattr(ctx, "_non_persisted_host_lineage", None) is None
+
+        # 19b. Uncached (had_cached=False) host replace=True + persisted=False write restores None.
+        ctx_uncached = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_uncached" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_uncached = _RecordingInstance()
+        ctx_uncached._instance = instance_uncached
+        ctx_uncached._set_effective_config_cache({"base": 1, "mode": "old"})
+        ctx_uncached._invalidate_effective_config_for_profile_refresh()
+        assert ctx_uncached._effective_config is None
+
+        async def _uncached_non_persisted_rpc(**_kwargs: object) -> dict[str, object]:
+            return {"success": True, "persisted": False, "config": {}}
+
+        ctx_uncached._send_request_and_wait_async = _uncached_non_persisted_rpc  # type: ignore[method-assign]
+
+        async def _uncached_mem_then_reject(**_kwargs: object) -> None:
+            res = await ctx_uncached.update_own_config({"timer": 3})
+            assert res["persisted"] is False
+            raise RuntimeError("reject uncached replace after mem write")
+
+        sender_uncached = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-rb-uncached",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": True,
+            },
+            ctx=ctx_uncached,
+            events_by_type={"lifecycle": {"config_change": _uncached_mem_then_reject}},
+            plugin_id="demo",
+            res_sender=sender_uncached,
+            logger=_FakeLogger(),
+        )
+        assert sender_uncached.payloads[-1]["success"] is False
+        assert "reject uncached replace after mem write" in str(
+            sender_uncached.payloads[-1].get("error", "")
+        )
+        assert ctx_uncached._effective_config is None
+        assert ctx_uncached._effective_config_uncertain is False
+        assert instance_uncached.refreshed[-1] == {"base": 1, "mode": "old"}
+        assert ctx_uncached._host_config_change_pending == 0
+        assert not getattr(ctx_uncached, "_pending_host_config_owner_tokens", {})
+        assert not getattr(ctx_uncached, "_owner_token_host_change_root", {})
+        assert getattr(ctx_uncached, "_non_persisted_host_lineage", None) is None
+
+        # 19c(i). Chained persisted=False write + subsequent failed update_own_config + rejecting callback.
+        ctx_chain_fail = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_chain_fail" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_chain_fail = _RecordingInstance()
+        ctx_chain_fail._instance = instance_chain_fail
+        ctx_chain_fail._set_effective_config_cache({"base": 1})
+
+        async def _base_local_payload(**_kwargs: object) -> dict[str, object]:
+            return {"plugin_id": "demo", "config": {"base": 1}}
+
+        async def _first_mem_second_fail_rpc(
+            *,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            updates = request_data["updates"]
+            assert isinstance(updates, dict)
+            if "bad" in updates:
+                raise RuntimeError("second write rpc failed")
+            return {"success": True, "persisted": False, "config": {}}
+
+        ctx_chain_fail._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_chain_fail._send_request_and_wait_async = _first_mem_second_fail_rpc  # type: ignore[method-assign]
+
+        async def _mem_then_fail_write_then_reject(**_kwargs: object) -> None:
+            res1 = await ctx_chain_fail.update_own_config({"timer": 3})
+            assert res1["persisted"] is False
+            with pytest.raises(RuntimeError, match="second write rpc failed"):
+                await ctx_chain_fail.update_own_config({"bad": 1})
+            raise RuntimeError("reject after second write fail")
+
+        sender_chain_fail = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-rb-chain-fail",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_chain_fail,
+            events_by_type={"lifecycle": {"config_change": _mem_then_fail_write_then_reject}},
+            plugin_id="demo",
+            res_sender=sender_chain_fail,
+            logger=_FakeLogger(),
+        )
+        assert sender_chain_fail.payloads[-1]["success"] is False
+        assert "reject after second write fail" in str(
+            sender_chain_fail.payloads[-1].get("error", "")
+        )
+        assert ctx_chain_fail._effective_config == {"base": 1, "timer": 3}
+        assert ctx_chain_fail._effective_config_uncertain is False
+        assert instance_chain_fail.refreshed[-1] == {"base": 1, "timer": 3}
+        assert getattr(ctx_chain_fail, "_non_persisted_host_lineage", None) is None
+
+        # 19c(ii). Chained persisted=False write + overlapping in-flight persisted=False write.
+        ctx_overlap = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_overlap" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_overlap = _RecordingInstance()
+        ctx_overlap._instance = instance_overlap
+        ctx_overlap._set_effective_config_cache({"base": 1})
+
+        second_write_started = asyncio.Event()
+        release_second_write = asyncio.Event()
+
+        async def _first_fast_second_slow_mem_rpc(
+            *,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            updates = request_data["updates"]
+            assert isinstance(updates, dict)
+            if "timer2" in updates:
+                second_write_started.set()
+                await release_second_write.wait()
+            return {"success": True, "persisted": False, "config": {}}
+
+        ctx_overlap._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_overlap._send_request_and_wait_async = _first_fast_second_slow_mem_rpc  # type: ignore[method-assign]
+        overlap_tasks: list[asyncio.Task[dict[str, object]]] = []
+
+        async def _mem_then_overlapping_mem_then_reject(**_kwargs: object) -> None:
+            res1 = await ctx_overlap.update_own_config({"timer": 3})
+            assert res1["persisted"] is False
+            write2 = asyncio.create_task(ctx_overlap.update_own_config({"timer2": 4}))
+            overlap_tasks.append(write2)
+            await _wait_for_checkpoint_or_task_failure(second_write_started, write2)
+            raise RuntimeError("reject while second mem write pending")
+
+        sender_overlap = _FakeResponseSender()
+        try:
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-mem-rb-overlap",
+                    "config": {"host": 9},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx_overlap,
+                events_by_type={
+                    "lifecycle": {"config_change": _mem_then_overlapping_mem_then_reject}
+                },
+                plugin_id="demo",
+                res_sender=sender_overlap,
+                logger=_FakeLogger(),
+            )
+            assert sender_overlap.payloads[-1]["success"] is False
+            assert "reject while second mem write pending" in str(
+                sender_overlap.payloads[-1].get("error", "")
+            )
+            release_second_write.set()
+            res2 = await overlap_tasks[0]
+            assert res2["persisted"] is False
+            assert res2["config"] == {"base": 1, "timer": 3, "timer2": 4}
+            assert ctx_overlap._effective_config == {"base": 1, "timer": 3, "timer2": 4}
+            assert ctx_overlap._effective_config_uncertain is False
+            assert instance_overlap.refreshed[-1] == {"base": 1, "timer": 3, "timer2": 4}
+            assert ctx_overlap._host_config_change_pending == 0
+            assert not getattr(ctx_overlap, "_pending_host_config_owner_tokens", {})
+            assert not getattr(ctx_overlap, "_owner_token_host_change_root", {})
+            assert getattr(ctx_overlap, "_non_persisted_host_lineage", None) is None
+        finally:
+            release_second_write.set()
+            for pending in overlap_tasks:
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(*overlap_tasks, return_exceptions=True)
+
+        # 19d(i). Completed TimeoutError (persisted=None) inside rejecting config_change rebases.
+        ctx_timeout = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_timeout" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_timeout = _RecordingInstance()
+        ctx_timeout._instance = instance_timeout
+        ctx_timeout._set_effective_config_cache({"base": 1})
+
+        async def _timeout_write_rpc(**_kwargs: object) -> dict[str, object]:
+            raise TimeoutError("write timed out")
+
+        ctx_timeout._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_timeout._send_request_and_wait_async = _timeout_write_rpc  # type: ignore[method-assign]
+
+        async def _timeout_then_reject(**_kwargs: object) -> None:
+            res = await ctx_timeout.update_own_config({"timer": 3})
+            assert res["persisted"] is None
+            raise RuntimeError("reject after timed out write")
+
+        sender_timeout = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-rb-timeout",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_timeout,
+            events_by_type={"lifecycle": {"config_change": _timeout_then_reject}},
+            plugin_id="demo",
+            res_sender=sender_timeout,
+            logger=_FakeLogger(),
+        )
+        assert sender_timeout.payloads[-1]["success"] is False
+        assert "reject after timed out write" in str(
+            sender_timeout.payloads[-1].get("error", "")
+        )
+        assert ctx_timeout._effective_config == {"base": 1, "timer": 3}
+        assert instance_timeout.refreshed[-1] == {"base": 1, "timer": 3}
+        assert ctx_timeout._effective_config_uncertain is True
+        post_to = await ctx_timeout.get_own_effective_config(None)
+        assert post_to["config"] == {"base": 1}
+        assert ctx_timeout._effective_config == {"base": 1}
+        assert ctx_timeout._effective_config_uncertain is False
+        assert instance_timeout.refreshed[-1] == {"base": 1}
+
+        # 19d(ii). In-flight write timing out after config_change already rejected also rebases.
+        ctx_to_overlap = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_timeout_overlap" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_to_overlap = _RecordingInstance()
+        ctx_to_overlap._instance = instance_to_overlap
+        ctx_to_overlap._set_effective_config_cache({"base": 1})
+
+        to_started = asyncio.Event()
+        release_to = asyncio.Event()
+
+        async def _slow_timeout_rpc(**_kwargs: object) -> dict[str, object]:
+            to_started.set()
+            await release_to.wait()
+            raise TimeoutError("overlap write timed out")
+
+        ctx_to_overlap._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_to_overlap._send_request_and_wait_async = _slow_timeout_rpc  # type: ignore[method-assign]
+        to_tasks: list[asyncio.Task[dict[str, object]]] = []
+
+        async def _spawn_slow_timeout_and_reject(**_kwargs: object) -> None:
+            wt = asyncio.create_task(ctx_to_overlap.update_own_config({"timer": 3}))
+            to_tasks.append(wt)
+            await _wait_for_checkpoint_or_task_failure(to_started, wt)
+            raise RuntimeError("reject before overlap timeout")
+
+        sender_to_overlap = _FakeResponseSender()
+        try:
+            await host_module._handle_config_update_command(
+                msg={
+                    "req_id": "req-mem-rb-to-overlap",
+                    "config": {"host": 9},
+                    "mode": "temporary",
+                    "replace": False,
+                },
+                ctx=ctx_to_overlap,
+                events_by_type={"lifecycle": {"config_change": _spawn_slow_timeout_and_reject}},
+                plugin_id="demo",
+                res_sender=sender_to_overlap,
+                logger=_FakeLogger(),
+            )
+            assert sender_to_overlap.payloads[-1]["success"] is False
+            assert "reject before overlap timeout" in str(
+                sender_to_overlap.payloads[-1].get("error", "")
+            )
+            release_to.set()
+            res_to = await to_tasks[0]
+            assert res_to["persisted"] is None
+            assert res_to["config"] == {"base": 1, "timer": 3}
+            assert ctx_to_overlap._effective_config == {"base": 1, "timer": 3}
+            assert instance_to_overlap.refreshed[-1] == {"base": 1, "timer": 3}
+            assert ctx_to_overlap._effective_config_uncertain is True
+        finally:
+            release_to.set()
+            for pending in to_tasks:
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(*to_tasks, return_exceptions=True)
+
+        # 19e. Control: persisted=False followed by persisted=True detaches lineage and preserves commit.
+        ctx_commit = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "demo_mem_rb_persisted_detach" / "plugin.toml",
+            logger=_FakeLogger(),  # type: ignore[arg-type]
+            status_queue=None,
+        )
+        instance_commit = _RecordingInstance()
+        ctx_commit._instance = instance_commit
+        ctx_commit._set_effective_config_cache({"base": 1})
+
+        async def _mem_then_persisted_rpc(
+            *,
+            request_data: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            updates = request_data["updates"]
+            assert isinstance(updates, dict)
+            if "timer" in updates:
+                return {"success": True, "persisted": False, "config": {}}
+            return {"success": True, "persisted": True, "config": {"base": 1, "saved": 9}}
+
+        ctx_commit._get_local_config_payload = _base_local_payload  # type: ignore[method-assign]
+        ctx_commit._send_request_and_wait_async = _mem_then_persisted_rpc  # type: ignore[method-assign]
+
+        async def _mem_then_commit_then_reject(**_kwargs: object) -> None:
+            res1 = await ctx_commit.update_own_config({"timer": 3})
+            assert res1["persisted"] is False
+            res2 = await ctx_commit.update_own_config({"saved": 9})
+            assert res2["persisted"] is True
+            raise RuntimeError("reject after persisted commit")
+
+        sender_commit = _FakeResponseSender()
+        await host_module._handle_config_update_command(
+            msg={
+                "req_id": "req-mem-rb-commit",
+                "config": {"host": 9},
+                "mode": "temporary",
+                "replace": False,
+            },
+            ctx=ctx_commit,
+            events_by_type={"lifecycle": {"config_change": _mem_then_commit_then_reject}},
+            plugin_id="demo",
+            res_sender=sender_commit,
+            logger=_FakeLogger(),
+        )
+        assert sender_commit.payloads[-1]["success"] is False
+        assert "reject after persisted commit" in str(
+            sender_commit.payloads[-1].get("error", "")
+        )
+        assert ctx_commit._effective_config == {"base": 1, "saved": 9}
+        assert ctx_commit._effective_config_uncertain is False
+        assert instance_commit.refreshed[-1] == {"base": 1, "saved": 9}
+        assert getattr(ctx_commit, "_non_persisted_host_lineage", None) is None
+
+    asyncio.run(_case_non_persisted_writes_rebase_on_host_rollback())

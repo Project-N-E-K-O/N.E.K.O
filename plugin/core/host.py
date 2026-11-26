@@ -1090,6 +1090,7 @@ async def _handle_config_update_command(
             begin_host_change = getattr(ctx, "_begin_host_config_change", None)
             end_host_change = getattr(ctx, "_end_host_config_change", None)
             host_change_owner_token = applied_owner_token if uses_context_publisher else None
+            handler_error: Exception | None = None
             try:
                 if not pending_host_change_registered and callable(begin_host_change):
                     if host_change_owner_token is not None:
@@ -1097,26 +1098,19 @@ async def _handle_config_update_command(
                     else:
                         begin_host_change()
                     pending_host_change_registered = True
-                try:
-                    with ctx._handler_scope("lifecycle.config_change"):
-                        result = config_change_handler(
-                            old_config=copy.deepcopy(old_config),
-                            new_config=copy.deepcopy(applied_config),
-                            mode=mode,
-                        )
-                        if inspect.isawaitable(result):
-                            await result
-                finally:
-                    if pending_host_change_registered and callable(end_host_change):
-                        pending_host_change_registered = False
-                        if host_change_owner_token is not None:
-                            end_host_change(host_change_owner_token)
-                        else:
-                            end_host_change()
+                with ctx._handler_scope("lifecycle.config_change"):
+                    result = config_change_handler(
+                        old_config=copy.deepcopy(old_config),
+                        new_config=copy.deepcopy(applied_config),
+                        mode=mode,
+                    )
+                    if inspect.isawaitable(result):
+                        await result
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
-                # Restore prechange configuration.
+                handler_error = e
+                # Restore prechange configuration while pending host guard and lineage remain active.
                 if uses_context_publisher:
                     rolled_back = rollback_for_host(
                         expected_owner_token=applied_owner_token,
@@ -1140,7 +1134,15 @@ async def _handle_config_update_command(
                     if callable(refresh_runtime_config) and isinstance(old_config, dict):
                         refresh_runtime_config(old_config)
                     logger.debug("[Plugin Process] Config rolled back after handler failure")
-                ret_payload["error"] = f"config_change handler failed: {e}"
+            finally:
+                if pending_host_change_registered and callable(end_host_change):
+                    pending_host_change_registered = False
+                    if host_change_owner_token is not None:
+                        end_host_change(host_change_owner_token)
+                    else:
+                        end_host_change()
+            if handler_error is not None:
+                ret_payload["error"] = f"config_change handler failed: {handler_error}"
                 res_sender.put(ret_payload, timeout=10.0)
                 return
         
