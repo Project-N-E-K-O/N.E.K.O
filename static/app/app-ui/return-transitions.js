@@ -27,7 +27,28 @@
     let idleReturnBallDesktopDragStatePending = null;
     I.pendingPngtuberReturnConfig = null;
 
+    I.shouldAnimateModelCatTransition = function shouldAnimateModelCatTransition() {
+        const bridge = window.nekoPetPowerSave;
+        try {
+            return !(bridge && typeof bridge.isEnabled === 'function' && bridge.isEnabled()
+                && typeof bridge.prepareFormChange === 'function');
+        } catch (_) {
+            return true;
+        }
+    };
+
+    I.prepareModelCatForm = async function prepareModelCatForm(target) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        try {
+            await window.nekoPetPowerSave.prepareFormChange(target);
+        } catch (error) {
+            console.warn('[App] prepare model/cat window failed:', error);
+        }
+    };
+
     function resolveModelReturnEnter(reason) {
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.removeAttribute === 'function') container.removeAttribute('data-neko-model-form-pending');
         const resolve = window._nekoModelReturnEnterResolve;
         window._nekoModelReturnEnterResolve = null;
         window._nekoModelReturnEnterPromise = null;
@@ -665,6 +686,14 @@
 
     I.playModelGoodbyeExit = function playModelGoodbyeExit(container, rect) {
         if (!container) return;
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.visibility = 'hidden';
+            container.style.transform = 'none';
+            container.classList.add('minimized');
+            return;
+        }
         if (container.getAttribute('data-neko-model-goodbye-exiting') === 'true') {
             applyModelGoodbyeVisualFade(container, { restart: false });
             return;
@@ -690,6 +719,26 @@
 
     I.playModelReturnEnter = function playModelReturnEnter(container, rect) {
         if (!container || !rect) return false;
+        if (!I.shouldAnimateModelCatTransition()) {
+            I.cancelModelReturnEnter('replaced');
+            const enterPromise = startModelReturnEnterWait(container);
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.transform = 'none';
+            container.setAttribute('data-neko-model-form-pending', 'true');
+            I.prepareModelCatForm('model').then(() => {
+                if (window._nekoModelReturnEnterPromise !== enterPromise) return;
+                if (container.isConnected) container.style.removeProperty('opacity');
+                resolveModelReturnEnter('power-save');
+                if (container.isConnected) {
+                    // 先提交无动画的最终样式，再交还 hover/锁定淡化等既有 CSS。
+                    void container.offsetWidth;
+                    container.style.removeProperty('transition');
+                    container.style.removeProperty('transform');
+                }
+            });
+            return true;
+        }
         setModelExitTransformOrigin(container, rect);
         I.cancelModelReturnEnter('replaced');
         const enterPromise = startModelReturnEnterWait(container);
@@ -907,6 +956,18 @@
                 blocked: true,
                 direction: I.nekoModelCatTransitionActive ? I.nekoModelCatTransitionActive.direction : direction
             });
+        }
+        if (!I.shouldAnimateModelCatTransition()) {
+            if (container && direction === 'cat-to-model') {
+                container.style.transition = 'none';
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+            }
+            const ready = direction === 'model-to-cat' ? I.prepareModelCatForm('cat') : Promise.resolve();
+            return ready.then(() => {
+                if (isNekoModelCatTransitionTokenCurrent(token) && onBeforeOverlayCleanup) onBeforeOverlayCleanup();
+                return { completed: true, direction, animationSkipped: true };
+            }).finally(() => I.releaseNekoModelCatTransition(token));
         }
         const rect = normalizeNekoTransitionRect(anchorRect, container, coverRect);
         const src = buildNekoModelCatTransitionAssetUrl(token);
@@ -1367,6 +1428,10 @@
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.transform = 'none';
+        }
         container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;

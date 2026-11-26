@@ -1772,7 +1772,7 @@
                     pngtuberContainer.style.setProperty('display', 'none', 'important');
                 }
                 I.completeGoodbyeResourceSuspend(goodbyeResourceToken);
-            }, I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS);
+            }, I.shouldAnimateModelCatTransition() ? I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS : 0);
 
             // 隐藏所有浮动按钮和锁按钮
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
@@ -1964,6 +1964,13 @@
                         activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
                     ) {
                         if (I.getReturnButtonAppearance(activeReturnButtonContainer) === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+                            if (!I.shouldAnimateModelCatTransition()) {
+                                I.prepareModelCatForm('cat').then(() => {
+                                    I.releaseNekoModelCatTransition(goodbyeTransitionToken);
+                                    revealActiveReturnBall('return-ball-power-save');
+                                });
+                                return;
+                            }
                             I.releaseNekoModelCatTransition(goodbyeTransitionToken);
                             revealActiveReturnBall('return-ball-legacy-ball');
                             return;
@@ -2325,6 +2332,10 @@
             if (!isCurrentReturn()) return;
             if (modelDisplayReady === false) {
                 return;
+            }
+            if (!I.shouldAnimateModelCatTransition() && window._nekoModelReturnEnterPromise) {
+                await window._nekoModelReturnEnterPromise;
+                if (!isCurrentReturn()) return;
             }
 
             await I.settleReturnedModelBounds(returnModelWasMoved, { isCurrentSettlement: isCurrentReturn });

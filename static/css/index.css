@@ -459,6 +459,17 @@ button * {
 }
 
 /* 看板娘判定框-最小化状态 */
+/* 省算力形态切换：窗口坐标准备完成前不显示新模型，子 canvas 不播放回归淡入。 */
+[data-neko-model-form-pending="true"] {
+    opacity: 0 !important;
+    transition: none !important;
+    transform: none !important;
+}
+[data-neko-model-form-pending="true"] canvas {
+    opacity: 1 !important;
+    transition: none !important;
+}
+
 #live2d-container.minimized {
     transform: scale(0.38) translateZ(0);
     /* 原处缩小渐隐（配合模型/猫切换遮罩） */
