@@ -79,17 +79,6 @@ from utils.screen_comment_guard import screen_guard_enabled, screen_history_rewr
 from ._shared import logger
 
 
-def _no_nekopower_note(agent_flags) -> dict:
-    """What a session's opening adds when NekoPower is not fully on: off, or on with no capability.
-
-    With only the master switch on, the panel looks switched on, so the
-    sentence names the capability switches as well.
-    """
-    if (agent_flags or {}).get("agent_enabled", False):
-        return SESSION_INIT_NEKOPOWER_NO_CAPABILITY
-    return SESSION_INIT_NO_NEKOPOWER
-
-
 class NotifyMixin:
     """Notification and prompt-assembly methods (see module docstring)."""
 
@@ -250,10 +239,15 @@ class NotifyMixin:
             )
         else:
             # Without NekoPower fully on there is no task tool and no turn check:
-            # say so in the opening, or she promises what nothing will do.
+            # say so in the opening, or she promises what nothing will do. With
+            # only the master switch on the panel looks switched on, so that
+            # sentence names the capability switches. (Read off ``self`` loosely:
+            # some callers hand in a bare namespace without ``agent_flags``.)
+            master_on = bool((getattr(self, "agent_flags", None) or {}).get("agent_enabled", False))
+            no_nekopower_note = SESSION_INIT_NEKOPOWER_NO_CAPABILITY if master_on else SESSION_INIT_NO_NEKOPOWER
             prompt = (
                 _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
-                + _loc(_no_nekopower_note(getattr(self, "agent_flags", None)), _lang)
+                + _loc(no_nekopower_note, _lang)
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():
