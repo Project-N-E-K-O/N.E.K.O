@@ -2531,3 +2531,25 @@ def test_unix_socket_from_a_literal_import_is_local(tmp_path):
 def test_datagram_endpoints_with_unpacked_or_reflected_calls(tmp_path, call, basis):
     source = f"import asyncio, socket\nasync def f(addresses):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
     assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+
+@pytest.mark.parametrize(
+    "cycle",
+    [
+        "b = a.Path\na = b.cwd\n",
+        "b = a.Path\nc = b.x\na = c.cwd\n",
+        "def f():\n    b = a.Path\n    a = b.cwd\n",
+    ],
+)
+def test_indirect_attribute_alias_cycles_do_not_stop_the_scan(tmp_path, cycle):
+    # On main these grew every round until the length limit (partial).
+    report = _scan(tmp_path, "import pathlib as a\nimport subprocess\n" + cycle + "subprocess.run(['ls'])\n")
+    assert report["status"] == "completed"
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+def test_alias_cycles_that_settle_resolve_as_before(tmp_path):
+    report = _scan(tmp_path, "class P:\n    def go(self):\n        a = b\n        b = a\n        a.push_message()\n")
+    assert report["capabilities"] == ["messages.push"]
+    assert [row["method"] for row in report["evidence"]] == ["b.push_message"]

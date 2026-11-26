@@ -955,8 +955,12 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         resolved_bindings[key] = binding
         bindings[key] = binding
 
+    # What each assigned name was bound to before propagation; see below.
+    before = {key: bindings.get(key) for key in counts}
+    rounds = 0
     previous = None
     while True:
+        rounds += 1
         resolved_bindings = {}
         for key, node in assignments:
             walker.check()
@@ -980,6 +984,18 @@ def _propagate_assignments(assignments, bindings, walker, uncertain_names=frozen
         # spelling too, or an alias chain could stop one round early.
         state = {key: (value, getattr(value[0], "legacy", None)) for key, value in resolved_bindings.items()}
         if state == previous or not resolved_bindings:
+            return
+        if rounds > 2 * len(assignments) + 2:
+            # An alias chain settles within one round per assignment. Still
+            # changing after that is an indirect cycle that grows every round
+            # (import pathlib as a; b = a.Path; a = b.cwd); its names keep
+            # what they were bound to before.
+            for key, value in state.items():
+                if previous is None or previous.get(key) != value:
+                    if before[key] is None:
+                        bindings.pop(key, None)
+                    else:
+                        bindings[key] = before[key]
             return
         previous = state
 
