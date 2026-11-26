@@ -44,6 +44,7 @@ class FormatLimits:
     vrm_instanced_vertices: int = 5000000
     live2d_physics_work: int = 3000000
     mmd_morph_bytes: int = 256 * 1024 * 1024
+    mmd_tga_bytes: int = 512 * 1024 * 1024
     mmd_morph_work: int = 10000000
     mmd_ik_iterations: int = 4096
     mmd_ik_work: int = 100000
@@ -337,10 +338,11 @@ def _auxiliary(data: dict, path: str, *, kind: str = "", limits: FormatLimits) -
     return True
 
 
-def _image(resources: _Resources, path: str) -> None:
-    """Reject obvious binary masquerades; decoder/rendering remains a later test."""
+def _image(resources: _Resources, path: str) -> int:
+    """Check the image signature and return the TGA decoder allocation in bytes."""
     header = resources.prefix(path, 18)
     lower = path.lower()
+    tga_bytes = 0
     if lower.endswith(".png"):
         valid = header.startswith(b"\x89PNG\r\n\x1a\n")
     elif lower.endswith((".jpg", ".jpeg")):
@@ -351,12 +353,16 @@ def _image(resources: _Resources, path: str) -> None:
         # Sphere maps keep their MMD suffix while the browser detects the image.
         valid = header.startswith((b"BM", b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"))
     elif lower.endswith(".tga"):
-        valid = len(header) == 18 and header[2] in (1, 2, 3, 9, 10, 11)
-        valid = valid and int.from_bytes(header[12:14], "little") > 0 and int.from_bytes(header[14:16], "little") > 0
-        valid = valid and header[16] in (8, 16, 24, 32)
+        _require(len(header) == 18, path, "invalid_model_image")
+        width, height = struct.unpack_from("<HH", header, 12)
+        kind, bits = header[2], header[16]
+        valid = width > 0 and height > 0 and kind in (1, 2, 3, 9, 10, 11) and bits in (8, 16, 24, 32)
+        # TGALoader expands each pixel to RGBA and RLE needs a second pixel buffer.
+        tga_bytes = width * height * (4 + (bits // 8 if kind in (9, 10, 11) else 0))
     else:
         valid = header.startswith(b"RIFF") and header[8:12] == b"WEBP"
     _require(valid, path, "invalid_model_image")
+    return tga_bytes
 
 
 def _live2d(resources: _Resources) -> None:
@@ -846,6 +852,7 @@ def _vrm(resources: _Resources) -> None:
                 expected *= counts[0]
             _require(output["count"] == expected, entry)
     instanced_vertices = 0
+    skinned_meshes = set()
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
@@ -884,8 +891,19 @@ def _vrm(resources: _Resources) -> None:
                 allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "mesh" in node:
+            if "skin" in node:
+                skinned_meshes.add(node["mesh"])
             instanced_vertices += instances * mesh_draw_counts[node["mesh"]]
             _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
+    # GLTFLoader marks the mesh definition once and normalizes every primitive.
+    for mesh_index in skinned_meshes:
+        for primitive in meshes[mesh_index]["primitives"]:
+            attrs = primitive["attributes"]
+            _require("JOINTS_0" in attrs and "WEIGHTS_0" in attrs, entry)
+            joints, weights = accessors[attrs["JOINTS_0"]], accessors[attrs["WEIGHTS_0"]]
+            _require(joints["type"] == weights["type"] == "VEC4" and joints["count"] == weights["count"], entry)
+            if "POSITION" in attrs:
+                _require(joints["count"] == accessors[attrs["POSITION"]]["count"], entry)
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors, heights = [0] * len(nodes), [1] * len(nodes)
     for start in range(len(nodes)):
@@ -1267,7 +1285,9 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
     # PmdReader appends duplicate IK children in original bone order. Its later
     # reordering remaps both parents and links by identity, preserving subtree
     # sizes and weights; calculate in that identity space before the permutation.
-    for owner, count in sorted(ik_owners.items()):
+    owner_order = sorted(ik_owners)
+    for owner in owner_order:
+        count = ik_owners[owner]
         for _ in range(count - 1):
             if owner in grants:
                 grants[len(parents)] = grants[owner]
@@ -1296,7 +1316,16 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             reader.skip(276 + bones * 20 + max(0, morphs - 1) * 20 + frames * 50)
         textures = [reader.text(100) for _ in range(10)]
         if reader.offset < reader.size:
-            reader.skip(reader.count("I", 83) * 83)
+            # In ordinary order negative indices use bone zero. The optional
+            # IK reorder remaps even negative indices, dropping that fallback.
+            reordered = list(ik_owners) != owner_order
+            for _ in range(reader.count("I", 83)):
+                reader.skip(20)
+                rigid_bone = reader.scalar("h")
+                if not reordered:
+                    rigid_bone = max(0, rigid_bone)
+                _require(0 <= rigid_bone < len(parents), path)
+                reader.skip(61)
             reader.skip(reader.count("I", 124) * 124)
     # static/libs/three-mmd.module.js PmdReader.ParseAsync/_ConvertMaterials leaves a
     # missing toon table empty; it supplies no implicit shared-toon fallback.
@@ -1334,9 +1363,11 @@ def _mmd(resources: _Resources) -> None:
         reader = _MmdReader(handle, resources.files[entry].byte_size, entry, resources.limits)
         (_pmx if entry.endswith(".pmx") else _pmd)(resources, reader)
         _require(reader.offset == reader.size, entry, "unsupported_model_structure")
+    tga_allocated = 0
     for name in resources.files:
         if name.lower().endswith(_MMD_IMAGES):
-            _image(resources, name)
+            tga_allocated += _image(resources, name)
+            _require(tga_allocated <= resources.limits.mmd_tga_bytes, name, "model_accessor_budget_exceeded")
 
 
 def validate_mmd_bundle(path, *, limits: BundleLimits = BundleLimits(),

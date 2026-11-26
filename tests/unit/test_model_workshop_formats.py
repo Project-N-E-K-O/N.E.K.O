@@ -841,6 +841,29 @@ def test_rejects_invalid_glb_framing_even_with_valid_outer_hashes(tmp_path, dama
         validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("missing", [None, "JOINTS_0", "WEIGHTS_0"])
+def test_skinned_vrm_requires_joint_and_weight_attributes(tmp_path, missing):
+    def graph(data):
+        data["accessors"] = [
+            {"componentType": 5126, "count": 3, "type": "VEC3"},
+            {"componentType": 5121, "count": 3, "type": "VEC4"},
+            {"componentType": 5126, "count": 3, "type": "VEC4"},
+        ]
+        attributes = {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}
+        if missing:
+            del attributes[missing]
+        data["meshes"] = [{"primitives": [{"attributes": attributes}]}]
+        data["nodes"][0].update(mesh=0, skin=0)
+        data["skins"] = [{"joints": [0]}]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if missing:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+    else:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+
+
 def test_vrm_extra_documentation_is_rejected_instead_of_discarded(tmp_path):
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(), "LICENSE.txt": b"Read me"})
     with pytest.raises(ModelFormatError, match="unsupported_model_resource"):
@@ -883,6 +906,17 @@ def pmd_bytes(texture="../Textures/face.png", *, toon=-1, toon_path=None, toon_p
         assert len(paths) == 10
         raw += b"\x00" + b"".join(fixed(value, 100) for value in paths) + struct.pack("<2I", 0, 0)
     return raw
+
+
+@pytest.mark.parametrize("image_type,required", [(2, 16), (10, 28)])
+def test_mmd_tga_decoded_storage_has_a_budget(tmp_path, image_type, required):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, image_type, 0, 0, 0, 0, 0, 2, 2, 24, 0)
+    pixels = bytes(12) if image_type == 2 else b"\x83\x00\x00\x00"
+    files = {"Avatar.pmx": pmx_bytes("face.tga"), "face.tga": header + pixels}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required))
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required - 1))
 
 
 @pytest.mark.parametrize("kind", ["pmx", "pmx21", "pmd"])
@@ -1037,8 +1071,15 @@ def vrm_animation_output(data, target, shape, component, normalized, count, keys
     data['animations'][0]['samplers'][0]['interpolation'] = interpolation
     data['animations'][0]['channels'][0]['target']['path'] = target
     if target == 'weights':
-        data['accessors'].append({'componentType': 5126, 'count': 1, 'type': 'VEC3'})
-        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 3}, 'targets': [{'POSITION': 3}, {'POSITION': 3}]}]}]
+        data['accessors'].extend([
+            {'componentType': 5126, 'count': 1, 'type': 'VEC3'},
+            {'componentType': 5121, 'count': 1, 'type': 'VEC4'},
+            {'componentType': 5126, 'count': 1, 'type': 'VEC4'},
+        ])
+        data['meshes'] = [{'primitives': [{
+            'attributes': {'POSITION': 3, 'JOINTS_0': 4, 'WEIGHTS_0': 5},
+            'targets': [{'POSITION': 3}, {'POSITION': 3}],
+        }]}]
         data['nodes'][0]['mesh'] = 0
 
 
@@ -1464,7 +1505,7 @@ def test_padded_interleaved_matrix_attributes_share_the_conversion_clone(tmp_pat
 
 def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=1,
                       parents=None, link=2, morph_records=None, owners=None, materials=0, grants=None, append_flag=256,
-                      effector=1):
+                      effector=1, rigid_bone=None):
     """Small complete layouts with controllable loader work, no external resources."""
     parents = list(parents) if parents is not None else [-1] * max(3, len(iterations))
     grants = grants or {}
@@ -1480,7 +1521,10 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
             raw += struct.pack('<HHBHf', owner, effector, links, count, 1.0) + struct.pack('<H', link) * links
         raw += struct.pack('<H', len(morph_kinds) + 1)
         raw += bytes(25) + (bytes(20) + struct.pack('<IB', 0, 1)) * len(morph_kinds)
-        return raw + struct.pack('<2BI', 0, 0, 0)
+        raw += struct.pack('<2BI', 0, 0, 0)
+        if rigid_bone is not None:
+            raw += bytes(1001) + struct.pack("<I20xh61xI", 1, rigid_bone, 0)
+        return raw
     def text(value):
         encoded = value.encode(); return struct.pack('<i', len(encoded)) + encoded
     bone_width = 2 if max([len(parents), *parents, *grants.values()]) > 127 else 1
@@ -1571,6 +1615,20 @@ def test_mmd_ik_effectors_match_the_loader_bone_slots(tmp_path, kind, effector, 
     else:
         with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
             validate_model_bundle(path)
+
+
+@pytest.mark.parametrize("bone,owners,accepted", [
+    (2, None, True), (3, None, False), (-1, None, True),
+    (3, [0, 0], True), (4, [0, 0], False), (-1, [1, 0], False),
+])
+def test_pmd_rigid_body_bones_match_converted_slots(tmp_path, bone, owners, accepted):
+    raw = mmd_runtime_bytes("pmd", rigid_bone=bone, owners=owners, iterations=[1] * len(owners or ()))
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmd", files={"Avatar.pmd": raw})
+    if accepted:
+        assert validate_mmd_bundle(path).model_format == "mmd"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_mmd_bundle(path)
 
 
 @pytest.mark.parametrize('iterations', [-1, 2147483647])
