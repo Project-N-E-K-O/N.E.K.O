@@ -570,7 +570,22 @@ def delete_profile_config(
     config_path = get_plugin_config_path(plugin_id)
     with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
-        if not profiles_path.exists():
+        data = (
+            _load_profiles_file_for_update(
+                plugin_id=plugin_id,
+                profiles_path=profiles_path,
+                op="delete",
+            )
+            if profiles_path.exists()
+            else {}
+        )
+        had_profiles_table = isinstance(data.get("config_profiles"), dict)
+        _seed_profiles_config_if_missing(
+            data,
+            plugin_id=plugin_id,
+            config_path=config_path,
+        )
+        if not isinstance(data.get("config_profiles"), dict):
             return {
                 "plugin_id": plugin_id,
                 "profile": profile_name,
@@ -579,11 +594,6 @@ def delete_profile_config(
                 "affected_active": False,
             }
 
-        data = _load_profiles_file_for_update(
-            plugin_id=plugin_id,
-            profiles_path=profiles_path,
-            op="delete",
-        )
         profiles_cfg, files_map = _normalize_profiles_config(data)
         previous_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
         previous_active_entry = (
@@ -597,9 +607,20 @@ def delete_profile_config(
             del files_map[profile_name]
             removed = True
 
+        active_cleared = False
         active_obj = profiles_cfg.get("active")
         if isinstance(active_obj, str) and active_obj == profile_name:
             profiles_cfg.pop("active", None)
+            active_cleared = True
+
+        if not had_profiles_table and not removed and not active_cleared:
+            return {
+                "plugin_id": plugin_id,
+                "profile": profile_name,
+                "removed": False,
+                "active_profile": previous_active,
+                "affected_active": False,
+            }
 
         new_active = _resolve_active_profile_name(plugin_id, profiles_cfg)
         new_active_entry = (
@@ -651,14 +672,22 @@ def set_active_profile(
     config_path = get_plugin_config_path(plugin_id)
     with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
-        if not profiles_path.exists():
-            raise HTTPException(status_code=404, detail="profiles.toml not found")
-
-        data = _load_profiles_file_for_update(
-            plugin_id=plugin_id,
-            profiles_path=profiles_path,
-            op="set active",
+        data = (
+            _load_profiles_file_for_update(
+                plugin_id=plugin_id,
+                profiles_path=profiles_path,
+                op="set active",
+            )
+            if profiles_path.exists()
+            else {}
         )
+        _seed_profiles_config_if_missing(
+            data,
+            plugin_id=plugin_id,
+            config_path=config_path,
+        )
+        if not isinstance(data.get("config_profiles"), dict):
+            raise HTTPException(status_code=404, detail="profiles.toml not found")
         profiles_cfg, files_map = _normalize_profiles_config(data)
         if profile_name not in files_map:
             raise HTTPException(status_code=404, detail="profile not found in config_profiles.files")

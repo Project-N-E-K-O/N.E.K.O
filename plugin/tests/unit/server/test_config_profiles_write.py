@@ -798,3 +798,130 @@ def test_upsert_profile_config_seeds_manifest_registrations_when_profiles_toml_m
         )
         assert home_loaded["profile"]["exists"] is True
         assert home_loaded["config"] == {"feature": {"x": 1}}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("with_extra_profiles_toml", [False, True])
+def test_set_active_and_delete_seed_manifest_profiles_and_avoid_noop_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_extra_profiles_toml: bool,
+) -> None:
+    import tomllib
+    from fastapi import HTTPException
+    from plugin.server.infrastructure.config_profiles import get_profile_config, get_profiles_state
+
+    # 1. set_active_profile on manifest-only declarations: unknown raises 404 without writing; valid activates and seeds.
+    activate_dir = tmp_path / f"activate_{with_extra_profiles_toml}"
+    (activate_dir / "profiles").mkdir(parents=True)
+    activate_cfg = activate_dir / "plugin.toml"
+    activate_cfg.write_text(
+        "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+        "[plugin.config_profiles.files]\nhome='profiles/home.toml'\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    (activate_dir / "profiles" / "home.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    (activate_dir / "profiles" / "work.toml").write_text("[feature]\nx=2\n", encoding="utf-8")
+    activate_profiles = activate_dir / "profiles.toml"
+    if with_extra_profiles_toml:
+        activate_profiles.write_text("[extra]\nnote='keep'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid, p=activate_cfg: p)
+
+    with pytest.raises(HTTPException) as exc_unknown:
+        module.set_active_profile(plugin_id="demo", profile_name="missing")
+    assert exc_unknown.value.status_code == 404
+    if with_extra_profiles_toml:
+        assert "config_profiles" not in tomllib.loads(activate_profiles.read_text(encoding="utf-8"))
+    else:
+        assert not activate_profiles.exists()
+
+    activated = module.set_active_profile(plugin_id="demo", profile_name="work")
+    assert activated["config_profiles"]["active"] == "work"
+    persisted_activate = tomllib.loads(activate_profiles.read_text(encoding="utf-8"))
+    assert persisted_activate["config_profiles"]["active"] == "work"
+    assert set(persisted_activate["config_profiles"]["files"]) == {"home", "work"}
+    if with_extra_profiles_toml:
+        assert persisted_activate["extra"] == {"note": "keep"}
+
+    # 2. When neither profiles.toml nor manifest [plugin.config_profiles] exists, set_active_profile still raises 404.
+    bare_dir = tmp_path / f"bare_{with_extra_profiles_toml}"
+    bare_dir.mkdir(parents=True)
+    bare_cfg = bare_dir / "plugin.toml"
+    bare_cfg.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    bare_profiles = bare_dir / "profiles.toml"
+    if with_extra_profiles_toml:
+        bare_profiles.write_text("[extra]\nnote='keep'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid, p=bare_cfg: p)
+    with pytest.raises(HTTPException) as exc_bare:
+        module.set_active_profile(plugin_id="demo", profile_name="home")
+    assert exc_bare.value.status_code == 404
+    assert "profiles.toml not found" in str(exc_bare.value.detail)
+    if with_extra_profiles_toml:
+        assert tomllib.loads(bare_profiles.read_text(encoding="utf-8")) == {"extra": {"note": "keep"}}
+    else:
+        assert not bare_profiles.exists()
+
+    # 3. delete_profile_config on manifest-only declarations:
+    #    no-op unknown does not write; deleting inactive preserves active & extra; deleting last active does not resurrect.
+    delete_dir = tmp_path / f"delete_{with_extra_profiles_toml}"
+    (delete_dir / "profiles").mkdir(parents=True)
+    delete_cfg = delete_dir / "plugin.toml"
+    delete_cfg.write_text(
+        "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+        "[plugin.config_profiles.files]\nhome='profiles/home.toml'\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    (delete_dir / "profiles" / "home.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    (delete_dir / "profiles" / "work.toml").write_text("[feature]\nx=2\n", encoding="utf-8")
+    delete_profiles = delete_dir / "profiles.toml"
+    if with_extra_profiles_toml:
+        delete_profiles.write_text("[extra]\nnote='keep'\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid, p=delete_cfg: p)
+
+    noop_del = module.delete_profile_config(plugin_id="demo", profile_name="missing")
+    assert noop_del == {
+        "plugin_id": "demo",
+        "profile": "missing",
+        "removed": False,
+        "active_profile": "home",
+        "affected_active": False,
+    }
+    if with_extra_profiles_toml:
+        assert tomllib.loads(delete_profiles.read_text(encoding="utf-8")) == {"extra": {"note": "keep"}}
+    else:
+        assert not delete_profiles.exists()
+
+    del_inactive = module.delete_profile_config(plugin_id="demo", profile_name="work")
+    assert del_inactive == {
+        "plugin_id": "demo",
+        "profile": "work",
+        "removed": True,
+        "active_profile": "home",
+        "affected_active": False,
+    }
+    persisted_del_1 = tomllib.loads(delete_profiles.read_text(encoding="utf-8"))
+    assert persisted_del_1["config_profiles"]["active"] == "home"
+    assert set(persisted_del_1["config_profiles"]["files"]) == {"home"}
+    if with_extra_profiles_toml:
+        assert persisted_del_1["extra"] == {"note": "keep"}
+
+    del_active = module.delete_profile_config(plugin_id="demo", profile_name="home")
+    assert del_active == {
+        "plugin_id": "demo",
+        "profile": "home",
+        "removed": True,
+        "active_profile": None,
+        "affected_active": True,
+    }
+    state_after = get_profiles_state(plugin_id="demo", config_path=delete_cfg)
+    assert state_after["config_profiles"]["active"] is None
+    assert state_after["config_profiles"]["files"] == {}
+    home_after = get_profile_config(plugin_id="demo", profile_name="home", config_path=delete_cfg)
+    assert home_after["profile"]["resolved_name"] is None
+    with pytest.raises(HTTPException) as exc_deleted:
+        module.update_profile_config(
+            plugin_id="demo",
+            profile_name="home",
+            updates={"feature": {"x": 9}},
+        )
+    assert exc_deleted.value.status_code == 404
