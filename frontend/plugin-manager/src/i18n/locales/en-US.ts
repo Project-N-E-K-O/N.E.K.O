@@ -1,16 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/en-US'
+import modelApiMessages from '../model-api/en-US'
+import modelBindingsMessages from '../model-bindings/en-US'
+import marketFeedbackMessages from '../market-feedback/en-US'
+import authoringMessages from '../authoring/en-US'
+import powerMessages from '../power/en-US'
 
 /**
  * English language pack
  */
 export default {
-  pluginConsent: pluginConsentMessages['en-US'],
-  authoring: authoringMessages['en-US'],
-  modelApi: modelApiMessages['en-US'],
-  modelBindings: modelBindingsMessages['en-US'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "Choose language",
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Loading...',
     refresh: 'Refresh',
+    retry: 'Retry',
     search: 'Search',
     filter: 'Filter',
     reset: 'Reset',
@@ -736,7 +741,16 @@ export default {
       exitFocus: 'Exit focus',
       exitFocusHint: 'Exit focus mode (Esc)',
       controlError: 'Plugin UI control error',
-      hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
+      hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.',
+      parseDocumentConfirm: 'Allow plugin "{plugin}" to parse document "{file}"?',
+      actionConfirmTitle: 'Confirm action from plugin "{plugin}"',
+      actionConfirmDefault: 'Run this action?',
+      actionConfirmTimeout: 'The confirmation timed out, so the action was not run.',
+      actionConfirmPending: 'Another confirmation is already open. Finish it first.',
+      openPathOutOfScope: 'This panel can only open files inside its own plugin folder or data folder.',
+      openPathNoBridge: 'Opening local files is only available in the desktop app.',
+      openPathFailed: 'Could not open the path: {message}',
+      unsafeTargetBlocked: 'Blocked unsafe target URL'
     }
   },
   package: {
@@ -822,6 +836,22 @@ export default {
       verify: 'Verify',
       install: 'Install',
       analyze: 'Analyze'
+    },
+    messages: {
+      selectPluginToBuild: 'Select at least one plugin to build first.',
+      bundleRequiresTwoPlugins: 'Select at least two plugins for a bundle.',
+      bundleBuildFailedWithError: 'Bundle build failed: {error}',
+      bundleBuildCompleted: 'Bundle build completed.',
+      bundleBuildPartialFailed: 'Bundle build failed for {count} item(s).',
+      buildFailedWithError: 'Build failed: {error}',
+      buildCompletedWithFailures: 'Build completed: {built} succeeded, {failed} failed.',
+      buildCompleted: 'Build completed: {built} succeeded.',
+      inspectCompleted: 'Package inspection completed.',
+      verifyPassed: 'Package verification passed.',
+      verifyFailed: 'Package verification failed.',
+      selectAtLeastOnePlugin: 'Select at least one plugin.',
+      analyzeCompleted: 'Analysis completed.',
+      analyzeFailedWithError: 'Analysis failed: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -1039,6 +1069,8 @@ export default {
     pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
     pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
+    pluginDeletedPermissionsNotCleared: 'Plugin {plugin} was deleted, but the permission records file is damaged or from a newer version, so any permission grants it had could not be cleared. If the file becomes readable again, they may still apply.',
+    pluginsDeletedPermissionsNotCleared: 'Plugins {plugins} were deleted, but the permission records file is damaged or from a newer version, so any permission grants they had could not be cleared. If the file becomes readable again, they may still apply.',
     startFailed: 'Failed to start',
     autoStartEnabled: 'Auto start enabled',
     autoStartDisabled: 'Auto start disabled',
@@ -1100,7 +1132,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O Plugin Manager'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

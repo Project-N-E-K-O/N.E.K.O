@@ -13,6 +13,10 @@ from utils.llm_client import anthropic_retry_error_types
 
 
 def test_proactive_llm_retry_errors_include_anthropic_transients():
+    # The accessor never imports the SDK itself (it runs in except clauses on the
+    # event loop); building an Anthropic client is what loads it in production.
+    import anthropic  # noqa: F401
+
     retry_types = proactive_service._proactive_llm_retry_error_types()
     anthropic_types = anthropic_retry_error_types()
     # Without anthropic, the accessor falls back to (), so the loop silently passes with zero iterations. CI/development must install

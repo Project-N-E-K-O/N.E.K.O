@@ -421,9 +421,13 @@ class TheaterWorkshop:
         ending = (self._store.get_branch_draft(project_id, request.ending_draft_id)
                   if request.endpoint_mode == "new_ending" else None)
         arguments = request.model_dump(exclude={"base_revision", "ending_draft_id", "ending"})
+        confirmed_ending = None
+        if request.ending is not None:
+            confirmed_ending = request.ending.model_dump()
+            if "fixed_narrations" not in request.ending.model_fields_set:
+                confirmed_ending.pop("fixed_narrations", None)
         plan = self._branch.prepare_path(project, **arguments,
-                                        ending_draft=ending, confirmed_ending=request.ending.model_dump(exclude_unset=True)
-                                        if request.ending else None)
+                                        ending_draft=ending, confirmed_ending=confirmed_ending)
         context = deepcopy(plan["context"])
         for attempt in range(2):
             try:

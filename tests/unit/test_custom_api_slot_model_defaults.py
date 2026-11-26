@@ -46,9 +46,8 @@ def _profiles():
 
 _TEXT_TIERS = (
     ('conversation', 'conversation', 'CONVERSATION_MODEL'),
-    ('summary', 'summary', 'SUMMARY_MODEL'),
-    ('correction', 'correction', 'CORRECTION_MODEL'),
-    ('emotion', 'emotion', 'EMOTION_MODEL'),
+    ('memory', 'memory', 'MEMORY_MODEL'),
+    ('recognition', 'recognition', 'RECOGNITION_MODEL'),
     ('vision', 'vision', 'VISION_MODEL'),
     ('agent', 'agent', 'AGENT_MODEL'),
 )
@@ -57,7 +56,7 @@ _TEXT_TIERS = (
 @pytest.mark.unit
 @pytest.mark.parametrize('prefix,model_type,profile_key,text_prefix', [
     ('gameMain', 'game_main', 'CONVERSATION_MODEL', 'conversation'),
-    ('gameSummary', 'game_summary', 'SUMMARY_MODEL', 'summary'),
+    ('gameSummary', 'game_summary', 'MEMORY_MODEL', 'memory'),
 ])
 @pytest.mark.parametrize('text_model', ['', 'user-core-model'])
 def test_game_follow_assist_keeps_assist_default_after_text_override(
@@ -82,14 +81,14 @@ def test_game_summary_empty_assist_tier_uses_same_provider_conversation(
     config_manager, monkeypatch, provider, missing_summary,
 ):
     profiles = _profiles()
-    profile = dict(profiles['openrouter'], CONVERSATION_MODEL='provider-chat-model', SUMMARY_MODEL='')
+    profile = dict(profiles['openrouter'], CONVERSATION_MODEL='provider-chat-model', MEMORY_MODEL='')
     if missing_summary:
-        profile.pop('SUMMARY_MODEL')
+        profile.pop('MEMORY_MODEL')
     profiles[provider] = profile
     monkeypatch.setattr('utils.config_manager.get_assist_api_profiles', lambda: profiles)
     _write_core_config(config_manager, {
         'coreApi': 'qwen', 'assistApi': provider, 'coreApiKey': 'core-key',
-        'enableCustomApi': True, 'summaryModelProvider': 'follow_core',
+        'enableCustomApi': True, 'memoryModelProvider': 'follow_core',
         'gameSummaryModelProvider': 'follow_assist',
     })
     resolved = config_manager.get_model_api_config('game_summary')
@@ -115,7 +114,11 @@ def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatc
 @pytest.mark.unit
 @pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
 @pytest.mark.parametrize('vision_model', ['vision-capable-model', ''])
-def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypatch, provider_mode, vision_model):
+# Both familiar slots (the settings page puts the advanced one on the agent tier too).
+@pytest.mark.parametrize('prefix, model_type', [('agent', 'agent'), ('agentAdvanced', 'agent_advanced')])
+def test_missing_agent_prefers_vision_then_conversation(
+    config_manager, monkeypatch, provider_mode, vision_model, prefix, model_type,
+):
     profiles = _profiles()
     profiles['openai']['AGENT_MODEL'] = ''
     profiles['openai']['VISION_MODEL'] = vision_model
@@ -123,10 +126,10 @@ def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypa
     _write_core_config(config_manager, {
         'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
         'enableCustomApi': True,
-        'agentModelProvider': provider_mode, 'agentModelId': '',
-        'agentModelUrl': profiles['openai']['OPENROUTER_URL'],
+        f'{prefix}ModelProvider': provider_mode, f'{prefix}ModelId': '',
+        f'{prefix}ModelUrl': profiles['openai']['OPENROUTER_URL'],
     })
-    assert config_manager.get_model_api_config('agent')['model'] == (
+    assert config_manager.get_model_api_config(model_type)['model'] == (
         vision_model or profiles['openai']['CONVERSATION_MODEL']
     )
 
@@ -238,14 +241,14 @@ class TestNamedProviderBlankModel:
             'assistApiKeyQwen': 'sk-qwen-core',
             'assistApiKeyClaude': 'sk-ant-test',
             'enableCustomApi': True,
-            'summaryModelProvider': 'claude',
-            'summaryModelUrl': claude_profile['OPENROUTER_URL'],
-            'summaryModelId': '',
+            'memoryModelProvider': 'claude',
+            'memoryModelUrl': claude_profile['OPENROUTER_URL'],
+            'memoryModelId': '',
         })
 
-        resolved = config_manager.get_model_api_config('summary')
+        resolved = config_manager.get_model_api_config('memory')
 
-        assert resolved['model'] == claude_profile['SUMMARY_MODEL']
+        assert resolved['model'] == claude_profile['MEMORY_MODEL']
         assert resolved['provider_type'] == 'anthropic'
 
     @pytest.mark.unit

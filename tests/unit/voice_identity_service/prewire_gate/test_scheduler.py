@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fake_clock import patch_module_asyncio
+
 pytestmark = pytest.mark.runtime
 
 from main_logic.voice_identity_service.prewire_gate.scheduler import (
@@ -86,13 +88,14 @@ class _RecordingBackend:
 
 
 class _BlockedBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, hold_s: float = 2.0) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
+        self.hold_s = hold_s
 
     def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
         self.started.set()
-        self.release.wait(2.0)
+        self.release.wait(self.hold_s)
         return 0.5
 
 
@@ -307,16 +310,41 @@ async def test_queued_cancellation_is_distinct_and_never_scores() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execution_timeout_is_reported_before_late_score_finishes() -> None:
-    backend = _BlockedBackend()
-    scheduler = _scheduler(backend, deadline_seconds=0.01)
-    receipt = scheduler.submit(_request("timeout"))
+async def test_execution_timeout_is_reported_before_late_score_finishes(monkeypatch) -> None:
+    # Held until released below: with the clock injected, a score that came
+    # back on its own while the loop was stalled would pass the deadline
+    # re-check and be accepted.
+    backend = _BlockedBackend(hold_s=60.0)
+    # The deadline is read from the injected clock, so the queue part of it
+    # can be spent without waiting: with a 10 ms deadline on the real clock, a
+    # runner that is slow to start the worker expired the job in the queue
+    # instead (deadline_expired_in_queue). The long nominal deadline keeps the
+    # real-time queue timer out of the way; only 10 ms are left to execute.
+    now = [0.0]
+    scheduler = _scheduler(backend, deadline_seconds=30.0, clock=lambda: now[0])
+    # Record the timeout the execution wait is given: what is left of the
+    # injected deadline (10 ms), not the full nominal 30 s.
+    from main_logic.voice_identity_service.prewire_gate import scheduler as scheduler_module
 
-    result = await scheduler.await_result(receipt)
-    assert result.status is ScoreResultStatus.TIMED_OUT
-    assert result.error_code == "execution_deadline_expired"
-    backend.release.set()
-    await scheduler.close()
+    waits = []
+    real_wait = asyncio.wait
+
+    def spy_wait(aws, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        waits.append(timeout)
+        return real_wait(aws, timeout=timeout, return_when=return_when)
+
+    try:
+        receipt = scheduler.submit(_request("timeout"))
+        now[0] = 30.0 - 0.01
+        patch_module_asyncio(monkeypatch, scheduler_module, wait=spy_wait)
+
+        result = await asyncio.wait_for(scheduler.await_result(receipt), 10)  # Hang guard.
+        assert result.status is ScoreResultStatus.TIMED_OUT
+        assert result.error_code == "execution_deadline_expired"
+        assert waits and all(abs(timeout - 0.01) < 1e-6 for timeout in waits)
+    finally:
+        backend.release.set()
+        await scheduler.close()
 
 
 @pytest.mark.asyncio

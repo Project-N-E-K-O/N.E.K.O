@@ -397,4 +397,3 @@ def test_persistent_bad_journal_still_blocks_mutation_with_bounded_retries(owned
     with pytest.raises(WorkshopError, match="unavailable"):
         runtime.snapshot_for_mutation(owned.config)
     assert calls <= 6
-

@@ -2,7 +2,7 @@
 
 **プレフィックス:** `/api/memory`
 
-これは、メモリブラウザーおよび設定画面向けにメインサーバーが提供する API です。最近のメモリの編集、メモリ機能の切り替え、キャラクターメモリの名前変更、ユーザーが明示的に開始する旧ストレージのクリーンアップを扱います。プロセス内部の [Memory Server API](/ja/api/memory-server) を汎用的にプロキシするものではありません。
+これは、メモリブラウザーおよび設定画面向けにメインサーバーが提供する API です。最近のメモリの編集、メモリ機能の切り替え、キャラクターメモリの名前変更、ローカルの反復表現インサイト、口癖回避リスト管理、外部メモリインポート、ユーザーが明示的に開始する旧ストレージのクリーンアップを扱います。プロセス内部の [Memory Server API](/ja/api/memory-server) を汎用的にプロキシするものではありません。
 
 すべてのルートは末尾のスラッシュなしで定義されています。クラウドストレージがメンテナンス中または読み取り専用の場合、書き込み操作は `409` を返すことがあります。
 
@@ -18,6 +18,15 @@
 | `POST` | `/api/memory/review_config` | 最近のメモリの自動レビュー設定を更新 |
 | `GET` | `/api/memory/powerful_memory_config` | Powerful Memory 設定を取得 |
 | `POST` | `/api/memory/powerful_memory_config` | Powerful Memory 設定を更新し、必要な移行を実行 |
+| `GET` | `/api/memory/insight_characters` | 反復表現インサイト分析の対象キャラクター一覧を取得 |
+| `POST` | `/api/memory/repetition_insights` | 保存済みアシスタント発話に対するローカル専用の反復表現分析を実行 |
+| `POST` | `/api/memory/repetition_effects/reset` | 1 キャラクター分のローカル反復抑止効果集計をリセット |
+| `GET` | `/api/memory/habitual_phrases` | キャラクターの口癖回避リストとパネル状態を取得 |
+| `POST` | `/api/memory/habitual_phrases/override` | 口癖フレーズ 1 件の許可・抑制・解除のユーザー上書きを保存 |
+| `POST` | `/api/memory/habitual_phrases/recompute` | キャラクターの口癖回避リストを今すぐ再計算 |
+| `POST` | `/api/memory/external_import/preview` | 書き込みを行わずに OpenClaw / Hermes / Molili のインポートをプレビュー |
+| `POST` | `/api/memory/external_import/commit` | プレビュー済みの外部メモリをキャラクターのストアへ統合保存 |
+| `GET` | `/api/memory/external_import/progress` | キャラクターの外部インポート進捗カウンターを取得 |
 | `GET` | `/api/memory/farewell-summary` | デスクトップ版の終了時お別れカード用の読み取り専用メモリ概要 |
 | `GET` | `/api/memory/legacy/scan` | ユーザーに提示できる旧メモリルートを読み取り専用で走査 |
 | `POST` | `/api/memory/legacy/purge` | 走査済みの旧ルートから明示的に選択された項目を削除 |
@@ -193,6 +202,136 @@ Powerful Memory は、シグナル分析、昇格時のマージ、反証チェ�
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## 反復表現インサイトと抑止効果
+
+### `GET /api/memory/insight_characters`
+
+パラメーターはありません。
+
+`POST /api/memory/repetition_insights` が受け付けるキャラクター名をソート順で返します。設定済みキャラクターに加え、シンボリックリンクや旧ベクターストアディレクトリを除いた実キャラクターディレクトリおよび最近のメモリファイルから構築されます。
+
+```json
+{
+  "characters": ["小天", "小夜"]
+}
+```
+
+### `POST /api/memory/repetition_insights`
+
+LLM 呼び出しや外部送信を行わず、保存済みアシスタント発話をローカルのみで分析します。Memory Server の `/internal/memory/{character_name}/repetition_insights` へ転送し、内部用の `_anti_repeat_response_ids` を除去したうえで、ローカルの抑止効果 `effectiveness` と集約済み `associations` を付与して返します。
+
+**リクエストボディ**
+
+| フィールド | 型 | 必須 | 既定値 | 説明 |
+|---|---|---:|---|---|
+| `character_name` | 文字列 | はい | — | 対象キャラクター名 |
+| `language` | 文字列 | はい | — | `en`、`es`、`pt`、`ru`、`ja`、`ko`、`zh-CN`、`zh-TW` のいずれか |
+| `assistant_message_limit` | 整数 | いいえ | `100` | 分析対象の直近アシスタント発話件数（`3`–`100`） |
+| `effect_days` | 整数 | いいえ | `30` | フォールバック効果集計日数（`7`、`30`、`90`。旧クライアント互換用） |
+
+成功時は `200` と `success: true`、`schema_version`、`artifact_type`、`character_name`、`language`、`parameters`、`summary`、`candidates`、`effectiveness`、`associations` を返します。不正なキャラクター名、非対応言語、マイナーエラーは `422`、未登録キャラクターは `404`、Memory Server 利用不可または書き込みフェンス中は `503` です。
+
+### `POST /api/memory/repetition_effects/reset`
+
+既存キャラクター 1 体のローカル反復抑止効果の集計だけを消去します。
+
+**リクエストボディ**
+
+```json
+{
+  "character_name": "小天"
+}
+```
+
+成功時は `{"success": true, "character_name": "小天", "cleared": true}` を返します。不正な名前は `422`、キャラクター未検出は `404`、効果ストア利用不可は `503` です。
+
+## 口癖回避リスト
+
+### `GET /api/memory/habitual_phrases`
+
+次回セッション開始時に適用されるキャラクターの口癖回避リストパネル状態を返します。
+
+**クエリパラメーター**
+
+| 名前 | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `character_name` | 文字列 | はい | 対象キャラクター名 |
+| `ui_language` | 文字列 | いいえ | 永続化されたキャラクター用プロンプト言語がない場合の UI 言語フォールバック |
+
+成功時は `200` と `success`、`character_name`、`switches`（`natural_expression`、`review`）、`rules`（`min_sessions`、`session_gap_minutes`、`max_items`、`candidate_pool`、`prompt_max_tokens`、`refresh_interval_hours`、`max_age_days`）、`next_refresh_at`、`computed_at`、`language`、`language_matches`、`stale`、`parameters`、`source`、`review`、`entries`、`injected`、`overrides` を返します。不正な名前は `422`、未検出は `404`、ストア利用不可は `503` です。
+
+### `POST /api/memory/habitual_phrases/override`
+
+1 つのフレーズに対するユーザー上書き（`allow`、`suppress`、`clear`）を保存し、`GET /api/memory/habitual_phrases` と同じ更新済みパネルを返します。
+
+**リクエストボディ**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `character_name` | 文字列 | はい | 対象キャラクター名 |
+| `phrase` | 文字列 | はい | フレーズ文字列（`1`–`200` 文字） |
+| `action` | 文字列 | はい | `"allow"`、`"suppress"`、`"clear"` のいずれか |
+| `ui_language` | 文字列 | いいえ | 任意の UI 言語ヒント（最大 `32` 文字） |
+
+不正な名前またはフレーズは `422`、未検出は `404`、復元・メンテナンス中またはストア利用不可は `503` です。
+
+### `POST /api/memory/habitual_phrases/recompute`
+
+Memory Server 経由（130 秒転送タイムアウト）でキャラクターの口癖回避リストを即時再計算し、更新済みパネルを返します。
+
+**リクエストボディ**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `character_name` | 文字列 | はい | 対象キャラクター名 |
+| `ui_language` | 文字列 | いいえ | 任意の UI 言語ヒント（最大 `32` 文字） |
+
+既に再計算中の場合は `409`（`{"success": false, "error": "already recomputing"}`）、不正な名前は `422`、未検出は `404`、再計算不可は `503` を返します。
+
+## 外部メモリインポート
+
+### `POST /api/memory/external_import/preview`
+
+メモリファイルへ書き込まずに OpenClaw、Hermes、Molili の Markdown または ZIP アーカイブを解析します。非 multipart リクエストに有効な整数値の `Content-Length` ヘッダーが含まれ `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合のみミドルウェアによって制限され、`multipart/*` リクエストおよび有効な整数値の `Content-Length` を持たないチャンク転送リクエスト等はそのままアプリへ転送されます。
+
+**リクエストボディ**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `character_name` | 文字列 | はい | 対象キャラクター名（ドット許可、最大 `50` 文字） |
+| `source_format` | 文字列 | いいえ | `"auto"`（既定）、`"openclaw"`、`"hermes"`、`"molili"` |
+| `files` | 配列 | いいえ | `{path/name, content}` オブジェクト配列。`archive_b64` と排他 |
+| `archive_b64` | 文字列 | いいえ | Base64 エンコードされた ZIP アーカイブ（`data:` プレフィックス可）。`files` と排他 |
+
+成功時は `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最大 20 件）、`candidates`（最大 100 件）、`truncated_preview` を返します。Molili アーカイブでは `character_card`、`master_profile`、`skipped`、`snapshot_time` も含まれます。非 multipart リクエストに有効な整数値の `Content-Length` ヘッダーがあり、その値が `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合のみ、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。`multipart/*` リクエストおよび有効な整数値の `Content-Length` がないチャンク転送リクエスト等は同ミドルウェアで `413` 拒否されずアプリケーションへそのまま渡されます。インポート項目・ファイルの検証失敗および OpenClaw/Hermes の Markdown/ZIP（`ExternalMemoryImportError`）解析失敗は `400`、不正なリクエストボディ JSON のデコード失敗（`{` など）、`source_format: "molili"` における不正 ZIP コンテナーでの未捕捉 `zipfile.BadZipFile` 例外（現在は `ExternalMemoryImportError` へ変換されない）およびその他の想定外エラーは `500` を返します。
+
+### `POST /api/memory/external_import/commit`
+
+プレビュー済みの外部メモリを `POST /internal/memory/import_external_markdown`（480 秒転送タイムアウト）経由でキャラクターのメモリストアへ統合します。
+
+**リクエストボディ**
+
+`preview` と同じ `character_name`、`source_format`、`files` / `archive_b64` に加えて、以下を受け付けます。
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `acknowledge_warnings` | 真偽値 | 条件付き | 不審な命令パターンの警告がある場合は `true` が必須（未指定・`false` は `409`） |
+| `render_language` | 文字列 | いいえ | 描画時のみ使う検証済みロケールフォールバック。永続的な言語設定には保存されません |
+
+成功時は `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates`、`warning_count` を返します。非 multipart リクエストに有効な整数値の `Content-Length` ヘッダーがあり、その値が `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合のみ、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。`multipart/*` リクエストおよび有効な整数値の `Content-Length` がないチャンク転送リクエスト等は同ミドルウェアで `413` 拒否されずアプリケーションへそのまま渡されます。ルーター・Memory Server 側のエラーは `400`（インポート入力・ファイルの検証または OpenClaw/Hermes Markdown/ZIP `ExternalMemoryImportError` の解析失敗、または partial / too_large エラーコードを含まない上流拒否）、`409`（警告未確認またはクラウドストレージメンテナンス中）、`413`（`error_code: "external_import_too_large"` と `partial_import`）、`500`（`error_code: "external_import_partial"` と `partial_import`、不正なリクエストボディ JSON のデコード失敗 `{` など、`source_format: "molili"` における不正 ZIP コンテナーでの `zipfile.BadZipFile` 例外、またはその他の想定外エラー）、`504`（`error_code: "external_import_timeout"`、転送クライアント側のタイムアウト）です。`504` の場合、インポートは Memory Server 上で継続中（送信後の読み取りタイムアウト）である可能性も、そもそも開始されていない（接続タイムアウト・プールタイムアウト）可能性もあります。呼び出し元は `GET /api/memory/external_import/progress`（キャラクター単位で 1 件のみメモリ保持されるため、前回実行の状態が残っていたり、重複リクエストで上書きされたりする場合があります）を確認するか、インポートを再試行できます（完了済みのペルソナ融合バッチおよび処理済みの日次日記エントリーはフィンガープリント重複排除により再処理がスキップされますが、インポート全体や並行リクエストの厳密な冪等性は保証されません）。
+
+### `GET /api/memory/external_import/progress`
+
+Memory Server が保持する外部インポート進捗カウンターをポーリングします。
+
+**クエリパラメーター**
+
+| 名前 | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `character_name` | 文字列 | はい | 対象キャラクター名（ドット許可、最大 `50` 文字） |
+
+現在の Memory Server プロセスで当該キャラクターの進捗エントリーが未登録の場合（インポート未実行、または登録前に検証で拒否された場合を含む）は `{"success": true, "active": false}`、実行中は `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": false, "started_at": ...}` を返します。成功・失敗・部分完了のいずれで終了した場合も `finished: true` として最終ステージと件数を保持したエントリーが残り、完了・終了後は `{"success": true, "active": false, "finished": true, ...}` を返します。進捗はキャラクターごとに 1 件のインメモリエントリーとして管理されるため、新しいインポートや重複するインポートを実行すると以前のエントリーは上書きされます。不正な名前は `400`、Memory Server が返す 200 以外のステータスコードはそのまま透過し、転送失敗は `502` です。
 
 ## お別れカードの概要
 

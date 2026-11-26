@@ -117,6 +117,8 @@ def test_init_creates_complete_plugin_source_by_default(
     assert _git(repo, "branch", "--show-current") == "main"
     agents_md = (repo / "AGENTS.md").read_text(encoding="utf-8")
     assert "neko-plugin check market_demo" in agents_md
+    assert "neko-plugin lint market_demo" in agents_md
+    assert "neko-plugin precheck market_demo" in agents_md
     assert "{plugin_id}" not in agents_md
     assert "plugin-market-verify.yml@main" in (
         repo / ".github/workflows/verify.yml"
@@ -272,6 +274,8 @@ def test_init_uses_exact_custom_output_and_custom_directory_commands(
     assert "neko-plugin check ." in agents_md
     assert "neko-plugin build ." in agents_md
     assert "neko-plugin sync . --clean" in agents_md
+    assert "neko-plugin lint ." in agents_md
+    assert "neko-plugin precheck ." in agents_md
     assert "neko-plugin check custom_output" not in agents_md
     assert neko_plugin_cli.main(["check", str(output)]) == 0
     assert "does not match directory name" not in capsys.readouterr().out
@@ -822,3 +826,28 @@ def test_market_package_over_32_mib_is_rejected(tmp_path: Path) -> None:
     messages = [message for _, message in release_cmd._diagnose_market_package(package)]
 
     assert any("package over 32 MiB" in message for message in messages)
+
+
+@pytest.mark.parametrize("github_actions", [True, False])
+def test_scaffold_without_checkout_documents_pinned_ruff_only_with_actions(
+    tmp_path: Path, github_actions: bool
+) -> None:
+    from plugin.neko_plugin_cli.core.lint import RUFF_LINT_SPEC
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec, render_plugin_files
+
+    # The Plugin studio layout: no N.E.K.O checkout, so no neko-plugin CLI.
+    files = render_plugin_files(
+        PluginSpec("studio_demo", create_github_actions=github_actions),
+        tmp_path / "studio_demo",
+        repo_root=None,
+    )
+    readme = files[Path("README.md")]
+    ruff_line = (
+        f"uvx ruff=={RUFF_LINT_SPEC.version} check --ignore-noqa --config ruff.toml ."
+    )
+
+    assert (Path("ruff.toml") in files) is github_actions
+    assert (ruff_line in readme) is github_actions
+    agents_md = files[Path("AGENTS.md")]
+    for subcommand in ("check", "lint", "sync", "precheck", "build"):
+        assert f"uv run neko-plugin {subcommand} <path-to-this-directory>" in agents_md

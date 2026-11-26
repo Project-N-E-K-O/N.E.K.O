@@ -91,6 +91,8 @@ from .multimodal_turn import (
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
+    multimodal_turn_after_revocation,
+    multimodal_turn_consent_unrevoked,
 )
 from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
@@ -143,6 +145,7 @@ class _QueuedMicFrame:
     MAX_DURATION_MS: ClassVar[int] = 120
 
     message: dict
+    pcm16: bytes
     duration_us: int
     source_rate_hz: int
     token: VoiceIngressToken
@@ -180,9 +183,14 @@ class _QueuedMicFrame:
         # construction.
         if len(samples) * 1_000 > source_rate_hz * cls.MAX_DURATION_MS:
             raise ValueError("MIC_PCM_FRAME_TOO_LONG")
+        try:
+            pcm16 = struct.pack(f"<{len(samples)}h", *samples)
+        except (struct.error, TypeError) as exc:
+            raise ValueError("MIC_PCM_SAMPLES_INVALID") from exc
         duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
             message=message,
+            pcm16=pcm16,
             duration_us=duration_us,
             source_rate_hz=source_rate_hz,
             token=token,
@@ -644,6 +652,21 @@ class AsrRuntimeMixin:
         if not hasattr(self, "_voice_lease_resync_suppressed"):
             self._voice_lease_resync_suppressed = False
 
+    def _discard_independent_live_frames(self) -> None:
+        """Forget staged live frames (no request_id) after a screen share stopped.
+
+        Screenshots the user attached (request_id set) stay for their turn;
+        frames already owned by a turn record stay with that turn.
+        """
+        latest = getattr(self, "_latest_independent_visual_frame", None)
+        if latest is not None and latest.request_id is None:
+            self._latest_independent_visual_frame = None
+        self._prerecord_visual_frames = [
+            frame
+            for frame in getattr(self, "_prerecord_visual_frames", None) or []
+            if frame.request_id is not None
+        ]
+
     def _stage_independent_visual_frame(
         self,
         image_b64: str,
@@ -651,8 +674,13 @@ class AsrRuntimeMixin:
         source: str,
         request_id: str | None,
         captured_at: float,
+        consent_epoch: int | None = None,
     ) -> bool:
-        """Stage one validated live frame without sending it to any model."""
+        """Stage one validated live frame without sending it to any model.
+
+        ``consent_epoch`` is the screen-consent revocation epoch at the
+        frame's arrival (before validation); None: the current one.
+        """
 
         self._ensure_asr_runtime_state()
         if (
@@ -686,6 +714,11 @@ class AsrRuntimeMixin:
             captured_at=stable_captured_at,
             source=str(source or "unknown"),
             request_id=(str(request_id) if request_id is not None else None),
+            consent_epoch=(
+                consent_epoch
+                if isinstance(consent_epoch, int)
+                else getattr(self, "_screen_consent_revocation_epoch", 0)
+            ),
         )
         if supersedes_latest_cache:
             self._latest_independent_visual_frame = frame
@@ -1208,11 +1241,23 @@ class AsrRuntimeMixin:
             > self._independent_visual_frame_ttl_s
         ):
             return None
+        consent_epoch = getattr(self, "_screen_consent_revocation_epoch", 0)
         frames = tuple(
-            frame for frame in record.sampled_frames() if record.accepts(frame)
+            frame
+            for frame in record.sampled_frames()
+            if record.accepts(frame)
+            # A live frame staged before a screen-consent revocation stays
+            # out; a screenshot the user attached (request_id) may go.
+            and (
+                frame.request_id is not None
+                or frame.consent_epoch is None
+                or frame.consent_epoch == consent_epoch
+            )
         )
         if not frames:
             return None
+        # Turn-level provenance follows the newest frame that is kept.
+        labelled = newest if newest in frames else frames[-1]
         return MultimodalTurn(
             turn_id=turn_id,
             session_epoch=record.session_epoch,
@@ -1222,8 +1267,10 @@ class AsrRuntimeMixin:
             captured_at=newest.captured_at,
             images=tuple(frame.image_b64 for frame in frames),
             transcript=transcript,
-            source=newest.source,
-            request_id=newest.request_id,
+            source=labelled.source,
+            request_id=labelled.request_id,
+            image_request_ids=tuple(frame.request_id for frame in frames),
+            consent_epoch=consent_epoch,
         )
     def _schedule_core_asr_cleanup(
         self,
@@ -3677,6 +3724,44 @@ class AsrRuntimeMixin:
             getattr(self, "session", None),
         )
 
+    def _note_queued_native_realtime_ingress_activity(
+        self,
+        frame: _QueuedMicFrame,
+    ) -> None:
+        """Expose one accepted 16 kHz Core-native frame to arbitration.
+
+        Only the ordinary Core-owned native route publishes early. 48 kHz
+        desktop PCM still waits for Core DSP and is classified by the existing
+        realtime transport path, so this signal never bypasses preprocessing.
+        """
+        if (
+            frame.source_rate_hz != 16_000
+            or frame.audio_stream_epoch != self._audio_stream_epoch
+            or frame.token != self._capture_native_ingress_token()
+            or self._asr_route_mode != "native"
+            or self._voice_lease_owner != "core"
+            or not getattr(self, "is_active", False)
+            or not self._voice_input_accepts_pcm()
+            or self._voice_session_activation_required
+            or self._voice_session_activation_degraded
+            or self._voice_session_activation_factory is not None
+            or getattr(self, "_active_session_interception_required", False)
+            or getattr(self, "_active_session_interception_bridge", None) is not None
+            or getattr(self, "_normal_capture_end_owner", None) is not None
+            or self._voice_input_pipeline_failed
+            or getattr(self, "_voice_input_pipeline_failure_token", None) is not None
+            or getattr(self, "session_closed_by_server", False)
+        ):
+            return
+        session = getattr(self, "session", None)
+        if (
+            not isinstance(session, _core_facade.OmniRealtimeClient)
+            or getattr(session, "_fatal_error_occurred", False)
+            or not callable(getattr(session, "stream_audio", None))
+        ):
+            return
+        session.note_pcm16_ingress_activity(frame.pcm16)
+
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
         if self._normal_capture_end_owner is not None:
@@ -3730,6 +3815,7 @@ class AsrRuntimeMixin:
         try:
             self._audio_stream_queue.put_nowait(frame)
             sequence_owned = False
+            self._note_queued_native_realtime_ingress_activity(frame)
         except asyncio.QueueFull:
             try:
                 await asyncio.sleep(0)
@@ -3755,6 +3841,7 @@ class AsrRuntimeMixin:
                 try:
                     self._audio_stream_queue.put_nowait(frame)
                     sequence_owned = False
+                    self._note_queued_native_realtime_ingress_activity(frame)
                 except asyncio.QueueFull:
                     self._clear_audio_stream_queue("ingress_backpressure")
                     self._audio_stream_dropped_total += 1
@@ -3826,6 +3913,8 @@ class AsrRuntimeMixin:
                     ingress_sequence=frame.ingress_sequence,
                     received_at=frame.received_at,
                     captured_at=frame.captured_at,
+                    validated_pcm16=frame.pcm16,
+                    validated_source_rate_hz=frame.source_rate_hz,
                 )
             except asyncio.CancelledError:
                 raise
@@ -4090,6 +4179,8 @@ class AsrRuntimeMixin:
         ingress_sequence: int | None = None,
         received_at: float | None = None,
         captured_at: float | None = None,
+        validated_pcm16: bytes | None = None,
+        validated_source_rate_hz: int | None = None,
     ) -> None:
         audio_received_at = (
             float(received_at)
@@ -4145,25 +4236,36 @@ class AsrRuntimeMixin:
             else None
         )
         try:
-            if not isinstance(data, list):
-                logger.error(
-                    "Microphone input rejected: expected a PCM sample list route=%s",
-                    self._asr_route_mode,
-                )
-                return
-            audio_bytes = struct.pack(f"<{len(data)}h", *data)
-            declared_rate_hz = message.get("sample_rate_hz")
-            if declared_rate_hz is None:
-                source_rate_hz = 48_000 if len(data) == 480 else 16_000
-            elif declared_rate_hz in {16_000, 48_000}:
-                source_rate_hz = int(declared_rate_hz)
+            if validated_pcm16 is not None:
+                if validated_source_rate_hz not in {16_000, 48_000}:
+                    logger.error(
+                        "Microphone input rejected: invalid prevalidated sample rate %r route=%s",
+                        validated_source_rate_hz,
+                        self._asr_route_mode,
+                    )
+                    return
+                audio_bytes = validated_pcm16
+                source_rate_hz = int(validated_source_rate_hz)
             else:
-                logger.error(
-                    "Microphone input rejected: unsupported sample rate %r route=%s",
-                    declared_rate_hz,
-                    self._asr_route_mode,
-                )
-                return
+                if not isinstance(data, list):
+                    logger.error(
+                        "Microphone input rejected: expected a PCM sample list route=%s",
+                        self._asr_route_mode,
+                    )
+                    return
+                audio_bytes = struct.pack(f"<{len(data)}h", *data)
+                declared_rate_hz = message.get("sample_rate_hz")
+                if declared_rate_hz is None:
+                    source_rate_hz = 48_000 if len(data) == 480 else 16_000
+                elif declared_rate_hz in {16_000, 48_000}:
+                    source_rate_hz = int(declared_rate_hz)
+                else:
+                    logger.error(
+                        "Microphone input rejected: unsupported sample rate %r route=%s",
+                        declared_rate_hz,
+                        self._asr_route_mode,
+                    )
+                    return
             try:
                 processed_frame = await pipeline_ref.process(
                     audio_bytes,
@@ -6480,6 +6582,14 @@ class AsrRuntimeMixin:
                 """
                 return turn_record is not None and turn_record.invalidated.is_set()
 
+            def note_screen_consent_revoked() -> None:
+                logger.info(
+                    "[%s] independent ASR turn %s saw screen consent revoked "
+                    "after freeze; submitting transcript without its frames",
+                    self.lanlan_name,
+                    external_turn_id,
+                )
+
             def note_visual_ownership_lost() -> None:
                 logger.info(
                     "[%s] independent ASR turn %s superseded after freeze; "
@@ -6606,11 +6716,20 @@ class AsrRuntimeMixin:
                             raise RuntimeError(
                                 "DIRECT_MULTIMODAL_SUBMIT_UNAVAILABLE"
                             )
-                        if visual_ownership_lost():
+                        # Screen consent revoked since the freeze (e.g. during
+                        # retrieval): only the user's own screenshots may go.
+                        multimodal_turn = multimodal_turn_after_revocation(
+                            multimodal_turn,
+                            getattr(self, "_screen_consent_revocation_epoch", 0),
+                        )
+                        if multimodal_turn is None or visual_ownership_lost():
                             # Sending transcripts, restoring previews, and acquiring the swap gate all await after
                             # the earlier check. This is the final synchronous point
                             # before actually invoking the provider.
-                            note_visual_ownership_lost()
+                            if multimodal_turn is not None:
+                                note_visual_ownership_lost()
+                            else:
+                                note_screen_consent_revoked()
                             multimodal_turn = None
                             await self._submit_core_voice_turn(
                                 event.text,
@@ -6633,8 +6752,26 @@ class AsrRuntimeMixin:
                                     # Gemini additionally awaits compression before sending,
                                     # allowing successor speech to take frame ownership there.
                                     # Same ownership criterion as offline handoff.
-                                    visual_still_owned=(
-                                        lambda: not visual_ownership_lost()
+                                    visual_still_owned=lambda: not visual_ownership_lost(),
+                                    # Screen consent is re-checked there too:
+                                    # a revocation during that compression
+                                    # keeps the live frames out, while the
+                                    # user's own screenshots (by request_id)
+                                    # still go.
+                                    screen_consent_holds=(
+                                        lambda turn=multimodal_turn: (
+                                            multimodal_turn_consent_unrevoked(
+                                                turn,
+                                                getattr(
+                                                    self,
+                                                    "_screen_consent_revocation_epoch",
+                                                    0,
+                                                ),
+                                            )
+                                        )
+                                    ),
+                                    image_request_ids=tuple(
+                                        multimodal_turn.image_request_ids or ()
                                     ),
                                 )
                             except ResponseAdmissionRejected:
@@ -6667,10 +6804,22 @@ class AsrRuntimeMixin:
                         handoff_target = session_ref
             finally:
                 session_swap_lock.release()
-            if handoff_target is not None and visual_ownership_lost():
+            if handoff_target is not None:
+                # A turn left without frames by a screen-consent revocation
+                # needs no switch to the offline VLM; it goes as text here.
+                multimodal_turn = multimodal_turn_after_revocation(
+                    multimodal_turn,
+                    getattr(self, "_screen_consent_revocation_epoch", 0),
+                )
+            if handoff_target is not None and (
+                multimodal_turn is None or visual_ownership_lost()
+            ):
                 # Handoff also connects candidate sessions, taking longer than direct submission. Recheck ownership
                 # after releasing the swap gate or the whole handoff moves frames for a successor.
-                note_visual_ownership_lost()
+                if multimodal_turn is None:
+                    note_screen_consent_revoked()
+                else:
+                    note_visual_ownership_lost()
                 handoff_target = None
                 multimodal_turn = None
                 await self._submit_core_voice_turn(

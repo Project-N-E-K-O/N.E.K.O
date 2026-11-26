@@ -1,11 +1,11 @@
 # Task HUD System
 
-The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the commissions in the NekoClaw host's ledger, not an independent task scheduler. See [Agent System](/architecture/agent-system) for how a commission is filed and carried out.
+The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the commissions in the NekoPower host's ledger, not an independent task scheduler. See [Agent System](/architecture/agent-system) for how a commission is filed and carried out.
 
 ## Current data path
 
 ```text
-NekoClaw host (a commission is filed or changes status)
+NekoPower host (a commission is filed or changes status)
     │ task_update
     ▼
 AgentServerEventBridge ── ZMQ :48962 ──> MainServerAgentBridge
@@ -92,7 +92,7 @@ POST /api/agent/admin/control
 
 ## Plugin display names
 
-The Agent Server cannot read another process's plugin runtime state directly. `app/agent_server/plugin_host.py` queries the embedded user-plugin service at `127.0.0.1:48916/plugins` and caches the ID-to-name map for 30 seconds. `app/agent_server/nekoclaw_mount.py` adds the friendly name to `params.plugin_name` when it sends a `user_plugin` task update; the HUD falls back to `plugin_id` or a localized type label.
+The Agent Server cannot read another process's plugin runtime state directly. `app/agent_server/plugin_host.py` queries the embedded user-plugin service at `127.0.0.1:48916/plugins` and caches the ID-to-name map for 30 seconds. `app/agent_server/nekopower_mount.py` adds the friendly name to `params.plugin_name` when it sends a `user_plugin` task update; the HUD falls back to `plugin_id` or a localized type label.
 
 The embedded plugin service itself is hosted from the Agent Server process in an isolated Uvicorn thread. This replaces the old assumption that plugin state is owned by the Main Server.
 
@@ -133,6 +133,6 @@ The browser-facing cancellation endpoint is proxied under `/api/agent`. The defe
 | Browser-facing Agent proxy | `main_routers/agent_router.py` |
 | Authoritative state snapshot | `app/agent_server/capabilities.py` |
 | Task cancellation and deferred completion | `app/agent_server/api_runtime.py` |
-| HUD task view and `task_update` emission | `app/agent_server/nekoclaw_mount.py` |
+| HUD task view and `task_update` emission | `app/agent_server/nekopower_mount.py` |
 | Plugin-name lookup | `app/agent_server/plugin_host.py` |
-| Commission ledger and status changes | `nekoclaw/host/ledger.py` |
+| Commission ledger and status changes | `nekopower/host/ledger.py` |

@@ -17,6 +17,8 @@ from utils.screen_comment_guard import project_screen_history, strip_screen_labe
 
 from ._turn_context import _TurnContextMixin, is_turn_context_message
 from ._shared import (
+    _chat_route_config,
+    _note_legacy_vision,
     _answered_chunk,
     _generation_check,
     _find_by_identity,
@@ -745,7 +747,13 @@ class _ToolingMixin(_TurnContextMixin):
         """
         vision_model = getattr(self, "vision_model", "") or ""
         if not vision_model:
-            return False
+            # Images go to the chat model, which is expected to read them. Only
+            # a client built without an image choice has nothing that can, and
+            # a chat model known to reject images (this run) cannot either.
+            if getattr(self, "_image_choice", None) is None:
+                return False
+            from utils.legacy_vision import chat_refuses_images
+            return not chat_refuses_images(_chat_route_config(self))
         # Identical model IDs count as already vision-selected only with matching URL/key/protocol
         # routing too. Different vision routes still require switching below.
         if vision_model == self.model and _same_route(
@@ -756,6 +764,7 @@ class _ToolingMixin(_TurnContextMixin):
             getattr(self, "api_key", None),
             getattr(self, "provider_type", None),
         ):
+            _note_legacy_vision(self, "offline tool image")
             return True
         on_genai = bool(
             getattr(self, "_use_genai_sdk", False)
@@ -783,6 +792,7 @@ class _ToolingMixin(_TurnContextMixin):
                 vision_model, type(e).__name__, e,
             )
             return False
+        _note_legacy_vision(self, "offline tool image")
         return True
 
     def _tool_image_locale(self) -> str:
@@ -1008,6 +1018,23 @@ class _ToolingMixin(_TurnContextMixin):
         self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
         return self._reasoning_stream_seq
 
+    def _notify_response_start(self) -> None:
+        """Tell the host a reply's LLM request is about to go out.
+
+        Called in both stream entry points (stream_text and prompt_ephemeral)
+        once a reply is sure to be attempted. Synchronous on purpose: it must
+        not open an await window in prompt_ephemeral between its decline check
+        and the reply begin. Best-effort: a callback failure must never disturb
+        the stream. getattr default guards ``__new__`` test stubs that bypass
+        ``__init__``."""
+        cb = getattr(self, "on_response_start", None)
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:
+            logger.debug("on_response_start callback failed (ignored): %s", e)
+
     async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
         """Symmetric clear for ``_notify_reasoning_active``: push the bubble back to
         False when THIS stream still owns the active pulse. Required for callers
@@ -1052,7 +1079,13 @@ class _ToolingMixin(_TurnContextMixin):
           ``_genai_tools_unsupported`` so subsequent calls degrade to the
           OpenAI-compat path, which carries ``tools`` too.
         - Otherwise: ``_astream_openai_with_tools``.
+
+        ``_before_fallback_request`` (optional, synchronous) runs right before
+        a failed Gemini attempt falls back to OpenAI-compat within the same
+        call. The caller already checked its request before this call; the
+        fallback is a fresh request that may be the first to reach a provider.
         """
+        before_fallback_request = overrides.pop("_before_fallback_request", None)
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
@@ -1111,6 +1144,8 @@ class _ToolingMixin(_TurnContextMixin):
                     raise
                 if tool_leak_filter is not None:
                     tool_leak_filter.reset()
+            if callable(before_fallback_request):
+                before_fallback_request()
         async for chunk in self._astream_openai_with_tools(
             messages,
             _tool_leak_filter=tool_leak_filter,

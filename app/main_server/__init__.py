@@ -277,23 +277,31 @@ def initialize_steamworks(*, quiet: bool = False):
 def ensure_steamworks_initialized():
     """Retry Steamworks initialization after Steam is opened post-startup."""
     global steamworks
+    from utils.steam_state import (
+        get_steamworks_generation,
+        publish_if_generation_unchanged,
+    )
+
     if steamworks is not None:
         return steamworks
 
+    generation = get_steamworks_generation()
     logger.debug("尝试重新初始化 Steamworks...")
-    steamworks = initialize_steamworks(quiet=True)
-    try:
-        from main_routers.shared_state import set_steamworks
+    handle = initialize_steamworks(quiet=True)
 
-        set_steamworks(steamworks)
-    except Exception as exc:
-        logger.debug(
-            "Steamworks shared-state update failed during retry: %s", exc, exc_info=True
-        )
+    def _publish() -> None:
+        global steamworks
+        steamworks = handle
 
-    if steamworks is not None:
+    # A shutdown/reset during init bumps the generation. Dropping the result
+    # then keeps it out of this module global; otherwise the next retry would
+    # return it from the check above and ensure_steamworks() would install it.
+    # ensure_steamworks() applies the same guard to the shared cache.
+    if not publish_if_generation_unchanged(generation, _publish):
+        return None
+    if handle is not None:
         get_default_steam_info()
-    return steamworks
+    return handle
 
 
 def get_default_steam_info():
@@ -384,10 +392,11 @@ async def _request_memory_server_shutdown() -> None:
     """Request memory_server shutdown after main_server has finished its own cleanup."""
     try:
         from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
 
         shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-        async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
-            response = await client.post(shutdown_url)
+        client = get_internal_http_client()
+        response = await client.post(shutdown_url, timeout=1.0)
         if response.status_code == 200:
             logger.info("已向memory_server发送关闭信号")
         else:
@@ -651,22 +660,47 @@ def _avatar_tool_multipart_preflight(scope):
 from app.model_workshop_static import ModelWorkshopRequestGate
 app.add_middleware(ModelWorkshopRequestGate, config_getter=lambda: _config_manager)
 
+
+def _emote_template_multipart_preflight(scope):
+    if scope.get("path", "").rstrip("/") == "/api/emote-maker/export/file":
+        from main_routers.emote_template_router import _reject_unscoped_export
+
+        return _reject_unscoped_export(Request(scope))
+    return None
+
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
 # External memory import preview/commit upload the archive as base64 inside JSON: those two
 # exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
 # other route stays at 16 MiB.
+from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
+from main_routers.workshop_router.preview_cards import (  # noqa: E402
+    WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+)
+
+_non_multipart_body_limits = {
+    "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+}
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
-    json_path_limits={
-        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-    },
+    json_path_limits=_non_multipart_body_limits,
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
+    multipart_path_limits={
+        "/api/steam/workshop/upload-preview-image": WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
+    },
+)
+app.add_middleware(
+    InboundBodySizeLimitMiddleware,
+    json_path_limits=_non_multipart_body_limits,
+    multipart_path_prefix="/api/emote-maker",
+    multipart_methods=("POST",),
+    max_multipart_body_bytes=EMOTE_MAX_MULTIPART_BODY_BYTES,
+    multipart_preflight=_emote_template_multipart_preflight,
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
@@ -806,7 +840,7 @@ async def _stop_neko_servers_integration_workers() -> None:
 # Strong references to in-flight shutdown steps: a step outlives the await that
 # observes it (caller cancellation is absorbed, a deadline only cancels it), so
 # the event loop's weak task set alone could let it be collected mid-cleanup.
-_SHUTDOWN_STEP_TASKS: set[asyncio.Task[object]] = set()
+from utils.shutdown_steps import SHUTDOWN_STEP_TASKS as _SHUTDOWN_STEP_TASKS
 # How long a step that missed its deadline gets to finish handling the cancel.
 _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS = 1.0
 # Shared waiting budget from the first caller cancellation, including grace.
@@ -834,35 +868,6 @@ class _ShutdownCancellationBudget:
 
 
 
-def _consume_shutdown_task_result(task: asyncio.Task[object]) -> None:
-    # Retrieve the outcome so asyncio does not log "exception was never
-    # retrieved" for a step whose failure _run_shutdown_step already reported.
-    try:
-        task.exception()
-    except (asyncio.CancelledError, Exception):
-        pass
-
-
-def _forget_shutdown_step(task: asyncio.Task[object]) -> None:
-    _SHUTDOWN_STEP_TASKS.discard(task)
-    _consume_shutdown_task_result(task)
-
-
-def _log_abandoned_shutdown_step_outcome(what: str):
-    """Report how a step ended after _run_shutdown_step stopped waiting on it."""
-
-    def _report(task: asyncio.Task[object]) -> None:
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.warning(
-                "%s failed after shutdown stopped waiting for it: %s", what, exc
-            )
-
-    return _report
-
-
 async def _run_shutdown_step(
     factory,
     *,
@@ -872,119 +877,20 @@ async def _run_shutdown_step(
     cancelled_budget_seconds: float = 0.0,
     cancellation_budget: _ShutdownCancellationBudget | None = None,
 ) -> asyncio.CancelledError | None:
-    """Run one cleanup and defer caller cancellation to the end.
+    # Keep Main's existing budgets and import surface while sharing its
+    # cancellation/retention behavior with the other shutdown hooks.
+    from utils.shutdown_steps import run_shutdown_step
 
-    Shutdown is a sequence of independent cleanups (connector threads, game
-    tasks, integration workers, ZMQ bridge, Cloud Save, HTTP pools). A
-    cancellation delivered while any one of them is awaited must not skip the
-    rest, so each step absorbs it here and the caller re-raises once, after
-    everything else has run. ``except Exception`` does NOT cover this:
-    ``CancelledError`` is a ``BaseException``.
-
-    The cleanup runs in a strongly referenced child task observed through
-    ``asyncio.shield``, so cancelling ``on_shutdown`` cannot cancel the cleanup
-    it is currently waiting on. Each delivered caller cancellation is consumed
-    exactly once (``uncancel`` keeps ``cancelling()`` at zero for later steps)
-    and the first instance is returned for the caller to re-raise. A step that
-    misses its deadline is cancelled and, like ``asyncio.wait_for`` did before,
-    given a short grace period to actually stop before the next step runs; a
-    step that fails is logged. Neither is raised, because raising would drop a
-    cancellation this helper already absorbed.
-
-    ``deadline_monotonic=None`` waits for the step's own terminal state, for
-    work that cancelling the await cannot stop (a worker thread). Once the
-    caller has cancelled -- before this step or while it is awaited -- nothing
-    else would end that wait, so the step then gets ``cancelled_budget_seconds``
-    from that moment as its deadline (0 means it is not started, or is
-    cancelled right away).
-
-    When supplied, ``cancellation_budget`` is shared across the shutdown's
-    steps. Its clock starts on the first caller cancellation; both step waits
-    and cancellation grace are capped by it. Later cancellations do not reset
-    it. Exhaustion skips remaining asynchronous steps. This bounds cooperative
-    waits, not synchronous cleanup or process exit (worker threads may linger).
-    Consuming cancellation and re-raising at the end is deliberate; callers
-    must not rely on the task's ``cancelling()`` count retaining those requests.
-    """
-    if cancellation_budget is not None and pending_cancellation is not None:
-        cancellation_budget.start()
-    if deadline_monotonic is None and pending_cancellation is not None:
-        deadline_monotonic = time.monotonic() + cancelled_budget_seconds
-    if cancellation_budget is not None:
-        deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
-    if deadline_monotonic is not None and deadline_monotonic - time.monotonic() <= 0:
-        logger.warning("%s skipped: shutdown deadline already passed", what)
-        return pending_cancellation
-    try:
-        task = asyncio.create_task(factory(), name=f"shutdown:{what}")
-    except Exception as exc:
-        logger.warning("%s failed during shutdown: %s", what, exc)
-        return pending_cancellation
-    _SHUTDOWN_STEP_TASKS.add(task)
-    task.add_done_callback(_forget_shutdown_step)
-    timed_out = False
-    cancel_grace_seconds = _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
-    while not task.done():
-        remaining = None
-        if deadline_monotonic is not None:
-            remaining = deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                if timed_out:
-                    break
-                timed_out = True
-                logger.warning(
-                    "%s exceeded its shutdown deadline; cancelling it", what
-                )
-                task.cancel()
-                cancel_started = time.monotonic()
-                deadline_monotonic = (
-                    cancel_started + _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
-                )
-                if cancellation_budget is not None:
-                    deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
-                cancel_grace_seconds = max(0.0, deadline_monotonic - cancel_started)
-                continue
-        try:
-            async with asyncio.timeout(remaining):
-                await asyncio.shield(task)
-        except TimeoutError:
-            # The loop head decides between cancelling and giving up.
-            pass
-        except asyncio.CancelledError as exc:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                current.uncancel()
-                if pending_cancellation is None:
-                    pending_cancellation = exc
-                if deadline_monotonic is None:
-                    # The caller's cancel is the only thing that bounds this
-                    # wait; give the step its cancelled budget from now on.
-                    deadline_monotonic = time.monotonic() + cancelled_budget_seconds
-                if cancellation_budget is not None:
-                    cancellation_budget.start()
-                    deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
-                logger.debug(
-                    "%s observed caller cancellation; waiting for it to finish",
-                    what,
-                )
-            # Otherwise the step was cancelled (by itself or by the deadline);
-            # the task is done and the loop exits to report it below.
-        except Exception:
-            # The step itself failed; the task is done and is reported below.
-            pass
-    if not task.done():
-        logger.warning(
-            "%s did not stop within %.1fs after cancellation; moving on",
-            what,
-            cancel_grace_seconds,
-        )
-        task.add_done_callback(_log_abandoned_shutdown_step_outcome(what))
-    elif task.cancelled():
-        if not timed_out:
-            logger.warning("%s cancelled itself during shutdown", what)
-    elif (step_exc := task.exception()) is not None:
-        logger.warning("%s failed during shutdown: %s", what, step_exc)
-    return pending_cancellation
+    return await run_shutdown_step(
+        factory,
+        what=what,
+        deadline_monotonic=deadline_monotonic,
+        pending_cancellation=pending_cancellation,
+        cancelled_budget_seconds=cancelled_budget_seconds,
+        cancellation_budget=cancellation_budget,
+        cancel_grace_seconds=_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS,
+        logger=logger,
+    )
 
 
 async def _cancel_task_if_running(
@@ -1296,16 +1202,14 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
-            # Start heavyweight lazy-module background warmup after runtime init, preimporting genai/mcp,
-            # translatepy, and router dependencies before first use. Avoid early on_startup
-            # placement, which competes for GIL with critical runtime initialization.
+            # Start heavyweight lazy-module background warmup after runtime init, preimporting the
+            # SDKs the current config can reach (genai/mcp, router dependencies) before
+            # first use. Avoid early on_startup placement, which competes for GIL with critical
+            # runtime initialization.
             try:
-                from utils.module_warmup import (
-                    MAIN_SERVER_WARMUP,
-                    start_background_warmup,
-                )
+                from utils.module_warmup import start_main_server_warmup
 
-                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+                start_main_server_warmup()
             except Exception as _warmup_exc:
                 logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
 
@@ -1431,6 +1335,7 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        _register_legacy_vision_notice(role_state)
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1671,7 +1576,21 @@ async def on_shutdown():
         try:
             from utils.token_tracker import TokenTracker
 
-            TokenTracker.get_instance().save()
+            # Always submit the final save, including after the shared cancel
+            # budget expires. Only waiting for it consumes the remaining budget.
+            token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+
+            async def wait_token_save():
+                await asyncio.shield(asyncio.wrap_future(token_save))
+
+            shutdown_cancellation = await _run_shutdown_step(
+                wait_token_save,
+                what="token usage save",
+                deadline_monotonic=None,
+                cancelled_budget_seconds=_SHUTDOWN_CANCELLED_BUDGET_SECONDS,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"Token usage save on shutdown failed: {e}")
 
@@ -1966,3 +1885,24 @@ from .process_utils import (  # noqa: F401
     find_preview_image_in_folder,
     get_folder_size,
 )
+
+
+def _register_legacy_vision_notice(role_state) -> None:
+    """Show the legacy-vision deprecation notice on every connected character page."""
+    from utils.legacy_vision import register_notice_sink
+
+    async def _broadcast(message: str) -> bool:
+        delivered = False
+        for rs in list(role_state.values()):
+            manager = getattr(rs, "session_manager", None)
+            send_status = getattr(manager, "send_status", None)
+            if send_status is None:
+                continue
+            try:
+                # send_status reports whether the page's socket took it.
+                delivered = bool(await send_status(message)) or delivered
+            except Exception as exc:  # noqa: BLE001 - one closed page must not block the rest
+                logger.debug("legacy vision notice not delivered: %s", exc)
+        return delivered
+
+    register_notice_sink(_broadcast)

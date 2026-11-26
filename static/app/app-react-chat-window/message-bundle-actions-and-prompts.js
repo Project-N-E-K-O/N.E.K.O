@@ -579,6 +579,31 @@
         I.dispatchHostEvent('import-image', {});
     }
 
+    // 语音消息：聊天窗等待这个 Promise；拒绝时 Error.name 为 AudioMessageRejected，
+    // message 为 'busy' 表示会话忙，其余视为一般失败（草稿保留，可用同一 requestId 重试）
+    I.handleComposerAudioMessage = function handleComposerAudioMessage(payload) {
+        var handler = I.state.onComposerAudioMessage;
+        if (typeof handler !== 'function') {
+            var unavailable = new Error('unavailable');
+            unavailable.name = 'AudioMessageRejected';
+            return Promise.reject(unavailable);
+        }
+        return Promise.resolve().then(function () {
+            return handler(payload);
+        });
+    };
+
+    I.handleAudioMessageActiveChange = function handleAudioMessageActiveChange(active, phase) {
+        I.state.audioMessageActive = active === true;
+        I.state.audioMessagePhase = typeof phase === 'string' ? phase : (active === true ? 'active' : 'idle');
+        if (!I.state.audioMessageActive && typeof I.state.deferredAudioMessageTarget === 'string') {
+            // 草稿刚结束：被推迟的收起马上生效，不留可以再点麦克风的空档
+            I.state.audioMessageTarget = I.state.deferredAudioMessageTarget;
+            I.state.deferredAudioMessageTarget = null;
+            I.renderWindow();
+        }
+    };
+
     I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {
@@ -1431,7 +1456,7 @@
             reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
         } catch (e) {}
         if (reduceMotion) {
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
             return;
         }
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
@@ -1458,7 +1483,7 @@
             // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
             // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
             if (I.getCurrentChatSurfaceMode() !== 'compact') return;
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
@@ -2422,6 +2447,86 @@
         // session_id 是 uuid 实际撞概率几乎 0，对偶清理更干净）。codex P2 指出。
         I.state.choicePrompt = null;
         I.state._launchedMiniGameSessionIds = Object.create(null);
+        I.renderWindow();
+    }
+
+    function cloneChoicePrompt(prompt) {
+        if (!prompt || typeof prompt !== 'object') return null;
+        return Object.assign({}, prompt, {
+            options: Array.isArray(prompt.options)
+                ? prompt.options.map(function (opt) {
+                    return opt && typeof opt === 'object' ? Object.assign({}, opt) : opt;
+                })
+                : []
+        });
+    }
+
+    I.captureSwitchSnapshot = function captureSwitchSnapshot() {
+        return {
+            messages: I.state.messages.map(I.cloneMessage),
+            choicePrompt: cloneChoicePrompt(I.state.choicePrompt),
+            launchedMiniGameSessionIds: Object.keys(I.state._launchedMiniGameSessionIds || {}),
+            pendingIcebreakerGalgameHandoffMessageId: String(I.state.pendingIcebreakerGalgameHandoffMessageId || '')
+        };
+    }
+
+    I.restoreSwitchSnapshot = function restoreSwitchSnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        var snapshotMessages = Array.isArray(snapshot.messages)
+            ? snapshot.messages.map(I.cloneMessage).filter(Boolean)
+            : [];
+        var seenIds = Object.create(null);
+        var maxSnapshotSortKey = -1;
+        snapshotMessages.forEach(function (msg, idx) {
+            if (msg.id !== undefined && msg.id !== null && msg.id !== '') {
+                seenIds[String(msg.id)] = true;
+            }
+            if (typeof msg.sortKey !== 'number' || !Number.isFinite(msg.sortKey)) {
+                msg.sortKey = idx;
+            }
+            if (msg.sortKey > maxSnapshotSortKey) {
+                maxSnapshotSortKey = msg.sortKey;
+            }
+        });
+        var nextPostClearSortKey = maxSnapshotSortKey + 1;
+        var liveMessages = Array.isArray(I.state.messages) ? I.state.messages : [];
+        var postClearMessages = [];
+        liveMessages.forEach(function (msg) {
+            if (!msg) return;
+            var msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+            if (msgId && seenIds[msgId]) return;
+            if (msgId) seenIds[msgId] = true;
+            var cloned = I.cloneMessage(msg);
+            if (!cloned) return;
+            cloned.sortKey = nextPostClearSortKey++;
+            postClearMessages.push(cloned);
+        });
+        I.setMessages(snapshotMessages.concat(postClearMessages));
+
+        if (!I.state.choicePrompt && snapshot.choicePrompt) {
+            I.state.choicePrompt = cloneChoicePrompt(snapshot.choicePrompt);
+            scheduleChoicePromptReveal();
+        }
+
+        if (Array.isArray(snapshot.launchedMiniGameSessionIds) && snapshot.launchedMiniGameSessionIds.length > 0) {
+            if (!I.state._launchedMiniGameSessionIds || typeof I.state._launchedMiniGameSessionIds !== 'object') {
+                I.state._launchedMiniGameSessionIds = Object.create(null);
+            }
+            snapshot.launchedMiniGameSessionIds.forEach(function (sessionId) {
+                var normalizedId = String(sessionId || '');
+                if (normalizedId) {
+                    I.state._launchedMiniGameSessionIds[normalizedId] = true;
+                }
+            });
+        }
+
+        var restoredHandoffId = String(snapshot.pendingIcebreakerGalgameHandoffMessageId || '');
+        if (!I.state.pendingIcebreakerGalgameHandoffMessageId
+                && restoredHandoffId
+                && I.state.messages.some(function (msg) { return String(msg.id || '') === restoredHandoffId; })) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = restoredHandoffId;
+        }
+
         I.renderWindow();
     }
 

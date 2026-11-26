@@ -209,7 +209,8 @@ def _is_kimi_code_anthropic_base_url(base_url: str | None) -> bool:
     parsed = _parse_base_url(base_url)
     if parsed is None:
         return False
-    return (parsed.hostname or "").lower() == "api.kimi.com" and parsed.path.rstrip("/") == "/coding"
+    # api.kimi.ai is the overseas host of the same Kimi Code service.
+    return (parsed.hostname or "").lower() in ("api.kimi.com", "api.kimi.ai") and parsed.path.rstrip("/") == "/coding"
 
 def _normalize_anthropic_sdk_base_url(base_url: str | None) -> str | None:
     parsed = _parse_base_url(base_url)
@@ -714,7 +715,6 @@ _ANTHROPIC_BODY_OVERRIDE_KEYS = {
     "metadata",
     "stop_sequences",
     "system",
-    "temperature",
     "thinking",
     "top_k",
     "top_p",
@@ -765,7 +765,9 @@ class ChatAnthropic:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = None,
+        # Keyword-only from here: removing ``temperature`` (once the fourth
+        # parameter) must not let an old positional call shift into ``streaming``.
+        *,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -787,7 +789,6 @@ class ChatAnthropic:
                 raise RuntimeError("anthropic package is required for Anthropic-compatible providers") from exc
         self.model = model
         self.base_url = _normalize_anthropic_sdk_base_url(base_url)
-        self.temperature = temperature
         self.extra_body = dict(extra_body) if extra_body else {}
         self._max_tokens = _coerce_anthropic_max_tokens(
             max_tokens if max_tokens is not None else max_completion_tokens
@@ -843,8 +844,6 @@ class ChatAnthropic:
         if system:
             payload["system"] = system
         payload["max_tokens"] = int(self.max_tokens)
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
         if include_default_extra_body and self.extra_body:
             _apply_anthropic_body_fields(payload, self.extra_body)
         anthropic_tools = _convert_openai_tools_to_anthropic(self.tools)

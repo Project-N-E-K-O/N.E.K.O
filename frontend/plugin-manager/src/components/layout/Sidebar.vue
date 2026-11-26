@@ -27,7 +27,7 @@
       >
         <button
           class="nav-item"
-          :class="{ 'nav-item--active': isExactActive || isRouteActive(item.path) }"
+          :class="{ 'nav-item--active': isExactActive || isRouteActive(item.path), 'nav-item--sub': item.sub }"
           :aria-label="item.label"
           :title="collapsed ? item.label : undefined"
           :aria-current="isExactActive || isRouteActive(item.path) ? 'page' : undefined"
@@ -88,12 +88,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import type { Component } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import { useSidebarState } from '@/composables/useSidebarState'
-import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, HomeFilled, Tickets, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
 
 const emit = defineEmits<{ 'collapse-change': [collapsed: boolean] }>()
 const sidebar = ref<HTMLElement | null>(null)
@@ -120,19 +121,32 @@ const pluginStore = usePluginStore()
 
 const adapters = computed(() => pluginStore.pluginSummariesWithStatus.filter((p) => p.type === 'adapter'))
 
-const navItems = computed(() => [
-  { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
+type NavItem = { path: string; icon: Component; label: string; guideId?: string; sub?: boolean }
+// `sub`: what belongs to the entry above it, shown indented below it.
+const navItems = computed<NavItem[]>(() => [
+  { path: '/', icon: HomeFilled, label: t('power.nav.home') },
+  { path: '/familiars/space', icon: FolderOpened, label: t('power.nav.space') },
+  { path: '/familiars/commissions', icon: Tickets, label: t('power.nav.commissions'), sub: true },
+  { path: '/familiars/runtime', icon: Setting, label: t('power.nav.runtime') },
+  { path: '/familiars/mcp', icon: Link, label: t('power.nav.mcp'), sub: true },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
+  { path: '/plugins/_overview', icon: Odometer, label: t('power.nav.overview'), guideId: 'sidebar-dashboard', sub: true },
+  { path: '/plugins/_forge', icon: Tools, label: t('authoring.title'), sub: true },
   { path: '/knowledge', icon: Collection, label: t('nav.knowledge') },
   { path: '/model-api', icon: Connection, label: t('modelApi.title') },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
-  { path: '/workbench', icon: Tools, label: t('authoring.title') },
 ])
 
 function isRouteActive(path: string): boolean {
   if (path === '/') return route.path === '/'
-  return route.path.startsWith(path)
+  // The plugins' own entry is not the current page while one of the two below it is.
+  // Only those two: a plugin's own id may begin with an underscore.
+  if (path === '/plugins') {
+    const below = ['/plugins/_overview', '/plugins/_forge'].some(own => route.path === own || route.path.startsWith(`${own}/`))
+    return route.path === path || (route.path.startsWith('/plugins/') && !below)
+  }
+  return route.path === path || route.path.startsWith(`${path}/`)
 }
 
 onMounted(() => {

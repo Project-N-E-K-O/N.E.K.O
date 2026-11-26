@@ -1,22 +1,36 @@
 export type ModelCapability = 'text' | 'image_input' | 'tool_calling' | 'streaming'
 export type ModelProtocol = 'openai_chat' | 'anthropic_messages'
+export type ModelSlotSource = 'manual' | 'host_follow'
+export type HostApiSource = 'agent_advanced' | 'agent' | 'agent_small'
 
 export interface ModelSlotInput {
   name: string
+  source: ModelSlotSource
+  host_api: HostApiSource | null
   protocol: ModelProtocol
   base_url: string
   model: string
   api_key?: string
   capabilities: ModelCapability[]
-  defaults: { temperature: number | null; max_output_tokens: number | null }
+  defaults: { max_output_tokens: number | null }
   timeout_seconds: number
   fallback_slot_id: string | null
+}
+
+export interface HostSlotStatus {
+  configured: boolean
+  model?: string
+  protocol?: ModelProtocol
+  free?: boolean
+  error_code?: string
+  message?: string
 }
 
 export interface ModelSlot extends ModelSlotInput {
   id: string
   api_key: string
   api_key_preview?: string
+  host_status?: HostSlotStatus
   bound_by: { plugin_id: string; usage_id: string; version: number }[]
 }
 

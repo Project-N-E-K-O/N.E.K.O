@@ -1140,3 +1140,62 @@ def test_plugin_tree_walk_raises_like_rglob(tmp_path, monkeypatch, error):
     else:
         with pytest.raises(OSError):
             build_rules.walk_plugin_tree(tmp_path)
+
+
+def test_pack_plugin_and_bundle_normalize_nfd_filenames_to_nfc(tmp_path: Path) -> None:
+    import unicodedata
+    import zipfile
+
+    from plugin.neko_plugin_cli.core.install import install_package
+    from plugin.neko_plugin_cli.public import inspect_package, pack_bundle, pack_plugin
+
+    def _make_plugin(root: Path, plugin_id: str, nfd_filename: str) -> Path:
+        pdir = root / plugin_id
+        pdir.mkdir(parents=True)
+        (pdir / "plugin.toml").write_text(
+            f'[plugin]\nid = "{plugin_id}"\nname = "{plugin_id}"\nversion = "0.1.0"\n'
+            f'entry = "plugins.{plugin_id}:Plugin"\n',
+            encoding="utf-8",
+        )
+        (pdir / "__init__.py").write_text("class Plugin:\n    pass\n", encoding="utf-8")
+        (pdir / nfd_filename).write_text("hello", encoding="utf-8")
+        return pdir
+
+    nfd_name = unicodedata.normalize("NFD", "café.txt")
+    nfc_name = unicodedata.normalize("NFC", "café.txt")
+
+    single_dir = _make_plugin(tmp_path / "src_single", "nfd_single", nfd_name)
+    single_pkg = tmp_path / "out" / "nfd_single.neko-plugin"
+    pack_plugin(single_dir, single_pkg)
+
+    inspected = inspect_package(single_pkg)
+    assert inspected.payload_hash_verified is True
+    with zipfile.ZipFile(single_pkg) as zf:
+        assert f"payload/plugins/nfd_single/{nfc_name}" in zf.namelist()
+    installed = install_package(
+        single_pkg,
+        plugins_root=tmp_path / "inst_single",
+        profiles_root=tmp_path / "prof_single",
+    )
+    assert installed.payload_hash_verified is True
+    assert installed.installed_plugin_count == 1
+    assert (tmp_path / "inst_single" / "nfd_single" / nfc_name).is_file()
+
+    plug_a = _make_plugin(tmp_path / "src_bundle", "nfd_a", nfd_name)
+    plug_b = _make_plugin(tmp_path / "src_bundle", "nfd_b", "plain.txt")
+    bundle_pkg = tmp_path / "out" / "nfd_bundle.neko-bundle"
+    pack_bundle([plug_a, plug_b], bundle_pkg, bundle_id="nfd_bundle")
+
+    inspected_bundle = inspect_package(bundle_pkg)
+    assert inspected_bundle.payload_hash_verified is True
+    with zipfile.ZipFile(bundle_pkg) as zf:
+        assert f"payload/plugins/nfd_a/{nfc_name}" in zf.namelist()
+    installed_bundle = install_package(
+        bundle_pkg,
+        plugins_root=tmp_path / "inst_bundle",
+        profiles_root=tmp_path / "prof_bundle",
+    )
+    assert installed_bundle.payload_hash_verified is True
+    assert installed_bundle.installed_plugin_count == 2
+    assert (tmp_path / "inst_bundle" / "nfd_a" / nfc_name).is_file()
+    assert (tmp_path / "inst_bundle" / "nfd_b" / "plain.txt").is_file()

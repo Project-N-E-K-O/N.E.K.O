@@ -177,7 +177,9 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "function getIdleReturnBallScreenRect(container)" in source
     assert "window.screenX" in source
     assert "window.appInterpage && window.appInterpage.nekoBroadcastChannel" in source
-    assert "detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'" in source
+    # Drag demotion and the cat waking up on her own are forwarded by name so the
+    # Electron chat can tell them apart from a user-caused tier change.
+    assert "detail.source === 'return-ball-drag-demotion' || detail.source === 'cat-sleep-wake-demotion'" in source
     assert "'return-ball-dragging'" in source
     assert "scheduleIdleReturnBallDesktopDragState" in source
     assert "clearIdleReturnBallDesktopDragStateFrame" in source
@@ -700,7 +702,9 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "function exitIdleDock(options)" in source
     assert "function exitElectronIdleDock(options)" in source
     assert "preserveCurrentPosition" in source
-    assert "idleDockActive && detail.source === 'return-ball-drag-demotion'" in source
+    assert "detail.source === 'return-ball-drag-demotion' || catWokeUpAlone" in source
+    assert "parkRestoreForReturn: catWokeUpAlone" in source
+    assert "detail.reason === 'cat-sleep-wake-demotion'" in source
     assert "detail.reason === 'return-ball-drag-demotion'" in source
     assert "detail.reason === 'return-ball-drag-end'" in source
     assert "detail.reason === 'viewport-resize'" in source
@@ -716,3 +720,26 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "wasActive && saved && !preserveCurrentPosition" in source
     assert "wasActive && triggered && minimized && preserveCurrentPosition" in source
     assert "setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));" in source
+
+
+def test_close_window_drops_both_owed_reopens_after_cat_woke_alone():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    close_block = _between(source, "function closeWindow() {", "neko:main-ui-hidden-by-model-manager-changed")
+    assert "idleDockParkedRestore = null;" in close_block
+    assert "electronIdleDockParkedRestoreBounds = null;" in close_block
+
+
+def test_any_real_surface_change_drops_the_web_owed_reopen():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    set_mode_block = _between(source, "function setChatSurfaceMode(nextMode) {", "clearCompactMinimizePressTimer();")
+    # Unconditional: a later manual minimize after the chat was opened some
+    # other way (e.g. the theater) must not inherit the reopen.
+    # Anchor on the transition-queue return; an earlier guard may also return previousMode.
+    before_clear = _between(
+        set_mode_block,
+        "transitionOptions: transitionOptions\n            };\n            return previousMode;",
+        "idleDockParkedRestore = null;",
+    )
+    assert "if (" not in before_clear

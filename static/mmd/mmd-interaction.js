@@ -8,9 +8,33 @@ if (!THREE) {
     console.error('[MMD Interaction] THREE.js 未加载，交互功能将不可用');
 }
 
+// 桌面宿主接管模型拖动时（它直接挪承载模型的那一层），平移拖动不再由页面写模型坐标，
+// 否则两边同时挪同一个模型。判据和 Live2D 的 isLive2DHostModelDragActive 一致：
+// 宿主在 window.__nekoNiriPetPhysicalCrop 上声明 hostModelDragOwnershipVersion，
+// 再用 isHostModelDragActive() 报告这次按下是否由它接管。
+// 宿主只在自己接管了这次按下时让 isHostModelDragActive() 返回 true。已发布的桌面壳只对 Live2D 画布接管
+// （它的两条接管路径都要求当前是 Live2D 模型），三维模型下返回 false；能接管三维的壳会先读交互对象上的
+// hostModelDragOwnershipVersion。方法缺失或抛错按「已接管」处理沿用 Live2D 的约定：带版本号的宿主从一开始
+// 就同时提供这个方法，真走到这两种情况说明宿主不兼容，宁可不写坐标，也不和宿主同时挪模型。
+function isMMDHostModelDragActive() {
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    if (!api) return false;
+    const ownershipVersion = Number(api.hostModelDragOwnershipVersion);
+    if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;
+    if (typeof api.isHostModelDragActive !== 'function') return true;
+    try {
+        return api.isHostModelDragActive() !== false;
+    } catch (_) {
+        return true;
+    }
+}
+
 class MMDInteraction {
     constructor(manager) {
         this.manager = manager;
+        // 宿主据此判断这一版页面会按 isHostModelDragActive() 让出平移拖动、
+        // 并且画布尺寸没变时 onWindowResize 不重设画布。
+        this.hostModelDragOwnershipVersion = 1;
 
         // 拖拽和缩放
         this.isDragging = false;
@@ -419,7 +443,9 @@ class MMDInteraction {
             }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
-            if (this.dragMode === 'pan') {
+            if (this.dragMode === 'pan' && isMMDHostModelDragActive()) {
+                // 宿主接管了这次拖动：上面已记下指针（跨屏、拖动提示照常用），模型坐标由宿主负责。
+            } else if (this.dragMode === 'pan') {
                 // 像素精确平移模型（参考 VRM 风格，基于相机 FOV/距离）
                 const mesh = this.manager.currentModel?.mesh;
                 if (!mesh) return;
@@ -470,6 +496,8 @@ class MMDInteraction {
         };
 
         // 鼠标抬起
+        // 宿主接管拖动（isMMDHostModelDragActive）时，宿主要在页面处理这次松手之前撤掉接管、补好模型坐标，
+        // 结算（跨屏、出界回弹、保存）仍由这里做；三维模型没有宿主侧的结算入口（见 VRM 的 _endDrag）。
         this.mouseUpHandler = async (e) => {
             if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (this.isDragging) {
@@ -478,9 +506,9 @@ class MMDInteraction {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
-                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    // 点一下（没拖动）给个原地颤动的即时反馈；连点逐级加大、第 4 下生气
                     if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
-                        window.NekoAvatarClickShake.play(canvas);
+                        window.NekoAvatarClickShake.tap(canvas);
                     }
                 }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
@@ -578,7 +606,8 @@ class MMDInteraction {
             getModel: () => this.manager.currentModel?.mesh,
             setScale: scale => this.manager.currentModel.mesh.scale.setScalar(scale),
             enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.mesh
-                && !this.checkLocked() && !isYuiGuideDragLocked()
+                && !this.checkLocked() && !isYuiGuideDragLocked(),
+            isHostModelDragActive: isMMDHostModelDragActive
         });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler);
@@ -951,7 +980,8 @@ class MMDInteraction {
         return easingMap[easingType] || easingMap.easeOutCubic;
     }
 
-    _animateModelToPosition(startPosition, targetPosition) {
+    _animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return Promise.resolve(false);
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh) return Promise.resolve(false);
         if (!Number.isFinite(targetPosition?.x) || !Number.isFinite(targetPosition?.y) || !Number.isFinite(targetPosition?.z)) {
@@ -974,8 +1004,27 @@ class MMDInteraction {
         this._isSnappingModel = true;
 
         return new Promise((resolve) => {
-            this._snapResolve = resolve;
+            const animationToken = { isCurrentSettlement };
+            this._activeSnapAnimation = animationToken;
+            const finish = (result) => {
+                if (this._activeSnapAnimation === animationToken) {
+                    this._activeSnapAnimation = null;
+                    this._isSnappingModel = false;
+                    this._snapCancelFrame = null;
+                    this._snapResolve = null;
+                }
+                resolve(result);
+            };
+            animationToken.cancel = () => {
+                if (this._activeSnapAnimation === animationToken) this._snapCancelFrame?.();
+                finish(false);
+            };
+            this._snapResolve = finish;
             const animate = (currentTime) => {
+                if (this._activeSnapAnimation !== animationToken || !isCurrentSettlement() || this.manager.currentModel?.mesh !== mesh) {
+                    finish(false);
+                    return;
+                }
                 const elapsed = currentTime - startTime;
                 const progress = Math.min(elapsed / duration, 1);
                 const eased = easingFn(progress);
@@ -990,10 +1039,7 @@ class MMDInteraction {
                     this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     mesh.position.copy(targetPosition);
-                    this._isSnappingModel = false;
-                    this._snapCancelFrame = null;
-                    this._snapResolve = null;
-                    resolve(true);
+                    finish(true);
                 }
             };
 
@@ -1005,7 +1051,10 @@ class MMDInteraction {
      * 将 MMD 模型回弹到当前可见区域内。
      * 返回 true 表示位置被修正；修正完成后会保存最终位置。
      */
-    async _snapModelIntoScreen({ animate = true } = {}) {
+    async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return false;
+        const previousSnap = this._activeSnapAnimation;
+        if (previousSnap?.isCurrentSettlement?.() === false) previousSnap.cancel();
         if (this._isSnappingModel) return false;
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh || !this.manager.camera || !this.manager.renderer || !THREE) return false;
@@ -1023,21 +1072,24 @@ class MMDInteraction {
 
         let changed = false;
         if (animate) {
-            changed = await this._animateModelToPosition(startPosition, targetPosition);
+            changed = await this._animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement });
         } else {
             mesh.position.copy(targetPosition);
             changed = true;
         }
 
-        if (changed) {
-            await this._savePositionAfterInteraction();
+        if (changed && isCurrentSettlement()) {
+            await this._savePositionAfterInteraction({ isCurrentSettlement });
         }
         return changed;
     }
 
     // ═══════════════════ 偏好保存 ═══════════════════
 
-    async _savePositionAfterInteraction() {
+    async _savePositionAfterInteraction(options = {}) {
+        const isCurrentSettlement = typeof options.isCurrentSettlement === 'function'
+            ? options.isCurrentSettlement : () => true;
+        if (!isCurrentSettlement()) return false;
         if (!this.manager.currentModel || !this.manager.currentModel.url) return;
 
         const modelUrl = this.manager.currentModel.url;
@@ -1076,6 +1128,8 @@ class MMDInteraction {
                 console.warn('[MMD] 获取显示器信息失败:', error);
             }
         }
+
+        if (!isCurrentSettlement()) return false;
 
         // 视口信息（跨分辨率缩放归一化）
         let viewportInfo = null;

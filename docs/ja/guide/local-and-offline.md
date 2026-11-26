@@ -6,9 +6,9 @@ seoSchemaType: WebPage
 
 # N.E.K.O. は完全にオフラインで動作しますか、通信が必要な機能は何ですか？
 
-N.E.K.O. は、インストール後すぐに全機能をオフラインで使える製品ではありません。UI と既定のメモリ保存先はローカルで、一部コンポーネントはセルフホストできますが、通常の無料経路や、多くのモデル、音声、Steam、Cloud、Workshop、オンラインコンテンツ、Browser、Agent 機能にはネットワーク接続が必要です。
+N.E.K.O. は、インストール後すぐに全機能をオフラインで使える製品ではありません。UI と既定のメモリ保存先はローカルで、一部コンポーネントはセルフホストできますが、通常の無料経路や、多くのモデル、音声、オプションのクロスデバイス同期、Steam、Cloud、Workshop、オンラインコンテンツ、Browser、Agent 機能にはネットワーク接続が必要です。
 
-最終事実確認日：**2026-07-23**。
+最終事実確認日：**2026-11-22**。
 
 ## 混同してはいけない四つの用語
 
@@ -33,6 +33,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 | 同梱の無料 Profile | Project N.E.K.O. のリモートサービス | あり | ユーザー API キーは不要だが、オフラインではない |
 | ASR、TTS、voice registration | Provider による | 多くの場合あり | 一部の local TTS や vLLM-Omni 経路がある。要件は経路ごとに異なる |
 | Steam、Workshop、Steam Cloud | Steam サービス | あり | オフラインでは利用できない |
+| クロスデバイス会話・メモリ同期 | N.E.K.O. 同期サービス（`sync.nekotech.cn`） | 有効時のみ | 既定では無効。コミュニティ OAuth ログイン（`community.project-neko.cn`）が必要。キャラクターカードで同期を有効化して保存すると `includeHistory: true` が送信され既存の最近のメモリ履歴も含まれます（履歴用の別 UI トグルはなく、既定の `false` は省略時の直接 REST 呼び出しのみ）。Steam Cloud とは別経路 |
 | Browser、Feed、Trend、オンラインコンテンツ | 外部ソース | あり | ネットワークなしでは最新の外部コンテンツを取得できない |
 | リモート Agent channel | Channel による | 多くの場合あり | キーボード・マウス操作とブラウザー操作はローカルマシン上で行われるが、各ステップを決めるモデル呼び出しはリモートの場合がある |
 
@@ -55,6 +56,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 - 現在の N.E.K.O. サービス経路を通る無料 API request
 - 選択した cloud ASR、TTS、voice service へ送る音声 sample または text
 - ユーザーが明示的に実行する Steam Cloud / Workshop content
+- コミュニティ OAuth ログイン（`community.project-neko.cn`）後にキャラクターごとのクロスデバイス同期を有効化した場合、N.E.K.O. 同期サービス（`sync.nekotech.cn`）へ送信される会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付け
 - タスクがキーボード・マウス操作やブラウザー操作のツールを使っている間に、これらのツールが Agent のモデルへ返すデスクトップのスクリーンショットと Web ページの内容
 - Online feed、Browser request、リモート Agent work
 
@@ -68,7 +70,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 2. Text chat だけでなく、必要なすべての role が対応しているか確認する。
 3. 利用できる場合は local speech component を構成する。
 4. オプションの Embedding をローカルに保つ。
-5. 境界外となる Steam Cloud、Workshop、online feed、Browser work、remote Agent channel を無効化または使用しない。
+5. 境界外となるクロスデバイス会話同期、Steam Cloud、Workshop、online feed、Browser work、remote Agent channel を無効化または使用しない。
 6. Outbound 通信を遮断して実測し、機能低下する項目を記録する。
 
 Project N.E.K.O. には現在、これらをすべて自動で設定する検証済みの「ワンクリック・オフラインモード」はありません。

@@ -10,6 +10,7 @@ from main_logic.asr_client.transcript import (
     TranscriptEnvelope,
 )
 from main_logic.core import LLMSessionManager
+from main_logic.core.multimodal_turn import MultimodalTurn
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 
@@ -912,6 +913,186 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
         turn_id="turn-1",
         source="screen",
     )
+
+
+async def test_offline_fast_path_passes_which_frames_are_user_screenshots() -> None:
+    """History keeps a screenshot the user attached as an attachment, not a live frame."""
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.response_backend = "offline_vlm"
+    manager.handle_new_message = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.handle_interruption = AsyncMock()
+    session.submit_multimodal_turn = AsyncMock()
+    manager.session = session
+    turn = SimpleNamespace(
+        transcript="what is this",
+        source="screen",
+        images=("live-frame", "user-shot"),
+        turn_id="turn-1",
+        image_request_ids=(None, "req-1"),
+    )
+
+    assert await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    ) is True
+    session.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        ("live-frame", "user-shot"),
+        turn_id="turn-1",
+        source="screen",
+        image_request_ids=(None, "req-1"),
+    )
+
+
+def _fast_path_manager_revoking_during_tts():
+    """Offline fast path; screen consent is revoked while TTS is ensured."""
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.response_backend = "offline_vlm"
+    manager.handle_new_message = AsyncMock()
+    manager._screen_consent_revocation_epoch = 3
+
+    async def revoke():
+        manager._screen_consent_revocation_epoch += 1
+
+    manager.ensure_tts_pipeline_alive = AsyncMock(side_effect=revoke)
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.handle_interruption = AsyncMock()
+    session.submit_multimodal_turn = AsyncMock()
+    session.submit_external_voice_turn = AsyncMock()
+    manager.session = session
+    return manager, session
+
+
+def _frozen_turn(images, request_ids):
+    return MultimodalTurn(
+        turn_id="turn-1", session_epoch=0, route_generation=0,
+        start_image_generation=0, image_generation=1, captured_at=0.0,
+        images=images, transcript="what is this", source="screen",
+        request_id=None, image_request_ids=request_ids, consent_epoch=3,
+    )
+
+
+async def test_offline_fast_path_revocation_after_freeze_keeps_only_user_screenshots() -> None:
+    manager, session = _fast_path_manager_revoking_during_tts()
+
+    assert await manager._handoff_to_offline_vlm_and_submit(
+        _frozen_turn(("live-frame", "user-shot"), (None, "req-1")),
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    ) is True
+    session.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        ("user-shot",),
+        turn_id="turn-1",
+        source="screen",
+        image_request_ids=("req-1",),
+    )
+    session.submit_external_voice_turn.assert_not_awaited()
+
+
+async def test_offline_fast_path_revocation_after_freeze_sends_live_frames_as_text() -> None:
+    manager, session = _fast_path_manager_revoking_during_tts()
+
+    assert await manager._handoff_to_offline_vlm_and_submit(
+        _frozen_turn(("live-frame",), (None,)),
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    ) is True
+    session.submit_multimodal_turn.assert_not_awaited()
+    session.submit_external_voice_turn.assert_awaited_once_with(
+        "what is this", turn_id="turn-1",
+    )
+
+
+@pytest.mark.parametrize(
+    "images,request_ids,expect_frames",
+    [
+        (("live-frame", "user-shot"), (None, "req-1"), ("user-shot",)),
+        (("live-frame",), (None,), None),
+    ],
+)
+async def test_handoff_candidate_path_revocation_after_freeze(
+    images, request_ids, expect_frames,
+) -> None:
+    """Realtime -> offline handoff; consent is revoked during tool sync."""
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.input_mode = "audio"
+    manager.response_backend = "realtime"
+    manager._asr_route_mode = "independent"
+    manager._independent_asr_provider = "qwen"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+    manager._screen_consent_revocation_epoch = 3
+
+    async def revoke():
+        manager._screen_consent_revocation_epoch += 1
+
+    manager._sync_tools_to_active_session = AsyncMock(side_effect=revoke)
+    old_session = SimpleNamespace(
+        base_url="wss://www.lanlan.tech/core",
+        close=AsyncMock(),
+    )
+    manager.session = old_session
+    manager.message_handler_task = None
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+        submit_external_voice_turn=AsyncMock(),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+
+    assert await manager._handoff_to_offline_vlm_and_submit(
+        _frozen_turn(images, request_ids),
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    ) is True
+    assert manager.session is candidate
+    if expect_frames is None:
+        candidate.submit_multimodal_turn.assert_not_awaited()
+        candidate.submit_external_voice_turn.assert_awaited_once_with(
+            "what is this", turn_id="turn-1",
+        )
+    else:
+        candidate.submit_multimodal_turn.assert_awaited_once_with(
+            "what is this",
+            expect_frames,
+            turn_id="turn-1",
+            source="screen",
+            image_request_ids=("req-1",),
+        )
+        candidate.submit_external_voice_turn.assert_not_awaited()
 
 
 async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:

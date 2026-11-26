@@ -98,6 +98,10 @@ def isolate_test_process() -> None:
     PRODUCT_MODULES_BEFORE_ISOLATION = product_modules_loaded()
 
     os.environ[TELEMETRY_OPT_OUT_ENV] = "1"
+    # Test helpers rewrite config files directly and read them back at once;
+    # the hot-path read cache would serve the old text for up to two seconds.
+    # tests/unit/test_config_read_cache.py turns it back on to test it.
+    os.environ.setdefault("NEKO_CONFIG_READ_CACHE", "0")
 
     from tests import storage_root_env_guard
 

@@ -10,6 +10,7 @@
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <link rel="stylesheet" href="/static/tutorial/click-guide/click-guide.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/memory_browser.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/memory_browser_imprint.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
@@ -80,7 +81,7 @@
                 <img src="/static/icons/exclamation.png" alt="">
                 <div class="memory-tip-copy">
                     <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
-                    <span class="tip-text memory-tip-scope" data-i18n="memory.tip2">仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。</span>
+                    <span class="tip-text memory-tip-scope" data-i18n="memory.tip2">可浏览与 TA 共同留下的印记，校准长期印象，或编辑近期对话。</span>
                 </div>
             </div>
             <div class="main">
@@ -448,6 +449,22 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="review-toggle">
+                                <input type="checkbox" id="advanced-diagnostics-toggle-checkbox">
+                                <div class="review-toggle-control">
+                                    <div class="review-toggle-heading">
+                                        <label for="advanced-diagnostics-toggle-checkbox" class="review-toggle-title" data-i18n="memory.advancedDiagnostics">高级记忆诊断</label>
+                                        <button type="button" class="memory-setting-help" aria-label="了解高级记忆诊断" data-i18n-aria="memory.advancedDiagnosticsTooltipLabel" aria-describedby="advanced-diagnostics-tooltip">
+                                            <img src="/static/icons/exclamation.png" alt="" aria-hidden="true" draggable="false">
+                                        </button>
+                                        <span id="advanced-diagnostics-tooltip" class="memory-setting-tooltip" role="tooltip" data-i18n="memory.advancedDiagnosticsNote">面向进阶用户与开发者：在纠错页默认展开多维度记忆健康评分、向量覆盖率与 30 天记忆漏斗诊断。</span>
+                                    </div>
+                                    <label for="advanced-diagnostics-toggle-checkbox" class="auto-review-toggle-btn" aria-hidden="true">
+                                        <span class="auto-review-toggle-icon"></span>
+                                        <span class="auto-review-toggle-text" id="advanced-diagnostics-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                     <div class="file-list storage-location-section">
                         <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
@@ -470,7 +487,19 @@
                 <div class="editor">
                     <div class="memory-editor-header">
                         <div class="memory-editor-context">
-                            <div class="editor-title" data-i18n="memory.chatHistory">聊天记录</div>
+                            <div class="editor-title" id="memory-editor-active-title" data-i18n="memory.title">记忆浏览</div>
+                            <div class="memory-view-tabs" id="memory-view-tabs" role="tablist" aria-label="记忆视图切换" data-i18n-aria="memory.viewTabsAria">
+                                <button type="button" class="memory-view-tab" role="tab" id="memory-tab-imprint" data-memory-tab="imprint" aria-controls="memory-panel-imprint" aria-selected="true">
+                                    <span data-i18n="memory.tabImprint">我们的印记</span>
+                                </button>
+                                <button type="button" class="memory-view-tab" role="tab" id="memory-tab-profile" data-memory-tab="profile" aria-controls="memory-panel-profile" aria-selected="false">
+                                    <span data-i18n="memory.tabProfile">TA 眼中的你</span>
+                                    <span id="memory-profile-tab-badge" class="memory-tab-badge" hidden></span>
+                                </button>
+                                <button type="button" class="memory-view-tab" role="tab" id="memory-tab-recent" data-memory-tab="recent" aria-controls="memory-panel-recent" aria-selected="false">
+                                    <span data-i18n="memory.tabRecent">近期对话</span>
+                                </button>
+                            </div>
                         </div>
                         <div class="memory-editor-header-actions">
                             <button type="button" id="memory-visit-trigger" class="memory-editor-action" data-memory-panel-trigger="visit" aria-controls="memory-visit-panel" aria-expanded="false" disabled>
@@ -481,23 +510,27 @@
                             </button>
                         </div>
                     </div>
-                    <div id="memory-chat-edit"></div>
-                    <div class="editor-actions" id="save-row" style="display:none;">
-                        <div id="save-status" role="status" aria-live="polite" aria-atomic="true" hidden>
-                            <span class="memory-save-toast-icon" aria-hidden="true"></span>
-                            <span class="memory-save-toast-message"></span>
-                        </div>
-                        <div class="actions-right">
-                            <span id="memory-unsaved-status" class="memory-unsaved-status" aria-live="polite" hidden>
-                                <span class="memory-unsaved-dot" aria-hidden="true"></span>
-                                <span data-i18n="memory.unsavedChanges">未保存</span>
-                            </span>
-                            <button class="clear-btn" id="clear-memory-btn" data-i18n="memory.clear">
-                                <span>清空</span>
-                            </button>
-                            <button class="save-btn" id="save-memory-btn" data-i18n="memory.save">
-                                <span>保存</span>
-                            </button>
+                    <div id="memory-panel-imprint" class="memory-tab-panel" role="tabpanel" aria-labelledby="memory-tab-imprint"></div>
+                    <div id="memory-panel-profile" class="memory-tab-panel" role="tabpanel" aria-labelledby="memory-tab-profile" hidden></div>
+                    <div id="memory-panel-recent" class="memory-tab-panel memory-panel-recent-shell" role="tabpanel" aria-labelledby="memory-tab-recent" hidden>
+                        <div id="memory-chat-edit"></div>
+                        <div class="editor-actions" id="save-row" style="display:none;">
+                            <div id="save-status" role="status" aria-live="polite" aria-atomic="true" hidden>
+                                <span class="memory-save-toast-icon" aria-hidden="true"></span>
+                                <span class="memory-save-toast-message"></span>
+                            </div>
+                            <div class="actions-right">
+                                <span id="memory-unsaved-status" class="memory-unsaved-status" aria-live="polite" hidden>
+                                    <span class="memory-unsaved-dot" aria-hidden="true"></span>
+                                    <span data-i18n="memory.unsavedChanges">未保存</span>
+                                </span>
+                                <button class="clear-btn" id="clear-memory-btn" data-i18n="memory.clear">
+                                    <span>清空</span>
+                                </button>
+                                <button class="save-btn" id="save-memory-btn" data-i18n="memory.save">
+                                    <span>保存</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -531,9 +564,22 @@
             </div>
         </div>
     </div>
+    <div id="memory-lineage-backdrop" class="memory-lineage-backdrop" hidden></div>
+    <aside id="memory-lineage-drawer" class="memory-lineage-drawer" role="dialog" aria-modal="true" aria-labelledby="memory-lineage-drawer-title" tabindex="-1" hidden>
+        <div class="memory-lineage-drawer-header">
+            <h3 id="memory-lineage-drawer-title" data-i18n="memory.lineageDrawerTitle">为什么 TA 会这么记？</h3>
+            <button type="button" id="memory-lineage-drawer-close" class="memory-aux-panel-close" data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+            </button>
+        </div>
+        <div id="memory-lineage-drawer-body" class="memory-lineage-drawer-body"></div>
+    </aside>
     <script src="/static/app/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
     <script src="/static/js/memory_browser.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/memory_habitual_phrases.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/memory_browser_star_map.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/memory_browser_dag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/memory_browser_imprint.js?v={{ static_asset_version }}"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

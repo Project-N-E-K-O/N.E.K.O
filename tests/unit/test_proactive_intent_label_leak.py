@@ -195,3 +195,124 @@ def test_no_strip_localized_common_label_openers() -> None:
 def test_empty_input_safe() -> None:
     assert _strip_proactive_intent_label_leak("") == ""
     assert _strip_proactive_intent_label_leak("   ") == "   "
+
+
+def test_registry_covers_commitment_cue_intros_and_patterns() -> None:
+    from config.prompts.prompts_activity import (
+        TOPIC_COMMITMENT_CUE_INTROS,
+        TOPIC_COMMITMENT_CUE_LABELS,
+        get_proactive_intent_leak_label_patterns,
+    )
+
+    labels = get_proactive_intent_leak_labels()
+    for lang, intro in TOPIC_COMMITMENT_CUE_INTROS.items():
+        head = intro.split("：", 1)[0].split(":", 1)[0].strip()
+        assert head.casefold() in labels, f"commitment intro label missing for {lang}: {head!r}"
+
+    patterns = get_proactive_intent_leak_label_patterns()
+    assert len(patterns) >= 7
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert any(p.match(rendered) for p in patterns), f"commitment pattern missing for {lang}: {rendered!r}"
+
+
+def test_strip_commitment_cue_intros_and_templated_labels_all_locales() -> None:
+    from config.prompts.prompts_activity import TOPIC_COMMITMENT_CUE_LABELS
+
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert _strip_proactive_intent_label_leak(f"- {rendered}: 我没忘") == "我没忘", lang
+        assert _strip_proactive_intent_label_leak(f"{rendered}\nHello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"【{rendered}】\nHello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"({rendered})\nHello there") == "Hello there", lang
+
+    # Also handle {due} containing a colon (e.g. time of day).
+    assert _strip_proactive_intent_label_leak(
+        "Promise (due 2026-11-03 18:00): I bought the cake"
+    ) == "I bought the cake"
+    assert _strip_proactive_intent_label_leak("答应过的事：上次说的蛋糕买好了") == "上次说的蛋糕买好了"
+
+
+def test_no_strip_commitment_phrases_in_natural_speech() -> None:
+    for txt in (
+        "答应过的事我可没忘，蛋糕买好了",
+        "Promise I kept: I bought the cake",
+        "約束はちゃんと覚えてるよ",
+        "Promise (due 2026-11-03) is something (aside) / wrote",
+        "/Promise (due 2026-11-03)something",
+    ):
+        assert _strip_proactive_intent_label_leak(txt) == txt
+
+
+def test_strip_slash_prefix_templated_commitment_labels_all_locales() -> None:
+    from config.prompts.prompts_activity import TOPIC_COMMITMENT_CUE_LABELS
+
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert _strip_proactive_intent_label_leak(f"{rendered} / Hello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"/{rendered} Hello there") == "Hello there", lang
+
+    # Static intro prefix must not shadow the longer templated {due} label.
+    assert _strip_proactive_intent_label_leak("/答应过的事（期限 2026-11-03）你好") == "你好"
+    # Nested parentheses inside {due} must remain balanced on the same line.
+    assert _strip_proactive_intent_label_leak("Promise (due Nov 3 (Mon)) / Hello there") == "Hello there"
+    assert _strip_proactive_intent_label_leak("/Promise (due Nov 3 (Mon)) Hello there") == "Hello there"
+    assert _strip_proactive_intent_label_leak("/答应过的事（期限 11月3日（周一））你好") == "你好"
+
+
+def test_strip_commitment_label_does_not_cross_paren_boundary_into_prose() -> None:
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due 2026-11-03): I bought the cake (finally)\nWant some?"
+        )
+        == "I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due Nov 3 (Mon)): I bought the cake (finally)\nWant some?"
+        )
+        == "I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "答应过的事（期限 2026-11-03）：我买到蛋糕了（终于）\n要不要尝尝？"
+        )
+        == "我买到蛋糕了（终于）\n要不要尝尝？"
+    )
+    assert (
+        _strip_proactive_intent_label_leak("Promise (due Nov 3 (Mon))\nWant some?")
+        == "Want some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due 2026-11-03) I bought the cake (finally)\nWant some?"
+        )
+        == "Promise (due 2026-11-03) I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak("Promise (due 2026-11-03) is something (aside): keep me")
+        == "Promise (due 2026-11-03) is something (aside): keep me"
+    )
+
+
+def test_unclosed_templated_commitment_label_avoids_catastrophic_backtracking() -> None:
+    """Reject long unclosed templated labels in linear time without ReDoS stalling."""
+    import time
+
+    from config.prompts.prompts_activity import get_proactive_intent_leak_label_patterns
+
+    patterns = get_proactive_intent_leak_label_patterns()
+    adversarial_inputs = [
+        "Promise (due " + "a" * 2000,
+        "Promise (due " + "(x)a" * 500,
+        "Promise (due " + "a(" * 500,
+        "约定（截止 " + "あ" * 2000,
+        "约定（截止 " + "（日）あ" * 500,
+    ]
+    start = time.perf_counter()
+    for text in adversarial_inputs:
+        for pattern in patterns:
+            assert pattern.match(text) is None
+        assert _strip_proactive_intent_label_leak(text) == text
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.5, f"Unclosed commitment label check took too long: {elapsed:.3f}s"

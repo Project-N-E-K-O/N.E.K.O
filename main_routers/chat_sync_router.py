@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
 from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+from services.chat_sync.writer import WriterQuarantined
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
 
@@ -60,7 +61,10 @@ class ProfileImportRequest(BaseModel):
 
 async def _runtime():
     """Resolve the configured runtime root only after local authorization."""
-    return await get_desktop_chat_sync_runtime(get_config_manager())
+    try:
+        return await get_desktop_chat_sync_runtime(get_config_manager())
+    except WriterQuarantined as exc:
+        raise _error(exc) from None
 
 
 Runtime = Annotated[object, Depends(_runtime)]
@@ -88,7 +92,8 @@ def _error(exc: ValueError) -> HTTPException:
     """Expose fixed adapter errors without bearer, network body or account PII."""
     code = str(exc)
     status = 401 if code == "chat_sync_login_required" else 409
-    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later"}:
+    if code in {"chat_sync_unavailable", "chat_sync_network_unavailable", "chat_sync_internal_error",
+                "chat_sync_service_rejected", "chat_sync_retry_later"}:
         status = 503
     return HTTPException(status, code, headers={"Cache-Control": "no-store"})
 
@@ -122,6 +127,7 @@ async def status(runtime: Runtime):
             **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch", "localOnlyOriginals")},
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
+            "channelStatus": binding.get("channelStatus"),
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
             # Fixed local codes: capacity, archive subject or inbox waiting states.
             "localMemoryDiagnostics": binding.get("localMemoryDiagnostics", []),
@@ -175,7 +181,17 @@ async def history(character_uid: str, runtime: Runtime):
 @router.get("/characters/{character_uid}/model-sync")
 async def model_sync_status(character_uid: str, runtime: Runtime):
     await _character(character_uid)
-    return await runtime.models.status(character_uid)
+    try:
+        return await runtime.models.status(character_uid)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "chat_sync_character_not_found":
+            raise HTTPException(404, code, headers={"Cache-Control": "no-store"}) from None
+        if not code.startswith("chat_sync_"):
+            exc = ValueError("chat_sync_unavailable")
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
 
 
 @router.post("/characters/{character_uid}/model-sync/{token}")

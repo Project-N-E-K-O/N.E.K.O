@@ -681,10 +681,12 @@ async def test_a_truncation_discard_wraps_up_only_while_its_reply_owns_the_turn(
 
 
 @pytest.mark.parametrize("current", [True, False])
-async def test_a_stale_reply_skips_the_takeover_cleanup(current):
-    """During a game takeover an ordinary completion clears the shared output.
-    A retired reply that no longer owns the turn must not: that would cut the
-    takeover's own speech and wipe its bookkeeping. A current one still does."""
+@pytest.mark.parametrize("req_owner", ["req-A", "req-mirror"])
+async def test_a_stale_reply_skips_the_takeover_cleanup(current, req_owner):
+    """During a game takeover an ordinary completion clears the shared output
+    and compare-and-clears _active_text_request_id (preserving foreign takeover
+    request ids), while emitting 'turn abandoned' without a sync 'turn end'.
+    A retired reply that no longer owns the turn must skip the shared cleanup."""
     mgr = _core_manager()
     mgr._takeover_active = True
     mgr._clear_tts_pipeline = AsyncMock()
@@ -692,13 +694,62 @@ async def test_a_stale_reply_skips_the_takeover_cleanup(current):
     if not current:
         mgr.current_speech_id = "speech-mirror"  # the takeover speaks meanwhile
     mgr._current_ai_turn_text = "镜像台词"
-    mgr._active_text_request_id = "req-mirror"
+    mgr._active_text_request_id = req_owner
 
     await mgr.handle_response_complete(reply_turn=reply_turn)
 
     assert mgr._clear_tts_pipeline.await_count == (1 if current else 0)
     assert mgr._current_ai_turn_text == ("" if current else "镜像台词")
-    assert mgr._active_text_request_id == (None if current else "req-mirror")
+    expected_req = None if req_owner == "req-A" else "req-mirror"
+    assert mgr._active_text_request_id == expected_req
+    assert _sync(mgr, "turn end") == []
+    if current:
+        assert [m.get("request_id") for m in _ws(mgr, "turn abandoned")] == ["req-A"]
+        assert reply_turn.turn_ended is True
+    else:
+        assert _ws(mgr, "turn abandoned") == []
+
+
+@pytest.mark.parametrize("intervened", [False, True])
+async def test_takeover_unbound_completion_emits_turn_abandoned_and_compare_clears(intervened):
+    """R1111-P2-02: unbound completion under takeover emits turn abandoned and compare-and-clears."""
+    mgr = _core_manager()
+    mgr._takeover_active = True
+    mgr._active_text_request_id = "req-1"
+
+    async def clear_tts(*, still_owned=None):
+        if intervened:
+            mgr._active_text_request_id = "req-2"
+            mgr._current_ai_turn_text = "新回复"
+            mgr._pending_turn_meta = {"request_id": "req-2"}
+            mgr._discarded_turn_open = True
+
+    mgr._clear_tts_pipeline = AsyncMock(side_effect=clear_tts)
+
+    await mgr.handle_response_complete()
+
+    assert [m.get("request_id") for m in _ws(mgr, "turn abandoned")] == ["req-1"]
+    assert _sync(mgr, "turn end") == []
+    assert mgr._active_text_request_id == ("req-2" if intervened else None)
+    if intervened:
+        assert mgr._current_ai_turn_text == "新回复"
+        assert mgr._pending_turn_meta == {"request_id": "req-2"}
+        assert mgr._discarded_turn_open
+
+
+async def test_takeover_completion_on_installed_client_preserves_rotated_speech():
+    mgr = _core_manager()
+    mgr._takeover_active = True
+    reply_turn = _retired_reply(mgr)
+    reply_turn.session = mgr.session
+    mgr.current_speech_id = "mirror"
+    mgr._current_ai_turn_text = "镜像台词"
+    mgr._clear_tts_pipeline = AsyncMock()
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr._current_ai_turn_text == "镜像台词"
+    assert mgr._active_text_request_id is None
+    assert [m["request_id"] for m in _ws(mgr, "turn abandoned")] == ["req-A"]
 
 
 async def test_the_avatar_path_hands_its_own_snapshot_to_the_client(monkeypatch):
@@ -1081,3 +1132,103 @@ async def test_a_takeover_dropped_completion_leaves_no_discard_flag_behind(displ
         if isinstance(m, dict) and str(m.get("data", "")).startswith("turn end")
     ]
     assert turn_ends == []
+
+
+@pytest.mark.parametrize("rotate", [True, False])
+async def test_takeover_completion_rechecks_speech_id_before_clearing_cache_under_lock(rotate):
+    """Under takeover, rotating current_speech_id while _finish_tts_clear waits on
+    tts_cache_lock must preserve the new speech's pending chunks and TTS-done flags."""
+    mgr = _core_manager()
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr._takeover_active = True
+    mgr.current_speech_id = "speech-old"
+    mgr.tts_pending_chunks = [("speech-old", "old line")]
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = True
+    reply_turn = _retired_reply(mgr)
+    reply_turn.session = mgr.session
+
+    waiting_for_lock = asyncio.Event()
+    real_finish = mgr._finish_tts_clear
+
+    async def tracked_finish(interrupt, **kwargs):
+        waiting_for_lock.set()
+        await real_finish(interrupt, **kwargs)
+
+    mgr._finish_tts_clear = tracked_finish
+
+    await mgr.tts_cache_lock.acquire()
+    completion = asyncio.create_task(mgr.handle_response_complete(reply_turn=reply_turn))
+    try:
+        await asyncio.wait_for(waiting_for_lock.wait(), 5)
+        await asyncio.sleep(0)
+        if rotate:
+            mgr.current_speech_id = "speech-mirror"
+            mgr.tts_pending_chunks.append(("speech-mirror", "mirror line"))
+            mgr._tts_done_queued_for_turn = True
+            mgr._tts_done_pending_until_ready = True
+    finally:
+        mgr.tts_cache_lock.release()
+
+    await asyncio.wait_for(completion, 5)
+    if rotate:
+        assert mgr.tts_pending_chunks == [("speech-mirror", "mirror line")]
+        assert mgr._tts_done_queued_for_turn is True
+        assert mgr._tts_done_pending_until_ready is True
+    else:
+        assert mgr.tts_pending_chunks == []
+        assert mgr._tts_done_queued_for_turn is False
+        assert mgr._tts_done_pending_until_ready is False
+
+
+@pytest.mark.parametrize("rotate", [True, False])
+async def test_takeover_completion_rechecks_speech_id_after_interrupt_land_sleep(
+    monkeypatch, rotate,
+):
+    """Under takeover, rotating current_speech_id during the 20ms interrupt sleep
+    must leave the new speech's queued audio, pending chunks, and flags intact."""
+    from main_logic.core import tts_runtime as tts_runtime_module
+
+    mgr = _core_manager()
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr._takeover_active = True
+    mgr.current_speech_id = "speech-old"
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_pending_chunks = [("speech-old", "old line")]
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = True
+    reply_turn = _retired_reply(mgr)
+    reply_turn.session = mgr.session
+
+    sleeping = asyncio.Event()
+    release = asyncio.Event()
+
+    async def parked_sleep(_delay):
+        sleeping.set()
+        await release.wait()
+
+    monkeypatch.setattr(tts_runtime_module.asyncio, "sleep", parked_sleep)
+
+    completion = asyncio.create_task(mgr.handle_response_complete(reply_turn=reply_turn))
+    await asyncio.wait_for(sleeping.wait(), 5)
+    if rotate:
+        mgr.current_speech_id = "speech-mirror"
+        mgr.tts_response_queue.put(("speech-mirror", b"mirror-audio"))
+        mgr.tts_pending_chunks.append(("speech-mirror", "mirror line"))
+        mgr._tts_done_queued_for_turn = True
+        mgr._tts_done_pending_until_ready = True
+    else:
+        mgr.tts_response_queue.put(("speech-old", b"leaked-audio"))
+    release.set()
+
+    await asyncio.wait_for(completion, 5)
+    if rotate:
+        assert ("speech-mirror", b"mirror-audio") in mgr.tts_response_queue.messages
+        assert mgr.tts_pending_chunks == [("speech-mirror", "mirror line")]
+        assert mgr._tts_done_queued_for_turn is True
+        assert mgr._tts_done_pending_until_ready is True
+    else:
+        assert mgr.tts_response_queue.messages == []
+        assert mgr.tts_pending_chunks == []
+        assert mgr._tts_done_queued_for_turn is False
+        assert mgr._tts_done_pending_until_ready is False

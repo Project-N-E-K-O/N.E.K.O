@@ -26,7 +26,8 @@ import os
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
-from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_logic.core._shared import _reply_observation_owner
+from main_logic.tool_calling import ToolCall, ToolDefinition, ToolOwnerCheck, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
     RECALL_MEMORY_TOOL_BUDGET_MS,
@@ -77,7 +78,13 @@ class ToolCallingMixin:
     # Tool calling — public API for agent_server / plugins
     # ------------------------------------------------------------------
 
-    def register_tool(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    def register_tool(
+        self,
+        tool: ToolDefinition,
+        *,
+        replace: bool = True,
+        owner_check: ToolOwnerCheck | None = None,
+    ) -> None:
         """Register a tool with the unified registry.
 
         - ``tool.handler`` is an in-process callable (recommended) — same-process
@@ -92,11 +99,21 @@ class ToolCallingMixin:
         to wait until "the tool is genuinely live on the wire" before returning,
         use ``await register_tool_and_sync(...)`` instead (the HTTP
         /api/tools/register endpoint already uses that path automatically).
+
+        ``owner_check`` makes the write conditional on who holds the name; see
+        ``ToolRegistry.register`` (raises ``ToolOwnershipError`` on refusal,
+        nothing is synced then).
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
         self._fire_task(self._sync_tools_to_active_session())
 
-    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    async def register_tool_and_sync(
+        self,
+        tool: ToolDefinition,
+        *,
+        replace: bool = True,
+        owner_check: ToolOwnerCheck | None = None,
+    ) -> None:
         """The awaitable version of ``register_tool``: registers, then waits for the session sync push to finish.
 
         For remote entries like HTTP `/api/tools/register` — by the time the
@@ -109,21 +126,25 @@ class ToolCallingMixin:
         ⚠️ ``raise_on_failure=True``: if the session.update genuinely fails on the
         wire, propagate the exception upward, so HTTP /api/tools doesn't return a
         false ok=true.
+
+        ``owner_check``: as in ``register_tool``.
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
-    def unregister_tool(self, name: str) -> bool:
+    def unregister_tool(self, name: str, *, owner_check: ToolOwnerCheck | None = None) -> bool:
+        """Remove a tool; ``owner_check`` makes it conditional, see ``ToolRegistry.unregister``."""
         holders = self._yielding_builtin_holders()
-        existed = self.tool_registry.unregister(name)
+        existed = self.tool_registry.unregister(name, owner_check=owner_check)
         if existed:
             self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
-    async def unregister_tool_and_sync(self, name: str) -> bool:
+    async def unregister_tool_and_sync(self, name: str, *, owner_check: ToolOwnerCheck | None = None) -> bool:
+        """The awaitable version of ``unregister_tool``."""
         holders = self._yielding_builtin_holders()
-        existed = self.tool_registry.unregister(name)
+        existed = self.tool_registry.unregister(name, owner_check=owner_check)
         if existed:
             self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
@@ -184,7 +205,16 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
-        result = await self.tool_registry.execute(call)
+        if call.name == DISPATCH_TOOL_NAME:
+            # The reply that emitted the call may finish after a new user input.
+            # A provider without reply ownership has no attributable input here.
+            owner_token = _reply_observation_owner.set(call.reply_owner)
+            try:
+                result = await self.tool_registry.execute(call)
+            finally:
+                _reply_observation_owner.reset(owner_token)
+        else:
+            result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
@@ -297,7 +327,7 @@ class ToolCallingMixin:
     # ------------------------------------------------------------------
     # Built-in tools: dispatch_task / query_tasks
     # ------------------------------------------------------------------
-    # Her two task tools. They exist only while NekoClaw is switched on for
+    # Her two task tools. They exist only while NekoPower is switched on for
     # this session (``_is_agent_enabled``), so a session without it does not
     # carry their definitions. Both take one sentence and no identifier: the
     # task brain in the agent process keeps the record and works out which
@@ -383,11 +413,10 @@ class ToolCallingMixin:
         import httpx
 
         from config import TOOL_SERVER_PORT
-        from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
+        from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
+        from utils.internal_http_client import InternalServiceSigningError, get_internal_http_client
 
         try:
-            from utils.internal_http_client import get_internal_http_client
-
             client = get_internal_http_client()
             resp = await asyncio.wait_for(
                 client.post(
@@ -397,7 +426,12 @@ class ToolCallingMixin:
                 ),
                 TASK_TOOL_TIMEOUT_SECONDS,
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            InternalServiceSigningError,
+        ) as exc:
             logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
             return None, False
         except Exception as exc:
@@ -436,15 +470,21 @@ class ToolCallingMixin:
         task = task.strip() if isinstance(task, str) else ""
         if not task:
             return _loc(TASK_TOOL_EMPTY, _lang)
+        owner = _reply_observation_owner.get()
+        input_id = getattr(owner, "observation_input_id", None)
+        current_turn = str(getattr(self, "current_speech_id", "") or "")
+        dispatch_turn = getattr(owner, "speech_id", None) or current_turn
+        user_text = getattr(self, "_latest_user_utterance", "") if dispatch_turn == current_turn else ""
         data, may_have_arrived = await self._post_to_task_system(
-            "/nekoclaw/dispatch",
+            "/nekopower/dispatch",
             {
                 "text": task,
                 "lanlan_name": self.lanlan_name,
                 # The user's own words of this turn, as far as they are known
                 # by now; plugins get them as ``_ctx.latest_user_request``.
-                "user_text": getattr(self, "_latest_user_utterance", "") or "",
-                "conversation_id": str(getattr(self, "current_speech_id", "") or ""),
+                "user_text": user_text or "",
+                **({"source_message_ref": f"conversation_input:{input_id}"} if input_id else {}),
+                "conversation_id": dispatch_turn,
                 "language": self.user_language,
             },
         )
@@ -465,7 +505,7 @@ class ToolCallingMixin:
         question = args_dict.get("question")
         question = question.strip() if isinstance(question, str) else ""
         data, _may_have_arrived = await self._post_to_task_system(
-            "/nekoclaw/query",
+            "/nekopower/query",
             {"text": question, "lanlan_name": self.lanlan_name, "language": self.user_language},
         )
         text = str((data or {}).get("text") or "").strip()

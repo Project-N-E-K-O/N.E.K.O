@@ -42,7 +42,7 @@ def test_provider_connectivity(loaded_api_keys, provider_key, env_var, clean_use
     assert provider_key in assist_profiles, f"Provider {provider_key} not found in assist_profiles"
     profile = assist_profiles[provider_key]
     
-    logger.info(f"Testing provider: {provider_key} with model {profile.get('CORRECTION_MODEL')}")
+    logger.info(f"Testing provider: {provider_key} with model {profile.get('MEMORY_MODEL')}")
 
 
     # Instantiate OmniOfflineClient
@@ -57,7 +57,7 @@ def test_provider_connectivity(loaded_api_keys, provider_key, env_var, clean_use
         client = OmniOfflineClient(
             base_url=profile['OPENROUTER_URL'],
             api_key=api_key,
-            model=profile['CORRECTION_MODEL'],
+            model=profile['MEMORY_MODEL'],
             vision_model=profile.get('VISION_MODEL', ''),
             vision_base_url=profile.get('VISION_BASE_URL', ''), 
             vision_api_key=profile.get('VISION_API_KEY', ''),

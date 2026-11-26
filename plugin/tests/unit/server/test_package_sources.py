@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import sys
 import time
 
 from fastapi import FastAPI
@@ -51,7 +52,7 @@ def test_measured_routes_change_priority_without_removing_other_routes():
     candidates = sources.download_candidates(URL, sources.DownloadPreferences())
     assert candidates[0][0] == "cdn-gh-proxy-org"
     assert candidates[-1][0] == "github-direct"
-    assert len(candidates) == 6
+    assert len(candidates) == 5
     asyncio.run(sources.reset_transfer_history())
     assert sources.download_candidates(URL, sources.DownloadPreferences())[0][0] == "github-direct"
 
@@ -59,9 +60,9 @@ def test_measured_routes_change_priority_without_removing_other_routes():
 def test_latency_dominates_typical_packages_and_failures_decay():
     # Fast first byte beats raw throughput for a megabyte-sized package.
     record("gh-proxy-com", latency=0.15, throughput=4 * 1024 * 1024)
-    record("hk-gh-proxy-org", latency=1.5, throughput=40 * 1024 * 1024)
+    record("edgeone-gh-proxy-org", latency=1.5, throughput=40 * 1024 * 1024)
     order = [key for key, _ in sources.download_candidates(URL, sources.DownloadPreferences())]
-    assert order.index("gh-proxy-com") < order.index("hk-gh-proxy-org")
+    assert order.index("gh-proxy-com") < order.index("edgeone-gh-proxy-org")
 
     record("gh-proxy-com", failed=True, now=1000.0)
     now = 1000.0
@@ -212,7 +213,7 @@ async def test_saved_policy_uses_catalogue_url_and_one_shared_deadline(monkeypat
     async def install(current, payload, context):
         seen.append(payload.package_url)
         route = current["_download_route"]
-        assert len(route.candidates) == (1 if snapshot else 6)
+        assert len(route.candidates) == (1 if snapshot else 5)
         assert route.deadline > 0
         current["result"] = {}
 
@@ -268,3 +269,167 @@ async def test_mixed_source_hash_failure_retries_once_without_resetting_budget(t
     assert path == good and check == "passed"
     assert attempts == [URL]
     assert not bad.exists()
+
+
+class _Warnings:
+    def __init__(self):
+        self.messages = []
+
+    def warning(self, message, *args):
+        self.messages.append(message.format(*args))
+
+    def info(self, message, *args):
+        pass
+
+
+def _load_routes(monkeypatch, text):
+    warnings = _Warnings()
+    monkeypatch.setattr(sources, "logger", warnings)
+    sources.route_stats_path().write_text(text, encoding="utf-8")
+    sources._routes.clear()
+    sources._loaded = False
+    sources._ensure_loaded()
+    return warnings
+
+
+def test_corrupt_route_data_is_dropped_field_by_field_or_route_by_route(monkeypatch):
+    now = time.time()
+    good = {"latency": 0.05, "throughput": 8 * 1024 * 1024, "failures": 0, "samples": 5, "updated": now}
+    # Raw JSON, because json.dumps cannot write an integer of this size as a float.
+    text = (
+        '{"routes": {'
+        f'"cdn-gh-proxy-org": {json.dumps(good)},'
+        f'"gh-proxy-com": {json.dumps({**good, "latency": 0.5, "updated": now + 30 * 24 * 3600})},'
+        f'"gh-proxy-org": {json.dumps({**good, "latency": float("inf"), "failures": 2})},'
+        f'"edgeone-gh-proxy-org": {json.dumps({**good, "throughput": "fast"})},'
+        f'"github-direct": {json.dumps(good)[:-1]}, "failures": {10 ** 400}}}'
+        '}}'
+    )
+    warnings = _load_routes(monkeypatch, text)
+    loaded_at = time.time()
+    assert list(sources._routes) == ["cdn-gh-proxy-org", "gh-proxy-com", "gh-proxy-org", "edgeone-gh-proxy-org"]
+    for source_id in ["gh-proxy-org", "edgeone-gh-proxy-org", "github-direct"]:
+        # Matched with the delimiter: "gh-proxy-org" is a substring of other ids.
+        assert any(f"route {source_id}:" in message for message in warnings.messages), source_id
+    # A corrupt measurement is ignored; the rest of that route's history stays.
+    assert sources._routes["gh-proxy-org"].latency is None and sources._routes["gh-proxy-org"].failures == 2.0
+    assert sources._routes["edgeone-gh-proxy-org"].throughput is None
+    assert sources._routes["edgeone-gh-proxy-org"].latency == 0.05
+    # A stamp past the clock keeps its history but counts as "just now".
+    assert sources._routes["gh-proxy-com"].updated <= loaded_at
+    assert sources._routes["gh-proxy-com"].latency == 0.5
+
+    candidates = sources.download_candidates(URL, sources.DownloadPreferences())
+    assert candidates[0][0] == "cdn-gh-proxy-org"
+    assert len(candidates) == 5
+
+
+def test_oversized_values_are_capped_or_dropped_and_retired_routes_skipped(monkeypatch):
+    now = time.time()
+    text = (
+        '{"routes": {'
+        f'"gh-proxy-com": {{"latency": 0.2, "throughput": 1e300, "samples": 1e300, "updated": {now}}},'
+        f'"gh-proxy-org": {{"latency": 0.2, "samples": {10 ** 400}, "updated": {now}}},'
+        f'"hk-gh-proxy-org": {{"latency": 0.1, "samples": 3, "updated": {now}}}'
+        '}}'
+    )
+    warnings = _load_routes(monkeypatch, text)
+    assert list(sources._routes) == ["gh-proxy-com"]
+    assert len(warnings.messages) == 1 and "route gh-proxy-org:" in warnings.messages[0]
+    stats = sources._routes["gh-proxy-com"]
+    assert stats.throughput == sources._MAX_THROUGHPUT and stats.samples == sources._MAX_SAMPLES
+    assert sources.estimate_route("gh-proxy-com", now=now).confidence == 1.0
+
+
+def test_failures_from_three_weeks_ago_decay_without_a_subnormal_power():
+    # 21.3-22.4 days after the last failure, 0.5 ** (age / 1800) is subnormal;
+    # Windows raises OverflowError for that, so the decay must flush it to zero.
+    record("gh-proxy-com", failed=True, latency=0.2, now=0.0)
+    # Every non-zero factor stays a normal float, which no platform flags.
+    for halvings in (999.0, 999.999):
+        assert sources._decay(halvings * sources._FAILURE_HALF_LIFE, sources._FAILURE_HALF_LIFE) >= sys.float_info.min
+    for days in (21.5, 22.0, 400.0, 5000.0):
+        assert sources._decay(days * 24 * 3600, sources._FAILURE_HALF_LIFE) == 0.0
+        estimate = sources.estimate_route("gh-proxy-com", now=days * 24 * 3600)
+        assert estimate.latency == pytest.approx(sources._PRIOR_LATENCY, abs=0.01)
+    candidates = sources.download_candidates(URL, sources.DownloadPreferences())
+    assert len(candidates) == 5
+
+
+def test_one_failing_estimate_falls_back_to_the_prior_and_the_rest_still_rank(monkeypatch):
+    warnings = _Warnings()
+    monkeypatch.setattr(sources, "logger", warnings)
+    monkeypatch.setattr(sources, "_reported_routes", set())
+    record("cdn-gh-proxy-org", latency=0.05, throughput=8 * 1024 * 1024)
+    record("gh-proxy-com", latency=0.1, throughput=8 * 1024 * 1024)
+    estimate_from = sources._estimate_from
+
+    def broken(stats, now):
+        if stats is sources._routes["gh-proxy-com"]:
+            raise OverflowError(34, "Result too large")
+        return estimate_from(stats, now)
+
+    monkeypatch.setattr(sources, "_estimate_from", broken)
+    assert sources.estimate_route("gh-proxy-com") == sources._PRIOR_ESTIMATE
+    candidates = [key for key, _ in sources.download_candidates(URL, sources.DownloadPreferences())]
+    assert candidates[0] == "cdn-gh-proxy-org" and len(candidates) == 5
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 1
+
+    # Once the route estimates again, a later breakage is reported anew.
+    monkeypatch.setattr(sources, "_estimate_from", estimate_from)
+    assert sources.estimate_route("gh-proxy-com").confidence > 0
+    monkeypatch.setattr(sources, "_estimate_from", broken)
+    sources.estimate_route("gh-proxy-com")
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 2
+
+
+@pytest.mark.parametrize("samples", [3, 0])
+def test_failures_of_a_history_stamped_zero_still_decay(samples):
+    sources._routes["gh-proxy-com"] = sources.RouteStats(latency=0.2, failures=5.0, samples=samples, updated=0.0)
+    record("gh-proxy-com", latency=0.2)
+    assert sources._routes["gh-proxy-com"].failures == 0.0
+
+
+def test_a_boolean_measurement_is_reported_as_corrupt(monkeypatch):
+    now = time.time()
+    warnings = _load_routes(monkeypatch, (
+        f'{{"routes": {{"gh-proxy-com": {{"latency": false, "throughput": true, "samples": 1, "updated": {now}}}}}}}'))
+    assert sources._routes["gh-proxy-com"].latency is None
+    assert sum("route gh-proxy-com:" in message for message in warnings.messages) == 2
+
+
+def test_non_finite_observations_are_not_recorded():
+    record("gh-proxy-com", latency=float("nan"), throughput=float("inf"))
+    record("gh-proxy-com", latency=0.3, throughput=1e300)
+    stats = sources._routes["gh-proxy-com"]
+    assert stats.latency == 0.3 and stats.throughput == sources._MAX_THROUGHPUT
+
+
+def test_a_zero_second_latency_is_a_sample_when_recorded_and_reloaded():
+    # A coarse clock (Windows) can measure a fast round trip as 0 s.
+    record("gh-proxy-com", latency=0.0, throughput=0.0)
+    assert sources._routes["gh-proxy-com"].latency == 0.0
+    assert sources._routes["gh-proxy-com"].throughput is None
+    sources._routes.clear()
+    sources._loaded = False
+    sources._ensure_loaded()
+    assert sources._routes["gh-proxy-com"].latency == 0.0
+
+
+async def test_a_retired_mirror_in_saved_or_sent_preferences_falls_back():
+    sources.preferences_path().write_text(
+        '{"mode": "direct", "specified_source_id": "hk-gh-proxy-org"}', encoding="utf-8")
+    assert sources.load_preferences() == (sources.DownloadPreferences(mode="direct"), True)
+
+    app = FastAPI()
+    app.include_router(bridge.router)
+    params = {"token": bridge.get_bridge_token()}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local") as client:
+        response = await client.put("/market/download-preferences", params=params, json={
+            "mode": "specified", "specified_source_id": "hk-gh-proxy-org",
+        })
+    assert response.status_code == 200
+    assert response.json()["specified_source_id"] == "gh-proxy-com"
+    saved = json.loads(sources.preferences_path().read_text(encoding="utf-8"))
+    assert saved == {"mode": "specified", "specified_source_id": "gh-proxy-com"}
+    assert all(key != "hk-gh-proxy-org" for key, _ in sources.download_candidates(URL, sources.DownloadPreferences()))

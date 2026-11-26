@@ -17,7 +17,7 @@
 While a task agent uses the keyboard and mouse or the browser, a banner is
 shown over the desktop or the browser window, and Esc on it stops the task.
 The agent process sends a ``builtin_activity`` event and offers the routes
-(covered in ``tests/unit/nekoclaw/test_agent_wiring.py``). Here:
+(covered in ``tests/unit/nekopower/test_agent_wiring.py``). Here:
 
 * the main server hands the event to every connected page as
   ``agent_builtin_activity``;
@@ -339,11 +339,18 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> AgentProcess:
 
 @pytest.fixture
 def client() -> TestClient:
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
     from main_routers import agent_router
 
     app = FastAPI()
     app.include_router(agent_router.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    )
 
 
 def _agent_url(path: str) -> str:
@@ -434,6 +441,125 @@ def test_the_stop_route_tells_a_stop_that_may_have_happened_from_one_that_never_
 
     assert response.status_code == status
     assert response.json()["success"] is False
+
+
+def test_the_stop_route_accepts_same_origin_json_without_csrf_token_and_rejects_unsafe_requests(
+    agent, monkeypatch
+):
+    from main_routers import agent_router
+
+    app = FastAPI()
+    app.include_router(agent_router.router)
+    agent.answer = Answer(200, {"success": True, "stopped": ["c1"]})
+
+    # Fresh TestClient with NO default headers: matches N.E.K.O.-PC buildStopScript
+    # running inside the pet page without X-CSRF-Token.
+    with TestClient(app) as bare_client:
+        stop_headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "http://testserver",
+        }
+        r_origin = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers=stop_headers,
+        )
+        assert (r_origin.status_code, r_origin.json()) == (200, {"success": True, "stopped": ["c1"]})
+        assert agent.requests == [("POST", _agent_url("/builtin/stop"), {"group": "keyboard_mouse"})]
+
+        r_referer = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "browser"}',
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Referer": "http://testserver/",
+            },
+        )
+        assert (r_referer.status_code, r_referer.json()) == (200, {"success": True, "stopped": ["c1"]})
+        assert len(agent.requests) == 2
+
+        # Missing both Origin and Referer -> 403, not forwarded.
+        r_no_origin = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        assert r_no_origin.status_code == 403
+        assert r_no_origin.json()["error_code"] == "csrf_validation_failed"
+
+        # Same-origin JSON with an explicitly stale/expired CSRF token still passes for emergency stop.
+        r_stale_csrf = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "X-CSRF-Token": "invalid-token"},
+        )
+        assert (r_stale_csrf.status_code, r_stale_csrf.json()) == (200, {"success": True, "stopped": ["c1"]})
+
+        # Same-origin JSON with cross-site browser metadata -> 403, not forwarded.
+        r_cross_site = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "Sec-Fetch-Site": "cross-site"},
+        )
+        assert r_cross_site.status_code == 403
+        assert r_cross_site.json()["error_code"] == "csrf_validation_failed"
+
+        # Cross-origin -> 403, not forwarded.
+        r_evil_origin = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "Origin": "https://evil.example"},
+        )
+        assert r_evil_origin.status_code == 403
+        assert r_evil_origin.json()["error_code"] == "csrf_validation_failed"
+
+        # Cross-port without CSRF -> 403, not forwarded.
+        r_cross_port = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={**stop_headers, "Origin": "http://testserver:3000"},
+        )
+        assert r_cross_port.status_code == 403
+        assert r_cross_port.json()["error_code"] == "csrf_validation_failed"
+
+        # Non-JSON Content-Type without CSRF -> 415, not forwarded.
+        r_text_plain = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "text/plain",
+                "Origin": "http://testserver",
+            },
+        )
+        assert r_text_plain.status_code == 415
+
+        # Bodyless POST without Content-Type and without CSRF -> 403, not forwarded.
+        r_no_ct = bare_client.post(
+            "/api/agent/builtin/stop",
+            headers={
+                "Accept": "application/json",
+                "Origin": "http://testserver",
+            },
+        )
+        assert r_no_ct.status_code == 403
+        assert r_no_ct.json()["error_code"] == "csrf_validation_failed"
+
+        # Remote backend mode blocks tokenless same-origin JSON too -> 501, not forwarded.
+        monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
+        r_remote = bare_client.post(
+            "/api/agent/builtin/stop",
+            content='{"group": "keyboard_mouse"}',
+            headers=stop_headers,
+        )
+        assert r_remote.status_code == 501
+
+    assert len(agent.requests) == 3
 
 
 def test_the_browser_settings_are_read_from_the_agent_process(agent, client):

@@ -19,6 +19,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 """
 
 from ._shared import (
+    CHARACTER_RESERVED_FIELD_SET,
     MAX_CARD_FACE_SIZE,
     MAX_UPLOAD_SIZE,
     _UploadTooLargeError,
@@ -54,8 +55,11 @@ import copy
 import struct
 import zlib
 from datetime import datetime
-from fastapi import Request, File, UploadFile, Form
+from pathlib import Path
+from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
+from ..system_router._shared import _validate_local_mutation_request
 from ..shared_state import (
     get_config_manager,
     get_initialize_character_data,
@@ -70,7 +74,10 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import is_user_imported_model
+from utils.frontend_utils import (
+    is_user_imported_model,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
+)
 from services.model_workshop.catalog import find_model_directory
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.character_memory import (
@@ -80,6 +87,37 @@ from utils.character_memory import (
 from config import (
     BUILTIN_LIVE2D_MODEL_NAMES,
 )
+
+
+def _is_live2d_search_root(model_dir: str | os.PathLike, config_mgr) -> bool:
+    """Return True when ``model_dir`` resolves to a Live2D search root itself."""
+    try:
+        resolved_dir = Path(model_dir).resolve()
+    except OSError:
+        return True
+    candidate_roots: list[Path] = [Path("static"), Path("static") / "live2d"]
+    if config_mgr is not None:
+        for attr in ("live2d_dir", "readable_live2d_dir"):
+            try:
+                val = getattr(config_mgr, attr, None)
+                if isinstance(val, (str, os.PathLike)):
+                    candidate_roots.append(Path(val))
+            except Exception:
+                pass
+        try:
+            proj_root = getattr(config_mgr, "project_root", None)
+            if isinstance(proj_root, (str, os.PathLike)):
+                candidate_roots.append(Path(proj_root) / "static")
+                candidate_roots.append(Path(proj_root) / "static" / "live2d")
+        except Exception:
+            pass
+    for root in candidate_roots:
+        try:
+            if resolved_dir == root.resolve():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _strip_local_character_identity(character_payload: dict) -> dict:
@@ -92,6 +130,23 @@ def _strip_local_character_identity(character_payload: dict) -> dict:
     delete_reserved(character_payload, 'character_uid')
     delete_reserved(character_payload, 'character_id')
     return character_payload
+
+
+def _is_bound_to_builtin_live2d(catgirl_data: dict, live2d_name: str, live2d_path: str) -> bool:
+    """Return True when the character's Live2D binding points at a bundled built-in model.
+
+    A user-imported model may share a built-in's name; the saved asset_source (or a
+    /user_live2d prefix on legacy bindings) tells which one the character displays.
+    """
+    if live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
+        return False
+    asset_source = str(get_reserved(catgirl_data, 'avatar', 'asset_source', default='') or '').strip().lower()
+    if asset_source in ('local', 'local_imported'):
+        return False
+    if asset_source:
+        return True
+    normalized_path = str(live2d_path or '').strip().replace('\\', '/')
+    return not normalized_path.startswith(('/user_live2d/', '/user_live2d_local/'))
 
 
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
@@ -160,7 +215,68 @@ async def get_character_cards():
         return {"success": False, "error": str(e)}
 
 
-@router.post('/catgirl/save-to-model-folder')
+class _CardsMutationGuardedRoute(APIRoute):
+    """Reject unauthenticated or cross-site mutations before FastAPI parses bodies."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                payload = None
+                path = request.url.path
+                is_json_route = any(
+                    path.endswith(suffix)
+                    for suffix in (
+                        "/catgirl/save-to-model-folder",
+                        "/character-card/save",
+                        "/card-meta",
+                    )
+                )
+                if is_json_route:
+                    media_type = (
+                        request.headers.get("content-type", "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
+                    )
+                    if media_type != "application/json":
+                        return JSONResponse(
+                            {"success": False, "error": "Content-Type must be application/json"},
+                            status_code=415,
+                        )
+                    raw_body = await request.body()
+                    try:
+                        decoded = json.loads(raw_body.decode("utf-8")) if raw_body else None
+                    except (UnicodeDecodeError, ValueError, RecursionError):
+                        return JSONResponse(
+                            {"success": False, "error": "请求体必须是合法的JSON格式"},
+                            status_code=400,
+                        )
+                    if not isinstance(decoded, dict):
+                        return JSONResponse(
+                            {"success": False, "error": "请求体必须是JSON对象"},
+                            status_code=400,
+                        )
+                    payload = decoded
+
+                rejected = _validate_local_mutation_request(
+                    request,
+                    payload=payload,
+                    error_defaults={"success": False},
+                )
+                if rejected is not None:
+                    return rejected
+
+            return await downstream(request)
+
+        return guarded
+
+
+mutation_router = APIRouter(route_class=_CardsMutationGuardedRoute)
+
+
+@mutation_router.post('/catgirl/save-to-model-folder')
 async def save_catgirl_to_model_folder(request: Request):
     """Save the character card into the model's folder."""
     try:
@@ -172,6 +288,9 @@ async def save_catgirl_to_model_folder(request: Request):
         if not chara_data or not model_name or not file_name:
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
 
+        if not _is_valid_live2d_model_name(model_name):
+            return JSONResponse({"success": False, "error": "非法模型名称"}, status_code=400)
+
         # Use find_model_directory to locate the model's actual filesystem path
         model_folder_path, _ = find_model_directory(model_name)
 
@@ -179,11 +298,11 @@ async def save_catgirl_to_model_folder(request: Request):
         if not model_folder_path:
             return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
 
-        # Allow writes only to user-imported models in user directories, never Workshop/static models
+        # Allow writes only to user-imported models in user directories, never Workshop/static models or search roots
         config_mgr = get_config_manager()
         is_user_model = is_user_imported_model(model_folder_path, config_mgr)
 
-        if not is_user_model:
+        if not is_user_model or _is_live2d_search_root(model_folder_path, config_mgr):
             return JSONResponse(
                 status_code=403,
                 content={
@@ -198,12 +317,28 @@ async def save_catgirl_to_model_folder(request: Request):
             logger.info(f"已创建模型文件夹: {model_folder_path}")
 
         # Prevent traversal: permit filenames only, not paths
+        if not isinstance(file_name, str):
+            return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
         safe_name = os.path.basename(file_name)
-        if safe_name != file_name or ".." in safe_name or safe_name.startswith(("/", "\\")):
+        if (
+            safe_name != file_name
+            or not safe_name
+            or safe_name in {".", ".."}
+            or ".." in safe_name
+            or safe_name.startswith(("/", "\\"))
+            or any(ch in safe_name for ch in ("/", "\\", ":", "\x00"))
+        ):
             return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
 
         # Save the character card into the model folder
         file_path = os.path.join(model_folder_path, safe_name)
+        target_path_obj = Path(file_path)
+        resolved_model_folder = Path(model_folder_path).resolve()
+        if (
+            target_path_obj.is_symlink()
+            or not target_path_obj.resolve().is_relative_to(resolved_model_folder)
+        ):
+            return JSONResponse({"success": False, "error": "非法文件路径"}, status_code=400)
         await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
 
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
@@ -213,7 +348,7 @@ async def save_catgirl_to_model_folder(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
-@router.post('/character-card/save')
+@mutation_router.post('/character-card/save')
 async def save_character_card(request: Request):
     # Parse the body BEFORE taking the transaction: ``request.json()`` awaits
     # the client's socket, and a slow or stalled upload would otherwise hold the
@@ -253,7 +388,12 @@ async def _save_character_card_serialized(data: dict):
         # Get the character-card name (profile name)
         # Support Chinese and English field names
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
-        name_error = _validate_profile_name(chara_name)
+        existing_catgirls = characters.get('猫娘') if isinstance(characters.get('猫娘'), dict) else {}
+        normalized_chara_name = chara_name.strip() if isinstance(chara_name, str) else ""
+        name_error = _validate_profile_name(
+            chara_name,
+            allow_reserved_route=bool(normalized_chara_name and normalized_chara_name in existing_catgirls),
+        )
         if name_error:
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()
@@ -271,6 +411,17 @@ async def _save_character_card_serialized(data: dict):
             if k != '档案名' and k != 'name':
                 if v:  # Save nonempty fields only
                     catgirl_data[k] = v
+
+        # Preserve all existing system/reserved fields when overwriting a same-named character.
+        if not is_new_character and isinstance(previous_catgirl_data, dict):
+            for k, v in previous_catgirl_data.items():
+                if k in CHARACTER_RESERVED_FIELD_SET:
+                    catgirl_data[k] = copy.deepcopy(v)
+            if (
+                isinstance(catgirl_data.get("_reserved"), dict)
+                and "field_order" in catgirl_data["_reserved"]
+            ):
+                _sync_catgirl_field_order(catgirl_data)
 
         # Preserve system identity when updating same-named cards; new cards cannot import packaged identities.
         previous_character_id = get_reserved(
@@ -367,7 +518,8 @@ async def export_catgirl_card(name: str):
     3. Append the archive data to the PNG image
     4. Return the PNG image for download
 
-    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export.
+    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export,
+    but a user-imported model that shadows a built-in name is.
     """
     import zipfile
     import tempfile
@@ -437,15 +589,23 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # Check bundled built-ins, which recipients already have and need not include
-                        if live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
+                        if _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path):
                             logger.info(
                                 f'猫娘 {name} 使用的是内置模型 '
                                 f'{live2d_name}，跳过模型打包'
                             )
                         else:
                             # Locate the model directory
-                            model_dir, _ = find_model_directory(live2d_name)
-                            if model_dir and os.path.exists(model_dir):
+                            if not _is_valid_live2d_model_name(live2d_name):
+                                logger.warning(f'非法模型名称，跳过打包: {live2d_name}')
+                                model_dir = None
+                            else:
+                                model_dir, _ = find_model_directory(live2d_name)
+                            if (
+                                model_dir
+                                and not _is_live2d_search_root(model_dir, _config_manager)
+                                and os.path.exists(model_dir)
+                            ):
                                 # Check whether this is a user-imported model
                                 if is_user_imported_model(model_dir, _config_manager):
                                     # Add model files to the archive
@@ -712,7 +872,7 @@ async def export_catgirl_settings_only(name: str):
         return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
 
 
-@router.post('/import-card')
+@mutation_router.post('/import-card')
 async def import_character_card(
     zip_file: UploadFile = File(...),
     card_image: UploadFile = File(None),
@@ -1041,6 +1201,10 @@ async def import_character_card(
                         character_data['_reserved']['avatar']['live2d'] = character_data['_reserved']['avatar'].get('live2d', {})
                         character_data['_reserved']['avatar']['live2d']['model_path'] = f'{model_name}/{model3_filename}'
                         character_data['_reserved']['avatar']['model_type'] = 'live2d'
+                        # The files now live in the user import directory; bind there explicitly so a
+                        # same-named built-in is neither displayed nor assumed on re-export.
+                        character_data['_reserved']['avatar']['asset_source'] = 'local_imported'
+                        character_data['_reserved']['avatar']['asset_source_id'] = ''
                         logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}, 文件: {model3_filename}')
 
                     elif imported_model_info['type'] == 'vrm':
@@ -1328,7 +1492,7 @@ async def get_card_meta(name: str):
     return JSONResponse({'success': True, 'meta': meta})
 
 
-@router.put('/catgirl/{name}/card-meta')
+@mutation_router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
     """Update card-face metadata (author; molili origin mark; only when origin=self/molili)."""
     _config_manager = get_config_manager()
@@ -1445,7 +1609,7 @@ async def get_card_face(name: str):
     return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
-@router.put('/catgirl/{name}/card-face')
+@mutation_router.put('/catgirl/{name}/card-face')
 async def put_card_face(name: str, image: UploadFile = File(...)):
     """Save the character's custom card-face image."""
     _config_manager = get_config_manager()
@@ -1527,7 +1691,7 @@ class _InvalidPortraitError(ValueError):
     to a 400 response (vs. 500 for genuine render errors)."""
 
 
-@router.post('/catgirl/{name}/export-with-portrait')
+@mutation_router.post('/catgirl/{name}/export-with-portrait')
 async def export_catgirl_with_portrait(
     name: str,
     portrait: UploadFile = File(...),
@@ -1606,10 +1770,22 @@ async def export_catgirl_with_portrait(
                 if model_type == 'live2d':
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
-                        live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
+                        relative_path = live2d_path.strip().replace('\\', '/')
+                        for user_prefix in ('/user_live2d_local/', '/user_live2d/'):
+                            if relative_path.startswith(user_prefix):
+                                relative_path = relative_path[len(user_prefix):]
+                                break
+                        live2d_name = relative_path.split('/')[0] if '/' in relative_path else relative_path.replace('.model3.json', '')
+                        if (
+                            _is_valid_live2d_model_name(live2d_name)
+                            and not _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path)
+                        ):
                             model_dir, _ = find_model_directory(live2d_name)
-                            if model_dir and os.path.exists(model_dir):
+                            if (
+                                model_dir
+                                and not _is_live2d_search_root(model_dir, _config_manager)
+                                and os.path.exists(model_dir)
+                            ):
                                 if is_user_imported_model(model_dir, _config_manager):
                                     model_files_added = 0
                                     for root, _dirs, files in os.walk(model_dir):
@@ -1759,3 +1935,6 @@ async def export_catgirl_with_portrait(
     finally:
         if temp_dir and os.path.exists(temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+
+router.include_router(mutation_router)

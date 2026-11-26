@@ -547,6 +547,8 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
+import { collectBatchPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -1326,24 +1328,28 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
-  const restartWarnings: string[] = []
+  const deleted: Array<{
+    result: Awaited<ReturnType<typeof deletePlugin>>
+    plugin: string
+    pluginId: string
+  }> = []
   for (const p of plugins) {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      if (result.restored_builtin_restart_error) {
-        restartWarnings.push(t('messages.pluginDeletedBuiltinRestartFailed', {
-          plugin: p.name,
-          error: result.restored_builtin_restart_error.message,
-        }))
-      }
+      // Same as the context-menu delete: drop the deleted plugin's cached
+      // permission details, so a restored built-in under this id does not show them.
+      usePluginConsentState().forget(p.id)
+      deleted.push({ result, plugin: p.name, pluginId: p.id })
     } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (restartWarnings.length > 0) ElMessage.warning(restartWarnings.join('; '))
+  // One notice per warning, so sentences are not glued together.
+  const deleteWarnings = collectBatchPluginDeleteWarnings(deleted, t)
+  deleteWarnings.forEach((warning) => ElMessage.warning(warning))
   if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  else if (restartWarnings.length === 0) {
+  else if (deleteWarnings.length === 0) {
     ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
   }
   await refreshAfterPluginChange()

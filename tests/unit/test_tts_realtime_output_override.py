@@ -168,3 +168,36 @@ def test_fallback_voice_change_restarts_worker(manager, name):
 
     assert first[0] == second[0] == name
     assert first != second
+
+
+@pytest.mark.parametrize("selected_by", [
+    {"ttsModelProvider": "qwen_token_plan"},
+    # The worker is also selected through TTS_PROVIDER / ttsProvider alone.
+    {"TTS_PROVIDER": "qwen_token_plan"},
+    {"ttsProvider": " Qwen_Token_Plan "},
+])
+@pytest.mark.parametrize("field, value", [
+    ("ttsModelId", "qwen-audio-3.0-tts-flash"),
+    ("ttsModelUrl", "https://token-plan.maas.qianwenaiapi.com"),
+])
+def test_token_plan_endpoint_or_model_change_restarts_worker(manager, field, value, selected_by):
+    # The Token Plan slot is not in tts_custom, so the runtime key must carry it itself.
+    base = {
+        **selected_by, "assistApiKeyQwenTokenPlan": "sk-sp-key",
+        "ttsModelUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+        "ttsModelId": "qwen-audio-3.0-tts-plus", "ttsVoiceId": "longanlingxin",
+    }
+    session = _session(manager)
+    session._effective_tts_route = lambda: ("", False)
+
+    manager.set_config(dict(base))
+    first = session._build_tts_runtime_key()
+    first_cache = session.game_speech_audio_cache_identity("x", render_language="zh")[1]
+    manager.set_config({**base, field: value})
+    second = session._build_tts_runtime_key()
+    second_cache = session.game_speech_audio_cache_identity("x", render_language="zh")[1]
+
+    assert first[0] == second[0] == "qwen_token_plan"
+    assert first != second
+    # Mini-game speech audio cached under the old model must not be reused.
+    assert first_cache != second_cache

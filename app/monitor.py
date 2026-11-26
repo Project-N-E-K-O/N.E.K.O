@@ -33,21 +33,30 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
-from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
+from config import (
+    MONITOR_SERVER_PORT,
+    MONITOR_HOST,
+    MONITOR_TOKEN,
+    MONITOR_VIEWER_TOKEN,
+    DEFAULT_LIVE2D_MODEL_NAME,
+    get_character_nickname,
+    resolve_master_display_name,
+)
 from app.monitor_auth import (
     MonitorAuthMiddleware,
     install_monitor_log_redaction,
     monitor_auth_enabled,
 )
 from utils.config_manager import get_config_manager, get_reserved
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
-from utils.frontend_utils import find_model_config_file
+from utils.frontend_utils import _is_within, find_model_config_file
 from services.model_workshop.catalog import find_models, find_model_directory
-from utils.workshop_utils import get_default_workshop_folder
+from utils.live2d_model_refs import sanitize_emotion_mapping
+from utils.workshop_utils import create_workshop_static_files, get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
@@ -167,29 +176,53 @@ if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
         app.mount("/user_live2d_local", ReadOnlyWorkshopStaticFiles(directory=_writable_live2d_path, config_manager=_config_manager), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
-# Mount the workshop directory (consistent with the main_server package)
-workshop_path = get_default_workshop_folder()
-if workshop_path and os.path.exists(workshop_path):
-    app.mount("/workshop", StaticFiles(directory=workshop_path), name="workshop")
-    logger.info(f"已挂载创意工坊目录: {workshop_path}")
+def _mount_model_roots(target_app, workshop_path, user_mod_path):
+    """Mount /workshop and /user_mods the way the main server does.
+
+    /workshop is the same multi-library app as app/main_server/workshop_runtime.py
+    (mounted even without a usable root, so Steam libraries registered later are still
+    served) and /user_mods matches app/main_server/web_app.py, so every URL that
+    find_model_config_file can return is served here too.
+    """
+    target_app.mount("/workshop", create_workshop_static_files(workshop_path), name="workshop")
+    if workshop_path:
+        logger.info(f"已挂载创意工坊目录: {workshop_path}")
+    if user_mod_path and os.path.isdir(user_mod_path):
+        target_app.mount("/user_mods", StaticFiles(directory=user_mod_path), name="user_mods")
+        logger.info(f"已挂载用户mod路径: {user_mod_path}")
+
+
+_mount_model_roots(app, get_default_workshop_folder(), _config_manager.get_workshop_path())
 
 @app.get("/subtitle")
 async def get_subtitle():
     return FileResponse(get_resource_path('templates/subtitle.html'))
 
 @app.get("/api/config/page_config")
-async def get_page_config(lanlan_name: str = ""):
-    """Get page config (lanlan_name and model_path)"""
+async def get_page_config(response: Response, lanlan_name: str = ""):
+    """Get page config (lanlan_name, master_* metadata, model_path, model_type, and lighting)."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
     try:
         # Get character data
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
-        
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
+        master_display_name = resolve_master_display_name(master_basic_config, master_name)
+        master_profile_name = (
+            str(master_basic_config.get('档案名', '') or '')
+            if isinstance(master_basic_config, dict)
+            else ""
+        )
+        master_nickname = get_character_nickname(master_basic_config)
+
         # If lanlan_name is provided, use it; otherwise use the current character
         target_name = lanlan_name if lanlan_name else her_name
-        
+        catgirl_config = lanlan_basic_config.get(target_name, {}) if isinstance(lanlan_basic_config, dict) else {}
+        # Monitor (templates/viewer.html) only mounts and renders Live2D models, so keep model_type aligned with model_path.
+        model_type = "live2d"
+
         # Get the live2d field (compatible with the new _reserved structure)
         live2d_model_path = get_reserved(
-            lanlan_basic_config.get(target_name, {}),
+            catgirl_config,
             'avatar',
             'live2d',
             'model_path',
@@ -209,7 +242,7 @@ async def get_page_config(lanlan_name: str = ""):
             live2d = DEFAULT_LIVE2D_MODEL
         if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
             live2d = DEFAULT_LIVE2D_MODEL
-        
+
         # Do not let the historical fallback reconstruct an unfinished URL.
         from services.model_workshop.runtime import require_url, require_identifier
         from services.model_workshop.tasks import _drain_sync
@@ -218,7 +251,7 @@ async def get_page_config(lanlan_name: str = ""):
         await _drain_sync(lambda: require_identifier(_config_manager, 'live2d', live2d))
         # Find all models
         models = await _drain_sync(find_models)
-        
+
         # Find the corresponding model path based on the live2d field
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
         if not model_path and live2d != DEFAULT_LIVE2D_MODEL:
@@ -226,15 +259,31 @@ async def get_page_config(lanlan_name: str = ""):
                 (m["path"] for m in models if m["name"] == DEFAULT_LIVE2D_MODEL),
                 find_model_config_file(DEFAULT_LIVE2D_MODEL),
             )
-        
+
         return {
             "success": True,
             "lanlan_name": target_name,
-            "model_path": model_path
+            "master_name": master_name or "",
+            "master_profile_name": master_profile_name,
+            "master_nickname": master_nickname,
+            "master_display_name": master_display_name or "",
+            "model_path": model_path,
+            "model_type": model_type,
+            "lighting": None,
         }
     except Exception as e:
         logger.error(f"获取页面配置失败: {e}")
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e),
+            "lanlan_name": "",
+            "master_name": "",
+            "master_profile_name": "",
+            "master_nickname": "",
+            "master_display_name": "",
+            "model_path": "",
+            "model_type": "",
+        }
 
 @app.get("/api/config/preferences")
 async def get_preferences():
@@ -251,13 +300,21 @@ def get_emotion_mapping(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find the .model3.json file
+        # Find the .model3.json file. Like the main server's route, only a file whose real
+        # path stays inside the model folder is used; if every candidate leaves it, refuse.
         model_json_path = None
+        model_dir_real = os.path.realpath(model_dir)
+        escaped = False
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+                candidate = os.path.join(model_dir, file)
+                if _is_within(model_dir_real, os.path.realpath(candidate)):
+                    model_json_path = candidate
+                    break
+                escaped = True
+        if model_json_path is None and escaped:
+            return JSONResponse(status_code=403, content={"success": False, "error": "模型配置文件不在模型目录内"})
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -265,16 +322,22 @@ def get_emotion_mapping(model_name: str):
             config_data = json.load(f)
 
         # Prefer EmotionMapping; if absent, derive from FileReferences
-        emotion_mapping = config_data.get('EmotionMapping')
-        if not emotion_mapping:
+        emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
+        # A stored mapping that is not an object (a corrupted file) is ignored like a missing one.
+        if not isinstance(emotion_mapping, dict) or not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
-            file_refs = config_data.get('FileReferences', {}) or {}
+            # Unexpected shapes on disk are skipped, never a 500.
+            file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None
+            if not isinstance(file_refs, dict):
+                file_refs = {}
 
             # Derive from the standard Motions structure
-            motions = file_refs.get('Motions', {}) or {}
+            motions = file_refs.get('Motions')
+            if not isinstance(motions, dict):
+                motions = {}
             for group_name, items in motions.items():
                 files = []
-                for item in items or []:
+                for item in items if isinstance(items, list) else []:
                     try:
                         file_path = item.get('File') if isinstance(item, dict) else None
                         if file_path:
@@ -284,13 +347,17 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["motions"][group_name] = files
 
             # Derive from the standard Expressions structure (group by the Name prefix, such as happy_xxx)
-            expressions = file_refs.get('Expressions', []) or []
+            expressions = file_refs.get('Expressions')
+            if not isinstance(expressions, list):
+                expressions = []
             for item in expressions:
                 if not isinstance(item, dict):
                     continue
-                name = item.get('Name') or ''
+                name = item.get('Name')
+                if not isinstance(name, str):
+                    name = ''
                 file_path = item.get('File') or ''
-                if not file_path:
+                if not isinstance(file_path, str) or not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
                 # Split the group at the first underscore
@@ -302,7 +369,11 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = derived_mapping
-        
+
+        # Same output as the main server's route: references it would refuse are left out.
+        emotion_mapping = sanitize_emotion_mapping(
+            emotion_mapping, os.path.dirname(model_json_path), model_dir_real
+        )
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         print(f"获取情绪映射配置失败: {e}")

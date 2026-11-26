@@ -239,18 +239,26 @@ def is_local_asr_available() -> bool:
 def _resolve_user_selected_provider(
     route: _AsrCoreRoute,
     provider_preference: str | None,
+    *,
+    ignore_route_capability: bool = False,
 ) -> _AsrSelection | None:
     """Honor an explicit user-selectable provider preference, if any.
 
     Returns ``None`` for the default ``auto`` preference, unknown values, and
     Core routes that do not support independent ASR at all (the Core route
-    capability always wins over the persisted preference).
+    capability always wins over the persisted preference). Offline
+    transcription (``offline.py``) passes ``ignore_route_capability``: a Core
+    that owns realtime transcription natively still has no whole-recording
+    path of its own.
     """
 
     preference = str(provider_preference or "").strip().lower()
     if not preference or preference == "auto":
         return None
-    if not route.capabilities.supports_independent_asr:
+    if (
+        not ignore_route_capability
+        and not route.capabilities.supports_independent_asr
+    ):
         return None
     meta = _ASR_PROVIDER_REGISTRY.get(preference)
     if meta is None or not meta.user_selectable:

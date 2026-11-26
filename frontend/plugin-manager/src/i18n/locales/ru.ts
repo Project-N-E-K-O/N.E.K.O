@@ -1,16 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/ru'
+import modelApiMessages from '../model-api/ru'
+import modelBindingsMessages from '../model-bindings/ru'
+import marketFeedbackMessages from '../market-feedback/ru'
+import authoringMessages from '../authoring/ru'
+import powerMessages from '../power/ru'
 
 /**
  * Русский языковой пакет
  */
 export default {
-  pluginConsent: pluginConsentMessages['ru'],
-  authoring: authoringMessages['ru'],
-  modelApi: modelApiMessages['ru'],
-  modelBindings: modelBindingsMessages['ru'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "Выбрать язык",
     surfaceLanguagePending: "Язык приложения изменён. Язык панели сохранён, чтобы не потерять несохранённые данные.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Загрузка...',
     refresh: 'Обновить',
+    retry: 'Повторить',
     search: 'Поиск',
     filter: 'Фильтр',
     reset: 'Сброс',
@@ -736,7 +741,16 @@ export default {
       exitFocus: 'Выйти из фокуса',
       exitFocusHint: 'Выйти из режима фокуса (Esc)',
       controlError: 'Ошибка элемента управления UI плагина',
-      hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
+      hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.',
+      parseDocumentConfirm: 'Разрешить плагину «{plugin}» разобрать документ «{file}»?',
+      actionConfirmTitle: 'Подтверждение действия плагина «{plugin}»',
+      actionConfirmDefault: 'Выполнить это действие?',
+      actionConfirmTimeout: 'Время подтверждения истекло, действие не выполнено.',
+      actionConfirmPending: 'Уже открыто другое подтверждение. Сначала завершите его.',
+      openPathOutOfScope: 'Эта панель может открывать только файлы в папке своего плагина или в его папке данных.',
+      openPathNoBridge: 'Открывать локальные файлы можно только в настольном приложении.',
+      openPathFailed: 'Не удалось открыть путь: {message}',
+      unsafeTargetBlocked: 'Небезопасный целевой адрес заблокирован'
     }
   },
   package: {
@@ -822,6 +836,22 @@ export default {
       verify: 'Верификация',
       install: 'Установка',
       analyze: 'Анализ'
+    },
+    messages: {
+      selectPluginToBuild: 'Сначала выберите плагины для сборки.',
+      bundleRequiresTwoPlugins: 'Для бандла нужно выбрать не менее двух плагинов.',
+      bundleBuildFailedWithError: 'Ошибка сборки бандла: {error}',
+      bundleBuildCompleted: 'Сборка бандла завершена.',
+      bundleBuildPartialFailed: 'Сборка бандла: ошибок {count}.',
+      buildFailedWithError: 'Ошибка сборки: {error}',
+      buildCompletedWithFailures: 'Сборка завершена: успешно {built}, с ошибками {failed}.',
+      buildCompleted: 'Сборка завершена: успешно {built}.',
+      inspectCompleted: 'Проверка содержимого пакета завершена.',
+      verifyPassed: 'Пакет прошёл верификацию.',
+      verifyFailed: 'Пакет не прошёл верификацию.',
+      selectAtLeastOnePlugin: 'Выберите хотя бы один плагин.',
+      analyzeCompleted: 'Анализ завершён.',
+      analyzeFailedWithError: 'Ошибка анализа: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -1039,6 +1069,8 @@ export default {
     pluginBuilt: 'Плагин упакован: {packageName}',
     pluginDeleted: 'Плагин удален',
     pluginDeletedBuiltinRestartFailed: 'Плагин {plugin} удалён, но восстановленную встроенную версию не удалось запустить: {error}',
+    pluginDeletedPermissionsNotCleared: 'Плагин {plugin} удалён, но файл записей о разрешениях повреждён или создан более новой версией, поэтому выданные ему разрешения (если были) не удалось сбросить. Если файл снова станет читаемым, они могут продолжить действовать.',
+    pluginsDeletedPermissionsNotCleared: 'Плагины {plugins} удалены, но файл записей о разрешениях повреждён или создан более новой версией, поэтому выданные им разрешения (если были) не удалось сбросить. Если файл снова станет читаемым, они могут продолжить действовать.',
     startFailed: 'Ошибка запуска',
     autoStartEnabled: 'Автозапуск включён',
     autoStartDisabled: 'Автозапуск выключен',
@@ -1100,7 +1132,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O Управление плагинами'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

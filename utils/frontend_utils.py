@@ -945,9 +945,9 @@ def find_models():
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
-    # Add the Steam Workshop directory.
-    workshop_search_dir = _resolve_workshop_search_dir()
-    if workshop_search_dir and os.path.exists(workshop_search_dir):
+    # Add the Steam Workshop directories: the configured one, then the other Steam
+    # libraries /workshop also serves (URLs stay relative to the root they came from).
+    for workshop_search_dir in _resolve_workshop_search_dirs():
         search_dirs.append(('workshop', workshop_search_dir, '/workshop'))
     
     # Traverse all search directories.
@@ -1026,6 +1026,33 @@ def _is_within(base: str, target: str) -> bool:
         return False
 
 
+def _is_strictly_within(base: str, target: str) -> bool:
+    """Return True iff realpath(target) is a strict descendant of realpath(base)."""
+    try:
+        base_real = os.path.realpath(base)
+        target_real = os.path.realpath(target)
+        return _is_within(base_real, target_real) and (
+            os.path.normcase(target_real) != os.path.normcase(base_real)
+        )
+    except Exception:
+        return False
+
+
+def _model_dir_relative_to_roots(model_dir: str, roots) -> str | None:
+    """
+    Path of *model_dir* relative to the first of *roots* that contains it,
+    with forward slashes; None when no root contains it.
+    """
+    model_dir_real = os.path.realpath(model_dir)
+    for root in roots:
+        if not root:
+            continue
+        root_real = os.path.realpath(root)
+        if model_dir_real != root_real and _is_within(root_real, model_dir_real):
+            return os.path.relpath(model_dir_real, root_real).replace(os.sep, '/')
+    return None
+
+
 def is_user_imported_model(model_path: str, config_manager=None) -> bool:
     """
     Check whether a model path is under the user-imported model directory.
@@ -1069,6 +1096,102 @@ def _resolve_workshop_search_dir() -> str:
     return None
 
 
+def _resolve_workshop_search_dirs() -> list:
+    """
+    Get all Workshop directories to search, the configured one first.
+
+    The first entry is ``_resolve_workshop_search_dir()``; after it come the Workshop
+    roots of the other Steam libraries that hold subscribed items (registered at
+    runtime), which ``/workshop`` also serves. Missing and duplicate directories are dropped.
+    """
+    dirs = []
+    seen = set()
+    candidates = [_resolve_workshop_search_dir()]
+    try:
+        from utils.config_manager import get_steam_workshop_library_roots
+        candidates.extend(get_steam_workshop_library_roots())
+    except Exception as e:
+        logging.warning(f"获取Steam创意工坊库目录失败: {e}")
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if not os.path.isdir(candidate):
+                continue
+            key = os.path.normcase(os.path.realpath(candidate))
+        except (OSError, ValueError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        dirs.append(candidate)
+    return dirs
+
+
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
+def is_valid_live2d_model_name(model_name: str | None) -> bool:
+    """Return whether ``model_name`` is a single safe Live2D directory/item identifier."""
+    if not isinstance(model_name, str):
+        return False
+    stripped = model_name.strip()
+    if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
+        return False
+    forbidden_chars = ("/", "\\", ":", "\x00") if _is_windows() else ("/", "\\", "\x00")
+    if any(ch in model_name for ch in forbidden_chars):
+        return False
+    return True
+
+
+def _is_strict_subpath(candidate_real: str, root_real: str) -> bool:
+    """Return True when ``candidate_real`` is strictly nested under ``root_real``."""
+    norm_candidate = os.path.normcase(candidate_real)
+    norm_root = os.path.normcase(root_real)
+    try:
+        return (
+            norm_candidate != norm_root
+            and os.path.commonpath([norm_candidate, norm_root]) == norm_root
+        )
+    except ValueError:
+        return False
+
+
+def _find_model_in_workshop_dir(workshop_search_dir: str, model_name: str):
+    """Find ``model_name`` in one Workshop directory; returns the model folder or None."""
+    workshop_search_real = os.path.realpath(workshop_search_dir)
+    # Direct match when model name equals folder name.
+    workshop_model_dir = os.path.join(workshop_search_dir, model_name)
+    if os.path.exists(workshop_model_dir):
+        workshop_model_dir_real = os.path.realpath(workshop_model_dir)
+        if _is_strict_subpath(workshop_model_dir_real, workshop_search_real):
+            return workshop_model_dir
+
+    # Recursively search all Workshop subfolders, handling Steam Workshop's item-ID folder names.
+    for item_id in os.listdir(workshop_search_dir):
+        item_path = os.path.join(workshop_search_dir, item_id)
+        item_path_real = os.path.realpath(item_path)
+        if os.path.isdir(item_path_real) and _is_strict_subpath(item_path_real, workshop_search_real):
+            # Check whether a subfolder contains a folder matching the model name.
+            potential_model_path = os.path.join(item_path, model_name)
+            if os.path.exists(potential_model_path):
+                potential_model_path_real = os.path.realpath(potential_model_path)
+                if _is_strict_subpath(potential_model_path_real, workshop_search_real):
+                    return potential_model_path
+
+            # Check whether the subfolder itself is a model directory containing .model3.json.
+            for file in os.listdir(item_path):
+                if file.endswith('.model3.json'):
+                    # Extract the model name without its suffix.
+                    potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
+                    if potential_model_name == model_name:
+                        if _is_strict_subpath(item_path_real, workshop_search_real):
+                            return item_path
+    return None
+
+
 def find_model_directory(model_name: str):
     """
     Find a model directory, preferring user Documents, then Workshop, then static.
@@ -1077,17 +1200,14 @@ def find_model_directory(model_name: str):
     from utils.config_manager import get_config_manager
     
     # Validate model names to prevent path traversal.
-    # Allow common characters: letters, digits, underscores, CJK characters, hyphens, spaces, half/fullwidth parentheses, dots, commas, etc.
-    # Reject path separators / \ and path traversal ..
-    if not model_name or not model_name.strip():
+    # Reject empty strings, dot-only names, drive prefixes, NUL bytes, and path separators.
+    if not isinstance(model_name, str) or not model_name.strip():
         logging.warning("模型名称为空")
         return (None, None)
-    if '..' in model_name or '/' in model_name or '\\' in model_name:
+    if not is_valid_live2d_model_name(model_name) or os.path.splitdrive(model_name)[0]:
         model_name_safe = repr(model_name) if len(model_name) <= 100 else repr(model_name[:100]) + '...'
         logging.warning(f"模型名称包含非法路径字符: {model_name_safe}")
         return (None, None)
-    
-    WORKSHOP_SEARCH_DIR = _resolve_workshop_search_dir()
     
     # Define the allowed base directories.
     allowed_base_dirs = []
@@ -1114,7 +1234,7 @@ def find_model_directory(model_name: str):
                 continue
             docs_model_dir_real = os.path.realpath(docs_model_dir)
             docs_live2d_dir_real = os.path.realpath(live2d_root)
-            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) != docs_live2d_dir_real:
+            if not _is_strict_subpath(docs_model_dir_real, docs_live2d_dir_real):
                 continue
 
             live2d_root_norm = os.path.normcase(os.path.normpath(str(live2d_root)))
@@ -1124,39 +1244,15 @@ def find_model_directory(model_name: str):
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
 
-    # Then try Workshop directories.
-    try:
-        if WORKSHOP_SEARCH_DIR and os.path.exists(WORKSHOP_SEARCH_DIR):
-            workshop_search_real = os.path.realpath(WORKSHOP_SEARCH_DIR)
-            # Direct match when model name equals folder name.
-            workshop_model_dir = os.path.join(WORKSHOP_SEARCH_DIR, model_name)
-            if os.path.exists(workshop_model_dir):
-                workshop_model_dir_real = os.path.realpath(workshop_model_dir)
-                if os.path.commonpath([workshop_model_dir_real, workshop_search_real]) == workshop_search_real:
-                    return (workshop_model_dir, '/workshop')
-            
-            # Recursively search all Workshop subfolders, handling Steam Workshop's item-ID folder names.
-            for item_id in os.listdir(WORKSHOP_SEARCH_DIR):
-                item_path = os.path.join(WORKSHOP_SEARCH_DIR, item_id)
-                item_path_real = os.path.realpath(item_path)
-                if os.path.isdir(item_path_real):
-                    # Check whether a subfolder contains a folder matching the model name.
-                    potential_model_path = os.path.join(item_path, model_name)
-                    if os.path.exists(potential_model_path):
-                        potential_model_path_real = os.path.realpath(potential_model_path)
-                        if os.path.commonpath([potential_model_path_real, workshop_search_real]) == workshop_search_real:
-                            return (potential_model_path, '/workshop')
-                    
-                    # Check whether the subfolder itself is a model directory containing .model3.json.
-                    for file in os.listdir(item_path):
-                        if file.endswith('.model3.json'):
-                            # Extract the model name without its suffix.
-                            potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
-                            if potential_model_name == model_name:
-                                if os.path.commonpath([item_path_real, workshop_search_real]) == workshop_search_real:
-                                    return (item_path, '/workshop')
-    except Exception as e:
-        logging.warning(f"检查创意工坊目录模型时出错: {e}")
+    # Then try Workshop directories (the configured one, then other Steam libraries).
+    for workshop_search_dir in _resolve_workshop_search_dirs():
+        try:
+            found = _find_model_in_workshop_dir(workshop_search_dir, model_name)
+        except Exception as e:
+            logging.warning(f"检查创意工坊目录模型时出错: {e}")
+            continue
+        if found:
+            return (found, '/workshop')
     
     # Then try the user mod path.
     try:
@@ -1168,19 +1264,19 @@ def find_model_directory(model_name: str):
             user_mod_model_dir = os.path.join(user_mods_path, model_name)
             if os.path.exists(user_mod_model_dir):
                 user_mod_model_dir_real = os.path.realpath(user_mod_model_dir)
-                if os.path.commonpath([user_mod_model_dir_real, user_mods_path_real]) == user_mods_path_real:
+                if _is_strict_subpath(user_mod_model_dir_real, user_mods_path_real):
                     return (user_mod_model_dir, '/user_mods')
             
             # Recursively search all subfolders in the user mod directory.
             for mod_folder in os.listdir(user_mods_path):
                 mod_path = os.path.join(user_mods_path, mod_folder)
                 mod_path_real = os.path.realpath(mod_path)
-                if os.path.isdir(mod_path_real):
+                if os.path.isdir(mod_path_real) and _is_strict_subpath(mod_path_real, user_mods_path_real):
                     # Check whether a subfolder contains a folder matching the model name.
                     potential_model_path = os.path.join(mod_path, model_name)
                     if os.path.exists(potential_model_path):
                         potential_model_path_real = os.path.realpath(potential_model_path)
-                        if os.path.commonpath([potential_model_path_real, user_mods_path_real]) == user_mods_path_real:
+                        if _is_strict_subpath(potential_model_path_real, user_mods_path_real):
                             return (potential_model_path, '/user_mods')
                     
                     # Check whether the subfolder itself is a model directory containing .model3.json.
@@ -1189,7 +1285,7 @@ def find_model_directory(model_name: str):
                             # Extract the model name without its suffix.
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
-                                if os.path.commonpath([mod_path_real, user_mods_path_real]) == user_mods_path_real:
+                                if _is_strict_subpath(mod_path_real, user_mods_path_real):
                                     return (mod_path, '/user_mods')
     except Exception as e:
         logging.warning(f"检查用户mod目录模型时出错: {e}")
@@ -1200,11 +1296,75 @@ def find_model_directory(model_name: str):
     static_model_dir = os.path.join(static_dir, model_name)
     if os.path.exists(static_model_dir):
         static_model_dir_real = os.path.realpath(static_model_dir)
-        if os.path.commonpath([static_model_dir_real, static_dir_real]) == static_dir_real:
+        if _is_strict_subpath(static_model_dir_real, static_dir_real):
             return (static_model_dir, '/static')
     
     # Return None if none exists.
     return (None, None)
+
+def find_workshop_item_model_file(item_path: str):
+    """
+    Path of the .model3.json a Workshop item folder provides, or None.
+
+    The one rule shared by the model URL (find_model_by_workshop_item_id) and the by-id
+    config read/update routes, so they always agree on the file:
+
+    1. candidates are the files directly in the folder (listing order), then nested
+       ones (sorted walk); directory links are not followed, and a file whose real
+       path leaves the item folder (file or folder link pointing elsewhere) is skipped,
+       so other models in the same item stay usable;
+    2. the first candidate named exactly after the folder (``<item id>.model3.json``) wins;
+    3. otherwise the first candidate.
+    """
+    if not item_path or not os.path.isdir(item_path):
+        return None
+    item_real = os.path.realpath(item_path)
+    preferred_name = f"{os.path.basename(os.path.normpath(item_path))}.model3.json"
+
+    def _inside(path: str) -> bool:
+        return _is_within(item_real, os.path.realpath(path)) and os.path.isfile(path)
+
+    def _candidates():
+        for file in os.listdir(item_path):
+            if file.endswith('.model3.json'):
+                yield os.path.join(item_path, file)
+        for root, dirs, files in os.walk(item_path, followlinks=False):
+            dirs.sort()
+            if os.path.normpath(root) == os.path.normpath(item_path):
+                continue
+            for file in sorted(files):
+                if file.endswith('.model3.json'):
+                    yield os.path.join(root, file)
+
+    first = None
+    for candidate in _candidates():
+        if not _inside(candidate):
+            continue
+        if os.path.basename(candidate) == preferred_name:
+            return candidate
+        if first is None:
+            first = candidate
+    return first
+
+
+def _workshop_item_has_model(item_path: str) -> bool:
+    """Whether a Workshop item folder holds a usable .model3.json (see find_workshop_item_model_file)."""
+    return find_workshop_item_model_file(item_path) is not None
+
+
+def _is_plain_item_id(item_id: str) -> bool:
+    """Return True if item_id is a single relative folder name without traversal or drive syntax."""
+    if not isinstance(item_id, str):
+        return False
+    cleaned = item_id.strip()
+    if not cleaned or cleaned in {".", ".."}:
+        return False
+    if any(sep in item_id for sep in ("/", "\\", "\x00", ":")):
+        return False
+    if os.path.splitdrive(item_id)[0]:
+        return False
+    return True
+
 
 def find_workshop_item_by_id(item_id: str) -> tuple:
     """
@@ -1214,41 +1374,70 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         item_id: Steam Workshop item ID
         
     Returns:
-        (item path, URL prefix) tuple; return defaults even if not found
+        (item path, URL prefix) tuple, or (None, None) if invalid or unsafe.
+        Falls back to static/<item_id> only for valid plain IDs when no
+        Workshop directory exists at all.
     """
+    if not _is_plain_item_id(item_id):
+        logging.warning("无效的创意工坊物品ID: %r", item_id)
+        return (None, None)
     try:
-        workshop_dir = _resolve_workshop_search_dir()
-        
-        # Use the default static directory if the path is empty or absent.
-        if not workshop_dir or not os.path.exists(workshop_dir):
+        # The configured directory first, then the other Steam libraries /workshop also serves.
+        search_dirs = _resolve_workshop_search_dirs()
+
+        # Use the default static directory only when no Workshop directory exists at all.
+        if not search_dirs:
+            workshop_dir = _resolve_workshop_search_dir()
             logging.warning(f"创意工坊目录不存在或无效: {workshop_dir}，使用默认路径")
             default_path = os.path.join("static", item_id)
+            if os.path.lexists(default_path) and not _is_strictly_within(os.path.realpath("static"), default_path):
+                return (None, None)
             return (default_path, '/static')
         
         # Search directly using the item ID as folder name.
-        item_path = os.path.join(workshop_dir, item_id)
-        if os.path.isdir(item_path):
-            # Check for a .model3.json file.
-            has_model_file = any(file.endswith('.model3.json') for file in os.listdir(item_path))
-            if has_model_file:
-                return (item_path, '/workshop')
-            
-            # Check subfolders for model files.
-            for subdir in os.listdir(item_path):
-                subdir_path = os.path.join(item_path, subdir)
-                if os.path.isdir(subdir_path):
-                    # Check subfolders for model files.
-                    if any(file.endswith('.model3.json') for file in os.listdir(subdir_path)):
-                        return (item_path, '/workshop')
+        for search_dir in search_dirs:
+            item_path = os.path.join(search_dir, item_id)
+            # An unreadable folder in one library must not stop the search in the next.
+            try:
+                if not _is_strictly_within(search_dir, item_path):
+                    continue
+                if _workshop_item_has_model(item_path):
+                    return (item_path, '/workshop')
+            except OSError as e:
+                logging.warning(f"检查创意工坊物品 {item_id} 时出错，继续查找其他库: {e}")
+                continue
         
-        # Return the default path if no matching folder is found.
-        default_path = os.path.join(workshop_dir, item_id)
+        # No model file anywhere: return the first library that holds the item folder
+        # (VRM/MMD items, or callers that only need the install path), so an item
+        # installed in another library is not reported at a path that does not exist.
+        # A non-empty folder wins over an empty leftover in an earlier library.
+        existing_dirs = []
+        for search_dir in search_dirs:
+            item_path = os.path.join(search_dir, item_id)
+            try:
+                if not os.path.isdir(item_path):
+                    continue
+                if not _is_strictly_within(search_dir, item_path):
+                    continue
+                existing_dirs.append(item_path)
+                with os.scandir(item_path) as entries:
+                    if any(True for _ in entries):
+                        return (item_path, '/workshop')
+            except OSError as e:
+                logging.warning(f"检查创意工坊物品 {item_id} 时出错，继续查找其他库: {e}")
+                continue
+        if existing_dirs:
+            return (existing_dirs[0], '/workshop')
+
+        # Return the default path if no matching folder is found, unless that folder
+        # is a link leading out of its root.
+        default_path = os.path.join(search_dirs[0], item_id)
+        if not _is_strictly_within(search_dirs[0], default_path):
+            return (None, None)
         return (default_path, '/workshop')
     except Exception as e:
         logging.error(f"查找创意工坊物品ID {item_id} 时出错: {e}")
-        # Return the default path on error.
-        default_path = os.path.join("static", item_id)
-        return (default_path, '/static')
+        return (None, None)
 
 
 def find_model_by_workshop_item_id(item_id: str) -> str:
@@ -1261,6 +1450,9 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
     Returns:
         Model configuration URL path, or None if not found
     """
+    if not _is_plain_item_id(item_id):
+        logging.warning("无效的创意工坊物品ID: %r", item_id)
+        return None
     try:
         # Find the item folder through find_workshop_item_by_id.
         item_result = find_workshop_item_by_id(item_id)
@@ -1269,30 +1461,38 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
             return None
         
         model_dir, url_prefix = item_result
+        if not model_dir or not url_prefix:
+            logging.warning(f"未找到创意工坊物品ID: {item_id}")
+            return None
         
-        # Find the .model3.json file
-        model_files = []
-        for root, _, files in os.walk(model_dir):
-            for file in files:
-                if file.endswith('.model3.json'):
-                    # Calculate the relative path.
-                    relative_path = os.path.relpath(os.path.join(root, file), model_dir)
-                    model_files.append(os.path.normpath(relative_path).replace('\\', '/'))
-        
-        if model_files:
-            # Prefer a model file with the same name as the folder.
-            folder_name = os.path.basename(model_dir)
-            for model_file in model_files:
-                if model_file.endswith(f"{folder_name}.model3.json"):
-                    return f"{url_prefix}/{item_id}/{model_file}"
-            # Otherwise return the first model file found.
-            return f"{url_prefix}/{item_id}/{model_files[0]}"
+        # Same choice as the by-id config routes (see find_workshop_item_model_file).
+        chosen = find_workshop_item_model_file(model_dir)
+        if chosen:
+            relative_path = os.path.normpath(os.path.relpath(chosen, model_dir))
+            return f"{url_prefix}/{item_id}/{relative_path.replace(os.sep, '/')}"
         
         logging.warning(f"创意工坊物品 {item_id} 中未找到模型配置文件")
         return None
     except Exception as e:
         logging.error(f"根据创意工坊物品ID {item_id} 查找模型时出错: {e}")
         return None
+
+
+def model_url_dir(model_dir: str, url_prefix: str, model_name: str) -> str:
+    """
+    URL directory of a folder returned by ``find_model_directory(model_name)``,
+    i.e. the part between ``url_prefix`` and the file name.
+
+    Workshop and user mod models are served relative to the root they were found in
+    (/workshop/<item_id>/..., /user_mods/<mod folder>/...), not under the model name;
+    the other prefixes serve ``<model_name>`` directly under their root.
+    """
+    if url_prefix == '/workshop':
+        return _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_name
+    if url_prefix == '/user_mods':
+        from utils.config_manager import get_workshop_path
+        return _model_dir_relative_to_roots(model_dir, [get_workshop_path()]) or model_name
+    return model_name
 
 
 def find_model_config_file(model_name: str) -> str:
@@ -1306,13 +1506,15 @@ def find_model_config_file(model_name: str) -> str:
         # If no model directory is found, return None or an empty string rather than a default path.
         return None
     
+    url_dir = model_url_dir(model_dir, url_prefix, model_name)
+
     # Find the .model3.json file
     for file in os.listdir(model_dir):
         if file.endswith('.model3.json'):
-            return f"{url_prefix}/{model_name}/{file}"
+            return f"{url_prefix}/{url_dir}/{file}"
     
     # Return the default path if nothing is found.
-    return f"{url_prefix}/{model_name}/{model_name}.model3.json"
+    return f"{url_prefix}/{url_dir}/{model_name}.model3.json"
 
 def get_timestamp():
     """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""

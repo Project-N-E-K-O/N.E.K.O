@@ -19,6 +19,7 @@
         >
           <span class="authoring-stepper__marker" aria-hidden="true">
             <el-icon v-if="step.state === 'done'"><Check /></el-icon>
+            <el-icon v-else-if="step.state === 'failed'"><CircleClose /></el-icon>
             <el-icon v-else-if="step.state === 'waiting'"><Clock /></el-icon>
             <el-icon v-else-if="step.state === 'unknown'"><QuestionFilled /></el-icon>
             <template v-else>{{ index }}</template>
@@ -38,7 +39,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Check, Clock, QuestionFilled } from '@element-plus/icons-vue'
+import { Check, CircleClose, Clock, QuestionFilled } from '@element-plus/icons-vue'
 import type { PublishPageId, PublishStep, PublishStepState } from '@/components/authoring/publishFlow'
 
 /** The publish pages as one row of page tabs; a click asks the page to show that page. */
@@ -127,6 +128,10 @@ const { t } = useI18n()
   border-color: var(--el-color-success);
   background: var(--el-color-success);
   color: #fff;
+}
+.authoring-stepper__node--failed .authoring-stepper__marker {
+  border-color: var(--el-color-danger);
+  color: var(--el-color-danger);
 }
 .authoring-stepper__node--todo .authoring-stepper__marker {
   border-color: var(--el-color-warning);

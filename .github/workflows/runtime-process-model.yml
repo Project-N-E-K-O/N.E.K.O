@@ -28,6 +28,7 @@ on:
       - 'launcher_core/**'
       - 'tests/unit/test_launcher_foreground_residency.py'
       - 'tests/unit/test_launcher_job_object.py'
+      - 'tests/unit/test_launcher_shutdown_request.py'
       - 'tests/unit/test_single_instance_lock.py'
       - '.github/workflows/runtime-process-model.yml'
       - 'pyproject.toml'
@@ -42,6 +43,7 @@ on:
       - 'launcher_core/**'
       - 'tests/unit/test_launcher_foreground_residency.py'
       - 'tests/unit/test_launcher_job_object.py'
+      - 'tests/unit/test_launcher_shutdown_request.py'
       - 'tests/unit/test_single_instance_lock.py'
       - '.github/workflows/runtime-process-model.yml'
       - 'pyproject.toml'
@@ -94,6 +96,7 @@ jobs:
           uv run pytest
           tests/unit/test_launcher_foreground_residency.py
           tests/unit/test_launcher_job_object.py
+          tests/unit/test_launcher_shutdown_request.py
           tests/unit/test_single_instance_lock.py
           -q
 

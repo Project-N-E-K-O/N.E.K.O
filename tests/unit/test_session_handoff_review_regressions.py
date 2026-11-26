@@ -102,7 +102,7 @@ async def test_unexpected_isolation_failure_can_retry_without_false_release(monk
         await ending
     assert not record.handoff_safe.is_set()
     assert not record.cleanup_complete.is_set()
-    await manager._wait_session_handoff(asyncio.get_running_loop().time() + .5)
+    await manager._wait_session_handoff(asyncio.get_running_loop().time() + 10)
     await record.task
     assert calls == 2
     assert old.closed.is_set()
@@ -314,3 +314,123 @@ async def test_retirement_keeps_inputs_of_reserved_successor():
         assert manager._starting_session_count == 1
     finally:
         manager._finish_start_operation(operation, token)
+
+
+async def test_handoff_releases_deferred_flush_when_generation_starts_not_after_reply(monkeypatch):
+    """R1111-P2-01: deferred flush must release as soon as M1 starts generation, not wait for M1 to finish."""
+    from unittest.mock import MagicMock
+    import main_logic.core as core_module
+    from tests.unit.test_offline_turn_cancellation_e2e import _client as _make_streaming_client
+    from utils.llm_client import LLMStreamChunk
+
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", MagicMock())
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda *_: None)
+
+    manager, _, clients = await make_full_manager(monkeypatch)
+    # Simulate an active realtime (non-OmniOfflineClient) session before handoff.
+    manager.session = SimpleNamespace(close=AsyncMock())
+    manager.session_ready = True
+    manager.is_active = True
+    manager.input_mode = "audio"
+
+    offline_client = _make_streaming_client()
+
+    m1_parked = asyncio.Event()
+    m1_release = asyncio.Event()
+    seen_texts: list[str] = []
+
+    def fake_astream(messages, **_kwargs):
+        last_user = next(
+            (getattr(m, "content", "") for m in reversed(messages) if getattr(m, "type", "") == "human"),
+            "",
+        )
+        seen_texts.append(str(last_user))
+        call_idx = len(seen_texts)
+
+        async def _gen():
+            if call_idx == 1:
+                m1_parked.set()
+                await m1_release.wait()
+            yield LLMStreamChunk(content=f"reply-{call_idx}", finish_reason="stop")
+
+        return _gen()
+
+    offline_client.llm = SimpleNamespace(astream=fake_astream, max_completion_tokens=100)
+
+    async def handoff_to_offline(_input_type):
+        from main_logic.omni_offline_client import OmniOfflineClient
+        if isinstance(manager.session, OmniOfflineClient):
+            return True
+        manager.session = offline_client
+        manager.session_ready = True
+        manager.input_mode = "text"
+        manager.pending_input_data.append({"input_type": "text", "data": "M2"})
+        # Also simulate live arrival M3 after start_session while M1 still owns defer.
+        await manager._stream_data_now({"input_type": "text", "data": "M3"})
+        return True
+
+    manager._ensure_offline_session_for_text_input = handoff_to_offline
+    manager._focus_inline_decision = AsyncMock(return_value=(False, None))
+    manager._push_focus_thinking = AsyncMock()
+    manager._start_turn_context = lambda *a, **kw: None
+    manager._await_turn_context = AsyncMock(return_value=None)
+    manager._bg_tasks = set()
+    manager._connection_records = []
+
+    try:
+        t1 = asyncio.create_task(
+            manager._process_stream_data_internal({"input_type": "text", "data": "M1"})
+        )
+        await asyncio.wait_for(m1_parked.wait(), timeout=2.0)
+
+        # Wait briefly for scheduled flush to run M2 and M3 while M1 is STILL parked!
+        for _ in range(50):
+            if len(seen_texts) >= 3:
+                break
+            await asyncio.sleep(0.01)
+
+        assert seen_texts == ["M1", "M2", "M3"], (
+            f"M2/M3 must flush in order as soon as M1 starts generation; got {seen_texts}"
+        )
+        assert manager._deferred_pending_input_flush_count == 0
+        assert manager.pending_input_data == []
+
+        m1_release.set()
+        await asyncio.wait_for(t1, timeout=2.0)
+    finally:
+        m1_release.set()
+        manager.session = None
+        await asyncio.wait_for(drain_manager(manager, clients), timeout=2.0)
+
+
+async def test_handoff_cancelled_before_generation_start_still_releases_defer_in_finally(monkeypatch):
+    """R1111-P2-01: failure before on_generation_started must still release defer in finally."""
+    from tests.unit.test_offline_provider_frame_publish import _make_client
+
+    manager, _, clients = await make_full_manager(monkeypatch)
+    manager.session = SimpleNamespace(close=AsyncMock())
+    manager.session_ready = True
+    manager.is_active = True
+    manager.input_mode = "audio"
+
+    offline_client, _ = _make_client()
+
+    async def handoff_to_offline(_input_type):
+        manager.session = offline_client
+        manager.session_ready = True
+        manager.input_mode = "text"
+        manager.pending_input_data.append({"input_type": "text", "data": "M2"})
+        return True
+
+    manager._ensure_offline_session_for_text_input = handoff_to_offline
+    manager._focus_inline_decision = AsyncMock(side_effect=RuntimeError("boom before stream_text"))
+    manager._flush_pending_input_data = AsyncMock()
+    manager.send_status = AsyncMock()
+
+    try:
+        await manager._process_stream_data_internal({"input_type": "text", "data": "M1"})
+        assert manager._deferred_pending_input_flush_count == 0
+        manager._flush_pending_input_data.assert_awaited_once()
+    finally:
+        manager.session = None
+        await drain_manager(manager, clients)

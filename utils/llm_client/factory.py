@@ -31,7 +31,6 @@ def create_chat_llm(
     base_url: str | None,
     api_key: str | None,
     *,
-    temperature: float | None = None,
     streaming: bool = False,
     max_retries: int = 2,
     max_completion_tokens: int | None = None,
@@ -65,6 +64,23 @@ def create_chat_llm(
         **kw: Forwarded to the selected client class.
     """
     from config.providers import get_cache_kwargs, get_extra_body
+
+    if provider_type == "chatgpt":
+        from .chatgpt_client import ChatChatGPT
+
+        if extra_body is _SENTINEL:
+            explicit = (model_kwargs or {}).get("extra_body")
+            # User-supplied reasoning wins over the inferred model default.
+            extra_body = (
+                explicit if ChatChatGPT._reasoning_params(explicit)
+                else get_extra_body(model, base_url) or None
+            )
+        return ChatChatGPT(
+            model=model, base_url=base_url, streaming=streaming,
+            max_completion_tokens=max_completion_tokens, max_tokens=max_tokens,
+            timeout=timeout, extra_body=extra_body, model_kwargs=model_kwargs,
+            tools=tools, tool_choice=tool_choice, **kw,
+        )
 
     is_anthropic = _is_anthropic_endpoint(base_url, provider_type)
 

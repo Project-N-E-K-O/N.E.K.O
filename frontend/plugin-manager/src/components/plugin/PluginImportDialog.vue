@@ -143,7 +143,6 @@ async function importSelectedPluginPackage() {
   try {
     const upload = await uploadPluginPackage(file)
     const result = await installImportedPackage(upload.path, {
-      installSource: 'imported',
       discardOnFailure: true,
     })
     if (!result) return

@@ -667,11 +667,19 @@
         return normalized;
     };
 
+    function getActiveScreenshotItems() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+        return Array.from(screenshotsList.children).filter(function (item) {
+            return !item.dataset || item.dataset.removing !== '1';
+        });
+    }
+
     mod.normalizeAllPendingComposerAttachments = async function normalizeAllPendingComposerAttachments() {
         var screenshotsList = S.dom.screenshotsList;
         if (!screenshotsList) return [];
 
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var urls = [];
         var changed = false;
         for (var i = 0; i < items.length; i += 1) {
@@ -791,16 +799,25 @@
      * @param {HTMLElement} item
      */
     mod.removeScreenshotFromList = function removeScreenshotFromList(item) {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
+        if (!item || (item.dataset && item.dataset.removing === '1')) return;
 
-        item.style.animation = 'slideOut 0.3s ease';
+        if (item.dataset) {
+            item.dataset.removing = '1';
+        }
+        if (item.style) {
+            item.style.pointerEvents = 'none';
+            item.style.animation = 'slideOut 0.3s ease';
+        }
+        mod.updateScreenshotCount();
+        mod.syncPendingComposerAttachments();
+
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
             mod.syncPendingComposerAttachments();
 
-            if (screenshotsList.children.length === 0) {
+            if (getActiveScreenshotItems().length === 0 && screenshotThumbnailContainer) {
                 screenshotThumbnailContainer.classList.remove('show');
             }
         }, 300);
@@ -811,18 +828,16 @@
      * Update the displayed screenshot count badge.
      */
     mod.updateScreenshotCount = function updateScreenshotCount() {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotCountEl = S.dom.screenshotCount;
-        var count = screenshotsList.children.length;
-        screenshotCountEl.textContent = count;
+        var count = getActiveScreenshotItems().length;
+        if (screenshotCountEl) {
+            screenshotCountEl.textContent = count;
+        }
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
 
     mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return [];
-
-        return Array.from(screenshotsList.children).map(function (item, index) {
+        return getActiveScreenshotItems().map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
             var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
@@ -957,9 +972,7 @@
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
         if (!attachmentId) return;
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return;
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var target = items.find(function (item) {
             return item.dataset.attachmentId === String(attachmentId);
         });
@@ -973,7 +986,7 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
         if (!screenshotsList || !screenshotThumbnailContainer) return;
         mod.updateScreenshotCount();
-        if (screenshotsList.children.length > 0) {
+        if (getActiveScreenshotItems().length > 0) {
             screenshotThumbnailContainer.classList.add('show');
         } else {
             screenshotThumbnailContainer.classList.remove('show');
@@ -1087,7 +1100,9 @@
         var existingItems = Array.from(screenshotsList.children);
         var detachedExistingItems = [];
         existingItems.forEach(function (item) {
-            detachedExistingItems.push(item);
+            if (!item.dataset || item.dataset.removing !== '1') {
+                detachedExistingItems.push(item);
+            }
             item.remove();
         });
         refreshPendingComposerAttachmentList();
@@ -1247,6 +1262,15 @@
                 booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
                 roundChoice: false
             }),
+            // 不拿道具直接连点模型（static/avatar/avatar-click-shake.js）
+            tap: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid', 'angry'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null,
+                roundChoice: false
+            }),
             rps: Object.freeze({
                 actions: Object.freeze({}),
                 acceptsTouchZone: false,
@@ -1375,11 +1399,36 @@
             && !!avatarInteractionTextContinuationState.interactionId;
     }
 
-    function queueDeferredTextSubmission(text, options) {
+    function queueDeferredTextSubmission(text, options, settle) {
         avatarInteractionTextContinuationState.deferredTextSubmissions.push({
             text: String(text || ''),
-            options: Object.assign({}, options || {})
+            options: Object.assign({}, options || {}),
+            // 可选：发送最终成功 / 放弃时回调（语音消息据此保留或清除草稿）
+            settle: typeof settle === 'function' ? settle : null
         });
+    }
+
+    // 语音消息只属于普通聊天：小剧场进行中时不能把它发进普通会话，也不能当成演绎台词。
+    // 串门不在这里拦：串门接管时语音改走串门台词（rerouteToVisit / AUDIO_MESSAGE_VISIT_REROUTE）
+    function isTheaterOwningChat() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        return !!(theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive());
+    }
+
+    // 带 expectedLanlanName 的提交（语音消息）在角色切换后再也不可能发出：
+    // 视为永久取消，不能放回队列重试（否则会立即重刷，形成不让出主线程的死循环）
+    function isDeferredSubmissionForStaleTarget(options) {
+        var expected = options && options.expectedLanlanName;
+        if (typeof expected !== 'string' || !expected) return false;
+        if (!(window.lanlan_config && window.lanlan_config.lanlan_name === expected)) return true;
+        // 排队期间开始了小剧场的语音消息同样作废（发送链路也会拒绝它）；串门的交给发送链路改道
+        return options.audioMessage === true && isTheaterOwningChat();
+    }
+
+    function settleDeferredSubmission(submission, sent) {
+        if (submission && typeof submission.settle === 'function') {
+            try { submission.settle(sent); } catch (_) { /* 回调方自行处理 */ }
+        }
     }
 
     function flushDeferredTextSubmissions() {
@@ -1409,11 +1458,25 @@
             for (var index = 0; index < pending.length; index += 1) {
                 nextPendingIndex = index;
                 var submission = pending[index];
+                if (isDeferredSubmissionForStaleTarget(submission.options)) {
+                    // 已作废的语音消息不进发送链路：不出气泡、不开文本会话
+                    settleDeferredSubmission(submission, false);
+                    nextPendingIndex = index + 1;
+                    continue;
+                }
                 var sent = await sendHandler(submission.text, Object.assign({}, submission.options, {
                     skipAvatarInteractionDeferral: true
                 }));
                 if (sent === false) {
-                    queueDeferredTextSubmission(submission.text, submission.options);
+                    // 角色已换的语音文本永久作废；其他等结果的调用方也直接收到失败，
+                    // 由它保留草稿让用户重发，而不是在队列里无限重试
+                    if (submission.settle || isDeferredSubmissionForStaleTarget(submission.options)) {
+                        settleDeferredSubmission(submission, false);
+                    } else {
+                        queueDeferredTextSubmission(submission.text, submission.options, submission.settle);
+                    }
+                } else {
+                    settleDeferredSubmission(submission, sent);
                 }
                 nextPendingIndex = index + 1;
             }
@@ -1856,7 +1919,10 @@
         return normalized;
     }
 
-    async function sendAvatarInteractionPayload(payload) {
+    // options.isStillValid（可选）：等待 WebSocket 重连后、真正发送前再确认一次这条互动是否还该发
+    // （例如等待期间已切换角色）。不传时行为不变。
+    async function sendAvatarInteractionPayload(payload, options) {
+        var isStillValid = options && typeof options.isStillValid === 'function' ? options.isStillValid : null;
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
             return false;
@@ -1886,6 +1952,13 @@
 
         try {
             await window.ensureWebSocketOpen();
+            if (isStillValid && !isStillValid()) {
+                console.debug('[AvatarInteraction] dropped stale interaction after reconnect wait:', normalized.interaction_id);
+                if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                    releaseDeferredTextAfterAvatarInteraction();
+                }
+                return false;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
@@ -1914,6 +1987,275 @@
     mod.ensureAvatarInteractionTextContinuationLifecycle = bindAvatarInteractionTextContinuationLifecycle;
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
+
+    // ===== 语音消息：录音 -> 离线 ASR 转写 -> 按普通文字消息发送（不保存原音） =====
+    var AUDIO_MESSAGE_API = '/api/audio-message';
+    // 后端返回这些错误码时，当前线路在用户改配置前都不会成功：收起麦克风按钮
+    var AUDIO_MESSAGE_ROUTE_ERRORS = {
+        ASR_OFFLINE_NOT_SUPPORTED: true,
+        ASR_CREDENTIALS_MISSING: true,
+        ASR_CREDENTIALS_REJECTED: true,
+        ASR_DEPENDENCY_MISSING: true,
+        ASR_BACKEND_BLOCKED: true,
+        ASR_UNKNOWN_CORE: true,
+        ASR_INVALID_CONFIG: true
+    };
+    var audioMessageAvailabilitySeq = 0;
+    var audioMessageCheckedTarget = null;
+    // 期望交给聊天窗的目标，以及聊天窗实际接受的目标（有草稿时收起会被推迟）
+    var audioMessageDesiredTarget = null;
+    var audioMessageAppliedTarget = null;
+    // 状态查询确认能转写的目标；实时语音期间不交给聊天窗
+    var audioMessageSupportedTarget = '';
+    var audioMessageRealtimeBusy = false;
+
+    // 串门接管了输入框：语音消息的转写文本只能作为串门台词发出
+    function visitOwnsComposerForAudioMessage() {
+        var visitChat = window.nekoVisitChat;
+        return !!(visitChat && typeof visitChat.isActive === 'function' && visitChat.isActive()
+            && typeof visitChat.submitAudioTranscript === 'function');
+    }
+
+    // 普通文字链路发现串门已接管输入框（排队或开会话期间才开始的）时，不发出、返回这个值，
+    // 由语音消息改走串门链路
+    var AUDIO_MESSAGE_VISIT_REROUTE = 'visit_reroute';
+
+    function audioMessageRejection(message) {
+        var error = new Error(message || 'failed');
+        error.name = 'AudioMessageRejected';
+        return error;
+    }
+
+    // 实时语音开着或正在启动时不提供语音消息：两路同时采集麦克风，实时识别会把这段录音
+    // 也当成语音输入，有的手机上新开的采集还会让实时那一路没声音。桌面端此时整个输入框
+    // 已经隐藏，这里主要防移动端（移动端开实时语音时输入框保持可见）。
+    function isRealtimeVoiceBusy() {
+        var state = window.appState;
+        return !!((state && (state.isRecording || state.voiceChatActive || state.voiceStartPending))
+            || window.isMicStarting === true);
+    }
+
+    function applyAudioMessageTarget(target, options) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        audioMessageDesiredTarget = target;
+        // 角色没变、只是线路不可用时保留草稿：用户改好设置后可以直接重发这条录音。
+        // 实时语音开始时只停掉正在采集的录音（stopCapture），试听 / 发送中的草稿留到请求结束
+        var stopCapture = !!(options && options.stopCapture);
+        var keepDraft = !target && !stopCapture && !!audioMessageAppliedTarget
+            && audioMessageAppliedTarget === currentAudioMessageTarget();
+        if (host.setAudioMessageTarget(target, { keepDraft: keepDraft, stopCapture: stopCapture }) !== false) {
+            audioMessageAppliedTarget = target;
+        }
+    }
+
+    function applySupportedAudioMessageTarget() {
+        audioMessageRealtimeBusy = isRealtimeVoiceBusy();
+        applyAudioMessageTarget(
+            audioMessageRealtimeBusy ? '' : audioMessageSupportedTarget,
+            { stopCapture: audioMessageRealtimeBusy }
+        );
+    }
+
+    function currentAudioMessageTarget() {
+        var config = window.lanlan_config;
+        return config && typeof config.lanlan_name === 'string' ? config.lanlan_name.trim() : '';
+    }
+
+    async function audioMessageMutationHeaders(forceRefresh) {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            try {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                Object.assign(headers, await security.getMutationHeaders());
+            } catch (_) { /* 被拒时后端返回 csrf_validation_failed，下面重试一次 */ }
+        }
+        return headers;
+    }
+
+    async function requestAudioMessageTranscript(payload) {
+        var body = JSON.stringify({
+            requestId: payload.requestId,
+            target: payload.target,
+            audio: payload.audio,
+            sampleRateHz: payload.sampleRateHz
+        });
+        for (var attempt = 0; attempt < 2; attempt++) {
+            var response = await fetch(AUDIO_MESSAGE_API + '/transcribe', {
+                method: 'POST',
+                headers: await audioMessageMutationHeaders(attempt > 0),
+                body: body
+            });
+            var data = null;
+            try { data = await response.json(); } catch (_) { data = null; }
+            if (attempt === 0 && data && data.error_code === 'csrf_validation_failed') continue;
+            return { ok: !!(response.ok && data && data.ok === true), data: data || {} };
+        }
+        return { ok: false, data: { error_code: 'csrf_validation_failed' } };
+    }
+
+    // 聊天窗 onComposerAudioMessage 的实现。成功（含"没识别到语音"）时 resolve，草稿随之清除；
+    // 拒绝时 message 为 'busy' 提示稍后重试，其余为一般失败。重试沿用同一 requestId，
+    // 后端据此合并进行中的转写、复用已出的转写结果，不会重复计费。
+    async function sendAudioMessagePayload(payload) {
+        if (!payload || typeof payload.requestId !== 'string' || typeof payload.audio !== 'string') {
+            throw audioMessageRejection('invalid');
+        }
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var result;
+        try {
+            result = await requestAudioMessageTranscript(payload);
+        } catch (error) {
+            console.warn('[AudioMessage] 转写请求失败:', error);
+            throw audioMessageRejection('network');
+        }
+        if (!result.ok) {
+            var code = String(result.data.error_code || 'failed');
+            console.warn('[AudioMessage] 转写失败:', code);
+            if (code === 'ASR_RATE_LIMITED') throw audioMessageRejection('busy');
+            if (AUDIO_MESSAGE_ROUTE_ERRORS[code]) {
+                // 收起麦克风（草稿还在时推迟到草稿结束）；后端记住了被拒的 key，换 key 前状态查询不会再报可用
+                audioMessageSupportedTarget = '';
+                applyAudioMessageTarget('');
+                refreshAudioMessageAvailability();
+            }
+            throw audioMessageRejection(code);
+        }
+        // 转写期间切换了角色：文本不能发到新角色的会话里
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        // 转写期间开始了实时语音：发文字会开文本会话、顶掉刚开的语音会话。草稿留着，之后再发
+        if (isRealtimeVoiceBusy()) throw audioMessageRejection('busy');
+        var text = typeof result.data.text === 'string' ? result.data.text.trim() : '';
+        if (!text) {
+            showAudioMessageNoSpeech();
+            return true;
+        }
+        // 串门接管了输入框（转写期间才开始的也算）：和打字一样作为亲人句发给选中的收件人。
+        // 普通文字链路会被串门运行时以 VISIT_INPUT_REFUSED_SOURCE 拒收
+        if (visitOwnsComposerForAudioMessage()) {
+            return sendAudioTranscriptAsVisitLine(text, payload);
+        }
+        var accepted = await mod.sendTextPayload(text, {
+            source: 'react-chat-window',
+            requestId: payload.requestId,
+            // 语音消息只发转写文本，不带走输入框里待发送的图片
+            ignoreComposerAttachments: true,
+            // 发送链路在开会话之后、真正发出前再核对一次角色
+            expectedLanlanName: payload.target,
+            // 标明是语音消息：小剧场期间不会被当作演绎输入
+            audioMessage: true,
+            // 头像互动进行中时文字会先排队：等真正发出（或因换角色被放弃）的结果再决定草稿去留
+            awaitDeferredSend: true,
+            // 排队或开会话期间串门接管了输入框：不按普通文字发出，交回来改走串门链路
+            rerouteToVisit: true
+        });
+        if (accepted === AUDIO_MESSAGE_VISIT_REROUTE) {
+            return sendAudioTranscriptAsVisitLine(text, payload);
+        }
+        if (accepted === false) {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
+        return true;
+    }
+
+    function showAudioMessageNoSpeech() {
+        window.showStatusToast(
+            window.t ? window.t('chat.audioMessageNoSpeech') : 'No speech was recognised in the recording.',
+            4000
+        );
+    }
+
+    // 作为串门台词发出（visit-chat.js 等到回显或拒收才结算）：被拒以 busy 拒绝，草稿保留。
+    // 转写只属于录音时的角色：排队期间换了角色再开始串门，不能发进新角色的串门；
+    // 发送链路等开会话之后也按 expectedLanlanName 再核对一次
+    async function sendAudioTranscriptAsVisitLine(text, payload) {
+        if (payload.target !== currentAudioMessageTarget()) {
+            refreshAudioMessageAvailability();
+            throw audioMessageRejection('stale_target');
+        }
+        var outcome = await window.nekoVisitChat.submitAudioTranscript({
+            text: text, requestId: payload.requestId, expectedLanlanName: payload.target
+        });
+        if (outcome === 'empty') {
+            showAudioMessageNoSpeech();
+            return true;
+        }
+        if (outcome !== 'sent') {
+            throw audioMessageRejection(
+                payload.target !== currentAudioMessageTarget() ? 'stale_target' : 'busy'
+            );
+        }
+        return true;
+    }
+
+    // 只有当前线路能离线转写时才把目标角色交给聊天窗（聊天窗据此显示麦克风按钮）
+    async function refreshAudioMessageAvailability() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setAudioMessageTarget !== 'function') return;
+        var target = currentAudioMessageTarget();
+        var seq = ++audioMessageAvailabilitySeq;
+        audioMessageCheckedTarget = target;
+        var supported = false;
+        if (target) {
+            try {
+                var response = await fetch(
+                    AUDIO_MESSAGE_API + '/status?target=' + encodeURIComponent(target),
+                    { cache: 'no-store' }
+                );
+                var data = response.ok ? await response.json() : null;
+                supported = !!(data && data.supported === true);
+            } catch (error) {
+                console.warn('[AudioMessage] 查询可用性失败:', error);
+            }
+        }
+        if (seq !== audioMessageAvailabilitySeq) return;
+        audioMessageSupportedTarget = supported ? target : '';
+        applySupportedAudioMessageTarget();
+    }
+
+    function bindAudioMessageHost(host) {
+        if (typeof host.setOnComposerAudioMessage !== 'function'
+                || typeof host.setAudioMessageTarget !== 'function') {
+            return;
+        }
+        host.setOnComposerAudioMessage(sendAudioMessagePayload);
+        refreshAudioMessageAvailability();
+        if (mod._audioMessageWatchBound) return;
+        mod._audioMessageWatchBound = true;
+        // 切换角色、开关实时语音都不发事件：每秒本地比对一次，角色名变了才去查状态；
+        // 回到窗口时也查一次，覆盖在设置页刚填好 key 的情况
+        window.setInterval(function () {
+            if (currentAudioMessageTarget() !== audioMessageCheckedTarget) {
+                refreshAudioMessageAvailability();
+            } else if (isRealtimeVoiceBusy() !== audioMessageRealtimeBusy) {
+                // 实时语音开始：停掉正在进行的录音并收起；结束：恢复麦克风
+                applySupportedAudioMessageTarget();
+            } else if (audioMessageDesiredTarget !== null
+                    && audioMessageDesiredTarget !== audioMessageAppliedTarget) {
+                // 被推迟的收起：草稿结束后再试
+                applyAudioMessageTarget(audioMessageDesiredTarget, {
+                    stopCapture: audioMessageRealtimeBusy && !audioMessageDesiredTarget
+                });
+            }
+        }, 1000);
+        window.addEventListener('focus', function () {
+            refreshAudioMessageAvailability();
+        });
+    }
+
+    mod.sendAudioMessagePayload = sendAudioMessagePayload;
+    mod.refreshAudioMessageAvailability = refreshAudioMessageAvailability;
 
     function clearReactChatWindowHostBindingPoll() {
         if (!mod._reactChatWindowHostBindingPollId) {
@@ -1971,6 +2313,8 @@
         host.setOnAvatarInteraction(function (payload) {
             return mod.sendAvatarInteractionPayload(payload);
         });
+
+        bindAudioMessageHost(host);
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();
@@ -2162,6 +2506,12 @@
         // Mic button click
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
+            // A host-mediated (mini-game) start offers a receipt right before it
+            // clicks. Take it before any early return so it can only ever
+            // describe THIS dispatch; a user's own press finds the slot empty.
+            var voiceStartReceipt = typeof window.takeVoiceStartReceipt === 'function'
+                ? window.takeVoiceStartReceipt()
+                : null;
             if (micButton.disabled || S.isRecording) return;
             // 邀请等待也已占用串门输入通道，在修改启动状态或结束文本会话前直接提示。
             if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
@@ -2201,6 +2551,18 @@
             S.voiceStartPending = true;
             var voiceStartEpoch = (S.voiceSessionStartEpoch || 0) + 1;
             S.voiceSessionStartEpoch = voiceStartEpoch;
+            // Accepted synchronously, before the first await: from here this
+            // press is the receipt's start, identified by its epoch. The
+            // receipt only records facts -- it never steers this flow.
+            if (voiceStartReceipt) {
+                voiceStartReceipt.accepted = true;
+                voiceStartReceipt.voiceStartEpoch = voiceStartEpoch;
+            }
+            function settleVoiceStartReceipt(outcome) {
+                if (voiceStartReceipt && voiceStartReceipt.outcome === 'pending') {
+                    voiceStartReceipt.outcome = outcome;
+                }
+            }
             function ensureVoiceStartCurrent() {
                 if (S.voiceSessionStartEpoch !== voiceStartEpoch
                         || window.isMicStarting !== true
@@ -2281,6 +2643,13 @@
                             && S._pendingSessionStartMode !== 'audio')) {
                     return false;
                 }
+                // Every path below stands this start down. Settle its receipt
+                // now: an automatic audio restart takes over WITHOUT moving
+                // the epoch (app-websocket.js), so while it holds the
+                // lifecycle flags the bridge could not tell this exited start
+                // from one still running and would keep reporting 'pending'.
+                // A no-op when the catch already settled it.
+                settleVoiceStartReceipt('cancelled');
                 if (!window.supersededByAudioStart(micStartOwner)) {
                     // This flow may have set S.isSwitchingMode when it began
                     // from a live text session, and standing down returns past
@@ -2397,6 +2766,11 @@
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
+                if (window.nekoVoiceCaptureReadiness) {
+                    await window.nekoVoiceCaptureReadiness.prepareCapture();
+                    ensureVoiceStartCurrent();
+                    if (micStartMustStandDown()) return;
+                }
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio',
@@ -2496,10 +2870,18 @@
                         // enabled and failed to start). Do not open the mic;
                         // unwind the starting-voice UI so the button is usable
                         // again, and let the ASR failure toast stand.
+                        settleVoiceStartReceipt('cancelled');
                         if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
                             window.abortVoiceStartForBlockedRoute();
                         }
                         return;
+                    }
+                    // startMicCapture takes the receipt synchronously on entry and
+                    // binds it to its own capture generation.
+                    if (voiceStartReceipt
+                            && typeof window.offerVoiceStartReceipt === 'function'
+                            && typeof window.startMicCapture === 'function') {
+                        window.offerVoiceStartReceipt(voiceStartReceipt);
                     }
                     var microphoneStarted = await window.startMicCapture();
                     if (microphoneStarted !== true) {
@@ -2543,7 +2925,9 @@
                 try {
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    if (S.proactiveVisionEnabled && !tutorialHoldsVision) {
+                    var speechVisionAllowed = typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                        && window.canProactiveVisionRunDuringSpeech() === true;
+                    if (speechVisionAllowed && !tutorialHoldsVision) {
                         if (typeof window.acquireProactiveVisionStream === 'function') {
                             await window.acquireProactiveVisionStream();
                         }
@@ -2580,6 +2964,12 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                // Settled before the lifecycle flags clear. A start that
+                // reached here without committing its own capture handed over
+                // to a capture that something else owns.
+                settleVoiceStartReceipt(
+                    voiceStartReceipt && voiceStartReceipt.committed === true ? 'started' : 'superseded'
+                );
                 S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
@@ -2589,6 +2979,9 @@
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var isMicrophoneStartCancelled = !!(
                     error && error.microphoneStartCancelled
+                );
+                settleVoiceStartReceipt(
+                    (isVoiceStartCancelled || isMicrophoneStartCancelled) ? 'cancelled' : 'failed'
                 );
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
@@ -3056,11 +3449,19 @@
 
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
+            // 语音消息排在头像互动队列里时串门开始了：普通文字会被串门拒收，交回去改走串门链路
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
+            // 语音消息排队期间开始了实时语音：不发（开文本会话会顶掉语音会话），由宿主保留草稿
+            if (options.rerouteToVisit === true && isRealtimeVoiceBusy()) {
+                return false;
+            }
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
             var ignoreComposerAttachments = options.ignoreComposerAttachments === true;
-            var hasScreenshots = !ignoreComposerAttachments && screenshotsList.children.length > 0;
+            var hasScreenshots = !ignoreComposerAttachments && getActiveScreenshotItems().length > 0;
             if (!text && !hasScreenshots && !hasExtraImages) return false;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3085,7 +3486,7 @@
             if (hasScreenshots) {
                 try {
                     await mod.normalizeAllPendingComposerAttachments();
-                    hasScreenshots = screenshotsList.children.length > 0;
+                    hasScreenshots = getActiveScreenshotItems().length > 0;
                 } catch (error) {
                     console.error('[Chat] 待发送图片处理失败:', error);
                     window.showStatusToast(
@@ -3160,12 +3561,34 @@
                 return !isVisitLine && !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
             }
 
-            function updateReactOptimisticMessageStatus(status) {
+            function buildReactUserBlocks(displayTextValue, imageUrls) {
+                var trimmedText = String(displayTextValue || '').trim();
+                var urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+                var blocks = [];
+                if (trimmedText) {
+                    blocks.push({
+                        type: 'text',
+                        text: trimmedText
+                    });
+                }
+                urls.forEach(function (url, index) {
+                    var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
+                    blocks.push({
+                        type: 'image',
+                        url: String(url),
+                        alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
+                    });
+                });
+                return blocks;
+            }
+
+            function updateReactOptimisticMessageStatus(status, extraPatch) {
                 if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
                 if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
-                    window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
-                        status: status
-                    });
+                    window.reactChatWindowHost.updateMessage(
+                        reactOptimisticMessageId,
+                        Object.assign({ status: status }, extraPatch || {})
+                    );
                 }
             }
 
@@ -3296,6 +3719,48 @@
                 }
             }
 
+            // 语音消息转写出的文本只属于录音时的角色：开会话、连 WebSocket 的等待期间若切换了角色，
+            // 就不发进新角色的会话。其他调用方不传 expectedLanlanName，不受影响
+            // 下面两种拒绝都发生在已记下「回复在途」之后：这句没发出，撤掉它自己的记录
+            // （只撤本次请求的，别的请求的记录不动），否则会被当成还在等回复
+            function forgetRefusedSubmission() {
+                if (requestId && window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+            }
+            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                forgetRefusedSubmission();
+                updateReactOptimisticMessageStatus('failed');
+                return false;
+            }
+            // 开会话等待期间串门接管了输入框：撤掉普通用户气泡，交回去改走串门链路（串门那边会出自己的气泡）
+            if (options.rerouteToVisit === true && visitOwnsComposerForAudioMessage()) {
+                if (reactOptimisticMessageId && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                    window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                }
+                // 这句没发出：撤掉它记下的「回复在途」（只撤自己的，别的请求的记录不动）
+                if (requestId && window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+                // 这次开会话时串门已在接管：那多半只是串门路由的 ack、并没起普通会话（同 markTextSubmissionRefused）。
+                // 撤回标记，串门句会自己发开会话请求并由 visit-chat 记下、串门结束时撤掉，之后普通聊天照常显式开会话
+                if (startedTextSessionHere && S.isTextSessionActive === true) {
+                    S.isTextSessionActive = false;
+                }
+                return AUDIO_MESSAGE_VISIT_REROUTE;
+            }
+            // 等待期间开始了小剧场：语音消息属于普通聊天，不能送进普通会话（串门由上面改道）。
+            // 延迟队列直接调用本函数、不经过 sendTextPayload 的入口检查，也由这里拦下
+            if (options.audioMessage === true && isTheaterOwningChat()) {
+                forgetRefusedSubmission();
+                updateReactOptimisticMessageStatus('failed');
+                return false;
+            }
+
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 try {
@@ -3303,46 +3768,51 @@
 
                     // Send screenshots first
                     if (hasScreenshots) {
-                        var screenshotItems = Array.from(screenshotsList.children);
-                        for (var i = 0; i < screenshotItems.length; i++) {
-                            var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
-                            if (img && img.src) {
-                                sentImageUrls.push(img.src);
-                                var msg = {
-                                    action: 'stream_data',
-                                    data: img.src,
-                                    input_type: getPendingAttachmentInputType(screenshotItems[i]),
-                                    request_id: requestId
-                                };
-                                // Attach paired avatar position metadata (captured at screenshot time)
-                                var storedPos = screenshotItems[i].dataset.avatarPosition;
-                                if (storedPos) {
-                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                        var screenshotItems = getActiveScreenshotItems();
+                        if (screenshotItems.length > 0) {
+                            var sentScreenshotCount = 0;
+                            for (var i = 0; i < screenshotItems.length; i++) {
+                                var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
+                                if (img && img.src) {
+                                    sentImageUrls.push(img.src);
+                                    sentScreenshotCount += 1;
+                                    var msg = {
+                                        action: 'stream_data',
+                                        data: img.src,
+                                        input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                        request_id: requestId
+                                    };
+                                    // Attach paired avatar position metadata (captured at screenshot time)
+                                    var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                    if (storedPos) {
+                                        try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                    }
+                                    S.socket.send(JSON.stringify(msg));
                                 }
-                                S.socket.send(JSON.stringify(msg));
                             }
-                        }
 
-                        if (!isReactWindowSource) {
-                            var screenshotItemCount = screenshotItems.length;
-                            window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                                skipReactSync: true
-                            });
-                        }
-                        sentUserContent = true;
+                            if (sentScreenshotCount > 0) {
+                                if (!isReactWindowSource) {
+                                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + sentScreenshotCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                        skipReactSync: true
+                                    });
+                                }
+                                sentUserContent = true;
 
-                        // Achievement: send image
-                        if (window.unlockAchievement) {
-                            window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                                console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
-                            });
-                        }
+                                // Achievement: send image
+                                if (window.unlockAchievement) {
+                                    window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                        console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                                    });
+                                }
+                            }
 
-                        // Clear screenshot list
-                        screenshotsList.innerHTML = '';
-                        screenshotThumbnailContainer.classList.remove('show');
-                        mod.updateScreenshotCount();
-                        mod.syncPendingComposerAttachments();
+                            // Clear screenshot list
+                            screenshotsList.innerHTML = '';
+                            screenshotThumbnailContainer.classList.remove('show');
+                            mod.updateScreenshotCount();
+                            mod.syncPendingComposerAttachments();
+                        }
                     }
 
                     if (hasExtraImages) {
@@ -3377,6 +3847,12 @@
                                 await window.appChat.ensureUserDisplayName();
                             } catch (nameError) {
                                 console.warn('[Chat] preload user display name failed:', nameError);
+                            }
+                            // 等用户名期间切换了角色（串门句会走到这里）：录音时角色的转写不再发出
+                            if (typeof options.expectedLanlanName === 'string' && options.expectedLanlanName
+                                    && !(window.lanlan_config && window.lanlan_config.lanlan_name === options.expectedLanlanName)) {
+                                updateReactOptimisticMessageStatus('failed');
+                                return false;
                             }
                         }
 
@@ -3431,7 +3907,28 @@
                         });
                     }
 
-                    updateReactOptimisticMessageStatus('sent');
+                    if (!sentUserContent) {
+                        if (reactOptimisticMessageAppended !== null && reactOptimisticMessageId) {
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                                window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                            } else {
+                                updateReactOptimisticMessageStatus('failed');
+                            }
+                        }
+                        return false;
+                    }
+
+                    var sentPatch = null;
+                    var imagesChanged = sentImageUrls.length !== optimisticImageUrls.length
+                        || sentImageUrls.some(function (url, idx) {
+                            return optimisticImageUrls[idx] !== url;
+                        });
+                    if (imagesChanged) {
+                        sentPatch = {
+                            blocks: buildReactUserBlocks(displayText, sentImageUrls)
+                        };
+                    }
+                    updateReactOptimisticMessageStatus('sent', sentPatch);
                     rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);
 
                     if (sentUserContent) {
@@ -3484,13 +3981,17 @@
 
         async function sendTextPayload(rawText, options) {
             options = options || {};
+            // 转写期间开始了小剧场：语音消息不再发送（串门由 sendAudioMessagePayload 改走串门台词）
+            if (options.audioMessage === true && isTheaterOwningChat()) return false;
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
-            var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
+            var hasScreenshots = options.ignoreComposerAttachments === true ? false : getActiveScreenshotItems().length > 0;
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                // 语音消息是普通聊天的录音：转写期间进了小剧场，就不能把它当成演绎台词提交
+                if (options.audioMessage === true) return false;
                 if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
                 if (!text) return false;
                 // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
@@ -3523,10 +4024,16 @@
                         && requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)) {
                     deferredOptions.autoCollapseAfterEnterRequested = true;
                 }
-                queueDeferredTextSubmission(text, deferredOptions);
                 textInputBox.value = '';
                 textInputComposing = false;
                 lastTextCompositionEndAt = 0;
+                if (deferredOptions.awaitDeferredSend === true) {
+                    // 调用方（语音消息）要等真正发出的结果，而不是"已排队"
+                    return new Promise(function (resolve) {
+                        queueDeferredTextSubmission(text, deferredOptions, resolve);
+                    });
+                }
+                queueDeferredTextSubmission(text, deferredOptions);
                 return true;
             }
 
@@ -4405,7 +4912,7 @@
         // Clear all screenshots button
         // ----------------------------------------------------------------
         clearAllScreenshots.addEventListener('click', async function () {
-            if (screenshotsList.children.length === 0) return;
+            if (getActiveScreenshotItems().length === 0) return;
 
             if (await window.showConfirm(
                 window.t ? window.t('dialogs.clearScreenshotsConfirm') : '\u786E\u5B9A\u8981\u6E05\u7A7A\u6240\u6709\u5F85\u53D1\u9001\u7684\u622A\u56FE\u5417\uFF1F',

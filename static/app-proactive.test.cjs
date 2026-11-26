@@ -17,7 +17,7 @@ test('tutorial suppression rejects late vision acquisition at every async bounda
         let stopped = 0;
         let promptCalls = 0;
         const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
-        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const state = { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true };
         const window = {
             appState: state, appConst: {},
             addEventListener(type, listener) { listeners.set(type, listener); },
@@ -331,7 +331,8 @@ test('overlapping tutorial sources keep vision stopped until the final release',
     const listeners = new Map();
     let intervalCount = 0;
     const window = {
-        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: false },
+        // The voice-call heartbeat needs Proactive Chat and its Screen Share option on.
+        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true },
         appConst: {},
         addEventListener(type, listener) { listeners.set(type, listener); }
     };
@@ -342,6 +343,7 @@ test('overlapping tutorial sources keep vision stopped until the final release',
         console,
         setInterval() { intervalCount += 1; return intervalCount; },
         clearInterval() {},
+        setTimeout() { return 0; },
         clearTimeout() {}
     });
     const emit = (active, source) => listeners.get('neko:home-tutorial-features-suppressed')({
@@ -442,6 +444,40 @@ test('request_screenshot declines privacy before capture and after an async capt
     }
 });
 
+test('request_screenshot privacy check: shared consent rule, and its fallback when the module lacks it', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    const cases = [
+        // [module exposes isVisionConsentHeldNow, its answer, window value, latest saved value, declined]
+        [true, true, false, false, false],
+        [true, false, true, true, true],
+        // Fallback: a revocation on either side declines.
+        [false, null, true, true, false],
+        [false, null, false, true, true],
+        [false, null, true, false, true],
+        [false, null, false, false, true],
+    ];
+    for (const [hasHeld, held, own, saved, declined] of cases) {
+        const sent = [];
+        const appProactive = {
+            isProactiveVisionEnabledNow: () => saved,
+            captureProactiveChatScreenshotWithSource: async () => ({ dataUrl: 'FRAME', captureType: 'screen' })
+        };
+        if (hasHeld) appProactive.isVisionConsentHeldNow = () => held;
+        await vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appProactive },
+            S: { proactiveVisionEnabled: own, socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } } },
+            response: {}, WebSocket: { OPEN: 1 }, console
+        });
+        const label = JSON.stringify({ hasHeld, held, own, saved });
+        assert.equal(sent.length, 1, label);
+        assert.equal(sent[0].declined === true, declined, label);
+        assert.equal(sent[0].data, declined ? '' : 'FRAME', label);
+    }
+});
+
 test('request_screenshot forwards a remembered-window decline instead of waiting for timeout', async () => {
     const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
     const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
@@ -526,7 +562,12 @@ test('live vision consent sends a typed snapshot only on an open socket', () => 
 
 
 test('a screenshot taken before a revocation never rides a later request', () => {
-    const window = { appState: { proactiveVisionEnabled: true }, appConst: {}, addEventListener() {} };
+    // The text-chat gate needs the two switches too (holdsProactiveVisionStream).
+    const window = {
+        appState: { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true },
+        appConst: {},
+        addEventListener() {},
+    };
     let sharedSettings = null;
     vm.runInNewContext(source, {
         window,
@@ -562,6 +603,17 @@ test('a screenshot taken before a revocation never rides a later request', () =>
     assert.deepEqual(titleOnly, { enabled_modes: ['news'] });
     const noVision = { enabled_modes: ['news'] };
     assert.equal(proactive.discardVisionRevokedSince(noVision, seqAtCapture), false);
+
+    // Proactive Chat or its Screen Share option off, revocation sequence unchanged
+    // (e.g. turned off in another window, this one not synced yet): drop too.
+    for (const key of ['proactiveChatEnabled', 'proactiveVisionChatEnabled']) {
+        window.appState[key] = false;
+        const switchedOff = makeBody();
+        const seqNow = proactive.currentProactiveVisionRevocationSeq();
+        assert.equal(proactive.discardVisionRevokedSince(switchedOff, seqNow), true, key);
+        assert.deepEqual(switchedOff, { enabled_modes: ['news'] }, key);
+        window.appState[key] = true;
+    }
 
     const later = makeBody();
     assert.equal(
@@ -646,4 +698,31 @@ test('typing pushes a nearer proactive tick to 30s after the last input at any i
     const deferred = timers.get(state.proactiveChatTimer);
     assert.ok(deferred, 'tick must re-arm for the rest of the input window');
     assert.equal(deferred.ms, 15000);
+});
+
+
+test('reconnect reports the same live consent a settings save does', () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
+    const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
+    const run = (local, appSettings) => {
+        const sent = [];
+        const state = {
+            proactiveVisionEnabled: local,
+            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw).enabled); } },
+        };
+        const mod = {};
+        vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appSettings }, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} },
+        });
+        mod.syncProactiveVisionConsent();
+        return sent;
+    };
+    // app-settings owns the rule (an unseen revocation from another window wins).
+    assert.deepEqual(run(true, { visionConsentForBackend: () => false }), [false]);
+    assert.deepEqual(run(true, { visionConsentForBackend: () => true }), [true]);
+    // Without app-settings, or with an unknown local value, behave as before.
+    assert.deepEqual(run(true, undefined), [true]);
+    assert.deepEqual(run(false, undefined), [false]);
+    assert.deepEqual(run(undefined, { visionConsentForBackend: () => true }), []);
 });

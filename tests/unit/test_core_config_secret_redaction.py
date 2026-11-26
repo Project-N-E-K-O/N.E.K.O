@@ -11,7 +11,8 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
     'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
     'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
-    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyQwenTokenPlan',
+    'assistApiKeyMinimax',
     'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -22,8 +23,8 @@ _ASSIST_API_KEY_FIELDS = (
 )
 
 _MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'vision', 'agent', 'omni', 'tts', 'image',
+    'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
+    'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
 )
 
 _MODEL_API_KEY_FIELDS = tuple(
@@ -82,7 +83,19 @@ def core_config_router(monkeypatch):
 
 class _FakeRequest:
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = 'POST'
+        self.base_url = 'http://testserver/'
+        self.url = SimpleNamespace(path='/api/config/core_api')
+        self.headers = Headers({
+            'content-type': 'application/json',
+            'origin': 'http://testserver',
+            'x-csrf-token': AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload
@@ -192,6 +205,8 @@ def _assist_only_key_fields() -> list[tuple[str, str]]:
         set(catalog['assist_api_providers'])
         - set(catalog['core_api_providers'])
         - {'vllm_omni'}
+        - {key for key, profile in catalog['assist_api_providers'].items()
+           if profile.get('auth_type') == 'oauth'}
     )
     registry = catalog['api_key_registry']
     return [(p, registry[p]['config_field']) for p in sorted(providers)]
@@ -849,3 +864,34 @@ def test_disabled_image_fields_require_strings(config_manager, core_config_route
     assert result["success"] is False
     assert result["error"] == "Image settings must be strings"
     assert config_manager.load_json_config("core_config.json", {}) == original
+
+
+@pytest.mark.unit
+def test_chatgpt_save_pins_origin_and_discards_api_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {'coreApi': 'qwen', 'coreApiKey': 'audio-key', 'assistApi': 'qwen'})
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        'enableCustomApi': True, 'conversationModelProvider': 'chatgpt',
+        'conversationModelId': 'account-model', 'conversationModelUrl': 'https://attacker.test',
+        'conversationModelApiKey': 'old-api-key',
+    })))
+    assert result['success'] is True
+    saved = config_manager.load_json_config('core_config.json', {})
+    assert saved['conversationModelUrl'] == 'https://api.openai.com/v1'
+    assert saved['conversationModelApiKey'] == ''
+    assert saved['coreApiKey'] == 'audio-key'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('slot,model', [
+    ('conversation', ''), ('conversation', '   '), ('conversation', {'id': 'model-a'}), ('conversation', ['model-a']),
+    ('tts', 'model'), ('omni', 'model'), ('image', 'model'), ('decision', 'model'), ('vision', 'model'),
+])
+def test_chatgpt_save_rejects_missing_model_and_unsupported_slots(config_manager, core_config_router, slot, model):
+    original = {'coreApi': 'qwen', 'coreApiKey': 'audio-key', 'assistApi': 'qwen'}
+    _write_core_config(config_manager, original)
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        'enableCustomApi': True, f'{slot}ModelProvider': 'chatgpt',
+        f'{slot}ModelId': model, f'{slot}ModelUrl': 'https://api.openai.com/v1',
+    })))
+    assert result['success'] is False
+    assert config_manager.load_json_config('core_config.json', {}) == original

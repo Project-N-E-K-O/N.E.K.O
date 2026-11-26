@@ -20,7 +20,7 @@ N.E.K.O. 当前没有发布一套单独版本化、承诺整体向后兼容的 H
 http://127.0.0.1:48911
 ```
 
-主 API 前没有统一认证层。`/api/tools`、`/api/capture` 等敏感集成路由会自行限制回环访问，但许多第一方 UI 路由不会。不要把 `48911` 端口暴露给不可信局域网或公网。模型提供商 API 密钥由[配置系统](/zh-CN/config/)管理，不是 API Bearer Token。
+在默认本地模式下，主 API 前没有统一认证层。`/api/tools`、`/api/capture` 等敏感集成路由会自行限制回环访问，但许多第一方 UI 路由不会。不要把 `48911` 端口暴露给不可信局域网或公网。启用 `NEKO_BEHIND_PROXY` 或 `NEKO_ACTIVITY_TRACKER_REMOTE` 时，`InstanceAccessMiddleware` 会在 API 路由上强制校验实例凭据（`Authorization: Bearer <instance_key>` 或已配对的浏览器会话 Cookie），包括本机回环外部集成——未提供凭据将收到 HTTP `401`。模型提供商 API 密钥由[配置系统](/zh-CN/config/)管理，不是 API Bearer Token。
 
 除非页面明确说明，这里的路径末尾都没有 `/`。
 

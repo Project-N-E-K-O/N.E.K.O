@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR supersedes the old run. Every other run gets a group of
+# its own (keyed by run id): GitHub keeps only one pending run per group, so a
+# shared main group would let a later merge replace a waiting run and leave
+# that commit without an Analyze result.
+concurrency:
+  group: analyze-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Five parallel jobs, split by concern so a failing check name points at a
 # category (expand it to see which step is red) instead of one giant title
@@ -96,13 +104,13 @@ jobs:
         # Electron's desktopCapturer region path.
         run: python scripts/check_no_tkinter.py
 
-      - name: Forbid `temperature=` kwargs on LLM client calls (memory + utils)
-        # Project policy: do NOT pass `temperature=` to create_chat_llm /
-        # ChatOpenAI / wrappers in memory_server.py + memory/ + utils/. The
-        # default (None) omits the field — required for o1/o3/gpt-5-thinking/
-        # Claude extended-thinking, and avoids per-call-site temperature drift
-        # across memory tasks. See memory/__init__.py and .agent/rules/
-        # neko-guide.md for the rationale.
+      - name: Forbid setting a model temperature anywhere in the repository
+        # Project policy: repository code does not set a sampling
+        # temperature (keyword, parameter, request-body key, attribute or
+        # schema field); every provider uses its own default. Required for
+        # o1/o3/gpt-5-thinking/Claude extended-thinking, and avoids
+        # per-call-site temperature drift. Exemptions are listed with their
+        # reasons in the script. See .agent/rules/neko-guide.md.
         run: python scripts/check_no_temperature.py
 
       - name: Keep heavy SDKs off the startup import chain (lazy-import contract)
@@ -271,7 +279,7 @@ jobs:
         # Top-level packages have a strict ordering — only higher layers may
         # depend on lower ones (config/steamworks → utils →
         # knowledge/memory/main_logic/services → main_routers
-        # → plugin → nekoclaw → app/launcher_core). The walker descends into
+        # → plugin → nekopower → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional
         # imports cannot smuggle in a layer inversion or cycle. FORBIDDEN_EDGES

@@ -506,7 +506,29 @@ test('switching to ball or unloading the page stops the current cat session', as
   assert.equal(runtime.unsubscribeCount, 2);
 });
 
-test('CAT2 and CAT3 do not start window sensing', async () => {
+test('gravity keeps one scene session across all three tiers and stops on final exit', async () => {
+  const runtime = createRuntime();
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  runtime.publishPlaygroundState({ active: true, tier: 'cat1' });
+  await flushPromises();
+  const stops = runtime.stops.length;
+  const observations = runtime.observations.length;
+  for (const tier of ['cat2', 'cat3', 'cat1', 'cat3']) {
+    runtime.publishTierState({ type: 'visual-tier', tier });
+    runtime.publishCatState({ active: true, appearance: 'cat', tier });
+    await flushPromises();
+    assert.equal(runtime.starts.length, 2);
+    assert.equal(runtime.stops.length, stops);
+    assert.equal(runtime.observations.length, observations);
+  }
+  runtime.publishPlaygroundState({ active: false, tier: 'cat3' });
+  await flushPromises();
+  assert.equal(runtime.stops.length, stops + 1);
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent(), null);
+});
+
+test('ordinary CAT2 and CAT3 do not start window sensing', async () => {
   const runtime = createRuntime();
 
   runtime.setTier('cat2');

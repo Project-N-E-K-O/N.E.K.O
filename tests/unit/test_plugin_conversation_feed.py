@@ -541,23 +541,32 @@ def test_queued_proactive_does_not_claim_server_vad_reply(published):
         session._response_arbiter = arbiter
         stub = _StubManager()
         stub.session = session
-        arbiter.notify_response_created({"type": "response.created", "response": {"id": "user-response"}})
-        ticket = await arbiter.enqueue(source="proactive")
-        session._begin_response_lifecycle("user-response")
-        await stub.send_lanlan_response("ordinary user reply")
-        stub._flush_ai_turn_text_to_tracker()
-        assert session.get_conversation_turn_type() == "assistant_message"
-        arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "user-response"}})
-        await asyncio.wait_for(ticket.sent, timeout=1)
-        arbiter.notify_response_created({"type": "response.created", "response": {"id": "proactive-response"}})
-        session._begin_response_lifecycle("proactive-response")
-        # Terminal processing may detach the owner before a final transcript.
-        arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "proactive-response"}})
-        await asyncio.wait_for(ticket.done, timeout=1)
-        await arbiter.wait_until_idle(timeout=1)
-        await stub.send_lanlan_response("actual proactive reply")
-        stub._flush_ai_turn_text_to_tracker()
-        await stub.drain()
+        try:
+            arbiter.notify_response_created({"type": "response.created", "response": {"id": "user-response"}})
+            ticket = await arbiter.enqueue(source="proactive")
+            session._begin_response_lifecycle("user-response")
+            await stub.send_lanlan_response("ordinary user reply")
+            stub._flush_ai_turn_text_to_tracker()
+            assert session.get_conversation_turn_type() == "assistant_message"
+            arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "user-response"}})
+            await asyncio.wait_for(ticket.sent, timeout=1)
+            arbiter.notify_response_created({"type": "response.created", "response": {"id": "proactive-response"}})
+            session._begin_response_lifecycle("proactive-response")
+            # Terminal processing may detach the owner before a final transcript.
+            arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "proactive-response"}})
+            await asyncio.wait_for(ticket.done, timeout=1)
+            await arbiter.wait_until_idle(timeout=1)
+            await stub.send_lanlan_response("actual proactive reply")
+            stub._flush_ai_turn_text_to_tracker()
+        finally:
+            # tests/conftest.py routes asyncio.run through nest_asyncio, which
+            # does not cancel leftover tasks; await the publish tasks and stop
+            # the queue consumer here (on failure paths too) so neither is
+            # finalized later on a closed loop.
+            try:
+                await stub.drain()
+            finally:
+                await arbiter.shutdown()
 
     asyncio.run(scenario())
     assert [record["turn_type"] for record in published] == ["assistant_message", "proactive_reply"]
@@ -596,26 +605,30 @@ def test_response_source_requires_id_and_uninterrupted_owner(response_id, interr
             pass
 
         arbiter = RealtimeResponseArbiter(send)
-        ticket = await arbiter.enqueue(source="proactive")
-        await asyncio.wait_for(ticket.sent, timeout=1)
-        event = {"type": "response.created", "response": {}}
-        if response_id is not None:
-            event["response"]["id"] = response_id
-        arbiter.notify_response_created(event)
-        assert ticket.started.done()
-        if interrupted:
-            # Capture the gap after interruption, before the owner's terminal.
-            arbiter._response_owner.interrupted = True
-        assert arbiter.response_source_for(response_id) == (
-            "proactive" if response_id is not None and not interrupted else None
-        )
-        arbiter.notify_response_terminal({"type": "response.done", "response": event["response"]})
-        if interrupted:
-            with pytest.raises(RuntimeError, match="response dispatch interrupted"):
+        try:
+            ticket = await arbiter.enqueue(source="proactive")
+            await asyncio.wait_for(ticket.sent, timeout=1)
+            event = {"type": "response.created", "response": {}}
+            if response_id is not None:
+                event["response"]["id"] = response_id
+            arbiter.notify_response_created(event)
+            assert ticket.started.done()
+            if interrupted:
+                # Capture the gap after interruption, before the owner's terminal.
+                arbiter._response_owner.interrupted = True
+            assert arbiter.response_source_for(response_id) == (
+                "proactive" if response_id is not None and not interrupted else None
+            )
+            arbiter.notify_response_terminal({"type": "response.done", "response": event["response"]})
+            if interrupted:
+                with pytest.raises(RuntimeError, match="response dispatch interrupted"):
+                    await asyncio.wait_for(ticket.done, timeout=1)
+            else:
                 await asyncio.wait_for(ticket.done, timeout=1)
-        else:
-            await asyncio.wait_for(ticket.done, timeout=1)
-        await arbiter.wait_until_idle(timeout=1)
+            await arbiter.wait_until_idle(timeout=1)
+        finally:
+            # See test_queued_proactive_does_not_claim_server_vad_reply.
+            await arbiter.shutdown()
 
     asyncio.run(scenario())
 

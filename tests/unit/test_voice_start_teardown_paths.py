@@ -152,13 +152,17 @@ function makeEnv() {
   return env;
 }
 
-// The mic flow closes over `micStartOwner` (null until it claims) and the epoch
-// it minted when the button was pressed.
+// The mic flow closes over `micStartOwner` (null until it claims), the epoch
+// it minted when the button was pressed, and the settle helper for a
+// mini-game start receipt (#3003), recorded here so a case can ask what a
+// stand-down settled.
 function micFlow(env, voiceStartEpoch) {
   const build = new Function(
     'S', 'window', 'voiceStartEpoch',
-    'var micStartOwner = null;' + MIC_STAND_DOWN
-      + ';return { standDown: micStartMustStandDown,'
+    'var micStartOwner = null; var settled = [];'
+      + ' function settleVoiceStartReceipt(outcome) { settled.push(outcome); }'
+      + MIC_STAND_DOWN
+      + ';return { standDown: micStartMustStandDown, settled: settled,'
       + ' claim: function (owner) { micStartOwner = owner; } };'
   );
   return build(env.S, env.W, voiceStartEpoch);
@@ -245,6 +249,11 @@ _CROSS_MODE = r"""
   claim(env, 'audio');
 
   assert(mic.standDown() === true, 'a newer AUDIO start must stop this one too');
+  // The newer audio start can share this epoch (the automatic restart does not
+  // mint one) and holds the lifecycle flags, so only an explicit settle tells a
+  // mini-game command that this start exited (#3003).
+  assert(mic.settled.length === 1 && mic.settled[0] === 'cancelled',
+         'a stand-down must settle its start receipt as cancelled, got ' + JSON.stringify(mic.settled));
   assert(env.order.length === 0,
          'the unwind is GLOBAL -- it bumps the mic generation and clears isMicStarting, which '
          + 'is the state the newer audio start is sitting on inside getUserMedia. Running it '
@@ -301,6 +310,7 @@ _CROSS_MODE = r"""
   const owner = claim(env, 'audio');
   mic.claim(owner);
   assert(mic.standDown() === false, 'an unchallenged start must proceed');
+  assert(mic.settled.length === 0, 'a start that proceeds must not settle its receipt');
 
   // The success path releases the slot inside the ack handler BEFORE settling
   // the promise, so a start that simply succeeded also resumes to an empty slot.

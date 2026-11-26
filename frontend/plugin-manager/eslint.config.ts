@@ -1,3 +1,4 @@
+import type { Linter } from 'eslint'
 import { globalIgnores } from 'eslint/config'
 import { defineConfigWithVueTs, vueTsConfigs } from '@vue/eslint-config-typescript'
 import pluginVue from 'eslint-plugin-vue'
@@ -7,6 +8,44 @@ import skipFormatting from '@vue/eslint-config-prettier/skip-formatting'
 // import { configureVueProject } from '@vue/eslint-config-typescript'
 // configureVueProject({ scriptLangs: ['ts', 'tsx'] })
 // More info at https://github.com/vuejs/eslint-config-typescript/#advanced-setup
+
+// `@/i18n/plugin-consent/testing`, `../plugin-consent/testing`, ... with or
+// without an extension or a Vite `?query`. Inside `plugin-consent/` itself,
+// also `./testing`. Specifiers are matched as written, not resolved, and only
+// plain string ones: template-literal or concatenated `import()` paths are not.
+// The unit test in `src/i18n/plugin-consent/testing.guard.test.ts` resolves them.
+const CONSENT_TESTING_IMPORT = /(^|\/)plugin-consent\/(\.\/)*testing(\.[cm]?[jt]sx?)?(\?.*)?$/
+const CONSENT_TESTING_SIBLING_IMPORT = new RegExp(
+  `${CONSENT_TESTING_IMPORT.source}|^(\\./)+testing(\\.[cm]?[jt]sx?)?(\\?.*)?$`,
+)
+// Same file set as the unit test in `src/i18n/plugin-consent/testing.guard.test.ts`.
+const SOURCE_FILES = '*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,vue}'
+const TEST_FILES = ['src/**/*.{test,spec}.*', 'src/**/__tests__/**', 'src/**/e2e/**']
+const CONSENT_TESTING_MESSAGE =
+  'plugin-consent/testing loads every language and is for tests only. ' +
+  'App code should go through the per-language bundles (see src/i18n/localeBundles.ts).'
+
+// Flat config replaces, not merges, the options of a rule set again by a later
+// config object. Any future `no-restricted-imports` / `no-restricted-syntax`
+// for `src/**` must include these entries (spread `forbidConsentTesting(...)`),
+// or it will silently drop this guard.
+function forbidConsentTesting(importSource: RegExp): Linter.RulesRecord {
+  return {
+    'no-restricted-imports': [
+      'error',
+      { patterns: [{ regex: importSource.source, message: CONSENT_TESTING_MESSAGE }] },
+    ],
+    // `no-restricted-imports` does not see dynamic `import()`. esquery ends a
+    // regex at the first `/`, even an escaped one, so spell slashes as `\x2F`.
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: `ImportExpression[source.value=/${importSource.source.replaceAll('\\/', '\\x2F').replaceAll('/', '\\x2F')}/]`,
+        message: CONSENT_TESTING_MESSAGE,
+      },
+    ],
+  }
+}
 
 export default defineConfigWithVueTs(
   {
@@ -18,5 +57,25 @@ export default defineConfigWithVueTs(
 
   pluginVue.configs['flat/essential'],
   vueTsConfigs.recommended,
+
+  // `src/i18n/plugin-consent/testing.ts` pulls in every language's consent
+  // copy. It lives under `src/` (not `__tests__/`, which vue-tsc left out when
+  // this was written; it no longer does) so that vue-tsc checks
+  // its `satisfies Record<AppLocale, ...>`, but app code must never import it:
+  // doing so would put all 8 languages back into the first-load bundle.
+  // Test files (and the e2e helpers) are exempt.
+  {
+    name: 'app/no-consent-testing-import',
+    files: [`src/**/${SOURCE_FILES}`],
+    ignores: TEST_FILES,
+    rules: forbidConsentTesting(CONSENT_TESTING_IMPORT),
+  },
+  {
+    name: 'app/no-consent-testing-import-sibling',
+    files: [`src/i18n/plugin-consent/**/${SOURCE_FILES}`],
+    ignores: TEST_FILES,
+    rules: forbidConsentTesting(CONSENT_TESTING_SIBLING_IMPORT),
+  },
+
   skipFormatting,
 )

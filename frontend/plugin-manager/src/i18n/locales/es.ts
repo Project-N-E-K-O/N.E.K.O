@@ -1,16 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/es'
+import modelApiMessages from '../model-api/es'
+import modelBindingsMessages from '../model-bindings/es'
+import marketFeedbackMessages from '../market-feedback/es'
+import authoringMessages from '../authoring/es'
+import powerMessages from '../power/es'
 
 /**
  * Paquete de idioma español
  */
 export default {
-  pluginConsent: pluginConsentMessages['es'],
-  authoring: authoringMessages['es'],
-  modelApi: modelApiMessages['es'],
-  modelBindings: modelBindingsMessages['es'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "Elegir idioma",
     surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Cargando...',
     refresh: 'Actualizar',
+    retry: 'Reintentar',
     search: 'Buscar',
     filter: 'Filtrar',
     reset: 'Restablecer',
@@ -736,7 +741,16 @@ export default {
       exitFocus: 'Salir del enfoque',
       exitFocusHint: 'Salir del modo enfoque (Esc)',
       controlError: 'Error de control de la UI del plugin',
-      hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.'
+      hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.',
+      parseDocumentConfirm: '¿Permitir que el plugin "{plugin}" analice el documento "{file}"?',
+      actionConfirmTitle: 'Confirmar acción del plugin "{plugin}"',
+      actionConfirmDefault: '¿Ejecutar esta acción?',
+      actionConfirmTimeout: 'La confirmación expiró, por lo que la acción no se ejecutó.',
+      actionConfirmPending: 'Ya hay otra confirmación abierta. Termínala primero.',
+      openPathOutOfScope: 'Este panel solo puede abrir archivos dentro de la carpeta de su propio plugin o de su carpeta de datos.',
+      openPathNoBridge: 'Abrir archivos locales solo está disponible en la aplicación de escritorio.',
+      openPathFailed: 'No se pudo abrir la ruta: {message}',
+      unsafeTargetBlocked: 'Se bloqueó una dirección de destino no segura'
     }
   },
   package: {
@@ -822,6 +836,22 @@ export default {
       verify: 'Verificar',
       install: 'Instalar',
       analyze: 'Analizar'
+    },
+    messages: {
+      selectPluginToBuild: 'Selecciona primero al menos un plugin para compilar.',
+      bundleRequiresTwoPlugins: 'Un paquete combinado requiere seleccionar al menos dos plugins.',
+      bundleBuildFailedWithError: 'Error al compilar el paquete combinado: {error}',
+      bundleBuildCompleted: 'Paquete combinado compilado.',
+      bundleBuildPartialFailed: 'Falló la compilación del paquete combinado en {count} elemento(s).',
+      buildFailedWithError: 'Error de compilación: {error}',
+      buildCompletedWithFailures: 'Compilación finalizada: {built} correcto(s), {failed} con error.',
+      buildCompleted: 'Compilación finalizada: {built} correcto(s).',
+      inspectCompleted: 'Inspección del paquete completada.',
+      verifyPassed: 'Verificación del paquete aprobada.',
+      verifyFailed: 'La verificación del paquete falló.',
+      selectAtLeastOnePlugin: 'Selecciona al menos un plugin.',
+      analyzeCompleted: 'Análisis completado.',
+      analyzeFailedWithError: 'Error en el análisis: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -1039,6 +1069,8 @@ export default {
     pluginBuilt: 'Plugin empaquetado: {packageName}',
     pluginDeleted: 'Plugin eliminado',
     pluginDeletedBuiltinRestartFailed: 'Se eliminó el plugin {plugin}, pero no se pudo iniciar la versión integrada restaurada: {error}',
+    pluginDeletedPermissionsNotCleared: 'Se eliminó el plugin {plugin}, pero el archivo de registros de permisos está dañado o pertenece a una versión más nueva, así que no se pudieron borrar los permisos que pudiera tener. Si el archivo vuelve a ser legible, esos permisos podrían seguir vigentes.',
+    pluginsDeletedPermissionsNotCleared: 'Se eliminaron los plugins {plugins}, pero el archivo de registros de permisos está dañado o pertenece a una versión más nueva, así que no se pudieron borrar los permisos que pudieran tener. Si el archivo vuelve a ser legible, esos permisos podrían seguir vigentes.',
     startFailed: 'Error al iniciar',
     autoStartEnabled: 'Inicio automático activado',
     autoStartDisabled: 'Inicio automático desactivado',
@@ -1100,7 +1132,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'Gestor de plugins N.E.K.O'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

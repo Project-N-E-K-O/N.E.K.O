@@ -419,9 +419,13 @@ def _legacy_upload(client, kind, directory):
     import zipfile
 
     if kind == 'live2d':
-        return client.post('/api/live2d/upload_model', files=[
-            ('files', (directory + '/Avatar.model3.json', b'{}', 'application/json')),
-        ])
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
+        return client.post(
+            '/api/live2d/upload_model',
+            headers={'Origin': 'http://testserver', 'X-CSRF-Token': AUTOSTART_CSRF_TOKEN},
+            files=[('files', (directory + '/Avatar.model3.json', b'{}', 'application/json'))],
+        )
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as archive:
         archive.writestr(directory + '/Avatar.pmx', b'PMX test upload')

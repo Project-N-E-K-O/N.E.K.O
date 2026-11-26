@@ -43,7 +43,7 @@ def test_full_live2d_reset_prefers_saved_appearance_baseline():
     assert "this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)" in source
     assert "? [this.appearanceBaselineParameters, this.motionBaselineParameters, this.initialParameters]" in source
     assert "? [this.appearanceBaselineParameters, this.savedModelParameters, this.motionBaselineParameters" not in source
-    assert "const resetValue = baseline.found ? baseline.value : initialValue;" in source
+    assert "let resetValue = baseline.found ? baseline.value : initialValue;" in source
     assert "coreModel.setParameterValueByIndex(paramIndex, resetValue);" in source
     assert "coreModel.setParameterValueById(paramId, resetValue);" in source
 

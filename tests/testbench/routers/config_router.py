@@ -97,7 +97,6 @@ class _UpdateGroupRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
-    temperature: float | None = None
     max_tokens: int | None = None
     timeout: float | None = None
 
@@ -244,9 +243,8 @@ async def list_providers() -> dict[str, Any]:
             "base_url": profile.get("openrouter_url", ""),
             "suggested_models": {
                 "conversation": profile.get("conversation_model"),
-                "summary": profile.get("summary_model"),
-                "correction": profile.get("correction_model"),
-                "emotion": profile.get("emotion_model"),
+                "summary": profile.get("memory_model"),
+                "emotion": profile.get("recognition_model"),
                 "vision": profile.get("vision_model"),
                 "agent": profile.get("agent_model"),
             },
@@ -375,7 +373,6 @@ async def _ping_chat(cfg: ModelGroupConfig, prompt: str) -> dict[str, Any]:
             model=cfg.model,
             base_url=cfg.base_url,
             api_key=cfg.api_key,
-            temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
             timeout=cfg.timeout or 30.0,
             max_retries=0,

@@ -4980,21 +4980,21 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
         await reopened.close()
 
 
-def _nekoclaw_with_links(tmp_path):
-    """A data root whose NekoClaw directory holds what a task agent and a browser leave there."""
+def _nekopower_with_links(tmp_path):
+    """A data root whose NekoPower directory holds what a task agent and a browser leave there."""
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
     (source_root / "config").mkdir(parents=True)
     (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
-    nekoclaw = source_root / "nekoclaw"
-    nekoclaw.mkdir()
-    (nekoclaw / "ledger.db").write_bytes(b"ledger")
-    (nekoclaw / "ledger.db-wal").write_bytes(b"not yet in the ledger file")
-    (nekoclaw / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
-    (nekoclaw / "browser.json").write_text('{"mode": "own_profile"}', encoding="utf-8")
+    nekopower = source_root / "nekopower"
+    nekopower.mkdir()
+    (nekopower / "ledger.db").write_bytes(b"ledger")
+    (nekopower / "ledger.db-wal").write_bytes(b"not yet in the ledger file")
+    (nekopower / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
+    (nekopower / "browser.json").write_text('{"mode": "own_profile"}', encoding="utf-8")
     # What task agents keep for later commissions, and what a plugin publishes for others.
-    space = nekoclaw / "task_agent_space"
+    space = nekopower / "task_agent_space"
     (space / "projects" / "Budget app" / "reviews").mkdir(parents=True)
     (space / "memory").mkdir()
     (space / "MEMORY.md").write_text("- [Use uv](memory/use-uv.md)\n", encoding="utf-8")
@@ -5003,14 +5003,14 @@ def _nekoclaw_with_links(tmp_path):
     (source_root / "plugin_shared" / "weather").mkdir(parents=True)
     (source_root / "plugin_shared" / "weather" / "cities.json").write_text("[]", encoding="utf-8")
     # A working directory with a virtual environment: links to an interpreter elsewhere.
-    work = nekoclaw / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work"
+    work = nekopower / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work"
     work.mkdir(parents=True)
     (work / "notes.txt").write_text("half done", encoding="utf-8")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _link_directory(work / "venv", elsewhere)
     # The profile of a browser that was killed: its lock is a link.
-    profile = nekoclaw / "browser_profile"
+    profile = nekopower / "browser_profile"
     profile.mkdir()
     (profile / "Preferences").write_text("{}", encoding="utf-8")
     _link_directory(profile / "SingletonLock", elsewhere)
@@ -5024,44 +5024,44 @@ def _nekoclaw_with_links(tmp_path):
 
 
 @pytest.mark.unit
-def test_links_below_nekoclaw_do_not_stop_a_migration_and_its_plain_files_move(tmp_path):
-    config_manager, source_root, target_root = _nekoclaw_with_links(tmp_path)
+def test_links_below_nekopower_do_not_stop_a_migration_and_its_plain_files_move(tmp_path):
+    config_manager, source_root, target_root = _nekopower_with_links(tmp_path)
 
     result = run_pending_storage_migration(config_manager)
 
     # A link anywhere in a migrated entry stops the whole migration; these are in none.
     assert result["completed"] is True, result
-    moved = target_root / "nekoclaw"
+    moved = target_root / "nekopower"
     assert (moved / "ledger.db").read_bytes() == b"ledger"
     assert (moved / "ledger.db-wal").read_bytes() == b"not yet in the ledger file"
     assert (moved / "permissions.json").read_text(encoding="utf-8") == '{"browser": "always"}'
     assert (moved / "browser.json").read_text(encoding="utf-8") == '{"mode": "own_profile"}'
     copied = set(result["payload"]["copied_entries"])
-    assert {"nekoclaw/ledger.db", "nekoclaw/ledger.db-wal", "nekoclaw/permissions.json", "nekoclaw/browser.json"} <= copied
+    assert {"nekopower/ledger.db", "nekopower/ledger.db-wal", "nekopower/permissions.json", "nekopower/browser.json"} <= copied
     # A file that is not there (nothing was learned about a model yet) is no entry.
-    assert "nekoclaw/model_capabilities.json" not in copied
+    assert "nekopower/model_capabilities.json" not in copied
     # The task agent space moves whole, and so does what plugins share.
-    assert {"nekoclaw/task_agent_space", "plugin_shared"} <= copied
+    assert {"nekopower/task_agent_space", "plugin_shared"} <= copied
     assert (moved / "task_agent_space" / "MEMORY.md").read_text(encoding="utf-8") == "- [Use uv](memory/use-uv.md)\n"
     assert (moved / "task_agent_space" / "memory" / "use-uv.md").read_text(encoding="utf-8") == "Run Python through uv."
     assert (moved / "task_agent_space" / "projects" / "Budget app" / "reviews" / "c1.md").is_file()
     assert (target_root / "plugin_shared" / "weather" / "cities.json").read_text(encoding="utf-8") == "[]"
     # The working directories and the browser profile stay in the old root, untouched.
     assert not (moved / "task_agents").exists() and not (moved / "browser_profile").exists()
-    assert (source_root / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work" / "notes.txt").is_file()
-    assert (source_root / "nekoclaw" / "browser_profile" / "Preferences").is_file()
+    assert (source_root / "nekopower" / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work" / "notes.txt").is_file()
+    assert (source_root / "nekopower" / "browser_profile" / "Preferences").is_file()
 
 
 # ---------------------------------------------------------------------------
 # The ledger and its write-ahead log go together
 # ---------------------------------------------------------------------------
 
-_LEDGER = "nekoclaw/ledger.db"
-_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+_LEDGER = "nekopower/ledger.db"
+_LEDGER_LOG = "nekopower/ledger.db-wal"
 
 
 def _ledger_roots(tmp_path, *, source: dict, target: dict, selection_source: str):
-    """Two roots holding the given ``nekoclaw`` files, and a migration from one to the other pending."""
+    """Two roots holding the given ``nekopower`` files, and a migration from one to the other pending."""
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"

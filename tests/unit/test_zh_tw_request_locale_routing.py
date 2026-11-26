@@ -228,7 +228,7 @@ class _StreamingStub(_streaming._StreamingMixin):
 
 class _FakeConfigManager:
     async def aget_model_api_config(self, model_type, *, core_config=None):
-        assert model_type == "emotion"
+        assert model_type == "recognition"
         return {
             "api_key": "k",
             "model": "m",

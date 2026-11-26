@@ -407,6 +407,52 @@ class TopicStore:
                 out.append(self.publish(t, rec))
             return out
 
+    def delete_records(
+        self,
+        topic: str,
+        *,
+        ids: set[str],
+        id_fields: tuple[str, ...],
+    ) -> int:
+        """Delete matching records from ``topic`` without clobbering other entries."""
+        clean_ids = {item for item in ids if isinstance(item, str) and item}
+        if not clean_ids:
+            return 0
+        t = str(topic)
+        with self._lock:
+            existing = self.items.get(t)
+            if not existing:
+                return 0
+            ml = int(self.maxlen)
+            if ml <= 0:
+                ml = 1
+            kept: deque[Dict[str, Any]] = deque(maxlen=ml)
+            removed = 0
+            for event in existing:
+                payload = event.get("payload") if isinstance(event, dict) else None
+                matched = False
+                has_primary_id = False
+                if isinstance(payload, dict):
+                    for field in id_fields:
+                        val = payload.get(field)
+                        if isinstance(val, str) and val:
+                            has_primary_id = True
+                            matched = val in clean_ids
+                            break
+                if not has_primary_id and isinstance(event, dict):
+                    index = event.get("index")
+                    if isinstance(index, dict):
+                        idx_id = index.get("id")
+                        if isinstance(idx_id, str) and idx_id in clean_ids:
+                            matched = True
+                if matched:
+                    removed += 1
+                else:
+                    kept.append(event)
+            if removed:
+                self.items[t] = kept
+            return removed
+
 
 @dataclass
 class StoreRegistry:

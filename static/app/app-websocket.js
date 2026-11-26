@@ -79,6 +79,8 @@
             }
             if (_agentTaskReconcileInFlight) return;
             _agentTaskReconcileInFlight = true;
+            // 发请求时每个任务是哪一份：请求在途时连接上又更新过的任务（换成了新的一份），服务端这次答的比它旧。
+            var askedWith = new Map(taskMap);
             try {
                 var result = await fetch('/api/agent/tasks', { cache: 'no-store' });
                 if (!result.ok) return;
@@ -113,7 +115,25 @@
                         return;
                     }
                     _agentTaskMissingCounts.delete(id);
-                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) return;
+                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) {
+                        // 还在办的任务：等不等用户回话、问的是哪条，按服务端的来。问话的推送漏了（连接断过）
+                        // 的话，悬浮窗上会一直留着上一条问话。
+                        // 请求在途时连接上刚更新过的不动：那边的更新，把正在输入的问话卡换掉会丢掉打到一半的字。
+                        if (askedWith.get(id) !== task) return;
+                        var askedNow = current.question && current.question.id;
+                        var askedHere = task.question && task.question.id;
+                        // 它派出去的使魔问的话（挂在它下面）也一样：哪几只在问、各问的是哪条。
+                        var askedBelow = function (one) {
+                            return (Array.isArray(one.sub_questions) ? one.sub_questions : []).map(function (item) {
+                                return item && typeof item === 'object' ? item.id + ':' + (item.question && item.question.id) : '';
+                            }).join('|');
+                        };
+                        if (current.status !== task.status || askedNow !== askedHere || askedBelow(current) !== askedBelow(task)) {
+                            taskMap.set(id, Object.assign({}, task, current));
+                            changed = true;
+                        }
+                        return;
+                    }
                     var terminalAt = Date.now();
                     taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
                     changed = true;
@@ -261,10 +281,16 @@
         // would otherwise be lost while querying Electron display metadata.
         var request;
         try {
-            request = navigator.mediaDevices.getDisplayMedia({
+            // Numbered by the mask module (#3474): this request replaces the
+            // source the desktop shell remembers for this window.
+            var captureMask = window.appCaptureMask;
+            var displayMediaOptions = {
                 video: { displaySurface: 'monitor', frameRate: { max: 1 } },
                 audio: false
-            });
+            };
+            request = captureMask && typeof captureMask.requestDisplayMedia === 'function'
+                ? captureMask.requestDisplayMedia(navigator.mediaDevices, displayMediaOptions)
+                : navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
         } catch (_) {
             _computerUseCaptureFailure = 'display_media_request_failed';
             return Promise.resolve(false);
@@ -2641,10 +2667,14 @@
 
     function syncProactiveVisionConsent(enabled) {
         if (typeof enabled !== 'boolean') {
-            enabled = window.appProactive
-                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
-                ? window.appProactive.isProactiveVisionEnabledNow()
-                : S.proactiveVisionEnabled;
+            // Same rule as a settings save (appSettings.visionConsentForBackend):
+            // this window's value, unless another window's revocation has not
+            // reached it yet. An unknown local value still sends nothing.
+            enabled = S.proactiveVisionEnabled;
+            if (typeof enabled === 'boolean' && window.appSettings
+                && typeof window.appSettings.visionConsentForBackend === 'function') {
+                enabled = window.appSettings.visionConsentForBackend();
+            }
         }
         if (typeof enabled !== 'boolean' || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {
@@ -3001,6 +3031,19 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // 连接断开期间挂起的问话不会补发：连上时读一次现在还在等的。
+            if (window.NekoPowerAsk) { try { window.NekoPowerAsk.sync(); } catch (_) {} }
+            // session_ended_by_server latches suppressAssistantStreamUntilNextSession
+            // so late chunks of the ended session are dropped; only session_started
+            // used to clear it. A fresh socket (reconnect, or the character switch
+            // path that sets _pendingGreetingSwitch) can be served by a text session
+            // the backend reuses without sending session_started — e.g. the greeting
+            // on an existing OmniOfflineClient — so its replies would be dropped
+            // forever. Clear the latch here: the old socket's late frames are already
+            // rejected by the `S.socket !== _thisSocket` guard in onmessage, and on
+            // the same socket (no new onopen) the latch still holds until
+            // session_started.
+            S.suppressAssistantStreamUntilNextSession = false;
             if (window.nekoReplyTail) window.nekoReplyTail.reset();
             announceReplyTailCapability();
             if (window.appSettings) syncProactiveVisionConsent();
@@ -3321,6 +3364,12 @@
 
                 if (response.type === 'plugin_view') {
                     if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
+                }
+
+                // 喵能力的委托在问用户：聊天窗里出一张能直接作答的卡片；没带问题的是「不等了」，卡片收起。
+                if (response.type === 'nekopower_question') {
+                    if (window.NekoPowerAsk) window.NekoPowerAsk.receive(response);
                     return;
                 }
 
@@ -5162,7 +5211,7 @@
                 // -------- agent_builtin_activity --------
                 // 使魔开始 / 停止使用键鼠或浏览器。页面自己不画横幅：只把事件原样
                 // 交出去，桌面壳（N.E.K.O.-PC）据此盖横幅、接 Esc 叫停。
-                // 契约见 docs/design/nekoclaw-rewrite.md 11.8 节。
+                // 契约见 docs/design/nekopower-rewrite.md 11.8 节。
                 } else if (response.type === 'agent_builtin_activity') {
                     try {
                         var activity = response.activity || {};
@@ -5427,8 +5476,14 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
+                        // 应答属于收到请求的这条连接：截图和遮罩期间 S.socket 可能被换掉（例如切换角色），
+                        // 不能把旧会话的截图发到新连接上。
+                        var requestSocket = S.socket;
                         function sendScreenshotReply(reply) {
-                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            if (!S.socket || S.socket !== requestSocket || S.socket.readyState !== WebSocket.OPEN) {
+                                if (S.socket !== requestSocket) console.log('[截图请求] 截图期间连接已更换，不发送应答');
+                                return;
+                            }
                             // Echo the ID for every reply, including privacy/tutorial
                             // declines and the legacy capture-function path.
                             if (typeof response.request_id === 'string' && response.request_id) {
@@ -5439,10 +5494,19 @@
                         function replySuppressedScreenshot() {
                             var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                                 && window.isNekoHomeTutorialProactiveSuppressed();
-                            var privacyBlocked = window.appProactive
-                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
-                                ? !window.appProactive.isProactiveVisionEnabledNow()
-                                : S.proactiveVisionEnabled === false;
+                            // Screen consent from both this window's value and the
+                            // latest saved setting (appProactive.isVisionConsentHeldNow):
+                            // a revocation on either side declines.
+                            var proactiveApi = window.appProactive;
+                            var privacyBlocked;
+                            if (proactiveApi && typeof proactiveApi.isVisionConsentHeldNow === 'function') {
+                                privacyBlocked = !proactiveApi.isVisionConsentHeldNow();
+                            } else {
+                                privacyBlocked = S.proactiveVisionEnabled === false
+                                    || (!!proactiveApi
+                                        && typeof proactiveApi.isProactiveVisionEnabledNow === 'function'
+                                        && !proactiveApi.isProactiveVisionEnabledNow());
+                            }
                             if (!tutorialBlocked && !privacyBlocked) return false;
                             sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
                             return true;
@@ -5454,6 +5518,8 @@
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
                             var shotCaptureType = null;
                             var hasPairedCaptureType = false;
+                            var pinnedAvatarPos = null;
+                            var hasPinnedAvatarPos = false;
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
@@ -5464,10 +5530,18 @@
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
+                                // 截图函数在拿到原图后、遮罩之前算好的 Avatar 位置（遮罩是异步的，事后再读会对不上）。
+                                if (shot && shot.avatarPositionPinned === true) {
+                                    pinnedAvatarPos = shot.avatarPosition || null;
+                                    hasPinnedAvatarPos = true;
+                                }
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (replySuppressedScreenshot()) return;
+                            // 拿不到图（dataUrl 为空）时不回应答，后端超时后会自己截整屏兜底（不遮）。
+                            // 若以后遮罩的退化策略改成丢帧，这里要对被丢的帧回 declined: true，
+                            // 见 app-capture-mask.js 的 decideWhenGeometryUnavailable。
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加
@@ -5490,8 +5564,10 @@
                                         captureType = 'screen';
                                     }
                                 }
-                                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
-                                    ? window.getAvatarScreenPosition(captureType) : null;
+                                var avatarPos = hasPinnedAvatarPos
+                                    ? pinnedAvatarPos
+                                    : (typeof window.getAvatarScreenPosition === 'function'
+                                        ? window.getAvatarScreenPosition(captureType) : null);
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }

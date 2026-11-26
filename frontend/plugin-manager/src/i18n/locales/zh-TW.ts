@@ -1,16 +1,20 @@
-import { pluginConsentMessages } from '../plugin-consent'
-import { modelApiMessages } from '../model-api'
-import { modelBindingsMessages } from '../model-bindings'
-import { authoringMessages } from '../authoring'
+import pluginConsentMessages from '../plugin-consent/zh-TW'
+import modelApiMessages from '../model-api/zh-TW'
+import modelBindingsMessages from '../model-bindings/zh-TW'
+import marketFeedbackMessages from '../market-feedback/zh-TW'
+import authoringMessages from '../authoring/zh-TW'
+import powerMessages from '../power/zh-TW'
 
 /**
  * 繁體中文語言包
  */
 export default {
-  pluginConsent: pluginConsentMessages['zh-TW'],
-  authoring: authoringMessages['zh-TW'],
-  modelApi: modelApiMessages['zh-TW'],
-  modelBindings: modelBindingsMessages['zh-TW'],
+  pluginConsent: pluginConsentMessages,
+  authoring: authoringMessages,
+  marketFeedback: marketFeedbackMessages,
+  modelApi: modelApiMessages,
+  modelBindings: modelBindingsMessages,
+  power: powerMessages,
   common: {
     chooseLanguage: "選擇語言",
     surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
@@ -24,6 +28,7 @@ export default {
 
     loading: '載入中...',
     refresh: '重新整理',
+    retry: '重試',
     search: '搜尋',
     filter: '篩選',
     reset: '重設',
@@ -736,7 +741,16 @@ export default {
       exitFocus: '退出專注',
       exitFocusHint: '退出專注模式（Esc）',
       controlError: '外掛介面控制項錯誤',
-      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。',
+      parseDocumentConfirm: '是否允許外掛「{plugin}」解析文件「{file}」？',
+      actionConfirmTitle: '確認外掛「{plugin}」的操作',
+      actionConfirmDefault: '要執行這個操作嗎？',
+      actionConfirmTimeout: '確認已逾時，操作未執行。',
+      actionConfirmPending: '已有一個確認框尚未處理，請先完成它。',
+      openPathOutOfScope: '這個面板只能開啟它自己的外掛目錄或資料目錄裡的檔案。',
+      openPathNoBridge: '只有桌面應用程式裡才能開啟本機檔案。',
+      openPathFailed: '無法開啟該路徑：{message}',
+      unsafeTargetBlocked: '目標位址不安全，已攔截'
     }
   },
   package: {
@@ -822,6 +836,22 @@ export default {
       verify: '校驗',
       install: '安裝',
       analyze: '分析'
+    },
+    messages: {
+      selectPluginToBuild: '請先選擇要建置的外掛',
+      bundleRequiresTwoPlugins: '整合包至少需要選擇兩個外掛',
+      bundleBuildFailedWithError: '整合包建置失敗：{error}',
+      bundleBuildCompleted: '整合包建置完成',
+      bundleBuildPartialFailed: '整合包建置失敗 {count} 個',
+      buildFailedWithError: '建置失敗：{error}',
+      buildCompletedWithFailures: '建置完成，成功 {built} 個，失敗 {failed} 個',
+      buildCompleted: '建置完成，成功 {built} 個',
+      inspectCompleted: '套件檢查完成',
+      verifyPassed: '套件校驗通過',
+      verifyFailed: '套件未通過校驗',
+      selectAtLeastOnePlugin: '請至少選擇一個外掛',
+      analyzeCompleted: '分析完成',
+      analyzeFailedWithError: '分析失敗：{error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -1039,6 +1069,8 @@ export default {
     pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
+    pluginDeletedPermissionsNotCleared: '外掛 {plugin} 已刪除，但權限記錄檔已損壞或版本不相容，未能清除它可能留有的授權；記錄檔恢復可讀後，這些授權可能仍然有效。',
+    pluginsDeletedPermissionsNotCleared: '外掛 {plugins} 已刪除，但權限記錄檔已損壞或版本不相容，未能清除它們可能留有的授權；記錄檔恢復可讀後，這些授權可能仍然有效。',
     startFailed: '啟動失敗',
     autoStartEnabled: '已開啟自動啟動',
     autoStartDisabled: '已關閉自動啟動',
@@ -1100,7 +1132,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O 外掛管理'
+    titleSuffix: 'N.E.K.O 喵能力'
   },
   tutorial: {
     yuiGuide: {

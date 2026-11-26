@@ -104,6 +104,14 @@ function createHarness(options = {}) {
   const timers = new Map();
   const windowListeners = new Map();
   const documentListeners = new Map();
+  // Receipts the toast page posts on its same-origin BroadcastChannel.
+  const receipts = [];
+  class FakeBroadcastChannel {
+    constructor(name) { this.name = name; }
+    // BroadcastChannel structured-clones its payload; this also leaves the vm realm.
+    postMessage(data) { receipts.push({ channel: this.name, data: JSON.parse(JSON.stringify(data)) }); }
+    close() {}
+  }
   let nextTimerId = 0;
   let cursorPoint = { x: 20, y: 20 };
   let cursorProvider = () => Promise.resolve(cursorPoint);
@@ -186,6 +194,7 @@ function createHarness(options = {}) {
     document,
     navigator: options.navigatorClipboard ? { clipboard: options.navigatorClipboard } : {},
     console: { log() {} },
+    BroadcastChannel: FakeBroadcastChannel,
     Promise,
     Date,
     Number,
@@ -204,6 +213,7 @@ function createHarness(options = {}) {
 
   return {
     statusToast,
+    receipts,
     mouseThrough,
     copied,
     legacyCopies,
@@ -212,6 +222,7 @@ function createHarness(options = {}) {
     setCursor(point) { cursorPoint = point; },
     setCursorProvider(provider) { cursorProvider = provider; },
     emitStatus(message = 'saved') { callbacks.status({ message, duration: 3000 }); },
+    emitStatusClear() { callbacks.status({ message: '', duration: 3000 }); },
     emitProminent(message = 'important') { callbacks.prominent({ message }); },
     runTimer(delay) {
       const match = Array.from(timers.entries()).find(([, timer]) => timer.delay === delay);
@@ -720,4 +731,36 @@ test('a stale-generation cursor result must not clear the new watchdog', async (
     true,
     '新请求悬挂时看门狗仍须把窗口拉回穿透态',
   );
+});
+
+// Status notice receipts (neko-status-toast-shown): senders behind the desktop
+// shell's one-way bridge rely on them to know a notice was really shown.
+test('a status notice posts its receipt only once it is actually shown', () => {
+  const harness = createHarness();
+  harness.emitStatus('first peek');
+  assert.deepEqual(harness.receipts, []);
+
+  harness.runTimer(10);
+  assert.deepEqual(harness.receipts, [
+    { channel: 'neko-status-toast-shown', data: { message: 'first peek' } },
+  ]);
+});
+
+test('a status notice cleared before its show timer posts no receipt', () => {
+  const harness = createHarness();
+  harness.emitStatus('first peek');
+  harness.emitStatusClear();
+
+  assert.equal(harness.hasTimer(10), false);
+  assert.deepEqual(harness.receipts, []);
+});
+
+test('a status notice replaced before its show timer only receipts the replacement', () => {
+  const harness = createHarness();
+  harness.emitStatus('first peek');
+  harness.emitStatus('busier notice');
+  assert.equal(harness.countTimers(10), 1);
+
+  harness.runTimer(10);
+  assert.deepEqual(harness.receipts.map((receipt) => receipt.data.message), ['busier notice']);
 });

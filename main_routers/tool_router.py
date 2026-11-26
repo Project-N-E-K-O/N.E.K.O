@@ -49,6 +49,11 @@ Endpoints
     tool is owned by a different source are NOT removed and reported in
     ``refused_roles`` (a plugin can never delete another plugin's tool by
     name collision). Returns ``{"removed": bool, "refused_roles": [...]}``.
+    ``expected_registration_id`` (optional) narrows this to one
+    registration: the ``registration_id`` that ``/register`` returned. A
+    role whose tool comes from a different registration (e.g. a newer
+    same-source one) is not removed and reported in ``refused_roles`` with
+    ``"reason": "different registration"``. Without it nothing changes.
 
 ``POST /api/tools/clear``
     Body: ``{"source": "plugin:foo", "role": null}`` — drops every tool
@@ -71,6 +76,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -85,6 +91,7 @@ from pydantic import BaseModel, Field, field_validator
 from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
+    ToolOwnershipError,
     ToolResult,
     looks_like_tool_envelope,
     tool_result_from_envelope,
@@ -163,9 +170,14 @@ _HTTP_CLIENT: Optional[httpx.AsyncClient] = None
 def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
+        from utils.internal_http_client import internal_service_event_hooks
+
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=5.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
 
@@ -190,6 +202,11 @@ class ToolRegisterRequest(BaseModel):
     host_instance_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     host_pid: Optional[int] = Field(default=None, gt=0)
     host_process_started_at: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    # Identifies this one tool registration (unrelated to the reply-tail
+    # registration ids further down); generated when the caller has none.
+    # A caller that sends its own can target it in /unregister even when it
+    # never got this request's answer (e.g. it timed out).
+    registration_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
     @field_validator("callback_url")
     @classmethod
@@ -205,6 +222,10 @@ class ToolUnregisterRequest(BaseModel):
     # by others (e.g. its registration never succeeded and another plugin owns name).
     expected_source: Optional[str] = None
     expected_host_instance_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    # If set, remove the tool only where it is this registration (the
+    # registration_id /register returned); a different registration of the
+    # same name is refused, so a late unregister cannot delete a newer one.
+    expected_registration_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class ToolClearRequest(BaseModel):
@@ -264,6 +285,10 @@ def _callback_origin(url: str) -> str:
         return f"{parsed.scheme}://{host}:{port}"
     except (ValueError, TypeError):
         return url
+
+
+def _tool_source(tool: ToolDefinition) -> str:
+    return str((tool.metadata or {}).get("source", ""))
 
 
 def _is_plugin_source(source: str) -> bool:
@@ -607,6 +632,8 @@ def _resolve_target_managers(role: Optional[str]) -> List[Any]:
 #                Reregistered names move to tail, preserving last-writer-wins replay.
 #   unregister → role=None removes all name records; role=X removes (X,name), global record skips X.
 #   clear → same as unregister, matched by source.
+#   Register refused on ownership by a target registry → that target never held the tool: exclude the role from
+#                the global record at once (a scoped record is dropped); drop it if every attempted target refused.
 #   Dead-plugin eviction → remove registrations matching the failed callback or host.
 #   Character slot delete/rename → ``forget_role``: manager/registry gone together.
 # Process-local: main_server restart clears ledger, still requiring plugin reregistration.
@@ -640,6 +667,33 @@ def _ledger_record(tool: ToolDefinition, role: Optional[str]) -> None:
     key = (role, tool.name)
     _remote_tool_ledger.pop(key, None)
     _remote_tool_ledger[key] = _LedgerEntry(tool=tool, role=role)
+
+
+def _ledger_withdraw_refused(
+    tool: ToolDefinition, role: Optional[str], refused_roles: List[str], *, drop: bool = False,
+) -> None:
+    """Undo the ledger record of a registration some targets refused on ownership.
+
+    ``register_tool`` records the ledger before its first await; a target whose
+    registry is meanwhile taken by another source refuses the write, and the
+    record must not keep claiming the name there (it would replay over the
+    other source's tool and make the ledger conflict check refuse that
+    source's own refresh). Only the record this request wrote is touched: a
+    later registration that replaced it is left alone. A global record skips
+    the refusing roles; it is dropped when ``drop`` is set (no attempted
+    target accepted it). A role-scoped record has a single target and is
+    dropped whenever that target refuses.
+    """
+    if not refused_roles:
+        return
+    key = (role, tool.name)
+    entry = _remote_tool_ledger.get(key)
+    if entry is None or entry.tool is not tool:
+        return
+    if drop or role is not None:
+        del _remote_tool_ledger[key]
+    else:
+        entry.excluded_roles.update(refused_roles)
 
 
 def _ledger_forget(matches: Callable[[_LedgerEntry], bool], role: Optional[str]) -> None:
@@ -720,6 +774,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "host_pid": req.host_pid,
             "host_process_started_at": req.host_process_started_at,
         }
+    registration_id = req.registration_id or uuid.uuid4().hex
     tool = ToolDefinition(
         name=req.name,
         description=req.description,
@@ -730,10 +785,15 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "callback_url": req.callback_url,
             "timeout_seconds": req.timeout_seconds,
             "role": req.role,
+            "registration_id": registration_id,
             **host_metadata,
             **({"reply_tail": True} if req.reply_tail else {}),
         },
     )
+
+    def same_source(existing: ToolDefinition) -> bool:
+        return _tool_source(existing) == req.source
+
     # Reserve ownership before the first await, including managers rebuilt
     # during session sync. Refused registrations must not alter the ledger.
     conflicts = []
@@ -749,7 +809,10 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             conflicts.append({"role": entry.role or "*", "error": "cross-source ledger overwrite refused"})
     if conflicts:
         logger.warning("register_tool refused cross-source overwrite: name='%s' incoming='%s'", req.name, req.source)
-        return {"ok": False, "registered": req.name, "affected_roles": [], "failed_roles": conflicts}
+        return {
+            "ok": False, "registered": req.name, "registration_id": registration_id,
+            "affected_roles": [], "failed_roles": conflicts,
+        }
 
     # Record ledger before registering targets: registry.register takes effect before wire sync, even if
     # sync fails. Managers rebuilt mid-loop are outside targets and rely on
@@ -758,6 +821,8 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         _ledger_record(tool, req.role)
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
+    ownership_refused: List[str] = []
+    attempted = 0
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
@@ -767,36 +832,46 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
                     # Another task can retire or replace this registration
                     # while a previous role awaits its session update.
                     continue
+            attempted += 1
             # Reject cross-source name collisions: name-keyed registry replace=True overwrites unconditionally;
             # without protection, later plugins silently displace existing same-name tools from other sources,
             # rerouting model calls to new callback and permitting original plugin to unregister another's tool.
             # Same-source refresh (restart callback_url / schema updates) unaffected.
-            existing = mgr.tool_registry.get(req.name)
-            if existing is not None:
-                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
-                if existing_source != req.source:
-                    logger.warning(
-                        "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
-                        role_name, req.name, existing_source or "unknown", req.source,
-                    )
-                    failed.append({
-                        "role": role_name,
-                        "error": (
-                            f"tool '{req.name}' already owned by source "
-                            f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
-                        ),
-                    })
-                    continue
+            # The registry runs the ownership check and the write as one locked step (owner_check), so a
+            # same-name write by another source cannot slip in between them.
             # Use _and_sync: await session.update push after registration,
             # so when caller gets ok=True, active/pending session tools
             # are current, avoiding success responses followed by model calls
             # unable to see tools.
-            await mgr.register_tool_and_sync(tool, replace=True)
+            await mgr.register_tool_and_sync(tool, replace=True, owner_check=same_source)
             affected.append(role_name)
+        except ToolOwnershipError as e:
+            # Nothing was written to this registry (unlike a sync failure below,
+            # where the registry already holds the tool and the record stays).
+            ownership_refused.append(role_name)
+            # Exclude the role before the next await: a manager rebuilt meanwhile
+            # must not get the refused tool replayed into its registry.
+            _ledger_withdraw_refused(tool, req.role, [role_name])
+            existing_source = _tool_source(e.existing)
+            logger.warning(
+                "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
+                role_name, req.name, existing_source or "unknown", req.source,
+            )
+            failed.append({
+                "role": role_name,
+                "error": (
+                    f"tool '{req.name}' already owned by source "
+                    f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
+                ),
+            })
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
             logger.warning("register_tool to %s failed: %s", role_name, err_text)
             failed.append({"role": role_name, "error": err_text})
+    # Every target this request actually tried refused: no registry holds the tool, so the record goes.
+    # Targets skipped above (record retired / replaced, role excluded) do not count as accepting.
+    if ownership_refused and len(ownership_refused) == attempted:
+        _ledger_withdraw_refused(tool, req.role, ownership_refused, drop=True)
     # All failed → ok=False informs plugins registration failed (former always-True
     # made plugins assume availability until next model tool call failed at runtime).
     # Partial success → ok=True plus failed_roles for caller handling, e.g. retry role.
@@ -804,6 +879,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         return {
             "ok": False,
             "registered": req.name,
+            "registration_id": registration_id,
             "affected_roles": [],
             "failed_roles": failed,
             "error": "no role accepted the registration",
@@ -811,6 +887,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     return {
         "ok": True,
         "registered": req.name,
+        "registration_id": registration_id,
         "affected_roles": affected,
         "failed_roles": failed,
     }
@@ -825,6 +902,8 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
             (req.expected_source is None or tool.metadata.get("source") == req.expected_source)
             and (req.expected_host_instance_id is None
                  or tool.metadata.get("host_instance_id") == req.expected_host_instance_id)
+            and (req.expected_registration_id is None
+                 or tool.metadata.get("registration_id") == req.expected_registration_id)
         )
 
     # After successful resolution, remove ledger before first await: 404 requests cannot mutate it, while managers
@@ -841,27 +920,35 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
         try:
             # Reject removal if the source or host instance has been replaced.
             # Symmetric with /register cross-source rejection: unregister only own tools.
-            # getattr tool_registry supports duck-typed managers/test stubs;
-            # managers without registries skip validation, retaining previous unregister behavior.
-            registry = getattr(mgr, "tool_registry", None)
-            existing = registry.get(req.name) if registry is not None else None
-            if existing is not None and not matches_owner(existing):
-                existing_source = str(existing.metadata.get("source") or "unknown")
-                logger.warning(
-                    "unregister_tool refused '%s' on %s: source=%s expected_source=%s "
-                    "host_instance_id=%s expected_host_instance_id=%s",
-                    req.name, role_name, existing_source, req.expected_source,
-                    existing.metadata.get("host_instance_id"), req.expected_host_instance_id,
-                )
-                refused.append({
-                    "role": role_name,
-                    "owned_by": existing_source,
-                })
-                continue
+            # The registry checks ownership and removes in one locked step (owner_check), so a
+            # same-name registration by another source cannot be deleted by name in between.
             # _and_sync awaits session synchronization before return, symmetric with register.
-            if await mgr.unregister_tool_and_sync(req.name):
+            if await mgr.unregister_tool_and_sync(req.name, owner_check=matches_owner):
                 removed_any = True
                 affected.append(role_name)
+        except ToolOwnershipError as e:
+            existing_source = str(e.existing.metadata.get("source") or "unknown")
+            logger.warning(
+                "unregister_tool refused '%s' on %s: source=%s expected_source=%s "
+                "host_instance_id=%s expected_host_instance_id=%s",
+                req.name, role_name, existing_source, req.expected_source,
+                e.existing.metadata.get("host_instance_id"), req.expected_host_instance_id,
+            )
+            refusal = {"role": role_name, "owned_by": existing_source}
+            if (
+                req.expected_registration_id is not None
+                and req.expected_source is not None
+                and e.existing.metadata.get("source") == req.expected_source
+                and (req.expected_host_instance_id is None
+                     or e.existing.metadata.get("host_instance_id") == req.expected_host_instance_id)
+                and e.existing.metadata.get("registration_id") != req.expected_registration_id
+            ):
+                # Same owner, but another registration of the name (e.g. a
+                # newer one made after the registration this call targets).
+                # Its id lets the owner target exactly that one next.
+                refusal["reason"] = "different registration"
+                refusal["registration_id"] = str(e.existing.metadata.get("registration_id") or "")
+            refused.append(refusal)
         except Exception as e:
             # One role's sync failure must not 500 the whole cross-role request; callers need
             # successful-role lists to infer state.

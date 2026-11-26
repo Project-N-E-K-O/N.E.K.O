@@ -2,7 +2,7 @@
 
 **前缀：** `/api/memory`
 
-这是主服务器为记忆浏览器和设置页面提供的 API，涵盖近期记忆编辑、记忆功能开关、角色记忆重命名，以及由用户主动触发的遗留存储清理。它不是进程内 [记忆服务器 API](/zh-CN/api/memory-server) 的通用代理。
+这是主服务器为记忆浏览器和设置页面提供的 API，涵盖近期记忆编辑、记忆功能开关、角色记忆重命名、本地复读洞察、习惯用语避用表管理、外部记忆导入，以及由用户主动触发的遗留存储清理。它不是进程内 [记忆服务器 API](/zh-CN/api/memory-server) 的通用代理。
 
 所有路由都不带末尾斜杠。云存储处于维护态或只读态时，写操作可能返回 `409`。
 
@@ -18,6 +18,15 @@
 | `POST` | `/api/memory/review_config` | 更新近期记忆自动复核开关 |
 | `GET` | `/api/memory/powerful_memory_config` | 读取强力记忆开关 |
 | `POST` | `/api/memory/powerful_memory_config` | 更新强力记忆开关，并执行必要迁移 |
+| `GET` | `/api/memory/insight_characters` | 列出允许进行复读洞察分析的角色 |
+| `POST` | `/api/memory/repetition_insights` | 对已落盘的助手回复运行纯本地复读分析 |
+| `POST` | `/api/memory/repetition_effects/reset` | 清空单个角色的本地防复读效果统计 |
+| `GET` | `/api/memory/habitual_phrases` | 读取角色的习惯用语避用表及面板状态 |
+| `POST` | `/api/memory/habitual_phrases/override` | 对单条习惯用语设置放行、抑制或清除覆盖决定 |
+| `POST` | `/api/memory/habitual_phrases/recompute` | 立即重算单个角色的习惯用语避用表 |
+| `POST` | `/api/memory/external_import/preview` | 在不写盘的情况下预览 OpenClaw、Hermes 或 Molili 导入 |
+| `POST` | `/api/memory/external_import/commit` | 将预览通过的外部记忆合并写入角色记忆存储 |
+| `GET` | `/api/memory/external_import/progress` | 轮询指定角色的外部记忆导入进度计数 |
 | `GET` | `/api/memory/farewell-summary` | 只读的记忆摘要，供桌面端退出告别卡使用 |
 | `GET` | `/api/memory/legacy/scan` | 只读扫描用户可见的遗留记忆根目录 |
 | `POST` | `/api/memory/legacy/purge` | 删除从遗留根目录中明确选中的条目 |
@@ -193,6 +202,136 @@
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## 复读洞察与防复读效果
+
+### `GET /api/memory/insight_characters`
+
+无参数。
+
+返回 `POST /api/memory/repetition_insights` 可接受的已排序角色名列表，合并了已配置角色与磁盘上的真实角色记忆目录（排除符号链接和遗留向量库目录）及近期记忆文件。
+
+```json
+{
+  "characters": ["小天", "小夜"]
+}
+```
+
+### `POST /api/memory/repetition_insights`
+
+对已持久化的助手回复运行纯本地复读分析（不调用 LLM，不外发数据）。接口会转发到记忆服务器的 `/internal/memory/{character_name}/repetition_insights`，移除内部 `_anti_repeat_response_ids` 字段，并补充本地防复读 `effectiveness` 与折叠后的 `associations`。
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---:|---|---|
+| `character_name` | 字符串 | 是 | — | 目标角色名称 |
+| `language` | 字符串 | 是 | — | 分析语言，支持 `en`、`es`、`pt`、`ru`、`ja`、`ko`、`zh-CN`、`zh-TW` |
+| `assistant_message_limit` | 整数 | 否 | `100` | 要检查的最近助手回复条数（`3`–`100`） |
+| `effect_days` | 整数 | 否 | `30` | 兜底效果窗口天数（`7`、`30` 或 `90`，兼容旧客户端） |
+
+成功返回 `200`，包含 `success: true`、`schema_version`、`artifact_type`、`character_name`、`language`、`parameters`、`summary`、`candidates`、`effectiveness` 和 `associations`。角色名非法、语言不受支持或挖掘失败返回 `422`；角色不存在返回 `404`；记忆服务器不可用或处于写围栏期间返回 `503`。
+
+### `POST /api/memory/repetition_effects/reset`
+
+仅清空指定现有角色的本地防复读效果聚合统计。
+
+**请求体**
+
+```json
+{
+  "character_name": "小天"
+}
+```
+
+成功返回 `{"success": true, "character_name": "小天", "cleared": true}`；角色名非法返回 `422`；角色不存在返回 `404`；效果存储不可用返回 `503`。
+
+## 习惯用语避用表
+
+### `GET /api/memory/habitual_phrases`
+
+返回下一轮会话开始时将生效的角色习惯用语避用表面板状态。
+
+**查询参数**
+
+| 名称 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `character_name` | 字符串 | 是 | 目标角色名称 |
+| `ui_language` | 字符串 | 否 | 角色没有持久化 prompt 语言时的界面语言兜底 |
+
+成功返回 `200`，包含 `success`、`character_name`、`switches`（`natural_expression`、`review`）、`rules`（`min_sessions`、`session_gap_minutes`、`max_items`、`candidate_pool`、`prompt_max_tokens`、`refresh_interval_hours`、`max_age_days`）、`next_refresh_at`、`computed_at`、`language`、`language_matches`、`stale`、`parameters`、`source`、`review`、`entries`、`injected` 和 `overrides`。名称非法返回 `422`，角色不存在返回 `404`，面板不可用返回 `503`。
+
+### `POST /api/memory/habitual_phrases/override`
+
+对单条习惯用语保存用户覆盖决策（`allow`、`suppress` 或 `clear`），并返回刷新后的面板结构（同 `GET /api/memory/habitual_phrases`）。
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `character_name` | 字符串 | 是 | 目标角色名称 |
+| `phrase` | 字符串 | 是 | 习惯用语文本（`1`–`200` 字符） |
+| `action` | 字符串 | 是 | `"allow"`、`"suppress"` 或 `"clear"` |
+| `ui_language` | 字符串 | 否 | 可选界面语言提示（最多 `32` 字符） |
+
+名称或用语非法返回 `422`；角色不存在返回 `404`；恢复/维护模式或存储不可用返回 `503`。
+
+### `POST /api/memory/habitual_phrases/recompute`
+
+通过记忆服务器（130 秒转发超时）立即重算指定角色的习惯用语避用表，并返回刷新后的面板数据。
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `character_name` | 字符串 | 是 | 目标角色名称 |
+| `ui_language` | 字符串 | 否 | 可选界面语言提示（最多 `32` 字符） |
+
+若该角色正在重算则返回 `409`（`{"success": false, "error": "already recomputing"}`）；名称非法返回 `422`；角色不存在返回 `404`；不可用返回 `503`。
+
+## 外部记忆导入
+
+### `POST /api/memory/external_import/preview`
+
+在不写入记忆文件的情况下解析 OpenClaw、Hermes 或 Molili 的 Markdown 文件或 ZIP 压缩包。仅当非 multipart 请求声明了超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 的有效整数 `Content-Length` 请求头时受中间件拦截；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输（chunked）等请求会直接透传给应用处理。
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `character_name` | 字符串 | 是 | 目标角色名称（允许点号，最长 `50` 字符） |
+| `source_format` | 字符串 | 否 | `"auto"`（默认）、`"openclaw"`、`"hermes"` 或 `"molili"` |
+| `files` | 数组 | 否 | `{path/name, content}` 对象数组；与 `archive_b64` 互斥 |
+| `archive_b64` | 字符串 | 否 | Base64 编码的 ZIP 压缩包（可带 `data:` 前缀）；与 `files` 互斥 |
+
+成功返回 `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最多 20 条）、`candidates`（最多 100 条）和 `truncated_preview`；Molili 压缩包还会返回 `character_card`、`master_profile`、`skipped` 和 `snapshot_time`。当非 multipart 请求带有有效的整数 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输等请求不会被该中间件以 `413` 拒绝而直接进入应用。导入字段/文件校验及 OpenClaw/Hermes Markdown/ZIP（`ExternalMemoryImportError`）解析失败返回 `400`；请求体 JSON 解码失败（例如格式错误的 `{`）、`source_format: "molili"` 下无效 ZIP 容器引发的未捕获 `zipfile.BadZipFile` 异常（当前未包装为 `ExternalMemoryImportError`）及其他未预期异常返回 `500`。
+
+### `POST /api/memory/external_import/commit`
+
+通过 `POST /internal/memory/import_external_markdown`（480 秒转发超时）将已预览的外部记忆合并写入角色记忆存储。
+
+**请求体**
+
+接收与 `preview` 相同的 `character_name`、`source_format` 及 `files` / `archive_b64` 字段，另加：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `acknowledge_warnings` | 布尔 | 条件必填 | 检测到可疑指令警告时必须为 `true`，否则返回 `409` |
+| `render_language` | 字符串 | 否 | 仅用于本次渲染的语言兜底，不会持久化为角色语言偏好 |
+
+成功返回 `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates` 和 `warning_count`。当非 multipart 请求带有有效的整数 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输等请求不会被该中间件以 `413` 拒绝而直接进入应用。路由与记忆服务器错误码包括：`400`（导入字段/文件校验或 OpenClaw/Hermes Markdown/ZIP `ExternalMemoryImportError` 解析失败，或上游未带 partial/too_large 错误码的拒绝）、`409`（未确认警告或云存储处于维护态）、`413`（`error_code: "external_import_too_large"` 并附带 `partial_import`）、`500`（`error_code: "external_import_partial"` 并附带 `partial_import`、请求体 JSON 解码失败如 `{`、`source_format: "molili"` 下无效 ZIP 容器引发的 `zipfile.BadZipFile` 异常，或其他未预期失败）以及 `504`（`error_code: "external_import_timeout"`，表示转发客户端超时）。返回 `504` 时，导入可能仍在记忆服务器后台执行（请求已发出后的读超时），也可能根本尚未开始（连接超时或连接池超时）；调用方可查询 `GET /api/memory/external_import/progress`（每个角色仅在内存中保留一条进度条目，因此可能仍显示上次运行状态或被重叠请求覆盖），或重试导入（已完成融合的人格批次与已完成的日记条目会通过指纹去重跳过重复处理，但并不保证整次导入或并发重试的严格幂等性）。
+
+### `GET /api/memory/external_import/progress`
+
+轮询记忆服务器内存中记录的外部导入进度计数器。
+
+**查询参数**
+
+| 名称 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `character_name` | 字符串 | 是 | 目标角色名称（允许点号，最长 `50` 字符） |
+
+当前记忆服务器进程内尚未为该角色登记进度条目时（包括从未执行导入，或请求在登记进度前已被校验拒绝），返回 `{"success": true, "active": false}`；导入进行中返回 `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": false, "started_at": ...}`；无论导入成功、失败还是部分完成，运行结束后均会保持 `finished: true` 并保留最终阶段与计数条目，返回 `{"success": true, "active": false, "finished": true, ...}`。该进度按角色在内存中仅保留单条记录，因此新的或重叠的导入请求会覆盖该角色先前的进度条目。名称非法返回 `400`；记忆服务器返回的非 200 状态码会原样透传，转发异常返回 `502`。
 
 ## 告别摘要
 

@@ -123,10 +123,8 @@ class UpdateParameters:
 
                 det_dict[k] = v
             elif k.startswith("cls_"):
-                k = k.split("cls_", 1)[1]
                 cls_dict[k] = v
             elif k.startswith("rec_"):
-                k = k.split("rec_", 1)[1]
                 rec_dict[k] = v
             else:
                 global_dict[k] = v
@@ -205,6 +203,6 @@ class UpdateParameters:
         new_rec_dict = {}
         for k, v in config.items():
             if k in need_remove_prefix:
-                k = k.split(prefix)[1]
+                k = k.split(prefix, 1)[1]
             new_rec_dict[k] = v
         return new_rec_dict

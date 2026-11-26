@@ -17,10 +17,15 @@ from .errors import ModelGatewayError
 _NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _USAGE_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ASSISTANT_HISTORY_FIELDS = {"tool_calls", "refusal", "annotations", "audio", "function_call"}
+# Accepted so plugins written against the earlier gateway keep working, then
+# dropped before the request is sent: plugin model requests carry no
+# temperature and the provider default applies (scripts/check_no_temperature.py).
+# The execution layer, which knows the calling plugin, logs the warning.
+DROPPED_FIELDS = frozenset({"temperature"})
 _REQUEST_FIELDS = {
     "model", "messages", "stream", "stream_options", "tools", "tool_choice",
-    "parallel_tool_calls", "max_tokens", "max_completion_tokens", "temperature",
-    "top_p", "stop", "n", "response_format",
+    "parallel_tool_calls", "max_tokens", "max_completion_tokens",
+    "top_p", "stop", "n", "response_format", *DROPPED_FIELDS,
 }
 
 
@@ -277,6 +282,8 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
 
     The caller retains the original ``body['model']`` as the plugin's usage alias.
     No user message, content order, tool association or explicit budget is repaired.
+    A ``temperature`` the plugin sends is accepted whatever its value and dropped;
+    the provider default applies (ModelExecutor logs the warning).
     """
     source = _object(body, "body", _REQUEST_FIELDS)
     usage_id = _string(source.get("model"), "model", nonempty=True)
@@ -303,9 +310,8 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
         if field in source:
             if type(source[field]) is not int or not 1 <= source[field] <= MAX_OUTPUT_TOKENS:
                 _invalid(field, "Output token budget must be an integer from 1 to 1000000.")
-    for field, maximum in (("temperature", 2), ("top_p", 1)):
-        if field in source:
-            _number(source[field], field, 0, maximum)
+    if "top_p" in source:
+        _number(source["top_p"], "top_p", 0, 1)
     if "n" in source and (type(source["n"]) is not int or source["n"] != 1):
         _invalid("n", "Only one completion per request is supported.")
     if "stop" in source:
@@ -316,8 +322,14 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
             _invalid("stop", "Expected a string or a list of 1 to 4 strings.")
     if "response_format" in source:
         _response_format(source["response_format"])
-    request = copy.deepcopy(source)
+    # Dropped before copying: their values are never inspected, so an arbitrary
+    # (e.g. deeply nested) value must not reach copy.deepcopy.
+    request = copy.deepcopy({key: value for key, value in source.items() if key not in DROPPED_FIELDS})
     for message in request["messages"]:
+        if message["role"] == "developer":
+            # Most providers reject the newer "developer" role; N.E.K.O never
+            # sends it upstream (it accepts it from plugins as a system message).
+            message["role"] = "system"
         if message["role"] == "assistant":
             for field in ("audio", "function_call", "annotations"):
                 message.pop(field, None)
@@ -327,8 +339,6 @@ def prepare_chat_request(slot: ModelSlot, body: object) -> dict:
                 message.pop("tool_calls", None)
     request["model"] = slot.model
     request["stream"] = stream
-    if "temperature" not in request and slot.defaults.temperature is not None:
-        request["temperature"] = slot.defaults.temperature
     if not {"max_tokens", "max_completion_tokens"} & request.keys():
         budget = slot.defaults.max_output_tokens or 1024
         if budget > MAX_OUTPUT_TOKENS:

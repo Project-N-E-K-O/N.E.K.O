@@ -24,6 +24,54 @@
     let loadingCloseFallbackTimer = null;
     let previewLoopId = null;     // requestAnimationFrame ID
     let lastPreviewTime = 0;      // 上次预览渲染时间戳
+    let _cardMakerCsrfToken = '';
+
+    async function getCardMakerMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _cardMakerCsrfToken = '';
+        if (_cardMakerCsrfToken) {
+            return { 'X-CSRF-Token': _cardMakerCsrfToken };
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            const cfg = resp && resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _cardMakerCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
+    async function cardMakerMutationFetch(url, options) {
+        async function send(forceRefresh) {
+            const csrfHeaders = await getCardMakerMutationHeaders(forceRefresh);
+            return fetch(url, Object.assign({}, options, {
+                headers: Object.assign({}, (options && options.headers) || {}, csrfHeaders),
+            }));
+        }
+        const response = await send(false);
+        if (response.status !== 403 || typeof response.clone !== 'function') return response;
+        try {
+            const payload = await response.clone().json();
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (_) {
+            return response;
+        }
+        return send(true);
+    }
 
     // 构图参数
     const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
@@ -1597,7 +1645,7 @@
                 formData.append('portrait', portraitBlob, 'portrait.png');
                 formData.append('include_model', 'true');
 
-                response = await fetch(
+                response = await cardMakerMutationFetch(
                     `/api/characters/catgirl/${encodeURIComponent(currentCharaName)}/export-with-portrait`,
                     { method: 'POST', body: formData }
                 );
@@ -1653,7 +1701,7 @@
             const formData = new FormData();
             formData.append('image', cardBlob, 'card_face.png');
 
-            const response = await fetch(
+            const response = await cardMakerMutationFetch(
                 `/api/characters/catgirl/${encodeURIComponent(currentCharaName)}/card-face`,
                 { method: 'PUT', body: formData }
             );

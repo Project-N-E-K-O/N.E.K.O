@@ -25,7 +25,7 @@ from typing import Any, BinaryIO, Mapping
 
 import psutil
 
-from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.entry_metadata import drop_unset_opt_in_fields, entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
 from plugin._types.isolated_metadata import (
     IsolatedPluginMetadata,
@@ -333,6 +333,7 @@ def _event_meta_payload(meta: object) -> dict[str, object]:
             "dynamic": False,
         }
     payload.update(entry_contract_fields(meta))
+    drop_unset_opt_in_fields(payload)
     quick_action_config = payload.get("quick_action_config")
     if is_dataclass(quick_action_config) and not isinstance(quick_action_config, type):
         # This SDK field has a structured wire contract. Do not change how the
@@ -379,8 +380,8 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
             f"Plugin '{plugin_id}' entry class '{class_name}' is invalid"
         )
 
-    scan_static_metadata(plugin_id, cls_obj, conf, pdata)
-    entries_preview = _extract_entries_preview(plugin_id, cls_obj, conf, pdata)
+    scan_static_metadata(plugin_id, cls_obj, conf, pdata, manifest_path=config_path)
+    entries_preview = _extract_entries_preview(plugin_id, cls_obj, conf, pdata, manifest_path=config_path)
 
     prefix_dot = f"{plugin_id}."
     prefix_colon = f"{plugin_id}:"

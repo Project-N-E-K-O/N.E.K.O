@@ -5,7 +5,7 @@
 | Python | 必须为 3.11.x | `pyproject.toml` |
 | uv | 当前兼容版本 | `uv.lock` 与 workflow |
 | Git | 仍受维护的版本 | 仓库操作 |
-| Node.js + npm | plugin manager 要求 `^20.19.0 || >=22.12.0` | package.json |
+| Node.js + npm | plugin manager 要求 `>=22.12.0` | package.json |
 
 Python 依赖使用 `uv sync`；不要把手工 `pip install -r requirements.txt` 当项目安装流程。前端和文档使用已提交 lockfile 与 `npm ci`。
 
