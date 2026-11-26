@@ -140,8 +140,23 @@ host-side and external integrations.
 :::
 
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
-are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
-`localhost` are allowed).
+are guarded by `verify_local_access` (loopback only — `127.0.0.1`, `::1`,
+or `localhost`; when `NEKO_BEHIND_PROXY` is enabled, callers must connect
+directly over loopback without forwarding headers such as `X-Forwarded`,
+`X-Forwarded-*`, `X-Real-IP`, or `Forwarded` — unauthenticated requests
+are rejected first by `InstanceAccessMiddleware` with HTTP `401`, and
+authenticated requests still carrying forwarding headers are rejected by
+`verify_local_access` with HTTP `403`). When `NEKO_BEHIND_PROXY` or
+`NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
+also include valid instance credentials (such as
+`Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
+`instance_access.key`), otherwise requests fail with HTTP `401`. If
+`NEKO_REQUIRE_HTTPS` is also enabled, plaintext `http://` requests fail with
+HTTP `401` even with a valid key unless sent over HTTPS — or, only when
+`NEKO_BEHIND_PROXY` is enabled in a deployment with an outer TLS gateway
+and a private HTTP upstream unexposed to untrusted clients, when `Host`
+matches an `https://` `NEKO_INSTANCE_PUBLIC_ORIGIN` (still directly over
+loopback without forwarding headers).
 
 ### `POST /api/tools/register`
 
@@ -272,15 +287,22 @@ does not retry.
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
+# Direct loopback without X-Forwarded-*/X-Real-IP/Forwarded headers; when NEKO_REQUIRE_HTTPS
+# is enabled, connect over HTTPS (plain http:// is accepted only under NEKO_BEHIND_PROXY
+# with outer TLS, a private unexposed upstream, and Host matching https:// NEKO_INSTANCE_PUBLIC_ORIGIN)
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# Required only when NEKO_BEHIND_PROXY or NEKO_ACTIVITY_TRACKER_REMOTE is enabled
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
     """Call on plugin startup: register the tool once main_server is up,
-    retrying indefinitely."""
+    retrying until accepted or rejected for missing/invalid credentials."""
     payload = {
         "name": TOOL_NAME,
         "description": "Look up the weather in a given city",
@@ -294,25 +316,43 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
-    async with httpx.AsyncClient() as client:
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server isn't up yet, try again later
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """Call before exit: unregister so the LLM doesn't hit a dead callback_url."""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return True
     except Exception:
-        pass  # main_server is down too — nothing we can do
+        return False  # main_server is down too — nothing we can do
 ```
 
 Do not wire this into a `NekoPluginBase` plugin. Lifecycle methods run

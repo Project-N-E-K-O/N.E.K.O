@@ -48,7 +48,9 @@ Call `aclose_internal_http_client()` at process shutdown to release the pool.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 import logging
+import os
 import threading
 import weakref
 from typing import Optional
@@ -95,6 +97,215 @@ def get_internal_http_client() -> httpx.AsyncClient:
         return client
 
 
+class InternalServiceSigningError(httpx.RequestError):
+    """Raised when signing an internal loopback service request fails before transmission."""
+
+
+def _httpx_signing_path(request: httpx.Request) -> str:
+    """Return the raw path component (excluding query string) from an httpx.Request."""
+    raw = request.url.raw_path
+    if isinstance(raw, (bytes, bytearray)):
+        path = bytes(raw).split(b"?", 1)[0].decode("latin-1")
+    else:
+        path = str(raw).split("?", 1)[0]
+    return path or (request.url.path or "/")
+
+
+def _httpx_signing_port(request: httpx.Request) -> int | None:
+    """Return the target TCP port for an httpx.Request."""
+    if request.url.port is not None:
+        return int(request.url.port)
+    scheme = (request.url.scheme or "").lower()
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
+def _trusted_internal_service_ports() -> set[int]:
+    """Return configured and launcher-allocated loopback ports for N.E.K.O internal services.
+
+    Note: only ports visible via shared config constants, NEKO_USER_PLUGIN_SERVER_PORT,
+    or USER_PLUGIN_BASE are trusted here; a standalone service re-binding to an ad-hoc
+    fallback port inside its own process only updates that process and cannot be observed
+    by peer processes without launcher coordination.
+    """
+    from urllib.parse import urlsplit
+    import config
+
+    ports: set[int] = set()
+    for attr in (
+        "MAIN_SERVER_PORT",
+        "MEMORY_SERVER_PORT",
+        "TOOL_SERVER_PORT",
+        "USER_PLUGIN_SERVER_PORT",
+    ):
+        val = getattr(config, attr, None)
+        if isinstance(val, int) and not isinstance(val, bool) and 0 < val <= 65535:
+            ports.add(val)
+
+    raw_plugin_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_plugin_port:
+        try:
+            parsed_port = int(raw_plugin_port)
+            if 0 < parsed_port <= 65535:
+                ports.add(parsed_port)
+        except ValueError:
+            pass
+
+    base_url = str(getattr(config, "USER_PLUGIN_BASE", "") or "").strip()
+    if base_url:
+        try:
+            parsed_base = urlsplit(base_url)
+            if parsed_base.port is not None and 0 < parsed_base.port <= 65535:
+                ports.add(int(parsed_base.port))
+        except ValueError:
+            pass
+    return ports
+
+
+def _normalize_extra_trusted_ports(extra_trusted_ports: Iterable[int] | None) -> frozenset[int]:
+    """Validate optional per-client trusted loopback ports into a ``frozenset[int]``."""
+    if extra_trusted_ports is None:
+        return frozenset()
+    return frozenset(
+        port
+        for port in extra_trusted_ports
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port <= 65535
+    )
+
+
+def _should_attach_internal_service_proof(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> bool:
+    """Return True when a request targets a trusted loopback internal service under proxy/remote mode."""
+    from utils.deployment import is_behind_proxy, is_remote_backend_deployment
+    from utils.instance_access import INTERNAL_SERVICE_HEADER
+
+    if not (is_behind_proxy() or is_remote_backend_deployment()):
+        return False
+    if INTERNAL_SERVICE_HEADER in request.headers:
+        return False
+    if (request.url.scheme or "").lower() not in {"http", "https"}:
+        return False
+    host = (request.url.host or "").strip().strip("[]").lower()
+    if not host:
+        return False
+    if host != "localhost":
+        import ipaddress
+
+        try:
+            ip = ipaddress.ip_address(host)
+            if not bool((getattr(ip, "ipv4_mapped", None) or ip).is_loopback):
+                return False
+        except ValueError:
+            return False
+    port = _httpx_signing_port(request)
+    return port is not None and (port in _trusted_internal_service_ports() or port in extra_trusted_ports)
+
+
+async def attach_internal_service_proof(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> None:
+    """Attach port-bound signed internal-service header on loopback hops when proxy/remote mode is active."""
+    if not _should_attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports):
+        return
+    from filelock import Timeout as FileLockTimeout
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
+
+    try:
+        key = await asyncio.to_thread(instance_key)
+        port = _httpx_signing_port(request)
+        if port is None:
+            raise ValueError("missing internal service target port")
+        request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+            key, request.method, _httpx_signing_path(request), port=port
+        )
+    except (OSError, ValueError, FileLockTimeout) as exc:
+        raise InternalServiceSigningError(
+            f"failed to sign internal service request: {type(exc).__name__}",
+            request=request,
+        ) from exc
+
+
+_attach_internal_service_proof = attach_internal_service_proof
+
+
+def attach_internal_service_proof_sync(
+    request: httpx.Request,
+    *,
+    extra_trusted_ports: frozenset[int] = frozenset(),
+) -> None:
+    """Sync variant of attach_internal_service_proof for blocking httpx.Client callers."""
+    if not _should_attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports):
+        return
+    from filelock import Timeout as FileLockTimeout
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
+
+    try:
+        key = instance_key()
+        port = _httpx_signing_port(request)
+        if port is None:
+            raise ValueError("missing internal service target port")
+        request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+            key, request.method, _httpx_signing_path(request), port=port
+        )
+    except (OSError, ValueError, FileLockTimeout) as exc:
+        raise InternalServiceSigningError(
+            f"failed to sign internal service request: {type(exc).__name__}",
+            request=request,
+        ) from exc
+
+
+def _build_internal_service_request_hook(*, sync: bool, extra_trusted_ports: frozenset[int]):
+    if not extra_trusted_ports:
+        return attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    if sync:
+        def _sync_hook(request: httpx.Request) -> None:
+            attach_internal_service_proof_sync(request, extra_trusted_ports=extra_trusted_ports)
+
+        return _sync_hook
+
+    async def _async_hook(request: httpx.Request) -> None:
+        await attach_internal_service_proof(request, extra_trusted_ports=extra_trusted_ports)
+
+    return _async_hook
+
+
+def internal_service_event_hooks(
+    *,
+    sync: bool = False,
+    extra_trusted_ports: Iterable[int] | None = None,
+) -> dict[str, list]:
+    """Return an httpx event_hooks mapping that signs loopback internal requests."""
+    normalized_extra = _normalize_extra_trusted_ports(extra_trusted_ports)
+    hook = _build_internal_service_request_hook(sync=sync, extra_trusted_ports=normalized_extra)
+    return {"request": [hook]}
+
+
+def merge_internal_service_event_hooks(
+    event_hooks: dict | None = None,
+    *,
+    sync: bool = False,
+    extra_trusted_ports: Iterable[int] | None = None,
+) -> dict[str, list]:
+    """Return a copy of event_hooks with the internal-service request hook appended."""
+    normalized_extra = _normalize_extra_trusted_ports(extra_trusted_ports)
+    hook = _build_internal_service_request_hook(sync=sync, extra_trusted_ports=normalized_extra)
+    merged: dict[str, list] = {
+        key: list(value) for key, value in (event_hooks or {}).items()
+    }
+    request_hooks = merged.setdefault("request", [])
+    if hook not in request_hooks:
+        request_hooks.append(hook)
+    return merged
+
+
 def _create_internal_http_client() -> httpx.AsyncClient:
     """Create a client dedicated to internal 127.0.0.1 services."""
     # verify=False skips SSLContext initialization entirely: we access only
@@ -106,6 +317,7 @@ def _create_internal_http_client() -> httpx.AsyncClient:
         proxy=None,
         trust_env=False,
         transport=transport,
+        event_hooks=internal_service_event_hooks(),
     )
 
 

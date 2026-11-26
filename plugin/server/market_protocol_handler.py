@@ -66,7 +66,11 @@ def _load_bridge_info() -> dict[str, Any] | None:
 
     port_value = data.get("port", 48911)
     try:
+        if isinstance(port_value, bool):
+            raise ValueError("bool is not a valid port")
         port = int(port_value)
+        if not (1 <= port <= 65535):
+            raise ValueError(f"port out of range: {port}")
     except (TypeError, ValueError):
         logger.warning(
             "Bridge token file has invalid 'port' value {!r}; falling back to 48911",
@@ -173,11 +177,26 @@ async def _call_local_install(
         _show_notification("无法读取 N.E.K.O bridge 凭据，请确认客户端正在运行", "N.E.K.O")
         return 1
 
+    try:
+        _load_project_dotenv()
+    except (OSError, UnicodeError) as exc:
+        logger.error("Failed to load project .env file {}: {}", _project_dotenv_path(), exc)
+        _show_notification("无法读取项目 .env 配置，已中止插件安装", "N.E.K.O")
+        return 1
+
     token = bridge["token"]
-    base_url = f"http://127.0.0.1:{bridge['port']}"
+    bridge_port = bridge["port"]
+    base_url = f"http://127.0.0.1:{bridge_port}"
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(180.0),
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(extra_trusted_ports=(bridge_port,)),
+        ) as client:
             # Trigger installation
             res = await client.post(
                 f"{base_url}/market/install",
@@ -325,12 +344,29 @@ def _show_notification(message: str, title: str) -> None:
         logger.debug("Failed to show notification: {}", exc)
 
 
+def _project_dotenv_path() -> Path:
+    """Return the repository root .env path matching launcher.py."""
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _load_project_dotenv(dotenv_path: Path | None = None) -> bool:
+    """Load runtime proxy/remote/instance-access settings from .env for internal HTTP signing without overriding existing process env vars (module import-time logging config is already initialized)."""
+    from dotenv import load_dotenv
+
+    target = dotenv_path if dotenv_path is not None else _project_dotenv_path()
+    return bool(load_dotenv(target, override=False))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for OS-invoked neko:// protocol handling."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not args:
+        print("Usage: python -m plugin.server.market_protocol_handler <neko://...>")
+        return 1
+    return handle_uri(args[0])
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m plugin.server.market_protocol_handler <neko://...>")
-        sys.exit(1)
-
-    uri = sys.argv[1]
-    sys.exit(handle_uri(uri))
+    sys.exit(main())

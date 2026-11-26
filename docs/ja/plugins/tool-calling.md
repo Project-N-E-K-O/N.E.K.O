@@ -133,8 +133,22 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 :::
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
-マウントされ、`verify_local_access` が `127.0.0.1` / `::1` /
-`localhost` のみ許可します。
+マウントされ、`verify_local_access` がループバック（`127.0.0.1` / `::1` /
+`localhost`）のみを許可します（`NEKO_BEHIND_PROXY` 有効時は `X-Forwarded`、
+`X-Forwarded-*`、`X-Real-IP`、`Forwarded` などの転送ヘッダーなしで直接ループバック
+接続する必要があります。有効なインスタンス認証情報がないリクエストはまずインスタンス認証
+ミドルウェアにより HTTP `401` で拒否され、認証通過後も転送ヘッダーが残っているリクエストは
+`verify_local_access` により HTTP `403` で拒否されます）。
+`NEKO_BEHIND_PROXY` または `NEKO_ACTIVITY_TRACKER_REMOTE` が有効な場合は、
+ループバック上の外部連携でも有効なインスタンス認証情報（`NEKO_INSTANCE_ACCESS_KEY`
+または `instance_access.key` 由来の `Authorization: Bearer <instance_key>` など）を
+送信する必要があり、未認証のリクエストには HTTP `401` が返ります。さらに
+`NEKO_REQUIRE_HTTPS` も有効な場合は、有効なキーがあっても平文の `http://`
+リクエストは HTTP `401` で拒否されるため、HTTPS で接続する必要があります（平文
+`http://` が許可されるのは、`NEKO_BEHIND_PROXY` が有効で外層 TLS ゲートウェイが
+TLS を終端し、非公開の HTTP アップストリームが信頼できないクライアントに公開されていない
+構成で、`Host` が `https://` の `NEKO_INSTANCE_PUBLIC_ORIGIN` に一致し、かつ転送ヘッダーなしの
+直接ループバック接続である場合のみです）。
 
 ### `POST /api/tools/register`
 
@@ -256,14 +270,20 @@ LLM がツール呼び出しを発火すると、main_server が `callback_url` 
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
+# X-Forwarded-*/X-Real-IP/Forwarded なしの直接ループバック接続が必要。NEKO_REQUIRE_HTTPS 有効時は
+# HTTPS エントリを使用（平文 http:// は NEKO_BEHIND_PROXY 有効・外層 TLS 終端・非公開アップストリームかつ Host が https:// の NEKO_INSTANCE_PUBLIC_ORIGIN に一致する場合のみ許可）
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# NEKO_BEHIND_PROXY または NEKO_ACTIVITY_TRACKER_REMOTE が有効な場合のみ必要
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
-    """起動時に呼ぶ：main_server が立ち上がるまで無限リトライで登録。"""
+    """起動時に呼ぶ：main_server が立ち上がるまでリトライで登録（認証拒否時はログを出して終了）。"""
     payload = {
         "name": TOOL_NAME,
         "description": "指定都市の天気を検索する",
@@ -277,25 +297,43 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
-    async with httpx.AsyncClient() as client:
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server がまだ起動していない、後で再試行
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """終了前に呼ぶ：ツールを取り消し、LLM が死んだ callback_url に当たらないように。"""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return True
     except Exception:
-        pass  # main_server も死んでいるなら諦める
+        return False  # main_server も死んでいるなら諦める
 ```
 
 これを `NekoPluginBase` プラグインに組み込まないでください。ライフサイクル
