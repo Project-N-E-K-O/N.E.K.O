@@ -461,16 +461,22 @@ def update_profile_config(
         synthesized_default_path = False
         if not isinstance(raw_path, str) or not raw_path.strip():
             raw_path = f"profiles/{profile_name}.toml"
-            files_map[profile_name] = raw_path
             synthesized_default_path = True
-
-        data["config_profiles"] = profiles_cfg
 
         profile_path = resolve_profile_path(raw_path, base_dir)
         if profile_path is None:
             raise HTTPException(status_code=400, detail="Invalid profile path")
-        if synthesized_default_path and profile_path.parent != (base_dir / "profiles").resolve():
-            raise HTTPException(status_code=400, detail="Invalid profile path")
+        if synthesized_default_path:
+            if profile_path.parent != (base_dir / "profiles").resolve():
+                raise HTTPException(status_code=400, detail="Invalid profile path")
+            if not profile_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Profile '{profile_name}' not found",
+                )
+            files_map[profile_name] = raw_path
+
+        data["config_profiles"] = profiles_cfg
 
         existing_profile: dict[str, object] = {}
         if profile_path.exists():

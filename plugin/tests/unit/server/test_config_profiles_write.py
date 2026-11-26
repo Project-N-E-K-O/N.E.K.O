@@ -403,3 +403,35 @@ def test_profile_writes_reject_path_traversal_names(
         )
     assert update_exc.value.status_code == 400
     assert config_path.read_text(encoding="utf-8") == manifest_text
+
+
+@pytest.mark.plugin_unit
+def test_update_profile_config_rejects_unknown_profile_with_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='demo'\nentry='demo:Plugin'\n"
+        "[plugin.config_profiles]\nactive='prod'\n"
+        "[plugin.config_profiles.files]\nprod='profiles/prod.toml'\n",
+        encoding="utf-8",
+    )
+    (profiles_dir / "prod.toml").write_text("[feature]\nx=1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        module.update_profile_config(
+            plugin_id="demo",
+            profile_name="prd",
+            updates={"feature": {"x": 2}},
+        )
+
+    assert exc_info.value.status_code == 404
+    assert not (profiles_dir / "prd.toml").exists()
+    assert not (plugin_dir / "profiles.toml").exists()
+    assert (profiles_dir / "prod.toml").read_text(encoding="utf-8") == "[feature]\nx=1\n"
