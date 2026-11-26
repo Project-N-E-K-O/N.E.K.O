@@ -1722,7 +1722,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """Resolve user_plugin_server's loopback origin.
 
         Startup may rebind a conflicting port; the environment variable stores the actual port. Resolution order
-        matches llm_tool_registry / music_pusher.
+        matches llm_tool_registry.
         """
         from config import USER_PLUGIN_SERVER_PORT
 
