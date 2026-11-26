@@ -281,6 +281,10 @@ SYSTEM_USE_PERMISSIONS = frozenset({
     PERMISSIONS["system.fs:read"].id,
     PERMISSIONS["system.fs:write"].id,
 })
+# Permissions whose uses reach the call audit: the judged RPC operations, the
+# message push and the system.* uses a plugin process reports. Uses of any
+# other permission are not recorded, so "never used" cannot be told for it.
+USAGE_AUDITED_PERMISSIONS = frozenset(CAPABILITY_BY_OPERATION.values()) | {MESSAGES_PUSH} | SYSTEM_USE_PERMISSIONS
 _SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
 _SYSTEM_USE_BATCH_LIMIT = 100
 _SYSTEM_USE_PER_MINUTE = 600

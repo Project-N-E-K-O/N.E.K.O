@@ -408,6 +408,8 @@ class Env:
         )
         monkeypatch.setattr(permission_panel, "usage_index", self.index)
         monkeypatch.setattr(permission_panel, "_checks_off", lambda: False)
+        monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "locks" / ".plugin-operation.lock"))
+        monkeypatch.setattr(permission_panel, "_manifest_cache", {})
         self.sources: dict[str, PluginSource] = {}
 
     def plugin(self, pid, manifest=MANIFEST, report=None, name=None):
@@ -1192,3 +1194,117 @@ def test_a_clear_that_changes_nothing_still_writes_nothing_under_the_same_source
     before = store.read("x")
     assert store.clear("x", MEMORY, source=MARKET) == before
     assert store.read("x") == before
+
+
+def test_unused_is_unknown_for_permissions_whose_uses_are_not_audited(env):
+    from plugin.server.application.plugins import capability_gate
+
+    assert capability_gate.USAGE_AUDITED_PERMISSIONS == {MEMORY, CONVERSATIONS, PUSH, CONNECT, SPAWN, FS_READ, FS_WRITE}
+    _weather(env)
+    env.store.decide("weather", MODELS, "granted", source=MARKET)
+    env.store.decide("weather", FS_READ, "granted", source=MARKET)
+    record = env.store.read("weather")
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    for entry in record["permissions"].values():
+        entry["decided_at"] = old
+    env.store.restore("weather", record)
+    env.index.observe({"ts": (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
+    assert rows[MODELS]["unused_30d"] is None and rows[MODELS]["usage_tracked"] is False
+    assert rows[FS_READ]["unused_30d"] is True and rows[FS_READ]["usage_tracked"] is True
+
+
+def test_a_plugin_seen_using_a_disclosure_only_permission_counts_in_the_privacy_page(env):
+    env.plugin("quiet", manifest="[plugin]\nid='quiet'\n", report={"status": "unavailable"})
+    env.index.observe(_decision("quiet", PUSH))
+
+    groups = {row["group"]: row for row in permission_panel.privacy_overview(index=env.index)["groups"]}
+    assert groups["messages"]["plugins"] == 1
+    plugins = {row["plugin_id"]: row for row in permission_panel.privacy_group("messages", index=env.index)["plugins"]}
+    assert plugins["quiet"]["has_permission"] is True
+
+
+def test_manifest_is_read_under_the_operation_lock_and_the_last_copy_serves_while_busy(env, monkeypatch):
+    from contextlib import contextmanager
+
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+
+    held = {"busy": False, "reads": 0, "timeouts": []}
+    load = permission_panel._load_manifest
+
+    @contextmanager
+    def lock(_stop, *, timeout=None):
+        held["timeouts"].append(timeout)
+        if held["busy"]:
+            raise PluginOperationBusy()
+        yield
+
+    def counted(root):
+        held["reads"] += 1
+        return load(root)
+
+    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", lock)
+    monkeypatch.setattr(permission_panel, "_load_manifest", counted)
+    _weather(env)
+
+    first = permission_panel.plugin_panel("weather", index=env.index)
+    assert held["reads"] == 1 and held["timeouts"] == [permission_panel.MANIFEST_LOCK_WAIT]
+
+    held["busy"] = True
+    assert permission_panel.plugin_panel("weather", index=env.index)["rows"] == first["rows"]
+    assert held["reads"] == 1 and held["timeouts"][-1] == 0
+
+    env.plugin("fresh", report=_report())
+    with pytest.raises(PluginOperationBusy):
+        permission_panel.plugin_panel("fresh", index=env.index)
+
+
+@pytest.mark.asyncio
+async def test_read_routes_answer_busy_when_a_manifest_cannot_be_read_yet(env, monkeypatch):
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+
+    def busy(_root):
+        raise PluginOperationBusy()
+
+    monkeypatch.setattr(permission_panel, "_read_manifest", busy)
+    _weather(env)
+    for path in ("/plugin-permissions/pending", "/plugin-permissions/privacy",
+                 "/plugin-permissions/privacy/memory", "/plugin-permissions/plugins/weather/panel"):
+        response = await _call("GET", path)
+        assert response.status_code == 409, (path, response.text)
+        assert response.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+async def test_a_saved_decision_returns_its_panel_while_another_operation_runs(env, monkeypatch, method):
+    from contextlib import contextmanager
+
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+    from plugin.server.routes import plugin_permissions as routes
+
+    @contextmanager
+    def lock(_stop, *, timeout=None):
+        # Busy once the decision's own operation has ended.
+        if not env.inside:
+            raise PluginOperationBusy()
+        yield
+
+    def wrap(operation):
+        async def run(*args, **kwargs):
+            env.inside = True
+            try:
+                return await operation(*args, **kwargs)
+            finally:
+                env.inside = False
+        return run
+
+    env.inside = False
+    monkeypatch.setattr(permission_panel, "hold_plugin_operation_file_lock", lock)
+    name = "_decide" if method == "PUT" else "_clear"
+    monkeypatch.setattr(routes, name, wrap(getattr(routes, name)))
+    _weather(env)
+    response = await _call(method, f"/plugin-permissions/plugins/weather/permissions/{CONNECT}", {"state": "granted"})
+    assert response.status_code == 200, response.text
+    assert any(row["permission"] == CONNECT for row in response.json()["rows"])

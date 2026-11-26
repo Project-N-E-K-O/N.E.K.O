@@ -13,6 +13,7 @@ translations. Declared reasons are passed on as written by the plugin.
 
 from __future__ import annotations
 
+import threading
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -46,6 +47,11 @@ from plugin.sdk.shared.permissions.declarations import (
 from plugin.server.application.plugins.capability_analysis_service import (
     read_report,
     schedule_analysis,
+)
+from plugin.server.application.plugins.capability_gate import USAGE_AUDITED_PERMISSIONS
+from plugin.server.application.plugins.operation_lock import (
+    PluginOperationBusy,
+    hold_plugin_operation_file_lock,
 )
 from plugin.server.application.plugins.permission_service import (
     MESSAGES_PUSH,
@@ -139,14 +145,46 @@ class _PluginInputs:
     declarations: PermissionDeclarations
 
 
+# Seconds a first manifest read waits for a running plugin operation.
+MANIFEST_LOCK_WAIT = 5.0
+_MANIFEST_CACHE_SIZE = 512
+# plugin root -> manifest read last (insertion order = least recently read first)
+_manifest_cache: dict[str, dict] = {}
+_manifest_cache_lock = threading.Lock()
+
+
 def _plugin_metas() -> dict[str, dict]:
     with state.acquire_plugins_read_lock():
         return {key: dict(value) for key, value in state.plugins.items() if isinstance(value, dict)}
 
 
 def _read_manifest(root: Path | None) -> dict:
+    """The plugin's plugin.toml, read under the plugin operation lock:
+    uninstall and update rename the plugin directory, which fails on Windows
+    while a file in it is open. While an operation holds the lock, the copy
+    read last is served; the first read of a plugin waits for the lock
+    (bounded, then ``PluginOperationBusy``)."""
     if root is None:
         return {}
+    key = str(root)
+    with _manifest_cache_lock:
+        cached = _manifest_cache.get(key)
+    try:
+        with hold_plugin_operation_file_lock(None, timeout=0 if cached is not None else MANIFEST_LOCK_WAIT):
+            manifest = _load_manifest(root)
+    except PluginOperationBusy:
+        if cached is None:
+            raise
+        return cached
+    with _manifest_cache_lock:
+        _manifest_cache.pop(key, None)
+        _manifest_cache[key] = manifest
+        while len(_manifest_cache) > _MANIFEST_CACHE_SIZE:
+            _manifest_cache.pop(next(iter(_manifest_cache)))
+    return manifest
+
+
+def _load_manifest(root: Path) -> dict:
     path = root / "plugin.toml"
     try:
         if not path.is_file() or path.stat().st_size > _MAX_MANIFEST_BYTES:
@@ -241,9 +279,11 @@ def _declaration(inputs: _PluginInputs, permission: str) -> dict | None:
 
 
 def _unused(index: UsageIndex, inputs: _PluginInputs, permission: str, status: str, entry: dict, now: datetime):
-    """``True`` / ``False`` for a granted permission when the audit history
-    covers the whole period; ``None`` otherwise."""
-    if status != "granted" or not index.covers_days(UNUSED_DAYS):
+    """``True`` / ``False`` for a granted permission whose uses are audited
+    when the audit history covers the whole period; ``None`` otherwise."""
+    if status != "granted" or permission not in USAGE_AUDITED_PERMISSIONS:
+        return None
+    if not index.covers_days(UNUSED_DAYS):
         return None
     cutoff = now - timedelta(days=UNUSED_DAYS)
     decided = _parse_time(entry.get("decided_at"))
@@ -293,6 +333,9 @@ def _rows(inputs: _PluginInputs, index: UsageIndex, checks_off: bool, now: datet
                 "condition_basis": CONDITION_BASIS,
                 "legacy_any": granted and entry.get("legacy_any") is True,
                 "enforced": resolved.enforced,
+                # False: uses of this permission are not recorded, so a
+                # missing ``last_used`` does not mean it was never used.
+                "usage_tracked": permission in USAGE_AUDITED_PERMISSIONS,
                 "last_used": last.last_used() if last is not None else None,
                 "unused_30d": _unused(index, inputs, permission, resolved.status, entry, now),
             }
@@ -533,13 +576,14 @@ def pending(*, index: UsageIndex = usage_index) -> dict:
 
 def _can_use(row: dict) -> bool:
     """Whether the plugin can use the permission now: granted, or a
-    disclosure-only permission it declares or was found using."""
+    disclosure-only permission it declares, was found using by the scan, or
+    was seen using."""
     if row["state"] == "granted":
         return True
     # ``enforced`` is the effective flag: also false while the master switch
     # has the checks off, when an undecided permission is not refused either.
     return not row["enforced"] and (
-        row["declared"] is not None or row["scan"] is not None
+        row["declared"] is not None or row["scan"] is not None or row["last_used"] is not None
     )
 
 
@@ -707,5 +751,11 @@ def forget_refused(plugin_id: str, permission: str) -> None:
 
 
 def ensure_plugin_known(plugin_id: str) -> None:
-    if plugin_id not in _plugin_metas():
+    """Raise 404 for an unknown plugin. Called inside the decision's plugin
+    operation, it also reads the manifest under the lock held there, so the
+    panel returned once the decision is saved finds it read already."""
+    meta = _plugin_metas().get(plugin_id)
+    if meta is None:
         raise _not_found(plugin_id)
+    config_path = meta.get("config_path")
+    _read_manifest(Path(config_path).parent if config_path else None)
