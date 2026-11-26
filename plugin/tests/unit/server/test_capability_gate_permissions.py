@@ -98,7 +98,7 @@ def _legacy(manager: Manager, plugins: dict) -> Path:
 
 
 def _verdict(plugin_id: str, capability: str = MEMORY) -> dict | None:
-    """The gate's audited decision for one use (``None``: allowed, not audited)."""
+    """The gate's audited decision for one use (``None``: not audited)."""
     capability_gate._last_written.clear()
     before = len(call_audit.entries())
     capability_gate.check(plugin_id, None, capability, "MEMORY_SEARCH")
@@ -148,7 +148,9 @@ def test_every_reader_agrees_on_the_stored_state(env, setup, gate, plugin, dialo
     }
     entry = _verdict("demo")
     if gate:
-        assert entry is None
+        # A use outside any call is audited even when allowed (last use).
+        assert (entry["verdict"], entry["reason"]) == ("allow", None)
+        assert "unattributed" in entry["flags"]
     else:
         assert (entry["verdict"], entry["reason"]) == ("would_deny", "self_not_approved")
         assert "consent_unavailable" not in entry["flags"]
@@ -256,7 +258,9 @@ def test_what_a_source_change_keeps_is_decided_in_one_place(env, monkeypatch):
     env.sources["demo"] = SECOND
     assert _readers("demo")["dialog"] is None
     assert permission_service.forget_plugin_grants(("demo",)) is True
-    assert env.store.read("demo") == {}
+    record = env.store.read("demo")
+    assert record["permissions"] == {} and LEGACY_DENIED not in record
+    assert record["grants_reset"]["reason"] == "source_changed"
 
 
 def test_dropping_grants_without_a_new_source_keeps_a_denial(env):
@@ -270,7 +274,9 @@ def test_dropping_grants_without_a_new_source_keeps_a_denial(env):
     env.sources.update(denied=FIRST, approved=FIRST)
     assert permission_service.forget_plugin_grants(("denied", "approved")) is True
 
-    assert env.store.read("approved") == {}
+    approved = env.store.read("approved")
+    assert approved["permissions"] == {} and "legacy_approved" not in approved
+    assert approved["grants_reset"]["reason"] == "source_changed"
     kept = env.store.read("denied")
     assert kept[LEGACY_DENIED] is True and kept["permissions"] == {}
     assert kept["source"] == FIRST.to_dict()
@@ -396,4 +402,5 @@ def test_dropping_grants_saves_a_first_use_import_or_reports_failure(env, monkey
     on_disk = json.loads(
         env.manager.get_runtime_config_path(plugin_permissions.FILENAME).read_text(encoding="utf-8")
     )
-    assert "demo" not in on_disk["plugins"]
+    assert on_disk["plugins"]["demo"]["permissions"] == {}
+    assert on_disk["plugins"]["demo"]["grants_reset"]["reason"] == "source_changed"

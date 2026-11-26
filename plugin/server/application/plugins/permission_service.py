@@ -435,6 +435,11 @@ def decide_permission(
     )
 
 
+def clear_permission(plugin_id: str, permission_id: str) -> dict:
+    """Return one permission of the plugin to undecided."""
+    return permission_store.clear(plugin_id, permission_id, source=current_source(plugin_id))
+
+
 def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
     """Bind a record still without a source to ``source``, which the caller
     has confirmed, so a later different source counts as a source change.
@@ -984,3 +989,13 @@ def permission_snapshot(plugin_id: str) -> dict:
         # Host-side marker (not sent): the push service retries until a read works.
         snapshot["read_failed"] = True
     return snapshot
+
+
+def record_states(record: dict | None, *, checks_off: bool) -> dict[str, PermissionState]:
+    """Every permission's state for ``record`` (as returned by
+    :func:`permission_record`), with the same rules the plugin process and the
+    host's checks use (see :func:`resolved_states`)."""
+    return {
+        permission: _resolve_state(permission, record, checks_off=checks_off)
+        for permission in PERMISSIONS
+    }
