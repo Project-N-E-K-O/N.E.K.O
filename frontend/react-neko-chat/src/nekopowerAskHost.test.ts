@@ -15,7 +15,11 @@ type Asks = {
   receive: (frame: Record<string, unknown>) => void;
   sync: () => Promise<void>;
   view: (question: unknown) => Record<string, unknown>;
+  answer: (taskId: string, questionId: string, given: Record<string, unknown>) => Promise<Record<string, unknown>>;
   SETTLE_MS: number;
+  RECHECK_MS: number;
+  RECHECKS: number;
+  RECHECK_SLOW_MS: number;
 };
 type Message = { id: string; blocks: Array<Record<string, unknown>> };
 
@@ -56,7 +60,8 @@ beforeEach(() => {
   const w = window as unknown as Record<string, unknown>;
   w.reactChatWindowHost = {
     appendMessage: (message: Message) => { messages.push(message); },
-    updateMessage: (id: string, patch: Partial<Message>) => { Object.assign(messages.find(each => each.id === id)!, patch); },
+    // As the chat does: nothing for a message it does not have.
+    updateMessage: (id: string, patch: Partial<Message>) => { Object.assign(messages.find(each => each.id === id) ?? {}, patch); },
     removeMessage: (id: string) => { messages = messages.filter(each => each.id !== id); },
   };
   w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'token' }) };
@@ -852,6 +857,30 @@ describe('the cards of the chat window', () => {
     expect([block().state, block().notice]).toEqual(['sending', '还不确定送到没有，过一会儿再看。']);
     await vi.advanceTimersByTimeAsync(asks.RECHECK_MS);
     expect([block().state, block().notice]).toEqual(['pending', '没送到，再试一次吧。']);
+  });
+
+  it('leaves a card closed where it stood (the chat could not take it out) whatever comes of its answer', async () => {
+    const w = window as unknown as Record<string, { getState?: () => unknown; removeMessage?: unknown; lanlan_name?: string }>;
+    w.reactChatWindowHost.getState = () => ({ messages });
+    delete w.reactChatWindowHost.removeMessage;
+    const rows = [{ task_id: 'c1', title: 't', route: 'task_agent', lanlan_name: 'Lan', question: permission }];
+    let back = () => {};
+    let readable = true;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      calls.push({ url, body: null, headers: {} });
+      if (url.includes('/answer')) return new Promise(resolve => { back = () => resolve({ ok: false, status: 504, json: async () => ({}) }); });
+      return Promise.resolve(readable ? { ok: true, status: 200, json: async () => ({ questions: rows }) } : { ok: false, status: 502, json: async () => ({}) });
+    }));
+    asks.receive(frame(permission, { lanlan_name: 'Lan' }));
+    answerFromChat({ taskId: 'c1', questionId: 'q1', choice: 'once' });
+    await flush();
+    w.lanlan_config.lanlan_name = 'Mio';
+    await asks.sync();
+    expect(block().state).toBe('closed');
+    readable = false;
+    back();
+    await flush();
+    expect(block().state).toBe('closed');
   });
 
   it('closes a card the read does not list though the connection said meanwhile that another question of its task is over', async () => {

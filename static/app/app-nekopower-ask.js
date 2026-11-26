@@ -528,16 +528,22 @@
         card.message = Object.assign({}, card.message, {
             blocks: [Object.assign({}, card.message.blocks[0], changes)]
         });
-        if (api && inChat(api, card.message.id)) api.updateMessage(card.message.id, { blocks: card.message.blocks });
+        // (The chat does nothing for a message it does not have: a card that is out of it is
+        // kept up to date here alone.)
+        if (api) api.updateMessage(card.message.id, { blocks: card.message.blocks });
     }
     /** Close the card of a task's question: all of that task's, or the one that asked `questionId`. */
     function close(taskId, questionId) {
         queued = queued.filter(function (args) { return args[0] !== taskId || (questionId && view(args[2]).id !== questionId); });
-        if (questionId) setOver(questionId);
+        if (questionId) {
+            setOver(questionId);
+            flying.delete(taskId + ':' + questionId);
+        }
         var card = open.get(taskId);
         if (!card || (questionId && card.questionId !== questionId)) return;
         open.delete(taskId);
         setOver(card.questionId);
+        flying.delete(taskId + ':' + card.questionId);
         var block = card.message.blocks[0];
         if (block.state !== 'pending' && block.state !== 'sending') return;
         // One that was being looked into (its answer was sent, and what came of it is not known)
@@ -777,6 +783,12 @@
             if (!mine && !known) {
                 // Taken out of the chat meanwhile (the page is with another character): it says
                 // what is not known once it is shown again, and is looked into from then.
+                var there = host();
+                if (there && inChat(there, card.message.id)) {
+                    // The chat could not take it out, and closed it where it stood: it stays so.
+                    flying.delete(flight);
+                    return;
+                }
                 card.looking = true;
                 patch(card, { state: 'sending', notice: word('unsure') });
                 return;

@@ -361,6 +361,14 @@ async def test_a_pick_that_names_nothing_the_question_offers_is_no_answer(select
     assert len(host.answers) == 2
 
 
+def test_an_option_given_as_a_bare_number_is_picked_by_its_digits():
+    # The page draws `1` and `2.0` as "1" and "2", and hands the one that was pressed back so.
+    questions = [{"id": "n", "question": "How many?", "options": [1, 2.0, 2.5, True]}]
+    assert _selected(build_answers(questions, "", {"0": ["2"]})) == [["2"]]
+    assert _selected(build_answers(questions, "", {"0": ["2.5"]})) == [["2.5"]]
+    assert _selected(build_answers(questions, "", {"0": ["True"]})) == [[]]
+
+
 async def test_a_note_slow_to_pass_on_does_not_keep_the_answer_waiting(monkeypatch):
     from app.agent_server import api_console
 

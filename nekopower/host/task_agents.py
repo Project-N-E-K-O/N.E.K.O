@@ -971,6 +971,10 @@ def build_answers(questions: list[Any], text: str, selected: Any = None) -> dict
         labels = []
         for option in question.get("options") or []:
             label = option.get("label") if isinstance(option, dict) else option
+            # A bare number where a label belongs (not what the tool asks for, and a model may
+            # write it all the same): the pages show it as its digits, and hand those back.
+            if isinstance(label, (int, float)) and not isinstance(label, bool) and not isinstance(option, dict):
+                label = str(int(label)) if float(label).is_integer() else str(label)
             if isinstance(label, str) and label:
                 labels.append(label)
         if picked is not None:
