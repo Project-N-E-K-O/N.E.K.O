@@ -878,8 +878,13 @@
     // Rename the draft before the request (like deleteCustomPreset): an Apply clicked
     // while the rename is in flight must not submit the old name, which the backend's
     // merge-by-name would write back next to the renamed preset. Rolled back on failure.
-    var wasSelected = CURRENT.preset === name;
-    if (!keepSource) moveDraftPreset(name, target, false);
+    if (!keepSource) {
+      moveDraftPreset(name, target, false);
+      // Redraw now so the old card (and its buttons) is not clickable with a name
+      // that no longer exists in the draft while the request is in flight.
+      renderPane();
+      renderHeadState();
+    }
     callEntry(keepSource ? 'duplicate_material_preset' : 'rename_material_preset',
       { name: name, new_name: target }).then(function (data) {
       var materials = (data && data.materials) || null;
@@ -897,8 +902,9 @@
     }).catch(function (error) {
       if (!keepSource && CURRENT.custom_presets && HAS.call(CURRENT.custom_presets, target) &&
           !HAS.call(CURRENT.custom_presets, name)) {
+        // moveDraftPreset already points the selection back when it still follows the
+        // renamed preset; a different preset chosen meanwhile is left alone.
         moveDraftPreset(target, name, false);
-        if (wasSelected) CURRENT.preset = name;
         renderPane();
         renderHeadState();
       }

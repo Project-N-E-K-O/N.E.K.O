@@ -1719,6 +1719,8 @@ function initUndoShortcuts() {
   document.addEventListener('keydown', function (event) {
     var meta = event.ctrlKey || event.metaKey;
     if (!meta) return;
+    // A shared common_dialogs.js dialog is open: undo / redo must not change the palette behind it.
+    if (document.querySelector('.modal-overlay')) return;
     var target = event.target;
     var tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
     // Inputs have the browser's own undo history; hijacking it would only confuse people.
@@ -8037,6 +8039,9 @@ function wireEvents() {
   document.addEventListener('keydown', function (event) {
     // The trash dialog handles its own keys; nothing behind it may react.
     if (trashModalEl) return;
+    // Same for the shared common_dialogs.js dialogs (e.g. the preset rename prompt):
+    // Ctrl+Enter there must only confirm the dialog, never apply the whole theme.
+    if (document.querySelector('.modal-overlay')) return;
     var modalOpen = !$('modal').hidden;
     if (event.key === 'Escape' && modalOpen) { closeModal(); return; }
     if (event.key === 'Tab' && modalOpen) { trapModalFocus(event); return; }

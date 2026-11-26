@@ -2374,9 +2374,9 @@
 
 /* ===== chat line height ===== */
 :root:not([data-theme="dark"])[data-nts-l-line-height]:root:root body .chat-body { line-height: var(--nts-line-height) !important; }
-:root:not([data-theme="dark"])[data-nts-l-line-height]:root:root body .message-markdown { line-height: var(--nts-line-height) !important; }
+:root:not([data-theme="dark"])[data-nts-l-line-height]:root:root body .message-block-markdown { line-height: var(--nts-line-height) !important; }
 :root[data-theme="dark"][data-nts-d-line-height]:root:root body .chat-body { line-height: var(--nts-line-height) !important; }
-:root[data-theme="dark"][data-nts-d-line-height]:root:root body .message-markdown { line-height: var(--nts-line-height) !important; }
+:root[data-theme="dark"][data-nts-d-line-height]:root:root body .message-block-markdown { line-height: var(--nts-line-height) !important; }
 
 /* ===== continuous corner curvature (corner-shape) =====
  * data-nts-squircle lists the modes that asked for continuous corners ("l", "d"
