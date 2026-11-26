@@ -92,6 +92,7 @@ class SdkBusMessageRecord:
     message_id: str | None = None
     message_type: str | None = None
     description: str | None = None
+    kind: str = "message"
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusMessageRecord":
@@ -107,10 +108,12 @@ class SdkBusMessageRecord:
             message_id=_as_str(_read_first(raw, "message_id", "id")),
             message_type=message_type,
             description=_as_str(_read_first(raw, "description")),
+            kind=_as_str(_read_first(raw, "kind")) or "message",
         )
 
     def dump(self) -> dict[str, Any]:
         return {
+            "kind": self.kind,
             "type": self.type,
             "timestamp": self.timestamp,
             "plugin_id": self.plugin_id,
@@ -142,6 +145,7 @@ class SdkBusEventRecord:
     event_id: str | None = None
     entry_id: str | None = None
     args: dict[str, Any] | None = None
+    kind: str = "event"
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusEventRecord":
@@ -157,10 +161,12 @@ class SdkBusEventRecord:
             event_id=_as_str(_read_first(raw, "event_id", "trace_id", "id")),
             entry_id=_as_str(_read_first(raw, "entry_id")),
             args=cast(dict[str, Any] | None, dict(args_raw) if isinstance(args_raw, Mapping) else None),
+            kind=_as_str(_read_first(raw, "kind")) or "event",
         )
 
     def dump(self) -> dict[str, Any]:
         return {
+            "kind": self.kind,
             "type": self.type,
             "timestamp": self.timestamp,
             "plugin_id": self.plugin_id,
@@ -191,6 +197,7 @@ class SdkBusLifecycleRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
     lifecycle_id: str | None = None
     detail: dict[str, Any] | None = None
+    kind: str = "lifecycle"
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusLifecycleRecord":
@@ -205,10 +212,12 @@ class SdkBusLifecycleRecord:
             metadata=_as_dict(_read_first(raw, "metadata")),
             lifecycle_id=_as_str(_read_first(raw, "lifecycle_id", "trace_id", "id")),
             detail=_as_dict(detail) if detail is not None else None,
+            kind=_as_str(_read_first(raw, "kind")) or "lifecycle",
         )
 
     def dump(self) -> dict[str, Any]:
         return {
+            "kind": self.kind,
             "type": self.type,
             "timestamp": self.timestamp,
             "plugin_id": self.plugin_id,
@@ -240,6 +249,7 @@ class SdkBusConversationRecord:
     turn_type: str | None = None
     lanlan_name: str | None = None
     message_count: int | None = None
+    kind: str = "conversation"
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusConversationRecord":
@@ -256,10 +266,12 @@ class SdkBusConversationRecord:
             turn_type=_as_str(_read_first(raw, "turn_type")) or _as_str(metadata.get("turn_type")),
             lanlan_name=_as_str(_read_first(raw, "lanlan_name")) or _as_str(metadata.get("lanlan_name")),
             message_count=_as_int(_read_first(raw, "message_count", "count", "messageCount"), default=0),
+            kind=_as_str(_read_first(raw, "kind")) or "conversation",
         )
 
     def dump(self) -> dict[str, Any]:
         return {
+            "kind": self.kind,
             "conversation_id": self.conversation_id,
             "type": self.type,
             "timestamp": self.timestamp,
@@ -303,6 +315,7 @@ class SdkBusFrameRecord:
     generation: int | None = None
     lanlan_name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    kind: str = "frame"
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusFrameRecord":
@@ -320,10 +333,12 @@ class SdkBusFrameRecord:
             generation=_as_int(generation) if generation is not None else None,
             lanlan_name=_as_str(_read_first(raw, "lanlan_name")),
             metadata=_as_dict(_read_first(raw, "metadata")),
+            kind=_as_str(_read_first(raw, "kind")) or "frame",
         )
 
     def dump(self) -> dict[str, Any]:
         return {
+            "kind": self.kind,
             "frame_id": self.frame_id,
             "type": self.type,
             "timestamp": self.timestamp,
@@ -603,7 +618,12 @@ class SdkBusList(Generic[TRecord]):
 
     @staticmethod
     def _item_value(item: object, field: str) -> object:
-        return _mapping_get(item, field)
+        value = _mapping_get(item, field)
+        if value is None and isinstance(item, SdkBusMemoryRecord):
+            if field == "kind" and "kind" not in item.payload:
+                return "memory"
+            return item.payload.get(field)
+        return value
 
     def _local_filter(self, filters: dict[str, Any], *, strict: bool = True) -> "SdkBusList[TRecord]":
         compiled_regexes: dict[str, re.Pattern[str]] = {}
