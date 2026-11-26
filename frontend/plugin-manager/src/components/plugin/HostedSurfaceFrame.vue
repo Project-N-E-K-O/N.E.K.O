@@ -188,6 +188,7 @@ type PendingHostedConfirm = {
   title: string
   message: string
   testIdPrefix: string
+  kind: 'parseDocument' | 'action'
   accept: () => void
   cancel: () => void
   resolve: (outcome: HostedConfirmOutcome) => void
@@ -204,16 +205,21 @@ const fullscreenRevision = ref(0)
 function handleFullscreenChange() {
   fullscreenRevision.value += 1
 }
+// Overlays must live inside the fullscreen element to stay visible.
+function fullscreenOverlayTarget(): HTMLElement | null {
+  const target = displayTarget.value
+  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) return target
+  return null
+}
 const hostedConfirmAppendTarget = computed<string | HTMLElement>(() => {
   void displayRevision.value
   void fullscreenRevision.value
   void pendingHostedConfirm.value
-  const target = displayTarget.value
-  if (typeof document !== 'undefined' && target && document.fullscreenElement === target) {
-    return target
-  }
-  return 'body'
+  return fullscreenOverlayTarget() ?? 'body'
 })
+function showHostMessage(type: 'warning' | 'error', message: string) {
+  ElMessage({ type, message, grouping: true, appendTo: fullscreenOverlayTarget() ?? document.body })
+}
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
@@ -244,6 +250,7 @@ function openHostedConfirm(options: {
   title: string
   message: string
   testIdPrefix: string
+  kind: 'parseDocument' | 'action'
   // When set, the dialog closes itself with 'timeout' at this time.
   deadline?: number
 }): Promise<HostedConfirmOutcome> {
@@ -259,6 +266,7 @@ function openHostedConfirm(options: {
       title: options.title,
       message: options.message,
       testIdPrefix: options.testIdPrefix,
+      kind: options.kind,
       accept: () => settlePendingHostedConfirm('confirm', { token }),
       cancel: () => settlePendingHostedConfirm('user_cancel', { token }),
       resolve: (outcome) => {
@@ -276,7 +284,7 @@ function splitHostOnlyContext<T>(context: T): { context: T; roots: string[] } {
   if (!context || typeof context !== 'object' || Array.isArray(context)) return { context, roots: [] }
   const { paths, ...panelContext } = context as Record<string, unknown>
   const record = paths && typeof paths === 'object' ? paths as Record<string, unknown> : {}
-  const roots = [record.plugin_dir, record.data_dir]
+  const roots = [record.plugin_dir, record.plugin_dir_unresolved, record.data_dir]
     .filter((value): value is string => typeof value === 'string' && !!value.trim())
   return { context: panelContext as T, roots }
 }
@@ -703,11 +711,7 @@ async function openHostedSurfacePath(rawPath: string) {
       await readContextInOrder()
     } catch (caught: unknown) {
       if (!componentMounted || generation !== hostedRequestGeneration) return
-      ElMessage({
-        type: 'error',
-        message: t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }),
-        grouping: true,
-      })
+      showHostMessage('error', t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }))
       return
     }
     if (!componentMounted || generation !== hostedRequestGeneration) return
@@ -716,21 +720,17 @@ async function openHostedSurfacePath(rawPath: string) {
   }
   const target = resolvePathWithinRoots(rawPath, roots)
   if (!target) {
-    ElMessage({ type: 'warning', message: t('plugins.ui.openPathOutOfScope'), grouping: true })
+    showHostMessage('warning', t('plugins.ui.openPathOutOfScope'))
     return
   }
   try {
     await openLocalPath(target)
   } catch (caught: unknown) {
     if ((caught as { code?: unknown } | null)?.code === NO_DESKTOP_BRIDGE) {
-      ElMessage({ type: 'warning', message: t('plugins.ui.openPathNoBridge'), grouping: true })
+      showHostMessage('warning', t('plugins.ui.openPathNoBridge'))
       return
     }
-    ElMessage({
-      type: 'error',
-      message: t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }),
-      grouping: true,
-    })
+    showHostMessage('error', t('plugins.ui.openPathFailed', { message: caught instanceof Error ? caught.message : String(caught) }))
   }
 }
 
@@ -847,7 +847,10 @@ async function handleHostedRequest(data: any) {
       if (pendingHostedConfirm.value) {
         respond({
           ok: false,
-          error: 'Document parsing confirmation is already pending.',
+          // Code kept for existing parseDocument callers; only the text says why.
+          error: pendingHostedConfirm.value.kind === 'parseDocument'
+            ? 'Document parsing confirmation is already pending.'
+            : 'Another confirmation is already pending.',
           code: 'document_parse_permission_denied',
         })
         return
@@ -861,6 +864,7 @@ async function handleHostedRequest(data: any) {
         title: t('common.confirm'),
         message: t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
         testIdPrefix: 'parse-document-confirm',
+        kind: 'parseDocument',
       })
       // No dialog deadline here: the expired-deadline check below answers.
       if (!isCurrentRequest() || confirmOutcome === 'host_cancel' || confirmOutcome === 'timeout') {
@@ -929,12 +933,13 @@ async function handleHostedRequest(data: any) {
         title: t('plugins.ui.actionConfirmTitle', { plugin: props.pluginId }),
         message,
         testIdPrefix: 'action-confirm',
+        kind: 'action',
         deadline: Date.now() + dialogMs,
       })
       if (!isCurrentRequest() || outcome === 'host_cancel') return
       if (outcome === 'timeout') {
         const timeoutMessage = t('plugins.ui.actionConfirmTimeout')
-        ElMessage({ type: 'warning', message: timeoutMessage, grouping: true })
+        showHostMessage('warning', timeoutMessage)
         respond({ ok: false, error: timeoutMessage, code: 'action_confirm_timeout' })
         return
       }

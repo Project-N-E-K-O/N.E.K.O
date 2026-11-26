@@ -167,6 +167,15 @@ describe('resolvePathWithinRoots', () => {
     expect(resolvePathWithinRoots('\\\\nas\\other\\plugins\\plugin_a', roots)).toBeNull()
   })
 
+  it('keeps backslashes literal in POSIX paths', () => {
+    const roots = ['/tmp/plugin\\a']
+    expect(resolvePathWithinRoots('/tmp/plugin/a/report.txt', roots)).toBeNull()
+    expect(resolvePathWithinRoots('/tmp/plugin\\a/report.txt', roots)).toBe('/tmp/plugin\\a/report.txt')
+    expect(resolvePathWithinRoots('/tmp/plugin/sub/report.txt', ['/tmp/plugin'])).toBe('/tmp/plugin/sub/report.txt')
+    expect(resolvePathWithinRoots('/tmp/plugin\\..\\..\\etc', ['/tmp'])).toBe('/tmp/plugin\\..\\..\\etc')
+    expect(resolvePathWithinRoots('\\tmp\\plugin\\x', ['/tmp/plugin'])).toBeNull()
+  })
+
   it('ignores missing roots', () => {
     expect(resolvePathWithinRoots('/anything', [null, undefined, '', 'relative/root'])).toBeNull()
   })

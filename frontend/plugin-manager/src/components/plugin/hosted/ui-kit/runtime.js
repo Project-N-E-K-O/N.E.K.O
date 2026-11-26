@@ -2071,16 +2071,17 @@ const api = {
   },
 };
 // Sandboxed panels have no allow-modals, so window.confirm always returns
-// false there. The host renders the dialog instead and answers
-// { confirmed }. It closes its dialog HOSTED_CONFIRM_HOST_MARGIN_MS before
-// this request times out (see HostedSurfaceFrame.vue) so a host timeout comes
-// back as a localized error; a host that never answers rejects here.
+// false there. The host renders the dialog instead and answers { confirmed }.
+// The host closes its dialog HOSTED_CONFIRM_RESPONSE_MARGIN_MS before this
+// request times out (same constant name in HostedSurfaceFrame.vue; keep both
+// in sync), so a host timeout comes back as a localized error; a host that
+// never answers rejects here.
 const HOSTED_CONFIRM_DIALOG_MS = 120000;
-const HOSTED_CONFIRM_HOST_MARGIN_MS = 5000;
+const HOSTED_CONFIRM_RESPONSE_MARGIN_MS = 5000;
 function confirmHostedAction(confirmMessage, userInitiated) {
   const payload = confirmMessage === true ? {} : { message: String(confirmMessage) };
   return requestHost('confirm', payload, {
-    timeoutMs: HOSTED_CONFIRM_DIALOG_MS + HOSTED_CONFIRM_HOST_MARGIN_MS,
+    timeoutMs: HOSTED_CONFIRM_DIALOG_MS + HOSTED_CONFIRM_RESPONSE_MARGIN_MS,
     userInitiated: userInitiated === true,
   }).then((result) => !!(result && result.confirmed === true));
 }

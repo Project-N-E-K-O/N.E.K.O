@@ -1677,6 +1677,18 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
     expect(lastMessageCall()).toMatchObject({ type: 'warning', message: 'plugins.ui.openPathOutOfScope' })
   })
 
+  it('also accepts the unresolved plugin directory reported by the host', async () => {
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({
+      paths: { plugin_dir: '/real/study_companion', plugin_dir_unresolved: pluginRoot, data_dir: dataRoot },
+    })
+    const frame = await mountFrame()
+    frame.dispatchRequest(openPathMessage(`${pluginRoot}/out.txt`))
+    await flushPromises()
+    await flushPromises()
+
+    expect(nekoOpenPath).toHaveBeenCalledWith({ path: `${pluginRoot}/out.txt` })
+  })
+
   it('takes the scope from the host context read, not from the panel message', async () => {
     const frame = await mountFrame()
     frame.dispatchRequest({
@@ -1875,6 +1887,53 @@ describe('HostedSurfaceFrame open-path scope and action confirmation', () => {
       expect.objectContaining({ requestId: 'confirm-b', ok: false, code: 'action_confirm_pending' }),
       '*',
     )
+  })
+
+  it('mounts host messages inside the fullscreen element while fullscreen', async () => {
+    const frame = await mountFrame()
+    const displayTarget = frame.container.querySelector<HTMLElement>('.hosted-surface-frame')
+    const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
+    let fullscreenEl: Element | null = null
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreenEl })
+    try {
+      frame.dispatchRequest(openPathMessage('/etc/passwd'))
+      await flushPromises()
+      await flushPromises()
+      expect(lastMessageCall()).toMatchObject({ appendTo: document.body })
+
+      fullscreenEl = displayTarget
+      frame.dispatchRequest(openPathMessage('/etc/hosts'))
+      await flushPromises()
+      await flushPromises()
+      expect(lastMessageCall()).toMatchObject({ message: 'plugins.ui.openPathOutOfScope' })
+      expect(lastMessageCall().appendTo).toBe(displayTarget)
+    } finally {
+      if (originalDescriptor) Object.defineProperty(document, 'fullscreenElement', originalDescriptor)
+      else delete (document as { fullscreenElement?: Element | null }).fullscreenElement
+    }
+  })
+
+  it('reports a generic pending confirmation to document parsing while an action confirm is open', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+    frame.dispatchRequest(confirmRequest())
+    await flushPromises()
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'a.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-while-action', userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'parse-while-action',
+        ok: false,
+        error: 'Another confirmation is already pending.',
+        code: 'document_parse_permission_denied',
+      }),
+      '*',
+    )
+    expect(actionDialog()).not.toBeNull()
   })
 
   it('refuses confirmations not started by a user action', async () => {

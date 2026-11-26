@@ -510,9 +510,23 @@ def _hosted_surface_paths(plugin_id: str, plugin_meta: Mapping[str, object]) -> 
 
     The plugin-manager host uses these to scope ``open-path`` requests; the
     panel never supplies them. ``data_dir`` comes from the same SDK helper as
-    the plugin's own ``data_path()``.
+    the plugin's own ``data_path()``. ``plugin_dir_unresolved`` is the same
+    directory before symlink resolution (e.g. a symlinked dev install, where
+    the plugin's ``__file__`` paths are unresolved); None when identical.
+    Does blocking file-system work: call it off the event loop.
     """
     plugin_root = _plugin_root_from_meta(plugin_meta)
+    plugin_root_unresolved: str | None = None
+    config_path_obj = plugin_meta.get("config_path")
+    if plugin_root is not None and isinstance(config_path_obj, str) and config_path_obj:
+        try:
+            unresolved = Path(config_path_obj).parent.absolute()
+            # ``absolute()`` keeps ``..``; the frontend folds it lexically,
+            # which differs from the OS once a symlink precedes it. Skip.
+            if ".." not in unresolved.parts and unresolved != plugin_root:
+                plugin_root_unresolved = str(unresolved)
+        except Exception:
+            plugin_root_unresolved = None
     data_dir: str | None
     try:
         from types import SimpleNamespace
@@ -524,6 +538,7 @@ def _hosted_surface_paths(plugin_id: str, plugin_meta: Mapping[str, object]) -> 
         data_dir = None
     return {
         "plugin_dir": str(plugin_root) if plugin_root is not None else None,
+        "plugin_dir_unresolved": plugin_root_unresolved,
         "data_dir": data_dir,
     }
 
@@ -1619,6 +1634,7 @@ class PluginUiQueryService:
                     ).model_dump())
 
             plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            surface_paths = await asyncio.to_thread(_hosted_surface_paths, plugin_id, plugin_meta)
             resolved_locale = locale or "en"
             resolved_context = {
                 "plugin_id": plugin_id,
@@ -1631,7 +1647,7 @@ class PluginUiQueryService:
                 "actions": actions,
                 "entries": entries,
                 "config": config_snapshot,
-                "paths": _hosted_surface_paths(plugin_id, plugin_meta),
+                "paths": surface_paths,
                 "warnings": warnings,
                 "i18n": {
                     "locale": resolved_locale,

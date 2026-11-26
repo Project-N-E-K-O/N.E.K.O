@@ -203,7 +203,12 @@ type ScopedPath = {
 function parseScopedPath(input: string): ScopedPath | null {
   const raw = normalizeLocalPath(String(input || '').trim())
   if (!raw || CONTROL_CHARS_RE.test(raw)) return null
-  const slashed = raw.replace(/\\/g, '/')
+  // A backslash is an ordinary file-name character in POSIX paths; only
+  // drive-letter and UNC (`\\host\share`, `//host/share`) inputs treat it
+  // as a separator.
+  const windowsLike = /^[a-zA-Z]:([\\/]|$)/.test(raw) || /^[\\/][\\/]/.test(raw)
+  const posixLiteral = raw.startsWith('/') && !windowsLike
+  const slashed = posixLiteral ? raw : raw.replace(/\\/g, '/')
   let style: ScopedPathStyle
   let root: string
   let rest: string
@@ -221,7 +226,7 @@ function parseScopedPath(input: string): ScopedPath | null {
     style = 'unc'
     root = `//${host}/${share}`
     rest = parts.slice(2).join('/')
-  } else if (slashed.startsWith('/')) {
+  } else if (posixLiteral) {
     style = 'posix'
     root = ''
     rest = slashed

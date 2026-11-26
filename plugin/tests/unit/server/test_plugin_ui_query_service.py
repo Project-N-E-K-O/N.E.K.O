@@ -190,8 +190,30 @@ def test_surface_context_reports_host_open_path_roots(monkeypatch, tmp_path) -> 
 
     assert context["paths"] == {
         "plugin_dir": str(plugin_dir.resolve()),
+        "plugin_dir_unresolved": None,
         "data_dir": str(storage_root.resolve() / "plugins" / "demo" / "data"),
     }
+
+
+def test_surface_paths_also_report_a_symlinked_plugin_dir(tmp_path) -> None:
+    real_dir = tmp_path / "real_plugin"
+    real_dir.mkdir()
+    (real_dir / "plugin.toml").write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    link_dir = tmp_path / "linked_plugin"
+    try:
+        link_dir.symlink_to(real_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    paths = ui_query_module._hosted_surface_paths("demo", {"config_path": str(link_dir / "plugin.toml")})
+
+    assert paths["plugin_dir"] == str(real_dir.resolve())
+    assert paths["plugin_dir_unresolved"] == str(link_dir)
+
+    dotted = ui_query_module._hosted_surface_paths(
+        "demo", {"config_path": str(link_dir / ".." / "linked_plugin" / "plugin.toml")},
+    )
+    assert dotted["plugin_dir_unresolved"] is None
 
 
 def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> None:
