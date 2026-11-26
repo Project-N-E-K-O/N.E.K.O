@@ -16,6 +16,7 @@ Document shape (``schema_version`` 1)::
           "source": {"channel": "market", "fingerprint": "..."} | null,
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "legacy_approved": true,     # optional, see LEGACY_APPROVED
+          "grants_reset": {"at": "<iso>", "reason": "source_changed"},  # optional, see GRANTS_RESET
           "permissions": {
             "<permission id>": {
               "state": "granted" | "denied" | "undecided",
@@ -91,6 +92,12 @@ _PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED)
 # one place that decides it. Every grant and every other marker is dropped;
 # an empty set would make a source change ask again about everything.
 KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
+
+# Set when a source change dropped decisions the user had made, so the
+# permission panel can tell the user why they are asked again. Cleared by the
+# next decision for that plugin.
+GRANTS_RESET = "grants_reset"
+RESET_SOURCE_CHANGED = "source_changed"
 
 
 ChangeListener = Callable[["frozenset[str] | None"], None]
@@ -233,6 +240,17 @@ def _load_error(exc: Exception) -> ServerDomainError:
         500,
         details={"file": FILENAME, "retryable": False},
     )
+
+
+def _had_decisions(record: dict) -> bool:
+    """Whether ``record`` holds anything a source change would drop."""
+    return bool(record.get("permissions")) or any(
+        record.get(marker) for marker in _PLUGIN_MARKERS if marker not in KEPT_ON_SOURCE_CHANGE
+    )
+
+
+def _mark_reset(record: dict, now: str) -> None:
+    record[GRANTS_RESET] = {"at": now, "reason": RESET_SOURCE_CHANGED}
 
 
 def _drop_for_source_change(record: dict) -> None:
@@ -568,6 +586,8 @@ class PluginPermissionStore:
             return False
         now = _now()
         if known is not None:
+            if _had_decisions(record):
+                _mark_reset(record, now)
             _drop_for_source_change(record)
             record["source_changed_at"] = now
         record["source"] = current.to_dict()
@@ -610,6 +630,7 @@ class PluginPermissionStore:
             else:
                 self._apply_source(record, source)
             now = _now()
+            record.pop(GRANTS_RESET, None)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
@@ -650,6 +671,7 @@ class PluginPermissionStore:
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
             now = _now()
+            record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
             if record.get(LEGACY_DENIED):
                 permissions[permission_id] = {
@@ -745,6 +767,8 @@ class PluginPermissionStore:
                 }
             for marker in _PLUGIN_MARKERS:
                 record.pop(marker, None)
+            if decision is not None:
+                record.pop(GRANTS_RESET, None)
             if decision == "denied":
                 record[LEGACY_DENIED] = True
             elif decision == "approved":
@@ -759,8 +783,9 @@ class PluginPermissionStore:
         """Drop what a source change drops, without changing the source.
 
         For a caller that cannot record the plugin's new source but knows
-        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps; a
-        record left with nothing to keep is removed. Returns the record
+        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps and
+        marks ``GRANTS_RESET`` when decisions were dropped; a record left
+        with nothing to keep is removed. Returns the record
         before the change (``None`` when there was none).
         """
         with self._lock:
@@ -770,13 +795,16 @@ class PluginPermissionStore:
                 return None
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            now = _now()
+            if _had_decisions(record):
+                _mark_reset(record, now)
             _drop_for_source_change(record)
-            if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
+            if not any(record.get(marker) for marker in (*KEPT_ON_SOURCE_CHANGE, GRANTS_RESET)):
                 del document["plugins"][plugin_id]
             elif record == cached:
                 return copy.deepcopy(cached)
             else:
-                record["updated_at"] = _now()
+                record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(cached)
 

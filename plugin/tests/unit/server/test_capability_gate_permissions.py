@@ -256,7 +256,9 @@ def test_what_a_source_change_keeps_is_decided_in_one_place(env, monkeypatch):
     env.sources["demo"] = SECOND
     assert _readers("demo")["dialog"] is None
     assert permission_service.forget_plugin_grants(("demo",)) is True
-    assert env.store.read("demo") == {}
+    record = env.store.read("demo")
+    assert record["permissions"] == {} and LEGACY_DENIED not in record
+    assert record["grants_reset"]["reason"] == "source_changed"
 
 
 def test_dropping_grants_without_a_new_source_keeps_a_denial(env):
@@ -270,7 +272,9 @@ def test_dropping_grants_without_a_new_source_keeps_a_denial(env):
     env.sources.update(denied=FIRST, approved=FIRST)
     assert permission_service.forget_plugin_grants(("denied", "approved")) is True
 
-    assert env.store.read("approved") == {}
+    approved = env.store.read("approved")
+    assert approved["permissions"] == {} and "legacy_approved" not in approved
+    assert approved["grants_reset"]["reason"] == "source_changed"
     kept = env.store.read("denied")
     assert kept[LEGACY_DENIED] is True and kept["permissions"] == {}
     assert kept["source"] == FIRST.to_dict()
@@ -396,4 +400,5 @@ def test_dropping_grants_saves_a_first_use_import_or_reports_failure(env, monkey
     on_disk = json.loads(
         env.manager.get_runtime_config_path(plugin_permissions.FILENAME).read_text(encoding="utf-8")
     )
-    assert "demo" not in on_disk["plugins"]
+    assert on_disk["plugins"]["demo"]["permissions"] == {}
+    assert on_disk["plugins"]["demo"]["grants_reset"]["reason"] == "source_changed"
