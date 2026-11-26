@@ -558,6 +558,52 @@ def test_action_failure_survives_polling_until_its_operation_or_context_changes(
     """.replace('ACTION', json.dumps(action)).replace('RESET', json.dumps(reset)))
 
 
+@pytest.mark.parametrize('action', ['recovery', 'cloud', 'local', 'retry'])
+def test_successful_action_does_not_persist_its_status_refresh_failure(action):
+    run_script(r"""(async()=>{
+        const action=ACTION,create=document.createElement;
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        let written=false,readFailure=true,writes=0;
+        global.fetch=async(path,options)=>{
+            if(path.endsWith('/status')){
+                if(written&&readFailure){readFailure=false;throw new TypeError('private status-read details');}
+                return{ok:true,json:async()=>({writerRecoveryRequired:action==='recovery'&&!written,characters:[{
+                    displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}
+                }]})};
+            }
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>({
+                conflict:!written&&['cloud','local'].includes(action),failed:!written&&action==='retry'
+            })};
+            assert.equal(options.method,'POST');
+            writes++;written=true;
+            return{ok:true,json:async()=>({deletions:{count:2}})};
+        };
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],shown=()=>modal.children.find(node=>node.className==='chat-sync-status').textContent;
+        const key={cloud:'useCloud',local:'keepLocal',retry:'retry'}[action];
+        const button=action==='recovery'?modal.querySelector('[data-sync-action="recover"]')
+            :modal.querySelector('[data-sync-model]').children.find(node=>node.textContent==='cloudModel.'+key+'{}');
+        await button.events.click();
+        assert.equal(writes,1);
+        assert(shown().includes('chat_sync_network_unavailable'));
+        assert(!shown().includes('private'));
+        if(action==='recovery')assert(shown().includes('chatSync.recoveryChecked'));
+        await intervals.find(item=>item.delay===5000).callback();
+        assert.equal(writes,1);
+        assert(!shown().includes('chat_sync_network_unavailable'));
+        if(action==='recovery'){
+            assert(shown().includes('chatSync.recoveryChecked'));
+            assert(shown().includes('chatSync.recoveryCloudCopiesKept'));
+        }else assert.equal(modal.querySelector('[data-sync-model]').children.length,0);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ACTION', json.dumps(action)))
+
+
 def test_writer_recovery_notice_yields_to_a_new_verification_requirement():
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);

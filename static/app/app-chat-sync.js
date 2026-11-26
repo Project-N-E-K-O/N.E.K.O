@@ -207,7 +207,11 @@
                         button.disabled = true;
                         try {
                             await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action });
-                            if (currentSettings(name, epoch) && activeUid === modelUid) await refreshStatus(true);
+                            if (currentSettings(name, epoch) && activeUid === modelUid) {
+                                await refreshStatus(true).catch(function (error) {
+                                    if (currentSettings(name, epoch) && activeUid === modelUid) statusNode.textContent = describeError(error);
+                                });
+                            }
                         }
                         catch (error) {
                             if (currentSettings(name, epoch) && activeUid === modelUid) {
@@ -261,13 +265,15 @@
             var path = '/characters/' + requestedUid;
             var recovered = await api(path + '/recovery/preview', 'POST');
             if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
-            await refreshStatus(true);
+            var statusReadError = null;
+            await refreshStatus(true).catch(function (error) { statusReadError = error; });
             if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
             // Earlier local deletions that never reached the cloud stay local only.
             var kept = recovered.deletions.count;
             if (kept) statusNode.textContent += '\n' + text('recoveryCloudCopiesKept', { count: kept });
             recoveryNotice = statusNode.textContent;
+            if (statusReadError) statusNode.textContent += '\n' + describeError(statusReadError);
         } catch (error) {
             if (currentSettings(requestedName, epoch) && activeUid === requestedUid) {
                 actionError = describeError(error);
