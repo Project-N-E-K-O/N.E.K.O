@@ -357,6 +357,7 @@ jobs:
           cache-dependency-path: frontend/plugin-manager/package-lock.json
 
       - name: Install dependencies
+        id: install
         working-directory: frontend/plugin-manager
         run: npm ci
 
@@ -366,6 +367,23 @@ jobs:
         # 格式，由 test:hosted-script 单独跑，被 vitest 收进来只会报 no test suite。
         working-directory: frontend/plugin-manager
         run: npm run test:unit
+
+      - name: Typecheck
+        # 这个包的类型检查此前没有任何 workflow 会跑：build-desktop.yml 用的是
+        # `npm run build-only`，跳过了 `npm run build` 里的 type-check。结果是
+        # src/views/ModelApi.vue 的 4 条 vue-tsc 报错一直留在 main 上（#4138 修掉），
+        # 本机 `npm run build` 是坏的却没人知道。
+        #
+        # 用 `npm run type-check`（vue-tsc --build）。和 react-neko-chat 一样，
+        # tsconfig.json 是 solution-style（"files": [] + references），裸的
+        # `vue-tsc --noEmit` 一个文件都不检查，永远绿。
+        #
+        # 放在单测后面并且单测失败也照跑：两类问题各报各的，不互相遮住。
+        # 依赖没装上就不跑：那时只会多一个「vue-tsc: not found」的红步骤。
+        # job 名不改 —— 「Plugin manager vitest」是 main 的必过检查名。
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: frontend/plugin-manager
+        run: npm run type-check
 
   plugin-manager-e2e:
     name: Plugin manager boot e2e
