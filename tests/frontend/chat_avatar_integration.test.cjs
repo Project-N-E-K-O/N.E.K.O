@@ -1011,3 +1011,47 @@ test('a background model capture keeps the upload cropper title and its status s
     core.refreshDisplayedAvatar();
     assert.match(h.dom.chatAvatarPreviewStatus.textContent, /^chat\.avatarPreviewReady/);
 });
+
+test('same-name backend re-selection retries the frontend rollback', async () => {
+    const h = harness(), calls = avatarCalls(h), fetch = h.context.fetch;
+    h.load('static/app/app-character.js');
+    h.context.fetch = async () => { throw new Error('temporary role failure'); };
+    await h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 10 });
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    h.context.fetch = fetch;
+    await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 11 });
+    await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 11 });
+    assert.deepEqual(calls.map(c => c[0]), ['begin', 'rollback', 'begin', 'commit']);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+});
+
+test('retired websocket still forwards stamped character-switch control frames', () => {
+    const h = harness(); const forwarded = [];
+    h.window.t = key => key;
+    h.window.location.protocol = 'http:'; h.window.location.host = 'fixture.test';
+    h.window.appConst = { HEARTBEAT_INTERVAL: 30000 };
+    h.window.handleCatgirlSwitch = (next, old, options) => {
+        forwarded.push([next, old, options?.switchRevision || 0]);
+    };
+    h.context.Blob = Blob;
+    h.context.WebSocket = class {
+        static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+        constructor(url) { this.url = url; this.readyState = 0; }
+        send() {}
+        close() { this.readyState = 3; }
+    };
+    h.load('static/app/app-websocket.js');
+    h.window.connectWebSocket();
+    const retired = h.window.appState.socket;
+    h.window.connectWebSocket();
+
+    retired.onmessage({ data: JSON.stringify({
+        type: 'catgirl_switched', new_catgirl: 'C', old_catgirl: 'B', switch_revision: 77
+    }) });
+    retired.onmessage({ data: JSON.stringify({
+        type: 'catgirl_switched', new_catgirl: 'D', old_catgirl: 'C'
+    }) });
+
+    assert.deepEqual(forwarded, [['C', 'B', 77]]);
+});
+
