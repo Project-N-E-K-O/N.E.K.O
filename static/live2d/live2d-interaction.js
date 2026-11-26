@@ -1563,6 +1563,9 @@ Live2DManager.prototype._beginLive2DPeekHostStage = function (model, state) {
         return null;
     }
     if (!pending || typeof pending.then !== 'function') return null;
+    // prepare 是宿主的回调，它执行期间探身可能已经被清掉（比如宿主顺手派发了关掉贴边探身的事件）。
+    // 这时别把清掉的落点写回隐藏位；调用方等这个 Promise 之后的检查会让这次进场返回 false。
+    if (this._live2DPeekState !== state || !state.active || model.destroyed) return Promise.resolve();
 
     state.hostStaged = true;
     state.hostStagePending = true;

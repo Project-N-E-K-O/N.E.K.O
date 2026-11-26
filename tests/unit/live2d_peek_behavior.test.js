@@ -4060,3 +4060,98 @@ test('peek host stage info describes the anchor and is null without one', async 
     manager.clearLive2DPeek('manual');
     assert.equal(manager.getLive2DPeekHostStageInfo(), null);
 });
+
+test('a peek cleared from inside the host prepare call is not written back to the hidden pose', async () => {
+    const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    // 宿主在 prepare 里同步清掉了探身（比如它顺手派发了关掉贴边探身的事件），然后仍然返回 Promise。
+    installPeekHostStage(harness, () => {
+        manager.clearLive2DPeek('widget-mode-disabled');
+        return Promise.resolve(true);
+    });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(model.x, 0, 'the cleared anchor must not be parked off-screen');
+    assert.equal(model.rotation, 0);
+    assert.equal(model.interactive, true);
+    assert.equal(await enterPromise, false);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(model.x, 0);
+    assert.equal(model.interactive, true);
+});
+
+test('host-staged reveal of a rotated or mirrored model stays inside the reported bounds', async () => {
+    const VIEW = { left: 0, top: 0, right: 1000, bottom: 800 };
+    const onScreen = (bounds) => {
+        const left = Math.max(bounds.left, VIEW.left);
+        const right = Math.min(bounds.right, VIEW.right);
+        const top = Math.max(bounds.top, VIEW.top);
+        const bottom = Math.min(bounds.bottom, VIEW.bottom);
+        return right > left && bottom > top ? { left, right, top, bottom } : null;
+    };
+    // 仿模型绕原点旋转；右侧的用镜像（scaleX: -1），模型占原点左边那一块。
+    const cases = [
+        { label: 'left side', x: 0, y: 100, scaleX: 1, edge: 'left' },
+        { label: 'right side', x: 1000, y: 100, scaleX: -1, edge: 'right' },
+        { label: 'top-left corner', x: 0, y: 0, scaleX: 1, edge: 'top-left' },
+        { label: 'top-right corner', x: 1000, y: 0, scaleX: -1, edge: 'top-right' },
+        { label: 'bottom-right corner', x: 1000, y: 560, scaleX: -1, edge: 'bottom-right' }
+    ];
+    for (const item of cases) {
+        const harness = createHarness({ interactionActive: true, stealthModeEnabled: false });
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: item.y, scaleX: item.scaleX });
+        const calls = installPeekHostStage(harness, () => Promise.resolve(true));
+
+        const contact = harness.getLive2DPeekEdgeContact(manager, model);
+        assert.equal(contact.edge, item.edge, item.label);
+        assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true, item.label);
+        const settled = harness.validateLive2DPeekEdgeContact(manager, model, contact);
+        const enterPromise = manager._tryApplyLive2DPeek(model, settled);
+
+        // 等宿主期间：转了角度、镜像之后的模型整个在屏外。
+        const state = manager._live2DPeekState;
+        assert.equal(state.hostStagePending, true, item.label);
+        assert.notEqual(state.peekRotation, 0, `${item.label} is a rotated pose`);
+        assert.equal(onScreen(model.getBounds()), null, `${item.label} must be fully off-screen while the host moves`);
+
+        const detail = calls[0];
+        const overshoot = detail.revealOvershootPx;
+        const allowed = {
+            left: detail.visibleBounds.left - (detail.side === 'right' ? overshoot : 0),
+            right: detail.visibleBounds.right + (detail.side === 'left' ? overshoot : 0),
+            top: detail.visibleBounds.top,
+            bottom: detail.visibleBounds.bottom
+        };
+        await waitForQueuedFrame(harness);
+        let sawModel = false;
+        let leftAllowedOnce = false;
+        for (let time = 5; time <= 300; time += 5) {
+            flushNextFrame(harness, time);
+            const visible = onScreen(model.getBounds());
+            if (visible) {
+                sawModel = true;
+                const where = `${item.label} at ${time}ms`;
+                assert.ok(visible.left >= allowed.left - 1e-6, `${where}: left ${visible.left} < ${allowed.left}`);
+                assert.ok(visible.right <= allowed.right + 1e-6, `${where}: right ${visible.right} > ${allowed.right}`);
+                assert.ok(visible.top >= allowed.top - 1e-6, `${where}: top ${visible.top} < ${allowed.top}`);
+                assert.ok(visible.bottom <= allowed.bottom + 1e-6, `${where}: bottom ${visible.bottom} > ${allowed.bottom}`);
+                if (visible.left < detail.visibleBounds.left - 1e-6 || visible.right > detail.visibleBounds.right + 1e-6) {
+                    leftAllowedOnce = true;
+                }
+            }
+            if (time < 300) await waitForQueuedFrame(harness);
+        }
+        assert.equal(await enterPromise, true, item.label);
+        assert.equal(sawModel, true, item.label);
+        assert.equal(leftAllowedOnce, true, `${item.label}: the soft-back reveal should use the overshoot allowance`);
+        // 停稳后露在屏内的部分就是报给宿主的那一块。
+        const final = onScreen(model.getBounds());
+        assertClose(final.left, detail.visibleBounds.left, `${item.label} final left`);
+        assertClose(final.right, detail.visibleBounds.right, `${item.label} final right`);
+        assertClose(final.top, detail.visibleBounds.top, `${item.label} final top`);
+        assertClose(final.bottom, detail.visibleBounds.bottom, `${item.label} final bottom`);
+    }
+});
