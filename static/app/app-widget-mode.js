@@ -23,6 +23,9 @@
     // each status notice it shows on this same-origin channel. Behind the shell's
     // one-way IPC bridge that receipt is the only proof the notice was shown.
     const STATUS_TOAST_SHOWN_CHANNEL = 'neko-status-toast-shown';
+    // A notice that is only late, not lost, may then be resent once. That is
+    // harmless: the toast page re-shows the same text in place (no second
+    // entrance), it only restarts the display timer.
     const FIRST_PEEK_NOTICE_ACK_TIMEOUT_MS = 1500;
     // Peeks that may try (send, then resend once) before giving up for this
     // launch, so a toast window that never confirms (or keeps dropping the
@@ -246,7 +249,7 @@
             channel = null;
         }
         if (!channel) {
-            showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+            if (!trySendNotice(message)) return Promise.resolve(false);
             return Promise.resolve(null);
         }
         return new Promise((resolve) => {
@@ -268,8 +271,19 @@
                 timer = null;
                 finish(isStatusToastShowing(message));
             }, FIRST_PEEK_NOTICE_ACK_TIMEOUT_MS);
-            showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+            if (!trySendNotice(message)) finish(false);
         });
+    }
+
+    // A bridge send that throws counts as not shown instead of rejecting the
+    // caller's promise.
+    function trySendNotice(message) {
+        try {
+            showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+            return true;
+        } catch (_) {
+            return false;
+        }
     }
 
     async function showFirstPeekNoticeViaBridge(message) {
@@ -295,6 +309,13 @@
         // existing anchor (stealth, interaction) are not.
         if (!detail || detail.active !== true || detail.reason !== 'anchor-created') return;
         if (firstPeekNoticeShown || firstPeekNoticePending || hasShownFirstPeekNoticeThisLaunch()) return;
+        // The budget is checked again after each attempt, but a reload while an
+        // attempt still waits for its receipt skips that check. The count
+        // restored from sessionStorage enforces it here instead.
+        if (firstPeekNoticeAttempts >= FIRST_PEEK_NOTICE_MAX_ATTEMPTS) {
+            markFirstPeekNoticeShown();
+            return;
+        }
         const message = t(
             'settings.widgetMode.firstPeekNotice',
             '她躲到屏幕边上了，把她拖回来就能恢复。不需要的话，可以在托盘菜单的“设置”里关闭“启用贴边探身”。'

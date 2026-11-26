@@ -256,6 +256,8 @@ def _run_first_peek_notice_harness(
     bridge_receipt: str = "ack",
     first_launch_peeks: int = 2,
     reloaded_peeks: int = 1,
+    reload_while_waiting_for_receipt: bool = False,
+    bridge_throws: int = 0,
 ) -> dict:
     # toast_kind="dom": the page's own toast (bootstrap-goodbye-and-toasts.js),
     # marked and rendering into #status-toast-text.
@@ -265,8 +267,10 @@ def _run_first_peek_notice_harness(
     # shown notice on the receipt channel; "none": no BroadcastChannel at all.
     assert toast_kind in ("dom", "bridge")
     assert bridge_receipt in ("ack", "none")
-    if drop_first_toast:
-        drop_toasts = max(drop_toasts, 1)
+    # drop_toasts=-1 drops every notice; drop_first_toast only adds a single drop
+    # when no other drop count is given, so it can never shrink "drop all".
+    if drop_first_toast and drop_toasts == 0:
+        drop_toasts = 1
     script = textwrap.dedent(
         f"""
         const fs = require('fs');
@@ -278,6 +282,10 @@ def _run_first_peek_notice_harness(
         const bridgeReceipt = {json.dumps(bridge_receipt)};
         const firstLaunchPeeks = {json.dumps(first_launch_peeks)};
         const reloadedPeeks = {json.dumps(reloaded_peeks)};
+        const reloadWhileWaitingForReceipt = {json.dumps(reload_while_waiting_for_receipt)};
+        let bridgeThrows = {json.dumps(bridge_throws)};
+        let unhandledRejections = 0;
+        process.on('unhandledRejection', () => {{ unhandledRejections += 1; }});
 
         // Fake clock: the page's receipt timeout only fires when settle() runs it.
         const timers = [];
@@ -371,6 +379,10 @@ def _run_first_peek_notice_harness(
             t(key, options) {{ return {json.dumps(i18n_echoes_key)} ? key : 'i18n:' + key; }},
             showStatusToast(message, durationMs) {{
               if (toastKind === 'bridge') {{
+                if (bridgeThrows > 0) {{
+                  bridgeThrows -= 1;
+                  throw new Error('IPC renderer unavailable');
+                }}
                 // ipcRenderer.send('neko:show-toast', ...): shown in another window.
                 // The shell may still lose it (a higher-priority notice, or the
                 // first notice into a freshly rebuilt toast window), and the send
@@ -414,11 +426,14 @@ def _run_first_peek_notice_harness(
           vm.createContext(context);
           if (bridgeReceipt === 'ack') context.BroadcastChannel = FakeBroadcastChannel;
           vm.runInContext(source, context, {{ filename: 'app-widget-mode.js' }});
-          const peek = async (detail) => {{
+          const dispatchPeek = (detail) => {{
             win.dispatchEvent(new CustomEventLike('neko:live2d-peek-changed', {{ detail }}));
+          }};
+          const peek = async (detail) => {{
+            dispatchPeek(detail);
             await settle();
           }};
-          return {{ notices, peek }};
+          return {{ notices, peek, dispatchPeek }};
         }}
 
         const anchor = (visible = true) => ({{
@@ -439,6 +454,16 @@ def _run_first_peek_notice_harness(
         await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
         const beforeAnchor = first.notices.length;
         for (let i = 0; i < firstLaunchPeeks; i++) {{
+          const last = i === firstLaunchPeeks - 1;
+          if (last && reloadWhileWaitingForReceipt) {{
+            // The pet window reloads while this peek still waits for its
+            // receipt: the old page and its pending timers and channels are gone.
+            first.dispatchPeek(anchor());
+            await flushMicrotasks();
+            timers.length = 0;
+            openChannels.clear();
+            break;
+          }}
           await first.peek(anchor());
           await first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
         }}
@@ -465,6 +490,7 @@ def _run_first_peek_notice_harness(
           legacyAfterLoad,
           localKeys: Array.from(localData.keys()),
           openChannels: openChannels.size,
+          unhandledRejections,
         }}));
         }})().catch((error) => {{
           console.error(error && error.stack ? error.stack : error);
@@ -600,6 +626,37 @@ def test_first_edge_peek_notice_attempt_budget_survives_a_pet_window_reload() ->
     assert outcome["sessionShown"] == "1"
     # A new pet window (app restart) starts with a fresh budget.
     assert outcome["restartedNotices"] == [dropped] * 4
+
+
+def test_first_edge_peek_notice_budget_holds_when_reloaded_while_waiting_for_receipt() -> None:
+    # The second peek spends the last attempt, then the pet window reloads
+    # before its receipt wait ends, so the shown flag was never written. Later
+    # peeks in this launch must not send again; an app restart starts afresh.
+    outcome = _run_first_peek_notice_harness(
+        toast_kind="bridge",
+        drop_toasts=-1,
+        first_launch_peeks=2,
+        reloaded_peeks=2,
+        reload_while_waiting_for_receipt=True,
+    )
+
+    dropped = {"message": FIRST_PEEK_MESSAGE, "durationMs": 10000, "dropped": True}
+    # Peek 1: send + resend. Peek 2: its first send, then the reload.
+    assert outcome["firstNotices"] == [dropped] * 3
+    assert outcome["reloadedNotices"] == []
+    assert outcome["sessionAttempts"] == "2"
+    assert outcome["sessionShown"] == "1"
+    assert outcome["restartedNotices"] == [dropped] * 4
+
+
+def test_first_edge_peek_notice_bridge_send_error_counts_as_unconfirmed() -> None:
+    # A bridge whose send throws must not leave an unhandled rejection; the
+    # attempt counts as unconfirmed and is retried on the next peek.
+    outcome = _run_first_peek_notice_harness(toast_kind="bridge", bridge_throws=1)
+
+    assert outcome["unhandledRejections"] == 0
+    assert outcome["firstNotices"] == ONE_NOTICE
+    assert outcome["sessionShown"] == "1"
 
 
 def test_first_edge_peek_notice_without_receipt_channel_counts_hand_off_as_shown() -> None:
