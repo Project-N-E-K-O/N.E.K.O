@@ -695,7 +695,11 @@ class PluginPermissionStore:
                     raise ValueError(f"Unknown permission: {permission_id!r}")
             if record is None:
                 return {}
-            if known_id is not None:
+            known = PluginSource.from_dict(record.get("source"))
+            source_changes = source is not None and known != source
+            # Nothing to do only when the record already says undecided under
+            # the current source; a source change is applied and saved first.
+            if known_id is not None and not source_changes:
                 entry = (record.get("permissions") or {}).get(known_id)
                 if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)

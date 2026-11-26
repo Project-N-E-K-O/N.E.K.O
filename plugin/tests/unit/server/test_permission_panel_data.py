@@ -1160,3 +1160,35 @@ def test_dropping_grants_keeps_a_cutoff_for_the_old_code(env):
     env.store.drop_grants("p")
     env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
     assert permission_panel.pending(index=env.index)["first_use"] == []
+
+
+def test_clearing_after_a_source_change_applies_it_first(env):
+    """A legacy denial kept over a source change: the cleared item reads
+    undecided under the new source, and the change is saved."""
+    env.plugin("p", manifest=None, report=_report(
+        plugin_sdk_main_agent_memory__read={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    env.sources["p"] = MARKET
+    env.store.apply_legacy_decision("p", "denied", source=MARKET)
+    env.store.decide("p", MEMORY, "granted", source=MARKET)
+    env.store.clear("p", MEMORY, source=MARKET)  # explicit undecided entry
+    env.store.decide("p", SPAWN, "granted", source=MARKET)
+    env.sources["p"] = MANUAL  # not started yet from the new source
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("p", index=env.index)["rows"]}
+    assert rows[MEMORY]["state"] == "denied"  # the kept denial, under the new source
+
+    record = env.store.clear("p", MEMORY, source=MANUAL)
+
+    assert record["source"] == MANUAL.to_dict()
+    assert SPAWN not in record["permissions"]  # the old source's grant is gone
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("p", index=env.index)["rows"]}
+    assert rows[MEMORY]["state"] == "undecided"
+    assert env.store.read("p")["source"] == MANUAL.to_dict()
+
+
+def test_a_clear_that_changes_nothing_still_writes_nothing_under_the_same_source(store):
+    store.decide("x", MEMORY, "granted", source=MARKET)
+    store.clear("x", MEMORY, source=MARKET)
+    before = store.read("x")
+    assert store.clear("x", MEMORY, source=MARKET) == before
+    assert store.read("x") == before
