@@ -2757,15 +2757,19 @@ async def _no_quota_left(commission_id: str) -> bool:
     return False
 
 
-async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
-    """A commission at work, with its session, and six task agents it started, each stopped its own way.
+async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> SimpleNamespace:
+    """A commission at work, with its session, and nine task agents it started, each stopped its own way.
 
-    One cannot be closed (its runtime does not answer); one cannot have its stop written (the
-    ledger is locked for it, however often it is asked), one has it written when it is asked
-    again; one is stopped as ever; one was read at work and is done by the time its stop is
-    written, and one was read at work and is stopped (by the user) by then. What the commission
-    started is read at the second asking; ``read_failures``: how many times that fails first.
+    One cannot be stopped (its runtime does not answer, however often it is asked), one is
+    stopped when it is asked again (the ledger was locked as it was stopped); one cannot have
+    its stop written (the ledger is locked for it, however often it is asked), one has it
+    written when it is asked again; one is stopped as ever; one is done and waits in its git
+    worktree for the user to have it landed (stuck over that alone); one is gone from the
+    ledger by the time its stop is written; one was read at work and is done by then, and one
+    was read at work and is stopped (by the user) by then. What the commission started is read
+    at the second asking; ``read_failures``: how many times that fails first.
     """
+    from nekopower.host.ledger import Transition
     from nekopower.host.task_agents import _Session
 
     manager = host.task_agents
@@ -2776,15 +2780,25 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
     members: dict[str, str] = {}
     for name in (
         "cannot be closed",
+        "closed when asked again",
         "cannot be written",
         "written when asked again",
         "at work",
+        "waits in its worktree",
+        "gone meanwhile",
         "done meanwhile",
         "stopped meanwhile",
     ):
         child = await _filed(host, name, parent_id=parent.id)
         await host.ledger.transition(child.id, "working", reason="test")
         members[name] = child.id
+    await host.ledger.transition(members["waits in its worktree"], "blocked", reason="test")
+    tree = tmp_path / "the-worktree"
+    tree.mkdir()
+    await host.ledger.add_tree(
+        id="the-tree", project_dir=str(tmp_path), path=str(tree), workdir=str(tree), state="held",
+        commission_id=members["waits in its worktree"],
+    )
     # In the order they were started: the one that cannot be closed comes first, and the others
     # after it are stopped all the same (or not, if a failure gave the rest up).
     seen = await host.ledger.select(parent_id=parent.id, oldest_first=True)
@@ -2796,6 +2810,7 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
     )
     select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
     unwritten = {members["written when asked again"]}
+    unstopped = {members["closed when asked again"]}
 
     async def read(**criteria: Any) -> Any:
         if criteria.get("parent_id") == parent.id:
@@ -2809,12 +2824,17 @@ async def _a_team_at_work(host: Any, monkeypatch: Any) -> SimpleNamespace:
         if commission_id == members["cannot be written"] or commission_id in unwritten:
             unwritten.discard(commission_id)
             raise RuntimeError("the ledger is locked")
+        if commission_id == members["gone meanwhile"]:
+            return Transition(applied=False, commission=None, previous=None, refusal="no such commission")
         return await transition(commission_id, status, **kwargs)
 
     async def recorded(commission_id: str) -> None:
         team.tried.append(commission_id)
         if commission_id == members["cannot be closed"]:
             raise RuntimeError("the runtime did not answer")
+        if commission_id in unstopped:
+            unstopped.discard(commission_id)
+            raise RuntimeError("the ledger is locked")
         await abort(commission_id)
 
     async def close_session(session: Any) -> None:
@@ -2858,7 +2878,7 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
     from nekopower.host.task_agents import _QUOTA_RUN_REASON, _USAGE_REASON
 
     host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
-    team = await _a_team_at_work(host, monkeypatch)
+    team = await _a_team_at_work(host, monkeypatch, tmp_path)
 
     said = await _ended_for_what_it_used(host.task_agents, team, end)
 
@@ -2870,29 +2890,46 @@ async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_sta
         # The run is told to stop all the same: a failure here would let it make the request.
         assert said == {"stop": True}
         assert (ended.status, ended.status_reason) == ("blocked", _USAGE_REASON)
-    # What it started is read though the first reading failed. One that cannot be closed does not
-    # keep the next from being stopped. One whose stop cannot be written is closed all the same (on
-    # record it is at work), and one whose stop is written when asked again is stopped; one that
-    # ended meanwhile is not closed, one that was stopped meanwhile is closed all the same.
+    # What it started is read though the first reading failed. One that cannot be stopped is asked
+    # as often as the ledger is (three times), and does not keep the next from being stopped; one
+    # stopped when asked again is stopped so. One whose stop cannot be written is closed all the
+    # same (on record it is at work), and one whose stop is written when asked again is stopped;
+    # one that waits in its worktree for the user is left to wait, as when a commission ends
+    # otherwise; one gone from the ledger meanwhile is closed all the same; one that ended
+    # meanwhile is not closed, one that was stopped meanwhile is closed all the same.
     members = team.members
     assert team.read_failures == 0
-    left = ("done meanwhile",)
-    assert team.tried == [members[name] for name in members if name not in left]
+    left = ("waits in its worktree", "done meanwhile")
+    asked = {"cannot be closed": 3, "closed when asked again": 2}
+    assert team.tried == [members[name] for name in members if name not in left for _ in range(asked.get(name, 1))]
     after = {name: await host.ledger.get(one) for name, one in members.items()}
     assert {name: one.status for name, one in after.items()} == {
         "cannot be closed": "cancelled",
+        "closed when asked again": "cancelled",
         "cannot be written": "working",
         "written when asked again": "cancelled",
         "at work": "cancelled",
+        "waits in its worktree": "blocked",
+        "gone meanwhile": "working",
         "done meanwhile": "done",
         "stopped meanwhile": "cancelled",
     }
-    for name in ("cannot be closed", "written when asked again", "at work"):
+    for name in ("cannot be closed", "closed when asked again", "written when asked again", "at work"):
         assert after[name].status_reason == "its parent finished"
-    assert after["stopped meanwhile"].status_reason == "test"
+    for name in ("waits in its worktree", "stopped meanwhile"):
+        assert after[name].status_reason == "test"
+    assert (await host.ledger.get_tree("the-tree")).state == "held"
     # Their sessions are asked to close (the one whose stop cannot be written among them; not the
-    # one that cannot be closed, nor the one that ended meanwhile), and the commission's own after.
-    closed = ("cannot be written", "written when asked again", "at work", "stopped meanwhile")
+    # one that cannot be stopped, the one that waits in its worktree, nor the one that ended
+    # meanwhile), and the commission's own after.
+    closed = (
+        "closed when asked again",
+        "cannot be written",
+        "written when asked again",
+        "at work",
+        "gone meanwhile",
+        "stopped meanwhile",
+    )
     assert team.closed == [*(members[name] for name in closed), team.parent.id]
 
 
@@ -2901,7 +2938,7 @@ async def test_a_commission_that_ends_for_what_it_used_is_closed_though_what_it_
     hosts, tmp_path, monkeypatch, end
 ):
     host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
-    team = await _a_team_at_work(host, monkeypatch)
+    team = await _a_team_at_work(host, monkeypatch, tmp_path)
     # Not even when asked again.
     team.read_failures = 99
 

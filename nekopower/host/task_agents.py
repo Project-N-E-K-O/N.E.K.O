@@ -5484,8 +5484,9 @@ class TaskAgentManager(TreeWork):
         For the ends of ``_on_usage`` (the quota ran out partway through)
         and ``_wind_up_step`` (the usage the user allowed is used up): its
         own end is written by now, and the caller closes its session once
-        this returns. These ends come once, so the ledger is asked again
-        after a failure, as ``_end_what_it_started`` does (``_looked``).
+        this returns. These ends come once, so what the ledger is asked, and
+        each one's stop, is tried again after a failure, as
+        ``_end_what_it_started`` does (``_looked``).
         Each by itself: one that cannot be stopped this moment does not
         leave the others at work, nor keep the commission's own session
         open; nor does a ledger that cannot say what it started. One whose
@@ -5499,10 +5500,14 @@ class TaskAgentManager(TreeWork):
         failure for room to go on, and would make the request it asked
         about; ``_pump_events`` would only log it).
 
-        Unlike ``_end_what_it_started``, one whose changes wait in its
-        worktree for the user is stopped too, as these two ends always did.
+        Not one whose work is done and waits in its git worktree for the
+        user (held back, or not landed), as there: it is stuck over that
+        alone, and is done once the user has it landed.
         """
         what = "for a commission that ended for what it used"
+        # (Read before those it started are, as there: one the user has landed this moment is
+        # still among these, or is over by the time those are read.)
+        waiting = await self._waits_in_tree()
         try:
             started = await self._looked(
                 lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES), what=what
@@ -5513,6 +5518,8 @@ class TaskAgentManager(TreeWork):
             logger.warning("finding what commission %s started failed", commission_id, exc_info=True)
             return
         for child in started:
+            if child.id in waiting:
+                continue
             try:
                 moved = await self._looked(
                     lambda child=child: self._ledger.transition(child.id, "cancelled", reason="its parent finished"),
@@ -5523,13 +5530,19 @@ class TaskAgentManager(TreeWork):
             except Exception:  # noqa: BLE001 - it is closed all the same
                 logger.warning("writing that commission %s stopped with its parent failed", child.id, exc_info=True)
                 moved = None
-            if moved is not None and not moved.applied and (
-                moved.commission is None or moved.commission.status != "cancelled"
+            if (
+                moved is not None
+                and not moved.applied
+                and moved.commission is not None
+                and moved.commission.status != "cancelled"
             ):
-                # It ended meanwhile, some other way: its session is its own.
+                # It ended meanwhile, some other way: its session is its own. (One that is gone
+                # from the ledger meanwhile is closed all the same: nothing is its own any more.)
                 continue
             try:
-                await self.abort(child.id)
+                # Asked again as well: stopping it reads and writes the ledger before its session
+                # is closed (what it started in turn), and is safe to do twice.
+                await self._looked(lambda child=child: self.abort(child.id), what=what)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the others are stopped all the same
