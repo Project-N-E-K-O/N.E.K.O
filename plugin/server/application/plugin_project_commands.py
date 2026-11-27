@@ -40,16 +40,19 @@ _busy: dict[str, str] = {}
 _project_leases: dict[str, BinaryIO] = {}
 
 
-def _project_lease_path(project_id: str) -> Path:
+def _plugin_runtime_root() -> Path:
     from utils.config_manager import get_config_manager
 
+    # plugin-runtime/ is registered as regenerable: storage migration leaves
+    # it behind instead of copying it.
+    return get_config_manager().app_docs_dir / "plugin-runtime"
+
+
+def _project_lease_path(project_id: str) -> Path:
     # The caller may not have resolved the record yet. Never use an API-supplied
     # project ID as a filesystem path component.
     key = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
-    # plugin-runtime/ is registered as regenerable: storage migration leaves
-    # it behind instead of copying it.
-    runtime_root = get_config_manager().app_docs_dir / "plugin-runtime"
-    return runtime_root / "project-operations" / f"{key}.lock"
+    return _plugin_runtime_root() / "project-operations" / f"{key}.lock"
 
 
 def _drop_inherited_project_leases() -> None:

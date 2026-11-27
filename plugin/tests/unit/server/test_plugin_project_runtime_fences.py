@@ -34,6 +34,7 @@ from utils import process_creation
 @pytest.fixture
 def project(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "get_plugin_state_root", lambda: tmp_path / "state" / "plugins")
+    monkeypatch.setattr(commands, "_plugin_runtime_root", lambda: tmp_path / "plugin-runtime")
     monkeypatch.setattr(operation_lock, "_operation_file_lock_path", lambda: tmp_path / "operation.lock")
     monkeypatch.setattr(state, "plugins", {})
     monkeypatch.setattr(state, "plugin_hosts", {})
@@ -434,13 +435,19 @@ from pathlib import Path
 from plugin import settings
 from plugin.server.application import plugin_project_commands as commands
 settings.get_plugin_state_root = lambda: Path(sys.argv[1])
+# Same lease directory as the test process, without starting a ConfigManager
+# (it may print storage-migration notes to stdout before 'ready').
+commands._plugin_runtime_root = lambda: Path(sys.argv[3])
 commands.claim_project(sys.argv[2], 'python-packages-sync')
 print('ready', flush=True)
 sys.stdin.read(1)
 commands.release_project(sys.argv[2])
 """
     child = process_creation.popen(
-        [sys.executable, "-c", script, str(settings.get_plugin_state_root()), project.project_id],
+        [
+            sys.executable, "-c", script, str(settings.get_plugin_state_root()), project.project_id,
+            str(commands._plugin_runtime_root()),
+        ],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
