@@ -3598,8 +3598,164 @@ for (const path of ['/web_chat_compact','/focus']) test('review 070a first local
 test('review 070a a page readiness object with a direct CSRF token stays the no-fetch fast path', async ()=>{
     const h=setupReviewWindow('/'),w=h.window;
     w.pageConfigReady=Promise.resolve({autostart_csrf_token:'fixture-already-ready'});
-    h.context.fetch=async ()=>{assert.fail('no token refetch is required');};
+    let configFetches = 0;
+    h.context.fetch = async () => { ++configFetches; return {ok: false, status: 503}; };
     h.load('static/app/app-prompt-shared.js');
     const headers=await w.nekoLocalMutationSecurity.getMutationHeaders();
     assert.equal(headers['X-CSRF-Token'],'fixture-already-ready');
+    assert.equal(configFetches, 0, 'a usable ready token must not start a direct fetch');
 });
+
+test('review 403f a transient CSRF config failure is retried by the next header-only caller', async () => {
+    const h = setupReviewWindow('/web_chat_compact'), w = h.window;
+    w.pageConfigReady = Promise.resolve(true);
+    let calls = 0;
+    h.context.fetch = async () => ++calls === 1
+        ? {ok: false, status: 503}
+        : {ok: true, json: async () => ({autostart_csrf_token: 'fixture-recovered'})};
+    h.load('static/app/app-prompt-shared.js');
+    const sec = w.nekoLocalMutationSecurity;
+    const failed = await Promise.all([sec.getMutationHeaders(), sec.getMutationHeaders()]);
+    assert.deepEqual(failed.map(headers => headers['X-CSRF-Token']), [undefined, undefined]);
+    assert.equal(calls, 1);
+    const recovered = await Promise.all([sec.getMutationHeaders(), sec.getMutationHeaders()]);
+    assert.deepEqual(recovered.map(headers => headers['X-CSRF-Token']), ['fixture-recovered', 'fixture-recovered']);
+    assert.equal(calls, 2, 'parallel callers share the single retry');
+    assert.equal((await sec.getMutationHeaders())['X-CSRF-Token'], 'fixture-recovered');
+    assert.equal(calls, 2, 'a valid token is cached');
+});
+
+for (const stalled of ['headers', 'body']) {
+    test('review 403f a hung CSRF ' + stalled + ' read aborts and late completion cannot replace the retry', async () => {
+        const h = setupReviewWindow('/focus'), w = h.window;
+        const oldReady = deferred(), retired = deferred();
+        w.pageConfigReady = oldReady.promise;
+        let calls = 0, firstSignal;
+        h.context.fetch = async (url, options) => {
+            assert.equal(String(url), '/api/config/page_config');
+            if (++calls === 1) {
+                firstSignal = options.signal;
+                if (stalled === 'headers') return retired.promise;
+                return {ok: true, json: () => retired.promise};
+            }
+            return {ok: true, json: async () => ({autostart_csrf_token: 'fixture-new'})};
+        };
+        h.load('static/app/app-prompt-shared.js');
+        const sec = w.nekoLocalMutationSecurity;
+        const first = sec.getMutationHeaders(), second = sec.getMutationHeaders();
+        await advanceModelBootTimer(h, 3000);
+        assert.equal(calls, 1, 'the initial direct fallback is singleflight');
+        oldReady.resolve({autostart_csrf_token: 'fixture-retired-ready'});
+        await advanceModelBootTimer(h, 10000);
+        assert.equal(firstSignal?.aborted, true);
+        assert.deepEqual((await Promise.all([first, second])).map(hdr => hdr['X-CSRF-Token']), [undefined, undefined]);
+        const retry = await sec.getMutationHeaders();
+        assert.equal(retry['X-CSRF-Token'], 'fixture-new');
+        const old = {autostart_csrf_token: 'fixture-retired-fetch'};
+        retired.resolve(stalled === 'headers' ? {ok: true, json: async () => old} : old);
+        await new Promise(setImmediate);
+        assert.equal(sec.peekCachedToken(), 'fixture-new');
+        assert.equal(calls, 2);
+    });
+}
+
+test('review 403f an initial readiness result cannot overwrite a completed explicit token refresh', async () => {
+    const h = setupReviewWindow('/focus'), w = h.window;
+    const oldReady = deferred(), recent = deferred();
+    w.pageConfigReady = oldReady.promise;
+    let calls = 0;
+    h.context.fetch = async () => {
+        ++calls;
+        return {ok: true, json: () => recent.promise};
+    };
+    h.load('static/app/app-prompt-shared.js');
+    const sec = w.nekoLocalMutationSecurity;
+    const first = sec.getMutationHeaders();
+    const explicit = sec.refreshToken();
+    recent.resolve({autostart_csrf_token: 'fixture-fresh-refresh'});
+    assert.equal(await explicit, 'fixture-fresh-refresh');
+    oldReady.resolve({autostart_csrf_token: 'fixture-stale-ready'});
+    assert.equal((await first)['X-CSRF-Token'], 'fixture-fresh-refresh');
+    assert.equal(sec.peekCachedToken(), 'fixture-fresh-refresh');
+    assert.equal(calls, 1);
+});
+
+test('review 403f an explicit refresh and the initial fallback share one in-flight read', async () => {
+    const h = setupReviewWindow('/focus'), w = h.window, response = deferred();
+    w.pageConfigReady = new Promise(() => {});
+    let calls = 0;
+    h.context.fetch = async () => { ++calls; return response.promise; };
+    h.load('static/app/app-prompt-shared.js');
+    const sec = w.nekoLocalMutationSecurity;
+    const first = sec.getMutationHeaders();
+    await advanceModelBootTimer(h, 3000);
+    const refresh = sec.refreshToken();
+    assert.equal(calls, 1, 'a concurrent refresh must join the active fetch');
+    response.resolve({ok: true, json: async () => ({autostart_csrf_token: 'fixture-singleflight'})});
+    assert.equal(await refresh, 'fixture-singleflight');
+    assert.equal((await first)['X-CSRF-Token'], 'fixture-singleflight');
+});
+
+function deskAvatarRace(pathname, configFetch) {
+    const h = setupReviewWindow(pathname), w = h.window;
+    const avatar = 'data:image/png;base64,YQ==';
+    w.__nekoInjectedConfig = {lanlan_name: 'A', switch_revision: 82, avatarModelType: 'vrm', avatarDataUrl: avatar};
+    w.appState.dom = {
+        chatAvatarPreviewCard: {hidden: false},
+        chatAvatarPreviewImage: {hidden: true},
+        chatAvatarPreviewPlaceholder: {hidden: false},
+        chatAvatarPreviewImageShell: {classList: {add() {}, remove() {}}},
+    };
+    const posts = [], modelReads = [];
+    h.context.localStorage = {getItem: () => null, setItem() {}};
+    h.context.fetch = async (url, options) => {
+        if (options?.method === 'POST') { posts.push(String(url)); return {ok: true}; }
+        if (String(url).startsWith('/api/config/page_config')) return {ok: true, json: async () => configFetch(modelReads)};
+        if (url === '/api/characters') return {ok: true, json: async () => ({ ['\u732b\u5a18']: {
+            A: {model_type: 'live2d', _reserved: {character_uid: UID_A}},
+            B: {model_type: 'live2d', _reserved: {character_uid: UID_B}},
+        } })};
+        throw new Error('unexpected fixture request: ' + url);
+    };
+    h.load('static/js/index.js');
+    return {h, w, avatar, posts};
+}
+
+for (const [name, revision] of [['B', 83], ['A', 83]]) {
+    test('review 403f a late avatar module cannot re-key A/82 as ' + name + '/' + revision, async () => {
+        const {h, w, avatar, posts} = deskAvatarRace('/web_chat_compact', reads => {
+            const role = reads.length ? name : 'A', rev = reads.length ? revision : 82;
+            reads.push(rev);
+            return desktopAvatarConfig(role, 'vrm', rev, '/static/vrm/' + role + '.vrm');
+        });
+        assert.equal(await w.startPageConfigLoad(), true);
+        assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar);
+        assert.equal(await w.reloadPageConfig(), true);
+        assert.equal(w.lanlan_config.lanlan_name, name);
+        assert.equal(w.lanlan_config.switch_revision, revision);
+        h.load('static/app/app-chat-avatar.js');
+        assert.equal(w.appChatAvatar.getExternalAvatar(), null, 'late consumption must re-check the active role and ordering evidence');
+        assert.equal(w.appChatAvatar.getCachedPreview(), null);
+        assert.equal(w.__nekoPendingAvatar, undefined);
+        assert.deepEqual(posts, []);
+    });
+}
+
+for (const supersede of [true, false]) {
+    test('review 403f central switch ' + (supersede ? 'commit discards' : 'rollback preserves') + ' the old pending IPC portrait', async () => {
+        const {h, w, avatar} = deskAvatarRace('/chat', () => {throw new Error('unnecessary page config');});
+        assert.equal(await w.startPageConfigLoad(), true);
+        assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar);
+        if (!supersede) w.connectWebSocket = () => {throw new Error('fixture switch failed');};
+        h.load('static/app/app-character.js');
+        assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 83}), supersede);
+        assert.equal(w.lanlan_config.lanlan_name, supersede ? 'B' : 'A');
+        if (supersede) assert.equal(w.__nekoPendingAvatar, undefined);
+        else {
+            assert.equal(w.getPageSwitchRevision(), 83, 'the failed receipt still advances ordering');
+            assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar);
+        }
+        h.load('static/app/app-chat-avatar.js');
+        assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, supersede ? undefined : avatar);
+    });
+}

@@ -109,6 +109,14 @@ function latestPageSwitchRevision() {
 // A named preview can publish revision zero without erasing an earlier committed receipt.
 window.getPageSwitchRevision = latestPageSwitchRevision;
 
+function discardSupersededIpcAvatar(name, revision) {
+    const identity = window.__nekoPendingAvatar?.identity;
+    if (identity && (identity.name !== name || identity.revision < revision)) {
+        delete window.__nekoPendingAvatar;
+    }
+}
+window.discardSupersededIpcAvatar = discardSupersededIpcAvatar;
+
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
 function handoffPageSnapshotToSwitch(name, revision, modelBoot = null) {
@@ -448,6 +456,7 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // 动态设置页面标题
             document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
+            discardSupersededIpcAvatar(name, switchRevision);
             if (expected) window.__nekoPageModelConfigPending = null;
             const failedBoot = window.__nekoPageModelConfigFailed;
             if (failedBoot?.name === name
@@ -521,13 +530,18 @@ function startMultiWindowPageConfigLoad() {
                 }
             }, typeof delay === 'number' ? delay : 0);
         }
-        async function applyInjectedAvatar(detail, options) {
+        async function applyInjectedAvatar(detail, revision, options) {
             if (!detail.avatarDataUrl) return;
             const modelType = detail.avatarModelType || '';
             if (typeof window.appChatAvatar?.setExternalAvatar === 'function') {
                 await window.appChatAvatar.setExternalAvatar(detail.avatarDataUrl, modelType, options);
             } else {
-                window.__nekoPendingAvatar = { dataUrl: detail.avatarDataUrl, modelType, ...options };
+                window.__nekoPendingAvatar = {
+                    dataUrl: detail.avatarDataUrl,
+                    modelType,
+                    identity: { name: detail.lanlan_name, revision },
+                    ...options,
+                };
             }
         }
         async function loadMatchingPageConfig(name, revision, pinned = false, injected = null) {
@@ -539,7 +553,7 @@ function startMultiWindowPageConfigLoad() {
                     || (!pinned && window.lanlan_config?.lanlan_name !== name)) return;
                 // Secondary windows can show the matching portrait without
                 // publishing the Pet window's canonical card-drop identity.
-                applyInjectedAvatar(avatar, { displayOnly: true })
+                applyInjectedAvatar(avatar, revision, { displayOnly: true })
                     .catch(() => console.warn('[主页] Could not restore the injected avatar.'));
                 avatar = null;
             }
@@ -645,6 +659,7 @@ function startMultiWindowPageConfigLoad() {
                 ? Object.assign({}, d.lighting)
                 : null;
             window.lanlan_config = lanlan_config;
+            discardSupersededIpcAvatar(lanlan_config.lanlan_name, switchRevision);
             // master 信息
             window.master_name = d.master_name || '';
             window.master_profile_name = d.master_profile_name || '';
@@ -656,7 +671,7 @@ function startMultiWindowPageConfigLoad() {
             lanlan_config.master_display_name = window.master_display_name;
             var pageTitleName = lanlan_config.master_display_name || lanlan_config.lanlan_name;
             document.title = pageTitleName ? `${pageTitleName} Terminal - Project N.E.K.O.` : 'Project N.E.K.O.';
-            if (d.avatarDataUrl) await applyInjectedAvatar(d);
+            if (d.avatarDataUrl) await applyInjectedAvatar(d, switchRevision);
             // resolve 类型与 5s 超时分支（loadPageConfig() → bool）保持一致，
             // 避免未来有 consumer 做 result === true 判断时 IPC 路径悄悄失效。
             resolve(true);

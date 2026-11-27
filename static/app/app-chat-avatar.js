@@ -1921,8 +1921,12 @@
     // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
     if (window.__nekoPendingAvatar) {
         const avatar = window.__nekoPendingAvatar;
-        mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
         delete window.__nekoPendingAvatar;
+        // Revision retirement belongs to successful publishers. A failed switch
+        // can raise the receipt watermark without replacing the displayed role.
+        if (!avatar.identity || (avatar.identity.name && avatar.identity.name === window.lanlan_config?.lanlan_name)) {
+            mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
+        }
     }
     if (window.__nekoPendingTutorialChatIdentity) {
         if (window.__nekoPendingTutorialChatIdentity.active) {
