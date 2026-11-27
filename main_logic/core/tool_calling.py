@@ -550,10 +550,18 @@ class ToolCallingMixin:
         the NekoPower opening while NekoPower is off.
         """
         held = getattr(self, "_nekopower_renewal", None)
-        if held is None or held[1].done():
+        if held is None:
             return
         self._nekopower_renewal = None
-        held[1].cancel()
+        renewal = held[1]
+        if renewal.done():
+            # Swapped in already: nothing of it is left to drop. Not swapped in (it gave up
+            # waiting): the session it prepared may still be swapped in later, and goes.
+            swapped = not renewal.cancelled() and renewal.exception() is None and renewal.result() is True
+            if swapped:
+                return
+        else:
+            renewal.cancel()
         self._nekopower_dropping = self._fire_task(self._drop_prepared_session())
 
     async def _drop_prepared_session(self) -> None:

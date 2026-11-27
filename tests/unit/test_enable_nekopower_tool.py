@@ -975,3 +975,27 @@ def test_switched_on_again_while_the_last_renewal_is_dropped_waits_for_it():
 
     asyncio.run(run())
     assert order == ["cleanup starts", "cleanup done", "renew"]
+
+
+@pytest.mark.parametrize("swapped", [True, False])
+def test_switched_off_after_a_renewal_that_gave_up_drops_what_it_prepared(swapped):
+    # CodeRabbit on #4155: a renewal that gave up waiting leaves a prepared session behind,
+    # built with NekoPower on; switched off later, it goes. One that swapped in leaves nothing.
+    manager = _flagged()
+
+    async def renew():
+        manager.renewals.append(True)
+        return swapped
+
+    manager.renew_session_now = renew
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        manager.update_agent_flags({"agent_enabled": True})
+        await manager._nekopower_renewal[1]
+        manager.update_agent_flags({"agent_enabled": False})
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert manager.dropped == ([] if swapped else ["cleanup", "reset"])
