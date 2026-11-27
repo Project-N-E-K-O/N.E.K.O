@@ -50,6 +50,13 @@ logger = get_module_logger(__name__)
 REHOST_LETTERS: tuple[str, ...] = tuple(chr(code) for code in range(ord("A"), ord("Z") + 1))
 REHOST_TOP_LOGPROBS = 20
 REHOST_REPLY_RULE = "Reply with the option letter only."
+# Least total probability the option letters must hold among the first token's
+# candidates before they are renormalised. Below it the model meant something
+# else (a word such as "I" or "A" opening a sentence) and the site asks its chat
+# prompt instead. In the no-prefill rehost runs the letters held at least 0.87
+# on DeepSeek and Doubao; Kimi went lower, under 0.2 in about 3 of 2000 calls
+# (2026-11-27).
+REHOST_MIN_LETTER_MASS = 0.2
 
 
 def _state_text(state: Any) -> str:
@@ -83,7 +90,8 @@ def letter_probabilities(candidates: Iterable[tuple[str, float]], keys: list[str
 
     A candidate counts when, without spaces and a trailing full stop, it is one
     of the first ``len(keys)`` letters; anything else (words, other letters)
-    is dropped before renormalising. Empty when no candidate is a letter.
+    is dropped before renormalising. Empty when the letters hold less than
+    :data:`REHOST_MIN_LETTER_MASS` in all.
     """
     probs: dict[str, float] = {}
     for token, logprob in candidates:
@@ -101,7 +109,7 @@ def letter_probabilities(candidates: Iterable[tuple[str, float]], keys: list[str
             continue  # a NaN log probability must not become an answer
         probs[keys[idx]] = probs.get(keys[idx], 0.0) + p
     total = sum(probs.values())
-    if total <= 0.0:
+    if total <= 0.0 or total < REHOST_MIN_LETTER_MASS:
         return {}
     return {key: p / total for key, p in probs.items()}
 

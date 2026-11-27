@@ -63,14 +63,18 @@ SITE_EMOTION_DISPLAY = "emotion_display"
 SITE_TURN_CHECK = "turn_check"
 
 # Chat endpoints whose answers carry the top-20 candidates of each token
-# (probed 2026-11-27). GLM, Grok and MiniMax return none; Bailian chat caps
-# top_logprobs at 5 and has a native decision model anyway.
-LOGPROB_CHAT_HOSTS = frozenset({
-    "ark.cn-beijing.volces.com",  # Doubao
-    "api.deepseek.com",
-    "api.moonshot.cn",  # Kimi
-    "api.stepfun.com",
-})
+# (probed 2026-11-27), by host and base path. Only these paths were tested: the
+# plan routes on the same hosts (Ark Coding Plan /api/coding/v3, Step Plan
+# /step_plan/v1) were not, so they keep the site's chat. GLM, Grok and MiniMax
+# return none; Bailian chat caps top_logprobs at 5 and has a native decision
+# model anyway.
+LOGPROB_CHAT_ENDPOINTS: dict[str, frozenset[str]] = {
+    "ark.cn-beijing.volces.com": frozenset({"/api/v3"}),  # Doubao
+    "api.deepseek.com": frozenset({"", "/v1"}),
+    "api.moonshot.cn": frozenset({"/v1"}),  # Kimi
+    "api.stepfun.com": frozenset({"/v1"}),
+}
+LOGPROB_CHAT_HOSTS = frozenset(LOGPROB_CHAT_ENDPOINTS)
 
 # The built-in free tier. Its gateways take a request only by fixed opening
 # words of the prompt, so a question written for this rework is turned away
@@ -84,7 +88,10 @@ FREE_TIER_HOSTS = frozenset({
     "www.lanlan.app",
     "lanlan.app",
 })
-FREE_TIER_LOGPROB_HOSTS = frozenset({"www.lanlan.tech", "lanlan.tech"})
+FREE_TIER_LOGPROB_ENDPOINTS: dict[str, frozenset[str]] = {
+    "www.lanlan.tech": frozenset({"/text/v1"}),
+    "lanlan.tech": frozenset({"/text/v1"}),
+}
 FREE_TIER_NEW_PROMPTS_ENABLED = False
 
 # Native decision endpoints that only some sites use. Doubao's decision model
@@ -98,6 +105,10 @@ NATIVE_DECISION_SITES_BY_HOST: dict[str, frozenset[str]] = {
 
 def _host(url: Any) -> str:
     return (urllib.parse.urlsplit(str(url or "").strip()).hostname or "").lower()
+
+
+def _base_path(url: Any) -> str:
+    return (urllib.parse.urlsplit(str(url or "").strip()).path or "").rstrip("/").lower()
 
 
 def native_decision_usable(decision_config: Mapping[str, Any] | None, site: str) -> bool:
@@ -128,10 +139,11 @@ def chat_logprobs_usable(chat_config: Mapping[str, Any] | None) -> bool:
     provider_type = str(chat_config.get("provider_type") or "").strip().lower()
     if provider_type in ("anthropic", "chatgpt", "websocket"):
         return False
-    host = _host(chat_config.get("base_url"))
-    if host in LOGPROB_CHAT_HOSTS:
+    url = chat_config.get("base_url")
+    host, path = _host(url), _base_path(url)
+    if path in LOGPROB_CHAT_ENDPOINTS.get(host, ()):
         return True
-    if host in FREE_TIER_LOGPROB_HOSTS:
+    if path in FREE_TIER_LOGPROB_ENDPOINTS.get(host, ()):
         return FREE_TIER_NEW_PROMPTS_ENABLED
     return False
 
@@ -181,6 +193,8 @@ async def ask_site_questions(
     from utils.logger_config import get_module_logger
 
     log = get_module_logger(__name__)
+    if not questions:
+        return None
     if decision_config is None:
         try:
             cm = config_manager

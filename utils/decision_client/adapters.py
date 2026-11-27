@@ -161,7 +161,12 @@ def _decision_http_client() -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     client = _http_clients.get(loop)
     if client is None or getattr(client, "is_closed", False):
-        client = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=DECISION_KEEPALIVE_SECONDS))
+        # httpx's default pool sizes, with the longer idle time.
+        client = httpx.AsyncClient(limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=DECISION_KEEPALIVE_SECONDS,
+        ))
         _http_clients[loop] = client
     return client
 
@@ -274,7 +279,7 @@ def _usage_int(usage: Mapping[str, Any], *names: str) -> int:
 
 
 class SystemOneAdapter(DecisionAdapter):
-    """TypeSafe System One protocol (DashScope ``decision-model`` & OpenRouter Decisions).
+    """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions).
 
     Wire format (Bailian decision model API reference): every question carries
     ``type`` / ``instructions`` / ``criteria``. ``score`` criteria is the

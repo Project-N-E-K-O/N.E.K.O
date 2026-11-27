@@ -403,7 +403,7 @@ async def test_astream_passes_each_chunks_token_candidates_through():
             return None
 
     llm = ChatOpenAI(model="doubao-seed-2-0-mini-260428", base_url="https://ark.cn-beijing.volces.com/api/v3", api_key="k")
-    stream = _Stream([_chunk("hap", [("hap", -0.1), ("sad", -2.4)]), _chunk("py"), _chunk("", None, "stop")])
+    stream = _Stream([_chunk("hap", [("hap", -0.1), ("sad", -2.4)]), _chunk("py", []), _chunk("", None, "stop")])
     try:
         with patch.object(llm._aclient.chat.completions, "create", AsyncMock(return_value=stream)):
             got = [c async for c in llm.astream([{"role": "user", "content": "hi"}], logprobs=True, top_logprobs=10)]
@@ -519,3 +519,43 @@ async def test_ask_site_questions_reads_the_decision_slot_when_not_given():
     assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions={"k": _question(2)},
                                     chat_config=None, config_manager=cm) is None
     cm.aget_model_api_config.assert_awaited_once_with("decision")
+
+
+@pytest.mark.unit
+def test_letter_probabilities_need_enough_letter_mass():
+    # "I" opening "I think...", a 9-option question: the letters hold 5% in all.
+    from utils.decision_client.rehost import REHOST_MIN_LETTER_MASS
+
+    keys = [f"k{i}" for i in range(9)]
+    cands = [("I", math.log(0.04)), ("Sure", math.log(0.9)), ("B", math.log(0.01))]
+    assert letter_probabilities(cands, keys) == {}
+    just_enough = [("A", math.log(REHOST_MIN_LETTER_MASS)), ("Sure", math.log(0.5))]
+    assert letter_probabilities(just_enough, keys) == {"k0": pytest.approx(1.0)}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("url", "usable"),
+    [
+        ("https://ark.cn-beijing.volces.com/api/v3", True),
+        ("https://ark.cn-beijing.volces.com/api/v3/", True),
+        ("https://ark.cn-beijing.volces.com/api/coding/v3", False),  # Coding Plan: not probed
+        ("https://api.stepfun.com/v1", True),
+        ("https://api.stepfun.com/step_plan/v1", False),  # Step Plan: not probed
+        ("https://api.deepseek.com", True),
+        ("https://api.deepseek.com/v1", True),
+        ("https://api.moonshot.cn/v1", True),
+        ("https://api.moonshot.cn.evil.example/v1", False),
+    ],
+)
+def test_rehost_only_on_the_probed_chat_paths(url, usable):
+    assert chat_logprobs_usable(_chat(url)) is usable
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ask_site_questions_without_questions_means_the_sites_chat():
+    from utils.decision_client import ask_site_questions
+
+    assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions={}, chat_config=DOUBAO_CHAT,
+                                    decision_config=BAILIAN) is None

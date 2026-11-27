@@ -671,7 +671,7 @@ class MemoryRecallReranker:
             is_native_decision_protocol,
         )
 
-        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model,
+        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
         # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
         # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
         # and falls through to the `emotion` chat-LLM rerank path on any error or cooldown.

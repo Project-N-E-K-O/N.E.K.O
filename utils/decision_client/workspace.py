@@ -15,7 +15,7 @@
 
 """Bailian (DashScope) workspace API Host parsing and decision URL building.
 
-The native ``decision-model`` endpoint is only served from a
+The native ``decision-model-preview`` endpoint is only served from a
 workspace-dedicated host ``{WorkspaceId}.{region}.maas.aliyuncs.com`` (the
 "API Host" column of the Bailian console's workspace page). Users may enter
 that host, a URL on it, or only the workspace ID. The stored value is

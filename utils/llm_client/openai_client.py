@@ -457,6 +457,8 @@ class ChatOpenAI:
                 finish_reason = getattr(choice, "finish_reason", None) if choice else None
                 # Only present when the request asked for logprobs.
                 top_logprobs = top_logprobs_of(getattr(choice, "logprobs", None)) if choice else []
+                if not any(top_logprobs):
+                    top_logprobs = []  # logprobs without top_logprobs: nothing to pass on
                 if content or tool_call_deltas or finish_reason or reasoning_content or top_logprobs:
                     yield LLMStreamChunk(
                         content=content,
