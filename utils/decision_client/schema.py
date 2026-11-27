@@ -40,6 +40,19 @@ _KNOWN_NATIVE_MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("gpt-6-luna", "openai_decisions"),
     ("gemini-decision-", "gemini_decisions"),
 )
+# Exact native model IDs. Bailian's released decision model is the bare
+# ``decision-model`` (its preview is ``decision-model-preview``).
+_KNOWN_NATIVE_MODELS: dict[str, str] = {
+    "decision-model": "systemone",
+}
+
+# Routers that serve the OpenRouter decision model catalog on their own System
+# One route (``POST <base>/systemone``) rather than OpenRouter's alpha route.
+_SYSTEMONE_ROUTER_HOSTS = frozenset({
+    "api.orcarouter.ai",
+    "router.requesty.ai",
+    "api.opper.ai",
+})
 
 # Decision models whose bare IDs only mean a decision model on one host. SiliconFlow
 # serves Kev-4B and SemIf on POST /v1/systemone (alpha; IDs are case-insensitive)
@@ -95,10 +108,15 @@ def infer_decision_protocol(
         return "openai_decisions"
 
     if is_openrouter_decision_model(m):
+        if url_host in _SYSTEMONE_ROUTER_HOSTS:
+            return "systemone"
         return "openrouter_decisions"
     host_models = _HOST_NATIVE_MODELS.get(url_host)
     if host_models and m in host_models[0]:
         return host_models[1]
+    exact = _KNOWN_NATIVE_MODELS.get(m)
+    if exact:
+        return "openrouter_decisions" if url_host == "openrouter.ai" else exact
     for prefix, proto in _KNOWN_NATIVE_MODEL_PREFIXES:
         if m.startswith(prefix):
             if url_host == "openrouter.ai" and proto != "openrouter_decisions":

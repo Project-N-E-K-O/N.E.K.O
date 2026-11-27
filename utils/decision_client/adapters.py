@@ -22,6 +22,7 @@ import asyncio
 import json
 import math
 import re
+import urllib.parse
 import weakref
 from typing import Any, Mapping
 
@@ -148,14 +149,34 @@ _http_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.Async
     weakref.WeakKeyDictionary()
 )
 
+# How long an idle pooled connection stays open. httpx closes idle connections
+# after 5 s by default, while decisions usually come more than 5 s apart (one per
+# turn), so every call paid the handshake again: 0.6-2 s cold against 0.1-0.55 s
+# warm across six vendors (measured 2026-11-27). A connection the server closed
+# meanwhile is noticed before reuse and replaced.
+DECISION_KEEPALIVE_SECONDS = 120.0
+
 
 def _decision_http_client() -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     client = _http_clients.get(loop)
     if client is None or getattr(client, "is_closed", False):
-        client = httpx.AsyncClient()
+        client = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=DECISION_KEEPALIVE_SECONDS))
         _http_clients[loop] = client
     return client
+
+
+# Request headers a vendor's decision endpoint needs besides the key, by host.
+# Volcengine Ark serves System One only to requests that opt in to the beta;
+# without the header it answers an empty 404 (observed 2026-11-26).
+_HOST_DECISION_HEADERS: dict[str, dict[str, str]] = {
+    "ark.cn-beijing.volces.com": {"ark-beta-systemone-api": "true"},
+}
+
+
+def _host_decision_headers(endpoint: str) -> dict[str, str]:
+    host = (urllib.parse.urlsplit(str(endpoint or "")).hostname or "").lower()
+    return dict(_HOST_DECISION_HEADERS.get(host, {}))
 
 
 async def _post_decision_request(
@@ -253,7 +274,7 @@ def _usage_int(usage: Mapping[str, Any], *names: str) -> int:
 
 
 class SystemOneAdapter(DecisionAdapter):
-    """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions).
+    """TypeSafe System One protocol (DashScope ``decision-model`` & OpenRouter Decisions).
 
     Wire format (Bailian decision model API reference): every question carries
     ``type`` / ``instructions`` / ``criteria``. ``score`` criteria is the
@@ -475,7 +496,11 @@ class SystemOneAdapter(DecisionAdapter):
         timeout: float,
     ) -> DecisionResponse:
         payload = self.build_payload(state=state, questions=questions, model=model)
-        headers = {"Content-Type": "application/json", **self._auth_headers(api_key)}
+        headers = {
+            "Content-Type": "application/json",
+            **_host_decision_headers(endpoint),
+            **self._auth_headers(api_key),
+        }
         resp = await _post_decision_request(endpoint, payload, headers, timeout)
         if resp.status_code >= 400:
             detail = _extract_error_detail(resp)

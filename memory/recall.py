@@ -671,7 +671,7 @@ class MemoryRecallReranker:
             is_native_decision_protocol,
         )
 
-        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
+        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model,
         # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
         # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
         # and falls through to the `emotion` chat-LLM rerank path on any error or cooldown.
@@ -724,11 +724,15 @@ class MemoryRecallReranker:
                     for i in range(0, len(native_candidate_ids), batch_size)
                 ]
                 dec_client = DecisionClient(config_manager=config_manager)
+                # Question IDs go on the wire as c0, c1, ...: candidate IDs may hold
+                # dots, which Gemini's decision API refuses (400 on every request,
+                # observed 2026-11-26); IDs must match [A-Za-z0-9_-]{1,64}.
+                qid_by_cid = {cid: f"c{idx}" for idx, cid in enumerate(native_candidate_ids)}
 
                 async def _batch_call(batch_ids: list[str]):
                     batch_state = state_header + "\n".join(line_by_cid[cid] for cid in batch_ids)
                     batch_questions = {
-                        cid: ScoreQuestion(
+                        qid_by_cid[cid]: ScoreQuestion(
                             instructions=(
                                 f"Rate how relevant memory candidate [{cid}] is for answering or "
                                 "supporting the Query above. Higher evidence score in parentheses "
@@ -756,11 +760,15 @@ class MemoryRecallReranker:
                     # fails the whole pass right away, like a single unsplit request
                     # would; raising here lets the sibling batches be cancelled now
                     # instead of after they finish.
-                    batch_answers = batch_resp.answers or {}
-                    if not any(
-                        batch_answers.get(cid) is not None
-                        and batch_answers[cid].score_norm is not None
+                    wire_answers = batch_resp.answers or {}
+                    batch_answers = {
+                        cid: wire_answers[qid_by_cid[cid]]
                         for cid in batch_ids
+                        if wire_answers.get(qid_by_cid[cid]) is not None
+                    }
+                    if not any(
+                        batch_answers[cid].score_norm is not None
+                        for cid in batch_answers
                     ):
                         raise RuntimeError("native decision batch returned no valid scores")
                     return batch_answers

@@ -31,6 +31,46 @@ from .messages import LLMResponse, LLMStreamChunk, ToolCallAggregate, _normalize
 from .thinking import strip_thinking_segments
 
 
+def top_logprobs_of(choice_logprobs: Any) -> list[list[tuple[str, float]]]:
+    """Candidate tokens of every content token in a choice's ``logprobs``.
+
+    Accepts the SDK object or its plain-dict form. Returns one
+    ``[(token, logprob), ...]`` list per content token, best candidate first as
+    the server sent them; empty when the reply carries no ``logprobs``.
+    """
+    if choice_logprobs is None:
+        return []
+    content = (
+        choice_logprobs.get("content") if isinstance(choice_logprobs, dict)
+        else getattr(choice_logprobs, "content", None)
+    )
+    out: list[list[tuple[str, float]]] = []
+    for tok in content or []:
+        tops = tok.get("top_logprobs") if isinstance(tok, dict) else getattr(tok, "top_logprobs", None)
+        cands: list[tuple[str, float]] = []
+        for top in tops or []:
+            text = top.get("token") if isinstance(top, dict) else getattr(top, "token", None)
+            logprob = top.get("logprob") if isinstance(top, dict) else getattr(top, "logprob", None)
+            if isinstance(text, str) and isinstance(logprob, (int, float)) and not isinstance(logprob, bool):
+                cands.append((text, float(logprob)))
+        out.append(cands)
+    return out
+
+
+def first_token_top_logprobs(raw_response: Any) -> list[tuple[str, float]]:
+    """Candidate tokens of the first content token of a raw chat completion.
+
+    *raw_response* is what :meth:`ChatOpenAI.ainvoke_raw` returns for a request
+    sent with ``logprobs=True`` and ``top_logprobs=N``. Empty when the reply has
+    no choice or no ``logprobs`` (many providers ignore the parameters).
+    """
+    choices = getattr(raw_response, "choices", None) or []
+    if not choices:
+        return []
+    per_token = top_logprobs_of(getattr(choices[0], "logprobs", None))
+    return per_token[0] if per_token else []
+
+
 def _plain_dict(value: Any) -> dict | None:
     """Best-effort "SDK object → plain JSON-ish dict" for passthrough fields.
 
@@ -93,8 +133,12 @@ class ChatOpenAI:
         enable_cache_control: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        keepalive_expiry: float | None = None,
         **_kwargs: Any,
     ):
+        """``keepalive_expiry`` keeps idle connections open that many seconds
+        (httpx closes them after 5 s by default), for a client kept and reused
+        across calls that come further apart than that."""
         self.model = model
         self.base_url = base_url
         # Tool-calling defaults baked into instance; per-call ``overrides``
@@ -129,9 +173,19 @@ class ChatOpenAI:
         from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
         ssl_context = _get_default_ssl_context()
-        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
+        http_kw: dict[str, Any] = {"verify": ssl_context}
+        if keepalive_expiry is not None:
+            import httpx
+            from openai import DEFAULT_CONNECTION_LIMITS
+
+            http_kw["limits"] = httpx.Limits(
+                max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                keepalive_expiry=keepalive_expiry,
+            )
+        client_kw["http_client"] = DefaultAsyncHttpxClient(**http_kw)
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = DefaultHttpxClient(**http_kw)
         self._client = OpenAI(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
@@ -401,12 +455,15 @@ class ChatOpenAI:
                     getattr(delta, "reasoning_content", None) if delta else None
                 )
                 finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                if content or tool_call_deltas or finish_reason or reasoning_content:
+                # Only present when the request asked for logprobs.
+                top_logprobs = top_logprobs_of(getattr(choice, "logprobs", None)) if choice else []
+                if content or tool_call_deltas or finish_reason or reasoning_content or top_logprobs:
                     yield LLMStreamChunk(
                         content=content,
                         tool_call_deltas=tool_call_deltas,
                         finish_reason=finish_reason,
                         reasoning_content=reasoning_content,
+                        top_logprobs=top_logprobs or None,
                     )
                 # Terminal chunk with usage info (stream_options={"include_usage": True})
                 if chunk.usage is not None:

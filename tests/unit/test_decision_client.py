@@ -67,6 +67,18 @@ def _reset_native_cooldown():
         ("kev-4b", "https://api.siliconflow.cn/v1", None, None, "systemone"),
         ("Qwen/Qwen3-8B", "https://api.siliconflow.cn/v1", "systemone", "Kev-4B", "chat_fallback"),
         ("Kev-4B", "https://api.deepseek.com/v1", None, None, "chat_fallback"),
+        # Bailian's released decision model is the bare ID.
+        ("decision-model", "https://dashscope.aliyuncs.com/compatible-mode/v1", "systemone", "decision-model", "systemone"),
+        ("decision-model", "https://my-gateway.example/v1", None, None, "systemone"),
+        ("decision-model-x", "https://my-gateway.example/v1", None, None, "systemone"),
+        ("decision-modeller", "https://my-gateway.example/v1", None, None, "chat_fallback"),
+        # The System One routers serve the OpenRouter catalog on their own /systemone route.
+        ("typesafe/jev-1.14", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "systemone"),
+        ("typesafe/jev-1.13", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "systemone"),
+        ("typesafe/jev-1.14.0", "https://router.requesty.ai/v1", None, None, "systemone"),
+        ("typesafe/jev-1.14.0", "https://api.opper.ai/v3/compat", "systemone", "typesafe/jev-1.14.0", "systemone"),
+        ("liquid/d1.2-ultra", "https://openrouter.ai/api/v1", "openrouter_decisions", "liquid/d1.2-ultra", "openrouter_decisions"),
+        ("anthropic/claude-haiku-4.5", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "chat_fallback"),
     ],
 )
 def test_infer_decision_protocol(model, endpoint_url, prof_proto, prof_model, expected):
@@ -135,7 +147,7 @@ def test_all_assist_providers_have_decision_fields():
         "qwen_intl": ("decision-model-preview", "systemone"),
         "openai": ("gpt-6-luna", "openai_decisions"),
         "gemini": ("gemini-decision-1", "gemini_decisions"),
-        "openrouter": ("google/gemini-decision-1", "openrouter_decisions"),
+        "openrouter": ("liquid/d1.2-ultra", "openrouter_decisions"),
         "silicon": ("Kev-4B", "systemone"),
     }
     assert set(native_expected.keys()).issubset(providers.keys())
@@ -1361,6 +1373,12 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert sf_dec["native_unavailable_reason"] == ""
     assert sf_dec["fallback_model"] == "Qwen/Qwen3-VL-30B-A3B-Instruct"
 
+    _set_cfg({"coreApi": "qwen", "assistApi": "openrouter", "assistApiKeyOpenrouter": "sk-or"})
+    or_dec = cm.get_model_api_config("decision")
+    assert or_dec["model"] == "liquid/d1.2-ultra"
+    assert or_dec["decision_protocol"] == "openrouter_decisions"
+    assert or_dec["decision_url"] == "https://openrouter.ai/api/alpha/decisions"
+
     # Default deepseek assist -> chat_fallback
     _set_cfg({"coreApi": "qwen", "assistApi": "deepseek", "assistApiKeyDeepseek": "sk-ds"})
     ds_dec = cm.get_model_api_config("decision")
@@ -1741,9 +1759,10 @@ async def test_memory_recall_reranker_uses_native_decision_and_ranks_by_score():
     ]
     fake_dec_resp = DecisionResponse(
         answers={
-            "m1": DecisionAnswer(question_type="score", value=0.3, score_norm=0.1),
-            "m2": DecisionAnswer(question_type="score", value=2.9, score_norm=0.97),
-            "m3": DecisionAnswer(question_type="score", value=1.5, score_norm=0.5),
+            # Question IDs are the candidates' positions (c0 = m1, ...).
+            "c0": DecisionAnswer(question_type="score", value=0.3, score_norm=0.1),
+            "c1": DecisionAnswer(question_type="score", value=2.9, score_norm=0.97),
+            "c2": DecisionAnswer(question_type="score", value=1.5, score_norm=0.5),
         },
         model="decision-model-preview",
         protocol="systemone",
@@ -1761,6 +1780,55 @@ async def test_memory_recall_reranker_uses_native_decision_and_ranks_by_score():
     assert mock_decide.await_count == 1
     assert mock_decide.await_args.kwargs["respect_cooldown"] is True
     assert [r["id"] for r in ranked] == ["m2", "m3"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_sends_question_ids_gemini_accepts_and_maps_answers_back():
+    # Candidate IDs with dots made Gemini's decision API answer 400 on every
+    # request; the wire IDs must match [A-Za-z0-9_-]{1,64}.
+    import re
+
+    from memory.recall import MemoryRecallReranker
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(return_value={
+        "model": "gemini-decision-1",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key": "k",
+        "decision_protocol": "gemini_decisions",
+        "decision_url": "https://generativelanguage.googleapis.com/v1beta/decisions",
+    })
+    candidates = [
+        {"id": "fact.2026-11-01.a", "text": "likes apples", "score": 1.0},
+        {"id": "fact.2026-11-01.b", "text": "allergic to peanuts", "score": 1.0},
+    ]
+    seen: dict = {}
+
+    async def _decide(self, *, state, questions, **kwargs):
+        seen["ids"] = list(questions)
+        by_text = {qid: ("peanuts" if "fact.2026-11-01.b" in q.instructions else "apples") for qid, q in questions.items()}
+        return DecisionResponse(
+            answers={
+                qid: DecisionAnswer(question_type="score", value=0.0, score_norm=0.9 if by_text[qid] == "peanuts" else 0.1)
+                for qid in questions
+            },
+            model="gemini-decision-1",
+            protocol="gemini_decisions",
+        )
+
+    with patch.object(DecisionClient, "decide", _decide):
+        ranked = await MemoryRecallReranker()._fine_rank(
+            candidates,
+            query_texts=["allergies?"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+    assert seen["ids"] and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", qid) for qid in seen["ids"])
+    assert [r["id"] for r in ranked] == ["fact.2026-11-01.b", "fact.2026-11-01.a"]
 
 
 @pytest.mark.asyncio
@@ -1836,7 +1904,7 @@ async def test_memory_recall_reranker_aligns_questions_with_bounded_native_state
     captured: dict = {"batches": []}
 
     async def _capture_decide(self, *, state, questions, **kwargs):
-        captured["batches"].append((state, list(questions.keys())))
+        captured["batches"].append((state, [q.instructions.split("[", 1)[1].split("]", 1)[0] for q in questions.values()]))
         captured["state"] = state
         captured["question_ids"] = list(questions.keys())
         return DecisionResponse(
@@ -1914,7 +1982,7 @@ async def test_memory_recall_native_rerank_batches_16_questions_per_request():
         # Each batch's state carries only its own candidates.
         own = set(ids)
         for i in range(40):
-            assert (f"[m{i}]" in state) == (f"m{i}" in own)
+            assert (f"[m{i}]" in state) == (f"c{i}" in own)
     assert [r["id"] for r in ranked] == [f"m{i}" for i in range(39, 9, -1)]
 
     # One failed batch fails the whole native pass -> summary chat rerank is used.
@@ -2341,7 +2409,7 @@ async def test_memory_recall_cancels_in_flight_batches_after_a_failure():
     slow_cancelled = asyncio.Event()
 
     async def _decide(self, *, state, questions, **kwargs):
-        if "m0" in questions:
+        if "c0" in questions:
             raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
         try:
             await asyncio.sleep(5)
@@ -2399,7 +2467,7 @@ async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
 
     async def _decide(self, *, state, questions, **kwargs):
         # First batch (m0..m15): every question refused -> no answers at all.
-        if "m0" in questions:
+        if "c0" in questions:
             return DecisionResponse(answers={}, model="decision-model-preview", protocol="systemone")
         # The other batch is slow: it must be cancelled as soon as the empty batch
         # returns, not awaited to completion.

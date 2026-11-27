@@ -241,7 +241,7 @@ JSON 객체만 반환하세요.""",
 - Плагины с пометкой [KEYWORD MATCH] прошли отбор по ключевым словам; рассмотрите их первыми.
 Верните только объект JSON, больше ничего.""",
 
-    'es': """Eres un User Plugin automation assessment agent que enruta tareas. PLUGINS DISPONIBLES:
+    'es': """Eres un User Plugin automation assessment agent, que enruta tareas. PLUGINS DISPONIBLES:
 {plugins_desc}
 
 El mensaje del usuario trae TASK (lo que hay que hacer) y USER_SAID (las palabras del propio usuario), y puede traer ACTIVE_TASKS y PREFERENCES.
@@ -275,7 +275,7 @@ MUY IMPORTANTE:
 - Los plugins marcados con [KEYWORD MATCH] pasaron un prefiltro de palabras clave; considéralos primero.
 Devuelve solo el objeto JSON, nada más.""",
 
-    'pt': """Você é um User Plugin automation assessment agent que roteia tarefas. PLUGINS DISPONÍVEIS:
+    'pt': """Você é um User Plugin automation assessment agent, que roteia tarefas. PLUGINS DISPONÍVEIS:
 {plugins_desc}
 
 A mensagem do usuário traz TASK (o que precisa ser feito) e USER_SAID (as palavras do próprio usuário), e pode trazer ACTIVE_TASKS e PREFERENCES.
@@ -415,7 +415,7 @@ JSON 배열만 반환하세요.""",
 
 Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
 Верните ТОЛЬКО JSON-массив, ничего больше.""",
-    'es': """Eres un agentic automation assessment agent en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
+    'es': """Eres un agentic automation assessment agent, en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
 
 Plugins disponibles (id: descripción breve):
 {plugin_summaries}
@@ -424,7 +424,7 @@ Solicitud del usuario: {user_text}
 
 Instrucciones: Devuelve un array JSON con todos los IDs de plugins posiblemente relevantes. Si ninguno es relevante, devuelve [].
 Devuelve SOLO el array JSON, nada más.""",
-    'pt': """Você é um agentic automation assessment agent na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
+    'pt': """Você é um agentic automation assessment agent, na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
 
 Plugins disponíveis (id: breve descrição):
 {plugin_summaries}
@@ -949,7 +949,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 Не судите, выполнимо ли действие.
 Верните только JSON: {"verdict": "...", "task": "действие одним предложением на языке пользователя; пусто для none"}""",
 
-    'es': """Eres un agentic automation assessment agent en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
+    'es': """Eres un agentic automation assessment agent, en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
 - "none": el usuario no pidió ninguna acción real fuera de la conversación; o el personaje solo charló, preguntó de vuelta o respondió con lo que sabe; o se negó a propósito (no quiere, le parece inapropiado).
 - "unable": el usuario pidió una acción real (manejar el ordenador, un navegador, un dispositivo, un plugin, buscar información actual, poner un recordatorio...) y el personaje dijo que no puede o que no tiene cómo.
 - "promised": el usuario pidió una acción real y el personaje aceptó hacerla, o dijo que la está haciendo.
@@ -957,7 +957,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 No juzgues si la acción es posible.
 Devuelve solo JSON: {"verdict": "...", "task": "la acción en una frase, en el idioma del usuario; vacío para none"}""",
 
-    'pt': """Você é um agentic automation assessment agent na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
+    'pt': """Você é um agentic automation assessment agent, na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
 - "none": o usuário não pediu nenhuma ação real fora da conversa; ou a personagem só conversou, perguntou de volta ou respondeu com o que sabe; ou recusou de propósito (não quer, acha inadequado).
 - "unable": o usuário pediu uma ação real (operar o computador, um navegador, um dispositivo, um plugin, buscar informação atual, criar um lembrete...) e a personagem disse que não consegue ou que não tem como.
 - "promised": o usuário pediu uma ação real e a personagem aceitou fazer, ou disse que está fazendo.

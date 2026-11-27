@@ -2389,7 +2389,7 @@ class CoreConfigMixin:
                 profile_protocol=profile_protocol,
                 profile_model=profile_model,
             )
-            # Workspace-only native endpoints (Bailian decision-model-preview): the
+            # Workspace-only native endpoints (Bailian decision-model): the
             # profile carries a host template filled with the user's saved
             # workspace API Host. It applies only while the slot still targets the
             # profile's own service; a hand-entered URL (custom provider or

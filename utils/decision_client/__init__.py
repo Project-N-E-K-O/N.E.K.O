@@ -24,6 +24,15 @@ from .adapters import (
     get_decision_adapter,
 )
 from .client import DecisionClient, clear_native_cooldown, decide
+from .rehost import rehost_choice, rehost_choices
+from .routing import (
+    ROUTE_CHAT,
+    ROUTE_NATIVE,
+    ROUTE_REHOST,
+    chat_logprobs_usable,
+    decide_route,
+    native_decision_usable,
+)
 from .schema import (
     ALL_DECISION_PROTOCOLS,
     NATIVE_DECISION_PROTOCOLS,
@@ -61,4 +70,12 @@ __all__ = [
     "is_native_decision_protocol",
     "infer_decision_protocol",
     "resolve_decision_endpoint",
+    "ROUTE_CHAT",
+    "ROUTE_NATIVE",
+    "ROUTE_REHOST",
+    "chat_logprobs_usable",
+    "decide_route",
+    "native_decision_usable",
+    "rehost_choice",
+    "rehost_choices",
 ]
