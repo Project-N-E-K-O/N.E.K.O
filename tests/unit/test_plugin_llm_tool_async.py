@@ -2857,8 +2857,7 @@ async def test_reconcile_finishes_under_the_name_lock_despite_a_second_cancel(mo
 
 @pytest.mark.asyncio
 async def test_failed_withdrawal_tracks_the_new_registration_over_an_earlier_one(monkeypatch, registry):
-    """wehos item 5 on #4161: a cancelled re-register whose withdrawal also
-    failed. main_server most likely holds the new registration (sent last,
+    """A cancelled re-register whose withdrawal also failed. main_server most likely holds the new registration (sent last,
     stored with replace semantics), so the host tracks it with its own
     ``timeout_seconds`` instead of keeping the earlier entry's."""
     import httpx
@@ -3113,6 +3112,31 @@ async def test_register_answer_lost_withdrawal_finishes_despite_a_cancel(monkeyp
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=2.0)
     assert server.ops() == ["register", "unregister"]
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_register_answer_lost_and_plugin_stopped_during_the_withdrawal_is_not_tracked(monkeypatch, registry):
+    """The plugin stops while the host withdraws a register whose answer was
+    lost, and the withdrawal fails: the stop's cleanup owns what is left, so
+    nothing is tracked afterwards."""
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _RegisterAnswerLost(_lost_answer("read_timeout"))
+    server.hold = {"unregister"}
+    _use_main_server(monkeypatch, registry, server)
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.unregister_exc = httpx.ReadTimeout("no answer")
+    server.release.set()
+    result = await asyncio.wait_for(task, timeout=2.0)
+
+    assert result["ok"] is False and result["error"] == "timeout"
+    assert server.ops() == ["register", "unregister", "clear"]
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     assert registry._name_locks == {}
 
