@@ -3117,10 +3117,14 @@ async def test_register_answer_lost_withdrawal_finishes_despite_a_cancel(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_register_answer_lost_and_plugin_stopped_during_the_withdrawal_is_not_tracked(monkeypatch, registry):
+@pytest.mark.parametrize("withdrawal_fails", [False, True])
+async def test_register_answer_lost_and_plugin_stopped_during_the_withdrawal_is_plugin_stopped(
+    monkeypatch, registry, withdrawal_fails,
+):
     """The plugin stops while the host withdraws a register whose answer was
-    lost, and the withdrawal fails: the stop's cleanup owns what is left, so
-    nothing is tracked afterwards."""
+    lost: nothing is tracked afterwards (the stop's cleanup owns what is
+    left), and the call fails with ``plugin_stopped`` like any register that
+    ended after the stop, saying whether the withdrawal was confirmed."""
     import httpx
 
     from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
@@ -3131,14 +3135,63 @@ async def test_register_answer_lost_and_plugin_stopped_during_the_withdrawal_is_
     task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
     await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
     await registry.clear_plugin_tools(PLUGIN_ID)
-    server.unregister_exc = httpx.ReadTimeout("no answer")
+    if withdrawal_fails:
+        server.unregister_exc = httpx.ReadTimeout("no answer")
     server.release.set()
     result = await asyncio.wait_for(task, timeout=2.0)
 
-    assert result["ok"] is False and result["error"] == "timeout"
+    assert result["ok"] is False and result["error"] == "plugin_stopped"
+    assert ("could not be confirmed" if withdrawal_fails else "was withdrawn") in result["message"]
     assert server.ops() == ["register", "unregister", "clear"]
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_notification_register_answer_lost_and_stopped_during_the_withdrawal_logs_no_traceback(
+    monkeypatch, registry,
+):
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+
+    server = _RegisterAnswerLost(_lost_answer("read_timeout"))
+    server.hold = {"unregister"}
+    _use_main_server(monkeypatch, registry, server)
+    owner = _notification_handler_owner()
+    calls: list[str] = []
+    owner.logger = types.SimpleNamespace(
+        info=lambda *a, **k: calls.append("info"),
+        warning=lambda *a, **k: calls.append("warning"),
+        exception=lambda *a, **k: calls.append("exception"),
+    )
+    task = asyncio.create_task(Comm._handle_llm_tool_register(
+        owner, dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID),
+    ))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert calls == ["info"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("withdrawal_fails", [False, True])
+async def test_register_answer_lost_error_says_what_the_host_did(monkeypatch, registry, withdrawal_fails):
+    """The original error is raised, carrying a note with the withdrawal's
+    outcome (shown in the traceback the notification path logs)."""
+    import httpx
+
+    server = _use_main_server(monkeypatch, registry, _RegisterAnswerLost(_lost_answer("read_timeout")))
+    if withdrawal_fails:
+        server.unregister_exc = httpx.ReadTimeout("no answer")
+
+    with pytest.raises(httpx.ReadTimeout) as caught:
+        await registry.register_remote_tool(
+            plugin_id=PLUGIN_ID, name="tool_a", description="d", parameters={}, timeout_seconds=12.0,
+        )
+
+    notes = " ".join(getattr(caught.value, "__notes__", []))
+    assert ("could not be confirmed" if withdrawal_fails else "was withdrawn") in notes
 
 
 @pytest.mark.asyncio

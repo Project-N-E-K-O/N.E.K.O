@@ -445,7 +445,8 @@ async def register_remote_tool(
       (best effort: if that fails it stays until the plugin's next
       cleanup), nothing is tracked, and
       ``RemoteToolError(code="plugin_stopped")`` is raised, also when the
-      register itself failed (chained from that error).
+      register itself failed (chained from that error) and when the stop
+      came while a lost answer was being reconciled (below).
     * The call is cancelled after the request was sent, or its answer was
       lost while the plugin runs (an httpx error after sending, see
       ``failed_before_send``, or an unreadable answer, ``code="timeout"``):
@@ -561,13 +562,27 @@ async def _register_remote_tool_locked(
             else not failed_before_send(httpx, exc)
         )
         if unknown:
-            _, interrupted = await _finish_despite_cancellation(_reconcile_unknown_register(
+            task, interrupted = await _finish_despite_cancellation(_reconcile_unknown_register(
                 plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
                 timeout_seconds=timeout_seconds, stopped=stopped,
                 why="register answer lost",
             ))
             if interrupted:
                 raise asyncio.CancelledError() from exc
+            withdrawn = task.result()
+            if stopped():
+                # Stopped during the reconcile: nothing was tracked, report
+                # it like any other register that ended after the stop.
+                raise _plugin_stopped_error(
+                    plugin_id=plugin_id, name=name, withdrawn=withdrawn, body=None,
+                ) from exc
+            # Shown with the traceback the notification path logs.
+            exc.add_note(
+                f"host: the registration of '{name}' was withdrawn from main_server"
+                if withdrawn else
+                f"host: withdrawing the registration of '{name}' could not be confirmed;"
+                " it is tracked so model calls are routed"
+            )
         raise
 
     if plugin_stopped:
@@ -602,6 +617,16 @@ async def _withdraw_after_stop(
     if interrupted:
         raise asyncio.CancelledError() from cause
     withdrawn = task.result()
+    raise _plugin_stopped_error(
+        plugin_id=plugin_id, name=name, withdrawn=withdrawn, body=body,
+    ) from cause
+
+
+def _plugin_stopped_error(
+    *, plugin_id: str, name: str, withdrawn: bool, body: Optional[Dict[str, Any]],
+) -> RemoteToolError:
+    """The ``plugin_stopped`` error of a register that ended after the stop,
+    saying whether its withdrawal was confirmed."""
     outcome = (
         "the registration was withdrawn" if withdrawn
         # Also reached when nothing was stored (e.g. main_server unreachable),
@@ -609,13 +634,13 @@ async def _withdraw_after_stop(
         else "its withdrawal could not be confirmed; if main_server stored it,"
         " it may remain until the plugin's next cleanup"
     )
-    raise RemoteToolError(
+    return RemoteToolError(
         f"plugin '{plugin_id}' was stopped while '{name}' was being registered; {outcome}",
         code="plugin_stopped",
         # Once withdrawn, the roles of the register's answer no longer hold
         # the tool: don't report them as affected.
         body=None if withdrawn else body,
-    ) from cause
+    )
 
 
 async def _post_register(
@@ -723,14 +748,14 @@ async def _reconcile_unknown_register(
     timeout_seconds: float,
     stopped: Any,
     why: str,
-) -> None:
+) -> bool:
     """Align host tracking with a register whose outcome is unknown (it was
     sent, then cancelled or its answer was lost). Caller holds the per-name
-    lock."""
+    lock. Returns whether main_server confirmed the withdrawal."""
     if await _remove_registration(
         plugin_id=plugin_id, name=name, role=role, registration_id=registration_id, why=why,
     ):
-        return
+        return True
     # main_server may still hold the tool. The callback route answers model
     # calls for untracked tools with "not registered", so while the plugin
     # runs, track it: calls still reach the plugin, and a later unregister
@@ -745,6 +770,7 @@ async def _reconcile_unknown_register(
                 "timeout_seconds": float(timeout_seconds),
                 "registration_id": registration_id,
             }
+    return False
 
 
 async def unregister_remote_tool(
