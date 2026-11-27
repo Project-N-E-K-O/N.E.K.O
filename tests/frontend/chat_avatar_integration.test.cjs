@@ -1793,18 +1793,28 @@ test('MMD startup waits for an in-flight switch to settle and resumes when takeo
     await rolesStarted.promise;
 
     settings.resolve();
-    let settleTimer;
-    for (let turn = 0; turn < 8 && !settleTimer; turn++) {
+    let settlementTimers = [];
+    for (let turn = 0; turn < 8 && settlementTimers.length === 0; turn++) {
         await new Promise(setImmediate);
-        settleTimer = [...h.timers.entries()].find(([, timer]) => timer.delay === 50);
+        settlementTimers = [...h.timers.entries()].filter(([, timer]) => timer.delay === 50);
     }
-    assert.ok(settleTimer, 'MMD startup should wait instead of abandoning A/B ownership while switch is active');
+    assert.ok(settlementTimers.length > 0,
+        'MMD startup should wait instead of abandoning A/B ownership while switch is active');
 
     heldRoles.resolve({ ok: false, status: 503, json: async () => ({}) });
     assert.equal(await switching, false);
-    h.timers.delete(settleTimer[0]);
-    settleTimer[1].callback();
-    for (let turn = 0; turn < 8 && canvas.style.visibility !== 'visible'; turn++) {
+
+    // VRM startup also uses a 50ms switch-settlement wait now. The harness can
+    // therefore hold more than one legitimate settlement timer; advancing only
+    // the first one makes this test depend on insertion order and can leave the
+    // MMD waiter parked forever. After the switch has settled, drain every
+    // settlement waiter while still requiring the MMD model to actually resume.
+    for (let turn = 0; turn < 16 && canvas.style.visibility !== 'visible'; turn++) {
+        for (const [id, timer] of [...h.timers.entries()]) {
+            if (timer.delay !== 50) continue;
+            h.timers.delete(id);
+            timer.callback();
+        }
         await new Promise(setImmediate);
     }
 
