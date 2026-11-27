@@ -719,6 +719,39 @@ def test_vrm_node_constraint_requires_an_existing_source(tmp_path, kind, source,
             validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("parents,constraints,accepted", [
+    ((None,), {0: ("rotation", 0)}, False),
+    ((None, None), {0: ("rotation", 1), 1: ("roll", 0)}, False),
+    ((None, 0), {0: ("rotation", 1)}, False),
+    ((None, 0, None, 2), {0: ("aim", 3), 2: ("roll", 1)}, False),
+    ((None, 0, None), {1: ("aim", 2), 2: ("rotation", 1)}, False),
+    ((None, None), {0: ("rotation", 1)}, True),
+    ((None, 0, None), {0: ("rotation", 2), 1: ("rotation", 0)}, True),
+    ((None, 0, None, 2), {0: ("roll", 2), 1: ("aim", 3)}, True),
+])
+def test_vrm_node_constraints_check_dependencies_along_ancestors(tmp_path, parents, constraints, accepted):
+    def graph(data):
+        data["nodes"] = [{} for _ in parents]
+        data["scenes"][0]["nodes"] = [index for index, parent in enumerate(parents) if parent is None]
+        data["extensionsUsed"].append("VRMC_node_constraint")
+        for index, parent in enumerate(parents):
+            if parent is not None:
+                data["nodes"][parent].setdefault("children", []).append(index)
+        for destination, (kind, source) in constraints.items():
+            data["nodes"][destination]["extensions"] = {
+                "VRMC_node_constraint": {
+                    "specVersion": "1.0", "constraint": {kind: {"source": source}},
+                },
+            }
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
 @pytest.mark.parametrize("version,declared,accepted", [
     ("1.0-beta", True, False), ("1.0", False, True), ("2.0", True, True),
 ])

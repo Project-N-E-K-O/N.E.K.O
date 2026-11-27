@@ -14,6 +14,7 @@ import struct
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, replace
+from graphlib import CycleError, TopologicalSorter
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
 from .bundle import BundleError, BundleLimits, CompatibilityWarning, inspect_bundle, _key
@@ -955,17 +956,18 @@ def _vrm(resources: _Resources) -> None:
     instanced_vertices = 0
     skinned_meshes = set()
     mesh_references: dict[int, int] = {}
-    children_seen = set()
+    node_parents: dict[int, int] = {}
+    node_constraints: dict[int, tuple[str, int]] = {}
     extensions_used = data.get("extensionsUsed")
     checks_node_constraints = extensions_used is None or "VRMC_node_constraint" in extensions_used
-    for node in nodes:
+    for node_index, node in enumerate(nodes):
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
         for child in node.get("children", []):
             _index(child, nodes, entry)
             # Shared children are reparented by GLTFLoader and invalid in glTF.
-            _require(child not in children_seen, entry)
-            children_seen.add(child)
+            _require(child not in node_parents, entry)
+            node_parents[child] = node_index
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
             if field in node:
                 _index(node[field], table, entry)
@@ -986,7 +988,8 @@ def _vrm(resources: _Resources) -> None:
                     definition = constraint.get(kind)
                     if definition is not None:
                         _require(isinstance(definition, dict), entry)
-                        _index(definition.get("source"), nodes, entry)
+                        source = _index(definition.get("source"), nodes, entry)
+                        node_constraints[node_index] = (kind, source)
                         break
         light = node_extensions.get("KHR_lights_punctual")
         if light is not None:
@@ -1074,6 +1077,23 @@ def _vrm(resources: _Resources) -> None:
                 colors[node] = 1
                 stack.append((node, True))
                 stack.extend((child, False) for child in nodes[node].get("children", []))
+    if node_constraints:
+        # The plugin visits constraints on each dependency and its ancestors.
+        # Separate the inherited node transform from its local constraint so
+        # ancestor walks are shared without building all transitive edges.
+        graph = TopologicalSorter()
+        for child, parent in node_parents.items():
+            graph.add(child, parent)
+        for destination, (kind, source) in node_constraints.items():
+            local_constraint = ("constraint", destination)
+            graph.add(destination, local_constraint)
+            graph.add(local_constraint, source)
+            if kind == "aim" and destination in node_parents:
+                graph.add(local_constraint, node_parents[destination])
+        try:
+            graph.prepare()
+        except CycleError as exc:
+            raise ModelFormatError("invalid_model_structure", entry) from exc
     for skin in skins:
         _require(isinstance(skin, dict) and isinstance(skin.get("joints"), list), entry)
         for joint in skin["joints"]:
@@ -1089,7 +1109,7 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(scene, dict) and isinstance(scene.get("nodes", []), list), entry)
         _require(isinstance(scene.get("name"), str) or scene.get("name") in (None, False, ""), entry)
         for node in scene.get("nodes", []):
-            _require(_index(node, nodes, entry) not in children_seen, entry)
+            _require(_index(node, nodes, entry) not in node_parents, entry)
     if "scene" in data:
         _index(data["scene"], scenes, entry)
 
