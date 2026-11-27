@@ -492,7 +492,8 @@ def test_clear_returns_a_permission_to_undecided(manager):
     store = PluginPermissionStore(manager)
     store.decide("x", MEMORY_READ, "granted")
 
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    entry = store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]
+    assert entry["state"] == "undecided" and entry["decided_at"]
 
 
 def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
@@ -516,7 +517,7 @@ def test_legacy_names_resolve_to_permission_ids_in_decide_and_clear(manager):
     record = store.decide("x", "memory.read", "granted")
     assert list(record["permissions"]) == [MEMORY_READ]
 
-    assert store.clear("x", "memory.read")["permissions"] == {}
+    assert store.clear("x", "memory.read")["permissions"][MEMORY_READ]["state"] == "undecided"
 
 
 def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
@@ -537,6 +538,26 @@ def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
     assert list(record["permissions"]) == [MEMORY_READ]
     with pytest.raises(ValueError):
         store.clear("y", "system.retired:read")
+
+
+def test_clearing_a_dropped_id_while_the_source_changes_commits_the_change(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=MARKET)
+    document = json.loads(_new_file(manager).read_text(encoding="utf-8"))
+    document["plugins"]["x"]["permissions"]["system.retired:read"] = {
+        "state": "granted",
+        "condition": "in_use",
+        "scope": "all",
+        "decided_at": "2026-01-01T00:00:00Z",
+    }
+    _new_file(manager).write_text(json.dumps(document), encoding="utf-8")
+    store = PluginPermissionStore(manager)
+
+    record = store.clear("x", "system.retired:read", source=MANUAL)
+
+    assert record["permissions"] == {}
+    assert record["source"] == MANUAL.to_dict()
+    assert store.read("x")["source"] == MANUAL.to_dict()
 
 
 def test_a_new_id_stored_here_reads_like_a_dropped_id_without_it_in_the_vocabulary(monkeypatch, manager):
@@ -898,13 +919,14 @@ def test_clear_on_legacy_denied_record_stores_an_undecided_exception(manager):
     assert record["permissions"][CONVERSATIONS_READ]["state"] == "undecided"
 
 
-def test_clear_on_ordinary_record_deletes_the_entry(manager):
+def test_clear_on_ordinary_record_keeps_a_timed_undecided_entry(manager):
     store = PluginPermissionStore(manager)
     store.decide("x", MEMORY_READ, "granted")
     saves = manager.saves
 
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
-    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    first = store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]
+    assert first["state"] == "undecided" and first["decided_at"]
+    assert store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ] == first
     assert manager.saves == saves + 1
 
 

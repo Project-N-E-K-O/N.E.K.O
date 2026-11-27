@@ -3,7 +3,8 @@
 The opening sentence and the definitions of the two task tools ride on every
 request of the main dialogue model. These tests hold their size: the Chinese
 total to the limit the design set, the other languages to what they measure
-today, and the opening sentence of a session without NekoPower to its own.
+today, and the opening sentence of a session without NekoPower to its own,
+with and without the note that she cannot act on the computer.
 A longer text has to raise a number here on purpose.
 """
 
@@ -13,7 +14,7 @@ import json
 
 import pytest
 
-from config.prompts.prompts_sys import SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT
+from config.prompts.prompts_sys import SESSION_INIT_NO_NEKOPOWER, SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT
 from config.prompts.prompts_task_tools import (
     DISPATCH_TOOL_DESCRIPTION,
     DISPATCH_TOOL_NAME,
@@ -44,6 +45,11 @@ ON_LIMIT = {"zh": 236, "zh-TW": 259, "en": 236, "ja": 317, "ko": 273, "ru": 257,
 # Opening sentence of a session without NekoPower: it carries the one sentence
 # about speaking before a tool call and nothing else of this.
 OFF_LIMIT = {"zh": 34, "zh-TW": 36, "en": 30, "ja": 52, "ko": 43, "ru": 40, "es": 36, "pt": 34}
+# The same opening as it goes out with the master switch off, the default state:
+# followed by SESSION_INIT_NO_NEKOPOWER, so she does not promise what no tool can do
+# (#4147). Measured on 2026-11-26 after it was cut down (Chinese 120, the note +86;
+# the first wording was +124), with two tokens to spare.
+OFF_WITH_NOTE_LIMIT = {"zh": 122, "zh-TW": 137, "en": 126, "ja": 207, "ko": 165, "ru": 159, "es": 145, "pt": 140}
 
 
 def _registered_tools(lang: str) -> list[dict]:
@@ -80,6 +86,13 @@ def test_opening_sentence_without_nekopower_stays_within_its_limit(lang):
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
+def test_opening_with_the_master_switch_off_stays_within_its_limit(lang):
+    opening = SESSION_INIT_PROMPT[lang] + SESSION_INIT_NO_NEKOPOWER[lang]
+
+    assert count_tokens(opening) <= OFF_WITH_NOTE_LIMIT[lang], (lang, count_tokens(opening))
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
 def test_both_opening_sentences_end_with_the_same_sentence_about_speaking_first(lang):
     plain, agent = SESSION_INIT_PROMPT[lang], SESSION_INIT_PROMPT_AGENT[lang]
     # The last sentence of the plain one is the last sentence of the other.
@@ -100,6 +113,7 @@ def test_both_opening_sentences_end_with_the_same_sentence_about_speaking_first(
     [
         SESSION_INIT_PROMPT,
         SESSION_INIT_PROMPT_AGENT,
+        SESSION_INIT_NO_NEKOPOWER,
         DISPATCH_TOOL_DESCRIPTION,
         DISPATCH_TOOL_TASK_DESCRIPTION,
         QUERY_TOOL_DESCRIPTION,

@@ -506,7 +506,11 @@ async def search(self, *, query: str, limit: int = 10):
 ```
 
 `name` must match `[A-Za-z0-9_.\-]{1,64}` so it stays safe to inline
-into the callback URL path segment.
+into the callback URL path segment, and must not consist only of dots
+(`.`, `..`): the URL path would normalise such a name away, so the tool
+could never be called. The decorator, the sync and async calls and the
+host all refuse those names (`ValueError` in the plugin; the host drops
+such a registration or unregistration).
 
 ### `NekoPluginBase` instance methods
 
@@ -569,8 +573,10 @@ from the host within `request_timeout`, none from `main_server` after the
 request was sent, or an answer that is not a JSON object; the outcome is
 unknown), `host_unavailable` (the request could
 not reach the host), `busy` (earlier calls for the same name used up the
-budget before this one could be sent; nothing was sent and `cleanup` is
-`None`. Also on an unregister, or a `cleanup`, whose requests already sent
+budget before this one could be sent, or the calling entry's time ran out
+before it was sent; nothing was sent and `cleanup` is `None`. A `cleanup`
+not sent because the entry's time ran out is `busy` too. Also on an
+unregister, or a `cleanup`, whose requests already sent
 left too little budget to remove a stale registration they reported
 (below): that removal was not sent and the registration is still
 listed in `refused_roles`), `not_registered` (unregister: the plugin had no local
@@ -640,14 +646,18 @@ Local state follows `ok`, so the plugin and the host agree:
   values), the result is `busy` and nothing was sent to the host. Called
   from an entry that has a deadline, the effective budget of each request,
   including the cleanup, is the smaller of its own budget and the entry's
-  remaining time; when the entry's time is used up, no cleanup is sent
-  (`cleanup` then reports `timeout`).
+  remaining time; a request that is not sent because the entry's time is
+  used up reports `busy` (nothing reached the host; for a cleanup,
+  `cleanup` then reports `busy`), while one that was sent but got no answer
+  in time still reports `timeout`. A request that reached the host but
+  expired in the host's queue before it was handled also reports `timeout`:
+  the host answers it like any deadline it ran out of.
 
 Argument errors raise like the sync calls (`ValueError`, `TypeError`,
-`EntryConflictError`). The async calls also raise `ValueError` for a
-`request_timeout` outside (0, 60] (the host's limit), a name made only of
-dots, and, for register, a `timeout` outside (0, 300] (`main_server`'s
-limit); the sync calls keep their existing behaviour. Host and
+`EntryConflictError`; an invalid name, including one made only of dots,
+raises `ValueError` on both). The async calls also raise `ValueError` for a
+`request_timeout` outside (0, 60] (the host's limit) and, for register, a
+`timeout` outside (0, 300] (`main_server`'s limit). Host and
 `main_server` failures never raise. Pick one style per tool name: the
 sync calls are not part of the per-name ordering and travel on a
 different IPC channel, so mixing them for the same name has no ordering

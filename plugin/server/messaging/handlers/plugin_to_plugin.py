@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from plugin.core.call_registry import delivery_link
 from plugin.core.rpc import RpcContext, RpcRemoteError
 from plugin.server.application.plugins import capability_gate
@@ -18,7 +20,13 @@ async def handle_plugin_to_plugin(ctx: RpcContext, request: dict[str, object]) -
     to_plugin_obj = request.get("to_plugin")
     event_type_obj = request.get("event_type")
     event_id_obj = request.get("event_id")
-    args = coerce_string_key_mapping(request.get("args", {})) or {}
+    raw_args = coerce_string_key_mapping(request.get("args", {})) or {}
+    args = dict(raw_args)
+    raw_ctx = args.get("_ctx")
+    sanitized_ctx = dict(raw_ctx) if isinstance(raw_ctx, Mapping) else {}
+    sanitized_ctx.pop("host_reply", None)
+    sanitized_ctx["channel"] = "plugin_to_plugin"
+    args["_ctx"] = sanitized_ctx
     to_plugin = normalize_non_empty_str(to_plugin_obj) or ""
     event_type = normalize_non_empty_str(event_type_obj) or ""
     event_id = normalize_non_empty_str(event_id_obj) or ""

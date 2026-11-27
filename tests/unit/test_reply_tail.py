@@ -423,7 +423,11 @@ async def test_callback_reserved_context_and_old_arguments(chain, monkeypatch, m
     arguments = {"sticker": "wave"}
     body = {"arguments": arguments, "call_id": "call-A"}
     if mode != "legacy":
-        arguments["_ctx"] = {"host_reply": {"token": "model-spoof"}, "lanlan_name": "new-role"}
+        arguments["_ctx"] = {
+            "host_reply": {"token": "model-spoof"},
+            "lanlan_name": "new-role",
+            "channel": "ui",
+        }
     if mode == "original":
         body["host_reply"] = chain.context
     elif mode == "wrong_plugin":
@@ -432,12 +436,39 @@ async def test_callback_reserved_context_and_old_arguments(chain, monkeypatch, m
     assert not result["is_error"]
     actual = trigger.call_args.args[1]
     if mode == "original":
-        assert actual["_ctx"] == {"host_reply": chain.context, "lanlan_name": "Cat"}
+        assert actual["_ctx"] == {
+            "host_reply": chain.context,
+            "lanlan_name": "Cat",
+            "channel": "chat_tool",
+        }
         assert arguments["_ctx"]["host_reply"] == {"token": "model-spoof"}
     elif mode != "legacy":
         assert "host_reply" not in actual["_ctx"]
+        assert actual["_ctx"]["channel"] == "chat_tool"
     else:
         assert actual == {"sticker": "wave"}
+
+
+@pytest.mark.parametrize("raw_ctx", [None, "ui", 123, ["ui"]])
+async def test_callback_coerces_non_dict_ctx_to_chat_tool(monkeypatch, raw_ctx):
+    from plugin.server.routes import llm_tools as callback
+    from contextlib import nullcontext
+
+    trigger = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(callback, "state", SimpleNamespace(
+        acquire_plugin_hosts_read_lock=nullcontext,
+        plugin_hosts={"stickers": SimpleNamespace(trigger=trigger)},
+    ))
+    monkeypatch.setattr(callback, "has_plugin_tool", lambda *_: True)
+    monkeypatch.setattr(callback, "get_plugin_tool_timeout", lambda *_: 20)
+    arguments = {"sticker": "wave", "_ctx": raw_ctx}
+    body = {"arguments": arguments, "call_id": "call-B"}
+
+    result = await callback.llm_tool_callback("stickers", "send", body)
+    assert not result["is_error"]
+    actual = trigger.call_args.args[1]
+    assert actual == {"sticker": "wave", "_ctx": {"channel": "chat_tool"}}
+    assert arguments["_ctx"] == raw_ctx
 
 
 async def test_remote_dispatch_does_not_add_context_to_legacy_wire(chain, monkeypatch):

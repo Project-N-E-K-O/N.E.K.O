@@ -5288,3 +5288,95 @@ def test_a_log_that_comes_to_be_in_the_target_while_the_entries_are_published_is
     assert _LEDGER not in _ledger_files(target_root)
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "target"
     assert _ledger_files(source_root) == source
+
+
+def _crash_publishing_character_cards_after_referenced_workshop(tmp_path, monkeypatch):
+    """Keep target config referencing source workshop, publish workshop, then crash on character_cards."""
+    import json
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_bytes(b"mod")
+    (source_root / "character_cards").mkdir(parents=True)
+    (source_root / "character_cards" / "cat.json").write_bytes(b"{}")
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+    (source_root / "config" / "workshop_config.json").write_text("{}", encoding="utf-8")
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_on_cards(staged, target, **kwargs):
+        if Path(staged).name == "character_cards":
+            raise KeyboardInterrupt("simulated process loss")
+        original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_on_cards)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    return config_manager, source_root, target_root
+
+
+@pytest.mark.unit
+def test_recovery_keeps_published_referenced_entry_written_since(tmp_path, monkeypatch):
+    """Published entries omitted from copied_entries must still detect post-publish writes via staged_target_manifests."""
+    config_manager, source_root, target_root = _crash_publishing_character_cards_after_referenced_workshop(
+        tmp_path, monkeypatch
+    )
+    (target_root / "workshop" / "mods" / "item.txt").write_bytes(b"post-publish edit")
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict", retry
+    assert (target_root / "workshop" / "mods" / "item.txt").read_bytes() == b"post-publish edit"
+    assert (source_root / "workshop" / "mods" / "item.txt").read_bytes() == b"mod"
+    assert list((target_root / ".smtx").iterdir())
+
+
+@pytest.mark.unit
+def test_recovery_rolls_back_unchanged_published_referenced_entry(tmp_path, monkeypatch):
+    """Unmodified published entries omitted from copied_entries must roll back cleanly."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _crash_publishing_character_cards_after_referenced_workshop(
+        tmp_path, monkeypatch
+    )
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery", retry
+    assert not (target_root / "workshop").exists()
+    assert (source_root / "workshop" / "mods" / "item.txt").read_bytes() == b"mod"
+
+
+@pytest.mark.unit
+def test_recovery_fails_closed_when_published_entry_has_no_manifest(tmp_path, monkeypatch):
+    """Missing manifest for a published target must raise migration_rollback_required without deleting target."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _crash_publishing_character_cards_after_referenced_workshop(
+        tmp_path, monkeypatch
+    )
+    payload = storage_migration_module.load_storage_migration(config_manager)
+    assert isinstance(payload, dict)
+    payload["copied_entries"].pop("workshop", None)
+    payload["staged_target_manifests"].pop("workshop", None)
+    storage_migration_module.save_storage_migration(config_manager, payload)
+
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_rollback_required", retry
+    assert (target_root / "workshop" / "mods" / "item.txt").read_bytes() == b"mod"

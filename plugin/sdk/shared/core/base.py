@@ -177,7 +177,12 @@ class NekoPluginBase:
         self._state_persistence = self.state
 
     def refresh_runtime_config(self, effective_config: dict[str, object] | None = None) -> None:
-        """Refresh SDK runtime helpers after the host effective config changes."""
+        """Refresh SDK runtime helpers after the host effective config changes.
+
+        Invoked synchronously under ``PluginContext``'s config-notification lock
+        so snapshots arrive in publication order. Implementations and overrides
+        must remain fast, non-blocking, and limited to in-memory state updates.
+        """
         cfg = effective_config if isinstance(effective_config, dict) else resolve_effective_config(self.ctx)
         store_enabled = resolve_store_enabled(cfg)
         db_enabled, db_name = resolve_db_config(cfg)

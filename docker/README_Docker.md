@@ -352,7 +352,7 @@ sudo sh backup.sh --container neko-2 --home ./neko-home-2    # 多实例
 
 备份产物默认只有本人可读（`umask 077`：目录 700、归档 600）：归档里有 API Key 与 TLS 私钥。
 
-产出三件：`neko-backup-<UTC>.tar.gz`、`.sha256`（`sha256sum -c` 可验证）、`.manifest.txt`（文件清单）。
+产出三件：`neko-backup-<容器名>-<UTC>-<PID>.tar.gz`、`.sha256`（`sha256sum -c` 可验证）、`.manifest.txt`（文件清单）。按实例名隔离归档前缀，多实例共用同一 `--out` 目录时 `--keep` 轮转不会误删其它实例的备份。旧版命名（`neko-backup-<UTC>-<PID>.tar.gz`，无容器名前缀）不会参与新轮转规则，升级后如有需要可手动清理。
 
 **恢复**（脚本每次都会把这几步印在输出结尾）：
 

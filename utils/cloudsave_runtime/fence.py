@@ -358,7 +358,7 @@ def _cloud_apply_fence_state(
         _facade.set_root_mode(
             config_manager,
             mode,
-            last_migration_result=reason or previous_state.get("last_migration_result", ""),
+            last_cloud_fence_reason=reason or previous_state.get("last_cloud_fence_reason", ""),
         )
         try:
             yield get_root_state(config_manager)

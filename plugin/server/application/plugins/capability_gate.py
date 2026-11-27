@@ -231,8 +231,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
             if record is not None:
                 registry.note_use(record, capability)
             # An allowance based on the last record read (store unreadable)
-            # is also audited below, so it can be told apart.
-            if "consent_unavailable" not in flags:
+            # is also audited below, so it can be told apart. So is one
+            # outside any call (a timer, a background thread): no call
+            # summary carries it, and the panel's last use needs it.
+            if "consent_unavailable" not in flags and record is not None:
                 return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))
@@ -279,6 +281,10 @@ SYSTEM_USE_PERMISSIONS = frozenset({
     PERMISSIONS["system.fs:read"].id,
     PERMISSIONS["system.fs:write"].id,
 })
+# Permissions whose uses reach the call audit: the judged RPC operations, the
+# message push and the system.* uses a plugin process reports. Uses of any
+# other permission are not recorded, so "never used" cannot be told for it.
+USAGE_AUDITED_PERMISSIONS = frozenset(CAPABILITY_BY_OPERATION.values()) | {MESSAGES_PUSH} | SYSTEM_USE_PERMISSIONS
 _SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
 _SYSTEM_USE_BATCH_LIMIT = 100
 _SYSTEM_USE_PER_MINUTE = 600

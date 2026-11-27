@@ -5880,3 +5880,78 @@ def test_legacy_bootstrap_preserves_both_completed_workshop_registries(tmp_path)
     result = import_legacy_runtime_root_if_needed(cm)
     assert not result['migrated'] and result['result'] == 'legacy_root_model_workshop_root_conflict'
     assert (snapshot(old), snapshot(cm.app_docs_dir)) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "existing_result",
+    ["legacy_root_imported", "failed:target_not_empty"],
+)
+def test_cloud_apply_fence_preserves_last_migration_result(tmp_path, existing_result):
+    """Entering and exiting cloud_apply_fence must not clobber last_migration_result."""
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        cloud_apply_fence,
+        get_root_state,
+        set_root_mode,
+    )
+
+    set_root_mode(cm, "normal", last_migration_result=existing_result)
+
+    with cloud_apply_fence(cm, mode=ROOT_MODE_BOOTSTRAP_IMPORTING, reason="launcher_phase0_bootstrap") as entered:
+        assert entered["last_migration_result"] == existing_result
+        assert entered["last_cloud_fence_reason"] == "launcher_phase0_bootstrap"
+        assert get_root_state(cm)["last_migration_result"] == existing_result
+
+    after = get_root_state(cm)
+    assert after["last_migration_result"] == existing_result
+    assert after["last_cloud_fence_reason"] == "launcher_phase0_bootstrap"
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_boot2_does_not_reimport_legacy_root_after_user_deletes(tmp_path, monkeypatch):
+    """Boot 2 inside launcher bootstrap fence must see Boot 1's legacy_root_imported marker."""
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        bootstrap_local_cloudsave_environment,
+        cloud_apply_fence,
+        export_local_cloudsave_snapshot,
+        get_root_state,
+        set_root_mode,
+    )
+
+    cm = _make_config_manager(tmp_path)
+    legacy_root = tmp_path / "legacy-root"
+    (legacy_root / "config").mkdir(parents=True)
+    (legacy_root / "config" / "characters.json").write_text(
+        json.dumps({"当前猫娘": "小黑", "猫娘": {"小黑": {"voice_id": "v1"}}, "主人": {}}),
+        encoding="utf-8",
+    )
+    (legacy_root / "memory" / "小黑").mkdir(parents=True)
+    (legacy_root / "memory" / "小黑" / "facts.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(cm, "get_legacy_app_root_candidates", lambda: [legacy_root])
+
+    with cloud_apply_fence(cm, mode=ROOT_MODE_BOOTSTRAP_IMPORTING, reason="launcher_phase0_bootstrap"):
+        boot1 = bootstrap_local_cloudsave_environment(cm)
+    assert boot1["legacy_import"]["migrated"] is True
+    assert get_root_state(cm)["last_migration_result"].startswith("legacy_root_")
+    set_root_mode(cm, "normal", last_successful_boot_at="2026-11-22T00:00:00Z")
+
+    _write_runtime_state(cm, character_name="小黑")
+    export_local_cloudsave_snapshot(cm)
+
+    # User deletes the character on the active root before restarting.
+    cm.get_config_path("characters.json").write_text(
+        json.dumps({"当前猫娘": "", "猫娘": {}, "主人": {}}),
+        encoding="utf-8",
+    )
+
+    with cloud_apply_fence(cm, mode=ROOT_MODE_BOOTSTRAP_IMPORTING, reason="launcher_phase0_bootstrap"):
+        boot2 = bootstrap_local_cloudsave_environment(cm)
+
+    assert boot2["legacy_import"]["migrated"] is False
+    chars_after = json.loads(cm.get_config_path("characters.json").read_text(encoding="utf-8"))
+    assert chars_after["猫娘"] == {}

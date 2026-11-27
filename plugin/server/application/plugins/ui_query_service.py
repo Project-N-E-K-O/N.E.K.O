@@ -1805,6 +1805,9 @@ class PluginUiQueryService:
                 hosted_run_id = uuid.uuid4().hex
                 if _card_context is not None:
                     trigger_context = dict(_card_context)
+                    trigger_context["channel"] = "chat_card"
+                else:
+                    trigger_context["channel"] = "ui"
                 trigger_context["run_id"] = hosted_run_id
                 trigger_args["_ctx"] = trigger_context
                 try:

@@ -227,17 +227,16 @@
   // ---------------------------------------------------------------- frame-rate modes
   P.saved = null;
   P.saveFps = function () {
-    if (!P.saved) P.saved = { targetFrameRate: window.targetFrameRate, lipSync: window.appState && window.appState.lipSyncActive, ls: localStorage.getItem('project_neko_settings') };
+    if (!P.saved) P.saved = { targetFrameRate: window.targetFrameRate };
     return P.saved;
   };
   P.restoreFps = function () {
     const s = P.saved;
     if (!s) return false;
-    if (window.appState) window.appState.lipSyncActive = s.lipSync || false;
     if (P._origBoostX11) { window.live2dManager.boostLinuxX11InteractiveFPS = P._origBoostX11; P._origBoostX11 = null; }
     window.live2dManager._startIdleFpsGovernor();
-    window.live2dManager.setTargetFPS(s.targetFrameRate);
-    if (s.ls !== null && localStorage.getItem('project_neko_settings') !== s.ls) localStorage.setItem('project_neko_settings', s.ls);
+    const fps = Number.isFinite(window.targetFrameRate) ? window.targetFrameRate : s.targetFrameRate;
+    window.live2dManager.setTargetFPS(fps);
     P.saved = null;
     return true;
   };

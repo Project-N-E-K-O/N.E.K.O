@@ -345,6 +345,30 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
 
 
 @pytest.mark.asyncio
+async def test_ui_api_locale_route_is_not_duplicated_by_plugin_install(
+    plugin_ui_async_client: AsyncClient,
+) -> None:
+    from plugin.server.http_app import build_plugin_server_app
+    from tests.fastapi_routes import effective_path, iter_routes
+
+    assert not hasattr(galgame_install_route_module, "get_plugin_ui_locale")
+    app = build_plugin_server_app()
+    locale_routes = []
+    for route in iter_routes(app.routes):
+        if effective_path(route) != "/plugin/{plugin_id}/ui-api/locale":
+            continue
+        methods = getattr(route, "methods", None) or set()
+        if "GET" in methods:
+            locale_routes.append(route)
+    assert len(locale_routes) == 1
+    assert locale_routes[0].endpoint is plugin_ui_route_module.plugin_ui_api_locale
+
+    response = await plugin_ui_async_client.get("/plugin/non_install_plugin/ui-api/locale")
+    assert response.status_code == 200
+    assert isinstance(response.json()["locale"], str)
+
+
+@pytest.mark.asyncio
 async def test_plugin_ui_i18n_rejects_locale_file_symlink_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

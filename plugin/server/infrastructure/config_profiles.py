@@ -176,6 +176,25 @@ def _resolve_active_profile_name(plugin_id: str, profiles_cfg: Mapping[object, o
     return active_name
 
 
+def lookup_registered_profile_path(
+    files_map: Mapping[str, str],
+    profile_name: str,
+) -> tuple[str, str] | None:
+    raw_path = files_map.get(profile_name)
+    if isinstance(raw_path, str) and raw_path.strip():
+        return profile_name, raw_path
+    if profile_name.isdigit():
+        try:
+            numeric_name = str(int(profile_name))
+        except ValueError:
+            numeric_name = ""
+        if numeric_name:
+            numeric_raw = files_map.get(numeric_name)
+            if isinstance(numeric_raw, str) and numeric_raw.strip():
+                return numeric_name, numeric_raw
+    return None
+
+
 def apply_user_config_profiles(
     *,
     plugin_id: str,
@@ -207,17 +226,15 @@ def apply_user_config_profiles(
         return base_config
     files_map = _to_string_key_mapping(files_map_obj)
 
-    raw_path_obj = files_map.get(active_name)
-    if (not isinstance(raw_path_obj, str) or not raw_path_obj.strip()) and active_name.isdigit():
-        raw_path_obj = files_map.get(str(int(active_name)))
-    if not isinstance(raw_path_obj, str) or not raw_path_obj.strip():
+    active_entry = lookup_registered_profile_path(files_map, active_name)
+    if active_entry is None:
         logger.warning(
             "Plugin {}: active profile '{}' not found in [plugin.config_profiles.files]",
             plugin_id,
             active_name,
         )
         return base_config
-    raw_path = raw_path_obj
+    _, raw_path = active_entry
 
     profile_path = resolve_profile_path(raw_path, config_path.parent)
     if profile_path is None:
@@ -361,13 +378,14 @@ def get_profile_config(
     profiles_cfg = _resolve_profiles_cfg(plugin_id=plugin_id, config_path=config_path)
 
     raw_path: str | None = None
+    resolved_name: str | None = None
     if isinstance(profiles_cfg, Mapping):
         files_map_obj = profiles_cfg.get("files")
         if isinstance(files_map_obj, Mapping):
             files_map = _to_string_key_mapping(files_map_obj)
-            value = files_map.get(profile_name)
-            if isinstance(value, str) and value.strip():
-                raw_path = value
+            registered = lookup_registered_profile_path(files_map, profile_name)
+            if registered is not None:
+                resolved_name, raw_path = registered
 
     if raw_path is None:
         if (
@@ -421,6 +439,7 @@ def get_profile_config(
         "plugin_id": plugin_id,
         "profile": {
             "name": profile_name,
+            "resolved_name": resolved_name,
             "path": raw_path,
             "resolved_path": resolved_str,
             "exists": exists,

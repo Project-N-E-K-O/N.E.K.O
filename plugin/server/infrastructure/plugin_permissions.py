@@ -16,6 +16,8 @@ Document shape (``schema_version`` 1)::
           "source": {"channel": "market", "fingerprint": "..."} | null,
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "legacy_approved": true,     # optional, see LEGACY_APPROVED
+          "grants_reset": {"at": "<iso>", "reason": "source_changed"},  # optional, see GRANTS_RESET
+          "legacy_decided_at": "<iso>",  # optional, see LEGACY_DECIDED_AT
           "permissions": {
             "<permission id>": {
               "state": "granted" | "denied" | "undecided",
@@ -30,9 +32,10 @@ Document shape (``schema_version`` 1)::
       }
     }
 
-A permission missing from ``permissions`` is undecided, except on a record
-with ``legacy_denied`` (see LEGACY_DENIED), where an explicit ``undecided``
-entry is stored instead.
+A permission missing from ``permissions`` is undecided, except a permission
+with a legacy name (``LEGACY_IDS``) on a record with ``legacy_denied`` (see
+LEGACY_DENIED): that one reads denied, so an explicit ``undecided`` entry is
+stored for it instead.
 
 When a plugin's source changes, its grants are discarded; only the
 plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
@@ -67,6 +70,9 @@ logger = get_logger("server.infrastructure.plugin_permissions")
 
 FILENAME = "plugin_permissions.json"
 SCHEMA_VERSION = 1
+
+# Permissions the consent dialog's whole-plugin decision covers.
+LEGACY_IDS: frozenset[str] = frozenset(LEGACY_PERMISSION_NAMES.values())
 
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
@@ -135,9 +141,10 @@ CONDITIONS = frozenset({CONDITION_ANYTIME, CONDITION_IN_USE})
 
 SCOPE_ALL = "all"
 
-# Set on a plugin record imported from a legacy whole-plugin denial: every
-# implicitly declared permission of that plugin counts as denied unless the
-# record holds an explicit entry for it (including an explicit "undecided").
+# Set on a plugin record by a whole-plugin denial from the consent flow
+# (imported or decided there): every permission with a legacy name
+# (LEGACY_IDS) counts as denied unless the record holds an explicit entry for
+# it (including an explicit "undecided"); other permissions are not covered.
 LEGACY_DENIED = "legacy_denied"
 # Set on a plugin record whose whole-plugin approval came from the consent
 # flow (imported or decided there). It only records that the plugin was
@@ -150,6 +157,16 @@ _PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED)
 # one place that decides it. Every grant and every other marker is dropped;
 # an empty set would make a source change ask again about everything.
 KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
+
+# Set when a source change dropped decisions the user had made, so the
+# permission panel can tell the user why they are asked again. Cleared by the
+# next decision for that plugin.
+GRANTS_RESET = "grants_reset"
+# When the consent dialog last denied or revoked the whole plugin: the time the
+# user answered for the permissions it covers. An approval answers only what
+# it granted (their own decided_at), so it does not set this.
+LEGACY_DECIDED_AT = "legacy_decided_at"
+RESET_SOURCE_CHANGED = "source_changed"
 
 
 ChangeListener = Callable[["frozenset[str] | None"], None]
@@ -340,6 +357,21 @@ def _load_error(exc: Exception) -> ServerDomainError:
         500,
         details={"file": FILENAME, "retryable": False},
     )
+
+
+def _had_decisions(record: dict) -> bool:
+    """Whether ``record`` holds a decision a source change would drop (an
+    explicit "undecided" entry is none)."""
+    return any(
+        isinstance(entry, dict) and entry.get("state") in STATES
+        for entry in (record.get("permissions") or {}).values()
+    ) or any(
+        record.get(marker) for marker in _PLUGIN_MARKERS if marker not in KEPT_ON_SOURCE_CHANGE
+    )
+
+
+def _mark_reset(record: dict, now: str) -> None:
+    record[GRANTS_RESET] = {"at": now, "reason": RESET_SOURCE_CHANGED}
 
 
 def _drop_for_source_change(record: dict) -> None:
@@ -632,7 +664,18 @@ class PluginPermissionStore:
             record["source_mismatch"] = (
                 known is not None and current is not None and known != current
             )
+            had_reset = GRANTS_RESET in record
+            saved_change = record.get("source_changed_at")
             self._apply_source(record, current)
+            if GRANTS_RESET in record and not had_reset:
+                # Not saved yet: no time to show (it would move on every read).
+                record[GRANTS_RESET] = {**record[GRANTS_RESET], "at": None}
+            # Only a saved source change time counts (it is a cutoff for
+            # earlier refusals); an unsaved one would be "now" on every read.
+            if saved_change is None:
+                record.pop("source_changed_at", None)
+            else:
+                record["source_changed_at"] = saved_change
         return record
 
     def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
@@ -735,6 +778,8 @@ class PluginPermissionStore:
             return False
         now = _now()
         if known is not None:
+            if _had_decisions(record):
+                _mark_reset(record, now)
             _drop_for_source_change(record)
             record["source_changed_at"] = now
         record["source"] = current.to_dict()
@@ -777,6 +822,7 @@ class PluginPermissionStore:
             else:
                 self._apply_source(record, source)
             now = _now()
+            record.pop(GRANTS_RESET, None)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
@@ -787,45 +833,67 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
-    def clear(self, plugin_id: str, permission_id: object) -> dict:
+    def clear(
+        self,
+        plugin_id: str,
+        permission_id: object,
+        *,
+        source: PluginSource | None = None,
+    ) -> dict:
         """Return one permission to undecided.
 
-        On a ``legacy_denied`` record a missing entry still means denied, so
-        an explicit ``undecided`` entry is stored instead of deleting it. An
-        id outside the vocabulary is accepted only when the record already
-        holds it (e.g. an id the vocabulary has since dropped).
+        An explicit ``undecided`` entry with the time is stored, so readers
+        can tell what happened before the user's last choice; it counts as
+        no decision everywhere (and on a ``legacy_denied`` record it keeps a
+        missing entry of a permission with a legacy name from meaning
+        denied). Under an unchanged source, a permission that is undecided
+        already (an ``undecided`` entry, or no entry unless it has a legacy
+        name on a ``legacy_denied`` record) is left as it is, without a
+        write. A changed ``source`` is applied and saved first, like in
+        :meth:`decide`. An id outside the vocabulary is accepted only when the
+        record already holds it (e.g. an id the vocabulary has since
+        dropped), and its entry is removed.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
             raise ValueError(f"Unknown permission: {permission_id!r}")
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
             if known_id is None:
                 if record is None or permission_id not in record.get("permissions", {}):
                     raise ValueError(f"Unknown permission: {permission_id!r}")
-                known_id = permission_id
-            permission_id = known_id
             if record is None:
                 return {}
-            entry = record.get("permissions", {}).get(permission_id)
-            if record.get(LEGACY_DENIED):
-                if entry is not None and entry.get("state") == STATE_UNDECIDED:
+            known = PluginSource.from_dict(record.get("source"))
+            source_changes = source is not None and known != source
+            # Nothing to do only when the record already says undecided under
+            # the current source; a source change is applied and saved first.
+            if known_id is not None and not source_changes:
+                entry = (record.get("permissions") or {}).get(known_id)
+                if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
-            elif entry is None:
-                return copy.deepcopy(record)
+                if entry is None and not (record.get(LEGACY_DENIED) and known_id in LEGACY_IDS):
+                    # Undecided already (a whole-plugin denial covers only
+                    # the permissions with a legacy name).
+                    return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            self._apply_source(record, source)
             now = _now()
+            record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
-            if record.get(LEGACY_DENIED):
-                permissions[permission_id] = {
+            if known_id is None:
+                # A source change above may have dropped it already.
+                permissions.pop(permission_id, None)
+            else:
+                permissions[known_id] = {
                     "state": STATE_UNDECIDED,
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
-            else:
-                del permissions[permission_id]
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
@@ -912,13 +980,28 @@ class PluginPermissionStore:
                 }
             for marker in _PLUGIN_MARKERS:
                 record.pop(marker, None)
+            if decision is not None:
+                record.pop(GRANTS_RESET, None)
             if decision == "denied":
                 record[LEGACY_DENIED] = True
+                # A fresh whole-plugin denial covers the permissions that
+                # flow knows about, including ones set back to undecided
+                # earlier (which would otherwise read undecided).
+                for permission_id in [
+                    key
+                    for key, entry in permissions.items()
+                    if key in LEGACY_IDS and isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED
+                ]:
+                    del permissions[permission_id]
             elif decision == "approved":
                 record[LEGACY_APPROVED] = True
             if record == self._document["plugins"].get(plugin_id):
                 return copy.deepcopy(record)
             record["updated_at"] = now
+            if decision != "approved":
+                # Deny / revoke answer every permission the dialog covers; an
+                # approval answers only what it granted (their decided_at).
+                record[LEGACY_DECIDED_AT] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
 
@@ -926,8 +1009,9 @@ class PluginPermissionStore:
         """Drop what a source change drops, without changing the source.
 
         For a caller that cannot record the plugin's new source but knows
-        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps; a
-        record left with nothing to keep is removed. Returns the record
+        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps and
+        marks ``GRANTS_RESET`` when decisions were dropped; a record left
+        with nothing to keep is removed. Returns the record
         before the change (``None`` when there was none).
         """
         with self._lock:
@@ -937,13 +1021,25 @@ class PluginPermissionStore:
                 return None
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            now = _now()
+            if _had_decisions(record):
+                _mark_reset(record, now)
+                # The code changed: refusals up to now came from the old code.
+                record["source_changed_at"] = now
             _drop_for_source_change(record)
             if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
-                del document["plugins"][plugin_id]
-            elif record == cached:
+                if not record.get(GRANTS_RESET):
+                    del document["plugins"][plugin_id]
+                    self._commit(manager, document)
+                    return copy.deepcopy(cached)
+                # Only the reset note is left. Like a removed record, it no
+                # longer claims the earlier source, so the next known source
+                # is a first binding and keeps decisions made meanwhile.
+                record["source"] = None
+            if record == cached:
                 return copy.deepcopy(cached)
             else:
-                record["updated_at"] = _now()
+                record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(cached)
 

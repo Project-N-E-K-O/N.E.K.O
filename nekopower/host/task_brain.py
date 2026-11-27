@@ -56,7 +56,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from nekopower.host import call_audit
@@ -70,6 +70,7 @@ from nekopower.host.decision import (
     find_duplicate,
     is_capability_question,
     looks_like_a_task,
+    quote_data,
 )
 from nekopower.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
 from nekopower.host.permissions import DENIED_BY_USER, GrantScope, PermissionGate, PermissionStore
@@ -120,6 +121,11 @@ class Receipt:
     # to end.
     stopped: list[Commission] = field(default_factory=list)
     unconfirmed: list[Commission] = field(default_factory=list)
+    # For "stopped" and "stop_failed": what of the project's, familiar's or
+    # plugin's work of those it stopped goes on, not stopped, as the stop
+    # meant the items it named and the reading was not shown these
+    # (``Triage.left_running``). The receipt says they go on.
+    left_running: list[Commission] = field(default_factory=list)
 
     @property
     def first(self) -> Commission | None:
@@ -269,6 +275,7 @@ def whole_lines_within(lines: list[str], max_tokens: int, more: str) -> list[str
 
 def render_receipt(receipt: Receipt, lang: str) -> str:
     """Return a receipt as text, in the given language."""
+    from config.nekopower_settings import RECEIPT_LEFT_RUNNING_TITLES
     from config.prompts.prompts_nekopower_brain import NO_CAPABILITY_REASONS, RECEIPT_TEXTS
 
     templates = _texts(RECEIPT_TEXTS, lang)
@@ -277,6 +284,14 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
     note = f" {templates['unread']}" if receipt.unread else ""
     if receipt.narrowed:
         note += f" {templates['narrowed']}"
+    if receipt.left_running:
+        named = templates["joined"].join(item.title for item in receipt.left_running[:RECEIPT_LEFT_RUNNING_TITLES])
+        count = len(receipt.left_running)
+        if count > RECEIPT_LEFT_RUNNING_TITLES:
+            named = templates["left_running_more"].format(
+                titles=named, count=count, more=count - RECEIPT_LEFT_RUNNING_TITLES
+            )
+        note += " " + templates["left_running"].format(titles=named)
     if receipt.kind == "no_capability":
         reason = _texts(NO_CAPABILITY_REASONS, lang).get(receipt.reason) or receipt.reason
         return templates["no_capability"].format(reason=reason) + note
@@ -297,7 +312,7 @@ def render_receipt(receipt: Receipt, lang: str) -> str:
         ):
             if items:
                 said.append(templates[key].format(title=templates["joined"].join(item.title for item in items)))
-        return " ".join(said)
+        return " ".join(said) + note
     if receipt.kind == "stopped" and len(receipt.commissions) > 1:
         title = templates["joined"].join(commission.title for commission in receipt.commissions)
     template = templates.get(receipt.kind)
@@ -475,7 +490,10 @@ class TaskBrain:
             if session is None:
                 continue
             role = roles.get(session.preset or "", session.preset or "familiar")
-            named[session_id] = f'{role} "{session.title}"' if session.title else role
+            # The title quoted as the rest of what the host did not write
+            # (``decision.quote_data``): quotes and line breaks within it
+            # cannot end it.
+            named[session_id] = f"{role} {quote_data(session.title)}" if session.title else role
         return named
 
     async def _recently_over(self, lanlan_name: str) -> list[Commission]:
@@ -613,20 +631,41 @@ class TaskBrain:
             async def tell() -> None:
                 # Looked at when it is written (a stop of everything may come
                 # between this callback and then).
-                if generation != self._dispatch_generation and receipt.kind != "stop_failed":
-                    # Everything was stopped since: what this round came to
-                    # is over with it, and nothing of it is told now. Not what
-                    # a stop it made could not end: stopping everything does
-                    # not take up what is stopped already.
-                    return
+                said = receipt
+                if generation != self._dispatch_generation:
+                    if receipt.kind != "stop_failed":
+                        # Everything was stopped since: what this round came
+                        # to is over with it, and nothing of it is told now.
+                        return
+                    # Not what a stop it made could not end: stopping
+                    # everything does not take up what is stopped already.
+                    # What it said goes on was stopped with everything, but
+                    # for what that could not stop: looked at again (and, not
+                    # to be read, taken for stopped).
+                    going_on: list[Commission] = []
+                    if receipt.left_running:
+                        try:
+                            now = {
+                                item.id
+                                for item in await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+                            }
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - not said to go on
+                            logger.warning("reading her work under way for a late receipt failed", exc_info=True)
+                            now = set()
+                        going_on = [item for item in receipt.left_running if item.id in now]
+                    said = replace(receipt, left_running=going_on)
                 await self._reporter.receipt(
                     lanlan_name,
-                    kind=receipt.kind,
-                    text=receipt.text(lang),
-                    commission=receipt.first,
+                    kind=said.kind,
+                    text=said.text(lang),
+                    commission=said.first,
                     # Not told in time what it did with the work: she says so
-                    # now, as a question it may have answered still waits.
-                    urgent=receipt.unread,
+                    # now, as a question it may have answered still waits. So
+                    # a stop that left some of a project's work going on: the
+                    # user is not to take it all for stopped meanwhile.
+                    urgent=said.unread or bool(said.left_running),
                 )
 
             self._spawn(tell())
@@ -684,6 +723,8 @@ class TaskBrain:
             # Stopped, though what was running could not all be told to end.
             unconfirmed: list[Commission] = []
             not_stopped: list[Commission] = []
+            # Over already (ended meanwhile, or stopped from the board).
+            over: list[Commission] = []
             for target in targets:
                 if self._closed:
                     # Closing ends what is under way with the host; nothing
@@ -706,13 +747,37 @@ class TaskBrain:
                     # Over already, and what it ran could not be told to end
                     # again: not said to be nothing.
                     unconfirmed.append(after)
+                elif after is not None:
+                    over.append(after)
+            # What of their project's work goes on, not meant by the stop ("the
+            # footer one" of the shop site's): as it is now, so not one that
+            # ended meanwhile or went with the stop. Read at once, in one look
+            # at her work under way. Not once the host is closing: it ends
+            # all of it.
+            left_running: list[Commission] = []
+            if triage.left_running and not self._closed:
+                try:
+                    under_way = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - said as it was read: under way
+                    logger.warning("reading her work under way after a stop failed", exc_info=True)
+                    under_way = [by_id[item] for item in triage.left_running if item in by_id]
+                now = {item.id: item for item in under_way}
+                left_running = [now[item] for item in triage.left_running if item in now]
             if not_stopped or unconfirmed:
                 return Receipt(
-                    kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed, model_calls=calls
+                    kind="stop_failed", commissions=not_stopped, stopped=stopped, unconfirmed=unconfirmed,
+                    left_running=left_running, model_calls=calls,
                 )
             if not stopped:
+                if left_running:
+                    # What it names was over already (with how it ended), while
+                    # more of its project goes on: that may be what was meant.
+                    # Which, the user is asked.
+                    return Receipt(kind="ambiguous", commissions=[*over, *left_running], model_calls=calls)
                 return Receipt(kind="nothing_active", model_calls=calls)
-            return Receipt(kind="stopped", commissions=stopped, model_calls=calls)
+            return Receipt(kind="stopped", commissions=stopped, left_running=left_running, model_calls=calls)
         if triage.kind == "answer" and targets:
             target = targets[0]
             is_permission = (target.question() or {}).get("kind") == "permission"
@@ -1795,7 +1860,9 @@ class TaskBrain:
                 lanlan_name,
                 reason=reason,
                 text=words[reason].format(receipt=receipt.text(lang)),
-                delivery_mode="proactive" if failed else "passive",
+                # So a stop that left some of a project's work going on: the
+                # user is not to take it all for stopped meanwhile.
+                delivery_mode="proactive" if failed or receipt.left_running else "passive",
                 commission=receipt.first,
             )
         return result

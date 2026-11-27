@@ -697,7 +697,10 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
                 await switch_builtin_source(request, **callbacks)
             assert target.exists()
             assert exc_info.value.rollback_code == "override_rollback_incomplete"
-            assert store.read("study_companion") == {}
+            record = store.read("study_companion")
+            assert record["permissions"] == {}
+            # Only the note that the grants were reset is left.
+            assert record["grants_reset"]["reason"] == "source_changed"
         elif scenario == "cleanup_fails_after_denial":
             # Dropped as a source change would: approvals go, the denial stays.
             with pytest.raises(SourceSwitchError) as exc_info:

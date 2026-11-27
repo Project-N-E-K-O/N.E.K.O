@@ -109,7 +109,15 @@ def _normalize_profile_name(value: object) -> str:
             status_code=400,
             details={},
         )
-    return value.strip()
+    normalized = value.strip()
+    if "/" in normalized or "\\" in normalized or "\x00" in normalized or normalized in {".", ".."}:
+        raise ServerDomainError(
+            code="INVALID_ARGUMENT",
+            message="Invalid profile_name",
+            status_code=400,
+            details={},
+        )
+    return normalized
 
 
 def _ensure_own_plugin_scope(
@@ -241,6 +249,103 @@ async def handle_plugin_config_replace(
             {
                 "code": "PERSISTENCE_TIMEOUT",
                 "message": "Config persistence timed out; replacement was not applied",
+            }
+        )
+    return payload
+
+
+@owns_deadline
+async def handle_plugin_config_profile_upsert(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only update own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    config = _normalize_updates_payload(request.get("config"))
+    make_active = request.get("make_active")
+    payload = await _persist_before_request_deadline(
+        request_deadline=ctx.deadline,
+        persist=lambda commit_guard: config_command_service.upsert_plugin_profile_config(
+            plugin_id=target_plugin_id,
+            profile_name=profile_name,
+            config=config,
+            make_active=make_active,
+            commit_guard=commit_guard,
+        ),
+    )
+    if payload is None:
+        logger.warning(
+            "PLUGIN_CONFIG_PROFILE_UPSERT persistence cancelled before request deadline: plugin_id={}, req_id={}",
+            target_plugin_id,
+            ctx.request_id,
+        )
+        raise RpcRemoteError(
+            {
+                "code": "PERSISTENCE_TIMEOUT",
+                "message": "Config profile persistence timed out; upsert was not applied",
+            }
+        )
+    return payload
+
+
+@owns_deadline
+async def handle_plugin_config_profile_delete(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only delete own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    payload = await _persist_before_request_deadline(
+        request_deadline=ctx.deadline,
+        persist=lambda commit_guard: config_command_service.delete_plugin_profile_config(
+            plugin_id=target_plugin_id,
+            profile_name=profile_name,
+            commit_guard=commit_guard,
+        ),
+    )
+    if payload is None:
+        logger.warning(
+            "PLUGIN_CONFIG_PROFILE_DELETE persistence cancelled before request deadline: plugin_id={}, req_id={}",
+            target_plugin_id,
+            ctx.request_id,
+        )
+        raise RpcRemoteError(
+            {
+                "code": "PERSISTENCE_TIMEOUT",
+                "message": "Config profile persistence timed out; deletion was not applied",
+            }
+        )
+    return payload
+
+
+@owns_deadline
+async def handle_plugin_config_profile_activate(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only activate own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    payload = await _persist_before_request_deadline(
+        request_deadline=ctx.deadline,
+        persist=lambda commit_guard: config_command_service.set_plugin_active_profile(
+            plugin_id=target_plugin_id,
+            profile_name=profile_name,
+            commit_guard=commit_guard,
+        ),
+    )
+    if payload is None:
+        logger.warning(
+            "PLUGIN_CONFIG_PROFILE_ACTIVATE persistence cancelled before request deadline: plugin_id={}, req_id={}",
+            target_plugin_id,
+            ctx.request_id,
+        )
+        raise RpcRemoteError(
+            {
+                "code": "PERSISTENCE_TIMEOUT",
+                "message": "Config profile persistence timed out; activation was not applied",
             }
         )
     return payload

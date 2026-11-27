@@ -910,36 +910,38 @@ class TimeIndexedMemory:
             )
 
     def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
-        self._assert_timeindex_writable(lanlan_name)
-        # Ensure the database engine and path exist.
-        if not self._ensure_engine_exists(lanlan_name):
-            logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
-            return
+        with self._get_engine_lock(lanlan_name):
+            self._assert_timeindex_writable(lanlan_name)
+            # Ensure the database engine and path exist.
+            if not self._ensure_engine_exists(lanlan_name):
+                logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
+                return
 
-        if timestamp is None:
-            timestamp = datetime.now()
+            if not messages:
+                return
 
-        db_path = self.db_paths[lanlan_name]
-        uri_path = db_path.replace("\\", "/")
-        connection_string = f"sqlite:///{uri_path}"
+            if timestamp is None:
+                timestamp = datetime.now()
 
-        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-
-        origin_history = SQLChatMessageHistory(
-            connection_string=connection_string,
-            session_id=event_id,
-            table_name=original_table,
-        )
-
-        origin_history.add_messages(messages)
-        # NOTE: compressed table writes are deprecated; the fact/reflection layer replaces their functionality.
-
-        with self.engines[lanlan_name].connect() as conn:
-            conn.execute(
-                text(f"UPDATE {original_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
-                {"timestamp": timestamp, "session_id": event_id}
-            )
-            conn.commit()
+            original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+            rows = [
+                {
+                    "session_id": event_id,
+                    "message": SQLChatMessageHistory.serialize_message(msg),
+                    "timestamp": timestamp,
+                }
+                for msg in messages
+            ]
+            # NOTE: compressed table writes are deprecated; the fact/reflection layer replaces their functionality.
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {original_table} (session_id, message, timestamp) "
+                        "VALUES (:session_id, :message, :timestamp)"
+                    ),
+                    rows,
+                )
+                conn.commit()
 
     async def astore_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         await asyncio.to_thread(

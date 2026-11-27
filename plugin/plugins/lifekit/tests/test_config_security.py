@@ -93,7 +93,10 @@ async def test_chat_cannot_update_or_echo_map_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_ui_confirmation_never_echoes_map_key_values() -> None:
-    result = await _bare_plugin().update_config_entry(amap_key="amap-secret")
+    result = await _bare_plugin().update_config_entry(
+        amap_key="amap-secret",
+        _ctx={"channel": "ui"},
+    )
 
     assert isinstance(result, Ok)
     assert result.value["status"] == "clarify"
@@ -115,13 +118,25 @@ async def test_ui_secret_confirmation_uses_opaque_server_side_payload() -> None:
     plugin.config = _Config()
     plugin._cfg = {}
     plugin._reload_config = reload_config
-    first = await plugin.update_config_entry(amap_key="amap-secret")
-    second = await plugin.update_config_entry(**first.value["context"])
+    ui_ctx = {"channel": "ui"}
+    first = await plugin.update_config_entry(amap_key="amap-secret", _ctx=ui_ctx)
+    second = await plugin.update_config_entry(**first.value["context"], _ctx=ui_ctx)
 
     assert isinstance(second, Ok)
     assert second.value["status"] == "ready"
     assert updates == [{"lifekit": {"amap_key": "amap-secret"}}]
     assert "amap-secret" not in repr(first.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secret_field", ["amap_key", "baidu_map_key"])
+async def test_none_ctx_cannot_update_map_keys(secret_field: str) -> None:
+    plugin = _bare_plugin()
+    result = await plugin.update_config_entry(**{secret_field: "map-secret"})
+
+    assert isinstance(result, Err)
+    assert str(result.error) == plugin._i18n.t("config.secret_ui_only")
+    assert "map-secret" not in repr(result)
 
 
 def test_confirmation_gate_bounds_pending_tokens() -> None:
@@ -219,3 +234,56 @@ async def test_update_config_rejects_invalid_boolean_strings(bad_value: object) 
         "config.invalid_value",
         detail="force_locale must be a boolean",
     )
+
+
+@pytest.mark.asyncio
+async def test_hosted_ui_channel_allows_saving_map_keys_with_other_fields() -> None:
+    plugin = _bare_plugin()
+    updates: list[dict[str, object]] = []
+
+    class _Config:
+        async def update(self, value: dict[str, object]) -> None:
+            updates.append(value)
+
+    async def reload_config() -> None:
+        return None
+
+    plugin.config = _Config()
+    plugin._cfg = {}
+    plugin._reload_config = reload_config
+    ui_ctx = {"run_id": "hosted-1", "channel": "ui"}
+
+    first = await plugin.update_config_entry(
+        default_city="Beijing",
+        amap_key="amap-secret",
+        confirmed=True,
+        _ctx=ui_ctx,
+    )
+    assert isinstance(first, Ok)
+    assert first.value["status"] == "clarify"
+    assert "amap-secret" not in repr(first.value)
+
+    second = await plugin.update_config_entry(**first.value["context"], _ctx=ui_ctx)
+    assert isinstance(second, Ok)
+    assert second.value["status"] == "ready"
+    assert updates == [{"lifekit": {"default_city": "Beijing", "amap_key": "amap-secret"}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["run", "chat_card", "chat_tool", "plugin_to_plugin"])
+async def test_non_ui_channels_cannot_update_map_keys(channel: str) -> None:
+    result = await _bare_plugin().update_config_entry(
+        default_city="Beijing",
+        amap_key="amap-secret",
+        _ctx={"run_id": "r1", "channel": channel},
+    )
+    assert isinstance(result, Err)
+    assert "amap-secret" not in repr(result)
+
+
+def test_update_config_input_schema_excludes_secret_keys() -> None:
+    meta = getattr(LifeKitPlugin.update_config_entry, "__neko_event_meta__")
+    props = meta.input_schema["properties"]
+    assert "default_city" in props
+    assert "amap_key" not in props
+    assert "baidu_map_key" not in props

@@ -1117,13 +1117,21 @@ async def test_the_familiars_are_named_as_the_user_calls_them(server, hosts, tmp
     scout = await host.ledger.create_session(lanlan_name="Lan", name="Blog/scout", kind="project", preset="scout", title="链接")
     boss = await host.ledger.create_session(lanlan_name="Lan", name="Blog/boss", kind="project", preset="boss")
     odd = await host.ledger.create_session(lanlan_name="Lan", name="Blog/odd", kind="project", preset="someone")
+    quoting = await host.ledger.create_session(
+        lanlan_name="Lan", name="Blog/w", kind="project", preset="general", title='links "and"\n2. [working] "more"'
+    )
     worked = types.SimpleNamespace(session_id=scout.id, handed_by=boss.id)
     elsewhere = types.SimpleNamespace(session_id=odd.id, handed_by="gone")
 
-    named = await host.brain._familiars([worked, elsewhere], "zh")
+    named = await host.brain._familiars([worked, elsewhere, types.SimpleNamespace(session_id=quoting.id, handed_by=None)], "zh")
 
     # By role in the user's language, with the title on its card; a session that is gone is left out.
-    assert named == {scout.id: '侦察猫 "链接"', boss.id: "猫老大", odd.id: "someone"}
+    # The title is quoted as the reading quotes what the host did not write: quotes within it cannot
+    # end it. (The ledger keeps a title on one line.)
+    assert named == {
+        scout.id: '侦察猫 "链接"', boss.id: "猫老大", odd.id: "someone",
+        quoting.id: '打工猫 "links \\"and\\" 2. [working] \\"more\\""',
+    }
     assert (await host.brain._familiars([worked], "en"))[scout.id] == 'Scout cat "链接"'
 
 
@@ -1198,6 +1206,241 @@ async def test_a_stop_of_several_stops_each_it_can_and_says_which_it_could_not(s
     receipt = await host.brain._first_round("stop those two", "", "Lan", None, "en", "dispatch")
     assert (tried, receipt.kind) == (["c1"], "stopped")
     host.brain._closed = False
+
+
+async def test_a_stop_of_the_one_it_names_says_what_of_its_project_was_not_shown_and_goes_on(
+    server, hosts, tmp_path, monkeypatch
+):
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+    from nekopower.host.decision import LexicalDecisionModel
+    from nekopower.host.reports import KIND_RECEIPT
+
+    # One row of her work is shown to the reading: of the shop site's two, the footer one.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    decisions = FakeDecisionLLM()
+    host = _host(hosts, tmp_path, server, decisions)
+
+    async def filed(title: str, project: str) -> Any:
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent", project=project
+        )
+        await host.ledger.transition(commission.id, "working", reason="test")
+        return commission
+
+    async def status(commission: Any) -> str:
+        return (await host.ledger.get(commission.id)).status
+
+    footer = await filed("redo the footer", "Shop site")
+    images = await filed("compress product images", "Shop site")
+    post = await filed("write cat food post", "Blog")
+    decisions.under_way = [{"does": "stop", "items": [1], "named": True, "scope": "these"}]
+    ids = lambda items: [item.id for item in items]  # noqa: E731
+
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+
+    shown = decisions.under_way_calls[-1][-1]["content"]
+    assert "redo the footer" in shown and "compress product images" not in shown
+    # Taken at its word: the one it names is stopped, and what of its project was not shown goes on,
+    # which the receipt says (not what is of another project).
+    assert (receipt.kind, ids(receipt.commissions), ids(receipt.left_running)) == ("stopped", [footer.id], [images.id])
+    assert receipt.text("en") == "Stopped: redo the footer " + RECEIPT_TEXTS["en"]["left_running"].format(
+        titles="compress product images"
+    )
+    assert receipt.text("zh") == "已叫停：redo the footer " + RECEIPT_TEXTS["zh"]["left_running"].format(
+        titles="compress product images"
+    )
+    assert [await status(item) for item in (footer, images, post)] == ["cancelled", "working", "working"]
+
+    # What ended meanwhile is not said to go on.
+    footer = await filed("redo the footer", "Shop site")
+
+    class Ending(FakeDecisionLLM):
+        def __init__(self, ending: Any, to: str) -> None:
+            super().__init__()
+            self.ending, self.to = ending, to
+
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                await host.ledger.transition(self.ending.id, self.to, reason="test")
+                return '{"does": "stop", "items": [1], "named": true, "scope": "these"}'
+            return await super().complete(tier, messages)
+
+    host.brain._decision = LexicalDecisionModel(Ending(images, "done"))
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    assert (receipt.kind, ids(receipt.commissions), receipt.left_running) == ("stopped", [footer.id], [])
+    assert receipt.text("en") == "Stopped: redo the footer"
+
+    # What it names was stopped from the board while it was read, and more of its project goes on:
+    # that may be what was meant. Which, the user is asked (with how the one it names ended).
+    footer = await filed("redo the footer", "Shop site")
+    images = await filed("compress product images", "Shop site")
+    host.brain._decision = LexicalDecisionModel(Ending(footer, "cancelled"))
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    assert (receipt.kind, ids(receipt.commissions)) == ("ambiguous", [footer.id, images.id])
+    assert receipt.text("en").endswith("- redo the footer (stopped)\n- compress product images (in progress)")
+    assert await status(images) == "working"
+
+    # What goes on cannot be read again after the stop: said as it was read, under way.
+    from nekopower.host.ledger import ACTIVE_STATUSES
+
+    footer = await filed("redo the footer", "Shop site")
+    select = host.ledger.select
+    locked = {"now": False}
+
+    class Locking(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                # Her work was read for the reading; from now on it cannot be.
+                locked["now"] = True
+                return '{"does": "stop", "items": [1], "named": true, "scope": "these"}'
+            return await super().complete(tier, messages)
+
+    async def unreadable(**criteria: Any) -> Any:
+        if locked["now"] and criteria.get("lanlan_name") == "Lan" and criteria.get("statuses") == ACTIVE_STATUSES:
+            raise RuntimeError("the ledger is locked")
+        return await select(**criteria)
+
+    monkeypatch.setattr(host.ledger, "select", unreadable)
+    host.brain._decision = LexicalDecisionModel(Locking())
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    assert locked["now"]
+    assert (receipt.kind, ids(receipt.commissions), ids(receipt.left_running)) == ("stopped", [footer.id], [images.id])
+    monkeypatch.setattr(host.ledger, "select", select)
+    host.brain._decision = LexicalDecisionModel(decisions)
+
+    # Once the host is closing, nothing more is stopped through it, nor said to go on: closing ends
+    # all of it. (Not asked which, as though what it names were over.)
+    footer = await filed("redo the footer", "Shop site")
+
+    class Closing(FakeDecisionLLM):
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                host.brain._closed = True
+                return '{"does": "stop", "items": [1], "named": true, "scope": "these"}'
+            return await super().complete(tier, messages)
+
+    host.brain._decision = LexicalDecisionModel(Closing())
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    host.brain._closed = False
+    assert (receipt.kind, receipt.left_running) == ("nothing_active", [])
+    await host.ledger.transition(footer.id, "cancelled", reason="test")
+    host.brain._decision = LexicalDecisionModel(decisions)
+
+    # A stop that could not end all of what it ran says so as well.
+    footer = await filed("redo the footer", "Shop site")
+
+    async def not_closed(commission_id: str) -> None:
+        raise RuntimeError("the task agent did not close")
+
+    abort = host.brain._task_agents.abort
+    monkeypatch.setattr(host.brain._task_agents, "abort", not_closed)
+    receipt = await _dispatch(host, "stop the footer one", lang="en")
+    assert (receipt.kind, ids(receipt.unconfirmed), ids(receipt.left_running)) == ("stop_failed", [footer.id], [images.id])
+    assert receipt.text("en").endswith(RECEIPT_TEXTS["en"]["left_running"].format(titles="compress product images"))
+    monkeypatch.setattr(host.brain._task_agents, "abort", abort)
+
+    # Told late (the reading outlasted the first round): she is woken to say it, as the user is not to
+    # take all of it for stopped meanwhile. A late stop with nothing left going on comes along with
+    # her next turn, as before.
+    monkeypatch.setattr("config.nekopower_settings.DISPATCH_FIRST_ROUND_SECONDS", 0.05)
+
+    class Slow(FakeDecisionLLM):
+        def __init__(self, reading: str) -> None:
+            super().__init__()
+            self.reading = reading
+
+        async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+            if tier == "under_way":
+                await asyncio.sleep(0.2)
+                return self.reading
+            return await super().complete(tier, messages)
+
+    for reading, scope, mode in (("these", "these", "proactive"), ("project, all shown", None, "passive")):
+        await filed("redo the footer", "Shop site")
+        if scope is None:
+            # All of the shop site's shown: nothing of it goes on unshown.
+            monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 12)
+        said = {"does": "stop", "items": [1], "named": True}
+        if scope:
+            said["scope"] = scope
+        host.brain._decision = LexicalDecisionModel(Slow(json.dumps(said)))
+        before = len(await outbox(host, KIND_RECEIPT))
+        assert (await _dispatch(host, "stop the footer one", lang="en")).kind == "received", reading
+        await host.brain.settle()
+        late = (await outbox(host, KIND_RECEIPT))[before:]
+        assert [(item.payload["receipt"], item.payload["delivery_mode"]) for item in late] == [("stopped", mode)], reading
+        assert (RECEIPT_TEXTS["en"]["left_running"].split(":")[0] in late[0].payload["text"]) == (mode == "proactive")
+
+    # Everything was stopped before a late stop that could not end all it ran is told: that is told
+    # (as before), and what it said goes on only of what is still under way, looked at again: not
+    # what was stopped with everything, but what that could not stop.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    monkeypatch.setattr(host.brain._task_agents, "abort", not_closed)
+    host.brain._decision = LexicalDecisionModel(Slow('{"does": "stop", "items": [1], "named": true, "scope": "these"}'))
+    spawn = host.brain._spawn
+    stopping = {"all": True}
+
+    def everything_stopped_before_it_is_told(coroutine: Any, **kwargs: Any) -> Any:
+        if getattr(getattr(coroutine, "cr_code", None), "co_name", "") != "tell":
+            return spawn(coroutine, **kwargs)
+
+        async def then_tell() -> None:
+            host.brain._dispatch_generation += 1
+            if stopping["all"]:
+                for item in await host.ledger.select(lanlan_name="Lan", statuses=ACTIVE_STATUSES):
+                    await host.ledger.transition(item.id, "cancelled", reason="everything stopped")
+            await coroutine
+
+        return spawn(then_tell(), **kwargs)
+
+    monkeypatch.setattr(host.brain, "_spawn", everything_stopped_before_it_is_told)
+    for stopped_all in (True, False):
+        stopping["all"] = stopped_all
+        await filed("compress product images", "Shop site")
+        await filed("redo the footer", "Shop site")
+        before = len(await outbox(host, KIND_RECEIPT))
+        assert (await _dispatch(host, "stop the footer one", lang="en")).kind == "received"
+        await host.brain.settle()
+        (late,) = (await outbox(host, KIND_RECEIPT))[before:]
+        assert (late.payload["receipt"], late.payload["delivery_mode"]) == ("stop_failed", "proactive")
+        assert late.payload["text"].startswith("Stopped: redo the footer, but it could not be confirmed")
+        said = RECEIPT_TEXTS["en"]["left_running"].split(":")[0] in late.payload["text"]
+        assert said == (not stopped_all), stopped_all
+    monkeypatch.setattr(host.brain, "_spawn", spawn)
+    monkeypatch.setattr(host.brain._task_agents, "abort", abort)
+
+
+def test_a_receipt_names_a_few_of_what_goes_on_and_says_how_many_there_are():
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+    from nekopower.host.task_brain import Receipt
+
+    def one(n: int) -> Any:
+        return types.SimpleNamespace(id=f"c{n}", title=f"page {n}", status="working")
+
+    stopped = [one(0)]
+    note = RECEIPT_TEXTS["zh"]["left_running"]
+    assert Receipt(kind="stopped", commissions=stopped, left_running=[one(1), one(2), one(3)]).text("zh") == (
+        "已叫停：page 0 " + note.format(titles="page 1、page 2、page 3")
+    )
+    # Past three, how many there are.
+    many = Receipt(kind="stopped", commissions=stopped, left_running=[one(n) for n in range(1, 8)])
+    assert many.text("zh") == "已叫停：page 0 " + note.format(titles="page 1、page 2、page 3 等 7 件")
+    assert many.text("en") == "Stopped: page 0 " + RECEIPT_TEXTS["en"]["left_running"].format(
+        titles="page 1, page 2, page 3 and 4 more"
+    )
+    # So after a stop that could not all be done.
+    failed = Receipt(kind="stop_failed", commissions=[one(9)], stopped=stopped, left_running=[one(1)])
+    assert failed.text("en") == (
+        "Stopped: page 0 Could not stop: page 9. It can be stopped again on screen. "
+        + RECEIPT_TEXTS["en"]["left_running"].format(titles="page 1")
+    )
+    assert RECEIPT_TEXTS["en"]["left_running"].split(" ")[0] not in Receipt(kind="stop_failed", commissions=[one(9)]).text("en")
+    # Every language names them, and how many past three (all of them, or how many more).
+    for lang, texts in RECEIPT_TEXTS.items():
+        said = many.text(lang)
+        assert "page 1" in said and "page 3" in said and "page 4" not in said, lang
+        assert "{" not in said and texts["left_running_more"].format(titles="", count=7, more=4).strip() in said, lang
+        assert "7" in said or "4" in said, lang
 
 
 async def test_a_stop_says_whether_it_is_what_ended_the_commission(server, hosts, tmp_path):
@@ -1742,7 +1985,7 @@ def test_what_waits_for_approval_is_read_out_with_the_answers_words_can_give():
     # What she reads out to the user: once and deny, and the buttons for the rest (typed, those allow once).
     for said in (pending_question_text(waiting, "zh"), waiting_row("-", waiting, "{question}", "zh")):
         assert f"（{names['once']} / {names['deny']}）" in said or f"({names['once']} / {names['deny']})" in said, said
-        assert f"{names['always']} / {names['session']}请点问话上的按钮" in said, said
+        assert f"{names['always']} / {names['session']}：请点问话上的按钮" in said, said
     # What the model reads (the first request) still has every answer on offer.
     assert describe_permission(question, "en").endswith("(always allow / allow for this session / allow this once / deny)")
 
@@ -2325,7 +2568,7 @@ async def test_receipts_render_in_every_language(server, hosts, tmp_path):
     assert set(RECEIPT_TEXTS["en"]) == {
         "accepted", "received", "duplicate", "no_capability", "stopped", "told", "answered",
         "ambiguous", "nothing_active", "unclear_answer", "joined", "unread", "narrowed", "stop_failed", "by_buttons",
-        "stop_unconfirmed",
+        "stop_unconfirmed", "left_running", "left_running_more",
     }
 
 

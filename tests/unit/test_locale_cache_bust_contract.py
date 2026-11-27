@@ -67,6 +67,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-11-26-sync-status-ask-badge-merge",
+        "2026-11-26-model-workshop-main-merge",
+        "2026-11-26-nekopower-half-on-hints",
         "2026-11-20-model-workshop-market-entry",
         "2026-11-26-sync-status-ask-cards-merge",
         "2026-11-26-compact-ball-ask-badge",
@@ -663,7 +665,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "30ba381fa8843dd3e4d616ec2a56f7ff894f371ac73e795b3767eddedf168890"
+LOCALE_KEY_SIGNATURE = "8e96815cf0421d68ba031c651e3c295bf591aaf0e2e07f70916d04f0230d9465"
 
 
 _BUMP_INSTRUCTIONS = (
