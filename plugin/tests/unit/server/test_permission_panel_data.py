@@ -2364,3 +2364,52 @@ def test_the_saver_reads_the_audit_files_first(monkeypatch, tmp_path):
     assert index._seeded is True
     saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
     assert saved["plugins"]["a"]["permissions"][MEMORY]["last"]["at"] == _ts(timedelta(days=1))
+
+
+def test_a_rotation_waits_for_the_older_files_to_be_read(tmp_path):
+    """The audit can rotate before the saver has read the files (a file
+    near its size limit at start): the oldest backup is read first."""
+    import logging
+
+    directory = tmp_path / "audit"
+    directory.mkdir()
+    base = directory / "call_audit.jsonl"
+    oldest = _decision("a", MEMORY, ts=_ts(timedelta(days=3)))
+    (directory / "call_audit.jsonl.1").write_text(json.dumps(oldest) + "\n", encoding="utf-8")
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    index = UsageIndex(now=lambda: NOW, directory=str(directory))
+    call_audit.add_rollover_observer(index.ensure_seeded)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, json.dumps(_decision("b", MEMORY)), None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(index.ensure_seeded)
+    assert index._seeded is True
+    assert index.last_use("a", MEMORY).at == NOW - timedelta(days=3)
+    # The backup it was read from is gone now.
+    assert "\"a\"" not in (directory / "call_audit.jsonl.1").read_text(encoding="utf-8")
+
+
+def test_a_failing_rollover_reader_does_not_stop_the_rotation(tmp_path):
+    import logging
+
+    def broken():
+        raise RuntimeError("boom")
+
+    base = tmp_path / "call_audit.jsonl"
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    call_audit.add_rollover_observer(broken)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, "{}", None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(broken)
+    assert (tmp_path / "call_audit.jsonl.1").exists()
+
+
+def test_the_index_reads_the_files_before_a_rotation():
+    from plugin.server.application.plugins import permission_usage
+
+    assert permission_usage.usage_index.ensure_seeded in call_audit._rollover_observers

@@ -43,6 +43,8 @@ dropped = 0  # records not written (queue full, unwritable file, after close); m
 _observers: list = []
 # Called with every entry that did not reach the file (see add_drop_observer).
 _drop_observers: list = []
+# Called before the file is rotated (see add_rollover_observer).
+_rollover_observers: list = []
 
 
 _drop_lock = threading.Lock()
@@ -100,6 +102,15 @@ class _AuditFileHandler(logging.handlers.RotatingFileHandler):
 
     def handleError(self, record: logging.LogRecord) -> None:
         _count_drop(_record_entry(record))  # unwritable file: count it, never echo the record
+
+    def doRollover(self) -> None:
+        # Readers of the files go first: rotating drops the oldest backup.
+        for observer in tuple(_rollover_observers):
+            try:
+                observer()
+            except Exception:
+                pass  # a reader of the audit, never part of it
+        super().doRollover()
 
 
 def audit_directory():
@@ -170,6 +181,18 @@ def add_drop_observer(observer) -> None:
 def remove_drop_observer(observer) -> None:
     if observer in _drop_observers:
         _drop_observers.remove(observer)
+
+
+def add_rollover_observer(observer) -> None:
+    """Call ``observer()`` on the writer thread just before the file rotates
+    (which deletes the oldest backup); the rotation waits for it."""
+    if observer not in _rollover_observers:
+        _rollover_observers.append(observer)
+
+
+def remove_rollover_observer(observer) -> None:
+    if observer in _rollover_observers:
+        _rollover_observers.remove(observer)
 
 
 def record(entry: dict) -> None:

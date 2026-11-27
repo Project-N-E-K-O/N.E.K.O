@@ -750,6 +750,9 @@ def install() -> None:
 
     call_audit.add_observer(usage_index.observe)
     call_audit.add_drop_observer(usage_index.note_dropped)
+    # The files written before this index existed are read before the first
+    # rotation can delete one (once per run; a seed under way is waited for).
+    call_audit.add_rollover_observer(usage_index.ensure_seeded)
 
 
 _saver: tuple[threading.Thread, threading.Event] | None = None
