@@ -12,6 +12,7 @@ import posixpath
 import re
 import struct
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, replace
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
@@ -341,8 +342,21 @@ def _auxiliary(data: dict, path: str, *, kind: str = "", limits: FormatLimits) -
     return True
 
 
-def _image(resources: _Resources, path: str) -> int:
-    """Check the image signature and return the TGA decoder allocation in bytes."""
+@dataclass(frozen=True)
+class _TgaLayout:
+    pixels: int
+    pixel_bytes: int
+    offset: int
+    rle: bool
+
+    @property
+    def decoded_bytes(self) -> int:
+        # TGALoader keeps both its decoded source pixels and RGBA output for RLE.
+        return self.pixels * (4 + (self.pixel_bytes if self.rle else 0))
+
+
+def _image(resources: _Resources, path: str) -> _TgaLayout | None:
+    """Check the image signature without reading its pixel payload."""
     header = resources.prefix(path, 18)
     lower = path.lower()
     if lower.endswith(".png"):
@@ -369,28 +383,34 @@ def _image(resources: _Resources, path: str) -> int:
         _require(valid and width > 0 and height > 0, path, "invalid_model_image")
         pixels, pixel_bytes = width * height, bits // 8
         offset = 18 + header[0] + palette_length * 3
-        remaining = resources.files[path].byte_size - offset
-        if kind in (9, 10, 11):
-            with resources.archive.open("model/" + path) as handle:
-                _require(remaining > 0, path, "invalid_model_image")
-                handle.seek(offset)
-                unread_pixels = pixels
-                while unread_pixels:
-                    packet = handle.read(1)
-                    _require(packet, path, "invalid_model_image")
-                    count = (packet[0] & 0x7f) + 1
-                    length = pixel_bytes if packet[0] & 0x80 else count * pixel_bytes
-                    _require(count <= unread_pixels and len(handle.read(length)) == length,
-                             path, "invalid_model_image")
-                    unread_pixels -= count
-            # TGALoader keeps both its decoded source pixels and RGBA output.
-            return pixels * (4 + pixel_bytes)
-        _require(remaining >= pixels * pixel_bytes, path, "invalid_model_image")
-        return pixels * 4
+        _require(offset <= resources.files[path].byte_size, path, "invalid_model_image")
+        return _TgaLayout(pixels, pixel_bytes, offset, kind in (9, 10, 11))
     else:
         valid = header.startswith(b"RIFF") and header[8:12] == b"WEBP"
     _require(valid, path, "invalid_model_image")
-    return 0
+    return None
+
+
+def _validate_tga_pixels(resources: _Resources, path: str, layout: _TgaLayout) -> None:
+    if not layout.rle:
+        _require(resources.files[path].byte_size - layout.offset >= layout.pixels * layout.pixel_bytes,
+                 path, "invalid_model_image")
+        return
+    with resources.archive.open("model/" + path) as handle:
+        handle.seek(layout.offset)
+        unread_pixels = layout.pixels
+        while unread_pixels:
+            packet = handle.read(1)
+            _require(packet, path, "invalid_model_image")
+            count = (packet[0] & 0x7f) + 1
+            length = layout.pixel_bytes if packet[0] & 0x80 else count * layout.pixel_bytes
+            _require(count <= unread_pixels and len(handle.read(length)) == length,
+                     path, "invalid_model_image")
+            unread_pixels -= count
+
+
+def _require_morph_weights(weights, count: int, entry: str) -> None:
+    _require(isinstance(weights, list) and len(weights) == count and all(_number(value) for value in weights), entry)
 
 
 def _live2d(resources: _Resources) -> None:
@@ -828,7 +848,10 @@ def _vrm(resources: _Resources) -> None:
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
             counts.append(len(morphs))
         _require(len(set(counts)) <= 1, entry)
-        mesh_morph_counts.append(tuple(set(counts)))
+        target_count = counts[0] if counts else 0
+        if "weights" in mesh:
+            _require_morph_weights(mesh["weights"], target_count, entry)
+        mesh_morph_counts.append(target_count)
         mesh_draw_counts.append(draw_count)
         mesh_weight_counts.append(sum(counts))
     for animation in animations:
@@ -877,9 +900,9 @@ def _vrm(resources: _Resources) -> None:
                     continue
                 node = nodes[target["node"]]
                 _require(isinstance(node, dict), entry)
-                counts = mesh_morph_counts[_index(node.get("mesh"), meshes, entry)]
-                _require(len(counts) == 1 and counts[0] > 0, entry)
-                expected *= counts[0]
+                target_count = mesh_morph_counts[_index(node.get("mesh"), meshes, entry)]
+                _require(target_count > 0, entry)
+                expected *= target_count
             _require(output["count"] == expected, entry)
     instanced_vertices = 0
     skinned_meshes = set()
@@ -892,6 +915,9 @@ def _vrm(resources: _Resources) -> None:
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
             if field in node:
                 _index(node[field], table, entry)
+        if "weights" in node:
+            _require("mesh" in node, entry)
+            _require_morph_weights(node["weights"], mesh_morph_counts[node["mesh"]], entry)
         light = node.get("extensions", {}).get("KHR_lights_punctual")
         if light is not None:
             _require(isinstance(light, dict), entry)
@@ -1373,14 +1399,12 @@ def _pmd(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
             reader.skip(276 + bones * 20 + max(0, morphs - 1) * 20 + frames * 50)
         textures = [reader.text(100) for _ in range(10)]
         if reader.offset < reader.size:
-            # In ordinary order negative indices use bone zero. The optional
-            # IK reorder remaps even negative indices, dropping that fallback.
+            # Only -1 means unbound. Position normalization needs bone zero
+            # for that sentinel, unless the IK reorder remaps it away first.
             reordered = list(ik_owners) != owner_order
             for _ in range(reader.count("I", 83)):
                 reader.skip(20)
                 rigid_bone = reader.scalar("h")
-                # Physics accepts only -1 as an unbound rigid body. Position
-                # normalization still needs bone zero before the physics module.
                 _require(0 <= rigid_bone < len(parents)
                          or (rigid_bone == -1 and not reordered and bool(parents)), path)
                 reader.skip(61)
@@ -1422,16 +1446,19 @@ def _mmd(resources: _Resources) -> None:
         reader = _MmdReader(handle, resources.files[entry].byte_size, entry, resources.limits)
         (_pmx if entry.endswith(".pmx") else _pmd)(resources, reader, tga_references)
         _require(reader.offset == reader.size, entry, "unsupported_model_structure")
-    tga_sizes = {}
+    reference_counts = Counter(tga_references.values())
+    tga_layouts = {}
+    tga_allocated = 0
     for name in resources.files:
         if name.lower().endswith(_MMD_IMAGES):
-            decoded = _image(resources, name)
-            if decoded:
-                tga_sizes[name] = decoded
-    tga_allocated = 0
-    for target in tga_references.values():
-        tga_allocated += tga_sizes[target]
-        _require(tga_allocated <= resources.limits.mmd_tga_bytes, target, "model_accessor_budget_exceeded")
+            layout = _image(resources, name)
+            if layout is not None and name in reference_counts:
+                tga_allocated += layout.decoded_bytes * reference_counts[name]
+                _require(tga_allocated <= resources.limits.mmd_tga_bytes, name, "model_accessor_budget_exceeded")
+                tga_layouts[name] = layout
+    # Reject over-budget packages before scanning any active texture packets.
+    for name, layout in tga_layouts.items():
+        _validate_tga_pixels(resources, name, layout)
 
 
 def validate_mmd_bundle(path, *, limits: BundleLimits = BundleLimits(),

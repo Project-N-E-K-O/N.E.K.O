@@ -17,7 +17,6 @@ from tests.unit.test_model_workshop_apply_runtime import application as applicat
 from tests.unit.test_model_workshop_install import bundle_path, install
 from tests.unit.test_model_workshop_migration import owner as owner
 from utils.config_manager import get_reserved
-from utils.character_memory import character_config_mutation_lock
 
 
 @pytest.mark.asyncio
@@ -147,6 +146,7 @@ async def test_switch_while_waiting_for_save_lock_cannot_race_guard(application,
         launch.result = _public_result(config, install(owner, package)['result'])
         launch.phase = 'installed'
         checked = asyncio.Event()
+        save_lock = asyncio.Lock()
         original = models._drain_sync
 
         async def drained(call):
@@ -155,9 +155,10 @@ async def test_switch_while_waiting_for_save_lock_cannot_race_guard(application,
             return value
 
         monkeypatch.setattr(models, '_drain_sync', drained)
+        monkeypatch.setattr(models, 'character_config_mutation_lock', save_lock)
         applying = None
         try:
-            async with character_config_mutation_lock:
+            async with save_lock:
                 applying = asyncio.create_task(apply_installed(config, launch))
                 await asyncio.wait_for(checked.wait(), 5)
                 characters = config.load_characters()

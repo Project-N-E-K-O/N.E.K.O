@@ -943,6 +943,42 @@ def test_mmd_tga_decoded_storage_has_a_budget(tmp_path, image_type, required):
         validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required - 1))
 
 
+@pytest.mark.parametrize("second_reference,budget", [(None, 27), ("./face.tga", 55), ("other.tga", 55)])
+def test_mmd_checks_total_tga_budget_before_reading_packets(tmp_path, monkeypatch, second_reference, budget):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 10, 0, 0, 0, 0, 0, 2, 2, 24, 0)
+    image = header + b"\x83\x00\x00\x00"
+    files = {
+        "Avatar.pmx": pmx_bytes("face.tga", second_reference=second_reference),
+        "face.tga": image,
+    }
+    if second_reference == "other.tga":
+        files["other.tga"] = image
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    packet_reads = []
+    read = zipfile.ZipExtFile.read
+
+    def track(handle, size=-1):
+        if size == 1 and handle.name.endswith(".tga"):
+            packet_reads.append(handle.name)
+        return read(handle, size)
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", track)
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=budget))
+    assert not packet_reads
+
+
+def test_mmd_unused_tga_only_needs_a_valid_header(tmp_path):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 10, 0, 0, 0, 0, 0, 2, 2, 24, 0)
+    files = {
+        "Avatar.pmx": pmx_bytes("face.png"),
+        "face.png": b"\x89PNG\r\n\x1a\nfixture",
+        "unused.tga": header,
+    }
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    assert validate_mmd_bundle(path).model_format == "mmd"
+
+
 @pytest.mark.parametrize("image_type,identifier,pixels,accepted", [
     (2, b"id", bytes(6), True),
     (2, b"id", bytes(5), False),
@@ -1948,6 +1984,46 @@ def test_vrm_morph_texture_is_not_charged_again_for_shared_mesh_nodes(tmp_path):
     assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_morph_weights=21)).model_format == "vrm"
     with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
         validate_vrm_bundle(path, format_limits=FormatLimits(vrm_morph_weights=20))
+
+
+@pytest.mark.parametrize("scope", ["mesh", "node"])
+@pytest.mark.parametrize("weights,targets,accepted", [
+    ([0.5], 1, True),
+    ([], 0, True),
+    ([], 1, False),
+    ([0.5, 0], 1, False),
+    ([0.5], 0, False),
+    ([True], 1, False),
+    (["0.5"], 1, False),
+    (None, 1, False),
+])
+def test_vrm_explicit_morph_weights_match_the_primitive_targets(tmp_path, scope, weights, targets, accepted):
+    def graph(data):
+        data["accessors"] = [{"componentType": 5126, "type": "VEC3", "count": 3}]
+        primitive = {"attributes": {"POSITION": 0}}
+        if targets:
+            primitive["targets"] = [{"POSITION": 0}]
+        mesh = {"primitives": [primitive]}
+        node = data["nodes"][0]
+        data["meshes"] = [mesh]
+        node["mesh"] = 0
+        (mesh if scope == "mesh" else node)["weights"] = weights
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+def test_vrm_node_weights_require_a_mesh(tmp_path):
+    def graph(data):
+        data["nodes"][0]["weights"] = []
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+        validate_vrm_bundle(path)
 
 
 @pytest.mark.parametrize('table', ['light', 'mesh', 'node', 'camera', 'scene'])

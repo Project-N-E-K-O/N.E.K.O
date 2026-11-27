@@ -18,7 +18,7 @@ import httpx
 from config.network import resolve_user_plugin_base
 from utils.character_memory import character_config_mutation_lock
 from utils.cloudsave_runtime import assert_cloudsave_writable, MaintenanceModeError
-from utils.internal_http_client import internal_service_event_hooks
+from utils.http.internal_client import internal_service_event_hooks
 from utils.market_config import get_market_web_url
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason_readonly
 
