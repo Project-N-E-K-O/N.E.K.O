@@ -1264,7 +1264,7 @@ UNDER_WAY_STOP_WORD_PATTERNS = (
     # (Kanji the Japanese share first, whole: "進行中" before "進行".)
     r"进行中|進行中|执行中|執行中|実行中|运行中|運行中|停止|停下|停掉|暂停|暫停|叫停|取消|撤销|撤銷|别做|別做|不做|算了|停|全部|所有|一切|在办|在辦|在做|在跑|在弄|进行|進行|正在|手上|手头|手頭|手里|手裡|任务|任務|工作|事情",
     # English.
-    r"\b(?:stop(?:s|ped|ping)?|cancel(?:s|ed|led|ing|ling)?|halt|abort|kill|quit|drop|pause|end|every(?:thing|one)?|whatever|anything|work(?:s|ing)?|tasks?|jobs?|things?|stuff|ones?|items?|ongoing|running|current(?:ly)?|active|pending|doing|in\s+progress|under\s*way|going\s+on)\b",
+    r"\b(?:stop(?:s|ped|ping)?|cancel(?:s|ed|led|ing|ling)?|halt|abort|kill|quit|drop|pause|end|every(?:thing|one)?|whatever|anything|work(?:s|ing)?|tasks?|jobs?|things?|stuff|ones?|items?|ongoing|running|current(?:ly)?|active|pending|doing|wip|in[\s-]+progress|under[\s-]*way|going[\s-]+on)\b",
     # Japanese.
     r"止めて|中止|停止|キャンセル|取り消し|全部|全て|進行中|実行中|作業|仕事|タスク",
     # Korean.

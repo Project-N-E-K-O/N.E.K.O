@@ -1551,6 +1551,9 @@ async def test_words_of_the_stop_itself_name_nothing_where_the_list_was_cut(monk
         ("整理正在进行的任务清单", "正在办的都停了吧"),
         ("work out the shop budget", "stop the work in progress"),
         ("cancel the old jobs", "cancel all the ongoing work"),
+        # (Hyphenated as well: CodeRabbit, fourth round.)
+        ("write progress report", "stop all the work-in-progress"),
+        ("find the way out", "cancel what is under-way"),
     ):
         assert await read(these, commission("c1", title, route="task_agent"), words) == asked, words
     # What is left of words that name it names it.
@@ -1558,6 +1561,8 @@ async def test_words_of_the_stop_itself_name_nothing_where_the_list_was_cut(monk
     assert await read(these, item, "停掉竞品调研那个") == ("stop", ["c1"])
     item = commission("c1", "work out the shop budget", route="task_agent")
     assert await read(these, item, "stop working out the budget") == ("stop", ["c1"])
+    item = commission("c1", "write progress report", route="task_agent")
+    assert await read(these, item, "stop the progress report") == ("stop", ["c1"])
     # The familiar's name as the host writes it ("Working cat") is not named by "working".
     item = commission("c1", "alpha", route="task_agent", session_id="s-w")
     assert await read(these, item, "stop everything that's working", familiars={"s-w": "Working cat"}) == asked
