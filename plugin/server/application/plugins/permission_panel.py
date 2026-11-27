@@ -423,8 +423,8 @@ def _unused(index: UsageIndex, inputs: _PluginInputs, permission: str, status: s
     when the audit history covers the whole period; ``None`` otherwise.
 
     A ``system.*`` use is reported by the plugin process, and reports can be
-    lost (its queue full, a send failing, a batch over the host's limit, the
-    audit unable to write): if any of the plugin's entries were lost in the
+    lost (its queue full, a send failing, a batch over the host's limit;
+    reported as ``system_use_lost``): if any of the plugin's entries were lost in the
     period, "unused" is not known for those rows (``None``). A ``False`` is
     kept: a lost entry can hide a use, never invent one."""
     if status != "granted" or permission not in USAGE_AUDITED_PERMISSIONS:

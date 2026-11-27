@@ -419,8 +419,11 @@ class UsageIndex:
         if len(recent) > RECENT_LIMIT * 2:
             recent.sort(key=lambda item: item.at, reverse=True)
             del recent[RECENT_LIMIT:]
-        # A use its call's allow_summary also counts is listed once, there.
-        listed = self._audit.setdefault(key, []) if not use.summarized else None
+        # A use its call's allow_summary also counts is listed once, there,
+        # unless it carries a flag (e.g. consent_unavailable): that row is
+        # the only place the flag shows, and the call may have ended before
+        # the use (then no summary counts it).
+        listed = self._audit.setdefault(key, []) if not use.summarized or use.flags else None
         if listed is not None:
             listed.append(use)
         if listed is not None and len(listed) > AUDIT_KEPT * 2:
@@ -534,17 +537,26 @@ class UsageIndex:
         return "read"
 
     def _merge_summary(self, document: dict, plugins: dict) -> None:
-        since = _parse_time(document.get("covered_since"))
+        # A time later than now (the clock was ahead when it was saved)
+        # would hold coverage in the future for good: taken as now, which
+        # keeps the gap (or loss) and lets it age out.
+        now = self._now()
+
+        def not_after_now(value: object) -> datetime | None:
+            parsed = _parse_time(value)
+            return min(parsed, now) if parsed is not None else None
+
+        since = not_after_now(document.get("covered_since"))
+        gap = not_after_now(document.get("gap_at"))
         with self._lock:
             if since is not None and (self._summary_since is None or since < self._summary_since):
                 self._summary_since = since
-            gap = _parse_time(document.get("gap_at"))
             if gap is not None and (self._gap_at is None or gap > self._gap_at):
                 self._gap_at = gap
             for plugin_id, record in plugins.items():
                 if not _text(plugin_id) or not isinstance(record, dict):
                     continue
-                lost = _parse_time(record.get("lost_at"))
+                lost = not_after_now(record.get("lost_at"))
                 if lost is not None:
                     self._note_loss_locked(plugin_id, lost)
                 permissions = record.get("permissions")

@@ -2115,6 +2115,7 @@ def test_a_save_does_not_wait_for_the_audit_files_being_read(tmp_path, monkeypat
     def slow_seed(_path):
         started.set()
         release.wait(5)
+        return True  # read in full: no gap to save
 
     monkeypatch.setattr(index, "_seed_file", slow_seed)
     seeding = threading.Thread(target=index.ensure_seeded)
@@ -2141,12 +2142,36 @@ def test_lost_at_is_within_the_kept_days(tmp_path):
 
 def test_a_use_its_call_also_counts_is_listed_once(tmp_path):
     index = _index(tmp_path)
-    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry = _decision("a", MEMORY, call_id="c1", flags=[])
     entry["operation"] = "MEMORY_QUERY"
     index.observe(entry)
     index.observe({"ts": _ts(), "kind": "allow_summary", "target": "a", "call_id": "c1", "counts": {MEMORY: 1}})
     items = permission_panel.plugin_audit("a", index=index)["items"]
     assert [(item["operation"], item["count"]) for item in items] == [("call", 1)]
+
+
+def test_a_flagged_use_inside_a_call_keeps_its_own_row(tmp_path):
+    """The flag shows on that row only; the call's row is listed too."""
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    index.observe({"ts": _ts(), "kind": "allow_summary", "target": "a", "call_id": "c1", "counts": {MEMORY: 1}})
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert sorted((item["operation"], tuple(item["flags"])) for item in items) == [
+        ("MEMORY_QUERY", ("consent_unavailable",)), ("call", ()),
+    ]
+    assert index.count("a", MEMORY, 1) == 1  # counted once still
+
+
+def test_a_flagged_use_after_its_call_ended_is_listed(tmp_path):
+    """No summary counts a use made after the call ended."""
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert [(item["operation"], item["flags"]) for item in items] == [("MEMORY_QUERY", ["consent_unavailable"])]
 
 
 # ---------------------------------------------------------------------------
@@ -2601,6 +2626,23 @@ def test_a_gap_stops_mattering_after_thirty_days(tmp_path):
     }), encoding="utf-8")
     assert index.last_use_since() == NOW - timedelta(days=31)
     assert index.last_use_covers_days(30) is True
+
+
+def test_summary_times_after_now_are_taken_as_now(tmp_path):
+    """Saved while the clock was ahead: the coverage and the loss start
+    now and age out, instead of staying in the future."""
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(-timedelta(days=5)), "gap_at": _ts(-timedelta(days=10)),
+        "plugins": {"p": {"lost_at": _ts(-timedelta(days=3)), "permissions": {}}},
+    }), encoding="utf-8")
+    assert index.last_use_since() == NOW
+    assert index.last_use_covers_days(30) is False
+    assert index.lost_at("p") == NOW
+    assert index.save_summary() is True
+    later = UsageIndex(now=lambda: NOW + timedelta(days=31), directory=str(tmp_path / "audit"))
+    assert later.last_use_since() == NOW
+    assert later.last_use_covers_days(30) is True
 
 
 def test_a_gap_is_saved_before_the_rotation_goes_on(env, monkeypatch):
