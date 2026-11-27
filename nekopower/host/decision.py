@@ -759,8 +759,8 @@ def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
     """Whether the sentence shares a word with what tells these items apart.
 
     What each is (its title and the words it was asked with), its project,
-    the familiar on it or that handed it on, its plugin, what it asks, and
-    the same of its members. Words every request has are left out
+    the familiar on it or that handed it on, its plugin, what it asks as the
+    list shows it (``_asked``), and the same of its members. Words every request has are left out
     (``orchestrator.content_tokens``). Read where the list was cut only: a
     stop the model says is named, of items whose words the sentence does not
     share, is asked about (``read_under_way``).
@@ -780,9 +780,12 @@ def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
         keywords = plugin.get("keywords")
         if isinstance(keywords, list):
             found += [str(keyword) for keyword in keywords]
-        asked = (item.question() or {}).get("question")
-        if isinstance(asked, str):
-            found.append(asked)
+        if item.question():
+            # As the list shows it (``_asked``): the command or path a request
+            # for approval asks about, each question one put together asks
+            # and the answers they offer, a report's details (Greptile, first
+            # round: "stop the npm install one").
+            found.append(_asked(item)[1])
         return found
 
     for item in items:

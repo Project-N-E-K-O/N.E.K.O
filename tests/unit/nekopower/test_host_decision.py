@@ -1500,6 +1500,15 @@ async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where
         (commission("c1", "alpha", route="task_agent", user_text="redo the footer"), "stop the footer", {}),
         (_waiting("c1", "alpha", {"kind": "question", "question": "Which month first?", "id": "q1"}),
          "stop the one asking about the month", {}),
+        # What it asks as the list shows it: the command a request for approval asks to run, each
+        # question one put together asks and the answers on offer, a report's details.
+        (_waiting("c1", "prepare release", {**_BUILD, "detail": {"command": "npm install"}}),
+         "stop the npm install one", {}),
+        (_waiting("c1", "alpha", {"kind": "questions", "questions": [
+            {"question": "Which title?", "options": [{"label": "Cats"}, {"label": "Dogs"}]}], "id": "q1"}),
+         "stop the one about cats or dogs", {}),
+        (_waiting("c1", "alpha", {"kind": "report", "question": "What time?", "details": "Two tables are free."}),
+         "stop the tables one", {}),
         (commission("c1", "alpha", route="task_agent"), "stop compressing the photos", {"children": [member]}),
         (commission("c1", "alpha", route="task_agent"), "stop the images cat", {"children": [member]}),
     ]
