@@ -598,6 +598,46 @@ def _gltf_extensions(data: dict, path: str) -> None:
             pending.extend(value)
 
 
+def _validate_vrm_spring_bones(definition, nodes: list, entry: str) -> None:
+    """Validate the dependencies used by the bundled spring-bone v1 loader."""
+    if definition is None:
+        return
+    _require(isinstance(definition, dict), entry)
+    if definition.get("specVersion") not in ("1.0", "1.0-beta"):
+        return
+    colliders, groups, springs = (definition.get(key) for key in ("colliders", "colliderGroups", "springs"))
+    _require(all(items is None or isinstance(items, list) for items in (colliders, groups, springs)), entry)
+    for collider in colliders or []:
+        _require(isinstance(collider, dict), entry)
+        node = collider.get("node")
+        _require(node is None or type(node) is int, entry)
+        # The plugin skips colliders attached to missing nodes.
+        if node is not None and 0 <= node < len(nodes):
+            shape = collider.get("shape")
+            _require(isinstance(shape, dict) and any(isinstance(shape.get(kind), dict)
+                                                     for kind in ("sphere", "capsule")), entry)
+    for group in groups or []:
+        _require(isinstance(group, dict), entry)
+        indices = group.get("colliders")
+        # Missing colliders are skipped; numeric indices cannot alias array properties.
+        _require(indices is None or (isinstance(indices, list) and all(type(index) is int for index in indices)), entry)
+    for spring in springs or []:
+        _require(isinstance(spring, dict), entry)
+        indices, center, joints = (spring.get(key) for key in ("colliderGroups", "center", "joints"))
+        _require(indices is None or isinstance(indices, list), entry)
+        for index in indices or []:
+            _index(index, groups or [], entry)
+        _require(center is None or type(center) is int, entry)
+        _require(isinstance(joints, list) and all(isinstance(joint, dict) for joint in joints), entry)
+        # Each adjacent pair creates a spring joint. Its head must exist; an
+        # absent final tail is supported by the plugin's default direction.
+        for joint in joints[:-1]:
+            _index(joint.get("node"), nodes, entry)
+        if len(joints) > 1:
+            tail = joints[-1].get("node")
+            _require(tail is None or type(tail) is int, entry)
+
+
 def _vrm(resources: _Resources) -> None:
     """Check GLB framing and self-contained glTF/VRM loading dependencies."""
     entry = resources.bundle.entrypoint
@@ -640,6 +680,9 @@ def _vrm(resources: _Resources) -> None:
         _require(vrm.get("specVersion", "0.0") == "0.0", entry, "unsupported_model_extension")
     buffers, views, images, nodes, textures = (data.get(key, []) for key in ("buffers", "bufferViews", "images", "nodes", "textures"))
     _require(all(isinstance(value, list) for value in (buffers, views, images, nodes, textures)) and bool(buffers), entry)
+    extensions_used = data.get("extensionsUsed")
+    if extensions_used is None or "VRMC_springBone" in extensions_used:
+        _validate_vrm_spring_bones(extensions.get("VRMC_springBone"), nodes, entry)
     buffer_sizes = []
     for index, buffer in enumerate(buffers):
         _require(isinstance(buffer, dict) and buffer.get("type", "arraybuffer") == "arraybuffer", entry)
@@ -958,7 +1001,6 @@ def _vrm(resources: _Resources) -> None:
     mesh_references: dict[int, int] = {}
     node_parents: dict[int, int] = {}
     node_constraints: dict[int, tuple[str, int]] = {}
-    extensions_used = data.get("extensionsUsed")
     checks_node_constraints = extensions_used is None or "VRMC_node_constraint" in extensions_used
     for node_index, node in enumerate(nodes):
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)

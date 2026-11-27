@@ -771,6 +771,69 @@ def test_vrm_checks_constraints_used_by_the_bundled_plugin(tmp_path, version, de
             validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("case,accepted", [
+    ("complete", True),
+    ("no_colliders", True),
+    ("ignored_collider", True),
+    ("missing_tail", True),
+    ("empty_spring", True),
+    ("unknown_version", True),
+    ("undeclared_extension", True),
+    ("missing_group", False),
+    ("undeclared_group_table", False),
+    ("empty_spring_with_missing_group", False),
+    ("missing_joint", False),
+    ("missing_collider_shape", False),
+    ("bad_group_list", False),
+    ("missing_joints", False),
+])
+def test_vrm_spring_bones_check_the_loader_dependencies(tmp_path, case, accepted):
+    def graph(data):
+        data["nodes"] = [{"children": [1]}, {"translation": [0, 1, 0]}, {}]
+        data["scenes"][0]["nodes"] = [0, 2]
+        extension = {
+            "specVersion": "1.0",
+            "colliders": [{"node": 2, "shape": {"sphere": {"radius": 0.1}}}],
+            "colliderGroups": [{"colliders": [0]}],
+            "springs": [{"joints": [{"node": 0}, {"node": 1}], "center": 2, "colliderGroups": [0]}],
+        }
+        spring = extension["springs"][0]
+        if case != "undeclared_extension":
+            data["extensionsUsed"].append("VRMC_springBone")
+        if case == "unknown_version":
+            extension["specVersion"] = "2.0"
+        if case in ("missing_group", "empty_spring_with_missing_group", "unknown_version", "undeclared_extension"):
+            spring["colliderGroups"] = [1]
+        if case in ("no_colliders", "undeclared_group_table"):
+            del extension["colliderGroups"]
+        if case == "no_colliders":
+            del extension["colliders"], spring["colliderGroups"]
+        if case == "ignored_collider":
+            extension["colliders"][0]["node"] = 3
+            extension["colliderGroups"][0]["colliders"].append(1)
+            spring["center"] = 3
+        if case in ("empty_spring", "empty_spring_with_missing_group"):
+            spring["joints"] = []
+        if case == "missing_joint":
+            spring["joints"][0]["node"] = 3
+        if case == "missing_tail":
+            spring["joints"][1]["node"] = 3
+        if case == "missing_collider_shape":
+            del extension["colliders"][0]["shape"]
+        if case == "bad_group_list":
+            extension["colliderGroups"][0]["colliders"] = {}
+        if case == "missing_joints":
+            del spring["joints"]
+        data["extensions"]["VRMC_springBone"] = extension
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
 @pytest.mark.parametrize("interleaved", [False, True])
 def test_vrm_inverse_bind_matrices_must_be_tightly_packed(tmp_path, interleaved):
     def graph(data):
