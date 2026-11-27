@@ -555,40 +555,12 @@ class FactStore:
     _ENTITY_RENAMES = {'user': 'master', 'ai': 'neko'}
 
     def load_facts(self, name: str) -> list[dict]:
-        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        from memory.long_term_sync import require_consistent_views
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-        path = self._facts_path(name)
         if name in self._facts:
             return self._facts[name]
         with self._get_lock(name):
-            require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-            # Double-check: another thread may have loaded while waiting for lock.
-            if name in self._facts:
-                return self._facts[name]
-            if os.path.exists(path):
-                try:
-                    with consistent_view_read(path):
-                        with open(path, encoding='utf-8') as f:
-                            data = json.load(f)
-                    if isinstance(data, list):
-                        data = self._without_cold_copies(name, data)
-                        if self._migrate_v1_entity_values(data):
-                            try:
-                                assert_cloudsave_writable(
-                                    self._config_manager,
-                                    operation="migrate",
-                                    target=f"memory/{name}/facts.json",
-                                )
-                                atomic_write_json(path, data, indent=2, ensure_ascii=False)
-                                logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
-                            except MaintenanceModeError as exc:
-                                logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
-                        self._facts[name] = data
-                        return data
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
-            self._facts[name] = []
-            return self._facts[name]
+            return self._load_facts_locked(name)
 
     def _character_dir(self, name: str) -> str:
         # Cold shards sit next to facts_archive.json (same character directory).
@@ -804,15 +776,16 @@ class FactStore:
     ) -> list[dict]:
         """Active facts (plus archived ones) read from disk, raising ``RuntimeError`` when unreadable.
 
-        For keyed writes deciding "was this already written": the lenient
-        :meth:`load_facts` caches an unreadable active pool as empty (a later
-        save would erase it) and :meth:`load_facts_full` reads an unreadable
-        archive as absent. Nothing is cached. Absent files read as empty; a
-        row present in both files (an interrupted archive commit) counts once,
-        as in :meth:`load_facts_full`. ``include_cold_stubs`` adds the cold rows
-        as stubs (no text, see :meth:`load_facts_full`); a cold row's stub
-        replaces any copy of it in the two files. An unreadable cold shard
-        raises too.
+        For keyed writes deciding "was this already written": unlike
+        :meth:`load_facts` (which caches the active pool in memory after a
+        successful load) and :meth:`load_facts_full` (which treats an unreadable
+        archive as absent), this method bypasses the in-memory cache and fails
+        closed on unreadable active, archive, or cold-shard files. Absent files
+        read as empty; a row present in both files (an interrupted archive
+        commit) counts once, as in :meth:`load_facts_full`.
+        ``include_cold_stubs`` adds the cold rows as stubs (no text, see
+        :meth:`load_facts_full`); a cold row's stub replaces any copy of it in
+        the two files. An unreadable cold shard raises too.
         """
         from memory.long_term_sync import require_consistent_views, consistent_view_read
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
@@ -945,78 +918,67 @@ class FactStore:
                 # (False → True only: absorbed, signal_processed).
                 # Otherwise stale-cache writes overwrite disk True with False, making drain loops
                 # resend facts to Stage-2 / synthesize duplicate reflections.
-                if os.path.exists(path):
-                    try:
-                        with open(path, encoding='utf-8') as f:
-                            disk_facts = json.load(f)
-                        if isinstance(disk_facts, list):
-                            # Index keys always use _readable_fact_id: manual/partly corrupt legacy rows
-                            # may lack ID (f['id'] raises KeyError) or use list/dict IDs
-                            # (sets raise TypeError: unhashable). Inner handlers catch JSON/OS errors only,
-                            # so either escapes, clears cache, and re-raises; every later persistence attempt
-                            # dies on that row, preventing new facts from persisting, contrary to read-merge's
-                            # intent to overwrite corrupt data safely.
-                            absorbed_ids = {
-                                _readable_fact_id(f) for f in disk_facts
-                                if isinstance(f, dict) and f.get('absorbed')
-                                and _readable_fact_id(f) is not None
-                            }
-                            signal_processed_ids = {
-                                _readable_fact_id(f) for f in disk_facts
-                                if isinstance(f, dict) and f.get('signal_processed')
-                                and _readable_fact_id(f) is not None
-                            }
-                            # ⚠ Remaining window: no interprocess lock spans this disk read and
-                            # atomic_write_json below (self._get_lock protects local threads only), so
-                            # another process may upgrade/consume after we read ai_disclosure, then our write restores
-                            # False. This exemption introduces no new race: since #976, all read-merge
-                            # has been best-effort read/merge/overwrite; any concurrent writer
-                            # can lose merged results in that window. Closing it requires an interprocess
-                            # facts.json lock across read and write (portalocker, currently used only
-                            # in galgame store), honored by every writer: a separate architectural
-                            # change outside scope. Exemption now requires the disk row still be
-                            # ai_disclosure, narrower than the existing full merge window.
-                            #
-                            # Notes count only if the disk row has not already been upgraded by another process:
-                            # it may have upgraded using its cache and already consumed Stage-2,
-                            # leaving user_observation + True on disk. Upgrading again from this process's
-                            # stale cache and permitting writeback would requeue an already consumed fact
-                            # into Stage-2, exactly the cross-process regression read-merge prevents.
-                            # Handle duplicate IDs conservatively: nobody upgraded only if all disk rows
-                            # with that ID are still ai_disclosure. Manual/reconciled files
-                            # may contain two same-ID rows: one ai_disclosure,
-                            # another upgraded with signal_processed=True. Both sets
-                            # contain it; testing only disclosure membership would allow writeback
-                            # overwriting consumed state with False.
-                            disk_disclosure_ids: set = set()
-                            disk_other_source_ids: set = set()
-                            for f in disk_facts:
-                                if not isinstance(f, dict):
-                                    continue
-                                disk_id = _readable_fact_id(f)
-                                if disk_id is None:
-                                    continue
-                                if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
-                                    disk_disclosure_ids.add(disk_id)
-                                else:
-                                    disk_other_source_ids.add(disk_id)
-                            disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
-                            if absorbed_ids or signal_processed_ids:
-                                for f in facts:
-                                    if f.get('id') in absorbed_ids:
-                                        f['absorbed'] = True
-                                    unsealed = (
-                                        f.get('id') in just_unsealed_ids
-                                        and f.get('id') in disk_ai_disclosure_ids
-                                    )
-                                    if f.get('id') in signal_processed_ids and not unsealed:
-                                        f['signal_processed'] = True
-                    except (json.JSONDecodeError, OSError):
-                        # Read-merge is best-effort: if the on-disk
-                        # file is corrupt or unreadable, fall through
-                        # and write whatever we have. The atomic
-                        # write below will overwrite the bad payload.
-                        pass
+                _DISK_FACTS_ABSENT = object()
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        disk_facts = json.load(f)
+                except FileNotFoundError:
+                    disk_facts = _DISK_FACTS_ABSENT
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+                    logger.warning(
+                        f"[FactStore] {name}: facts.json 读取失败，拒绝覆盖写入: {e}"
+                    )
+                    raise RuntimeError(
+                        f"Refusing to overwrite unreadable facts file {path}: {e}"
+                    ) from e
+                if disk_facts is not _DISK_FACTS_ABSENT:
+                    if not isinstance(disk_facts, list):
+                        logger.warning(
+                            f"[FactStore] {name}: facts.json 顶层非 list ({type(disk_facts).__name__})，拒绝覆盖写入"
+                        )
+                        raise RuntimeError(
+                            f"Refusing to overwrite non-list facts file {path}"
+                        )
+                    # Index keys always use _readable_fact_id: manual/partly corrupt legacy rows
+                    # may lack ID (f['id'] raises KeyError) or use list/dict IDs
+                    # (sets raise TypeError: unhashable).
+                    absorbed_ids = {
+                        _readable_fact_id(f) for f in disk_facts
+                        if isinstance(f, dict) and f.get('absorbed')
+                        and _readable_fact_id(f) is not None
+                    }
+                    signal_processed_ids = {
+                        _readable_fact_id(f) for f in disk_facts
+                        if isinstance(f, dict) and f.get('signal_processed')
+                        and _readable_fact_id(f) is not None
+                    }
+                    # ⚠ Remaining window: no interprocess lock spans this disk read and
+                    # atomic_write_json below (self._get_lock protects local threads only), so
+                    # another process may upgrade/consume after we read ai_disclosure, then our write restores
+                    # False.
+                    disk_disclosure_ids: set = set()
+                    disk_other_source_ids: set = set()
+                    for f in disk_facts:
+                        if not isinstance(f, dict):
+                            continue
+                        disk_id = _readable_fact_id(f)
+                        if disk_id is None:
+                            continue
+                        if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
+                            disk_disclosure_ids.add(disk_id)
+                        else:
+                            disk_other_source_ids.add(disk_id)
+                    disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
+                    if absorbed_ids or signal_processed_ids:
+                        for f in facts:
+                            if f.get('id') in absorbed_ids:
+                                f['absorbed'] = True
+                            unsealed = (
+                                f.get('id') in just_unsealed_ids
+                                and f.get('id') in disk_ai_disclosure_ids
+                            )
+                            if f.get('id') in signal_processed_ids and not unsealed:
+                                f['signal_processed'] = True
                 atomic_write_json(path, facts, indent=2, ensure_ascii=False)
             except Exception:
                 # Cache divergence guard (CodeRabbit PR-956 Major,
@@ -7061,30 +7023,39 @@ class FactStore:
         if name in self._facts:
             return self._facts[name]
         path = self._facts_path(name)
-        if os.path.exists(path):
+        try:
+            with consistent_view_read(path):
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+        except FileNotFoundError:
+            self._facts[name] = []
+            return self._facts[name]
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+            raise RuntimeError(f"Failed to load facts file {path}: {e}") from e
+        if not isinstance(data, list):
+            logger.warning(
+                f"[FactStore] facts 文件顶层非 list ({type(data).__name__}): {path}"
+            )
+            raise RuntimeError(
+                f"Facts file {path} must contain a JSON list, got {type(data).__name__}"
+            )
+        data = self._without_cold_copies(name, data)
+        if self._migrate_v1_entity_values(data):
             try:
-                with consistent_view_read(path):
-                    with open(path, encoding='utf-8') as f:
-                        data = json.load(f)
-                if isinstance(data, list):
-                    data = self._without_cold_copies(name, data)
-                    if self._migrate_v1_entity_values(data):
-                        try:
-                            assert_cloudsave_writable(
-                                self._config_manager,
-                                operation="migrate",
-                                target=f"memory/{name}/facts.json",
-                            )
-                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
-                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
-                        except MaintenanceModeError as exc:
-                            logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
-                    self._facts[name] = data
-                    return data
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
-        self._facts[name] = []
-        return self._facts[name]
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="migrate",
+                    target=f"memory/{name}/facts.json",
+                )
+                atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+            except MaintenanceModeError as exc:
+                logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
+            except OSError as exc:
+                logger.warning(f"[FactStore] {name}: facts.json v1→v2 迁移落盘失败，暂用内存迁移结果: {exc}")
+        self._facts[name] = data
+        return data
 
     @staticmethod
     def _recompute_fact_hash(target: dict, cleaned_text: str) -> str:

@@ -395,6 +395,10 @@ const messages = {
     },
   },
   colony: {
+    askLabel: '{name} is asking you',
+    say: 'Reply…',
+    more: 'More…',
+    sayPlaceholder: 'Say something back…',
     catLabel: '{name}, {state}. Press Enter to open, arrow keys to move.',
     waitingBubble: 'Waiting for you ❗',
     answer: 'Answer…',
@@ -493,6 +497,12 @@ const messages = {
     },
   },
   ask: {
+    notePlaceholder: 'To add a sentence, write it here, then press a button above',
+    noteLabel: 'A sentence to go with your answer',
+    addPlaceholder: 'Type an answer, or add a sentence and pick above',
+    confirm: { yes: 'Yes, go ahead', no: 'No' },
+    stale: 'Not delivered: this question was already answered, or it has asked a new one. What is shown now is where it stands.',
+    noteLost: 'Your answer was delivered, but the sentence you added was not: it cannot take one right now.',
     command: 'The whole command',
     path: 'The whole path',
     copy: 'Copy',

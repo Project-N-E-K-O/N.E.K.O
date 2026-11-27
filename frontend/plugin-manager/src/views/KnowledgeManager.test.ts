@@ -845,6 +845,31 @@ describe('KnowledgeManager job polling', () => {
     expect(api.entries.mock.calls.length).toBeGreaterThan(before)
   })
 
+  it.each([
+    ['isComposing', { key: 'Process', keyCode: 229, isComposing: true }],
+    ['keyCode 229 alone', { key: 'Enter', keyCode: 229 }],
+  ])('does not search the catalog at the Enter that picks a word of an input method (%s)', async (_name, picking) => {
+    const container = await mount()
+    await openTab('catalog')
+    const search = container.querySelector<HTMLInputElement>('.toolbar .el-input input')
+    expect(search).toBeTruthy()
+    search!.value = '被炉'
+    search!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    const before = api.entries.mock.calls.length
+    // Only the way down says a word is being picked; let go, it is an Enter like any other.
+    search!.dispatchEvent(new KeyboardEvent('keydown', { ...picking, bubbles: true }))
+    search!.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.entries.mock.calls.length).toBe(before)
+    // Enter once more, with no word left to pick: now it searches.
+    search!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }))
+    search!.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }))
+    await flush()
+    expect(api.entries.mock.calls.length).toBe(before + 1)
+    expect(api.entries.mock.calls.at(-1)?.[0]).toMatchObject({ query: '被炉' })
+  })
+
   it('reloads the open catalog when an import finishes', async () => {
     vi.useFakeTimers()
     api.packJobs

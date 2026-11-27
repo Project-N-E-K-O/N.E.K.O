@@ -833,7 +833,16 @@ export default {
       exitFocus: 'Выйти из фокуса',
       exitFocusHint: 'Выйти из режима фокуса (Esc)',
       controlError: 'Ошибка элемента управления UI плагина',
-      hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
+      hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.',
+      parseDocumentConfirm: 'Разрешить плагину «{plugin}» разобрать документ «{file}»?',
+      actionConfirmTitle: 'Подтверждение действия плагина «{plugin}»',
+      actionConfirmDefault: 'Выполнить это действие?',
+      actionConfirmTimeout: 'Время подтверждения истекло, действие не выполнено.',
+      actionConfirmPending: 'Уже открыто другое подтверждение. Сначала завершите его.',
+      openPathOutOfScope: 'Эта панель может открывать только файлы в папке своего плагина или в его папке данных.',
+      openPathNoBridge: 'Открывать локальные файлы можно только в настольном приложении.',
+      openPathFailed: 'Не удалось открыть путь: {message}',
+      unsafeTargetBlocked: 'Небезопасный целевой адрес заблокирован'
     }
   },
   package: {

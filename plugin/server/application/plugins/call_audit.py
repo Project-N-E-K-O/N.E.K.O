@@ -26,15 +26,21 @@ MAX_BYTES = 4 * 1024 * 1024
 BACKUP_COUNT = 3
 
 _ring: deque[tuple[int, dict]] = deque(maxlen=1000)
-_write_order = itertools.count()  # shared by both rings; timestamps can tie
+_write_order = itertools.count()  # shared by all rings; timestamps can tie
 # Decisions get their own ring so frequent forward entries cannot evict them.
 _decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
+# A plugin process reports its own system.* uses; they get a third ring so a
+# busy (or misbehaving) plugin cannot evict the host's decisions either.
+_system_use_ring: deque[tuple[int, dict]] = deque(maxlen=500)
+_SYSTEM_USE_KINDS = frozenset({"system_use", "system_use_lost"})
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
 _generation = 0  # bumped by reopen(); a close() issued for an older run is ignored
 _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out close left behind
 dropped = 0  # records not written (queue full, unwritable file, after close); may race
+# Called with every recorded entry (see add_observer).
+_observers: list = []
 
 
 _drop_lock = threading.Lock()
@@ -110,10 +116,34 @@ def _audit_logger_locked() -> logging.Logger | None:
     return log
 
 
+def add_observer(observer) -> None:
+    """Call ``observer(entry)`` for every entry recorded from now on.
+
+    It runs on the recording thread (often the event loop), so it must be
+    quick and must not record audit entries itself; its errors are ignored.
+    """
+    if observer not in _observers:
+        _observers.append(observer)
+
+
+def remove_observer(observer) -> None:
+    if observer in _observers:
+        _observers.remove(observer)
+
+
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
-    (_decision_ring if entry.get("kind") == "decision" else _ring).append((next(_write_order), item))
+    kind = entry.get("kind")
+    ring = _decision_ring if kind == "decision" else _system_use_ring if kind in _SYSTEM_USE_KINDS else _ring
+    ring.append((next(_write_order), item))
+    for observer in tuple(_observers):
+        try:
+            observer(item)
+        except Exception:
+            # An observer must never stop an entry from being recorded; it
+            # is a reader of the audit, not part of it.
+            pass
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.
@@ -130,7 +160,8 @@ def record(entry: dict) -> None:
 
 def entries() -> list[dict]:
     """Newest first."""
-    return [item for _, item in sorted([*_ring, *_decision_ring], key=lambda pair: pair[0], reverse=True)]
+    rings = [*_ring, *_decision_ring, *_system_use_ring]
+    return [item for _, item in sorted(rings, key=lambda pair: pair[0], reverse=True)]
 
 
 def generation() -> int:

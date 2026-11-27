@@ -1916,8 +1916,9 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     host = _host(hosts, tmp_path, llm)
     receipt = await _dispatch(host, "write two files outside the work folder")
     await wait_status(host, receipt.commission_id, "waiting_user")
+    question = (await host.ledger.get(receipt.commission_id)).question()
 
-    assert (await _dispatch(host, "always, from now on")).kind == "answered"
+    assert await host.answer(receipt.commission_id, "", choice="always", question_id=question["id"]) is True
 
     await wait_status(host, receipt.commission_id, "done")
     assert (tmp_path / "one.txt").exists() and (tmp_path / "two.txt").exists()
@@ -1926,6 +1927,37 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     # question row is gone: never delivered here, and out of date once answered.)
     waits = [event for event in await _events(host, receipt.commission_id, "status") if event.payload["to"] == "waiting_user"]
     assert len(waits) == 1
+
+
+async def test_a_typed_always_allows_the_one_request_and_says_the_buttons_do_more(hosts, tmp_path):
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+
+    llm = ScriptedLLM(
+        [
+            _write_outside(tmp_path, "one.txt"),
+            [call("write", {"file_path": str(tmp_path / "two.txt"), "content": "hi"}, "c2"), finish("tool_calls")],
+            _report("ready", "written"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "write two files outside the work folder")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+
+    # Read from the words as "always" (the fake reads it so), it allows this one write:
+    # nothing in the settings changes, and the second write asks again.
+    typed = await _dispatch(host, "always, from now on")
+    assert (typed.kind, typed.narrowed) == ("answered", True)
+    assert typed.text("en").endswith(RECEIPT_TEXTS["en"]["narrowed"])
+    await wait_until(lambda: (tmp_path / "one.txt").exists(), what="the first file")
+    await wait_until(lambda: _waiting_for(host, receipt.commission_id, "two.txt"), what="the second question")
+    assert not (tmp_path / "two.txt").exists()
+    assert await host.permission_store.mode("outside_write") == "first_ask"
+    # So for "session".
+    said = await _dispatch(host, "for this session")
+    assert (said.kind, said.narrowed) == ("answered", True)
+    await wait_status(host, receipt.commission_id, "done")
+    assert await host.permission_store.mode("outside_write") == "first_ask"
+    assert (tmp_path / "two.txt").read_text(encoding="utf-8") == "hi"
 
 
 async def test_permission_denied_is_told_to_the_task_agent(hosts, tmp_path):
@@ -1967,6 +1999,37 @@ async def test_an_answer_that_says_neither_yes_nor_no_keeps_waiting(hosts, tmp_p
     assert (await host.ledger.get(receipt.commission_id)).status == "waiting_user"
     assert not (tmp_path / "outside.txt").exists()
     await host.abort(receipt.commission_id)
+
+
+async def test_what_is_said_while_its_answer_cannot_be_read_is_a_request_and_the_question_still_waits(hosts, tmp_path):
+    scripts = {
+        "outside the work folder": ScriptedLLM([_write_outside(tmp_path), _report("ready", "written")]),
+        "yes, do it": ScriptedLLM([_report("ready", "nothing to do")]),
+    }
+    decisions = FakeDecisionLLM()
+    decisions.under_way = [RuntimeError("the small model is down")]
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), decision_llm=decisions)
+    receipt = await _dispatch(host, "write a file outside the work folder")
+    question = (await wait_status(host, receipt.commission_id, "waiting_user")).question()
+
+    said = await _dispatch(host, "yes, do it")
+
+    # Not read, so no answer, and nothing is allowed: a request of its own, and the question still waits.
+    # She is told it could not be told.
+    assert said.kind == "accepted" and said.commission_id != receipt.commission_id
+    from config.prompts.prompts_nekopower_brain import RECEIPT_TEXTS
+
+    assert said.text("en").endswith(RECEIPT_TEXTS["en"]["unread"])
+    still = await host.ledger.get(receipt.commission_id)
+    assert (still.status, still.question()["id"]) == ("waiting_user", question["id"])
+    assert not (tmp_path / "outside.txt").exists()
+    # Read again once the model answers: the choice it read off the words is what the question gets.
+    decisions.under_way = []
+    answered = await _dispatch(host, "yes")
+    assert answered.kind == "answered" and not answered.unread
+    await wait_status(host, receipt.commission_id, "done")
+    assert (tmp_path / "outside.txt").read_text() == "hello"
+    await host.abort(said.commission_id)
 
 
 async def test_forbidden_category_is_refused_without_asking(hosts, tmp_path):
@@ -2512,6 +2575,223 @@ async def test_stopping_a_commission_stops_its_child_task_agents(hosts, tmp_path
     assert (await host.ledger.get(sub.id)).status == "cancelled"
 
 
+async def test_a_task_agent_that_cannot_be_closed_does_not_keep_its_parent_open(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+            _report("ready", "done"),
+        ]
+    )
+    child = ScriptedLLM([[wait, say("part one done"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    receipt = await _dispatch(host, "do the work in two parts")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    close = host.task_agents._close_session
+    failing = {sub.id}
+
+    async def close_session(session: Any) -> None:
+        if session.commission_id in failing:
+            failing.discard(session.commission_id)
+            raise RuntimeError("the runtime did not answer")
+        await close(session)
+
+    monkeypatch.setattr(host.task_agents, "_close_session", close_session)
+
+    # The child's session could not be closed, and the stop says so; both are stopped all the same,
+    # and the parent's own session is closed all the same.
+    with pytest.raises(RuntimeError, match="the runtime did not answer"):
+        await host.abort(receipt.commission_id)
+    assert [(await host.ledger.get(one)).status for one in (receipt.commission_id, sub.id)] == ["cancelled"] * 2
+    await wait_until(lambda: receipt.commission_id not in host.task_agents.running, what="the parent's session being closed")
+
+    # Stopped again: nothing fails any more.
+    again = await host.abort(receipt.commission_id)
+
+    assert (again.status, again.status_reason) == ("cancelled", "stopped")
+    await wait_until(lambda: host.task_agents.running == [], what="both sessions being closed")
+    release.set()
+    await host.brain.settle()
+    assert (await host.ledger.get(sub.id)).status_reason == "its parent was stopped"
+
+
+async def test_stopping_again_reaches_the_task_agents_it_started_that_were_stopped_and_no_others(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    children: dict[str, str] = {}
+    for status, path in (
+        ("working", ["working"]),
+        ("blocked", ["working", "blocked"]),
+        ("cancelled", ["cancelled"]),
+        ("done", ["working", "done"]),
+        ("failed", ["working", "failed"]),
+    ):
+        child = await _filed(host, f"part {status}", parent_id=parent.id)
+        for step in path:
+            await host.ledger.transition(child.id, step, reason="test")
+        children[child.id] = status
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    stopped: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        stopped.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    await host.task_agents.abort(parent.id)
+
+    # Those under way are stopped with it, and those stopped already are looked at again (one
+    # whose closing failed is closed so); those that ended otherwise are left as they are.
+    assert sorted(children[one] for one in stopped[1:]) == ["blocked", "cancelled", "working"]
+    after = {children[one.id]: one for one in await host.ledger.select(parent_id=parent.id)}
+    assert {status: one.status for status, one in after.items()} == {
+        "working": "cancelled", "blocked": "cancelled", "cancelled": "cancelled", "done": "done", "failed": "failed",
+    }
+    assert after["cancelled"].status_reason == "test"
+    # Not even asked to be stopped: nothing goes on their record.
+    for status in ("done", "failed"):
+        assert await _events(host, after[status].id, "transition_refused") == []
+
+
+async def test_a_task_agent_that_cannot_be_stopped_does_not_keep_the_others_going(hosts, tmp_path, monkeypatch):
+    from nekopower.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    children = []
+    for number in range(3):
+        child = await _filed(host, f"part {number}", parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        children.append(child.id)
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    tried: list[str] = []
+    abort = host.task_agents.abort
+    failing: dict[str, str] = {}
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        if commission_id in failing:
+            raise RuntimeError(failing[commission_id])
+        await abort(commission_id)
+
+    closed: list[str] = []
+
+    async def close_session(session: Any) -> None:
+        closed.append(session.commission_id)
+        raise RuntimeError("the parent's runtime did not answer")
+
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+    monkeypatch.setattr(host.task_agents, "_close_session", close_session)
+    # The parent's own session (no runtime of its own here), whose closing fails as well.
+    host.task_agents._sessions[parent.id] = _Session(parent.id)
+    host.task_agents._notes[parent.id] = ["also check the logs"]
+    order = [child.id for child in await host.ledger.select(parent_id=parent.id)]
+    failing.update({order[0]: "the first one failed", order[1]: "the second one failed"})
+
+    # Two children fail: the third is stopped all the same, and so is the parent itself (what is
+    # kept for it is let go, its session is asked to close). The first failure is what is raised.
+    with pytest.raises(RuntimeError, match="the first one failed"):
+        await host.task_agents.abort(parent.id)
+
+    assert tried[1:] == order
+    assert (await host.ledger.get(order[2])).status == "cancelled"
+    assert parent.id not in host.task_agents._notes
+    assert closed == [parent.id]
+    # Only its own closing failing: that is raised.
+    failing.clear()
+    closed.clear()
+    with pytest.raises(RuntimeError, match="the parent's runtime did not answer"):
+        await host.task_agents.abort(parent.id)
+    assert closed == [parent.id]
+    del host.task_agents._sessions[parent.id]
+
+
+async def test_a_stopped_task_agent_is_closed_again_though_the_ledger_cannot_be_written(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    stopped_child = await _filed(host, "part one", parent_id=parent.id)
+    await host.ledger.transition(stopped_child.id, "cancelled", reason="test")
+    working_child = await _filed(host, "part two", parent_id=parent.id)
+    await host.ledger.transition(working_child.id, "working", reason="test")
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    transition = host.task_agents._ledger.transition
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id in (stopped_child.id, working_child.id):
+            raise RuntimeError("the ledger is locked")
+        return await transition(commission_id, status, **kwargs)
+
+    tried: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents._ledger, "transition", locked)
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    with pytest.raises(RuntimeError, match="the ledger is locked"):
+        await host.task_agents.abort(parent.id)
+
+    # The one stopped already is closed again, nothing being written for it; the one whose stop
+    # could not be written is not closed (it is on record as at work), and the failure is raised.
+    assert tried[1:] == [stopped_child.id]
+    assert (await host.ledger.get(working_child.id)).status == "working"
+
+
+async def test_a_stop_ends_the_commission_itself_though_what_it_started_cannot_be_read_and_spares_one_that_ended(
+    hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    child = await _filed(host, "part one", parent_id=parent.id)
+    await host.ledger.transition(child.id, "working", reason="test")
+    # Read while it was at work, and done by the time its stop is written.
+    seen_at_work = await host.ledger.get(child.id)
+    await host.ledger.transition(child.id, "done", reason="test")
+    await host.ledger.transition(parent.id, "cancelled", reason="test")
+    select = host.task_agents._ledger.select
+    unreadable = {"value": False}
+
+    async def read(**criteria: Any) -> Any:
+        if criteria.get("parent_id") == parent.id:
+            if unreadable["value"]:
+                raise RuntimeError("the ledger cannot be read")
+            return [seen_at_work]
+        return await select(**criteria)
+
+    tried: list[str] = []
+    abort = host.task_agents.abort
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents._ledger, "select", read)
+    monkeypatch.setattr(host.task_agents, "abort", recorded)
+
+    # The child ended (done) between being read and its stop: its stop is refused, and its
+    # session is not closed.
+    await host.task_agents.abort(parent.id)
+    assert tried == [parent.id]
+    assert (await host.ledger.get(child.id)).status == "done"
+    # What it started cannot be read: the commission itself is ended all the same, and that is raised.
+    unreadable["value"] = True
+    host.task_agents._notes[parent.id] = ["also check the logs"]
+    with pytest.raises(RuntimeError, match="the ledger cannot be read"):
+        await host.task_agents.abort(parent.id)
+    assert parent.id not in host.task_agents._notes
+
+
 async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(
@@ -2688,6 +2968,447 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
     # (Asked again where the ledger could not be read at once: the child is not left as it was.)
     assert bool(failed) == (ledger != "readable")
+
+
+async def _no_quota_left(commission_id: str) -> bool:
+    return False
+
+
+async def _a_team_at_work(host: Any, monkeypatch: Any, tmp_path: Path) -> SimpleNamespace:
+    """A commission at work, with its session, and eighteen task agents it started, each stopped its own way.
+
+    One cannot be stopped (its runtime does not answer, however often it is asked), one is
+    stopped when it is asked again (the ledger was locked as it was stopped); one cannot have
+    its stop written (the ledger is locked for it, however often it is asked), one has it
+    written when it is asked again; one is stopped as ever. One is done and waits in its git
+    worktree for the user to have it landed (stuck over that alone); one was read at work and
+    waits so by the time its stop is written; one is being landed at the user's word; one
+    waits so and cannot have its stop written either; one waited so and was taken up again
+    (queued, its worktree on record as it was left). Three cannot have their stop written, and
+    stand otherwise by then than as they were read: one waited so and is taken up again, one was
+    at work and waits so, one waits so and cannot be read again either. A landing writes how two end this moment: one
+    is being left for the user (its worktree on record as waiting, itself not stuck yet), the
+    other's landing gives way to more that was said to it. One is gone from the ledger by the time
+    its stop is written; one was read at work and is done by then, and one was read at work
+    and is stopped (by the user) by then. What the commission started is read at the second
+    asking; ``read_failures``: how many times that fails first.
+    """
+    from nekopower.host.ledger import Transition
+    from nekopower.host.task_agents import _Session
+
+    manager = host.task_agents
+    # Asked again a moment later, not after a while.
+    monkeypatch.setattr("config.nekopower_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    members: dict[str, str] = {}
+    for name in (
+        "cannot be closed",
+        "closed when asked again",
+        "cannot be written",
+        "written when asked again",
+        "at work",
+        "waits in its worktree",
+        "waits by then",
+        "being landed",
+        "waits and cannot be written",
+        "taken up again, cannot be written",
+        "stuck by then, cannot be written",
+        "waits, cannot be read or written",
+        "taken up again",
+        "on its way to wait",
+        "landing gave way",
+        "gone meanwhile",
+        "done meanwhile",
+        "stopped meanwhile",
+    ):
+        child = await _filed(host, name, parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        members[name] = child.id
+
+    async def tree(name: str, state: str) -> None:
+        path = tmp_path / f"the-worktree-of-{name.replace(' ', '-')}"
+        path.mkdir()
+        await host.ledger.add_tree(
+            id=f"the-tree-of-{name.replace(' ', '-')}", project_dir=str(tmp_path), path=str(path),
+            workdir=str(path), state=state, commission_id=members[name],
+        )
+
+    async def waits(name: str, state: str) -> None:
+        # Done, and stuck over its worktree alone (``tree_work``).
+        await host.ledger.transition(members[name], "blocked", reason="test")
+        await tree(name, state)
+
+    # A landing writes how two of them end this moment (``_landing_ends``). One's changes are being
+    # left for the user (``_left_for_the_user``): its worktree is on record as waiting, and it is not
+    # on record as stuck yet. The other's landing gives way to more that was said to it: at work.
+    await tree("on its way to wait", "unlanded")
+    await tree("landing gave way", "active")
+    landings = {members["on its way to wait"]: "blocked", members["landing gave way"]: None}
+    for one in landings:
+        manager._landing_ends[one] = asyncio.get_running_loop().create_future()
+    written = manager._landing_end_written
+
+    async def land(commission_id: str) -> None:
+        # The landing goes on while it is waited for, and is through.
+        if landings.get(commission_id) is not None:
+            await host.ledger.transition(commission_id, landings[commission_id], reason="test")
+        manager._landing_ends.pop(commission_id).set_result(None)
+
+    async def end_written(commission_id: str) -> None:
+        if commission_id in manager._landing_ends:
+            asyncio.ensure_future(land(commission_id))
+        await written(commission_id)
+
+    monkeypatch.setattr(manager, "_landing_end_written", end_written)
+    await waits("waits in its worktree", "held")
+    await waits("waits and cannot be written", "held")
+    await waits("taken up again, cannot be written", "held")
+    await waits("waits, cannot be read or written", "held")
+    # More was said to it: queued for a place (``_requeue``), its worktree on record as it was left
+    # until it is at work in it (``_tree_at_work``).
+    await waits("taken up again", "held")
+    await host.ledger.transition(members["taken up again"], "queued", reason="test")
+    # The user had it landed this moment: on record as being landed, and in hand (``_tree_in_hand``).
+    await waits("being landed", "landing")
+    manager._decided_for["the-tree-of-being-landed"] = members["being landed"]
+    # In the order they were started: the one that cannot be closed comes first, and the others
+    # after it are stopped all the same (or not, if a failure gave the rest up).
+    seen = await host.ledger.select(parent_id=parent.id, oldest_first=True)
+    assert [child.id for child in seen] == list(members.values())
+    await waits("waits by then", "unlanded")
+    # Read stuck, taken up again since; read at work, stuck over its worktree since.
+    await host.ledger.transition(members["taken up again, cannot be written"], "queued", reason="test")
+    await waits("stuck by then, cannot be written", "unlanded")
+    await host.ledger.transition(members["done meanwhile"], "done", reason="test")
+    await host.ledger.transition(members["stopped meanwhile"], "cancelled", reason="test")
+    team = SimpleNamespace(
+        parent=parent, members=members, seen=[child.id for child in seen], tried=[], closed=[], read_failures=1,
+        unreadable={members["waits, cannot be read or written"]},
+    )
+    select, transition, abort, get = manager._ledger.select, manager._ledger.transition, manager.abort, manager._ledger.get
+    unwritten = {members["written when asked again"]}
+    unstopped = {members["closed when asked again"]}
+    never_written = {
+        members[name] for name in (
+            "cannot be written", "waits and cannot be written", "taken up again, cannot be written",
+            "stuck by then, cannot be written", "waits, cannot be read or written",
+        )
+    }
+
+    async def look(commission_id: str) -> Any:
+        if commission_id in team.unreadable:
+            raise RuntimeError("the ledger cannot be read")
+        return await get(commission_id)
+
+    async def read(**criteria: Any) -> Any:
+        if criteria.get("parent_id") == parent.id:
+            if team.read_failures:
+                team.read_failures -= 1
+                raise RuntimeError("the ledger cannot be read")
+            return seen
+        return await select(**criteria)
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id in never_written or commission_id in unwritten:
+            unwritten.discard(commission_id)
+            raise RuntimeError("the ledger is locked")
+        if commission_id == members["gone meanwhile"]:
+            return Transition(applied=False, commission=None, previous=None, refusal="no such commission")
+        return await transition(commission_id, status, **kwargs)
+
+    async def recorded(commission_id: str) -> None:
+        team.tried.append(commission_id)
+        if commission_id == members["cannot be closed"]:
+            raise RuntimeError("the runtime did not answer")
+        if commission_id in unstopped:
+            unstopped.discard(commission_id)
+            raise RuntimeError("the ledger is locked")
+        await abort(commission_id)
+
+    async def close_session(session: Any) -> None:
+        team.closed.append(session.commission_id)
+
+    async def not_noted(*args: Any) -> None:
+        # (What the request used is not what this is about.)
+        return None
+
+    monkeypatch.setattr(manager._ledger, "select", read)
+    monkeypatch.setattr(manager._ledger, "transition", locked)
+    monkeypatch.setattr(manager._ledger, "get", look)
+    monkeypatch.setattr(manager, "abort", recorded)
+    monkeypatch.setattr(manager, "_close_session", close_session)
+    monkeypatch.setattr(manager, "_note_usage", not_noted)
+    team.session = _Session(parent.id, session_id="the-parents-session", free=True)
+    manager._sessions[parent.id] = team.session
+    # Each at work in a session of its own: what is closed of them is seen.
+    for name, one in members.items():
+        manager._sessions[one] = _Session(one, session_id=f"the-session-of-{name.replace(' ', '-')}")
+    return team
+
+
+async def _ended_for_what_it_used(manager: Any, team: SimpleNamespace, end: str) -> Any:
+    """End the commission as ``end`` says: its quota runs out partway through, or the usage the user allowed is used up."""
+    try:
+        if end == "quota":
+            # A request of its own that found no quota left.
+            return await manager._on_usage(team.session, {"type": "usage", "input": 100, "output": 10})
+        # The last of the requests it had for handing over what it has.
+        team.session.wind_up_left = 0
+        return await manager._wind_up_step(team.session)
+    finally:
+        team.unreadable.clear()
+        for one in (team.parent.id, *team.members.values()):
+            manager._sessions.pop(one, None)
+            manager._landing_ends.pop(one, None)
+        manager._decided_for.pop("the-tree-of-being-landed", None)
+
+
+@pytest.mark.parametrize("end", ["quota", "usage"])
+async def test_each_task_agent_is_stopped_by_itself_when_the_commission_that_started_them_ends_for_what_it_used(
+    hosts, tmp_path, monkeypatch, end
+):
+    from nekopower.host.task_agents import _QUOTA_RUN_REASON, _USAGE_REASON
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
+    team = await _a_team_at_work(host, monkeypatch, tmp_path)
+
+    said = await _ended_for_what_it_used(host.task_agents, team, end)
+
+    ended = await host.ledger.get(team.parent.id)
+    if end == "quota":
+        assert said is None
+        assert (ended.status, ended.status_reason) == ("failed", _QUOTA_RUN_REASON)
+    else:
+        # The run is told to stop all the same: a failure here would let it make the request.
+        assert said == {"stop": True}
+        assert (ended.status, ended.status_reason) == ("blocked", _USAGE_REASON)
+    # What it started is read though the first reading failed. One that cannot be stopped is asked
+    # as often as the ledger is (three times), and does not keep the next from being stopped; one
+    # stopped when asked again is stopped so. One whose stop cannot be written is closed all the
+    # same (on record it is at work), and one whose stop is written when asked again is stopped;
+    # one that waits in its worktree for the user is left to wait, as when a commission ends
+    # otherwise, and so is one that came to wait after it was read, one being landed at the
+    # user's word, and one that waits and whose stop cannot be written; one taken up again since
+    # its worktree came to wait is stopped as any other. A landing that writes how one ends is
+    # waited for: one it leaves to wait for the user waits, one it gives way with is stopped. One
+    # gone from the ledger meanwhile is closed all the same; one that ended meanwhile is not
+    # closed, one that was stopped meanwhile is closed all the same. Those whose stop cannot be
+    # written are looked at as they stand by then: one taken up again since it was read is
+    # stopped, one stuck over its worktree since is not, and one that cannot be read again either
+    # is taken as it was read (stuck).
+    members = team.members
+    assert team.read_failures == 0
+    waiting = (
+        "waits in its worktree", "waits by then", "being landed", "waits and cannot be written", "on its way to wait",
+        "stuck by then, cannot be written", "waits, cannot be read or written",
+    )
+    left = (*waiting, "done meanwhile")
+    asked = {"cannot be closed": 3, "closed when asked again": 2}
+    assert team.tried == [members[name] for name in members if name not in left for _ in range(asked.get(name, 1))]
+    after = {name: await host.ledger.get(one) for name, one in members.items()}
+    assert {name: one.status for name, one in after.items()} == {
+        "cannot be closed": "cancelled",
+        "closed when asked again": "cancelled",
+        "cannot be written": "working",
+        "written when asked again": "cancelled",
+        "at work": "cancelled",
+        **dict.fromkeys(waiting, "blocked"),
+        "taken up again, cannot be written": "queued",
+        "taken up again": "cancelled",
+        "landing gave way": "cancelled",
+        "gone meanwhile": "working",
+        "done meanwhile": "done",
+        "stopped meanwhile": "cancelled",
+    }
+    stopped_with_it = (
+        "cannot be closed", "closed when asked again", "written when asked again", "at work", "taken up again",
+        "landing gave way",
+    )
+    for name in stopped_with_it:
+        assert after[name].status_reason == "its parent finished"
+    for name in (*waiting, "stopped meanwhile"):
+        assert after[name].status_reason == "test"
+    trees = {name: (await host.ledger.get_tree(f"the-tree-of-{name.replace(' ', '-')}")).state for name in waiting}
+    assert trees == {
+        "waits in its worktree": "held", "waits by then": "unlanded", "being landed": "landing",
+        "waits and cannot be written": "held", "on its way to wait": "unlanded",
+        "stuck by then, cannot be written": "unlanded", "waits, cannot be read or written": "held",
+    }
+    # Nothing goes on their record for it: a stop refused over the worktree is not noted.
+    for name in waiting:
+        assert await _events(host, members[name], "transition_refused") == []
+    assert host.task_agents._landing_ends == {}
+    # Their sessions are asked to close (the one whose stop cannot be written among them; not the
+    # one that cannot be stopped, those that wait in their worktree, nor the one that ended
+    # meanwhile), and the commission's own after.
+    closed = (
+        "closed when asked again",
+        "cannot be written",
+        "written when asked again",
+        "at work",
+        "taken up again, cannot be written",
+        "taken up again",
+        "landing gave way",
+        "gone meanwhile",
+        "stopped meanwhile",
+    )
+    assert team.closed == [*(members[name] for name in closed), team.parent.id]
+
+
+@pytest.mark.parametrize("end", ["quota", "usage"])
+async def test_a_commission_that_ends_for_what_it_used_is_closed_though_what_it_started_cannot_be_read(
+    hosts, tmp_path, monkeypatch, end
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=_no_quota_left)
+    team = await _a_team_at_work(host, monkeypatch, tmp_path)
+    # Not even when asked again.
+    team.read_failures = 99
+
+    said = await _ended_for_what_it_used(host.task_agents, team, end)
+
+    assert said == (None if end == "quota" else {"stop": True})
+    # Asked as often as a reading at the end of a run is (``_looked``), and then given up on.
+    assert team.read_failures == 99 - 3
+    assert (await host.ledger.get(team.parent.id)).status == ("failed" if end == "quota" else "blocked")
+    assert team.tried == []
+    assert team.closed == [team.parent.id]
+
+
+async def test_a_commission_that_is_over_leaves_the_task_agents_that_wait_in_their_worktree_to_wait(
+    hosts, tmp_path, monkeypatch
+):
+    """As any commission ends (``_end_what_it_started``): whether what it started waits in its worktree is looked at as each one's end is written."""
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    monkeypatch.setattr("config.nekopower_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
+    parent = await _filed(host, "do the work")
+    await host.ledger.transition(parent.id, "working", reason="test")
+    members: dict[str, str] = {}
+    for name in (
+        "at work",
+        "cannot be written",
+        "waits in its worktree",
+        "waits and cannot be written",
+        "taken up again",
+        "taken up again meanwhile",
+        "landed meanwhile",
+        "landed while being landed",
+        "waits by then",
+        "being landed",
+    ):
+        child = await _filed(host, name, parent_id=parent.id)
+        await host.ledger.transition(child.id, "working", reason="test")
+        members[name] = child.id
+    await host.ledger.transition(parent.id, "done", reason="test")
+
+    def tree_of(name: str) -> str:
+        return f"the-tree-of-{name.replace(' ', '-')}"
+
+    async def waits(name: str, state: str) -> None:
+        # Done, and stuck over its worktree alone (``tree_work``).
+        await host.ledger.transition(members[name], "blocked", reason="test")
+        path = tmp_path / tree_of(name)
+        path.mkdir()
+        await host.ledger.add_tree(
+            id=tree_of(name), project_dir=str(tmp_path), path=str(path), workdir=str(path), state=state,
+            commission_id=members[name],
+        )
+
+    for name in (
+        "waits in its worktree", "waits and cannot be written", "landed meanwhile", "taken up again",
+        "taken up again meanwhile",
+    ):
+        await waits(name, "held")
+    # More was said to it: queued for a place (``_requeue``), its worktree on record as it was left
+    # until it is at work in it (``_tree_at_work``).
+    await host.ledger.transition(members["taken up again"], "queued", reason="test")
+    # The user had it landed as the end begins: in hand (``_tree_in_hand``), on record as being
+    # landed, and at work again on its way to being done (``_landed_at_the_users_word``).
+    await waits("landed while being landed", "landing")
+    await host.ledger.transition(members["landed while being landed"], "working", reason="landing")
+    manager._decided_for[tree_of("landed while being landed")] = members["landed while being landed"]
+    select, transition, abort = manager._ledger.select, manager._ledger.transition, manager.abort
+    after_reading: list[str] = []
+
+    async def read(**criteria: Any) -> Any:
+        found = await select(**criteria)
+        if criteria.get("parent_id") == parent.id and not after_reading:
+            after_reading.append("done")
+            # After what it started is read, before their ends are written: one comes to wait
+            # for the user, one is being landed at the user's word (on record as being landed,
+            # and in hand), one is landed and done, the one that was being landed is done, and
+            # more is said to one that waited (it was read stuck).
+            await waits("waits by then", "unlanded")
+            await waits("being landed", "landing")
+            manager._decided_for[tree_of("being landed")] = members["being landed"]
+            await transition(members["landed meanwhile"], "working", reason="landed")
+            await transition(members["landed meanwhile"], "done", reason="landed")
+            await host.ledger.update_tree(tree_of("landed meanwhile"), state="discarding")
+            await transition(members["landed while being landed"], "done", reason="landed")
+            await host.ledger.update_tree(tree_of("landed while being landed"), state="discarding")
+            manager._decided_for.pop(tree_of("landed while being landed"), None)
+            await transition(members["taken up again meanwhile"], "queued", reason="test")
+        return found
+
+    async def locked(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id in (members["cannot be written"], members["waits and cannot be written"]):
+            raise RuntimeError("the ledger is locked")
+        return await transition(commission_id, status, **kwargs)
+
+    tried: list[str] = []
+
+    async def recorded(commission_id: str) -> None:
+        tried.append(commission_id)
+        await abort(commission_id)
+
+    async def unreadable(**criteria: Any) -> Any:
+        # Which worktrees wait for the user cannot be read apart: that is looked at only as each
+        # one's end is written, in the same transaction.
+        raise RuntimeError("the worktrees cannot be read")
+
+    monkeypatch.setattr(manager._ledger, "trees", unreadable)
+    monkeypatch.setattr(manager._ledger, "select", read)
+    monkeypatch.setattr(manager._ledger, "transition", locked)
+    monkeypatch.setattr(manager, "abort", recorded)
+    try:
+        await manager._end_what_it_started(parent.id)
+    finally:
+        manager._decided_for.pop(tree_of("being landed"), None)
+        manager._decided_for.pop(tree_of("landed while being landed"), None)
+
+    # Those that wait for the user are left to wait, looked at as their end is written (also one
+    # that came to wait after what the commission started was read, and one being landed at the
+    # user's word); one that is stuck and whose end cannot be written is left as it is. Those that
+    # ended meanwhile are not stopped: their own end lets them go. The one at work is ended and
+    # stopped, and so are those taken up again since their worktree came to wait, before what the
+    # commission started was read or after; one whose end cannot be written is stopped all the same.
+    stopped = ["at work", "cannot be written", "taken up again", "taken up again meanwhile"]
+    assert sorted(tried) == sorted(members[name] for name in stopped)
+    after = {name: await host.ledger.get(one) for name, one in members.items()}
+    waiting = ("waits in its worktree", "waits and cannot be written", "waits by then", "being landed")
+    assert {name: one.status for name, one in after.items()} == {
+        "at work": "cancelled",
+        "cannot be written": "working",
+        **dict.fromkeys(waiting, "blocked"),
+        "taken up again": "cancelled",
+        "taken up again meanwhile": "cancelled",
+        "landed meanwhile": "done",
+        "landed while being landed": "done",
+    }
+    for name in ("at work", "taken up again", "taken up again meanwhile"):
+        assert after[name].status_reason == "its parent finished"
+    for name in waiting:
+        assert after[name].status_reason == "test"
+    # Nothing goes on their record for it: a stop refused over the worktree, or because it ended
+    # meanwhile, is not noted.
+    for name in (*waiting, "landed meanwhile", "landed while being landed"):
+        assert await _events(host, members[name], "transition_refused") == []
+    trees = {name: (await host.ledger.get_tree(tree_of(name))).state for name in (*waiting, "landed meanwhile")}
+    assert trees == {
+        "waits in its worktree": "held", "waits and cannot be written": "held", "waits by then": "unlanded",
+        "being landed": "landing", "landed meanwhile": "discarding",
+    }
 
 
 async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts, tmp_path):

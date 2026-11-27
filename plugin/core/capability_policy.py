@@ -15,27 +15,48 @@ from plugin.sdk.shared.permissions import PERMISSIONS
 # Defined now so the wire contract is fixed; nothing returns it yet.
 CAPABILITY_NOT_GRANTED = "CAPABILITY_NOT_GRANTED"
 
-# Where the master switch can be turned on from.
+# Where the master switch can be turned on from. Only the host config is
+# written by the host (the plugin manager's setting); the environment
+# variables are read only.
 SOURCE_HOST_CONFIG = "host_config"
+SOURCE_ENV = "env"
 SOURCE_LEGACY_ENV = "legacy_env"
+SOURCES: tuple[str, ...] = (SOURCE_HOST_CONFIG, SOURCE_ENV, SOURCE_LEGACY_ENV)
+WRITABLE_SOURCES: frozenset[str] = frozenset({SOURCE_HOST_CONFIG})
+ENV_NAME = "NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED"
 LEGACY_ENV_NAME = "NEKO_PLUGIN_CAPABILITY_POLICY"
 _LEGACY_SWITCHED_OFF = frozenset({"off", "observe"})
+
+
+def _host_config_disabled() -> bool:
+    try:
+        from plugin.server.infrastructure.permission_switch import switch_store
+
+        return switch_store.disabled()
+    except Exception:
+        # The switch only ever turns checks off; unreadable means on.
+        return False
+
+
+def source_states() -> dict[str, bool]:
+    """Whether each source switches the checks off."""
+    from plugin import settings
+
+    return {
+        SOURCE_HOST_CONFIG: _host_config_disabled(),
+        SOURCE_ENV: getattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False) is True,
+        SOURCE_LEGACY_ENV: getattr(settings, "PLUGIN_CAPABILITY_POLICY", None) in _LEGACY_SWITCHED_OFF,
+    }
 
 
 def checks_disabled_sources() -> tuple[str, ...]:
     """Which configuration turned permission checks off; empty while they are on.
 
-    Either source is enough: when the host setting and the legacy variable
-    disagree, the switch is on. Read at call time.
+    Any source is enough: when they disagree, the switch is on. Read at call
+    time (the host config value is cached by its store).
     """
-    from plugin import settings
-
-    sources = []
-    if getattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False) is True:
-        sources.append(SOURCE_HOST_CONFIG)
-    if getattr(settings, "PLUGIN_CAPABILITY_POLICY", None) in _LEGACY_SWITCHED_OFF:
-        sources.append(SOURCE_LEGACY_ENV)
-    return tuple(sources)
+    states = source_states()
+    return tuple(source for source in SOURCES if states[source])
 
 
 def checks_disabled() -> bool:
@@ -68,8 +89,9 @@ def startup_notices() -> list[str]:
             meaning = "it now turns the master switch on: uses are still judged and recorded, none are refused"
         elif legacy == "enforce":
             meaning = "it now leaves permission checks in force"
-            if SOURCE_HOST_CONFIG in checks_disabled_sources():
-                meaning += ", but NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED switches them off anyway"
+            others = [source for source in checks_disabled_sources() if source != SOURCE_LEGACY_ENV]
+            if others:
+                meaning += ", but the master switch is on anyway (source: " + ", ".join(others) + ")"
         else:
             meaning = "the value is not one of off / observe / enforce and is ignored"
         notices.append(

@@ -23,9 +23,8 @@ def _local(case: dict[str, Any], bars: Bars) -> tuple[str, orch.Verdict | None]:
     verdict = orch.by_rules(case["dispatch"], case["user"], standing, bars)
     if verdict is not None:
         return "rules", verdict
-    key = cases_of.follows_up(case["dispatch"], standing)
-    if key is not None:
-        return "rules", orch.settle(key, orch.FOLLOW_UP, standing, bars)
+    # (What goes on with work that ended lately is read before the orchestrator, by a model:
+    # ``decision.LexicalDecisionModel.read_under_way``. What it does not take comes here.)
     verdict, _matches = orch.by_retrieval(case["dispatch"], case["user"], standing, bars)
     if verdict is None:
         return "ask", None

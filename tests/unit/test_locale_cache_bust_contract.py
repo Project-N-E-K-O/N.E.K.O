@@ -66,11 +66,33 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
-        "2026-11-25-knowledge-subscriptions-merge",
+        "2026-11-26-knowledge-audio-message-merge",
+        "2026-11-26-nekopower-half-on-hints",
+        "2026-11-26-sync-status-ask-badge-merge",
+        "2026-11-26-sync-status-ask-cards-merge",
+        "2026-11-26-compact-ball-ask-badge",
+        "2026-11-26-sync-review-main-merge",
+        "2026-11-26-nekopower-ask-cards",
+        "2026-11-25-sync-channel-status",
         "2026-11-25-chat-audio-message-glue",
+        "2026-11-25-chat-audio-ui-main-merge",
+        "2026-11-25-chat-audio-ui-only",
+        "2026-11-25-bailian-api-host",
+        "2026-11-25-chat-audio-main-merge-2",
+        "2026-11-25-chat-audio-main-merge",
         "2026-11-25-subscriptions-panel",
-        "2026-11-25-knowledge-qwen-main-merge",
+        "2026-11-16-chat-audio-expired",
         "2026-11-25-qwen-token-plan-tts-main-merge",
+        "2026-11-15-chat-audio-independent-asr",
+        "2026-11-15-chat-audio-main-rebase-4",
+        "2026-11-15-chat-audio-main-rebase-3",
+        "2026-11-14-chat-audio-theater-nekoclaw-merge",
+        "2026-11-15-chat-audio-main-rebase-2",
+        "2026-11-14-chat-audio-theater-nekoclaw-manual-unavailable",
+        "2026-11-15-chat-audio-main-rebase-1",
+        "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
+        "2026-11-25-knowledge-subscriptions-merge",
+        "2026-11-25-knowledge-qwen-main-merge",
         "2026-11-24-knowledge-emote-theater-merge",
         "2026-11-23-theater-market-recovery-main-merge",
         "2026-11-23-knowledge-frontend-i18n-merge",
@@ -675,7 +697,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "937a2ba71dd7ed75117a3c8e0e907fe0342cdb014819ca42998d4756e58e47ab"
+LOCALE_KEY_SIGNATURE = "89db70baaf3253e6b6759d0e9288b3035a94e35efa3355b41fd5b02e23dd33ad"
 
 
 _BUMP_INSTRUCTIONS = (

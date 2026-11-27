@@ -67,6 +67,7 @@ from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_NO_NEKOPOWER,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
     normalize_sys_prompt_locale,
@@ -236,8 +237,15 @@ class NotifyMixin:
                 + self.lanlan_prompt
             )
         else:
+            # With the NekoPower master switch off there is no task tool and no
+            # turn check: say so in the opening, or she promises what nothing will
+            # do. Only the master switch is looked at (owner, 2026-11-26): the task
+            # agent is to start with it alone. (Read off ``self`` loosely: some
+            # callers hand in a bare namespace without ``agent_flags``.)
+            master_on = bool((getattr(self, "agent_flags", None) or {}).get("agent_enabled", False))
             prompt = (
                 _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
+                + ("" if master_on else _loc(SESSION_INIT_NO_NEKOPOWER, _lang))
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():

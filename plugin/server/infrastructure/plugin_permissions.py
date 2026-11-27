@@ -16,6 +16,8 @@ Document shape (``schema_version`` 1)::
           "source": {"channel": "market", "fingerprint": "..."} | null,
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "legacy_approved": true,     # optional, see LEGACY_APPROVED
+          "grants_reset": {"at": "<iso>", "reason": "source_changed"},  # optional, see GRANTS_RESET
+          "legacy_decided_at": "<iso>",  # optional, see LEGACY_DECIDED_AT
           "permissions": {
             "<permission id>": {
               "state": "granted" | "denied" | "undecided",
@@ -30,22 +32,31 @@ Document shape (``schema_version`` 1)::
       }
     }
 
-A permission missing from ``permissions`` is undecided, except on a record
-with ``legacy_denied`` (see LEGACY_DENIED), where an explicit ``undecided``
-entry is stored instead.
+A permission missing from ``permissions`` is undecided, except a permission
+with a legacy name (``LEGACY_IDS``) on a record with ``legacy_denied`` (see
+LEGACY_DENIED): that one reads denied, so an explicit ``undecided`` entry is
+stored for it instead.
 
 When a plugin's source changes, its grants are discarded; only the
 plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
 approval does not).
 
 On the first load the decisions recorded in the legacy ``plugin_consents.json``
-are imported once. The legacy file is only ever read here, never written.
+are imported once. Once that import is saved, a marker file next to it
+(``MARKER_FILENAME``) records it, and the legacy file is not imported again.
+The legacy file itself is only ever read here, never written.
+
+Storage errors are logged rate-limited: the first one of a kind right away,
+repeats at most once per ``ERROR_LOG_WINDOW`` seconds with a count, and one
+line when that kind of operation works again.
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
@@ -60,8 +71,62 @@ logger = get_logger("server.infrastructure.plugin_permissions")
 FILENAME = "plugin_permissions.json"
 SCHEMA_VERSION = 1
 
+# Permissions the consent dialog's whole-plugin decision covers.
+LEGACY_IDS: frozenset[str] = frozenset(LEGACY_PERMISSION_NAMES.values())
+
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
+# Written once the import of LEGACY_FILENAME is saved; its presence alone
+# means "already imported".
+MARKER_FILENAME = "plugin_consents.imported.json"
+MARKER_SCHEMA_VERSION = 1
+IMPORT_ALREADY_DONE = "already_imported"
+
+ERROR_LOG_WINDOW = 60.0
+
+
+class _ErrorLog:
+    """Rate-limited logging of repeated storage errors.
+
+    Keyed by ``(operation, error type)``. Messages carry error type names
+    and plugin ids only.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        # key -> [last logged at, suppressed since then, failures in a row]
+        self._seen: dict[tuple[str, str], list] = {}
+
+    def failed(self, operation: str, error: str, message: str, *args) -> None:
+        now = self._clock()
+        with self._lock:
+            state = self._seen.get((operation, error))
+            if state is None:
+                if len(self._seen) > 256:
+                    self._seen.clear()
+                self._seen[(operation, error)] = [now, 0, 1]
+                suppressed = None
+            else:
+                state[2] += 1
+                if now - state[0] < ERROR_LOG_WINDOW:
+                    state[1] += 1
+                    return
+                suppressed, state[0], state[1] = state[1], now, 0
+        if suppressed:
+            logger.error(message + " (repeated; {} more since the last report)", *args, suppressed)
+        else:
+            logger.error(message, *args)
+
+    def recovered(self, operation: str, message: str) -> None:
+        with self._lock:
+            keys = [key for key in self._seen if key[0] == operation]
+            failures = sum(self._seen.pop(key)[2] for key in keys)
+        if failures:
+            logger.info(message + " (after {} failure(s))", failures)
+
+
+_errors = _ErrorLog()
 
 
 STATE_GRANTED = "granted"
@@ -76,9 +141,10 @@ CONDITIONS = frozenset({CONDITION_ANYTIME, CONDITION_IN_USE})
 
 SCOPE_ALL = "all"
 
-# Set on a plugin record imported from a legacy whole-plugin denial: every
-# implicitly declared permission of that plugin counts as denied unless the
-# record holds an explicit entry for it (including an explicit "undecided").
+# Set on a plugin record by a whole-plugin denial from the consent flow
+# (imported or decided there): every permission with a legacy name
+# (LEGACY_IDS) counts as denied unless the record holds an explicit entry for
+# it (including an explicit "undecided"); other permissions are not covered.
 LEGACY_DENIED = "legacy_denied"
 # Set on a plugin record whose whole-plugin approval came from the consent
 # flow (imported or decided there). It only records that the plugin was
@@ -91,6 +157,16 @@ _PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED)
 # one place that decides it. Every grant and every other marker is dropped;
 # an empty set would make a source change ask again about everything.
 KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
+
+# Set when a source change dropped decisions the user had made, so the
+# permission panel can tell the user why they are asked again. Cleared by the
+# next decision for that plugin.
+GRANTS_RESET = "grants_reset"
+# When the consent dialog last denied or revoked the whole plugin: the time the
+# user answered for the permissions it covers. An approval answers only what
+# it granted (their own decided_at), so it does not set this.
+LEGACY_DECIDED_AT = "legacy_decided_at"
+RESET_SOURCE_CHANGED = "source_changed"
 
 
 ChangeListener = Callable[["frozenset[str] | None"], None]
@@ -123,13 +199,22 @@ def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
     with _listeners_lock:
         listeners = list(_change_listeners)
     for listener in listeners:
+        # Tracked per listener, so one working listener does not report
+        # another one as recovered.
+        # By identity: two callbacks can share a name (same factory, or
+        # methods of two instances of one class).
+        operation = f"listener:{getattr(listener, '__qualname__', type(listener).__name__)}:{id(listener)}"
         try:
             listener(plugin_ids)
         except Exception as exc:
-            logger.error(
+            _errors.failed(
+                operation,
+                type(exc).__name__,
                 "plugin permission change listener failed: error={}",
                 type(exc).__name__,
             )
+        else:
+            _errors.recovered(operation, "plugin permission change listener works again")
 
 
 def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
@@ -172,6 +257,45 @@ CORRUPT = "PLUGIN_PERMISSIONS_CORRUPT"  # content is not a valid store
 UNSUPPORTED_VERSION = "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"  # written by a newer version
 READ_ERROR_CODES = frozenset({READ_FAILED, CORRUPT, UNSUPPORTED_VERSION})
 WRITE_FAILED = "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+
+def _legacy_import_info(document: dict) -> dict:
+    """The document's ``legacy_import`` summary; ``{}`` when it is missing or
+    not a table (a hand-edited or damaged file), so loading never fails on it."""
+    value = document.get("legacy_import")
+    if value is None or isinstance(value, dict):
+        return value or {}
+    _errors.failed(
+        "legacy_import_shape",
+        type(value).__name__,
+        "plugin permission store has a malformed legacy_import entry (ignored): type={}",
+        type(value).__name__,
+    )
+    return {}
+
+
+def _marker_present(path) -> bool:
+    """Whether the legacy import was marked done next to the store ``path``.
+
+    A marker that cannot be checked raises a read failure, so nothing is
+    imported or created on an unknown answer."""
+    try:
+        os.stat(path.with_name(MARKER_FILENAME))
+    except FileNotFoundError:
+        _errors.recovered("marker_check", "legacy plugin consent import marker can be checked again")
+        return False
+    except OSError as exc:
+        _errors.failed(
+            "marker_check",
+            type(exc).__name__,
+            "legacy plugin consent import marker could not be checked: error={}",
+            type(exc).__name__,
+        )
+        raise _read_failed(
+            "Plugin permission storage is unavailable", file=MARKER_FILENAME
+        ) from exc
+    _errors.recovered("marker_check", "legacy plugin consent import marker can be checked again")
+    return True
 
 
 def _read_failed(message: str, *, file: str = FILENAME) -> ServerDomainError:
@@ -235,6 +359,21 @@ def _load_error(exc: Exception) -> ServerDomainError:
     )
 
 
+def _had_decisions(record: dict) -> bool:
+    """Whether ``record`` holds a decision a source change would drop (an
+    explicit "undecided" entry is none)."""
+    return any(
+        isinstance(entry, dict) and entry.get("state") in STATES
+        for entry in (record.get("permissions") or {}).values()
+    ) or any(
+        record.get(marker) for marker in _PLUGIN_MARKERS if marker not in KEPT_ON_SOURCE_CHANGE
+    )
+
+
+def _mark_reset(record: dict, now: str) -> None:
+    record[GRANTS_RESET] = {"at": now, "reason": RESET_SOURCE_CHANGED}
+
+
 def _drop_for_source_change(record: dict) -> None:
     """Discard what no longer applies once the plugin's code may differ."""
     record["permissions"] = {}
@@ -278,22 +417,31 @@ class PluginPermissionStore:
         except (OSError, ValueError, UnicodeError) as exc:
             # The file is left untouched: overwriting it would drop every
             # grant on disk. Nothing is cached, so the next call reads again.
-            logger.error(
+            _errors.failed(
+                "read",
+                type(exc).__name__,
                 "plugin permission store could not be read: error={}",
                 type(exc).__name__,
             )
             raise _load_error(exc) from exc
+        _errors.recovered("read", "plugin permission store can be read again")
         unsaved = False
         if document is None:
-            document = self._initial_document(path.with_name(LEGACY_FILENAME))
+            document = self._initial_document(path)
             try:
                 self._save(manager, document)
             except ServerDomainError:
                 # Reads are served from memory; every write first persists the
                 # import (see _load_for_write). Until then a restart simply
                 # imports the unchanged legacy file again.
-                logger.error("imported plugin permissions are held in memory until the next save")
+                _errors.failed(
+                    "pending_import",
+                    "unsaved",
+                    "imported plugin permissions are held in memory until the next save",
+                )
                 unsaved = True
+        if not unsaved:
+            self._mark_imported(manager, path, document)
         self._path, self._document = path, document
         self._unsaved = unsaved
         # Anything read before (or under another path) may differ now.
@@ -307,10 +455,44 @@ class PluginPermissionStore:
         if self._unsaved:
             self._save(manager, self._document)
             self._unsaved = False
+            self._mark_imported(manager, self._path, self._document)
         return manager
 
-    def _initial_document(self, legacy_path) -> dict:
-        plugins, summary = self._import_legacy(legacy_path)
+    def _mark_imported(self, manager, path, document: dict) -> None:
+        """Record that the legacy file has been imported, once the store
+        holding the import is on disk. Best effort: a failed write is retried
+        on the next load."""
+        legacy = path.with_name(LEGACY_FILENAME)
+        if _legacy_import_info(document).get("status") == "absent":
+            # The store was created without a legacy file: there was nothing
+            # to import, so a file that appeared since is not marked.
+            return
+        try:
+            if not os.path.isfile(legacy) or _marker_present(path):
+                return
+            manager.save_json_config(
+                MARKER_FILENAME,
+                {
+                    "schema_version": MARKER_SCHEMA_VERSION,
+                    "imported_at": document.get("imported_at") or _now(),
+                    "into": FILENAME,
+                },
+            )
+        except Exception as exc:
+            _errors.failed(
+                "mark_import",
+                type(exc).__name__,
+                "legacy plugin consent import could not be marked: error={}",
+                type(exc).__name__,
+            )
+        else:
+            _errors.recovered("mark_import", "legacy plugin consent import is marked")
+
+    def _initial_document(self, path) -> dict:
+        if _marker_present(path):
+            plugins, summary = {}, {"status": IMPORT_ALREADY_DONE, "plugins": 0, "skipped": 0}
+        else:
+            plugins, summary = self._import_legacy(path.with_name(LEGACY_FILENAME))
         return {
             "schema_version": SCHEMA_VERSION,
             "imported_at": _now(),
@@ -323,11 +505,14 @@ class PluginPermissionStore:
         try:
             raw = read_json_tolerating_replace(legacy_path)
         except FileNotFoundError:
+            _errors.recovered("legacy_read", "legacy plugin consents can be read again")
             return {}, {"status": "absent", "plugins": 0, "skipped": 0}
         except OSError as exc:
             # Possibly transient: do not create the new file, so the import is
             # attempted again on the next load instead of being lost.
-            logger.error(
+            _errors.failed(
+                "legacy_read",
+                type(exc).__name__,
                 "legacy plugin consents could not be read: error={}",
                 type(exc).__name__,
             )
@@ -335,11 +520,13 @@ class PluginPermissionStore:
                 "Legacy plugin consent records could not be read", file=LEGACY_FILENAME
             ) from exc
         except (ValueError, UnicodeError) as exc:
+            _errors.recovered("legacy_read", "legacy plugin consents can be read again")
             logger.error(
                 "legacy plugin consents are not valid JSON and were not imported: error={}",
                 type(exc).__name__,
             )
             return {}, {"status": "invalid", "plugins": 0, "skipped": 0}
+        _errors.recovered("legacy_read", "legacy plugin consents can be read again")
         if (
             not isinstance(raw, dict)
             or raw.get("schema_version") != LEGACY_SCHEMA_VERSION
@@ -422,7 +609,9 @@ class PluginPermissionStore:
         try:
             manager.save_json_config(FILENAME, document)
         except Exception as exc:
-            logger.error(
+            _errors.failed(
+                "save",
+                type(exc).__name__,
                 "plugin permission store could not be saved: error={}",
                 type(exc).__name__,
             )
@@ -431,12 +620,17 @@ class PluginPermissionStore:
                 "Plugin permission records could not be saved",
                 503,
             ) from exc
+        _errors.recovered("save", "plugin permission store can be saved again")
+        _errors.recovered("pending_import", "imported plugin permissions are saved")
 
     def _commit(self, manager, document: dict) -> None:
         # Persist first; the cache only moves once the disk has the change.
         self._save(manager, document)
         before, self._document = self._document, document
-        self._unsaved = False
+        was_unsaved, self._unsaved = self._unsaved, False
+        if was_unsaved:
+            # This save also put a pending first-use import on disk.
+            self._mark_imported(manager, self._path, document)
         _notify_change(_changed_plugins(before, document))
 
     # ------------------------------------------------------------------
@@ -448,7 +642,7 @@ class PluginPermissionStore:
             self._load()
             return {
                 "imported_at": self._document.get("imported_at"),
-                **copy.deepcopy(self._document.get("legacy_import") or {}),
+                **copy.deepcopy(_legacy_import_info(self._document)),
             }
 
     def read(self, plugin_id: str) -> dict:
@@ -470,7 +664,18 @@ class PluginPermissionStore:
             record["source_mismatch"] = (
                 known is not None and current is not None and known != current
             )
+            had_reset = GRANTS_RESET in record
+            saved_change = record.get("source_changed_at")
             self._apply_source(record, current)
+            if GRANTS_RESET in record and not had_reset:
+                # Not saved yet: no time to show (it would move on every read).
+                record[GRANTS_RESET] = {**record[GRANTS_RESET], "at": None}
+            # Only a saved source change time counts (it is a cutoff for
+            # earlier refusals); an unsaved one would be "now" on every read.
+            if saved_change is None:
+                record.pop("source_changed_at", None)
+            else:
+                record["source_changed_at"] = saved_change
         return record
 
     def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
@@ -504,10 +709,15 @@ class PluginPermissionStore:
                 try:
                     manager = self._load_for_write()
                     self._commit(manager, document)
-                except ServerDomainError:
-                    logger.error(
-                        "plugin source binding was not saved: plugin_id={}", plugin_id
+                except ServerDomainError as exc:
+                    _errors.failed(
+                        "bind",
+                        exc.code,
+                        "plugin source binding was not saved: plugin_id={}",
+                        plugin_id,
                     )
+                else:
+                    _errors.recovered("bind", "plugin source bindings are saved again")
                 return copy.deepcopy(record)
             manager = self._load_for_write()
             self._commit(manager, document)
@@ -568,6 +778,8 @@ class PluginPermissionStore:
             return False
         now = _now()
         if known is not None:
+            if _had_decisions(record):
+                _mark_reset(record, now)
             _drop_for_source_change(record)
             record["source_changed_at"] = now
         record["source"] = current.to_dict()
@@ -610,6 +822,7 @@ class PluginPermissionStore:
             else:
                 self._apply_source(record, source)
             now = _now()
+            record.pop(GRANTS_RESET, None)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
@@ -620,45 +833,67 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
-    def clear(self, plugin_id: str, permission_id: object) -> dict:
+    def clear(
+        self,
+        plugin_id: str,
+        permission_id: object,
+        *,
+        source: PluginSource | None = None,
+    ) -> dict:
         """Return one permission to undecided.
 
-        On a ``legacy_denied`` record a missing entry still means denied, so
-        an explicit ``undecided`` entry is stored instead of deleting it. An
-        id outside the vocabulary is accepted only when the record already
-        holds it (e.g. an id the vocabulary has since dropped).
+        An explicit ``undecided`` entry with the time is stored, so readers
+        can tell what happened before the user's last choice; it counts as
+        no decision everywhere (and on a ``legacy_denied`` record it keeps a
+        missing entry of a permission with a legacy name from meaning
+        denied). Under an unchanged source, a permission that is undecided
+        already (an ``undecided`` entry, or no entry unless it has a legacy
+        name on a ``legacy_denied`` record) is left as it is, without a
+        write. A changed ``source`` is applied and saved first, like in
+        :meth:`decide`. An id outside the vocabulary is accepted only when the
+        record already holds it (e.g. an id the vocabulary has since
+        dropped), and its entry is removed.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
             raise ValueError(f"Unknown permission: {permission_id!r}")
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
             if known_id is None:
                 if record is None or permission_id not in record.get("permissions", {}):
                     raise ValueError(f"Unknown permission: {permission_id!r}")
-                known_id = permission_id
-            permission_id = known_id
             if record is None:
                 return {}
-            entry = record.get("permissions", {}).get(permission_id)
-            if record.get(LEGACY_DENIED):
-                if entry is not None and entry.get("state") == STATE_UNDECIDED:
+            known = PluginSource.from_dict(record.get("source"))
+            source_changes = source is not None and known != source
+            # Nothing to do only when the record already says undecided under
+            # the current source; a source change is applied and saved first.
+            if known_id is not None and not source_changes:
+                entry = (record.get("permissions") or {}).get(known_id)
+                if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
-            elif entry is None:
-                return copy.deepcopy(record)
+                if entry is None and not (record.get(LEGACY_DENIED) and known_id in LEGACY_IDS):
+                    # Undecided already (a whole-plugin denial covers only
+                    # the permissions with a legacy name).
+                    return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            self._apply_source(record, source)
             now = _now()
+            record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
-            if record.get(LEGACY_DENIED):
-                permissions[permission_id] = {
+            if known_id is None:
+                # A source change above may have dropped it already.
+                permissions.pop(permission_id, None)
+            else:
+                permissions[known_id] = {
                     "state": STATE_UNDECIDED,
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
-            else:
-                del permissions[permission_id]
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
@@ -745,13 +980,28 @@ class PluginPermissionStore:
                 }
             for marker in _PLUGIN_MARKERS:
                 record.pop(marker, None)
+            if decision is not None:
+                record.pop(GRANTS_RESET, None)
             if decision == "denied":
                 record[LEGACY_DENIED] = True
+                # A fresh whole-plugin denial covers the permissions that
+                # flow knows about, including ones set back to undecided
+                # earlier (which would otherwise read undecided).
+                for permission_id in [
+                    key
+                    for key, entry in permissions.items()
+                    if key in LEGACY_IDS and isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED
+                ]:
+                    del permissions[permission_id]
             elif decision == "approved":
                 record[LEGACY_APPROVED] = True
             if record == self._document["plugins"].get(plugin_id):
                 return copy.deepcopy(record)
             record["updated_at"] = now
+            if decision != "approved":
+                # Deny / revoke answer every permission the dialog covers; an
+                # approval answers only what it granted (their decided_at).
+                record[LEGACY_DECIDED_AT] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
 
@@ -759,8 +1009,9 @@ class PluginPermissionStore:
         """Drop what a source change drops, without changing the source.
 
         For a caller that cannot record the plugin's new source but knows
-        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps; a
-        record left with nothing to keep is removed. Returns the record
+        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps and
+        marks ``GRANTS_RESET`` when decisions were dropped; a record left
+        with nothing to keep is removed. Returns the record
         before the change (``None`` when there was none).
         """
         with self._lock:
@@ -770,13 +1021,25 @@ class PluginPermissionStore:
                 return None
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
+            now = _now()
+            if _had_decisions(record):
+                _mark_reset(record, now)
+                # The code changed: refusals up to now came from the old code.
+                record["source_changed_at"] = now
             _drop_for_source_change(record)
             if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
-                del document["plugins"][plugin_id]
-            elif record == cached:
+                if not record.get(GRANTS_RESET):
+                    del document["plugins"][plugin_id]
+                    self._commit(manager, document)
+                    return copy.deepcopy(cached)
+                # Only the reset note is left. Like a removed record, it no
+                # longer claims the earlier source, so the next known source
+                # is a first binding and keeps decisions made meanwhile.
+                record["source"] = None
+            if record == cached:
                 return copy.deepcopy(cached)
             else:
-                record["updated_at"] = _now()
+                record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(cached)
 

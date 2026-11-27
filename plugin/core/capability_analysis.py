@@ -18,6 +18,7 @@ from plugin.core.permission_declarations import (
     parse_permission_declarations,
 )
 from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, PERMISSIONS
+from plugin.sdk.shared.permissions.catalog import BLIND_SPOT_TIERS, TIER_HIGH
 from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_files
 
 # What the analyzer reports, in the earlier capability names that stored
@@ -807,9 +808,10 @@ COUNTED_BLIND_SPOT_TYPES = (
     "code_exec",
     "native_loader",
 )
-# Minimal high-risk marker for the permission panel. A shared risk-tier table
-# for permissions and blind spots is planned to replace this set.
-HIGH_RISK_BLIND_SPOT_TYPES = frozenset({"native_loader"})
+# Blind spot types shown as high risk, from the shared risk-tier table.
+HIGH_RISK_BLIND_SPOT_TYPES = frozenset(
+    kind for kind, tier in BLIND_SPOT_TIERS.items() if tier == TIER_HIGH
+)
 
 _MODELS = "plugin_sdk.models:invoke"
 _NETWORK = "system.network:connect"

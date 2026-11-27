@@ -149,8 +149,8 @@ async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_re
         with closing(runtime.scheduler._connect()) as conn:
             task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain=? AND channel='model'", (key,)).fetchone()
         assert (task['failures'], task['blocked_generation']) == (1, generation)
-        assert task['last_error'] == 'chat_sync_unavailable'
-        assert runtime.scheduler.last_error(key) == 'chat_sync_unavailable'
+        assert task['last_error'] == 'chat_sync_internal_error'
+        assert runtime.scheduler.last_error(key) == 'chat_sync_internal_error'
         # The pass still reaches its own cleanup after the failure.
         assert len(cleanups) >= 2
         # A hint only clears the poll interval: the failure itself keeps the role out.
@@ -186,7 +186,7 @@ async def test_expected_automatic_model_failure_stays_out_of_the_console(tmp_pat
         capsys.readouterr()
         await runtime._automatic_models(runtime.state.bindings(), presence)
         assert 'model_step_unavailable' not in capsys.readouterr().out
-        assert runtime.scheduler.last_error(DOMAIN.key()) == 'chat_sync_unavailable'
+        assert runtime.scheduler.last_error(DOMAIN.key()) == 'chat_sync_internal_error'
     finally:
         await runtime.close()
 
@@ -545,6 +545,203 @@ async def pending_model_runtime(tmp_path, *, uploaded=False, large=False):
 
 
 @pytest.mark.asyncio
+async def test_unaccepted_model_binding_reports_pending_until_the_cloud_receipt_arrives(tmp_path):
+    runtime, service, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    not_ready = [True]
+
+    async def observed(request):
+        if not_ready[0] and request.url.path.endswith('/model-binding') and request.method == 'PUT':
+            return httpx.Response(409, json={'detail': 'media_resource_not_ready'})
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        assert runtime.models.store.get(DOMAIN.key())['pending']['uploaded'] is False
+        assert await runtime.models.status(UID) == {'pending': True, 'conflict': False, 'failed': False}
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        not_ready[0] = False
+        from services.chat_sync.scheduler import PULL_INTERVAL_MS
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert not (await runtime.models.status(UID)).get('pending')
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
+        assert service.puts[-1]['operationId'] == pending['operationId']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('endpoint', ['capabilities', 'binding'])
+@pytest.mark.parametrize('work', ['upload', 'candidate', 'revision', 'failed', 'error', 'selection', 'none'])
+async def test_legacy_model_404_fallback_preserves_unconfirmed_work(tmp_path, endpoint, work):
+    paths = []
+
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    state = runtime.models.store.get(DOMAIN.key())
+    if work != 'selection':
+        state['selection'] = (await adapter.read(UID))['selection']
+    if work != 'upload':
+        state.pop('pending')
+    if work in {'candidate', 'revision', 'failed'}:
+        state['seen_revision'] = state['revision'] + 1
+    if work == 'candidate':
+        state['candidate'] = {'token': 'f' * 32, 'revision': state['seen_revision'], 'record': state['remote'],
+                              'expected': state['selection'], 'path': '/user_live2d/cloud-sync/candidate/model.model3.json'}
+    if work == 'failed':
+        state['failed'] = state['seen_revision']
+    if work == 'error':
+        state['error'] = True
+    runtime.models.store.put(DOMAIN.key(), state)
+
+    async def observed(request):
+        suffix = '/models/capabilities' if endpoint == 'capabilities' else '/model-binding'
+        if request.url.path.endswith(suffix):
+            paths.append(str(request.url))
+            return httpx.Response(404, json={'detail': 'Not Found'})
+        return await service.request(request)
+
+    await runtime.http.aclose()
+    runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+    try:
+        await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
+        assert runtime.models.store.get(DOMAIN.key()) == state
+        status = runtime.scheduler.channel_status(DOMAIN.key())['model']
+        assert status['lastError'] is None
+        assert status['status'] == ('success' if work == 'none' else 'waiting')
+        assert (status['lastSuccessAt'] is not None) is (work == 'none')
+        assert len(paths) == 1
+        if endpoint == 'binding' and work == 'none':
+            assert 'metadataOnly=true' in paths[0]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_model_completion_waits_for_local_selection_changed_after_receipt(tmp_path):
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+
+    async def change_selection(request):
+        if request.url.path.endswith('/model-binding') and request.method == 'PUT' and not service.puts:
+            adapter.path = '/C.model3.json'
+
+    service.hook = change_selection
+    try:
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 1
+        assert runtime.models.store.get(DOMAIN.key())['selection'] != (await adapter.read(UID))['selection']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 2
+        assert runtime.models.store.get(DOMAIN.key())['selection'] == (await adapter.read(UID))['selection']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['database', 'io', 'invalid_state', 'invalid_shape'])
+async def test_legacy_model_read_failure_records_error_and_still_cleans_cache(tmp_path, monkeypatch, failure):
+    import sqlite3
+    from unittest.mock import AsyncMock, Mock
+    from services.chat_sync.runtime import ChatSyncServiceError
+
+    runtime, _, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    read_state = runtime.models.store.get
+    error = {'database': sqlite3.OperationalError, 'io': OSError, 'invalid_state': ValueError}.get(failure)
+    cleanup = Mock(wraps=runtime.models.cleanup_cache)
+    monkeypatch.setattr(runtime.models, 'step', AsyncMock(side_effect=ChatSyncServiceError(404)))
+    unreadable = Mock(side_effect=error('private storage details')) if error else Mock(return_value=['private invalid state'])
+    monkeypatch.setattr(runtime.models.store, 'get', unreadable)
+    monkeypatch.setattr(runtime.models, 'cleanup_cache', cleanup)
+    try:
+        await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
+        state = runtime.scheduler.channel_status(DOMAIN.key())['model']
+        assert state == {'status': 'error', 'lastSuccessAt': None,
+                         'lastError': 'chat_sync_unavailable' if failure == 'io' else 'chat_sync_internal_error'}
+        assert read_state(DOMAIN.key())['pending']['operationId'] == pending['operationId']
+        cleanup.assert_called_once_with()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['apply', 'retry', 'retry_inactive'])
+async def test_automatic_model_completion_waits_for_renderer_admission_and_retry(tmp_path, outcome):
+    from tests.unit.test_chat_sync_runtime import OTHER_UID
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, _, _ = setup_runtime(tmp_path, ModelService())
+    selected = [UID]
+
+    async def current_character():
+        return selected[0]
+
+    class Adapter:
+        path = '/user_live2d/original/model.model3.json'
+
+        async def read(self, _uid):
+            return {'name': 'Synthetic', 'kind': 'live2d', 'path': self.path,
+                    'selection': canonical(['live2d', self.path]).decode()}
+
+        async def apply(self, _uid, expected, path, commit):
+            assert expected == (await self.read(_uid))['selection']
+            await commit(setattr, self, 'path', path)
+            return True
+
+    runtime.current_character_uid_provider = current_character
+    runtime.models.adapter = Adapter()
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        candidate = (await runtime.models.status(UID))['candidate']
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+        }
+        if outcome != 'apply':
+            assert await runtime.models.finish(UID, candidate['token'], False) is False
+            runtime.test_clock[0] += PULL_INTERVAL_MS
+            await runtime._automatic_models(bindings, presence)
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+            # Earlier versions could persist a transport receipt before admission.
+            runtime.scheduler.success(DOMAIN.key(), 'model')
+            if outcome == 'retry_inactive':
+                selected[0] = OTHER_UID
+            await runtime.models.resolve(UID, 'retry')
+            assert (await runtime.models.status(UID)) == {'conflict': False, 'failed': False}
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+                'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+            }
+            if outcome == 'retry_inactive':
+                await runtime._automatic_models(bindings, presence)
+                assert runtime.scheduler.channel_status(DOMAIN.key())['model']['lastSuccessAt'] is None
+                selected[0] = UID
+            await runtime._automatic_models(bindings, presence)
+            candidate = (await runtime.models.status(UID))['candidate']
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+        assert await runtime.models.finish(UID, candidate['token'], True) is True
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model'] == {
+            'status': 'success', 'lastSuccessAt': runtime.test_clock[0], 'lastError': None,
+        }
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(tmp_path):
     runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:
@@ -569,6 +766,40 @@ async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(t
 
 
 @pytest.mark.asyncio
+async def test_newer_local_model_confirmation_supersedes_old_renderer_failure(tmp_path):
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        service.model = {'schemaVersion': 1, 'model': None}
+        service.model_revision += 1
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        await runtime._automatic_models(bindings, presence)
+        candidate = (await runtime.models.status(UID))['candidate']
+        assert not await runtime.models.finish(UID, candidate['token'], False)
+        failed_revision = service.model_revision
+        adapter.path = '/C.model3.json'
+        runtime.test_clock[0] += PULL_INTERVAL_MS
+        await runtime._automatic_models(bindings, presence)
+        assert (await runtime.models.status(UID)) == {'conflict': True, 'failed': True}
+        assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'waiting'
+        await runtime.models.resolve(UID, 'local')
+        await runtime._automatic_models(bindings, presence)
+        assert service.model_revision > failed_revision
+        for _ in range(2):
+            assert runtime.models.store.get(DOMAIN.key())['revision'] == service.model_revision
+            assert runtime.scheduler.channel_status(DOMAIN.key())['model']['status'] == 'success'
+            assert await runtime.models.status(UID) == {'conflict': False, 'failed': False}
+            runtime.test_clock[0] += PULL_INTERVAL_MS
+            await runtime._automatic_models(bindings, presence)
+        assert len(service.puts) == 2
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_metadata_revision_survives_a_failed_full_record_read(tmp_path):
     runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:
@@ -581,7 +812,7 @@ async def test_metadata_revision_survives_a_failed_full_record_read(tmp_path):
             return await service.request(request)
         await runtime.http.aclose()
         runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
-        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+        with pytest.raises(ValueError, match='^chat_sync_network_unavailable$'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['seen_revision'] == 3
         offline = False
@@ -761,7 +992,7 @@ async def test_successful_model_check_clears_persisted_transport_error_only(tmp_
 
         await runtime.http.aclose()
         runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
-        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+        with pytest.raises(ValueError, match='^chat_sync_network_unavailable$'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['error'] is True
         assert (await runtime.models.status(UID))['failed'] is True
@@ -828,7 +1059,7 @@ async def test_model_download_distinguishes_transport_loss_from_server_rejection
     model = SimpleNamespace(store=SimpleNamespace(path=tmp_path / 'profiles.sqlite3'))
     package = {'sha256': 'f' * 64, 'size': 4, 'resource': {'url': 'https://oss.example/model.zip'}}
     error = ValueError if status is None else OSError
-    message = 'chat_sync_unavailable' if status is None else 'cloud_model_download_unavailable'
+    message = 'chat_sync_network_unavailable' if status is None else 'cloud_model_download_unavailable'
     with pytest.raises(error, match='^' + message + '$'):
         await DesktopModelSync.download(model, DOMAIN, None, package, guard)
     assert not list((tmp_path / 'model-packages').glob('*.part'))
@@ -996,7 +1227,7 @@ async def test_changed_model_checks_a_lost_ack_before_publishing_the_current_sel
     runtime, service, adapter, pending = await pending_model_runtime(tmp_path)
     service.lose_ack = True
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         assert service.model == pending['record'] and service.model_revision == 2
         adapter.path = '/C.model3.json'
@@ -1016,7 +1247,7 @@ async def test_unchanged_model_retries_a_lost_ack_with_the_identical_envelope(tm
     runtime, service, _, pending = await pending_model_runtime(tmp_path)
     service.lose_ack = True
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         await runtime.models.step(UID)
         assert service.puts == [{field: pending[field] for field in ('operationId', 'baseRevision', 'record')}] * 2
@@ -1039,7 +1270,7 @@ async def test_changed_pending_model_keeps_unknown_operation_when_cloud_cannot_b
                 raise httpx.ReadError('synthetic state query unavailable')
     service.hook = unavailable
     try:
-        with pytest.raises(ValueError, match='chat_sync_unavailable'):
+        with pytest.raises(ValueError, match='chat_sync_network_unavailable'):
             await runtime.models.step(UID)
         assert runtime.models.store.get(DOMAIN.key())['pending'] == pending
         assert service.puts == [] and service.resources == []

@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh the merged knowledge and audio-message locale resources together.
-    const LOCALE_VERSION = '2026-11-26-knowledge-audio-message-merge';
+    // 合入 main（喵能力面板「只开总开关」提示）与知识库/语音消息语言包，一并刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-27-knowledge-nekopower-hints-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

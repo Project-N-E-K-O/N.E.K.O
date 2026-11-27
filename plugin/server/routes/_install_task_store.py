@@ -67,6 +67,8 @@ def _normalize_task_id(task_id: str) -> str:
         raise ValueError("task_id is required")
     if ".." in normalized or "/" in normalized or "\\" in normalized:
         raise ValueError("invalid task_id")
+    if normalized.lower() == "latest":
+        raise ValueError("invalid task_id")
     return normalized
 
 

@@ -10,6 +10,7 @@ import time
 from typing import (
     Any,
     Callable,
+    ClassVar,
     Dict,
     Generic,
     Final,
@@ -282,6 +283,8 @@ class UnaryNode(TraceNode):
 
 
 class BusList(BusListCore, Generic[TRecord]):
+    _accepted_filter_kwargs: ClassVar[frozenset[str]] = frozenset(BusFilter.__dataclass_fields__)
+
     def __init__(
         self,
         items: Sequence[TRecord],

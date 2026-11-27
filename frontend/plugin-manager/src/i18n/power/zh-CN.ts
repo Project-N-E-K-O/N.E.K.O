@@ -388,6 +388,10 @@ const messages: PowerMessages = {
     },
   },
   colony: {
+    askLabel: '{name} 在问你',
+    say: '回话…',
+    more: '更多…',
+    sayPlaceholder: '回它一句…',
     catLabel: '{name}，{state}。按回车打开，方向键挪位置。',
     waitingBubble: '等你回话 ❗',
     answer: '回答…',
@@ -486,6 +490,12 @@ const messages: PowerMessages = {
     },
   },
   ask: {
+    notePlaceholder: '想补一句就写在这里，再点上面的按钮',
+    noteLabel: '补一句给它',
+    addPlaceholder: '打字回答，或者补一句再点上面的选项',
+    confirm: { yes: '是，照做', no: '不要' },
+    stale: '没送到：这个问题已经答过了，或者它换了个新问题。现在显示的是它最新的情况。',
+    noteLost: '回答送到了，补的那句没送到：它这会儿收不了话。',
     command: '完整的命令',
     path: '完整的路径',
     copy: '复制',

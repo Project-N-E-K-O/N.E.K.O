@@ -1371,7 +1371,7 @@ async def test_local_upgrade_binds_from_the_lock_entry_while_the_registry_is_bus
     def busy(_plugin_id):
         raise TimeoutError("registry read lock busy")
 
-    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    monkeypatch.setattr(config_paths, "_registered_plugin_config_candidates", busy)
     assert permission_service.current_source(PLUGIN_ID) is None
 
     result = await env.service.install(

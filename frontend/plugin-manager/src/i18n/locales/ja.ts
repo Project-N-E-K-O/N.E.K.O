@@ -833,7 +833,16 @@ export default {
       exitFocus: 'フォーカス終了',
       exitFocusHint: 'フォーカスモードを終了（Esc）',
       controlError: 'プラグイン UI コントロールエラー',
-      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
+      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。',
+      parseDocumentConfirm: 'プラグイン「{plugin}」にドキュメント「{file}」の解析を許可しますか？',
+      actionConfirmTitle: 'プラグイン「{plugin}」の操作を確認',
+      actionConfirmDefault: 'この操作を実行しますか？',
+      actionConfirmTimeout: '確認がタイムアウトしたため、操作は実行されませんでした。',
+      actionConfirmPending: '別の確認ダイアログが開いています。先にそちらを完了してください。',
+      openPathOutOfScope: 'このパネルが開けるのは、自身のプラグインフォルダーまたはデータフォルダー内のファイルだけです。',
+      openPathNoBridge: 'ローカルファイルを開けるのはデスクトップアプリのみです。',
+      openPathFailed: 'パスを開けませんでした：{message}',
+      unsafeTargetBlocked: '安全でない遷移先のためブロックしました'
     }
   },
   package: {

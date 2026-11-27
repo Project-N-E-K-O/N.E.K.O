@@ -155,7 +155,8 @@
             v-model="query"
             clearable
             :placeholder="t('knowledge.searchPlaceholder')"
-            @keyup.enter="loadEntries(true)"
+            @keydown="enterKey.down"
+            @keyup.enter="enterKey.up(() => loadEntries(true))"
             @clear="loadEntries(true)"
           />
           <el-select
@@ -595,6 +596,7 @@ import {
   type KnowledgeStatus,
   type KnowledgeVectorState,
 } from '@/api/knowledge'
+import { useEnterKey } from '@/utils/enterKey'
 import { createLatestRequestGate } from '@/utils/latestRequest'
 import { createOverviewRequestGate, type OverviewRequestTicket } from '@/utils/overviewRequestGate'
 import {
@@ -626,6 +628,8 @@ const status = ref<KnowledgeStatus | null>(null)
 const savingEnabled = ref(false)
 
 const query = ref('')
+// Enter that picks a word of an input method is not Enter that searches.
+const enterKey = useEnterKey()
 const packFilter = ref('')
 const entries = ref<KnowledgeEntry[]>([])
 const entriesLoading = ref(false)

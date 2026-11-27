@@ -138,6 +138,9 @@ SEARCH_TOOL = "capability_search"
 CALL_TOOL = "capability_call"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
 _START_TIMEOUT_SECONDS = 10.0
+# What a plugin's request for confirmation was answered with by a button of a
+# page, as the task agent that called the plugin is told it.
+CONFIRMATION_ANSWERS = {"yes": "Yes, go ahead.", "no": "No, do not do it."}
 
 _SEARCH_TOOL_DEFINITION = {
     "name": SEARCH_TOOL,
@@ -1338,7 +1341,10 @@ class CapabilityGateway:
         except Exception as exc:  # noqa: BLE001 - it could not be asked; the task agent is told so
             logger.warning("a plugin's request for confirmation could not be put to the user: %s", type(exc).__name__)
             return None
-        return str(answer.get("text") or "").strip()
+        said = str(answer.get("text") or "").strip()
+        # Answered with a button of a page: yes or no, with what the user added to it.
+        pressed = CONFIRMATION_ANSWERS.get(str(answer.get("choice") or ""))
+        return f"{pressed} {said}".strip() if pressed else said
 
     async def _ask_before_reopening(
         self, commission: Commission, capability: Capability, *, just_asked: bool

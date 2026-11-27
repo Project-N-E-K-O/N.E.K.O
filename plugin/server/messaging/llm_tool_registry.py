@@ -31,10 +31,11 @@ selected port).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
 
 import psutil
@@ -59,6 +60,42 @@ logger = get_logger("server.messaging.llm_tool_registry")
 # per-tool timeout in the callback route (so we don't hard-code 30s).
 _plugin_tools: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
 _lock = asyncio.Lock()
+
+# (plugin_id, tool_name) -> [lock, number of holders and waiters].
+# Serialises register / unregister of one name of one plugin across the
+# main_server call *and* the tracking update; ``_lock`` alone only guards
+# the dict. Without it, an unregister whose SDK caller was cancelled can
+# answer after a newer register of the same name has completed and pop the
+# tracking that register wrote. Entries are dropped as soon as nobody
+# holds or waits for them, so the map stays bounded by the operations in
+# flight (nothing is left behind once a plugin has stopped).
+_name_locks: Dict[Tuple[str, str], List[Any]] = {}
+
+
+@contextlib.asynccontextmanager
+async def _tool_name_lock(plugin_id: str, name: str) -> AsyncIterator[None]:
+    """Hold the per-name lock of ``(plugin_id, name)``.
+
+    Lock order: this lock is taken first and ``_lock`` only inside it, for
+    the tracking update; ``_lock`` is never held while waiting for this one.
+    ``clear_plugin_tools`` does not take it, so plugin-stop cleanup never
+    waits behind an in-flight register / unregister.
+    """
+    key = (plugin_id, name)
+    # No await between lookup and increment: all callers share one loop
+    # (as the shared httpx client already requires).
+    entry = _name_locks.get(key)
+    if entry is None:
+        entry = [asyncio.Lock(), 0]
+        _name_locks[key] = entry
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0 and _name_locks.get(key) is entry:
+            del _name_locks[key]
 
 
 @dataclass
@@ -231,7 +268,10 @@ def _valid_tool_name(name: object) -> bool:
     """Same rule the SDK enforces in the plugin process. Checked again here
     because the name is inlined into the callback URL path (``/`` and other
     separators are refused, so it stays one segment under this plugin's own
-    prefix), and the plugin process is not trusted to have run the SDK check."""
+    prefix; names made only of dots are refused because the path would
+    normalise them away), and the plugin process is not trusted to have run
+    the SDK check. Used by both parsers, so the notification handlers and the
+    request-response handlers apply the same rule."""
     from plugin.sdk.plugin.llm_tool import validate_tool_name
 
     if not isinstance(name, str):
@@ -340,7 +380,29 @@ async def register_remote_tool(
     httpx error (main_server unreachable) and :class:`RemoteToolError`
     when main_server answered with an error status or ``ok: false``, so
     the caller can surface the outcome back to the plugin via IPC.
+
+    Runs under the per-name lock (see ``_tool_name_lock``), so it does not
+    interleave with another register / unregister of the same name.
     """
+    async with _tool_name_lock(plugin_id, name):
+        return await _register_remote_tool_locked(
+            plugin_id=plugin_id, name=name, description=description, parameters=parameters,
+            timeout_seconds=timeout_seconds, role=role, reply_tail=reply_tail,
+            registration_id=registration_id,
+        )
+
+
+async def _register_remote_tool_locked(
+    *,
+    plugin_id: str,
+    name: str,
+    description: str,
+    parameters: Dict[str, Any],
+    timeout_seconds: float,
+    role: Optional[str],
+    reply_tail: bool,
+    registration_id: Optional[str],
+) -> Dict[str, Any]:
     callback_url = build_callback_url(plugin_id, name)
     httpx = await ensure_httpx()
     host = _tool_host_instance
@@ -455,7 +517,25 @@ async def unregister_remote_tool(
     registration was rejected by the cross-source guard and the name
     actually belongs to another plugin) — a plugin can never unregister
     another plugin's tool by name collision.
+
+    Runs under the per-name lock (see ``_tool_name_lock``): a late answer
+    cannot drop the tracking of a register of the same name that started
+    after this call.
     """
+    async with _tool_name_lock(plugin_id, name):
+        return await _unregister_remote_tool_locked(
+            plugin_id=plugin_id, name=name, role=role,
+            expected_registration_id=expected_registration_id,
+        )
+
+
+async def _unregister_remote_tool_locked(
+    *,
+    plugin_id: str,
+    name: str,
+    role: Optional[str],
+    expected_registration_id: Optional[str],
+) -> Dict[str, Any]:
     payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
     if expected_registration_id is not None:
         # Remove only that registration; a newer one of the same name stays.

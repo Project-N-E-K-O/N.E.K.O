@@ -499,8 +499,11 @@ def merged_evidence_state(sources: list[dict]) -> dict:
     them to defaults (CodeRabbit Major #1392). Shared by the persona merge
     (refine and introspection) and the introspection reflection merge.
     """
+    rein_values = [
+        float(src.get("reinforcement", 0) or 0) for src in sources
+    ]
     state = {
-        "reinforcement": 0.0,
+        "reinforcement": max(rein_values) if rein_values else 0.0,
         "disputation": 0.0,
         "user_fact_reinforce_count": 0,
         "sub_zero_days": 0,
@@ -509,9 +512,6 @@ def merged_evidence_state(sources: list[dict]) -> dict:
         "sub_zero_last_increment_date": None,
     }
     for src in sources:
-        state["reinforcement"] = max(
-            state["reinforcement"], float(src.get("reinforcement", 0) or 0),
-        )
         state["disputation"] = max(
             state["disputation"], float(src.get("disputation", 0) or 0),
         )

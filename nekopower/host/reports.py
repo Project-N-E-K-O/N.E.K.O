@@ -75,7 +75,9 @@ def _question_lines(questions: Any, words: dict[str, str]) -> str:
     return lines[0] if lines else ""
 
 
-def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int | None = None) -> str:
+def describe_permission(
+    question: dict[str, Any], lang: str, *, max_tokens: int | None = None, spoken: bool = False
+) -> str:
     """Return what a permission question asks to allow, with the answers on offer, in one line.
 
     With ``max_tokens`` the line is made to fit: the command or path gives
@@ -91,6 +93,17 @@ def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int 
     names = _loc(PERMISSION_OPTION_NAMES, lang)
     offered = [names[option] for option in question.get("options") or [] if option in names]
     answers = f" ({' / '.join(offered)})" if offered else ""
+    if spoken and offered:
+        # Read out to the user (what waits): the answers words can give, and
+        # the buttons for always and this session, as ``render_question`` says.
+        from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT
+
+        options = [option for option in question.get("options") or [] if option in names]
+        said = [names[option] for option in options if option in ("once", "deny")]
+        rest = [names[option] for option in options if option in ("always", "session")]
+        answers = f" ({' / '.join(said)})" if said else ""
+        if rest:
+            answers += _loc(PERMISSION_BUTTONS_ONLY_TEXT, lang).format(options=" / ".join(rest))
     room = PERMISSION_SUBJECT_MAX_TOKENS
     if max_tokens is not None:
         if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):
@@ -143,6 +156,33 @@ def _wording(question: dict[str, Any]) -> str:
     return category
 
 
+def permission_kind(question: dict[str, Any]) -> str:
+    """Return what a request for approval asks to allow in the host's own English words, for a model to read.
+
+    The words of its category, without what a task agent wrote (the
+    command, the path, the name): nothing in them can say what to choose.
+    (Marked as left out, the words made the small model unsure whether a
+    plain "wait" answered at all.) The amounts a question about usage or a
+    team states are the host's own count.
+    """
+    import re
+
+    from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS
+
+    categories = PERMISSION_CATEGORY_TEXTS["en"]
+    wording = _wording(question)
+    if wording not in categories or wording in ("plugin_entry", "other"):
+        # Words that are all what it names ("call {detail}").
+        return "call a plugin" if wording == "plugin_entry" else "use a tool"
+    detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
+    amounts = {name: str(detail.get(name) or "") for name in ("used", "more", "count")}
+    words = categories[wording].format(detail="", **amounts)
+    # No gap, empty brackets or bare colon where it stood.
+    words = re.sub(r"\s*\(\s*\)", "", words)
+    words = re.sub(r"\s+([,;:])", r"\1", words)
+    return re.sub(r"\s{2,}", " ", words).strip().rstrip(":").strip()
+
+
 def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int) -> tuple[str, bool]:
     """Return ``_permission_subject`` and whether a middle was left out of it."""
     from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_DETAIL_CUT_MARK
@@ -186,6 +226,38 @@ def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int
     return action, cut
 
 
+def page_question(question: dict[str, Any] | None, lang: str) -> dict[str, Any] | None:
+    """Return a pending question as a page shows it on a card with the ways to answer; None for none.
+
+    The question as the ledger has it, and for a request for approval
+    what is to be allowed in one line of the commission's language
+    (``line``: the words ``render_question`` has for her, without the
+    answers on offer, which the card shows as buttons). ``line_cut`` says
+    the command or path in it is not whole: the card then shows it whole
+    (``detail``) before an approval that holds for more than this once is
+    offered.
+
+    ``lines`` has the same line in each language of the interface, by the
+    code a page names its language with (``zh-CN``, ``en``, ...), each with
+    its own ``line_cut``: a page shows the one of its language, the words
+    of its buttons, and ``line`` where it has none. The two go together, so
+    that what a page says of the line being cut is said of the line it
+    shows (the mark that says so in the line is in its language too).
+    """
+    if not isinstance(question, dict):
+        return None
+    if question.get("kind") != "permission":
+        return dict(question)
+    from config.nekopower_settings import PERMISSION_SUBJECT_MAX_TOKENS
+    from config.prompts._locale import NEKO_CORE_LOCALES, normalize_prompt_locale
+
+    def said(language: str) -> dict[str, Any]:
+        line, cut = _permission_subject_cut(question, normalize_prompt_locale(language), PERMISSION_SUBJECT_MAX_TOKENS)
+        return {"line": line, "line_cut": cut}
+
+    return {**question, **said(lang), "lines": {code: said(code) for code in NEKO_CORE_LOCALES}}
+
+
 def tokens_text(tokens: int) -> str:
     """Return a number of tokens in a few characters, the same in every language: ``950``, ``12k``, ``1.3M``."""
     tokens = max(0, int(tokens))
@@ -215,7 +287,15 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
         # answer back, which come after it in the sentence.
         from utils.tokenize import count_tokens
 
-        offered = " / ".join(names[option] for option in question.get("options") or [] if option in names)
+        from config.prompts.prompts_nekopower_brain import PERMISSION_BUTTONS_ONLY_TEXT
+
+        options = [option for option in question.get("options") or [] if option in names]
+        # Typed or said, an answer allows the one request at most: always and
+        # this session are named as the buttons' (``decision`` narrows them).
+        offered = " / ".join(names[option] for option in options if option in ("once", "deny"))
+        by_buttons = [names[option] for option in options if option in ("always", "session")]
+        if by_buttons:
+            offered += _loc(PERMISSION_BUTTONS_ONLY_TEXT, lang).format(options=" / ".join(by_buttons))
         room = PERMISSION_SUBJECT_MAX_TOKENS
         shown_title = title
         what, cut = _permission_subject_cut(question, lang, room)
@@ -394,8 +474,8 @@ class Reporter:
         """Report that a commission waits for the user to answer or approve.
 
         ``text`` is the question as one sentence for her to pass on, in the
-        commission's language; ``question`` keeps its parts for an interface
-        that shows buttons.
+        commission's language; ``question`` keeps its parts, and ``card``
+        is those as an interface shows them with buttons.
         """
         root = commission
         payload = {
@@ -403,6 +483,9 @@ class Reporter:
             "task_id": commission.id,
             "title": commission.title,
             "question": question,
+            # The same as a card of a page shows it (``page_question``).
+            "card": page_question(question, commission.lang or "en"),
+            "route": commission.route,
             "text": render_question(commission.title, question, commission.lang or "en"),
             "delivery_mode": "proactive",
         }
@@ -427,20 +510,24 @@ class Reporter:
         }
         return await self._add(commission, KIND_CORRECTION, payload)
 
-    async def receipt(self, lanlan_name: str, *, kind: str, text: str, commission: Commission | None = None) -> int:
+    async def receipt(
+        self, lanlan_name: str, *, kind: str, text: str, commission: Commission | None = None, urgent: bool = False
+    ) -> int:
         """Report the conclusion of a first round that outlasted its budget.
 
         She answered "received" meanwhile. A conclusion that agrees with that
         (accepted, passed on, stopped) comes along with her next turn; one
         she has to act on (nothing can do it, it repeats something, it is
-        unclear which task is meant) wakes her.
+        unclear which task is meant) wakes her, and so does one that is
+        ``urgent`` (what the sentence did with the work could not be told:
+        taken for new work, a question it may have answered still waits).
         """
         payload = {
             "lanlan_name": lanlan_name,
             "task_id": commission.id if commission else None,
             "receipt": kind,
             "text": text,
-            "delivery_mode": "passive" if kind in QUIET_RECEIPTS else "proactive",
+            "delivery_mode": "passive" if kind in QUIET_RECEIPTS and not urgent else "proactive",
         }
         return await self._add(commission, KIND_RECEIPT, payload)
 

@@ -265,7 +265,8 @@
             const width = Number(bounds && bounds.width);
             const height = Number(bounds && bounds.height);
             if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-            return { width, height };
+            // Host contract: N.E.K.O.-PC/src/preload/shared/pet-power-save-crop.js, toCropState().
+            return { width, height, isPowerSave: String(state.source || '').startsWith('power-save:') };
         } catch (_) {
             return null;
         }
@@ -573,7 +574,7 @@
      * 优先扫描单个按钮元素；若按钮元素不可见，回退到按钮容器元素。
      * ownerPrefix: 可选，'vrm' 或 'live2d'，只扫描当前系统的按钮，避免多系统按钮混入导致包围盒偏移。
      */
-    function getButtonZone(ownerPrefix) {
+    function getButtonZone(ownerPrefix, placementApi = null) {
         let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
         let hasButtons = false;
 
@@ -585,7 +586,7 @@
         // 第一优先级：扫描所有单个按钮
         const allBtns = document.querySelectorAll(selector);
         for (const btn of allBtns) {
-            const r = btn.getBoundingClientRect();
+            const r = toPlacementRect(btn.getBoundingClientRect(), placementApi);
             if (r.width === 0 || r.height === 0) continue;
             hasButtons = true;
             if (r.left < left) left = r.left;
@@ -602,7 +603,7 @@
             const containers = document.querySelectorAll(containerSelector);
             for (const c of containers) {
                 if (c.style.display === 'none' || !c.offsetWidth) continue;
-                const r = c.getBoundingClientRect();
+                const r = toPlacementRect(c.getBoundingClientRect(), placementApi);
                 if (r.width === 0 || r.height === 0) continue;
                 hasButtons = true;
                 if (r.left < left) left = r.left;
@@ -857,6 +858,9 @@
         const niriViewport = getNiriPetPhysicalCropViewport(niriCropApi);
         const placementApi = niriViewport ? niriCropApi : null;
         const isNiriPetPhysicalCrop = !!placementApi;
+        // Power-save crop shares the virtual coordinate API, but its menus
+        // still follow the popup direction and fit within the full screen.
+        const preserveCropPlacement = isNiriPetPhysicalCrop && !niriViewport.isPowerSave;
         const isMobile = !isNiriPetPhysicalCrop && (typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768));
         let goDown = isMobile;
 
@@ -864,7 +868,7 @@
         const popup = container._popupElement;
         // 如果 opensLeft 未设置，默认为 true（保守策略：面板放在按钮左侧）
         // 手机端忽略此设置，始终向下展开
-        const goLeft = isNiriPetPhysicalCrop
+        const goLeft = preserveCropPlacement
             ? false
             : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);
         container.dataset.goLeft = String(goLeft);
@@ -875,17 +879,21 @@
         const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
         const screenW = niriViewport ? niriViewport.width : window.innerWidth;
         const screenH = niriViewport ? niriViewport.height : window.innerHeight;
-        if (!isNiriPetPhysicalCrop) {
+        const insets = getBoxInsets(container);
+        const toPanelMaxWidth = width => Math.max(0,
+            toLocalCssPx(width, panelScale) - (insets.borderBox ? 0 : insets.width));
+        if (!preserveCropPlacement) {
             // Bound the rendered width, including the shared UI scale.
-            const viewportWidth = Math.max(1, toLocalCssPx(screenW - edgeMargin * 2, panelScale));
+            const viewportWidth = Math.max(1, toPanelMaxWidth(screenW - edgeMargin * 2));
             const originalMax = parseFloat(getComputedStyle(container).maxWidth);
             container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
         }
-        const panelW = container.offsetWidth * panelScale;
+        const viewportMaxWidth = container.style.maxWidth;
+        let panelW = container.offsetWidth * panelScale;
         let panelH = container.offsetHeight * panelScale;
         const sideSpace = goLeft ? popupRect.left - gap - edgeMargin
             : screenW - popupRect.right - gap - edgeMargin;
-        if (!isNiriPetPhysicalCrop && sideSpace < Math.min(240 * panelScale, panelW)) {
+        if (!preserveCropPlacement && sideSpace < Math.min(240 * panelScale, panelW)) {
             goDown = true;
         }
         container.dataset.goDown = String(goDown);
@@ -896,7 +904,20 @@
         const ownerPrefixMatch = popupId.match(/^(live2d|vrm|mmd|pngtuber)-/);
         const ownerPrefix = ownerPrefixMatch ? ownerPrefixMatch[1] : '';
 
+        function positionSidePanelVertically() {
+            // Width limits may wrap content; clamp with the rendered height.
+            panelH = container.offsetHeight * panelScale;
+            let topVal = anchorRect.top;
+            if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
+            if (topVal < edgeMargin) topVal = edgeMargin;
+            container.style.top = `${topVal}px`;
+        }
+
         function positionStackedPanel(buttonZone) {
+            // Discard side-only constraints before measuring the stacked panel.
+            container.style.maxWidth = viewportMaxWidth;
+            panelW = container.offsetWidth * panelScale;
+            panelH = container.offsetHeight * panelScale;
             let panelLeft = Math.max(edgeMargin, popupRect.left);
             if (panelLeft + panelW > screenW - edgeMargin) {
                 panelLeft = edgeMargin;
@@ -928,7 +949,7 @@
         }
 
         if (goDown) {
-            positionStackedPanel(getButtonZone(ownerPrefix));
+            positionStackedPanel(getButtonZone(ownerPrefix, placementApi));
             entryMotion = 'translateY(-6px)';
         } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
@@ -938,7 +959,7 @@
             // 超出屏幕左边缘时限制
             if (panelLeft < edgeMargin) {
                 panelLeft = edgeMargin;
-                container.style.maxWidth = `${Math.max(0, toLocalCssPx(panelRight - edgeMargin, panelScale))}px`;
+                container.style.maxWidth = `${toPanelMaxWidth(panelRight - edgeMargin)}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
@@ -949,7 +970,7 @@
 
             // 超出屏幕右边缘时限制
             if (panelLeft + panelW > screenW - edgeMargin) {
-                container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - panelLeft, panelScale))}px`;
+                container.style.maxWidth = `${toPanelMaxWidth(screenW - edgeMargin - panelLeft)}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
@@ -958,27 +979,20 @@
         applySidePanelTransform(container, entryMotion);
 
         // ── Step 3：垂直定位（对齐 anchor）── 非手机端执行
-        if (!goDown) {
-            let topVal = anchorRect.top;
-
-            // 边界钳制
-            if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
-            if (topVal < edgeMargin) topVal = edgeMargin;
-            container.style.top = `${topVal}px`;
-        }
+        if (!goDown) positionSidePanelVertically();
 
         if (isNiriPetPhysicalCrop) {
             container.dataset.niriPhysicalCropPositioned = 'true';
-            return;
+            if (preserveCropPlacement) return;
         }
 
         // ── Step 4：按钮禁区安全验证（降级为 fallback，不再是主逻辑）── 非手机端执行
-        const zone = getButtonZone(ownerPrefix);
+        const zone = getButtonZone(ownerPrefix, placementApi);
         if (zone.hasButtons) {
             const savedTransform = container.style.transform;
             applySidePanelTransform(container, 'none');
             void container.offsetHeight;
-            const pr = container.getBoundingClientRect();
+            const pr = toPlacementRect(container.getBoundingClientRect(), placementApi);
             container.style.transform = savedTransform;
 
             const overlapsH = pr.right > zone.left && pr.left < zone.right;
@@ -986,15 +1000,20 @@
 
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
-                if (goDown) {
+                const availableSideWidth = goLeft ? zone.left - gap - edgeMargin
+                    : screenW - edgeMargin - zone.right - gap;
+                if (goDown || availableSideWidth < Math.min(240 * panelScale, panelW)) {
+                    goDown = true;
+                    container.dataset.goDown = 'true';
                     positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
-                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
+                    container.style.maxWidth = `${toPanelMaxWidth(zone.left - gap - edgeMargin)}px`;
                 } else {
                     container.style.left = `${zone.right + gap}px`;
-                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - zone.right - gap, panelScale))}px`;
+                    container.style.maxWidth = `${toPanelMaxWidth(screenW - edgeMargin - zone.right - gap)}px`;
                 }
+                if (!goDown) positionSidePanelVertically();
             }
         }
 
@@ -1013,20 +1032,35 @@
             if (_containerRef._nekoPositionRevision !== positionRevision) return;
             _containerRef._nekoPositionCheckTimer = null;
             if (!_containerRef.isConnected || _containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
-            const z = getButtonZone(_ownerPrefix);
+            // Crop activation and display changes can invalidate the captured
+            // coordinate space. Remeasure once with the current host state.
+            const currentCropApi = getNiriPetPhysicalCropPlacementApi();
+            const currentViewport = getNiriPetPhysicalCropViewport(currentCropApi);
+            if ((currentViewport ? currentCropApi : null) !== placementApi
+                || (currentViewport ? currentViewport.width : window.innerWidth) !== screenW
+                || (currentViewport ? currentViewport.height : window.innerHeight) !== screenH) {
+                positionSidePanel(_containerRef, anchor, options, false);
+                applySidePanelTransform(_containerRef, 'none');
+                return;
+            }
+            const z = getButtonZone(_ownerPrefix, placementApi);
             if (!z.hasButtons) return;
-            const r = _containerRef.getBoundingClientRect();
+            const r = toPlacementRect(_containerRef.getBoundingClientRect(), placementApi);
             const oH = r.right > z.left && r.left < z.right;
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
-                if (_goDown) {
+                const availableSideWidth = _goLeft ? z.left - _gap - _edgeMargin
+                    : _screenW - _edgeMargin - z.right - _gap;
+                if (_goDown || availableSideWidth < Math.min(240 * panelScale, panelW)) {
                     positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
-                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;
+                    _containerRef.style.maxWidth = `${toPanelMaxWidth(z.left - _gap - _edgeMargin)}px`;
+                    positionSidePanelVertically();
                 } else {
                     _containerRef.style.left = `${z.right + _gap}px`;
-                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(_screenW - _edgeMargin - z.right - _gap, _containerRef.dataset.nekoUiScale))}px`;
+                    _containerRef.style.maxWidth = `${toPanelMaxWidth(_screenW - _edgeMargin - z.right - _gap)}px`;
+                    positionSidePanelVertically();
                 }
                 applySidePanelTransform(_containerRef, 'none');
             }

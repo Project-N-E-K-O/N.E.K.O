@@ -22,7 +22,12 @@ from typing import Any
 import httpx
 import pytest
 
-from nekopower.host.plugin_runs import MAX_CONSECUTIVE_POLL_ERRORS, PluginCatalog, PluginRunner
+from nekopower.host.plugin_runs import (
+    MAX_CONSECUTIVE_POLL_ERRORS,
+    PluginCatalog,
+    PluginRunner,
+    _reraise_swallowed_cancellation,
+)
 from tests.unit.nekopower.host_fakes import wait_until
 from tests.unit.nekopower.plugin_server_fake import PLUGIN_SERVER_URL, FakePluginServer, entry, finish, plugin
 
@@ -39,13 +44,20 @@ class Faults:
         # Raise a connection error for this many cancel requests.
         self.failing_cancels = 0
         self.cancel_requests = 0
+        # The reason each cancel request gave, in order.
+        self.cancel_reasons: list[Any] = []
         # Answer a run's status with something that is not a run record.
         self.unreadable_polls = False
+        # Answer a run's status with this HTTP error instead.
+        self.poll_error: int | None = None
         self.polls = 0
         # Hold back the answer to POST /runs until this is set.
         self.answer_may_return: asyncio.Event | None = None
         # Called just before the answer to POST /runs is handed back.
         self.on_runs_answer: Any = None
+        # The next GET of this kind ("poll" or "export") cancels the task it
+        # runs in, and comes up as a transport error instead.
+        self.cancel_wrapped_in: str | None = None
 
 
 def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
@@ -63,6 +75,7 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
         async def post(self, url: str, **kwargs: Any) -> Any:
             if url.endswith("/cancel"):
                 faults.cancel_requests += 1
+                faults.cancel_reasons.append((kwargs.get("json") or {}).get("reason"))
                 if faults.failing_cancels > 0:
                     faults.failing_cancels -= 1
                     raise httpx.ConnectError("refused")
@@ -74,10 +87,16 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
             return response
 
         async def get(self, url: str, **kwargs: Any) -> Any:
-            if "/runs/" in url and not url.endswith("/export"):
+            kind = "export" if url.endswith("/export") else "poll" if "/runs/" in url else None
+            if kind is not None and faults.cancel_wrapped_in == kind:
+                faults.cancel_wrapped_in = None
+                await _cancelled_and_wrapped(httpx.ReadError)
+            if kind == "poll":
                 faults.polls += 1
                 if faults.unreadable_polls:
                     return httpx.Response(200, content=b"<html>proxy error</html>")
+                if faults.poll_error is not None:
+                    return httpx.Response(faults.poll_error)
             return await self._client.get(url, **kwargs)
 
     catalog = PluginCatalog(base_url=PLUGIN_SERVER_URL, client_factory=server.client)
@@ -88,6 +107,15 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
         default_entry_timeout=lambda: None,
         poll_interval=0.01,
     )
+
+
+async def _cancelled_and_wrapped(error: type[Exception]) -> None:
+    """Cancel the task this runs in, and come up with ``error`` instead, as a request layer can."""
+    asyncio.current_task().cancel()
+    try:
+        await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        raise error("the request layer wrapped the cancellation") from None
 
 
 def _slow_weather(server: FakePluginServer) -> asyncio.Event:
@@ -147,13 +175,17 @@ async def test_cancels_of_one_run_at_the_same_time_send_one_request(server):
     await runner.aclose()
 
 
-async def test_unreadable_status_answers_end_the_wait(server):
+@pytest.mark.parametrize("answer", ["unreadable", "an HTTP error"])
+async def test_unreadable_status_answers_end_the_wait(server, answer):
     started = _slow_weather(server)
     faults = Faults()
     runner = _runner(server, faults)
     calling, run_id = await _started_run(server, runner, started)
 
-    faults.unreadable_polls = True
+    if answer == "unreadable":
+        faults.unreadable_polls = True
+    else:
+        faults.poll_error = 502
     polls_before = faults.polls
     outcome = await asyncio.wait_for(calling, 5)
 
@@ -162,6 +194,7 @@ async def test_unreadable_status_answers_end_the_wait(server):
     assert faults.polls - polls_before == MAX_CONSECUTIVE_POLL_ERRORS
     # Given up on, the run is cancelled rather than left going.
     await wait_until(lambda: server.cancelled == [("weather", run_id)], what="the run being cancelled")
+    assert faults.cancel_reasons == ["polling failed"]
     # The server records the cancel before its answer reaches the runner; the
     # run is forgotten once that answer is in.
     await wait_until(lambda: runner.active_runs("c1") == [], what="the accepted cancel being taken in")
@@ -190,6 +223,158 @@ async def test_a_run_given_up_on_stays_known_until_its_cancel_is_accepted(server
     assert asked == 1
     assert server.cancelled == [("weather", run_id)]
     assert runner.active_runs("c1") == []
+
+
+async def test_a_run_whose_wait_timed_out_is_cancelled_and_stays_known_until_its_cancel_is_accepted(
+    server, monkeypatch
+):
+    from nekopower.host import plugin_runs
+
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+    # However long the entry may take, the wait for it ends at once.
+    monkeypatch.setattr(plugin_runs, "run_wait_timeout", lambda _entry_timeout: 0.05)
+    calling, run_id = await _started_run(server, runner, started)
+
+    outcome = await asyncio.wait_for(calling, 5)
+    await wait_until(lambda: faults.cancel_requests == 1, what="the first cancel request")
+    await runner.aclose()
+
+    assert (outcome.success, outcome.status) == (False, "timeout")
+    # Given up on, the run may still be going: it is cancelled, saying why.
+    assert faults.cancel_reasons == ["timed out"]
+    assert server.cancelled == []
+    # The cancel did not go through: stopping the commission must still find the run.
+    assert runner.active_runs("c1") == [run_id]
+    assert runner.cancels_not_taken("c1") == [run_id]
+
+    asked = await runner.cancel_commission("c1", "stopped")
+
+    assert asked == 1
+    assert server.cancelled == [("weather", run_id)]
+    assert runner.active_runs("c1") == []
+
+
+async def test_a_run_whose_wait_failed_unexpectedly_is_cancelled_and_stays_known_until_its_cancel_is_accepted(
+    server, monkeypatch
+):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+
+    async def broken(_run_id: str, **_kwargs: Any) -> dict[str, Any]:
+        await asyncio.wait_for(started.wait(), 5)
+        raise RuntimeError("the client for polling could not be made")
+
+    monkeypatch.setattr(runner, "_await_completion", broken)
+
+    outcome = await asyncio.wait_for(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}), 5
+    )
+    await wait_until(lambda: faults.cancel_requests == 1, what="the first cancel request")
+    await runner.aclose()
+
+    # Nothing says it ended: it is cancelled, saying why, and stays known until that is taken.
+    assert (outcome.success, outcome.status) == (False, "unknown")
+    assert faults.cancel_reasons == ["waiting failed"]
+    assert runner.active_runs("c1") == [outcome.run_id]
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    assert runner.active_runs("c1") == []
+
+
+@pytest.mark.parametrize("where", ["waiting", "the listener for new runs", "polling", "reading what it gave back"])
+async def test_a_cancellation_of_the_caller_that_comes_up_as_an_error_is_one(server, monkeypatch, caplog, where):
+    faults = Faults()
+    runner = _runner(server, faults)
+    listener = None
+    if where == "reading what it gave back":
+        # One that ends at once, so what it gave back is read.
+        async def sunny(_args: dict[str, Any]) -> dict[str, Any]:
+            return finish({"reply": "sunny"})
+
+        server.add_plugin(plugin("weather", "Weather lookups", [entry("today", "Today's weather")]), today=sunny)
+        faults.cancel_wrapped_in = "export"
+    else:
+        started = _slow_weather(server)
+
+        async def wrapped(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            await asyncio.wait_for(started.wait(), 5)
+            await _cancelled_and_wrapped(RuntimeError)
+            return {}
+
+        if where == "waiting":
+            monkeypatch.setattr(runner, "_await_completion", wrapped)
+        elif where == "the listener for new runs":
+            listener = wrapped
+        else:
+            faults.cancel_wrapped_in = "poll"
+    calling = asyncio.ensure_future(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={}, on_run_created=listener)
+    )
+
+    try:
+        await asyncio.wait([calling], timeout=5)
+        # One that did not come up leaves it waiting, not failing with something else.
+        assert calling.done(), "the cancellation did not come up"
+        with pytest.raises(asyncio.CancelledError) as raised:
+            calling.result()
+        await wait_until(lambda: faults.cancel_requests == 1, what="the cancel request")
+    finally:
+        calling.cancel()
+        await runner.aclose()
+
+    # The caller was cancelled, and the run with it: not a wait that failed, which would go on as if nothing happened.
+    assert faults.cancel_reasons == ["caller cancelled"]
+    assert runner.active_runs("c1") == []
+    # The error it came up as is kept as its cause; nothing on record says a listener, the wait or the polling failed.
+    came_up_as = httpx.ReadError if where in ("polling", "reading what it gave back") else RuntimeError
+    assert isinstance(raised.value.__cause__, came_up_as)
+    assert "the listener for new runs failed" not in caplog.text
+    assert "waiting for run" not in caplog.text
+    assert "polling run" not in caplog.text
+
+
+async def test_a_cancellation_found_with_no_cause_given_still_shows_the_error_it_happened_during():
+    async def handling() -> None:
+        try:
+            raise httpx.ReadError("the request layer wrapped the cancellation")
+        except httpx.ReadError:
+            asyncio.current_task().cancel()
+            _reraise_swallowed_cancellation()
+
+    task = asyncio.ensure_future(handling())
+    await asyncio.wait([task], timeout=5)
+    assert task.done()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        task.result()
+    # Nothing is given as its cause, and the error being handled is not hidden (as ``from None`` would hide it).
+    assert raised.value.__cause__ is None
+    assert isinstance(raised.value.__context__, httpx.ReadError)
+    assert raised.value.__suppress_context__ is False
+
+
+async def test_a_run_whose_cancel_was_taken_before_its_wait_timed_out_is_let_go(server, monkeypatch):
+    from nekopower.host import plugin_runs
+
+    started = _slow_weather(server)
+    faults = Faults()
+    runner = _runner(server, faults)
+    monkeypatch.setattr(plugin_runs, "run_wait_timeout", lambda _entry_timeout: 0.5)
+    calling, run_id = await _started_run(server, runner, started)
+    # Stopped while it is waited for: the plugin server takes the cancel, the run does not end.
+    assert await runner.cancel_commission("c1", "stopped") == 1
+
+    outcome = await asyncio.wait_for(calling, 5)
+    await runner.aclose()
+
+    assert outcome.status == "timeout"
+    # Not asked again, and not kept as a run that may still be going.
+    assert faults.cancel_requests == 1
+    assert runner.active_runs("c1") == []
+    assert runner._lost == {}
 
 
 async def test_closing_waits_for_the_cancel_of_a_run_created_while_closing(server):
@@ -296,6 +481,25 @@ async def test_a_run_whose_caller_went_away_stays_known_until_its_cancel_is_acce
     assert asked == 1
     assert server.cancelled == [("weather", run_id)]
     assert runner.active_runs("c1") == []
+
+
+async def test_a_cancel_the_server_did_not_take_is_known_until_one_is_taken(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+    calling, run_id = await _started_run(server, runner, started)
+
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    # Asked, and not taken: the run may go on, and the next stop asks again.
+    assert runner.cancels_not_taken("c1") == [run_id]
+
+    assert await runner.cancel_commission("c1", "stopped") == 1
+    assert runner.cancels_not_taken("c1") == []
+    assert server.cancelled == [("weather", run_id)]
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+    await runner.aclose()
 
 
 async def test_a_run_whose_caller_went_away_is_dropped_once_its_cancel_is_accepted(server):

@@ -833,7 +833,16 @@ export default {
       exitFocus: '집중 종료',
       exitFocusHint: '집중 모드 종료 (Esc)',
       controlError: '플러그인 UI 컨트롤 오류',
-      hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
+      hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.',
+      parseDocumentConfirm: '플러그인 "{plugin}"이(가) 문서 "{file}"을(를) 구문 분석하도록 허용하시겠습니까?',
+      actionConfirmTitle: '플러그인 "{plugin}"의 작업 확인',
+      actionConfirmDefault: '이 작업을 실행하시겠습니까?',
+      actionConfirmTimeout: '확인 시간이 초과되어 작업이 실행되지 않았습니다.',
+      actionConfirmPending: '다른 확인 창이 이미 열려 있습니다. 먼저 완료해 주세요.',
+      openPathOutOfScope: '이 패널은 자신의 플러그인 폴더나 데이터 폴더 안의 파일만 열 수 있습니다.',
+      openPathNoBridge: '로컬 파일 열기는 데스크톱 앱에서만 사용할 수 있습니다.',
+      openPathFailed: '경로를 열 수 없습니다: {message}',
+      unsafeTargetBlocked: '안전하지 않은 대상 URL이 차단되었습니다'
     }
   },
   package: {

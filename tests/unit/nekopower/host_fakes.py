@@ -24,6 +24,78 @@ from typing import Any
 
 from tests.unit.nekopower.fakes import ScriptedLLM
 
+# How the stand-in reads a request against the work there is, unless a test says what it reads
+# (``FakeDecisionLLM.under_way``): the plain sentences tests dispatch. A bare answer (or anything after
+# "answer:") answers the one question that waits; a sentence with a stop word stops the one piece of work
+# under way, or the one its words name; one with a word that adds something adds to the one piece of
+# work under way, or else to the newest that ended. Anything else is new work.
+_BARE_ANSWERS = {
+    "yes": "once", "ok": "once", "sure": "once", "go ahead": "once", "yes, go ahead": "once",
+    "allow it for this session": "session", "for this session": "session",
+    "always": "always", "yes, always": "always", "always, from now on": "always", "always allow": "always",
+    "no": "deny", "deny": "deny",
+}
+_ANSWER_MARKS = ("answer:", "回答：", "回答:")
+_STOP_WORDS = ("stop", "cancel", "never mind", "abort", "叫停", "停下", "停掉", "停止", "取消", "算了", "不用做了", "别做了")
+_ADD_WORDS = ("also", "by the way", "make sure", "instead", "one more thing", "另外", "对了", "顺便", "还有", "补充", "记得", "改成", "再加")
+
+
+def _read_like_a_model(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    lines = str(messages[-1]["content"]).splitlines()
+    said = next(line for line in lines if line.startswith("REQUEST: "))[len("REQUEST: ") :].strip()
+    lowered = said.lower()
+    items: dict[str, list[tuple[int, str]]] = {"under_way": [], "asked": [], "ended": []}
+    place = ""
+    for line in lines:
+        if line.startswith("UNDER WAY"):
+            place = "under_way"
+        elif line.startswith("WAITING FOR THE USER"):
+            place = "asked"
+        elif line.startswith("ENDED LATELY"):
+            place = "ended"
+        elif place and line[:1].isdigit() and ". [" in line:
+            items[place].append((int(line.split(".", 1)[0]), line))
+    waiting = [number for number, line in [*items["under_way"], *items["asked"]] if "; it waits for the user" in line]
+    marked = next((mark for mark in _ANSWER_MARKS if lowered.startswith(mark)), None)
+    answer = lowered[len(marked) :].strip() if marked else lowered
+    if waiting and (marked or answer in _BARE_ANSWERS):
+        if len(waiting) > 1:
+            return {"does": "unsure", "items": waiting}
+        return {"does": "answer", "items": waiting, "choice": _BARE_ANSWERS.get(answer, "unclear")}
+
+    def named(candidates: list[tuple[int, str]]) -> list[int]:
+        words = {word for word in lowered.replace(",", " ").split() if len(word) > 3}
+        return [number for number, line in candidates if words & set(line.split('"')[1].lower().split())]
+
+    under_way = items["under_way"]
+    if any(word in lowered for word in _STOP_WORDS) and under_way:
+        if len(under_way) == 1:
+            return {"does": "stop", "items": [under_way[0][0]], "named": False}
+        picked = named(under_way)
+        if len(picked) == 1:
+            return {"does": "stop", "items": picked, "named": True}
+        return {"does": "unsure", "items": [number for number, _line in under_way]}
+    if any(word in lowered for word in _ADD_WORDS):
+        workers = [(number, line) for number, line in under_way if "by the plugin" not in line]
+        if len(workers) == 1:
+            return {"does": "add", "items": [workers[0][0]]}
+        if workers:
+            picked = named(workers)
+            return {"does": "add", "items": picked} if len(picked) == 1 else {"does": "new"}
+        if items["ended"] and not under_way:
+            picked = named(items["ended"]) or [items["ended"][0][0]]
+            return {"does": "add", "items": picked[:1]}
+    return {"does": "new"}
+
+
+def _choose_like_a_model(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """What a bare answer chose, as tests dispatch them (``_BARE_ANSWERS``); anything else chose nothing that is read."""
+    lines = str(messages[-1]["content"]).splitlines()
+    said = next(line for line in lines if line.startswith("REQUEST: "))[len("REQUEST: ") :].strip().lower()
+    marked = next((mark for mark in _ANSWER_MARKS if said.startswith(mark)), None)
+    said = said[len(marked) :].strip() if marked else said
+    return {"answers": 1, "choice": _BARE_ANSWERS.get(said, "unclear")}
+
 
 class FakeDecisionLLM:
     """Stands in for both tiers of the decision model and counts every request."""
@@ -59,6 +131,15 @@ class FakeDecisionLLM:
         # there without naming it, which most tests have nothing of.
         self.belongs: list[Any] = [{"goes_to": 0, "relation": "new"}]
         self.belongs_calls: list[list[dict[str, Any]]] = []
+        # Readings of what a request does with the work there is, like ``fine``: the last one
+        # repeats. Without any, the plain sentences tests dispatch are read as they mean
+        # (``_read_like_a_model``). Kept apart as well: asked only while there is such work.
+        self.under_way: list[Any] = []
+        self.under_way_calls: list[list[dict[str, Any]]] = []
+        # What an answer to a request for approval chose, read apart, like ``under_way`` (without any,
+        # the bare answers tests dispatch: ``_choose_like_a_model``).
+        self.choices: list[Any] = []
+        self.choice_calls: list[list[dict[str, Any]]] = []
         self.short_calls: list[list[dict[str, Any]]] = []
         # Answers of the task agent space's own calls (the review of a
         # finished commission, the summary of an archived project): dicts,
@@ -94,6 +175,22 @@ class FakeDecisionLLM:
         if tier == "beside":
             self.beside_calls.append([dict(message) for message in messages])
             answer = self.beside[min(len(self.beside_calls) - 1, len(self.beside) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        if tier == "answer_choice":
+            self.choice_calls.append([dict(message) for message in messages])
+            if not self.choices:
+                return json.dumps(_choose_like_a_model(messages))
+            answer = self.choices[min(len(self.choice_calls) - 1, len(self.choices) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        if tier == "under_way":
+            self.under_way_calls.append([dict(message) for message in messages])
+            if not self.under_way:
+                return json.dumps(_read_like_a_model(messages))
+            answer = self.under_way[min(len(self.under_way_calls) - 1, len(self.under_way) - 1)]
             if isinstance(answer, BaseException):
                 raise answer
             return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)

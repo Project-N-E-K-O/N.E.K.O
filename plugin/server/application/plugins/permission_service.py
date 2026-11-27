@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,18 +53,70 @@ class _SourceUnknown(Exception):
     pass
 
 
-def _plugin_directory(plugin_id: str) -> Path | None:
-    """Directory of the loaded plugin, ``None`` when it is not registered."""
+def _registered_candidates(plugin_id: str) -> tuple[object, ...]:
+    from plugin.server.infrastructure.config_paths import (
+        _registered_plugin_config_candidates,
+    )
+
+    try:
+        return _registered_plugin_config_candidates(plugin_id)
+    except TimeoutError as exc:
+        # The registry is busy; an unknown source keeps the last known one.
+        raise _SourceUnknown from exc
+
+
+def _plugin_directory(plugin_id: str, candidates: tuple[str, ...] | None = None) -> Path | None:
+    """Directory of the loaded plugin, ``None`` when it is not registered.
+
+    ``candidates`` are config files already resolved and found to exist (the
+    cache key's own paths, see ``_candidates_key``): the first ``plugin.toml``
+    among them is used without looking at the file system again, so the
+    directory always matches the key it is cached under.
+    """
     from plugin.server.infrastructure.config_paths import (
         _resolve_registered_plugin_config_path,
     )
 
+    if candidates is not None:
+        for candidate in candidates:
+            path = Path(candidate)
+            if path.name == "plugin.toml":
+                return path.parent
+        return None
     try:
         path = _resolve_registered_plugin_config_path(plugin_id)
     except TimeoutError as exc:
-        # The registry is busy; an unknown source keeps the last known one.
         raise _SourceUnknown from exc
     return path.parent if path is not None else None
+
+
+# plugin_id -> (manager, lock snapshot, registered config paths and whether
+# each exists, source). The source is worked out from exactly these inputs;
+# the install-source lock is copy-on-write (every change publishes a new
+# snapshot object), so a different snapshot, manager, registration or a
+# config file appearing / disappearing or a symlink on its path switched
+# means it is worked out again (a stat and a realpath per candidate). Spares the per-use path resolution, logging and lock-entry
+# lookup in the host's checks.
+_source_cache: dict[str, tuple[object, object, tuple[object, ...], PluginSource | None]] = {}
+_SOURCE_CACHE_LIMIT = 1024
+
+
+def _candidates_key(candidates: tuple[object, ...]) -> tuple[object, ...]:
+    """The candidates and where each really is now (None when it is not a file).
+
+    Which one is used, and its directory, depends on both: a config file
+    appearing, or a symlink on its path switched to another directory, is a
+    different input.
+    """
+    resolved = []
+    for candidate in candidates:
+        try:
+            resolved.append(
+                os.path.realpath(candidate) if candidate is not None and os.path.isfile(candidate) else None
+            )
+        except (TypeError, ValueError, OSError):
+            resolved.append(None)
+    return (candidates, tuple(resolved))
 
 
 def _source_of(entry) -> PluginSource | None:
@@ -86,23 +139,59 @@ def _source_of(entry) -> PluginSource | None:
 
 def current_source(plugin_id: str) -> PluginSource | None:
     """Return the plugin's install source, or ``None`` when it is unknown."""
-    from plugin.server.application.install_source import (
-        InstallSourceError,
-        get_install_source_manager,
-    )
+    from plugin.server.application.install_source import get_install_source_manager
 
     manager = get_install_source_manager()
     if manager is None or manager.is_degraded or not plugin_id:
         return None
     try:
-        directory = _plugin_directory(plugin_id)
+        candidates = _registered_candidates(plugin_id)
     except _SourceUnknown:
         return None
+    try:
+        snapshot = manager.snapshot()
+    except Exception:
+        snapshot = None
+    key = _candidates_key(candidates)
+    # The directory is chosen from the same resolved paths as the key, so a
+    # link switched between the two looks can't file B's source under A's key.
+    resolved = tuple(path for path in key[1] if path is not None)
+    cached = _source_cache.get(plugin_id)
+    if (
+        snapshot is not None and cached is not None and cached[0] is manager
+        and cached[1] is snapshot and cached[2] == key
+    ):
+        return cached[3]
+    try:
+        source = _resolve_source(plugin_id, manager, resolved, snapshot)
+    except _SourceUnknown:
+        return None  # not cached: a busy registry or lock error is not an answer
+    if snapshot is None:
+        return source
+    if len(_source_cache) >= _SOURCE_CACHE_LIMIT:
+        _source_cache.clear()
+    _source_cache[plugin_id] = (manager, snapshot, key, source)
+    return source
+
+
+def _resolve_source(
+    plugin_id: str, manager, candidates: tuple[object, ...], snapshot: object = None
+) -> PluginSource | None:
+    """The source from ``snapshot`` (the one the cache entry is keyed by),
+    never a later state of the manager; the current one when it is None."""
+    from plugin.server.application.install_source import InstallSourceError
+
+    pinned = {"snapshot": snapshot} if snapshot is not None else {}
+    directory = _plugin_directory(plugin_id, candidates)
     if directory is not None:
         try:
-            entry = manager.entry_for_directory(directory)
-        except InstallSourceError:
-            return None
+            # The directory comes from the key's resolved paths: classify it
+            # as it is, not wherever a link points by now.
+            entry = manager.entry_for_directory(
+                directory, **pinned, **({"path_resolved": True} if pinned else {})
+            )
+        except InstallSourceError as exc:
+            raise _SourceUnknown from exc
         # The directory key is exact; an empty plugin_id only means the
         # metadata was unreadable when the lock entry was written. A known
         # directory without an entry must not fall back to another root's
@@ -114,7 +203,7 @@ def current_source(plugin_id: str) -> PluginSource | None:
     # active entry and only trusts a unique match.
     matches = [
         entry
-        for entry in manager.list_entries(include_removed=False)
+        for entry in manager.list_entries(include_removed=False, **pinned)
         if entry.plugin_id == plugin_id
     ]
     if len(matches) != 1:
@@ -344,6 +433,11 @@ def decide_permission(
         condition=condition,
         source=current_source(plugin_id),
     )
+
+
+def clear_permission(plugin_id: str, permission_id: str) -> dict:
+    """Return one permission of the plugin to undecided."""
+    return permission_store.clear(plugin_id, permission_id, source=current_source(plugin_id))
 
 
 def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
@@ -895,3 +989,13 @@ def permission_snapshot(plugin_id: str) -> dict:
         # Host-side marker (not sent): the push service retries until a read works.
         snapshot["read_failed"] = True
     return snapshot
+
+
+def record_states(record: dict | None, *, checks_off: bool) -> dict[str, PermissionState]:
+    """Every permission's state for ``record`` (as returned by
+    :func:`permission_record`), with the same rules the plugin process and the
+    host's checks use (see :func:`resolved_states`)."""
+    return {
+        permission: _resolve_state(permission, record, checks_off=checks_off)
+        for permission in PERMISSIONS
+    }

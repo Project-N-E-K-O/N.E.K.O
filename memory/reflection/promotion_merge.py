@@ -537,14 +537,9 @@ class PromotionMergeMixin:
         now = datetime.now()
         if self._within_backoff(R, now):
             return 'skip_retry_pending'
-        if self._exceeds_max_retries(R):
-            await self._amark_promote_blocked(
-                lanlan_name, R, self._promote_blocked_reason(R),
-            )
-            return 'blocked'
 
-        # Revalidate snapshot + throttle gate + record attempt — ALL
-        # inside the same lock section. CodeRabbit PR #936 round-5
+        # Revalidate snapshot + idempotency + throttle gate + record attempt —
+        # ALL inside the same lock section. CodeRabbit PR #936 round-5
         # Major #3: without this fusion, two concurrent invocations
         # can both pass the pre-lock backoff check, both take the lock
         # serially, and both record attempts — defeating the throttle
@@ -558,7 +553,10 @@ class PromotionMergeMixin:
         # `promote_attempt_count` for an already-merged reflection
         # both wastes a retry slot and emits a misleading evidence
         # event. Re-read the on-disk view, find the same id, and
-        # short-circuit if it's no longer eligible.
+        # short-circuit if it's no longer eligible or already applied.
+        from memory.scopes import subject_from_entry
+        break_for_already_applied = False
+        break_for_blocked = False
         async with self._get_alock(lanlan_name):
             current_list = await self._aload_reflections_full(lanlan_name)
             current = self._find_reflection_in_list(current_list, R['id'])
@@ -577,29 +575,46 @@ class PromotionMergeMixin:
                     f"introspection (itself or its persona line); skip"
                 )
                 return 'no_longer_eligible'
-            if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
+            current_subject = subject_from_entry(current)
+            if (
+                current_subject is not None
+                and self._subject_forget_is_active(lanlan_name, current_subject)
+            ):
+                return 'no_longer_eligible'
+            current_rid = current.get('id')
+            if (
+                current_rid
+                and await self._ascoped_promotion_already_applied(
+                    lanlan_name, current_rid, current_subject,
+                )
+            ):
+                # Persona entry already persisted on an earlier attempt whose
+                # reflection status save failed (even if that was the final
+                # allowed attempt); recover status before checking retry caps.
+                R = current
+                break_for_already_applied = True
+            elif evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
                     f"dropped below threshold under lock; skip"
                 )
                 return 'no_longer_eligible'
-            # Re-check throttle against the freshly-read entry — this
-            # closes the race where another coroutine recorded an
-            # attempt between our pre-lock check and our lock
-            # acquisition.
-            if self._within_backoff(current, now):
+            elif self._within_backoff(current, now):
+                # Re-check throttle against the freshly-read entry — this
+                # closes the race where another coroutine recorded an
+                # attempt between our pre-lock check and our lock
+                # acquisition.
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: another attempt "
                     f"recorded during lock wait; skip_retry_pending"
                 )
                 return 'skip_retry_pending'
-            if self._exceeds_max_retries(current):
+            elif self._exceeds_max_retries(current):
                 # Must release lock before calling _amark_promote_blocked
                 # (it re-acquires the same lock via _arecord_state_change).
                 R = current
                 break_for_blocked = True
             else:
-                break_for_blocked = False
                 # Use the freshly-read entry from here on so downstream
                 # merge math sees the latest evidence values.
                 R = current
@@ -611,6 +626,12 @@ class PromotionMergeMixin:
                 await self._arecord_promote_attempt_locked(
                     lanlan_name, R['id'], now_iso,
                 )
+
+        if break_for_already_applied:
+            await self._arecord_state_change(
+                lanlan_name, R['id'], 'confirmed', 'promoted',
+            )
+            return 'promote_fresh'
 
         if break_for_blocked:
             await self._amark_promote_blocked(
@@ -790,19 +811,37 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
-                counts_kwargs = (
-                    {'fact_source_counts': current3['fact_source_counts']}
-                    if isinstance(current3.get('fact_source_counts'), dict)
-                    else {}
+                rid = current3.get('id')
+                already_applied = bool(
+                    rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
                 )
-                result = await self._persona_manager.aadd_fact(
-                    lanlan_name, current3.get('text', ''),
-                    entity=target_entity or 'master',
-                    source='reflection', source_id=current3['id'],
-                    speaker_provenance=current3,
-                    **promote_kwargs,
-                    **counts_kwargs,
-                )
+                if already_applied:
+                    result = self._persona_manager.FACT_ADDED
+                else:
+                    counts_kwargs = (
+                        {'fact_source_counts': current3['fact_source_counts']}
+                        if isinstance(current3.get('fact_source_counts'), dict)
+                        else {}
+                    )
+                    result = await self._persona_manager.aadd_fact(
+                        lanlan_name, current3.get('text', ''),
+                        entity=target_entity or 'master',
+                        source='reflection', source_id=current3['id'],
+                        speaker_provenance=current3,
+                        **promote_kwargs,
+                        **counts_kwargs,
+                    )
+                    if (
+                        result == self._persona_manager.FACT_QUEUED_CORRECTION
+                        and rid
+                        and await self._ascoped_promotion_already_applied(
+                            lanlan_name, rid, promote_subject,
+                        )
+                    ):
+                        result = self._persona_manager.FACT_ADDED
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
                     lanlan_name, R['id'], 'confirmed', 'promoted',

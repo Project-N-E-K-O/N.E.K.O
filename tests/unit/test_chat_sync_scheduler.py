@@ -362,7 +362,7 @@ def test_fixed_error_fences_survive_restart_and_do_not_store_arbitrary_text(tmp_
     assert not scheduler.ready("a", "pull", 1, "old", manual=True)
     assert scheduler.ready("a", "pull", 1, "new", manual=True)
     scheduler.failure("b", "pull", 1, "old", ValueError("chat_sync_private user text"))
-    assert scheduler.last_error("b") == "chat_sync_unavailable"
+    assert scheduler.last_error("b") == "chat_sync_internal_error"
     assert not scheduler.ready("b", "pull", 1, "new", manual=True)
     assert scheduler.ready("b", "pull", 2, "new", manual=True)
 
@@ -402,10 +402,120 @@ def test_unconfirmed_recent_write_keeps_its_code_and_blocks_the_channel(tmp_path
     assert scheduler.ready("a", "pull", 1, "session") is False
 
 
-def test_unknown_error_text_is_still_not_stored(tmp_path):
+@pytest.mark.parametrize('kind,code', [(ValueError, 'chat_sync_internal_error'), (OSError, 'chat_sync_unavailable')])
+def test_unknown_error_text_is_still_not_stored(tmp_path, kind, code):
     scheduler = ChatSyncScheduler(tmp_path / "scheduler.sqlite3", clock=lambda: 1000)
-    scheduler.failure("a", "pull", 1, "session", ValueError("private path C:/Users/someone/recent.json"))
-    assert scheduler.last_error("a") == "chat_sync_unavailable"
+    scheduler.failure("a", "pull", 1, "session", kind("private path C:/Users/someone/recent.json"))
+    assert scheduler.last_error("a") == code
+
+
+@pytest.mark.parametrize('code', [
+    'character_profile_unsupported_value', 'character_profile_name_conflict', 'character_profile_changed',
+    'character_profile_conflict', 'profile_revision_conflict', 'chat_sync_not_enabled',
+    'chat_sync_character_not_found', 'chat_sync_writer_recovery_required', 'chat_sync_closing',
+    'cloud_model_upload_unavailable', 'cloud_model_download_unavailable',
+])
+def test_known_business_failures_keep_their_specific_channel_diagnostic(tmp_path, code):
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: 1000, uniform=lambda *_: 0)
+    remote_storage = code.startswith('cloud_model_')
+    error = OSError(code) if remote_storage else ValueError(code)
+    scheduler.failure('role', 'model' if remote_storage else 'profile', 1, 'session', error)
+    channel = scheduler.channel_status('role')['model' if remote_storage else 'profile']
+    assert channel == {'status': 'error', 'lastSuccessAt': None, 'lastError': code}
+    if remote_storage:
+        with closing(scheduler._connect()) as conn:
+            assert conn.execute('SELECT retry_at FROM scheduler_tasks').fetchone()[0] == 6000
+
+
+@pytest.mark.parametrize('code', [
+    'long_term_memory_conflict_unresolved', 'long_term_memory_upload_refused', 'long_term_memory_upload_unsupported',
+])
+def test_long_term_refusals_keep_their_reason_and_retry_after_backoff(tmp_path, code):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+
+    clock = [1000]
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: clock[0], uniform=lambda *_: 0)
+    assert scheduler.claim('role', 'long_term', 1, 'session')
+    scheduler.failure('role', 'long_term', 1, 'session', LongTermMemoryRetryLater(code))
+    assert scheduler.channel_status('role')['long_term'] == {
+        'status': 'error', 'lastSuccessAt': None, 'lastError': code,
+    }
+    scheduler.request_check('role', 'long_term')
+    assert not scheduler.ready('role', 'long_term', 1, 'session')
+    clock[0] = 6000
+    assert scheduler.ready('role', 'long_term', 1, 'session')
+
+
+@pytest.mark.parametrize('channel', ['pull', 'long_term', 'profile', 'model'])
+def test_channel_status_keeps_success_separate_from_other_failures(tmp_path, channel):
+    path = tmp_path / 'scheduler.db'
+    clock = [1000]
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    other = 'model' if channel != 'model' else 'pull'
+    assert scheduler.channel_status('role')[channel] == {
+        'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+    }
+    scheduler.claim('role', channel, 1, 'session')
+    scheduler.success('role', channel)
+    scheduler.failure('role', other, 1, 'session', ValueError('private non-network failure'))
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    states = scheduler.channel_status('role')
+    assert states[channel] == {'status': 'success', 'lastSuccessAt': 1000, 'lastError': None}
+    assert states[other] == {'status': 'error', 'lastSuccessAt': None, 'lastError': 'chat_sync_internal_error'}
+    clock[0] = 200000
+    assert scheduler.claim('role', channel, 1, 'session')
+    assert scheduler.channel_status('role')[channel]['status'] == 'waiting'
+    assert not scheduler.ready('role', other, 1, 'new-session', manual=True)
+    scheduler.success('role', channel)
+    assert scheduler.channel_status('role')[channel]['lastSuccessAt'] == 200000
+
+
+def test_existing_scheduler_attempts_are_not_migrated_as_successes(tmp_path):
+    path = tmp_path / 'scheduler.db'
+    scheduler = ChatSyncScheduler(path, clock=lambda: 1000)
+    scheduler.claim('role', 'pull', 1, 'session')
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute('ALTER TABLE scheduler_tasks DROP COLUMN last_success')
+    scheduler = ChatSyncScheduler(path, clock=lambda: 2000)
+    assert scheduler.channel_status('role')['pull'] == {
+        'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+    }
+    scheduler.success('role', 'pull')
+    assert scheduler.channel_status('role')['pull']['lastSuccessAt'] == 2000
+
+
+def test_network_error_keeps_transport_backoff_and_its_specific_code(tmp_path):
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: 1000, uniform=lambda *_: 0)
+    for _ in range(8):
+        scheduler.failure('role', 'pull', 1, 'session', ValueError('chat_sync_network_unavailable'))
+    with closing(scheduler._connect()) as conn:
+        row = conn.execute('SELECT retry_at,due_at,blocked_generation FROM scheduler_tasks').fetchone()
+    assert tuple(row) == (31000, 0, None)
+    assert scheduler.channel_status('role')['pull']['lastError'] == 'chat_sync_network_unavailable'
+
+
+@pytest.mark.parametrize('failure_recorded', [False, True])
+def test_retrying_a_failed_model_waits_for_a_new_successful_receipt(tmp_path, failure_recorded):
+    path = tmp_path / 'scheduler.db'
+    clock = [1000]
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0])
+    scheduler.claim('role', 'model', 1, 'session')
+    scheduler.success('role', 'model')
+    scheduler.claim('role', 'pull', 1, 'session')
+    scheduler.success('role', 'pull')
+    if failure_recorded:
+        scheduler.failure('role', 'model', 1, 'session', ValueError('private model error'))
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute('UPDATE scheduler_device SET origin_retry_at=9000')
+    scheduler.retry_model('role')
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0])
+    assert scheduler.channel_status('role')['model'] == {
+        'status': 'waiting', 'lastSuccessAt': None, 'lastError': None,
+    }
+    assert scheduler.channel_status('role')['pull']['lastSuccessAt'] == 1000
+    assert not scheduler.ready('role', 'model', 1, 'session')
+    clock[0] = 9000
+    assert scheduler.ready('role', 'model', 1, 'session')
 
 
 # The scheduler_device shape every released version created before its unused

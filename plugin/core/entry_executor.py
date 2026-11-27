@@ -26,6 +26,7 @@ from plugin.core.rpc import (
     request_scope,
 )
 from plugin.sdk.shared.core.entry_runtime import (
+    _drop_unsupported_host_ctx,
     prepare_entry_kwargs,
     resolve_entry_timeout,
 )
@@ -493,7 +494,7 @@ class EntryExecutor:
                 args=args,
             )
             if event_type == "plugin_entry"
-            else dict(args)
+            else _drop_unsupported_host_ctx(method, dict(args))
         )
         host_context = args.get("_ctx")
         host_context = host_context if isinstance(host_context, dict) else {}

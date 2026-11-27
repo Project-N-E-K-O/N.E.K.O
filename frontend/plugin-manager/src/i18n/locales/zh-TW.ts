@@ -833,7 +833,16 @@ export default {
       exitFocus: '退出專注',
       exitFocusHint: '退出專注模式（Esc）',
       controlError: '外掛介面控制項錯誤',
-      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。',
+      parseDocumentConfirm: '是否允許外掛「{plugin}」解析文件「{file}」？',
+      actionConfirmTitle: '確認外掛「{plugin}」的操作',
+      actionConfirmDefault: '要執行這個操作嗎？',
+      actionConfirmTimeout: '確認已逾時，操作未執行。',
+      actionConfirmPending: '已有一個確認框尚未處理，請先完成它。',
+      openPathOutOfScope: '這個面板只能開啟它自己的外掛目錄或資料目錄裡的檔案。',
+      openPathNoBridge: '只有桌面應用程式裡才能開啟本機檔案。',
+      openPathFailed: '無法開啟該路徑：{message}',
+      unsafeTargetBlocked: '目標位址不安全，已攔截'
     }
   },
   package: {

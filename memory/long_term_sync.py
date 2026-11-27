@@ -388,7 +388,11 @@ def export_document(views, completed_at, *, source_evidence=None):
                 times = [source_time(key) for key in selected]
                 if all(value is not None for value in times): metadata['sourceCreatedAt'] = max(times)
                 else: metadata.pop('sourceCreatedAt', None)
-            if native.get('source') in ('user_observation', 'ai_disclosure', 'chat'): metadata['source'] = native['source']
+            metadata['source'] = (
+                native['source']
+                if native.get('source') in ('user_observation', 'ai_disclosure', 'chat')
+                else 'user_observation'
+            )
             # Rows written before the marker existed were never queued for judging.
             metadata.update(importance=native.get('importance', 5), absorbed=bool(native.get('absorbed')), archived=archived,
                             signalJudged=bool(native.get('signal_processed', True)))
@@ -587,7 +591,11 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
              or (incoming['schemaVersion'] == 1 and row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
-    incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
+    incoming_fact_sources = {
+        row['id']: _incoming_fact_source(row, local_facts)
+        for row in incoming['entries']
+        if row['kind'] == 'fact'
+    }
     withdrawn_facts = ({row['id'] for row in incoming['entries']
                         if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
                        | {item['id'] for item in cold if item['kind'] == 'fact' and item['status'] == 'retracted'})
@@ -608,7 +616,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
     for row in incoming['entries']:
         if row['kind'] == 'fact':
             fact_subjects.setdefault(row['id'], set()).add(row['subject'])
-            fact_copy_sources.setdefault(row['id'], set()).add(_incoming_fact_source(row))
+            fact_copy_sources.setdefault(row['id'], set()).add(_incoming_fact_source(row, local_facts))
     for item in cold:
         if item['kind'] == 'fact':
             fact_subjects.setdefault(item['id'], set()).add(item['subject'])
@@ -680,7 +688,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                         native[field] = deepcopy(previous[field])
             result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
-            native.update(entity=subject, source=_incoming_fact_source(row),
+            native.update(entity=subject, source=_incoming_fact_source(row, local_facts),
                           importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')),
                           # Only a schema 3 writer can say a fact still waits for judging.
                           signal_processed=bool(meta.get('signalJudged', True)),
@@ -792,8 +800,16 @@ def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous, sh
         native['fact_source_counts'] = dict(carried)
 
 
-def _incoming_fact_source(row):
-    return row['metadata'].get('source', 'ai_disclosure' if row['subject'] == 'neko' else 'user_observation')
+def _incoming_fact_source(row, local_facts=None):
+    source = row['metadata'].get('source')
+    if source in ('user_observation', 'ai_disclosure', 'chat'):
+        return source
+    if local_facts is not None:
+        previous = local_facts.get((row['subject'], row['id']), {})
+        prev_source = previous.get('source')
+        if prev_source in ('user_observation', 'ai_disclosure', 'chat'):
+            return prev_source
+    return 'user_observation'
 
 
 def _incoming_cold(incoming, previous_state, current_schema):

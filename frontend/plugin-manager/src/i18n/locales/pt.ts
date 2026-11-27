@@ -833,7 +833,16 @@ export default {
       exitFocus: 'Sair do foco',
       exitFocusHint: 'Sair do modo foco (Esc)',
       controlError: 'Erro de controle da UI do plugin',
-      hostedRuntimePending: 'O contêiner Vue reconheceu esta Surface. Renderizadores TSX, Markdown e Auto serão conectados em uma fase posterior.'
+      hostedRuntimePending: 'O contêiner Vue reconheceu esta Surface. Renderizadores TSX, Markdown e Auto serão conectados em uma fase posterior.',
+      parseDocumentConfirm: 'Permitir que o plugin "{plugin}" analise o documento "{file}"?',
+      actionConfirmTitle: 'Confirmar ação do plugin "{plugin}"',
+      actionConfirmDefault: 'Executar esta ação?',
+      actionConfirmTimeout: 'A confirmação expirou, então a ação não foi executada.',
+      actionConfirmPending: 'Já existe outra confirmação aberta. Conclua-a primeiro.',
+      openPathOutOfScope: 'Este painel só pode abrir arquivos dentro da pasta do próprio plugin ou da pasta de dados dele.',
+      openPathNoBridge: 'Abrir arquivos locais só está disponível no aplicativo para desktop.',
+      openPathFailed: 'Não foi possível abrir o caminho: {message}',
+      unsafeTargetBlocked: 'Endereço de destino inseguro bloqueado'
     }
   },
   package: {

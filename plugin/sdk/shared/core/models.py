@@ -127,14 +127,24 @@ class PluginModels:
             if client is None or client.is_closed():
                 from openai import AsyncOpenAI
 
+                from utils.internal_http_client import internal_service_event_hooks
+
                 # The host owns the <=300s slot deadline. A larger transport
                 # timeout lets its structured timeout response reach the SDK.
+                # The gateway is a loopback hop to the plugin server: in
+                # proxy/remote mode InstanceAccessMiddleware admits it only with
+                # the signed internal-service proof; the gateway's own Bearer
+                # token check still runs after admission.
                 client = AsyncOpenAI(
                     base_url=base_url,
                     api_key=token,
                     timeout=360.0,
                     max_retries=0,
-                    http_client=_GatewayHttpClient(trust_env=False, timeout=360.0),
+                    http_client=_GatewayHttpClient(
+                        trust_env=False,
+                        timeout=360.0,
+                        event_hooks=internal_service_event_hooks(),
+                    ),
                 )
                 self._clients[loop] = client
             return client

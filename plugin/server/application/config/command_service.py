@@ -62,7 +62,15 @@ def _normalize_profile_name(profile_name: object) -> str:
             status_code=400,
             details={},
         )
-    return profile_name.strip()
+    normalized = profile_name.strip()
+    if "/" in normalized or "\\" in normalized or "\x00" in normalized or normalized in {".", ".."}:
+        raise ServerDomainError(
+            code="INVALID_ARGUMENT",
+            message="Invalid profile_name",
+            status_code=400,
+            details={},
+        )
+    return normalized
 
 
 def _normalize_mode(mode: object) -> str:
@@ -231,6 +239,7 @@ class ConfigCommandService:
         profile_name: object,
         config: object,
         make_active: object,
+        commit_guard: ConfigCommitGuard | None = None,
     ) -> dict[str, object]:
         normalized_profile_name = _normalize_profile_name(profile_name)
         normalized_config = _normalize_config_updates(config)
@@ -242,6 +251,7 @@ class ConfigCommandService:
                 profile_name=normalized_profile_name,
                 config=normalized_config,
                 make_active=normalized_make_active,
+                commit_guard=commit_guard,
             )
             return _normalize_payload(payload, context="upsert_plugin_profile_config")
         except HTTPException as exc:
@@ -274,6 +284,7 @@ class ConfigCommandService:
         *,
         plugin_id: str,
         profile_name: object,
+        commit_guard: ConfigCommitGuard | None = None,
     ) -> dict[str, object]:
         normalized_profile_name = _normalize_profile_name(profile_name)
         try:
@@ -281,6 +292,7 @@ class ConfigCommandService:
                 infrastructure_delete_profile_config,
                 plugin_id=plugin_id,
                 profile_name=normalized_profile_name,
+                commit_guard=commit_guard,
             )
             return _normalize_payload(payload, context="delete_plugin_profile_config")
         except HTTPException as exc:
@@ -313,6 +325,7 @@ class ConfigCommandService:
         *,
         plugin_id: str,
         profile_name: object,
+        commit_guard: ConfigCommitGuard | None = None,
     ) -> dict[str, object]:
         normalized_profile_name = _normalize_profile_name(profile_name)
         try:
@@ -320,6 +333,7 @@ class ConfigCommandService:
                 infrastructure_set_active_profile,
                 plugin_id=plugin_id,
                 profile_name=normalized_profile_name,
+                commit_guard=commit_guard,
             )
             return _normalize_payload(payload, context="set_plugin_active_profile")
         except HTTPException as exc:

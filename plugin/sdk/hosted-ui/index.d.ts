@@ -283,6 +283,7 @@ export function ImagePreview(props: CommonProps & { artifact?: ArtifactLike; src
 export function AudioPlayer(props: CommonProps & { artifact?: ArtifactLike; src?: string; value?: string | ArtifactLike; label?: any; caption?: any; controls?: boolean; preload?: string; emptyText?: any }): any
 export function VideoPlayer(props: CommonProps & { artifact?: ArtifactLike; src?: string; value?: string | ArtifactLike; label?: any; caption?: any; poster?: string; controls?: boolean; preload?: string; emptyText?: any }): any
 export function Gallery<T = any>(props: CommonProps & { items?: T[]; columns?: number; cols?: number; emptyText?: any; onSelect?: (item: T, index: number) => void }): any
+/** `path` asks the desktop host to open a local file or folder; only paths inside this plugin's own plugin directory or data directory are opened. */
 export function FileDownload(props: CommonProps & { href?: string; url?: string; dataUrl?: string; path?: string; filename?: string; label?: any; copiedLabel?: any; tone?: Tone; target?: string; openExternal?: boolean }): any
 export function TextBlock(props: CommonProps & { text?: any; value?: any }): any
 export function LogViewer(props: CommonProps & { text?: any; value?: any; autoScroll?: boolean; deps?: any[]; scrollBehavior?: ScrollBehavior }): any

@@ -15,14 +15,23 @@ type BuildHostedTsxDocumentOptions = {
 
 function escapeScriptContent(value: string) {
   return value
-    .replace(/<\/script/g, '<\\/script')
+    .replace(/<\/(script)/gi, '<\\/$1')
     .replace(/<!--/g, '<\\!--')
+}
+
+function escapeJsonForInlineScript(json: string) {
+  return json
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
 }
 
 function escapeHtmlAttribute(value: string) {
   return value
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
 }
@@ -81,7 +90,7 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
 
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   const compiled = compileHostedTsx(options.source, options.dependencies, options.surface.entry || 'entry.tsx')
-  const payload = escapeScriptContent(JSON.stringify(buildPayload(options)))
+  const payload = escapeJsonForInlineScript(JSON.stringify(buildPayload(options)))
   const locale = escapeHtmlAttribute(options.locale)
   const uiKit = buildUiKitBundle()
 

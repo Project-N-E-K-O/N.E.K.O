@@ -136,7 +136,11 @@ _LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
 # A call that got the name lock with less than this left of its budget
 # (or less than half of it, for small budgets) is not sent: it reports
 # "busy" with nothing applied, instead of an almost certain "timeout"
-# whose outcome would be unknown.
+# whose outcome would be unknown. The stale-removal follow-ups use the same
+# threshold and also report "busy" when one is not sent; the requests sent
+# before it may have applied changes, which the result reports. A request the
+# RPC layer did not send because the calling entry's deadline had passed
+# reports "busy" too.
 _LLM_TOOL_MIN_SEND_BUDGET = 5.0
 # How often one reported registration id is targeted when it keeps showing up.
 _LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
@@ -756,6 +760,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
         with self._llm_tools_lock:
             self._llm_tools[meta.name] = meta
 
+    def _holds_llm_tool_locally(self, name: str) -> bool:
+        """Whether a handler for ``name`` is registered locally right now."""
+        with self._llm_tools_lock:
+            return self._llm_tools.get(name) is not None
+
     def _release_llm_tool_locally(self, meta: "LlmToolMeta") -> bool:
         """Drop ``meta`` from ``_llm_tools`` and remove its dynamic entry,
         but only if that exact registration is still current (a
@@ -862,15 +871,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
 
     @staticmethod
-    def _validate_async_llm_tool_name(name: str) -> None:
-        validate_tool_name(name)
-        # "." / ".." pass the shared rule but are normalised away in the
-        # callback URL path, so such a tool could never be called. Only the
-        # async calls refuse them; the sync calls keep their behaviour.
-        if set(name) == {"."}:
-            raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
-
-    @staticmethod
     def _validate_llm_tool_timeout(timeout: float) -> None:
         if (
             isinstance(timeout, bool)
@@ -920,7 +920,19 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 timeout=request_timeout,
                 wrap_result=False,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
+            if getattr(exc, "sent", True) is False:
+                # The calling entry's deadline ran out before the request was
+                # handed to the transport: the host never got it, so the
+                # outcome is known (nothing applied), as for a call whose
+                # lock wait used up its budget.
+                return build_result(
+                    {}, ok=False, error="busy",
+                    message=(
+                        "the calling entry's remaining time ran out before the request "
+                        "could be sent; nothing was sent to the host"
+                    ),
+                )
             return build_result(
                 {}, ok=False, error="timeout",
                 message=(
@@ -999,8 +1011,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
             declared permissions.
 
         Returns ``True`` on success. Raises ``ValueError`` for invalid
-        names, ``EntryConflictError`` for duplicates and
-        ``PermissionDeniedError`` for a narrowing outside the declarations.
+        names (including names made only of dots), ``EntryConflictError``
+        for duplicates and ``PermissionDeniedError`` for a narrowing outside
+        the declarations.
         """
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
@@ -1014,11 +1027,17 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
         Removes the dynamic entry locally and notifies the host so the
         registration is also dropped from main_server. Returns ``True``
-        if the tool existed and was removed, ``False`` otherwise.
+        if the tool existed and was removed, ``False`` for a valid name
+        that is not registered (an invalid name raises, see below).
 
         Fire-and-forget like :meth:`register_llm_tool`; use
         :meth:`unregister_llm_tool_async` to get the real outcome.
+
+        Raises ``ValueError`` for an invalid name (one that no call could
+        have registered, e.g. one made only of dots), like
+        :meth:`unregister_llm_tool_async`.
         """
+        validate_tool_name(name)
         meta = self._llm_tools.get(name)
         if meta is None or not self._release_llm_tool_locally(meta):
             return False
@@ -1092,7 +1111,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
         self._validate_llm_tool_timeout(timeout)
-        self._validate_async_llm_tool_name(name)
+        validate_tool_name(name)
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail, permissions=permissions,
@@ -1144,6 +1163,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         def held(result: LlmToolUnregisterResult) -> list[dict[str, str]]:
             return [r for r in result["refused_roles"] if r.get("reason") == "different registration"]
 
+        def pairs(result: LlmToolUnregisterResult) -> list[tuple[Any, str]]:
+            return [(r.get("role"), r.get("registration_id") or "") for r in held(result)]
+
         outcomes: list[LlmToolUnregisterResult] = []
         queue = list(dict.fromkeys(r.get("registration_id") or "" for r in held(first)))
         # A registration that is still being written to roles (a timed-out
@@ -1151,25 +1173,39 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # removal: it then gets one more targeted attempt, never more.
         attempts: dict[str, int] = {}
         removed_ids: set[str] = set()
+        # Resolution is reported per (role, id): a registration that comes
+        # back on one role must not make the roles it was already removed
+        # from look unresolved again.
+        seen: list[tuple[Any, str]] = pairs(first)
+        resolved: set[tuple[Any, str]] = set()
         error: str | None = None
         message: str | None = None
+        no_id = (
+            f"another registration of {name!r} holds the name but main_server did not "
+            "report its id; not removed"
+        )
         while queue:
             rid = queue.pop(0)
             if rid in removed_ids or attempts.get(rid, 0) >= _LLM_TOOL_MAX_REMOVAL_ATTEMPTS:
                 continue
             attempts[rid] = attempts.get(rid, 0) + 1
             if not rid:
-                error, message = "partial_failure", (
-                    f"another registration of {name!r} holds the name but main_server did not "
-                    "report its id; not removed"
-                )
+                error, message = "partial_failure", no_id
                 continue
             left = deadline - time.monotonic()
             if left < min(_LLM_TOOL_MIN_SEND_BUDGET, budget / 2):
-                error, message = "timeout", (
-                    f"another registration of {name!r} holds the name and too little of the "
-                    f"{budget}s budget is left to remove it"
-                )
+                # Nothing is sent, so the outcome is known (the holder stays):
+                # "busy", like a call whose lock wait used up its budget, not
+                # "timeout", which means the outcome is unknown. A holder
+                # without an id, seen before or still queued, is reported
+                # instead: a retry cannot fix it.
+                if error is None and "" in queue:
+                    error, message = "partial_failure", no_id
+                elif error is None:
+                    error, message = "busy", (
+                        f"another registration of {name!r} holds the name and too little of the "
+                        f"{budget}s budget is left to remove it; nothing more was sent"
+                    )
                 break
             outcome = await self._request_llm_tool_change(
                 request_type="LLM_TOOL_UNREGISTER_REQUEST",
@@ -1181,22 +1217,34 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 build_result=build_unregister_result,
             )
             outcomes.append(outcome)
+            reported_pairs = pairs(outcome)
+            reported = [pair[1] for pair in reported_pairs]
+            # Holders this answer reports: new ones, other roles, or ones
+            # removed earlier that are back (no longer counted as removed).
+            # Also on a failed answer, so a holder that came back is still
+            # listed in refused_roles.
+            removed_ids.difference_update(reported)
+            # Roles this targeted request removed the id from, even on a
+            # failed answer; ones it reports as held are not resolved.
+            resolved.update((affected, rid) for affected in outcome["affected_roles"])
+            resolved.difference_update(reported_pairs)
             if not outcome["ok"]:
                 error, message = outcome["error"] or "partial_failure", outcome["message"]
                 break
-            reported = [r.get("registration_id") or "" for r in held(outcome)]
             if rid not in reported:
                 removed_ids.add(rid)
-            # Holders this answer reports: new ones, other roles, or ones
-            # removed earlier that are back (no longer counted as removed).
-            removed_ids.difference_update(reported)
+                # This targeted request left the id on none of the roles it
+                # visited: every (role, id) seen for it so far is gone. Roles
+                # where it shows up in a later answer are holders again.
+                resolved.update(pair for pair in seen if pair[1] == rid)
+            seen.extend(reported_pairs)
             queue.extend(reported)
 
         everything = [first, *outcomes]
         unresolved = {
             (r.get("role"), r.get("registration_id")): r
             for result in everything for r in held(result)
-            if (r.get("registration_id") or "") not in removed_ids
+            if (r.get("role"), r.get("registration_id") or "") not in resolved
         }
         if unresolved and error is None:
             error, message = "partial_failure", (
@@ -1243,11 +1291,15 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
         if result["ok"] and any(
             r.get("reason") == "different registration" for r in result["refused_roles"]
-        ):
+        ) and not self._holds_llm_tool_locally(meta.name):
             # Another registration of this plugin holds the name (a register
             # that timed out earlier and landed late). The plugin holds no
             # handler for the name now, so it is a leftover too: remove it by
-            # its reported id, within the cleanup budget.
+            # its reported id, within the cleanup budget. If a handler is
+            # back (a sync register_llm_tool, which does not take the name
+            # lock, ran meanwhile), that registration may be the live one:
+            # leave it, and its refusal stays in the result. Checked once:
+            # a sync register landing after this check is not seen.
             result = await self._remove_reported_llm_tool_registrations(
                 meta.name, meta.role, result, deadline, _LLM_TOOL_CLEANUP_TIMEOUT,
             )
@@ -1285,7 +1337,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Raises ``ValueError`` for an invalid name or ``request_timeout``.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
-        self._validate_async_llm_tool_name(name)
+        validate_tool_name(name)
         try:
             async with self._llm_tool_name_lock(name, request_timeout) as remaining:
                 deadline = time.monotonic() + remaining

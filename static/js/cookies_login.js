@@ -589,6 +589,36 @@ function refreshQrSessionCopy(platformKey) {
     if (image) image.alt = safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code');
 }
 
+function renderQrSessionError(qrLoginBox, message, retryButtonId, onRetry) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'qr-session-error';
+    wrapper.appendChild(document.createTextNode(String(message || '')));
+    const retryBtn = document.createElement('button');
+    retryBtn.id = retryButtonId;
+    retryBtn.className = 'qr-session-retry';
+    retryBtn.textContent = safeT('cookiesLogin.qrLogin.retry', '重试');
+    retryBtn.onclick = onRetry;
+    wrapper.appendChild(retryBtn);
+    qrLoginBox.replaceChildren(wrapper);
+}
+
+function sanitizeQrImageSrc(src) {
+    const value = String(src || '').trim();
+    if (!value) return '';
+    if (/^data:image\/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(value)) {
+        return value;
+    }
+    try {
+        const parsed = new URL(value, window.location.origin);
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+            return parsed.toString();
+        }
+    } catch {
+        return '';
+    }
+    return '';
+}
+
 async function requestQR(config, platformKey) {
     if (qrRefreshTimeout) {
         clearTimeout(qrRefreshTimeout);
@@ -602,11 +632,13 @@ async function requestQR(config, platformKey) {
     const abortController = new AbortController();
     qrRequestAbortController = abortController;
     const qrLoginBox = document.getElementById('QRLogin');
-    qrLoginBox.innerHTML = `
-        <div class="qr-session-loading">
-            <div data-i18n="cookiesLogin.qrLogin.loading">${safeT('cookiesLogin.qrLogin.loading', '正在获取二维码...')}</div>
-        </div>
-    `;
+    const loadingBox = document.createElement('div');
+    loadingBox.className = 'qr-session-loading';
+    const loadingText = document.createElement('div');
+    loadingText.setAttribute('data-i18n', 'cookiesLogin.qrLogin.loading');
+    loadingText.textContent = safeT('cookiesLogin.qrLogin.loading', '正在获取二维码...');
+    loadingBox.appendChild(loadingText);
+    qrLoginBox.replaceChildren(loadingBox);
     
     try {
         const response = await fetch('/api/auth/get_QR', {
@@ -630,45 +662,88 @@ async function requestQR(config, platformKey) {
         }
         if (result.success && result.data) {
             currentQrKey = result.data.qrcode_key;
-            const timeout = result.data.timeout || 180;
-            
-            qrLoginBox.innerHTML = `
-                <div class="qr-session">
-                    <button id="qr-collapse-action" class="qr-collapse-btn">
-                        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                        <span data-i18n="common.collapse">${safeT('common.collapse', '收起')}</span>
-                    </button>
-                    <div id="qr-scan-title" class="qr-session-title">${safeT('cookiesLogin.qrLogin.scanTitle', '扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
-                    <img class="qr-session-image" src="${result.data.qrcode_image}" alt="${safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code')}">
-                    <div id="qr-status" class="qr-session-status">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
-                    <div id="qr-valid-for" class="qr-session-validity" data-seconds="${timeout}">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
-                    <button id="qr-refresh-btn" class="qr-session-refresh" data-i18n="cookiesLogin.qrLogin.refreshQR">${safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码')}</button>
-                </div>
-            `;
-            
-            document.getElementById('qr-collapse-action').onclick = function() {
+            const parsedTimeout = Number(result.data.timeout);
+            const timeout = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 180;
+
+            const sessionEl = document.createElement('div');
+            sessionEl.className = 'qr-session';
+
+            const collapseBtn = document.createElement('button');
+            collapseBtn.id = 'qr-collapse-action';
+            collapseBtn.className = 'qr-collapse-btn';
+            const svgNS = 'http://www.w3.org/2000/svg';
+            const chevronSvg = document.createElementNS(svgNS, 'svg');
+            chevronSvg.setAttribute('width', '12');
+            chevronSvg.setAttribute('height', '12');
+            chevronSvg.setAttribute('fill', 'none');
+            chevronSvg.setAttribute('stroke', 'currentColor');
+            chevronSvg.setAttribute('viewBox', '0 0 24 24');
+            const chevronPath = document.createElementNS(svgNS, 'path');
+            chevronPath.setAttribute('stroke-linecap', 'round');
+            chevronPath.setAttribute('stroke-linejoin', 'round');
+            chevronPath.setAttribute('stroke-width', '2');
+            chevronPath.setAttribute('d', 'M19 9l-7 7-7-7');
+            chevronSvg.appendChild(chevronPath);
+            const collapseLabel = document.createElement('span');
+            collapseLabel.setAttribute('data-i18n', 'common.collapse');
+            collapseLabel.textContent = safeT('common.collapse', '收起');
+            collapseBtn.appendChild(chevronSvg);
+            collapseBtn.appendChild(collapseLabel);
+
+            const scanTitle = document.createElement('div');
+            scanTitle.id = 'qr-scan-title';
+            scanTitle.className = 'qr-session-title';
+            const platformLabel = PLATFORM_CONFIG[platformKey]?.name || config["name"] || '';
+            scanTitle.textContent = safeT('cookiesLogin.qrLogin.scanTitle', '扫码登录 {{platform}}').replace('{{platform}}', platformLabel);
+
+            const qrImg = document.createElement('img');
+            qrImg.className = 'qr-session-image';
+            const safeQrSrc = sanitizeQrImageSrc(result.data.qrcode_image);
+            if (safeQrSrc) {
+                qrImg.src = safeQrSrc;
+            }
+            qrImg.alt = safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code');
+
+            const statusEl = document.createElement('div');
+            statusEl.id = 'qr-status';
+            statusEl.className = 'qr-session-status';
+            statusEl.textContent = safeT('cookiesLogin.qrLogin.waiting', '等待扫码...');
+
+            const validForEl = document.createElement('div');
+            validForEl.id = 'qr-valid-for';
+            validForEl.className = 'qr-session-validity';
+            validForEl.dataset.seconds = String(timeout);
+            validForEl.textContent = safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', String(timeout));
+
+            const refreshBtn = document.createElement('button');
+            refreshBtn.id = 'qr-refresh-btn';
+            refreshBtn.className = 'qr-session-refresh';
+            refreshBtn.setAttribute('data-i18n', 'cookiesLogin.qrLogin.refreshQR');
+            refreshBtn.textContent = safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码');
+
+            sessionEl.append(collapseBtn, scanTitle, qrImg, statusEl, validForEl, refreshBtn);
+            qrLoginBox.replaceChildren(sessionEl);
+
+            collapseBtn.onclick = function() {
                 stopQrPoll();
                 currentQrKey = null;
                 showQRLogin(config, platformKey);
             };
-            
-            document.getElementById('qr-refresh-btn').onclick = function() {
+
+            refreshBtn.onclick = function() {
                 currentQrKey = null;
                 stopQrPoll();
                 requestQR(config, platformKey);
             };
-            
+
             startQrPoll(config, platformKey);
         } else {
-            qrLoginBox.innerHTML = `
-                <div class="qr-session-error">
-                    ${safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试')}
-                    <button id="qr-retry-btn" class="qr-session-retry">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
-                </div>
-            `;
-            document.getElementById('qr-retry-btn').onclick = function() {
-                requestQR(config, platformKey);
-            };
+            renderQrSessionError(
+                qrLoginBox,
+                safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试'),
+                'qr-retry-btn',
+                function() { requestQR(config, platformKey); }
+            );
         }
     } catch (err) {
         if (err?.name === 'AbortError' || requestGeneration !== qrRequestGeneration) return;
@@ -677,15 +752,12 @@ async function requestQR(config, platformKey) {
         const errorMessage = err?.localized === true
             ? err.message
             : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
-        qrLoginBox.innerHTML = `
-            <div class="qr-session-error">
-                ${errorMessage}
-                <button id="qr-retry-btn-err" class="qr-session-retry">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
-            </div>
-        `;
-        document.getElementById('qr-retry-btn-err').onclick = function() {
-            requestQR(config, platformKey);
-        };
+        renderQrSessionError(
+            qrLoginBox,
+            errorMessage,
+            'qr-retry-btn-err',
+            function() { requestQR(config, platformKey); }
+        );
     } finally {
         if (requestGeneration === qrRequestGeneration) {
             qrRequestAbortController = null;

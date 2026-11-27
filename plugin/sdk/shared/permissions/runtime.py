@@ -116,6 +116,15 @@ class PluginPermissions:
             state = self._states.get(permission)
         return state if state is not None else unavailable_state(permission)
 
+    def _peek(self, permission: str) -> PermissionState | None:
+        """The state held for ``permission``, None before any snapshot.
+
+        Takes no lock and never logs, for the process's audit hook (which
+        must not block or re-enter): ``apply`` replaces the dict wholesale, so
+        reading the current one is safe. ``permission`` must be a known id.
+        """
+        return self._states.get(permission)
+
     def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
         if is_async_callable(callback):
             raise TypeError("ctx.permissions.on_change callbacks must be synchronous")

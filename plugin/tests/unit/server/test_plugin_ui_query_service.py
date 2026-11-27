@@ -160,6 +160,62 @@ def test_surface_context_includes_config_snapshot_only_with_permission(monkeypat
     assert context["actions"] == []
 
 
+def test_surface_context_reports_host_open_path_roots(monkeypatch, tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage_root))
+    plugin_ui = normalize_plugin_ui_manifest(
+        {"plugin": {"ui": {"panel": [{"id": "main", "entry": "ui/panel.tsx"}]}}},
+        plugin_id="demo",
+    )
+    with state.acquire_plugins_write_lock():
+        previous = state.plugins.get("demo")
+        state.plugins["demo"] = {
+            "id": "demo",
+            "config_path": str(config_path),
+            "plugin_ui": plugin_ui,
+            "entries": [],
+        }
+    try:
+        context = asyncio.run(PluginUiQueryService().get_surface_context("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            if previous is None:
+                state.plugins.pop("demo", None)
+            else:
+                state.plugins["demo"] = previous
+
+    assert context["paths"] == {
+        "plugin_dir": str(plugin_dir.resolve()),
+        "plugin_dir_unresolved": None,
+        "data_dir": str(storage_root.resolve() / "plugins" / "demo" / "data"),
+    }
+
+
+def test_surface_paths_also_report_a_symlinked_plugin_dir(tmp_path) -> None:
+    real_dir = tmp_path / "real_plugin"
+    real_dir.mkdir()
+    (real_dir / "plugin.toml").write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    link_dir = tmp_path / "linked_plugin"
+    try:
+        link_dir.symlink_to(real_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    paths = ui_query_module._hosted_surface_paths("demo", {"config_path": str(link_dir / "plugin.toml")})
+
+    assert paths["plugin_dir"] == str(real_dir.resolve())
+    assert paths["plugin_dir_unresolved"] == str(link_dir)
+
+    dotted = ui_query_module._hosted_surface_paths(
+        "demo", {"config_path": str(link_dir / ".." / "linked_plugin" / "plugin.toml")},
+    )
+    assert dotted["plugin_dir_unresolved"] is None
+
+
 def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     ui_dir = plugin_dir / "ui"
@@ -1382,3 +1438,41 @@ def test_surface_context_reports_provider_failure_as_warning(tmp_path) -> None:
         if warning.get("code") == "ui_context_failed"
     ]
     assert any("not found" in str(message) for message in messages)
+
+
+def test_call_surface_action_authoritatively_tags_channel_in_ctx(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
+    captured_contexts: list[dict[str, object]] = []
+
+    class _CapturingHost(_BrokenContextHost):
+        async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None = None) -> object:
+            captured_contexts.append(dict(args.get("_ctx") or {}))
+            return await super().trigger(entry_id, args, timeout=timeout)
+
+    restore = _install_demo_plugin(tmp_path, _CapturingHost(), permissions=["action:call"])
+    try:
+        asyncio.run(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="ping",
+                args={"_ctx": {"channel": "run", "lanlan_name": "Alice"}},
+                kind="panel",
+                surface_id="main",
+            )
+        )
+        asyncio.run(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="ping",
+                args={},
+                _card_context={"card_id": "c1", "channel": "ui"},
+            )
+        )
+    finally:
+        restore()
+
+    assert len(captured_contexts) == 2
+    assert captured_contexts[0]["channel"] == "ui"
+    assert captured_contexts[0]["lanlan_name"] == "Alice"
+    assert captured_contexts[1]["channel"] == "chat_card"
+    assert captured_contexts[1]["card_id"] == "c1"

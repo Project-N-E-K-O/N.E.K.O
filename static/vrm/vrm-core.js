@@ -363,7 +363,12 @@ class VRMCore {
             ? renderer.getPixelRatio()
             : null;
 
-        renderer.setPixelRatio(this._getQualityPixelRatio(window.renderQuality || 'medium'));
+        const targetPixelRatio = this._getQualityPixelRatio(window.renderQuality || 'medium');
+        // 像素比没变就不重设：three.js 的 setPixelRatio 会连带 setSize 重新分配画布缓冲区，
+        // 画布在下一次渲染前是空的。窗口尺寸变了但页面视口不变时（resize 事件照常派发）就是这种情况。
+        if (!(Number.isFinite(prevPixelRatio) && Math.abs(prevPixelRatio - targetPixelRatio) < 0.001)) {
+            renderer.setPixelRatio(targetPixelRatio);
+        }
 
         const nextPixelRatio = typeof renderer.getPixelRatio === 'function'
             ? renderer.getPixelRatio()

@@ -80,6 +80,7 @@ class Wiring:
         monkeypatch.setattr(nekopower_mount, "_updates", None)
         monkeypatch.setattr(nekopower_mount, "_updates_worker", None)
         nekopower_mount.hud.clear()
+        nekopower_mount._asked.clear()
         api_runtime._turn_checks_seen.clear()
         mount.reset_for_tests()
         mount.configure(
@@ -935,13 +936,17 @@ def _commission(**values: Any) -> Any:
         "plugin_id": None,
         "entry_id": None,
         "parent_id": None,
+        "name": None,
         "created_at": 1_700_000_000.0,
         "started_at": 1_700_000_005.0,
         "ended_at": None,
         "updated_at": 1_700_000_005.0,
+        "lang": "en",
     }
     base.update(values)
-    return SimpleNamespace(**base)
+    # What it asks while it waits for the user (``asked``), as the ledger's row reads it.
+    asked = base.pop("asked", None)
+    return SimpleNamespace(**base, question=lambda: asked)
 
 
 @pytest.mark.parametrize(
@@ -982,8 +987,65 @@ def test_hud_task_of_a_task_agent_and_of_a_task_not_yet_decided():
         "start_time": "2023-11-14T22:13:25Z",
         "params": {"description": "sort the photos", "instruction": "sort the photos by month"},
         "lanlan_name": "Lan",
+        "question": None,
     }
     assert (undecided["type"], undecided["start_time"]) == ("task", "2023-11-14T22:13:20Z")
+
+
+PERMISSION = {
+    "kind": "permission", "id": "q1", "category": "run_command", "detail": {"command": "npm run build"},
+    "options": ["always", "session", "once", "deny"],
+}
+
+
+def test_a_task_that_waits_for_the_user_carries_what_it_asks_and_no_other_does():
+    from app.agent_server.nekopower_mount import hud_task
+
+    waiting = hud_task(_commission(status="waiting_user", asked=dict(PERMISSION)))
+
+    # As a card shows it: the question, and what is to be allowed in one line.
+    assert {key: waiting["question"][key] for key in PERMISSION} == PERMISSION
+    assert "npm run build" in waiting["question"]["line"] and waiting["question"]["line_cut"] is False
+    # In each language of the interface too: every page it is sent to shows the one of its own.
+    assert waiting["question"]["lines"]["ja"] == {"line": "コマンド npm run build の実行", "line_cut": False}
+    # Said as None once it does not wait: the page merges what it is sent into what it has.
+    for status in ("queued", "working", "done", "blocked", "failed", "cancelled"):
+        task = hud_task(_commission(status=status, asked=dict(PERMISSION), ended_at=1_700_000_050.0))
+        assert "question" in task and task["question"] is None, status
+
+
+async def test_a_commission_that_stops_waiting_has_the_card_of_its_question_closed(wiring):
+    change = wiring.mount_module._on_commission_change
+    # One the HUD shows, and a task agent's own task agent, which it does not.
+    for commission_id, parent in (("c1", None), ("c2", "c1")):
+        waiting = _commission(id=commission_id, parent_id=parent, status="waiting_user", asked={**PERMISSION, "id": f"q-{commission_id}"})
+        change(waiting, "working")
+        change(_commission(id=commission_id, parent_id=parent, status="working"), "waiting_user")
+    await wait_until(lambda: len(wiring.of("nekopower_question")) == 2)
+
+    closed = wiring.of("nekopower_question")
+    assert [(event["task_id"], event["question_id"], event["question"], event["lanlan_name"]) for event in closed] == [
+        ("c1", "q-c1", None, "Lan"), ("c2", "q-c2", None, "Lan"),
+    ]
+    # In the order things happened: the task is back at work on the HUD before its card closes.
+    kinds = [event["event_type"] for event in wiring.events]
+    assert kinds.index("nekopower_question") > kinds.index("task_update")
+    # The task agent's own one is not shown: what it asks is, with the task shown above it, until it asks no more.
+    assert [(task["status"], _asked_below(task)) for task in wiring.updates("c1")] == [
+        ("waiting_user", []), ("running", []), ("running", [("c2", "q-c2")]), ("running", []),
+    ]
+    assert wiring.updates("c2") == []
+
+
+async def test_nothing_is_closed_for_a_commission_that_did_not_wait_for_the_user(wiring):
+    change = wiring.mount_module._on_commission_change
+    change(_commission(status="working"), "queued")
+    change(_commission(status="done", ended_at=1_700_000_050.0), "working")
+    # Still waiting (written again as it waits): its card stays.
+    change(_commission(id="c5", status="waiting_user", asked=dict(PERMISSION)), "waiting_user")
+    await wait_until(lambda: len(wiring.updates()) == 3)
+
+    assert wiring.of("nekopower_question") == []
 
 
 def test_a_task_agents_own_task_agent_is_not_shown():
@@ -995,6 +1057,90 @@ def test_a_task_agents_own_task_agent_is_not_shown():
     view = HudTasks()
     assert view.update(child) is None
     assert view.all() == []
+
+
+def _below(commission_id: str, parent: str, question_id: str | None = None, **values: Any) -> Any:
+    """A task agent's own task agent: waiting for the user with an approval if ``question_id`` is given."""
+    if question_id is not None:
+        values.setdefault("status", "waiting_user")
+        values.setdefault("asked", {**PERMISSION, "id": question_id})
+    return _commission(id=commission_id, parent_id=parent, name=f"agent-{commission_id}", title=f"job {commission_id}", **values)
+
+
+def _asked_below(task: dict[str, Any]) -> list[tuple[str, str]]:
+    return [(item["id"], item["question"]["id"]) for item in task["sub_questions"]]
+
+
+def test_what_a_task_agents_own_task_agents_ask_is_shown_with_the_task_above_them():
+    from app.agent_server.nekopower_mount import HudTasks
+
+    view = HudTasks()
+    top = view.update(_commission(id="c1"))
+    # Said as none, for the page merges what it is sent into what it has.
+    assert top["sub_questions"] == []
+
+    shown = view.update(_below("c2", "c1", "q2"))
+    # The task shown above it, with who asks and what, as a card shows it (the line of an approval included).
+    assert shown["id"] == "c1" and shown["status"] == "running"
+    [item] = shown["sub_questions"]
+    assert {key: item[key] for key in ("id", "name", "title")} == {"id": "c2", "name": "agent-c2", "title": "job c2"}
+    assert item["question"]["id"] == "q2" and "npm run build" in item["question"]["line"]
+    # One that one started asks as well: shown with the same task, after the one that asked first.
+    assert _asked_below(view.update(_below("c3", "c2", "q3"))) == [("c2", "q2"), ("c3", "q3")]
+    # Written again as it waits: nothing new to tell.
+    assert view.update(_below("c2", "c1", "q2")) is None
+    # A new question takes the place of the one it asked, where that one stood.
+    assert _asked_below(view.update(_below("c2", "c1", "q4"))) == [("c2", "q4"), ("c3", "q3")]
+    # The task shown, told of again as it moves on, keeps them.
+    assert _asked_below(view.update(_commission(id="c1"))) == [("c2", "q4"), ("c3", "q3")]
+    assert _asked_below(view.get("c1")) == [("c2", "q4"), ("c3", "q3")]
+
+    # Answered: back at work, and taken off (whatever its row still reads of the question).
+    assert _asked_below(view.update(_below("c2", "c1", "q4", status="working"))) == [("c3", "q3")]
+    assert view.update(_below("c3", "c2", status="cancelled"))["sub_questions"] == []
+    # One that did not wait goes on without the task being told again.
+    assert view.update(_below("c2", "c1", status="done")) is None
+    assert view.get("c1")["sub_questions"] == []
+    # Never shown as tasks of their own.
+    assert [task["id"] for task in view.all()] == ["c1"]
+
+
+def test_nothing_is_kept_of_what_is_asked_under_a_task_not_in_view():
+    from app.agent_server.nekopower_mount import HudTasks
+
+    view = HudTasks()
+    # The task it was started for let go of already (or never seen): nothing to show it with, nothing kept.
+    assert view.update(_below("c2", "c1", "q2")) is None
+    assert view.update(_below("c3", "c2", "q3")) is None
+    assert (view._parents, view._asked_below) == ({}, {})
+    assert view.update(_commission(id="c1"))["sub_questions"] == []
+    # Waiting with nothing on record that a card could show: not one to be answered there, and nothing kept.
+    assert view.update(_below("c5", "c1", status="waiting_user")) is None
+    assert view._asked_below == {}
+
+
+def test_who_is_under_a_task_is_let_go_of_with_the_task():
+    from app.agent_server.nekopower_mount import HUD_RETENTION_SECONDS, HudTasks
+
+    now = [100.0]
+    view = HudTasks(clock=lambda: now[0])
+    view.update(_commission(id="c1"))
+    view.update(_below("c2", "c1", "q2"))
+    view.update(_commission(id="other"))
+    view.update(_below("c9", "other", "q9"))
+    view.update(_below("c9", "other", status="working"))
+    # Ended with one under it still asking (stopped, and the word of that one not in yet).
+    view.update(_commission(id="c1", status="cancelled", ended_at=1_700_000_050.0))
+
+    now[0] += HUD_RETENTION_SECONDS + 1
+    view.update(_commission(id="other"))
+    assert [task["id"] for task in view.all()] == ["other"]
+    # Who is under the task still shown is kept, for one it starts may ask; nothing is kept of what is not asked.
+    assert view._parents == {"c9": "other"}
+    assert view._asked_below == {}
+    view.update(_below("c9", "other", "q10"))
+    view.clear()
+    assert (view._parents, view._asked_below) == ({}, {})
 
 
 def test_ended_tasks_stay_in_view_for_a_while_and_then_go():
@@ -1088,6 +1234,40 @@ async def test_a_sentence_for_her_goes_out_as_a_message_from_the_system(wiring, 
     # For her only: an explicit empty list shows it neither in the chat nor as a HUD toast.
     assert event["visibility"] == []
     assert event["coalesce_key"] == f"nekopower:{kind}:c1"
+
+
+async def test_a_question_goes_out_with_its_parts_for_a_card_to_answer_it_on(wiring):
+    card = {**PERMISSION, "line": "run the command npm run build", "line_cut": False}
+    payload = {
+        "lanlan_name": "Lan", "task_id": "c1", "title": "build the site", "text": "what she passes on",
+        "question": dict(PERMISSION), "card": card, "route": "task_agent", "delivery_mode": "proactive",
+    }
+
+    assert await wiring.mount_module.send_report(_item("question", payload)) is True
+
+    (event,) = wiring.events
+    # One event: the card is shown when her sentence is delivered, and not without it.
+    assert event["event_type"] == "proactive_message" and event["text"] == "what she passes on"
+    assert (event["question"], event["title"], event["route"]) == (card, "build the site", "task_agent")
+
+
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        # Only a question brings one along.
+        ("correction", {"reason": "no_capability", "question": dict(PERMISSION)}),
+        # Not without the commission it is answered for, nor with something that is no question.
+        ("question", {"task_id": "", "question": dict(PERMISSION)}),
+        ("question", {"question": "allow it?"}),
+    ],
+)
+async def test_no_card_goes_out_with_anything_else(wiring, kind, payload):
+    payload = {"lanlan_name": "Lan", "task_id": "c1", "text": "something she is told", "delivery_mode": "proactive", **payload}
+
+    assert await wiring.mount_module.send_report(_item(kind, payload)) is True
+
+    (event,) = wiring.events
+    assert "question" not in event and "route" not in event
 
 
 @pytest.mark.parametrize(
@@ -1803,6 +1983,56 @@ async def test_stopping_without_naming_a_group_stops_both(wiring, builtins, monk
     assert answer == {"success": True, "stopped": [typing, booking]}
     assert (await host.ledger.get(typing)).status == "cancelled"
     assert (await host.ledger.get(booking)).status == "cancelled"
+
+
+async def test_a_commission_that_cannot_be_ended_does_not_keep_esc_from_stopping_the_other_group(
+    wiring, builtins, monkeypatch
+):
+    host = wiring.host_mount.get_host()
+    typing, booking = await _working(host, "填表"), await _working(host, "订票")
+    # Stopped before, its task agent could not be closed: it still holds the keyboard and mouse.
+    await host.ledger.transition(typing, "cancelled", reason="stopped")
+    builtins.module._in_use.update({KEYBOARD: typing, BROWSER: booking})
+    agents = host.brain._task_agents
+    close = agents.abort
+
+    async def abort(commission_id: str) -> None:
+        if commission_id == typing:
+            raise RuntimeError("the runtime did not answer")
+        await close(commission_id)
+
+    monkeypatch.setattr(agents, "abort", abort)
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    # Tried first and not ended: not said to be stopped; the browser's is stopped all the same.
+    assert aborted == [(typing, "Stopped with Esc"), (booking, "Stopped with Esc")]
+    assert answer == {"success": True, "stopped": [booking]}
+    assert (await host.ledger.get(booking)).status == "cancelled"
+
+
+async def test_a_commission_that_uses_both_groups_and_cannot_be_ended_is_asked_once(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    task_id = await _working(host, "订票")
+    await host.ledger.transition(task_id, "cancelled", reason="stopped")
+    builtins.module._in_use.update({KEYBOARD: task_id, BROWSER: task_id})
+    agents = host.brain._task_agents
+    closings: list[str] = []
+
+    async def abort(commission_id: str) -> None:
+        closings.append(commission_id)
+        raise RuntimeError("the runtime did not answer")
+
+    monkeypatch.setattr(agents, "abort", abort)
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    # Tried once for both groups: its session is not waited on twice, and it is not said to be stopped.
+    assert aborted == [(task_id, "Stopped with Esc")]
+    assert closings == [task_id]
+    assert answer == {"success": True, "stopped": []}
 
 
 async def test_a_commission_that_uses_both_groups_is_stopped_once(wiring, builtins, monkeypatch):

@@ -1640,6 +1640,8 @@
             onComposerAudioMessage: typeof I.state.onComposerAudioMessage === 'function'
                 ? I.handleComposerAudioMessage : undefined,
             onAudioMessageActiveChange: I.handleAudioMessageActiveChange,
+            // 喵能力有没有问话在等回话：小球态据此挂角标（minimize-and-idle-dock.js）
+            onNekoPowerAskWaitingChange: I.handleNekoPowerAskWaitingChange,
             onTheaterSubmit: typeof I.state.onTheaterSubmit === 'function'
                 ? I.handleTheaterSubmit : undefined,
             onAvatarInteraction: I.handleAvatarInteraction,

@@ -74,6 +74,12 @@ def validate_tool_name(name: str) -> str:
         raise ValueError(
             f"LLM tool name {name!r} must match {_TOOL_NAME_PATTERN.pattern}"
         )
+    # "." / ".." match the pattern but are normalised away in the callback
+    # URL path (they turn into a parent path), so such a tool could never be
+    # called. One rule for every path: decorator, sync and async calls, and
+    # the host's own check (``llm_tool_registry._valid_tool_name``).
+    if set(name) == {"."}:
+        raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
     return name
 
 
@@ -329,7 +335,11 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 outcome on main_server is unknown).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
-#                 the same name used up the budget; nothing was sent),
+#                 the same name used up the budget, or the calling entry's
+#                 deadline ran out before the request was sent; nothing was
+#                 sent; also an unregister, or a register's cleanup, whose
+#                 requests already sent left too little budget to remove a
+#                 reported stale registration: that removal was not sent),
 #                 "not_registered"
 #                 (unregister: no local record and main_server removed
 #                 nothing of this plugin's under that name; with a local
@@ -360,7 +370,10 @@ class LlmToolUnregisterResult(TypedDict):
     plugin than the one targeted. Such a registration is stale; the
     cleanup after a failed register and ``unregister_llm_tool_async`` then
     remove each one by the ``registration_id`` reported with it, and
-    ``ok`` requires all of them gone."""
+    ``ok`` requires all of them gone. Exception: the cleanup leaves them
+    when the plugin holds a handler for the name again (registered
+    meanwhile through the sync call), and is then ``ok`` with them still
+    listed here."""
 
     ok: bool
     removed: bool

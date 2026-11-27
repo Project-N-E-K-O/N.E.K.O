@@ -660,10 +660,11 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
 
     answered = await host.dispatch("yes, always", lanlan_name="Lan", lang="en")
 
-    assert answered.kind == "answered"
+    # Typed, "always" allows this call: the setting stays as it is, and she is told the buttons do more.
+    assert (answered.kind, answered.narrowed) == ("answered", True)
     await wait_status(host, receipt.commission_id, "done")
     assert llm.requests[1][-1]["content"] == "3 notes about Lyon"
-    assert await host.permission_store.mode("mcp_server", "notes") == "allow"
+    assert await host.permission_store.mode("mcp_server", "notes") == "first_ask"
 
 
 # ---------------------------------------------------------------------------
