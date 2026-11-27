@@ -48,6 +48,7 @@ SMALL_SLOT = "slot_" + "b" * 32
 OWN_SLOT = "slot_" + "c" * 32
 PLAIN_SLOT = "slot_" + "d" * 32
 OTHER_SLOT = "slot_" + "e" * 32
+ADVANCED_SLOT = "slot_" + "f" * 32
 # Keys that must never be seen anywhere but in what a session is opened with.
 OWN_KEY = "sk-own-secret-0001"
 AGENT_KEY = "sk-agent-secret-0002"
@@ -703,7 +704,7 @@ async def test_the_settings_are_read_whole_and_written_one_preset_at_a_time(host
         "worker": (None, "inherit", True),
         "scout": (None, "inherit", True),
         "inspector": (None, "inherit", True),
-        "planner": (None, "inherit", True),
+        "planner": (None, "advanced", True),
         "general": (None, "agent", False),
     }
     assert by["boss"]["in_effect"] == {
@@ -2259,3 +2260,210 @@ async def test_a_commission_stopped_as_its_record_is_read_on_its_way_into_the_qu
     monkeypatch.setattr(host.ledger, "get", get)
     release_first.set()
     await wait_status(host, first, "done")
+
+
+# ---------------------------------------------------------------------------
+# The planner goes by the advanced task agent model of the main app
+# ---------------------------------------------------------------------------
+
+ADVANCED_TIER = {
+    "model": "advanced-model",
+    "base_url": "http://advanced.test/v1",
+    "api_key": "sk-advanced-secret-0003",
+    "provider_type": "openai_compatible",
+}
+
+
+def _with_advanced_slot(**more: Any) -> dict[str, ModelSlot]:
+    return {**_default_slots(), ADVANCED_SLOT: _follow("agent_advanced", **more)}
+
+
+async def _planner(host: Any, name: str = "plan") -> Any:
+    return await host.ledger.create_session(lanlan_name="Lan", name=name, kind="single", preset="planner")
+
+
+async def test_out_of_the_box_a_planner_is_sent_to_the_slot_that_follows_the_advanced_model(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        ADVANCED_SLOT, "advanced-model", False, "agent_advanced", ""
+    )
+    assert choice.config["api_key"] == ADVANCED_TIER["api_key"]
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_name, row.model_tier, row.model_fallback) == (
+        ADVANCED_SLOT, "advanced-model", "agent_advanced", ""
+    )
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    assert by["planner"]["in_effect"] == {
+        "follows": None, "slot": ADVANCED_SLOT, "model": "advanced-model", "agent": False, "free": False,
+        "fallback": None,
+    }
+
+
+async def test_the_other_presets_keep_their_defaults_beside_an_advanced_planner(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+
+    assert {name: item["default"] for name, item in by.items()} == {
+        "boss": "agent", "worker": "inherit", "scout": "inherit", "inspector": "inherit", "planner": "advanced",
+        "general": "agent",
+    }
+    for name in ("boss", "general"):
+        assert (by[name]["in_effect"]["slot"], by[name]["in_effect"]["model"]) == (AGENT_SLOT, "agent-model")
+    for name in ("worker", "scout", "inspector"):
+        assert by[name]["in_effect"] == {"follows": "starter", "fallback": None}
+
+
+async def test_a_planner_started_by_a_lead_goes_by_the_advanced_model_and_not_the_leads(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced=dict(ADVANCED_TIER))
+    team = _Team({"preset": "planner"})
+    host = _host(hosts, tmp_path, team.pick, manager)
+    # The lead goes by a slot of its own: its planner no longer follows it there.
+    await host.set_role_model("general", OWN_SLOT)
+
+    lead = await wait_status(host, (await _dispatch(host, "plan the tests")).commission_id, "done")
+    (sub,) = await host.ledger.select(parent_id=lead.id)
+
+    assert team.lead_spec.model.model == "own-model"
+    assert team.child_spec.model.model == "advanced-model"
+    row = await _session_of(host, sub.id)
+    assert (row.preset, row.model_slot, row.model_tier, row.model_fallback) == ("planner", "", "agent_advanced", "")
+
+
+@pytest.mark.parametrize("slots", ["none", "without tool calling"])
+async def test_without_a_slot_that_follows_it_a_planner_is_sent_to_the_advanced_model_itself(hosts, tmp_path, slots):
+    chosen = _default_slots() if slots == "none" else _with_advanced_slot(capabilities=["text", "streaming"])
+    manager = _manager(tmp_path, chosen, agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        "", "advanced-model", False, "agent_advanced", ""
+    )
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_name, row.model_tier) == ("", "advanced-model", "agent_advanced")
+    # Shown as a model of its own: not the task agent model, and not the model of whoever starts it.
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    assert by["planner"]["in_effect"] == {
+        "follows": None, "slot": None, "model": "advanced-model", "agent": False, "free": False, "fallback": None,
+    }
+
+
+async def test_a_planner_settled_on_the_advanced_model_itself_stays_on_it_and_follows_it(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    session = await _planner(host)
+    await tasks.settle_model(session)
+
+    # Opened again: the advanced model it was settled on, and not the task agent model.
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.name, choice.tier, choice.fallback) == ("", "advanced-model", "agent_advanced", "")
+
+    # The user sets the advanced model of the main app to another one: followed, as a tier always is.
+    manager.tiers["agent_advanced"] = {**ADVANCED_TIER, "model": "advanced-model-2"}
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.name, choice.tier, choice.fallback) == ("", "advanced-model-2", "agent_advanced", "")
+
+
+async def test_a_planner_on_the_slot_that_follows_the_advanced_model_follows_that_tier_and_no_other(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    session = await _planner(host)
+    await tasks.settle_model(session)
+
+    # The tier moves: followed, and not taken for a slot that was changed.
+    manager.tiers["agent_advanced"] = {**ADVANCED_TIER, "base_url": "http://elsewhere.test/v1"}
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.config["base_url"], choice.fallback) == (ADVANCED_SLOT, "http://elsewhere.test/v1", "")
+
+    # The slot is made to follow the task agent model instead: not followed there; the default again,
+    # which with no slot that follows the advanced model is that model itself, and why.
+    slots = _with_advanced_slot()
+    slots[ADVANCED_SLOT] = _follow("agent")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.tier, choice.fallback) == ("", "agent_advanced", "slot_changed")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_tier, row.model_fallback) == ("", "agent_advanced", "slot_changed")
+
+
+@pytest.mark.parametrize(
+    ("how", "code"),
+    [
+        ("not configured", "host_api_not_configured"),
+        ("unreadable", "model_config_unreadable"),
+        ("slot of a tier not configured", "host_api_not_configured"),
+    ],
+)
+async def test_an_advanced_model_that_cannot_be_used_leaves_a_planner_with_the_task_agent_model_and_says_why(
+    hosts, tmp_path, how, code
+):
+    tiers: dict[str, Any] = {}
+    if how == "unreadable":
+        tiers["agent_advanced"] = OSError("cannot be read")
+    slots = _with_advanced_slot() if how.startswith("slot") else _default_slots()
+    manager = _manager(tmp_path, slots, **tiers)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        AGENT_SLOT, "agent-model", True, "agent", code
+    )
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, code)
+
+
+async def test_without_slots_a_planner_is_sent_to_the_task_agent_model_as_every_preset_is(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), None)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.fallback) == ("", "agent-model", True, "")
+
+
+@pytest.mark.parametrize("setting", ["slot", "inherit"])
+async def test_a_planner_set_by_the_user_goes_by_the_setting_and_not_the_advanced_model(hosts, tmp_path, setting):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    team = _Team({"preset": "planner"})
+    host = _host(hosts, tmp_path, team.pick, manager)
+    await host.set_role_model("planner", OWN_SLOT if setting == "slot" else "inherit")
+
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    lead = await wait_status(host, (await _dispatch(host, "plan the tests")).commission_id, "done")
+    (sub,) = await host.ledger.select(parent_id=lead.id)
+    row = await _session_of(host, sub.id)
+
+    if setting == "slot":
+        assert by["planner"]["in_effect"]["slot"] == OWN_SLOT
+        assert team.child_spec.model.model == "own-model"
+        assert (row.model_slot, row.model_fallback) == (OWN_SLOT, "")
+    else:
+        assert by["planner"]["in_effect"] == {"follows": "starter", "fallback": None}
+        # The lead is a session of no project's: the task agent model, by the slot that follows it.
+        assert team.child_spec.model.model == "agent-model"
+        assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, "")
+
+
+async def test_a_planner_counts_against_the_free_quota_only_where_the_advanced_model_goes_with_the_free_key(
+    hosts, tmp_path
+):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced={**ADVANCED_TIER, "api_key": FREE_KEY})
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    free = await host.task_agents.session_model(await _planner(host, "free"))
+    manager.tiers["agent_advanced"] = dict(ADVANCED_TIER)
+    paid = await host.task_agents.session_model(await _planner(host, "paid"))
+
+    assert (free.free, paid.free) == (True, False)

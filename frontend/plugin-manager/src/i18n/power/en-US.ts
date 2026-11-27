@@ -584,6 +584,7 @@ const messages = {
     default: 'Default ({what})',
     inherit: 'The model of whoever starts it',
     agentModel: 'familiar model',
+    advancedModel: 'Familiar Model (advanced)',
     free: 'free',
     noModel: 'no model',
     slotEmpty: 'no model filled in',

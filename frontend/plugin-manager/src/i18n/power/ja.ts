@@ -577,6 +577,7 @@ const messages: PowerMessages = {
     default: '既定（{what}）',
     inherit: '使いに出した使い魔に合わせる',
     agentModel: '使い魔モデル',
+    advancedModel: '使い魔モデル・上級',
     free: '無料',
     noModel: 'モデルなし',
     slotEmpty: 'モデル未入力',

@@ -577,6 +577,7 @@ const messages: PowerMessages = {
     default: '預設（{what}）',
     inherit: '跟隨派它的使魔',
     agentModel: '使魔模型',
+    advancedModel: '使魔模型·高級',
     free: '免費',
     noModel: '沒有模型',
     slotEmpty: '還沒填模型',

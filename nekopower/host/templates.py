@@ -105,7 +105,7 @@ WRITES: tuple[str, ...] = ("inherit", "none")
 # In a work tree of its own: for the pull request that makes them.
 WRITES_LATER = "tree"
 MEMORIES: tuple[str, ...] = ("project", "none")
-MODELS: tuple[str, ...] = ("agent", "inherit")
+MODELS: tuple[str, ...] = ("agent", "inherit", "advanced")
 
 # What a session that reads only is opened without: what writes files, runs
 # commands, calls capabilities (which can write as well), files notes for
@@ -176,8 +176,9 @@ class Template:
     # it. ``none``: neither; it is told the user's rules and nothing else.
     memory: str = "project"
     # Whose model its sessions use unless the user says otherwise: the task
-    # agents' (``agent``) or that of the session that started it
-    # (``inherit``). Kept and shown; nothing goes by it yet.
+    # agents' (``agent``), the advanced one of the main app (``advanced``)
+    # or that of the session that started it (``inherit``); see
+    # ``role_models.py``.
     model: str = "inherit"
     # Most model requests one run of its sessions may make; None sets none.
     max_requests: int | None = None
@@ -362,7 +363,7 @@ def builtin_templates() -> dict[str, Template]:
             writes="none",
             memory="none",
         ),
-        "planner": _builtin("planner", read_only=True, writes="none"),
+        "planner": _builtin("planner", read_only=True, writes="none", model="advanced"),
         "general": _builtin("general", model="agent"),
     }
     return {name: made[name] for name in PRESETS}

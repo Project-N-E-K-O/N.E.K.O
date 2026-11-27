@@ -28,13 +28,17 @@ has a setting of its own, kept in ``role_models.json`` next to the ledger:
   model of the main app, or that model itself when there is no such slot
   (the user removed it, or the plugin server never ran); ``inherit`` the
   model of the session that started it, else that of its project's lead,
-  else ``agent``.
+  else ``agent``; ``advanced`` the slot that follows the advanced task agent
+  model of the main app and declares tool calling, else that model itself,
+  else ``agent`` (when that model cannot be read or names none, or there
+  are no slots to read it by).
 
 A copy of a session (preset ``shadow``) has no setting: it is sent where the
 session it was copied from is, or what was cached of the conversation is lost.
 
 Out of the box every session is so sent to the task agent model of the main
-app, as before there were settings.
+app, as before there were settings, but a planner's: it is sent to the
+advanced one, which is the task agent model itself until the user sets it.
 
 A session's model is settled when it is made and kept on its row of the
 ledger (``Session.model_*``): which slot, the model's name, a digest of its
@@ -64,6 +68,7 @@ logger = logging.getLogger(__name__)
 INHERIT = "inherit"
 # The defaults a template can name (``templates.MODELS``).
 AGENT = "agent"
+ADVANCED = "advanced"
 # Why a slot could not be used (``model_slot_resolver``), kept on a session
 # whose preset's default was used in its place.
 SLOT_NOT_FOUND = "slot_not_found"
@@ -97,6 +102,8 @@ REQUIRED_CAPABILITIES: tuple[str, ...] = ("tool_calling",)
 IMAGE_INPUT = "image_input"
 # The tier of the main app a slot follows when it follows the task agent model.
 AGENT_TIER = "agent"
+# The one it follows when it follows the advanced task agent model.
+ADVANCED_TIER = "agent_advanced"
 _SLOT_PREFIX = "slot_"
 _FILE_VERSION = 1
 
@@ -205,7 +212,7 @@ class Choice:
     """The model a session is sent to, as it is settled; with what it is called on (in memory only).
 
     ``slot`` is the slot of the model panel ("" for the task agent model of
-    the main app itself), ``agent`` whether it is that model (that slot, or
+    the main app itself, or its advanced one), ``agent`` whether it is that model (that slot, or
     the slot that follows it), ``tier`` the tier of the main app it is
     (that model, or a slot that follows a tier; "" for a slot the user
     filled in), ``fallback`` why the setting of the preset could not be
@@ -361,7 +368,7 @@ class RoleModels:
     session was sent to before there were settings); ``slots`` the slots of
     the model panel, None where there are none to read (then every preset
     is sent to ``agent_config``). ``default_of`` returns a preset's default
-    (``AGENT`` or ``INHERIT``) for a project, as its template says.
+    (``AGENT``, ``ADVANCED`` or ``INHERIT``) for a project, as its template says.
     """
 
     def __init__(
@@ -449,6 +456,60 @@ class RoleModels:
             return await self.agent(fallback or SLOT_CHANGED)
         return dataclass_replace(found, fallback=fallback)
 
+    async def advanced(self) -> Choice:
+        """Return the advanced task agent model of the main app itself; raises ``SlotUnavailable``.
+
+        ``MODEL_CONFIG_UNREADABLE`` where it cannot be read (or there are no
+        slots to read it by), ``HOST_API_NOT_CONFIGURED`` where it names no model.
+        """
+        if self.slots is None:
+            raise SlotUnavailable(MODEL_CONFIG_UNREADABLE)
+        try:
+            config = await self.slots.tier(ADVANCED_TIER)
+        except SlotUnavailable:
+            raise
+        except Exception:  # noqa: BLE001 - the tier cannot be read just now
+            raise SlotUnavailable(MODEL_CONFIG_UNREADABLE) from None
+        if not config or not config.get("model"):
+            raise SlotUnavailable(HOST_API_NOT_CONFIGURED)
+        return _choice("", False, config, tier=ADVANCED_TIER)
+
+    async def advanced_default(self, fallback: str = "") -> Choice:
+        """Return the default ``advanced``: the slot that follows the advanced task agent model, else that model.
+
+        Only a slot that declares tool calling counts. Where neither can be
+        used, the default ``agent``, with why; where there are no slots, that
+        default as it is without them.
+        """
+        if self.slots is None:
+            return await self.agent_default(fallback)
+        try:
+            listed = await self.slots.list()
+        except SlotUnavailable as exc:
+            return await self.agent_default(fallback or exc.code)
+        slot_id = next(
+            (
+                str(item.slot_id)
+                for item in listed
+                if item.source == "host_follow"
+                and item.host_api == ADVANCED_TIER
+                and set(REQUIRED_CAPABILITIES) <= set(item.capabilities)
+            ),
+            None,
+        )
+        try:
+            if slot_id is None:
+                found = await self.advanced()
+            else:
+                found = await self.slot(slot_id)
+        except SlotUnavailable as exc:
+            return await self.agent_default(fallback or exc.code)
+        if found.tier != ADVANCED_TIER:
+            # Listed as following the advanced model, and read as another:
+            # what it says now nobody chose.
+            return await self.agent_default(fallback or SLOT_CHANGED)
+        return dataclass_replace(found, fallback=fallback)
+
     async def choose(
         self,
         preset: str,
@@ -485,6 +546,8 @@ class RoleModels:
             found = await inherited()
             if found is not None:
                 return dataclass_replace(found, fallback=fallback)
+        if wanted == ADVANCED:
+            return await self.advanced_default(fallback)
         return await self.agent_default(fallback)
 
     async def describe(
@@ -500,11 +563,12 @@ class RoleModels:
         """
 
         async def starter() -> Choice:
-            # Told apart by what no other choice is: no slot, and not the task agent model.
-            return Choice(slot="", agent=False, name="", ident="", free=False)
+            # Told apart by what no other choice is: no slot, not the task
+            # agent model, and no tier of the main app.
+            return Choice(slot="", agent=False, name="", ident="", free=False, tier="")
 
         choice = await self.choose(preset, project, starter, settings=settings)
-        if not choice.slot and not choice.agent:
+        if not choice.slot and not choice.agent and not choice.tier:
             return {"follows": "starter", "fallback": choice.fallback or None}
         return {
             "follows": None,
@@ -523,10 +587,12 @@ class RoleModels:
         there (``SLOT_CHANGED``), unless it still follows the tier of the
         main app it followed then: what the user sets for the main app is
         taken as it always was. A slot made to follow a tier since, or
-        another tier, is not: slots are written by more than the user.
+        another tier, is not: slots are written by more than the user. No
+        slot is the task agent model itself, or the advanced one where that
+        is the tier it was settled on.
         """
         if not slot_id:
-            return await self.agent()
+            return await (self.advanced() if tier == ADVANCED_TIER else self.agent())
         found = await self.slot(slot_id)
         if found.tier != tier:
             # Made to follow a tier since, or another one, or to follow
