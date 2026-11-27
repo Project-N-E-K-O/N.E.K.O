@@ -2465,7 +2465,7 @@ class KnowledgeService:
                 # A waiter may observe changed capacity after taking the lock.
                 # Cache refusals against this check, never the caller's old key.
                 refusal_keys = {pack_id: self._replan_key(pack_id, specification) for pack_id in targets}
-                planned = []
+                prepared = []
                 for pack_id in targets:
                     record = self._registry.packs.get(pack_id)
                     if record is None:
@@ -2474,22 +2474,44 @@ class KnowledgeService:
                     if pack_sha256(raw) != record.pack_sha256:
                         raise KnowledgePackError("pack_file_mismatch")
                     pack = decode_pack_bytes(raw)
-                    try:
-                        chunks = count_pack_chunks(pack, fit=fit)
-                    except ValueError as exc:
-                        if str(exc) == "embedding_input_too_large":
-                            raise _ReplanInputRefusal(refusal_keys) from exc
+                    options = self._rebuild_options(record, "replan") if record.archive_sha256 else {}
+                    options["fit"] = fit
+                    prepared.append((pack, record, options))
+
+                def plan(use_archive: bool):
+                    planned = []
+                    for pack, record, recovered in prepared:
+                        options = recovered if use_archive else {"fit": fit}
+                        try:
+                            chunks = count_pack_chunks(pack, **options)
+                        except ValueError as exc:
+                            if str(exc) == "embedding_input_too_large":
+                                raise _ReplanInputRefusal(refusal_keys) from exc
+                            raise
+                        if chunks > MAX_CHUNKS_PER_PACK:
+                            raise _ReplanLimitRefusal("too_many_chunks", refusal_keys)
+                        planned.append((pack, record, chunks, options))
+                    changed = {record.pack_id: chunks for _pack, record, chunks, _options in planned}
+                    if sum(changed.get(key, record.chunks) for key, record in self._registry.packs.items()) > MAX_TOTAL_CHUNKS:
+                        raise _ReplanLimitRefusal("capacity_chunks", refusal_keys)
+                    return planned
+
+                try:
+                    # Keep verified inputs of fitting entries instead of
+                    # invalidating their vectors when another entry is long.
+                    planned = plan(use_archive=True)
+                except _ReplanLimitRefusal:
+                    if not any(options.get("seed_vectors") for _pack, _record, options in prepared):
                         raise
-                    if chunks > MAX_CHUNKS_PER_PACK:
-                        raise _ReplanLimitRefusal("too_many_chunks", refusal_keys)
-                    planned.append((pack, record, chunks))
-                changed = {record.pack_id: chunks for _pack, record, chunks in planned}
-                if sum(changed.get(key, record.chunks) for key, record in self._registry.packs.items()) > MAX_TOTAL_CHUNKS:
-                    raise _ReplanLimitRefusal("capacity_chunks", refusal_keys)
+                    # A finer archive layout can consume more rows. Retain
+                    # the old local fallback when reuse exceeds a live budget.
+                    # Unlike startup recovery, backfill must never drop fit:
+                    # that would restore the over-long inputs that triggered it.
+                    planned = plan(use_archive=False)
                 registry = self._registry
-                for pack, record, chunks in planned:
+                for pack, record, chunks, options in planned:
                     self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
-                                             disabled_keys=record.disabled_titles, fit=fit)
+                                             disabled_keys=record.disabled_titles, **options)
                     self._pending_chunk_reconcile = True
                     registry = registry.with_pack(replace(record, chunks=chunks))
                 save_registry(self.root, registry)
