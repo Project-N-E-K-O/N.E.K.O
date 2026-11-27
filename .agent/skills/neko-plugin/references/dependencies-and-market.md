@@ -29,6 +29,9 @@ code disagree, the code wins.
   ([vendor_sync.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/neko_plugin_cli/core/vendor_sync.py))
   for a registered project, in packaged N.E.K.O builds too. Sync after every
   dependency change, then reload the plugin.
+  To drop the last dependency, keep an explicit `dependencies = []`: with the
+  field missing, a sync treats `vendor/` as hand-maintained and leaves it as
+  it is, old packages included.
 - **Pure Python only.** The Market release workflow rebuilds `vendor/` with
   `sync --clean` on a Linux runner
   ([plugin-market-release.yml](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/.github/workflows/plugin-market-release.yml)),
