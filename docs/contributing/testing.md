@@ -39,7 +39,7 @@ A directory is not proof of behavior. Inspect fixtures and test code to see whet
 
 ## CI coverage
 
-- `.github/workflows/plugin-tests.yml`: the full plugin suite (`plugin/tests`) on Linux and Windows, plus selected root contracts.
+- `.github/workflows/plugin-tests.yml`: the full plugin suite (`plugin/tests`) on Linux and Windows.
 - `.github/workflows/analyze.yml`: Ruff and project-specific static contracts.
 - `.github/workflows/docs.yml`: `npm ci` and VitePress build.
 - Desktop/Docker workflows validate packaging paths separately.

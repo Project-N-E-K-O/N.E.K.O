@@ -78,8 +78,10 @@ jobs:
         # process creation (inherited pipe race, child-side lock reset) is
         # covered here; the Windows job skips those cases. -n auto: the suite
         # is isolated per test (tmp_path runtime roots, git identity) and
-        # runs under pytest-xdist.
-        run: uv run pytest plugin/tests -n auto -q --durations=20
+        # runs under pytest-xdist. --dist loadfile, as in the other xdist
+        # calls (see pyproject.toml): each file stays on one worker in order,
+        # so the seed pinned in plugin/tests/pytest.ini stays reproducible.
+        run: uv run pytest plugin/tests -n auto --dist loadfile -q --durations=20
 
   plugin-pytest:
     name: Plugin pytest (Windows)

@@ -39,7 +39,7 @@ description: 改插件宿主和插件框架（`plugin/core`、`plugin/server`、
 
 ## 测试和 CI 覆盖到哪
 
-- `plugin/**` 有改动且 PR 的目标分支是 `main` 时，`.github/workflows/plugin-tests.yml` 在 Windows（`uv run pytest plugin/tests -q`，串行）和 Linux（`uv run pytest plugin/tests -n auto`）上各跑一遍整个 `plugin/tests`。目标分支不是 `main` 的 PR 不会自动跑，要手动触发：`gh workflow run plugin-tests.yml --ref <分支>`。
+- `plugin/**` 有改动且 PR 的目标分支是 `main` 时，`.github/workflows/plugin-tests.yml` 在 Windows（`uv run pytest plugin/tests -q`，串行）和 Linux（`uv run pytest plugin/tests -n auto --dist loadfile`）上各跑一遍整个 `plugin/tests`。目标分支不是 `main` 的 PR 不会自动跑，要手动触发：`gh workflow run plugin-tests.yml --ref <分支>`。
 - `frontend/plugin-manager` 的 vitest（`npm run test:unit`）、类型检查（`npm run type-check`）和启动 e2e（`npm run test:boot:e2e`）在 `.github/workflows/unit-tests.yml` 里。
 - ⚠️ 这几条**没有任何 workflow 会跑**，改了相关代码要自己在本地跑：`npm run check-hosted-tsx`、`npm run test:hosted-script`、`npm run test:hosted:e2e`、`scripts/check-hosted-ui.sh`。
 - plugin-manager 的 `vite.config.ts` 在 `VITEST === 'true'` 时关掉 Element Plus 组件自动导入。原因：自动导入会把模板里的 `<el-tabs>` 编译成显式 import，绕过测试里用 `app.component()` 注册的全局桩。别在测试环境把它打开。
@@ -80,7 +80,7 @@ description: 改插件宿主和插件框架（`plugin/core`、`plugin/server`、
 常用命令：
 
 - 整个插件子系统：`uv run pytest plugin/tests -q`；unit + integration：`uv run pytest -c plugin/tests/pytest.ini plugin/tests/unit plugin/tests/integration -q`
-- e2e 要显式打开：`uv run pytest -c plugin/tests/pytest.ini plugin/tests/e2e --run-plugin-e2e -q`（连已启动的实例时加 `PLUGIN_E2E_BASE_URL=http://127.0.0.1:48911/ui`）
+- `plugin/tests` 下目前没有浏览器 e2e 用例（`plugin/tests/e2e` 已删除）；`--run-plugin-e2e` 开关和 `plugin_e2e` 标记还保留，以后新加的 e2e 用例默认跳过，要加这个开关才跑。
 - 对内置插件跑仓库规范脚本时要显式传路径，例如 `uv run python scripts/check_async_blocking.py plugin/plugins/<id>`。很多规范脚本默认排除 `plugin/plugins`，因为那里可能放第三方代码。
 - hosted UI 全套检查目前只针对 MCP Adapter 的夹具：`scripts/check-hosted-ui.sh`。
 

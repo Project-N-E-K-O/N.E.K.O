@@ -11,6 +11,7 @@ and the locking between status, refresh, complete and logout.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
