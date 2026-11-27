@@ -21,18 +21,23 @@ const apps: Array<ReturnType<typeof createApp>> = []
 const flush = async () => {
   for (let n = 0; n < 10; n++) await nextTick()
 }
-function mount() {
+function mount(onClose?: () => void) {
   const root = document.createElement('div')
   document.body.append(root)
-  const app = createApp(PluginConsentDialog)
+  const app = createApp(PluginConsentDialog, { onClose })
   app.use(getActivePinia() ?? createPinia())
   app.component(
     'el-dialog',
     defineComponent({
+      emits: ['close'],
       setup:
-        (_, { slots }) =>
+        (_, { slots, emit }) =>
         () =>
-          h('div', [slots.default?.(), slots.footer?.()]),
+          h('div', [
+            slots.default?.(), slots.footer?.(),
+            // Exercise Vue's component-event fallthrough, as ElDialog does.
+            h('button', { 'data-testid': 'dialog-close', onClick: () => emit('close') }, 'dialog close'),
+          ]),
     })
   )
   app.component(
@@ -141,6 +146,42 @@ describe('plugin consent dialog', () => {
     await request
   })
 
+  it('keeps a root dialog close from reaching the parent while approval is saving', async () => {
+    const store = usePluginConsentState()
+    store.details.demo = record('demo')
+    const request = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
+    const activeRequest = store.activeRequest
+    const parentClose = vi.fn(() => store.resolveConfirmation(false))
+    let finishApproval!: (value: PluginConsent) => void
+    api.approvePluginConsent.mockReturnValueOnce(
+      new Promise((resolve) => { finishApproval = resolve }),
+    )
+    const root = mount(parentClose)
+    agree(root).click()
+    await vi.waitFor(() => expect(api.approvePluginConsent).toHaveBeenCalledOnce())
+    expect(agree(root).disabled).toBe(true)
+    root.querySelector<HTMLButtonElement>('[data-testid="dialog-close"]')!.click()
+    await flush()
+    expect(parentClose).not.toHaveBeenCalled()
+    expect(store.activeRequest).toBe(activeRequest)
+
+    finishApproval(record('demo', { decision: 'approved', state: 'clear', unconfirmed: [] }))
+    await expect(request).resolves.toBe(true)
+    expect(parentClose).not.toHaveBeenCalled()
+  })
+
+  it('still cancels through its own root dialog close when not saving', async () => {
+    const store = usePluginConsentState()
+    store.details.demo = record('demo')
+    const request = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
+    const parentClose = vi.fn(() => store.resolveConfirmation(false))
+    const root = mount(parentClose)
+    root.querySelector<HTMLButtonElement>('[data-testid="dialog-close"]')!.click()
+    await expect(request).resolves.toBe(false)
+    expect(parentClose).not.toHaveBeenCalled()
+    expect(api.approvePluginConsent).not.toHaveBeenCalled()
+  })
+
   it('warns when the analysis is incomplete', async () => {
     const store = usePluginConsentState()
     store.details.demo = record('demo', {
@@ -213,8 +254,8 @@ describe('plugin consent dialog', () => {
     await expect(request).resolves.toBe(false)
   })
 
-  it('keeps the dialog open when consent cannot be saved', async () => {
-    api.approvePluginConsent.mockRejectedValue(new Error('disk full'))
+  it('keeps the dialog open when consent cannot be saved and allows another approval', async () => {
+    api.approvePluginConsent.mockRejectedValueOnce(new Error('disk full'))
     const store = usePluginConsentState()
     store.details.demo = record('demo')
     const request = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
@@ -224,8 +265,10 @@ describe('plugin consent dialog', () => {
     await flush()
     expect(root.textContent).toContain('pluginConsent.saveFailed')
     expect(store.activeRequest?.plugins).toHaveLength(1)
-    store.resolveConfirmation(false)
-    expect(await request).toBe(false)
+    expect(agree(root).disabled).toBe(false)
+    agree(root).click()
+    await expect(request).resolves.toBe(true)
+    expect(api.approvePluginConsent).toHaveBeenCalledTimes(2)
   })
 
   it('handles a batch in one dialog and does not grant on cancel', async () => {

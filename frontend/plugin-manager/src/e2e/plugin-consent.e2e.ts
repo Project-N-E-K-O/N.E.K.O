@@ -271,6 +271,53 @@ test('cancelling the consent dialog does not start or record a decision', async 
   expect(calls).toEqual({ decided: [], started: 0 })
 })
 
+test('failed consent module stays visible and can close or recover without approving', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  const calls = await fixture(page)
+  // Fail the real production chunk, rather than replacing the dialog with a
+  // stub: the recovery controls must remain above the full-height route.
+  const consentModule = '**/PluginConsentDialog-*.js'
+  await page.route(consentModule, (route) => route.abort('failed'))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo`)
+  await startButton(page).click()
+  const panel = page.locator('.consent-loader-host .deferred-panel')
+  await expect(page.getByTestId('deferred-panel-error')).toBeVisible()
+  const close = panel.getByRole('button', { name: 'Close', exact: true })
+  await expect(close).toBeVisible()
+  const bounds = await panel.boundingBox()
+  const viewport = page.viewportSize()!
+  expect(bounds).not.toBeNull()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.y).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width)
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height)
+  await page.screenshot({ path: testInfo.outputPath('consent-load-error.png'), fullPage: true })
+  await close.click()
+  await expect(panel).toHaveCount(0)
+  expect(calls).toEqual({ decided: [], started: 0 })
+
+  // Closing releases the request. A new attempt still offers recovery; after
+  // reloading the failed browser import, only an explicit approval may start.
+  await startButton(page).click()
+  await expect(page.getByTestId('deferred-panel-error')).toBeVisible()
+  await page.unroute(consentModule)
+  await Promise.all([
+    page.waitForEvent('load'),
+    page.getByTestId('deferred-panel-reload').click(),
+  ])
+  await startButton(page).click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm plugin capabilities' })
+  await expect(dialog).toBeVisible()
+  expect(calls).toEqual({ decided: [], started: 0 })
+  await dialog.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect.poll(() => calls.started).toBe(1)
+  expect(calls.decided).toEqual([true])
+  expect(errors).toEqual([])
+})
+
 test('a running plugin with unconfirmed capabilities is listed in the notice', async ({
   page,
 }) => {

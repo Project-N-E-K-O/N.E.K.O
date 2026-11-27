@@ -52,6 +52,19 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            // Keep the router's dependency closure stable as optional dialogs
+            // change shared chunks, so it stays outside the bootstrap budget.
+            { name: 'vue-router', test: /[\\/]node_modules[\\/]vue-router[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     fs: {
