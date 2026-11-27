@@ -527,6 +527,17 @@ async function autoInitMMDOnMainPage() {
         const activeManager = window.mmdManager;
         const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
         const activeResolvedPath = activeManager?.currentModel?.url || '';
+        const committedRevision = Number.isSafeInteger(window.lanlan_config?.switch_revision)
+            ? window.lanlan_config.switch_revision : 0;
+        const activeCommitted = !!activeManager?.currentModel?.mesh && !!committedRevision
+            && window.appCharacter?.hasCommittedPageModel?.(catgirlName, committedRevision);
+        if (activeCommitted) {
+            // A newer same-name switch may have rebuilt the manager without
+            // updating the legacy window.mmdModel path. Its committed renderer
+            // record is stronger ownership evidence than this stale startup.
+            if (activeResolvedPath) window.mmdModel = activeResolvedPath;
+            return;
+        }
         if (activeManager?.currentModel?.mesh && (activeResolvedPath !== desiredResolvedPath || rendererNeedsRecovery())) {
             // A failed successor may already have mounted its mesh before a
             // later step failed. Retire that wrong owner so the normal startup
@@ -638,6 +649,7 @@ async function autoInitMMDOnMainPage() {
 
             if (!await ownsStartupAfterSwitchSettlement()) return;
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
+            if (!stillOwnsStartup()) return;
             window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
             // Once this load starts, its own resulting mesh is not evidence of
             // takeover. The manager's existing token already distinguishes it.

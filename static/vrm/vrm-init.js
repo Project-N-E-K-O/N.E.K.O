@@ -679,7 +679,7 @@ async function initVRMModel() {
         loadStarted = true;
         await loading;
         if (!await ownsStartupAfterSwitchSettlement()) return;
-        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel);
+        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel?.vrm);
 
         // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
         _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);

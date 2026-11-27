@@ -126,6 +126,40 @@ function handoffPageSnapshotToSwitch(name, revision) {
     return null;
 }
 
+function queuedPageSwitchMatches(name, revision) {
+    const pending = window.appState?._pendingCatgirlSwitch;
+    return pending?.newCatgirl === name
+        && (!revision || !pending.switchRevision || pending.switchRevision === revision);
+}
+
+function pageSwitchIntentApplied(name, revision) {
+    return window.lanlan_config?.lanlan_name === name
+        && (!revision || latestPageSwitchRevision() >= revision)
+        && !window.appCharacter?.needsCurrentCharacterRecovery?.(
+            name, { fromSnapshot: true, switchRevision: revision }
+        );
+}
+
+async function waitForQueuedPageHandoff(name, revision, expected) {
+    const deadline = Date.now() + 46000;
+    while (Date.now() < deadline) {
+        if (window.__nekoPageModelConfigPending !== expected) {
+            return pageSwitchIntentApplied(name, revision);
+        }
+        if (!window.appState?.isSwitchingCatgirl && !queuedPageSwitchMatches(name, revision)) {
+            // The previous attempt schedules pending replay in a microtask after
+            // clearing its latch. Let that replay claim ownership before deciding
+            // the queued intent has failed.
+            await Promise.resolve();
+            if (!window.appState?.isSwitchingCatgirl && !queuedPageSwitchMatches(name, revision)) {
+                return pageSwitchIntentApplied(name, revision);
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return false;
+}
+
 // Leave time for the backend's bounded wait on an in-progress rename of the
 // current role (30s); the rest of the UI keeps its separate startup deadline.
 const MODEL_SNAPSHOT_TIMEOUT_MS = 32000;
@@ -177,7 +211,19 @@ async function finishModelBootstrap(expected) {
         expected.retryable = false;
         const loaded = await loadPageConfig({ modelBoot: expected });
         if (loaded || window.__nekoPageModelConfigPending !== expected) return loaded;
-        if (expected.handoffQueued) return false;
+        if (expected.handoffQueued) {
+            const applied = await waitForQueuedPageHandoff(expected.name, expected.revision, expected);
+            expected.handoffQueued = false;
+            if (applied) {
+                if (window.__nekoPageModelConfigPending === expected) {
+                    window.__nekoPageModelConfigPending = null;
+                    expected.retire?.();
+                }
+                return true;
+            }
+            if (window.__nekoPageModelConfigPending !== expected) return false;
+            expected.retryable = true;
+        }
         // A real stamped receipt can take over a failed/stalled boot, including
         // during retry. It cannot take over a healthy first read by name alone.
         expected.failed = true;
@@ -239,7 +285,8 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
                 !data.lanlan_name || typeof data.model_type !== 'string' || !data.model_type.trim()
                 || typeof data.model_path !== 'string'
                 || (expected.pinned
-                    ? data.lanlan_name !== expected.name || (!!expected.revision && switchRevision < expected.revision)
+                    ? data.lanlan_name !== expected.name
+                        || (!explicitPreview && !!expected.revision && switchRevision < expected.revision)
                     : switchRevision < expected.revision
                         || (switchRevision === expected.revision && data.lanlan_name !== expected.name))
             );

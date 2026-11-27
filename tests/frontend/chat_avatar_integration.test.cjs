@@ -1441,6 +1441,64 @@ test('pinned preview accepts revision zero despite the current-character high-wa
     assert.equal(h.window.mmdModel, '/Preview/model.pmx');
 });
 
+test('same-name positive IPC preview accepts a later revision-zero HTTP preview', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '?lanlan_name=A';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'A', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' };
+    h.context.fetch = async url => {
+        assert.ok(String(url).includes('lanlan_name=A'));
+        return { json: async () => desktopAvatarConfig('A', 'mmd', 0, '/A/preview.pmx') };
+    };
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(h.window.lanlan_config.switch_revision, 0);
+    assert.equal(h.window.mmdModel, '/A/preview.pmx');
+    assert.equal(h.context.latestPageSwitchRevision(), 82, 'preview revision zero must not lower the IPC high-water');
+});
+
+test('stale positive pinned HTTP snapshot is rejected after the request has started', async () => {
+    const h = harness(), body = deferred(), started = deferred();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '?lanlan_name=Preview';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'Preview', switch_revision: 82 };
+    let reads = 0;
+    h.context.fetch = async url => {
+        assert.ok(String(url).includes('lanlan_name=Preview'));
+        reads++;
+        if (reads === 1) {
+            started.resolve();
+            return { ok: true, json: async () => body.promise };
+        }
+        return { ok: false, status: 404 };
+    };
+    h.load('static/js/index.js');
+    const loading = h.window.startPageConfigLoad();
+    await started.promise;
+    const before = {
+        name: h.window.lanlan_config.lanlan_name,
+        revision: h.window.lanlan_config.switch_revision,
+        model: h.window.mmdModel,
+    };
+    h.window.appState._latestCatgirlSwitchRevision = 83;
+    body.resolve(desktopAvatarConfig('Preview', 'mmd', 82, '/Preview/stale-after-start.pmx'));
+    for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === 600); turn++) {
+        await new Promise(setImmediate);
+    }
+    assert.deepEqual(
+        [h.window.lanlan_config.lanlan_name, h.window.lanlan_config.switch_revision, h.window.mmdModel],
+        [before.name, before.revision, before.model],
+        'the stale positive HTTP response must not mutate identity, revision, or model path'
+    );
+    assert.equal(h.context.latestPageSwitchRevision(), 83);
+    const retry = [...h.timers.entries()].find(([, timer]) => timer.delay === 600);
+    assert.ok(retry);
+    h.timers.delete(retry[0]); retry[1].callback();
+    assert.equal(await loading, false);
+    assert.equal(reads, 2);
+});
+
 test('positive pinned preview snapshot is still ordered against the current-character high-water', async () => {
     const h = harness();
     h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
@@ -1513,7 +1571,7 @@ test('failed page-model handoff keeps bootstrap ownership and schedules a retry'
     assert.equal(h.window.__nekoPageModelConfigPending, null, 'permanent retry failure releases the renderer gate');
 });
 
-test('queued page-model handoff yields to the central switch without scheduling a competing retry', async () => {
+test('queued page-model handoff waits for the central switch result without a competing retry', async () => {
     const h = harness();
     h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
     h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '';
@@ -1528,10 +1586,66 @@ test('queued page-model handoff yields to the central switch without scheduling 
         h.window.appState._pendingCatgirlSwitch = { newCatgirl: name, switchRevision: options.switchRevision };
         return false;
     };
-    assert.equal(await h.window.startPageConfigLoad(), false);
+    const loading = h.window.startPageConfigLoad();
+    for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === 50); turn++) {
+        await new Promise(setImmediate);
+    }
     assert.ok(h.window.__nekoPageModelConfigPending, 'queued central switch keeps renderer gate until it settles');
     assert.equal([...h.timers.values()].some(timer => timer.delay === 600), false,
         'queued handoff must not start a competing page-model retry');
+
+    h.window.appState.isSwitchingCatgirl = false;
+    h.window.appState._pendingCatgirlSwitch = null;
+    h.window.appState._latestCatgirlSwitchRevision = 82;
+    h.window.lanlan_config = { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' };
+    const settle = [...h.timers.entries()].find(([, timer]) => timer.delay === 50);
+    assert.ok(settle);
+    h.timers.delete(settle[0]); settle[1].callback();
+
+    assert.equal(await loading, true);
+    assert.equal(h.window.__nekoPageModelConfigPending, null);
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 600), false);
+});
+
+test('queued page-model handoff failure releases into the bounded bootstrap retry', async () => {
+    const h = harness(); let pageReads = 0;
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' };
+    const cfg = desktopAvatarConfig('B', 'live2d', 82, '/B.model3.json');
+    h.context.fetch = async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            pageReads++;
+            return pageReads === 1 ? { ok: true, json: async () => cfg } : { ok: false, status: 404 };
+        }
+        return { ok: true, json: async () => ({}) };
+    };
+    h.load('static/js/index.js');
+    h.window.lanlan_config = { lanlan_name: 'A', switch_revision: 81, model_type: 'live2d' };
+    h.window.appState = { isSwitchingCatgirl: true, _latestCatgirlSwitchRevision: 81, _pendingCatgirlSwitch: null };
+    h.window.handleCatgirlSwitch = async (name, _old, options) => {
+        h.window.appState._pendingCatgirlSwitch = { newCatgirl: name, switchRevision: options.switchRevision };
+        return false;
+    };
+    const loading = h.window.startPageConfigLoad();
+    for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === 50); turn++) {
+        await new Promise(setImmediate);
+    }
+    h.window.appState.isSwitchingCatgirl = false;
+    h.window.appState._pendingCatgirlSwitch = null;
+    const settle = [...h.timers.entries()].find(([, timer]) => timer.delay === 50);
+    assert.ok(settle);
+    h.timers.delete(settle[0]); settle[1].callback();
+
+    for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === 600); turn++) {
+        await new Promise(setImmediate);
+    }
+    const retry = [...h.timers.entries()].find(([, timer]) => timer.delay === 600);
+    assert.ok(retry, 'failed queued replay must return bootstrap ownership to the bounded retry');
+    h.timers.delete(retry[0]); retry[1].callback();
+    assert.equal(await loading, false);
+    assert.equal(pageReads, 2);
+    assert.equal(h.window.__nekoPageModelConfigPending, null);
 });
 
 test('failed model bootstrap preserves identity and a real same-revision receipt recovers it', async () => {
@@ -2053,6 +2167,57 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
     assert.equal(restoredManager?.currentModel?.url, pathB, 'the fresh manager must actually own the restored mesh');
     assert.ok(restoredManager.currentModel.mesh);
     assert.ok(bSettingsReads >= 2, 'recovery must re-read B settings rather than reuse the disposed startup instance');
+});
+
+test('stale MMD startup preserves a newer committed same-name manager', async () => {
+    const h = harness(), firstSettings = deferred(), settingsStarted = deferred();
+    const oldPath = '/static/mmd/B/old.pmx', newPath = '/static/mmd/B/new.pmx';
+    const model = path => desktopAvatarConfig('B', 'mmd', path === oldPath ? 82 : 83, path);
+    let currentPath = oldPath, settingsReads = 0;
+    const startup = startDesktopAvatarBootstrap(
+        h,
+        { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
+        async url => {
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => model(oldPath) };
+            if (url.endsWith('/B/mmd_settings')) {
+                settingsReads++;
+                if (settingsReads === 1) {
+                    settingsStarted.resolve();
+                    await firstSettings.promise;
+                }
+                return { ok: true, json: async () => ({ success: false }) };
+            }
+            if (url === '/api/characters') {
+                return { ok: true, json: async () => ({ ['猫娘']: {
+                    B: { ...model(currentPath), mmd: currentPath, _reserved: { character_uid: UID_B } },
+                } }) };
+            }
+            return { ok: true, json: async () => ({}) };
+        }
+    );
+    assert.equal(await startup.ready, true);
+    await settingsStarted.promise;
+
+    currentPath = newPath;
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 83, forceReload: true }), true);
+    const committedManager = h.window.mmdManager;
+    assert.equal(committedManager?.currentModel?.url, newPath);
+    assert.equal(h.window.lanlan_config.switch_revision, 83);
+
+    firstSettings.resolve();
+    for (let turn = 0; turn < 12; turn++) await new Promise(setImmediate);
+    assert.equal(h.window.mmdManager, committedManager, 'stale startup must not dispose the newer committed manager');
+    assert.equal(committedManager._isDisposed, false);
+    assert.equal(committedManager.currentModel.url, newPath);
+    assert.equal(h.window.mmdModel, newPath, 'legacy path cache follows the committed manager instead of reviving the stale path');
+    assert.ok(!startup.loads.includes(oldPath));
+});
+
+test('MMD and VRM startups keep synchronous ownership guards at the final load/confirm boundary', () => {
+    const mmd = fs.readFileSync(path.join(root, 'static/mmd/mmd-init.js'), 'utf8');
+    const vrm = fs.readFileSync(path.join(root, 'static/vrm/vrm-init.js'), 'utf8');
+    assert.match(mmd, /const resolvedPath = [^\n]+;\s*if \(!stillOwnsStartup\(\)\) return;\s*window\.MMDLoadingOverlay\.update/);
+    assert.match(vrm, /confirmRestoredRenderer\?\.\(startupName, 'vrm', startupManager\.currentModel\?\.vrm\)/);
 });
 
 test('same-name MMD path refresh retires the old startup and loads only the new path', async () => {

@@ -76,7 +76,16 @@ async def test_snapshot_reports_generation_of_writer_that_caused_final_inconsist
         assert name == 'B'
         assert revision == crud._catgirl_switch_revision > 71
         assert generation == 1
+        entered_wait = asyncio.Event()
+        original_wait_for_release = lock.wait_for_release
+
+        async def observed_wait_for_release(expected_generation):
+            entered_wait.set()
+            return await original_wait_for_release(expected_generation)
+
+        monkeypatch.setattr(lock, 'wait_for_release', observed_wait_for_release)
         waiter = asyncio.create_task(crud.wait_for_current_catgirl_snapshot_settlement(generation))
+        await asyncio.wait_for(entered_wait.wait(), timeout=1)
         await asyncio.sleep(0)
         assert waiter.done() is False
     finally:
