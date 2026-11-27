@@ -1985,6 +1985,14 @@ def test_a_loss_outside_the_window_or_of_another_plugin_does_not_count(env):
     assert rows[FS_READ]["unused_30d"] is True
 
 
+@pytest.fixture
+def fresh_rings(monkeypatch):
+    """Entries recorded here stay out of the shared rings other tests read."""
+    monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
+    monkeypatch.setattr(call_audit, "_system_use_ring", call_audit.deque(maxlen=500))
+
+
 def _feeding(index):
     """Feed ``index`` from call_audit as the host does, file writes off."""
     call_audit.add_observer(index.observe)
@@ -2004,7 +2012,7 @@ def _unfeed(index):
         {"items": [{"permission": FS_READ, "event": "open", "target": "~/*.txt", "verdict": "allow", "flags": []}] * 101},
     ],
 )
-def test_losses_the_gate_counts_reach_the_index(tmp_path, monkeypatch, message):
+def test_losses_the_gate_counts_reach_the_index(tmp_path, monkeypatch, fresh_rings, message):
     from plugin.server.application.plugins import capability_gate
 
     monkeypatch.setattr(capability_gate, "_system_use_budget", {})
@@ -2022,7 +2030,7 @@ class _NullLog:
         pass
 
 
-def test_entries_the_audit_cannot_write_count_as_lost(tmp_path, monkeypatch):
+def test_entries_the_audit_cannot_write_count_as_lost(tmp_path, monkeypatch, fresh_rings):
     def no_writer():
         raise RuntimeError("the writer thread could not start")
 
@@ -2038,7 +2046,7 @@ def test_entries_the_audit_cannot_write_count_as_lost(tmp_path, monkeypatch):
     assert index.lost_at("nobody") is None
 
 
-def test_entries_recorded_after_the_audit_closed_are_not_lost(tmp_path, monkeypatch):
+def test_entries_recorded_after_the_audit_closed_are_not_lost(tmp_path, monkeypatch, fresh_rings):
     """Shutdown: the index still sees them and the summary is saved after."""
     index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
     monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: None)  # closed
