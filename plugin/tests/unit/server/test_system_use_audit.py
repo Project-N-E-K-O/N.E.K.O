@@ -221,6 +221,6 @@ def test_a_plugin_thread_use_keeps_its_handler(written):
     ]})
     first, second, third, fourth = written
     assert first["flags"] == ["plugin_thread", "plugin_reported"] and first["handler"] == "plugin_entry.sync"
-    assert second["handler"] == "<invalid>"
+    assert "handler" not in second  # not identifier-shaped: not stored at all
     assert "handler" not in third and third["flags"] == ["plugin_reported"]
     assert fourth["flags"] == ["unattributed", "plugin_reported"] and "handler" not in fourth

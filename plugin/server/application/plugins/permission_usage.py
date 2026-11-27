@@ -25,10 +25,10 @@ lost. It is read before the audit files and saved from time to time
 leaves the audit files as the only source, as before.
 
 Lost entries (``note_loss``): what the plugin process could not send or the
-host did not take (``system_use_lost``), and what the host's audit could not
-write (call_audit's drop observer: queue full, write failure; not entries
-recorded after the audit was closed at shutdown, which still reach this index
-and the summary saved after it). Within the last 30 days they make
+host did not take (``system_use_lost``). An entry the host's audit file
+could not take (queue full, write failure, closed) is not lost for this
+index: observers see every entry before it is queued, so it is indexed and
+reaches the next summary save. Within the last 30 days they make
 "unused" unknown for the plugin's ``system.*`` rows (see ``lost_since``).
 """
 
@@ -230,7 +230,12 @@ class UsageIndex:
         # ones come through observe(), so none is counted twice.
         self._created = self._now()
         self._seeded = False
-        self._since: datetime | None = None  # oldest coverage start seen
+        # Oldest coverage start seen in the audit (files and live): counts
+        # and lists are complete from then on.
+        self._since: datetime | None = None
+        # Oldest coverage start the summary file holds: last uses are
+        # complete from the earlier of the two (they outlive the files).
+        self._summary_since: datetime | None = None
         self._last: dict[tuple[str, str], Use] = {}
         # Last use that was not refused.
         self._last_effective: dict[tuple[str, str], Use] = {}
@@ -251,7 +256,11 @@ class UsageIndex:
         self._save_lock = threading.Lock()
         # Whether the summary file was read (False: missing or unusable).
         self.summary_loaded = False
-        self._summary_read = False  # tried already
+        # "missing" / "read" / "corrupt" once read; None until a read worked.
+        # A summary that could not be read this time (an OSError, a newer
+        # format) is tried again and never overwritten meanwhile.
+        self._summary_state: str | None = None
+        self._summary_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Feeding
@@ -354,19 +363,9 @@ class UsageIndex:
                 with self._lock:
                     self._note_loss_locked(plugin_id, at or self._now())
         except Exception:
-            # Called from call_audit's drop path: noting a loss must never
-            # make recording (or dropping) an entry fail.
+            # Called while recording an audit entry: noting a loss must
+            # never make the recording fail.
             pass
-
-    def note_dropped(self, entry: object) -> None:
-        """call_audit's drop observer: ``entry`` was not written to the file."""
-        if not isinstance(entry, dict):
-            return
-        kind = entry.get("kind")
-        if kind in ("decision", "system_use", SYSTEM_USE_LOST):
-            self.note_loss(entry.get("plugin"))
-        elif kind == "allow_summary":
-            self.note_loss(entry.get("target"))
 
     def _index(self, use: Use) -> None:
         # Caller holds self._lock.
@@ -414,9 +413,11 @@ class UsageIndex:
         if len(recent) > RECENT_LIMIT * 2:
             recent.sort(key=lambda item: item.at, reverse=True)
             del recent[RECENT_LIMIT:]
-        listed = self._audit.setdefault(key, [])
-        listed.append(use)
-        if len(listed) > AUDIT_KEPT * 2:
+        # A use its call's allow_summary also counts is listed once, there.
+        listed = self._audit.setdefault(key, []) if not use.summarized else None
+        if listed is not None:
+            listed.append(use)
+        if listed is not None and len(listed) > AUDIT_KEPT * 2:
             listed.sort(key=lambda item: item.at, reverse=True)
             del listed[AUDIT_KEPT:]
 
@@ -445,7 +446,7 @@ class UsageIndex:
         with self._seed_lock:
             if self._seeded:
                 return
-            self._ensure_summary_locked()
+            self._ensure_summary()
             try:
                 paths = self._files()
             except Exception as exc:
@@ -459,42 +460,58 @@ class UsageIndex:
     # Summary file
     # ------------------------------------------------------------------
 
-    def _ensure_summary_locked(self) -> None:
-        # Caller holds self._seed_lock.
-        if not self._summary_read:
-            self._summary_read = True
-            self._load_summary()
+    def _ensure_summary(self) -> str | None:
+        """Read the summary file once it can be read; its state (None: not
+        readable this time, try again later)."""
+        with self._summary_lock:
+            if self._summary_state is None:
+                self._summary_state = self._load_summary()
+            return self._summary_state
 
-    def _load_summary(self) -> None:
-        """Merge the summary file into the index; any problem leaves the
-        index to the audit files alone (logged by error type)."""
+    def _load_summary(self) -> str | None:
+        """Merge the summary file into the index. Content that is not a
+        summary (not JSON, wrong shape, an older or unknown format, too
+        large) is "corrupt": the index goes on with the audit files alone
+        and the file is moved aside before the next save. A file that could
+        not be read now (an OSError) or is from a newer version returns
+        None: nothing is merged and it is never overwritten until read."""
         try:
             path = self._summary_path()
             with open(path, "rb") as stream:
                 raw = stream.read(_SUMMARY_MAX_BYTES + 1)
+        except FileNotFoundError:
+            return "missing"
+        except Exception as exc:
+            logger.warning("permission usage: summary not readable now, kept as it is: error={}",
+                           type(exc).__name__)
+            return None
+        try:
             if len(raw) > _SUMMARY_MAX_BYTES:
                 raise ValueError("summary too large")
             document = json.loads(raw.decode("utf-8"))
-            plugins = document.get("plugins") if isinstance(document, dict) else None
-            if document.get("schema_version") != SUMMARY_SCHEMA or not isinstance(plugins, dict):
+            version = document.get("schema_version") if isinstance(document, dict) else None
+            if isinstance(version, int) and not isinstance(version, bool) and version > SUMMARY_SCHEMA:
+                logger.warning("permission usage: summary from a newer version, kept as it is")
+                return None
+            plugins = document.get("plugins")
+            if version != SUMMARY_SCHEMA or not isinstance(plugins, dict):
                 raise ValueError("unknown summary format")
-        except FileNotFoundError:
-            return
         except Exception as exc:
-            logger.warning("permission usage: summary not read, using the audit files only: error={}",
+            logger.warning("permission usage: summary not usable, using the audit files only: error={}",
                            type(exc).__name__)
-            return
+            return "corrupt"
         try:
             self._merge_summary(document, plugins)
         except Exception as exc:
             logger.warning("permission usage: summary partly read: error={}", type(exc).__name__)
         self.summary_loaded = True
+        return "read"
 
     def _merge_summary(self, document: dict, plugins: dict) -> None:
         since = _parse_time(document.get("covered_since"))
         with self._lock:
-            if since is not None and (self._since is None or since < self._since):
-                self._since = since
+            if since is not None and (self._summary_since is None or since < self._summary_since):
+                self._summary_since = since
             for plugin_id, record in plugins.items():
                 if not _text(plugin_id) or not isinstance(record, dict):
                     continue
@@ -540,20 +557,29 @@ class UsageIndex:
             for plugin_id, lost in self._lost.items():
                 if lost >= oldest:
                     plugins.setdefault(plugin_id, {"lost_at": None, "permissions": {}})["lost_at"] = lost.isoformat()
+            since = self._last_use_since_locked()
             return {
                 "schema_version": SUMMARY_SCHEMA,
-                "covered_since": self._since.isoformat() if self._since else None,
+                "covered_since": since.isoformat() if since else None,
                 "plugins": plugins,
             }
+
+    def _last_use_since_locked(self) -> datetime | None:
+        known = [since for since in (self._since, self._summary_since) if since is not None]
+        return min(known, default=None)
 
     def save_summary(self, *, force: bool = False) -> bool:
         """Write the summary file if it fell behind (or ``force``). Merges the
         old summary first, so nothing in it is dropped (the audit files are
-        not read for this: they are still there for the next start).
-        Returns whether a file was written. Never raises."""
+        not read for this: they are still there for the next start, and a
+        read of them under way is not waited for). A summary that could not
+        be read is not written over; a corrupt one is moved aside first
+        (``usage_summary.json.bad``). Returns whether a file was written.
+        Never raises."""
         try:
-            with self._seed_lock:
-                self._ensure_summary_locked()
+            state = self._ensure_summary()
+            if state is None:
+                return False
             with self._save_lock:
                 with self._lock:
                     if not (self._dirty or force):
@@ -565,6 +591,13 @@ class UsageIndex:
 
                     path = self._summary_path()
                     os.makedirs(os.path.dirname(path), exist_ok=True)
+                    if state == "corrupt":
+                        try:
+                            os.replace(path, path + ".bad")  # kept for a look, never read back
+                        except FileNotFoundError:
+                            pass
+                        with self._summary_lock:
+                            self._summary_state = "missing"
                     atomic_write_json(path, document, indent=None)
                 except Exception:
                     with self._lock:
@@ -600,9 +633,23 @@ class UsageIndex:
     # Queries (each reads the files first if not done yet)
     # ------------------------------------------------------------------
 
+    def last_use_since(self) -> datetime | None:
+        """Since when last uses (``last_use``, ``last_effective_use``) are
+        complete: the oldest coverage start in the audit or the summary."""
+        self.ensure_seeded()
+        with self._lock:
+            return self._last_use_since_locked()
+
+    def last_use_covers_days(self, days: int) -> bool:
+        since = self.last_use_since()
+        return since is not None and since <= self._now() - timedelta(days=days)
+
     def history_since(self) -> datetime | None:
         """Since when the audit covers every use: the oldest coverage start
-        still in the audit; None when there is none."""
+        still in the audit files (or recorded since); None when there is
+        none. Counts (``count``), recent records and the audit list are
+        complete from then on; last uses can reach further back
+        (``last_use_since``)."""
         self.ensure_seeded()
         with self._lock:
             return self._since
@@ -634,9 +681,11 @@ class UsageIndex:
         return lost is not None and lost > cutoff
 
     def lost_at(self, plugin_id: str) -> datetime | None:
+        """When entries of ``plugin_id`` were last lost, within DAYS_KEPT days."""
         self.ensure_seeded()
         with self._lock:
-            return self._lost.get(plugin_id)
+            lost = self._lost.get(plugin_id)
+        return lost if lost is not None and lost >= self._now() - timedelta(days=DAYS_KEPT) else None
 
     def audit(
         self,
@@ -749,7 +798,6 @@ def install() -> None:
     from plugin.server.application.plugins import call_audit
 
     call_audit.add_observer(usage_index.observe)
-    call_audit.add_drop_observer(usage_index.note_dropped)
     # The files written before this index existed are read before the first
     # rotation can delete one (once per run; a seed under way is waited for).
     call_audit.add_rollover_observer(usage_index.ensure_seeded)

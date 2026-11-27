@@ -429,7 +429,8 @@ def _unused(index: UsageIndex, inputs: _PluginInputs, permission: str, status: s
     kept: a lost entry can hide a use, never invent one."""
     if status != "granted" or permission not in USAGE_AUDITED_PERMISSIONS:
         return None
-    if not index.covers_days(UNUSED_DAYS):
+    # Last uses outlive the audit files (the summary): their own coverage.
+    if not index.last_use_covers_days(UNUSED_DAYS):
         return None
     cutoff = now - timedelta(days=UNUSED_DAYS)
     decided = _parse_time(entry.get("decided_at"))
@@ -767,8 +768,18 @@ def _can_use(row: dict) -> bool:
 
 
 def _history(index: UsageIndex) -> dict:
+    """``since`` / ``covers_30d``: from when counts (``uses_7d``), recent
+    records and the audit list are complete (the audit files).
+    ``last_use_since`` / ``last_use_covers_30d``: from when ``last_used``
+    and ``unused_30d`` are (the audit files and the usage summary)."""
     since = index.history_since()
-    return {"since": since.isoformat() if since else None, "covers_30d": index.covers_days(UNUSED_DAYS)}
+    last_use_since = index.last_use_since()
+    return {
+        "since": since.isoformat() if since else None,
+        "covers_30d": index.covers_days(UNUSED_DAYS),
+        "last_use_since": last_use_since.isoformat() if last_use_since else None,
+        "last_use_covers_30d": index.last_use_covers_days(UNUSED_DAYS),
+    }
 
 
 def privacy_overview(*, index: UsageIndex = usage_index) -> dict:

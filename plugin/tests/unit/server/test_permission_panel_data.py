@@ -1805,7 +1805,9 @@ def test_the_summary_keeps_last_uses_the_audit_files_no_longer_hold(env):
 
     # No audit file at all now (rotated away): the summary alone answers.
     index = _rebuilt(env)
-    assert index.history_since() == now - timedelta(days=45)
+    assert index.last_use_since() == now - timedelta(days=45)
+    # Counts and lists only come from the audit files: none are left.
+    assert index.history_since() is None
     assert index.summary_loaded is True
     assert index.last_use("weather", CONNECT).outcome == "blocked"
     assert index.last_effective_use("weather", CONNECT).at == now - timedelta(days=3)
@@ -1814,6 +1816,9 @@ def test_the_summary_keeps_last_uses_the_audit_files_no_longer_hold(env):
     assert rows[CONNECT]["unused_30d"] is False
     assert rows[FS_READ]["unused_30d"] is True
     assert rows[CONNECT]["last_used"]["outcome"] == "blocked"
+    history = permission_panel.privacy_overview(index=index)["history"]
+    assert history == {"since": None, "covers_30d": False,
+                       "last_use_since": (now - timedelta(days=45)).isoformat(), "last_use_covers_30d": True}
 
 
 def test_without_the_summary_the_audit_files_answer_as_before(env):
@@ -1838,7 +1843,8 @@ def test_without_the_summary_the_audit_files_answer_as_before(env):
         b"{not json",
         b"\xff\xfe\x00",
         b"[]",
-        b'{"schema_version": 99, "plugins": {}}',
+        b'{"schema_version": 0, "plugins": {}}',
+        b'{"schema_version": "1", "plugins": {}}',
         b'{"schema_version": 1, "plugins": []}',
     ],
 )
@@ -1996,13 +2002,11 @@ def fresh_rings(monkeypatch):
 def _feeding(index):
     """Feed ``index`` from call_audit as the host does, file writes off."""
     call_audit.add_observer(index.observe)
-    call_audit.add_drop_observer(index.note_dropped)
     return index
 
 
 def _unfeed(index):
     call_audit.remove_observer(index.observe)
-    call_audit.remove_drop_observer(index.note_dropped)
 
 
 @pytest.mark.parametrize(
@@ -2030,57 +2034,118 @@ class _NullLog:
         pass
 
 
-def test_entries_the_audit_cannot_write_count_as_lost(tmp_path, monkeypatch, fresh_rings):
+@pytest.mark.parametrize("closed", [False, True])
+def test_entries_the_audit_file_does_not_take_are_indexed_not_lost(tmp_path, monkeypatch, fresh_rings, closed):
+    """Observers see an entry before it is queued: a full queue, a write
+    failure or a closed audit leave it in the index (and the next summary)."""
     def no_writer():
         raise RuntimeError("the writer thread could not start")
 
     index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
-    monkeypatch.setattr(call_audit, "_audit_logger_locked", no_writer)
-    try:
-        call_audit.record(_decision("unwritten", MEMORY))
-        call_audit.record({"kind": "allow_summary", "target": "summed", "counts": {MEMORY: 1}})
-        call_audit.record({"kind": "forward", "caller": "nobody"})
-    finally:
-        _unfeed(index)
-    assert index.lost_at("unwritten") is not None and index.lost_at("summed") is not None
-    assert index.lost_at("nobody") is None
-
-
-def test_entries_recorded_after_the_audit_closed_are_not_lost(tmp_path, monkeypatch, fresh_rings):
-    """Shutdown: the index still sees them and the summary is saved after."""
-    index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
-    monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: None)  # closed
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", (lambda: None) if closed else no_writer)
     before = call_audit.dropped
     try:
-        call_audit.record(_system_use("late", FS_READ))
+        call_audit.record(_system_use("p", FS_READ))
     finally:
         _unfeed(index)
     assert call_audit.dropped == before + 1
-    assert index.lost_at("late") is None and index.last_use("late", FS_READ) is not None
+    assert index.lost_at("p") is None and index.last_use("p", FS_READ) is not None
 
 
-def test_queue_full_and_write_failures_name_the_entry(tmp_path):
-    import logging
-    import queue as queue_module
+def test_a_summary_not_readable_now_is_not_overwritten(tmp_path, monkeypatch):
+    first = _index(tmp_path)
+    first.observe(_decision("old", MEMORY, ts=_ts(timedelta(days=40))))
+    first.observe({"ts": _ts(timedelta(days=45)), "kind": "usage_coverage_start"})
+    first.save_summary()
+    saved = _summary_path(tmp_path).read_bytes()
 
-    def log_record(entry):
-        # What call_audit.record logs: the entry's JSON as the message.
-        return logging.LogRecord("x", logging.INFO, "", 0, json.dumps(entry), None, None)
+    index = _index(tmp_path)
+    index.observe(_decision("new", MEMORY))
+    real_open = open
+    fail = {"on": True}
 
-    index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
+    def locked(path, *args, **kwargs):
+        if fail["on"] and str(path).endswith("usage_summary.json"):
+            raise PermissionError("locked by another program")
+        return real_open(path, *args, **kwargs)
+
+    import builtins
+
+    monkeypatch.setattr(builtins, "open", locked)
+    assert index.save_summary() is False
+    assert _summary_path(tmp_path).read_bytes() == saved
+    # Readable again: merged, then saved with both.
+    fail["on"] = False
+    assert index.save_summary() is True
+    plugins = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]
+    assert set(plugins) == {"old", "new"}
+    assert index.last_use_since() == NOW - timedelta(days=45)
+
+
+def test_a_summary_from_a_newer_version_is_kept(tmp_path):
+    newer = json.dumps({"schema_version": 2, "plugins": {}, "more": "fields"})
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_text(newer, encoding="utf-8")
+    index.observe(_decision("a", MEMORY))
+    assert index.save_summary() is False
+    assert _summary_path(tmp_path).read_text(encoding="utf-8") == newer
+    assert index.last_use("a", MEMORY) is not None  # the audit side still works
+
+
+def test_a_corrupt_summary_is_moved_aside_before_it_is_replaced(tmp_path):
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_bytes(b"{not json")
+    index.observe(_decision("a", MEMORY))
+    assert index.save_summary() is True
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+    assert json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["schema_version"] == 1
+    # The next save does not move the good file aside.
+    index.observe(_decision("b", MEMORY))
+    assert index.save_summary() is True
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+
+
+def test_a_save_does_not_wait_for_the_audit_files_being_read(tmp_path, monkeypatch):
+    """Shutdown right after start: the final save must not wait for the seed."""
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY))
+    started, release = threading.Event(), threading.Event()
+
+    def slow_seed(_path):
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(index, "_seed_file", slow_seed)
+    seeding = threading.Thread(target=index.ensure_seeded)
+    seeding.start()
     try:
-        full = call_audit._DroppingQueueHandler(queue_module.Queue(maxsize=1))
-        full.handle(log_record(_decision("queued", MEMORY)))  # the last slot is kept for the stop sentinel
-        file_handler = call_audit._AuditFileHandler(str(tmp_path / "x" / "a.jsonl"), delay=True)
-        file_handler.handleError(log_record(_system_use("unwritten", FS_READ)))
-        # A message that is not an entry is still counted, without a name.
-        before = call_audit.dropped
-        file_handler.handleError(logging.LogRecord("x", logging.INFO, "", 0, "not json", None, None))
-        assert call_audit.dropped == before + 1
-        file_handler.close()
+        assert started.wait(5)
+        done = []
+        saver = threading.Thread(target=lambda: done.append(index.save_summary()))
+        saver.start()
+        saver.join(2)
+        assert done == [True]
     finally:
-        _unfeed(index)
-    assert index.lost_at("queued") is not None and index.lost_at("unwritten") is not None
+        release.set()
+        seeding.join(5)
+
+
+def test_lost_at_is_within_the_kept_days(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_lost("p", ts=_ts(timedelta(days=40))))
+    assert index.lost_at("p") is None
+    index.observe(_lost("p", ts=_ts(timedelta(days=2))))
+    assert index.lost_at("p") == NOW - timedelta(days=2)
+
+
+def test_a_use_its_call_also_counts_is_listed_once(tmp_path):
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    index.observe({"ts": _ts(), "kind": "allow_summary", "target": "a", "call_id": "c1", "counts": {MEMORY: 1}})
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert [(item["operation"], item["count"]) for item in items] == [("call", 1)]
 
 
 # ---------------------------------------------------------------------------

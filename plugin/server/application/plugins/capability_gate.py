@@ -319,7 +319,8 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
     if "unattributed" in flags:
         flags.discard("plugin_thread")  # contradictory: keep the weaker claim
     handler = item.get("handler")
-    handler = _identifier(handler) if "plugin_thread" in flags and isinstance(handler, str) and handler else None
+    # Kept only when identifier-shaped: no "<invalid>" placeholder is stored.
+    handler = handler if "plugin_thread" in flags and isinstance(handler, str) and _IDENTIFIER.fullmatch(handler) and handler else None
     entry = {
         "kind": "system_use", "mode": mode,
         # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).

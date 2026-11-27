@@ -41,8 +41,6 @@ _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out c
 dropped = 0  # records not written (queue full, unwritable file, after close); may race
 # Called with every recorded entry (see add_observer).
 _observers: list = []
-# Called with every entry that did not reach the file (see add_drop_observer).
-_drop_observers: list = []
 # Called before the file is rotated (see add_rollover_observer).
 _rollover_observers: list = []
 
@@ -50,35 +48,10 @@ _rollover_observers: list = []
 _drop_lock = threading.Lock()
 
 
-def _count_drop(entry: dict | None = None) -> None:
+def _count_drop() -> None:
     global dropped
     with _drop_lock:  # producers and the writer thread both count
         dropped += 1
-    if entry is None:
-        return
-    for observer in tuple(_drop_observers):
-        try:
-            observer(entry)
-        except Exception:
-            pass  # a reader of the audit, never part of it
-
-
-# The entry record() is queueing on this thread: a full queue drops it right
-# there (_DroppingQueueHandler, same thread), so it is named without parsing.
-_queueing = threading.local()
-
-
-def _record_entry(record: logging.LogRecord) -> dict | None:
-    """The entry a dropped log record carried (its message is the entry's
-    JSON). Parsed only when a record is dropped, never on the way in."""
-    entry = getattr(_queueing, "entry", None)
-    if entry is not None:
-        return entry
-    try:
-        entry = json.loads(record.getMessage())
-    except Exception:
-        return None
-    return entry if isinstance(entry, dict) else None
 
 
 class _DroppingQueueHandler(logging.handlers.QueueHandler):
@@ -90,7 +63,7 @@ class _DroppingQueueHandler(logging.handlers.QueueHandler):
         self.queue.put_nowait(record)
 
     def handleError(self, record: logging.LogRecord) -> None:
-        _count_drop(_record_entry(record))  # queue full: drop and count, no traceback
+        _count_drop()  # queue full: drop and count, no traceback
 
 
 class _AuditFileHandler(logging.handlers.RotatingFileHandler):
@@ -101,7 +74,7 @@ class _AuditFileHandler(logging.handlers.RotatingFileHandler):
         return super()._open()
 
     def handleError(self, record: logging.LogRecord) -> None:
-        _count_drop(_record_entry(record))  # unwritable file: count it, never echo the record
+        _count_drop()  # unwritable file: count it, never echo the record
 
     def doRollover(self) -> None:
         # Readers of the files go first: rotating drops the oldest backup.
@@ -169,20 +142,6 @@ def remove_observer(observer) -> None:
         _observers.remove(observer)
 
 
-def add_drop_observer(observer) -> None:
-    """Call ``observer(entry)`` for every entry the writer lost (queue full,
-    unwritable file, the writer failing to start). Not for entries recorded
-    while the file is closed (shutdown). It may run on the writer thread;
-    same rules as ``add_observer``."""
-    if observer not in _drop_observers:
-        _drop_observers.append(observer)
-
-
-def remove_drop_observer(observer) -> None:
-    if observer in _drop_observers:
-        _drop_observers.remove(observer)
-
-
 def add_rollover_observer(observer) -> None:
     """Call ``observer()`` on the writer thread just before the file rotates
     (which deletes the oldest backup); the rotation waits for it."""
@@ -214,18 +173,12 @@ def record(entry: dict) -> None:
         with _lock:
             log = _audit_logger_locked()
             if log is None:
-                # Closed (shutdown) or the old writer still owns the file: not
-                # written, but observers have it (no drop observer call).
                 _count_drop()
             else:
                 # A full queue makes QueueHandler drop the record (handleError).
-                _queueing.entry = item
-                try:
-                    log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
-                finally:
-                    _queueing.entry = None
+                log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     except Exception:  # e.g. the writer thread could not start
-        _count_drop(item)
+        _count_drop()
 
 
 def entries() -> list[dict]:
