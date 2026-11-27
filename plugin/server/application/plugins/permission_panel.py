@@ -991,9 +991,12 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
 
 
 def has_refused(plugin_id: str, permission: str) -> bool:
-    """Whether refusals of ``permission`` by ``plugin_id`` are held (the
-    pending list may show them)."""
-    return usage_index.has_refused(plugin_id, permission)
+    """Whether refusals of ``permission`` by ``plugin_id`` later than the
+    user's last answer are held (the ones the pending list shows)."""
+    record = permission_record(plugin_id)
+    stored = record.get("permissions") or {}
+    entry = stored.get(permission) if isinstance(stored.get(permission), dict) else {}
+    return usage_index.has_refused(plugin_id, permission, after=_answered_at(record, permission, entry))
 
 
 def forget_refused(plugin_id: str, permission: str) -> None:

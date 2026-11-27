@@ -159,9 +159,10 @@ def remove_observer(observer) -> None:
 
 
 def add_drop_observer(observer) -> None:
-    """Call ``observer(entry)`` for every entry that is not written to the
-    file (queue full, unwritable file, after close). It may run on the
-    writer thread; same rules as ``add_observer``."""
+    """Call ``observer(entry)`` for every entry the writer lost (queue full,
+    unwritable file, the writer failing to start). Not for entries recorded
+    while the file is closed (shutdown). It may run on the writer thread;
+    same rules as ``add_observer``."""
     if observer not in _drop_observers:
         _drop_observers.append(observer)
 
@@ -190,7 +191,9 @@ def record(entry: dict) -> None:
         with _lock:
             log = _audit_logger_locked()
             if log is None:
-                _count_drop(item)
+                # Closed (shutdown) or the old writer still owns the file: not
+                # written, but observers have it (no drop observer call).
+                _count_drop()
             else:
                 # A full queue makes QueueHandler drop the record (handleError).
                 _queueing.entry = item

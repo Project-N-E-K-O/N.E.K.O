@@ -2023,16 +2023,32 @@ class _NullLog:
 
 
 def test_entries_the_audit_cannot_write_count_as_lost(tmp_path, monkeypatch):
+    def no_writer():
+        raise RuntimeError("the writer thread could not start")
+
     index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
-    monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: None)  # closed
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", no_writer)
     try:
-        call_audit.record(_decision("closed", MEMORY))
+        call_audit.record(_decision("unwritten", MEMORY))
         call_audit.record({"kind": "allow_summary", "target": "summed", "counts": {MEMORY: 1}})
         call_audit.record({"kind": "forward", "caller": "nobody"})
     finally:
         _unfeed(index)
-    assert index.lost_at("closed") is not None and index.lost_at("summed") is not None
+    assert index.lost_at("unwritten") is not None and index.lost_at("summed") is not None
     assert index.lost_at("nobody") is None
+
+
+def test_entries_recorded_after_the_audit_closed_are_not_lost(tmp_path, monkeypatch):
+    """Shutdown: the index still sees them and the summary is saved after."""
+    index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: None)  # closed
+    before = call_audit.dropped
+    try:
+        call_audit.record(_system_use("late", FS_READ))
+    finally:
+        _unfeed(index)
+    assert call_audit.dropped == before + 1
+    assert index.lost_at("late") is None and index.last_use("late", FS_READ) is not None
 
 
 def test_queue_full_and_write_failures_name_the_entry(tmp_path):
@@ -2213,6 +2229,21 @@ async def test_clearing_an_undecided_item_with_refusals_stores_the_answer(env):
     first = entry["decided_at"]
     await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
     assert env.store.read("p")["permissions"][SPAWN]["decided_at"] > first
+
+
+@pytest.mark.asyncio
+async def test_clearing_again_after_a_restart_does_not_rewrite_the_answer(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    answered = env.store.read("p")
+    # Rebuilt from the files: the answered refusal is held again, but it is
+    # older than the answer, so a second clear changes nothing.
+    index = _rebuilt(env)
+    index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert env.store.read("p") == answered
 
 
 @pytest.mark.asyncio

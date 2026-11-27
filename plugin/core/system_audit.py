@@ -49,9 +49,11 @@ plugin code (directly or through a library it called, or from a thread it
 started) is flagged ``plugin_thread`` and carries the handler that was running
 then (``ctx.handler_ctx``, e.g. ``plugin_entry.<id>``) as ``handler``. Anything
 else (a thread the SDK / host started, the main thread's event loop, a thread
-started through ``_thread`` directly) is flagged ``unattributed``. Both kinds
-are recorded and never refused (they count as background uses outside any
-handler).
+started through ``_thread`` directly, a pool's ``initializer``) is flagged
+``unattributed``. Both kinds are recorded and never refused (they count as
+background uses outside any handler). A thread counts as whoever started it,
+for its whole life: a library's own background thread first started on
+behalf of plugin code is the plugin's.
 
 Like the rest of the permission checks this only constrains honest plugins:
 ctypes or a C extension can do all of the above without an audit event.

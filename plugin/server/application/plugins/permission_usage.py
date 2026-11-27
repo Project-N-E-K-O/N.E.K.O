@@ -26,7 +26,9 @@ leaves the audit files as the only source, as before.
 
 Lost entries (``note_loss``): what the plugin process could not send or the
 host did not take (``system_use_lost``), and what the host's audit could not
-write (call_audit's drop observer). Within the last 30 days they make
+write (call_audit's drop observer: queue full, write failure; not entries
+recorded after the audit was closed at shutdown, which still reach this index
+and the summary saved after it). Within the last 30 days they make
 "unused" unknown for the plugin's ``system.*`` rows (see ``lost_since``).
 """
 
@@ -644,7 +646,8 @@ class UsageIndex:
     ) -> tuple[list[Use], int]:
         """Uses of ``plugin_id`` newest first, optionally of one permission /
         outcome: ``limit`` of them from ``offset`` on, and how many match in
-        all. Only the newest AUDIT_KEPT per permission are kept."""
+        all. Only the newest AUDIT_KEPT per permission are kept, whatever
+        their outcome; the outcome filter applies to those."""
         self.ensure_seeded()
         with self._lock:
             uses = [
@@ -688,10 +691,13 @@ class UsageIndex:
         with self._lock:
             self._refused.pop((plugin_id, permission), None)
 
-    def has_refused(self, plugin_id: str, permission: str) -> bool:
+    def has_refused(self, plugin_id: str, permission: str, *, after: datetime | None = None) -> bool:
+        """Whether refusals are held for the pair, later than ``after`` if given
+        (a batch merged across it counts: its last refusal is later)."""
         self.ensure_seeded()
         with self._lock:
-            return bool(self._refused.get((plugin_id, permission)))
+            batches = list(self._refused.get((plugin_id, permission)) or ())
+        return any(after is None or at > after for at, _count, _start in batches)
 
     def refused_uses(self, after=None) -> dict[tuple[str, str], tuple[datetime, int, bool]]:
         """``(plugin, permission) -> (last time, count, count is a lower bound)``
