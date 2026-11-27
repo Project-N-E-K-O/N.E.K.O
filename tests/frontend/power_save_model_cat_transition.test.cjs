@@ -135,6 +135,8 @@ for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
 
     test(`${type}: replacing a pending entrance releases the old model styles`, async () => {
         const h = harness();
+        const finishes = [];
+        h.window.nekoPetPowerSave.prepareFormChange = () => new Promise(resolve => finishes.push(resolve));
         const oldModel = h.element(type);
         const nextModel = h.element('replacement');
         h.I.playModelReturnEnter(oldModel, null);
@@ -148,9 +150,20 @@ for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
         assert.equal(oldModel.style.transform, undefined);
         assert.equal(nextModel.getAttribute('data-neko-model-form-pending'), 'true');
         assert.equal(nextModel.style.opacity, '0');
-        h.prepare(true);
+        let nextSettled = false;
+        nextEntrance.then(() => { nextSettled = true; });
+        finishes[0](true);
+        await flush();
+        assert.equal(nextModel.getAttribute('data-neko-model-form-pending'), 'true');
+        assert.equal(nextModel.style.opacity, '0');
+        assert.equal(h.window._nekoModelReturnEnterPromise, nextEntrance);
+        assert.equal(nextSettled, false, 'the old bridge reply must not settle the new entrance');
+        finishes[1](true);
         await nextEntrance;
         assert.equal(nextModel.getAttribute('data-neko-model-form-pending'), undefined);
+        assert.equal(nextModel.style.opacity, undefined);
+        assert.equal(nextModel.style.transition, undefined);
+        assert.equal(nextModel.style.transform, undefined);
     });
 }
 
