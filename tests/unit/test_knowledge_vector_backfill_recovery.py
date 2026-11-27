@@ -1,4 +1,8 @@
-"""Exercise recovery and row identity across deferred knowledge backfill."""
+"""Exercise recovery and row identity across deferred knowledge backfill.
+
+Shared archive fixtures preserve the reuse suite's legacy chunk plan without
+importing that collected suite or duplicating its synthetic model identity.
+"""
 
 # Index scheduling hooks follow VectorIndexer; shared runtime state stays on the service.
 from services.knowledge import indexing as index_module
@@ -13,8 +17,11 @@ from services.knowledge.chunking import derive_chunks
 from services.knowledge.models import KnowledgePackError, decode_pack_bytes, parse_pack
 from services.knowledge.service import KnowledgeService
 from services.knowledge.store import count_pack_chunks
-from tests.knowledge_archive_fixtures import make_archive, specification
-from tests.unit.test_knowledge_archive_chunk_reuse import _archive
+from tests.knowledge_archive_fixtures import (
+    make_archive,
+    make_chunk_plan_archive as _archive,
+    specification,
+)
 from tests.knowledge_helpers import _stop_automatic_indexer
 from tests.knowledge_fixtures import FakeEmbedder, _finished, _import, _pack, _raw
 

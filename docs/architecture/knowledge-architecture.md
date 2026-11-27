@@ -159,9 +159,11 @@ contracts are specified in [the unified knowledge design](/design/personal-knowl
 
 Limits: 10 MiB per pack file, 5,000 entries and 10,000 chunks per pack, 20,000 entries, 20,000 chunks and 64 MiB of pack files in total.
 
-Local imports and replacement bodies default to retrieval **off**, automatic
-context **off**, local vectors **on**. Market subscriptions keep their existing
-installation policy. The global switch defaults to on.
+New local imports default to retrieval **off**, automatic context **off** and
+local vectors **on**. Local JSON or ZIP body replacements reset retrieval and
+automatic context to **off**, while retaining the pack's existing local-vector
+setting. Market subscriptions keep their existing installation policy. The
+global switch defaults to on.
 
 ## Import, indexing and retrieval
 

@@ -1,8 +1,9 @@
 """Independent v2 wire samples and certified synthetic vectors for knowledge tests.
 
-The archive factory writes the public wire format directly, keeping validator
-tests independent of the production exporter. No real model is loaded; tests
-explicitly install synthetic vectors into their own isolated service.
+make_archive writes the public wire format directly, keeping validator tests
+independent of the production exporter. make_chunk_plan_archive exercises the
+real exporter with a legacy chunk layout for reuse/recovery tests. No real
+model is loaded; callers own their isolated service and temporary files.
 """
 
 import hashlib
@@ -11,6 +12,9 @@ import struct
 import zipfile
 from pathlib import Path
 
+from services.knowledge.archive import export_archive, read_archive
+from services.knowledge.chunking import derive_chunks
+from services.knowledge.models import parse_pack
 from utils import knowledge_package as package
 from utils.embedding_contract import EmbedDeferred
 
@@ -22,6 +26,38 @@ def specification(dimension=64, quantization="int8"):
             "quantization": quantization, "max_length": 1024,
             "processing_version": "neko-onnx-last-token-truncate-l2-v1",
             "weights_sha256": {key: "a" * 64 for key in ("model", "external_data", "tokenizer")}}
+
+
+def make_chunk_plan_archive(tmp_path, *, reverse=False):
+    """Export the legacy 97-row plan shared by reuse and backfill recovery tests.
+
+    Keep the original chunk inputs and optional reversed row order; only the
+    synthetic resource identity is shared with the other archive fixtures.
+    """
+    spec = specification()
+    payload = {
+        "schema_version": 1, "pack_id": "archive-original-inputs", "material_type": "knowledge",
+        "source": {"name": "Original inputs", "homepage": "", "license": "CC0"},
+        "entries": [
+            {"title": "Reference", "content": "\n\n".join(f"{index:03d} " + "x" * 696 for index in range(100))},
+            {"title": "Short", "content": "The short entry also keeps its own vector."},
+        ],
+    }
+    pack = parse_pack(payload)
+    blob = struct.pack("<64f", 1.0, *([0.0] * 63))
+    rows = [
+        {"entry_title": entry.title, "chunk_index": chunk.chunk_index, "text_hash": chunk.text_hash,
+         "embedding_text": chunk.embed_text, "vector": blob}
+        for entry in pack.entries for chunk in derive_chunks(entry)
+    ]
+    assert len(rows) == 97  # The long entry used the legacy 96-chunk fallback.
+    if reverse:
+        rows.reverse()  # Valid archive row order need not match chunk_index order.
+    artifact = export_archive(tmp_path / "exports", payload, specification=spec, vectors=rows)
+    path = tmp_path / "exports" / (artifact["sha256"] + ".neko-knowledge.zip")
+    checked = read_archive(path, expected_spec=spec)
+    assert len(checked["seed_vectors"]) == 97
+    return pack, path, checked, spec
 
 
 def make_archive(path: Path, *, mutate=None, zip64=False):
