@@ -1,6 +1,6 @@
 # YUI Chibi PNGTuber
 
-美术定稿基准图位于 `authoring/`，保留原文件与 SHA-256。运行资源随仓库分发，位于同级 `yui-chibi-*.zip` 中，分包清单和校验信息由上级 `manifest.json` 管理。`metadata.actions.json` 和 `model.json` 为可读源码副本；不依赖开发者工作目录。
+运行资源随仓库分发，位于同级 `yui-chibi-*.zip` 中，分包清单和校验信息由上级 `manifest.json` 管理。`metadata.actions.json` 和 `model.json` 为可读源码副本；不依赖开发者工作目录。
 
 ## 动作与触发
 

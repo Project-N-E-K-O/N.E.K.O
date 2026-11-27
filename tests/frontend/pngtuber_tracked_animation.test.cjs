@@ -1993,3 +1993,74 @@ test('old deadline cannot supersede a newer B request during retry backoff', asy
     assert.equal(m.layeredStateIndex, 3);
     assert.equal(attempts, 2);
 });
+
+
+test('new queued work recovers from exhausted entry and idle-fallback retries', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    const data = m._trackedPlayback.data;
+    data.duration_ms = 10000;
+    data.frames[0].duration_ms = 5000;
+    data.frames[1].time_ms = 5000;
+    data.frames[1].duration_ms = 5000;
+    const attempts = { action: 0, idle: 0 };
+    m.prepareReviewedEntry = async index => {
+        if (index === 3) { attempts.action++; throw Error('action unavailable'); }
+        if (index === 0) { attempts.idle++; throw Error('idle unavailable'); }
+        return [{ image: {} }];
+    };
+    m.requestReviewedState(3, { force: true });
+    await flushReviewed();
+    for (const time of [350, 850, 1850, 2100, 2600]) {
+        advance(time);
+        m.reviewedPlaybackTick(time);
+        await flushReviewed();
+    }
+    assert.equal(m._reviewedRetry.exhausted, true);
+    assert.deepEqual(attempts, { action: 3, idle: 3 });
+    assert.equal(m.requestReviewedState(4), true);
+    assert.equal(m._reviewedRetry, null);
+    advance(2700);
+    m.reviewedPlaybackTick(2700);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(10100);
+    m._trackedPlayback.lastIndex = 1;
+    m.reviewedPlaybackTick(10100);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    assert.deepEqual(attempts, { action: 3, idle: 3 });
+});
+
+test('accepting queued work does not cancel ordinary retry backoff', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let attempts = 0;
+    m.prepareReviewedEntry = async index => {
+        if (index === 3 && ++attempts === 1) throw Error('temporary');
+        return [{ image: {} }];
+    };
+    m.requestReviewedState(3, { force: true });
+    await flushReviewed();
+    const retry = m._reviewedRetry;
+    m.requestReviewedState(4);
+    assert.equal(m._reviewedRetry, retry);
+    advance(349);
+    m.reviewedPlaybackTick(349);
+    await flushReviewed();
+    assert.equal(attempts, 1);
+    advance(350);
+    m.reviewedPlaybackTick(350);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 3);
+    assert.equal(m._reviewedQueued.index, 4);
+    advance(2350);
+    m._trackedPlayback.lastIndex = 1;
+    m.reviewedPlaybackTick(2350);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+});

@@ -1499,6 +1499,7 @@
             const elapsed = performance.now() - this.layeredAnimationStart;
             if (!options.force && current?.data.playback === 'once' && !this.reviewedActionComplete(current, elapsed)) {
                 this._reviewedQueued = { index, options };
+                if (this._reviewedRetry?.exhausted) this._reviewedRetry = null;
                 return true;
             }
             // Keep the identity across retries: a newer queue item can target the same clip.
