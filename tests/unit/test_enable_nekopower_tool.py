@@ -485,6 +485,8 @@ def test_after_yes_that_could_not_switch_it_on_she_is_told_why_and_nothing_is_re
 class _Renewing:
     """What ``renew_session_now`` reads and calls of the session manager."""
 
+    _drop_renewal_preparation = LifecycleMixin._drop_renewal_preparation
+
     def __init__(self, *, prepares=True, idle=True, swap_running=False):
         self.session = object()
         self.is_active = True
@@ -511,6 +513,8 @@ class _Renewing:
         async def prepare():
             if self.prepares:
                 self.pending_session_warmed_up_event.set()
+            elif self.prepares is None:
+                await asyncio.sleep(10)  # still preparing
 
         self.background_preparation_task = asyncio.ensure_future(prepare())
 
@@ -535,8 +539,33 @@ def test_renewal_prepares_anew_and_swaps_at_once_when_nothing_is_under_way():
     assert fake.calls == ["cleanup", "reset", "prepare", "swap"]
 
 
-def test_renewal_waits_for_a_turn_under_way_to_swap_by_itself():
+def test_renewal_lets_the_turn_under_way_end_before_it_prepares():
+    # Codex on #4155: the new session is built from what memory has of the conversation,
+    # which takes a turn in at its end; prepared mid-turn, it would lose that turn.
     fake = _Renewing(idle=False)
+
+    async def run():
+        async def turn_ends():
+            await asyncio.sleep(0.3)
+            fake.calls.append("turn ends")
+            fake.idle = True
+
+        asyncio.ensure_future(turn_ends())
+        return await LifecycleMixin.renew_session_now(fake, wait_seconds=5)
+
+    assert asyncio.run(run()) is True
+    assert fake.calls == ["turn ends", "cleanup", "reset", "prepare", "swap"]
+
+
+def test_renewal_still_waits_for_a_turn_begun_after_it_prepared():
+    fake = _Renewing()
+    real_prepare = fake._trigger_immediate_preparation_for_extra
+
+    async def prepare_then_busy():
+        await real_prepare()
+        fake.idle = False
+
+    fake._trigger_immediate_preparation_for_extra = prepare_then_busy
 
     async def run():
         async def turn_ends():
@@ -548,6 +577,33 @@ def test_renewal_waits_for_a_turn_under_way_to_swap_by_itself():
 
     assert asyncio.run(run()) is True
     assert "swap" not in fake.calls
+
+
+@pytest.mark.parametrize("when", ["preparing", "waiting to swap"])
+def test_renewal_stops_and_drops_what_it_prepared_once_the_session_ends(when):
+    # Codex on #4155: ended or torn down meanwhile, the renewal must not bring a session back.
+    fake = _Renewing(prepares=None if when == "preparing" else True)
+
+    async def run():
+        async def session_ends():
+            await asyncio.sleep(0.3)
+            fake.is_active = False
+            fake.session = None
+
+        if when == "waiting to swap":
+            real_prepare = fake._trigger_immediate_preparation_for_extra
+
+            async def prepare_then_busy():
+                await real_prepare()
+                fake.idle = False
+
+            fake._trigger_immediate_preparation_for_extra = prepare_then_busy
+        asyncio.ensure_future(session_ends())
+        return await LifecycleMixin.renew_session_now(fake, wait_seconds=5)
+
+    assert asyncio.run(run()) is False
+    assert "swap" not in fake.calls
+    assert fake.calls[-2:] == ["cleanup", "reset"]
 
 
 def test_renewal_gives_up_without_a_session_or_when_preparing_fails():
@@ -999,3 +1055,10 @@ def test_switched_off_after_a_renewal_that_gave_up_drops_what_it_prepared(swappe
 
     asyncio.run(run())
     assert manager.dropped == ([] if swapped else ["cleanup", "reset"])
+
+
+def test_stopping_does_not_cut_short_a_swap_under_way():
+    fake = _Renewing()
+    fake.is_hot_swap_imminent = True
+    asyncio.run(LifecycleMixin._drop_renewal_preparation(fake))
+    assert fake.calls == []
