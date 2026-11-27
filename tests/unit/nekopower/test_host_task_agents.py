@@ -2328,6 +2328,26 @@ async def test_nothing_is_said_to_a_commission_while_the_end_of_its_run_writes_t
     assert manager._landing_ends == {}
 
 
+async def test_what_is_said_to_a_commission_held_back_twice_at_once_waits_for_the_last_hold(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    # A landing holds it back, and the end of a run is written within that (``_end``'s ``hold``);
+    # the first of them is through before the other.
+    first = manager._nothing_more_said("c1")
+    second = manager._nothing_more_said("c1")
+    first.__enter__()
+    second.__enter__()
+    waits = asyncio.ensure_future(manager._landing_end_written("c1"))
+    await asyncio.sleep(0)
+    first.__exit__(None, None, None)
+    await asyncio.sleep(0)
+
+    assert not waits.done() and "c1" in manager._landing_ends
+    second.__exit__(None, None, None)
+    await asyncio.wait_for(waits, 5)
+    assert manager._landing_ends == {} and manager._landing_holds == {}
+
+
 # ---------------------------------------------------------------------------
 # Task agents started by task agents
 # ---------------------------------------------------------------------------
