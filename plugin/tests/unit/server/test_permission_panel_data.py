@@ -2497,3 +2497,50 @@ def test_two_saves_move_a_corrupt_summary_aside_once(tmp_path):
         index._ensure_summary = original
     assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
     assert set(json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]) == {"a", "b"}
+
+
+@pytest.mark.parametrize("where", ["open", "read"])
+def test_an_audit_file_that_cannot_be_read_makes_coverage_unknown(env, monkeypatch, where):
+    """The summary covers 45 days and holds a use 40 days ago; a use 3 days
+    ago sits in an audit file that cannot be read now: not "unused"."""
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT)
+    now = datetime.now(timezone.utc)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=40)).isoformat()))
+    env.index.save_summary()
+    audit = env.tmp_path / "audit" / "call_audit.jsonl"
+    audit.write_text(json.dumps(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat())) + "\n",
+                     encoding="utf-8")
+    import builtins
+
+    real_open = builtins.open
+
+    class Failing:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            raise OSError("read failed")
+
+    def flaky(path, *args, **kwargs):
+        if str(path) == str(audit):
+            if where == "open":
+                raise PermissionError("locked")
+            return Failing()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky)
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is None
+    assert index.last_use_since() is None and index.history_since() is None
+    # The summary still keeps the start it knows.
+    monkeypatch.setattr(builtins, "open", real_open)
+    index.save_summary(force=True)
+    saved = json.loads(_summary_path(env.tmp_path).read_text(encoding="utf-8"))
+    assert saved["covered_since"] == (now - timedelta(days=45)).isoformat()

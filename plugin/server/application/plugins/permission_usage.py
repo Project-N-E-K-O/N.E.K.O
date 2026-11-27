@@ -236,6 +236,10 @@ class UsageIndex:
         # Oldest coverage start the summary file holds: last uses are
         # complete from the earlier of the two (they outlive the files).
         self._summary_since: datetime | None = None
+        # An audit file could not be read (in full) this run: neither start
+        # can be vouched for, so both read as unknown (the summary still
+        # saves the starts it knows).
+        self._audit_incomplete = False
         self._last: dict[tuple[str, str], Use] = {}
         # Last use that was not refused.
         self._last_effective: dict[tuple[str, str], Use] = {}
@@ -452,9 +456,15 @@ class UsageIndex:
                 paths = self._files()
             except Exception as exc:
                 logger.warning("permission usage: audit files unavailable: error={}", type(exc).__name__)
-                paths = []
-            for path in paths:
-                self._seed_file(path)
+                paths = None
+            if paths is None:
+                self._audit_incomplete = True
+            for path in paths or ():
+                if not self._seed_file(path):
+                    self._audit_incomplete = True
+            # Not read again in this run (a file read in part would count
+            # twice, and the files may have rotated since); the next start
+            # reads them again.
             self._seeded = True
 
     # ------------------------------------------------------------------
@@ -605,7 +615,7 @@ class UsageIndex:
                         try:
                             os.replace(path, path + ".bad")  # kept for a look, never read back
                         except FileNotFoundError:
-                            pass
+                            pass  # gone already: nothing to keep, the new file is written below
                         with self._summary_lock:
                             self._summary_state = "missing"
                     atomic_write_json(path, document, indent=None)
@@ -618,26 +628,33 @@ class UsageIndex:
             logger.warning("permission usage: summary not saved: error={}", type(exc).__name__)
             return False
 
-    def _seed_file(self, path: str) -> None:
+    def _seed_file(self, path: str) -> bool:
+        """Index one audit file; False when it exists but could not be read
+        (in full)."""
         try:
             stream = open(path, encoding="utf-8", errors="replace")
         except FileNotFoundError:
-            return
+            return True
         except OSError as exc:
             logger.warning("permission usage: audit file not read: error={}", type(exc).__name__)
-            return
-        with stream:
-            for line in stream:
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                at = _parse_time(entry.get("ts"))
-                if at is None or at >= self._created:
-                    continue
-                self.observe(entry)
+            return False
+        try:
+            with stream:
+                for line in stream:
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    at = _parse_time(entry.get("ts"))
+                    if at is None or at >= self._created:
+                        continue
+                    self.observe(entry)
+        except OSError as exc:
+            logger.warning("permission usage: audit file read in part: error={}", type(exc).__name__)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Queries (each reads the files first if not done yet)
@@ -648,7 +665,7 @@ class UsageIndex:
         complete: the oldest coverage start in the audit or the summary."""
         self.ensure_seeded()
         with self._lock:
-            return self._last_use_since_locked()
+            return None if self._audit_incomplete else self._last_use_since_locked()
 
     def last_use_covers_days(self, days: int) -> bool:
         since = self.last_use_since()
@@ -659,10 +676,10 @@ class UsageIndex:
         still in the audit files (or recorded since); None when there is
         none. Counts (``count``), recent records and the audit list are
         complete from then on; last uses can reach further back
-        (``last_use_since``)."""
+        (``last_use_since``). None also while an audit file could not be read."""
         self.ensure_seeded()
         with self._lock:
-            return self._since
+            return None if self._audit_incomplete else self._since
 
     def covers_days(self, days: int) -> bool:
         since = self.history_since()
