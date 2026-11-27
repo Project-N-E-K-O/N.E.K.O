@@ -1586,14 +1586,32 @@ async def _rename_catgirl_transaction(
     switch_revision = 0
 
     async def notify_committed_rename():
-        if not (memory_server_reloaded and rename_notification_sockets and switch_revision):
+        if not (memory_server_reloaded and switch_revision):
+            return
+        # Keep sockets captured before the rename (the old-role manager can be
+        # removed), but also include current manager sockets so pages that
+        # reconnect while finalize is in flight receive the same committed
+        # revision. Deduplicate by object identity.
+        sockets = []
+        seen_socket_ids = set()
+        current_sockets = [
+            manager.websocket for manager in session_manager.values()
+            if getattr(manager, "websocket", None)
+        ]
+        for socket in [*rename_notification_sockets, *current_sockets]:
+            socket_id = id(socket)
+            if socket_id in seen_socket_ids:
+                continue
+            seen_socket_ids.add(socket_id)
+            sockets.append(socket)
+        if not sockets:
             return
         frame = json.dumps({
             "type": "catgirl_switched", "new_catgirl": new_name,
             "old_catgirl": old_name, "switch_revision": switch_revision,
         })
         await asyncio.gather(
-            *(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in rename_notification_sockets),
+            *(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
             return_exceptions=True,
         )
 
@@ -2569,6 +2587,7 @@ async def _delete_synced_character(uid: str, before_delete):
         committed_switch_revision = 0
         rollback_switch_revision = 0
         surviving_switch_target = None
+        restore_cancelled = False
         reconcile_cancelled = False
 
         def mark_delete_committed():
@@ -2634,8 +2653,17 @@ async def _delete_synced_character(uid: str, before_delete):
                     await get_switch_current_catgirl_fast()()
                     return True
                 try:
-                    await _await_cleanup_to_completion(restore_previous_character())
-                except (Exception, asyncio.CancelledError):
+                    _, restore_error, restore_cancelled = (
+                        await _await_coroutine_outcome_to_completion(
+                            restore_previous_character()
+                        )
+                    )
+                    if restore_error is not None:
+                        if isinstance(restore_error, asyncio.CancelledError):
+                            restore_cancelled = True
+                        else:
+                            raise restore_error
+                except Exception:
                     logger.exception("Failed to restore current character after sync deletion")
 
                 if not rollback_switch_revision:
@@ -2694,7 +2722,7 @@ async def _delete_synced_character(uid: str, before_delete):
                             raise notify_error
                 except Exception:
                     logger.exception("Failed to notify committed fallback after sync deletion")
-            if reconcile_cancelled or notify_cancelled:
+            if restore_cancelled or reconcile_cancelled or notify_cancelled:
                 raise asyncio.CancelledError
         return success
 

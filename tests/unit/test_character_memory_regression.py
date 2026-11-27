@@ -6299,6 +6299,7 @@ async def test_current_rename_cancel_after_finalize_notifies_all_pages_before_pr
 
     old_socket = SimpleNamespace(send_text=AsyncMock())
     watcher_socket = SimpleNamespace(send_text=AsyncMock())
+    reconnected_watcher_socket = SimpleNamespace(send_text=AsyncMock())
     old_manager = SimpleNamespace(websocket=old_socket, is_active=False, session=None)
     watcher_manager = SimpleNamespace(websocket=watcher_socket, is_active=False, session=None)
 
@@ -6355,6 +6356,9 @@ async def test_current_rename_cancel_after_finalize_notifies_all_pages_before_pr
                 crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
             )
             await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+            # The notification code must retain sockets captured before the
+            # rename and also discover a manager socket replaced during finalize.
+            watcher_manager.websocket = reconnected_watcher_socket
             rename.cancel()
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(asyncio.shield(rename), timeout=0.1)
@@ -6367,11 +6371,72 @@ async def test_current_rename_cancel_after_finalize_notifies_all_pages_before_pr
         assert "New" in stored["猫娘"] and "Old" not in stored["猫娘"]
         assert crud._catgirl_switch_revision_target == "New"
         assert crud._catgirl_switch_revision > 71
-        for socket in (old_socket, watcher_socket):
+        for socket in (old_socket, watcher_socket, reconnected_watcher_socket):
             socket.send_text.assert_awaited_once()
             frame = json.loads(socket.send_text.await_args.args[0])
             assert (frame["old_catgirl"], frame["new_catgirl"]) == ("Old", "New")
             assert frame["switch_revision"] == crud._catgirl_switch_revision
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_cancel_during_restore_finishes_restore_then_propagates(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "e" * 32
+    name, fallback = "RestoreCancelPrimary", "RestoreCancelSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+
+    original_save = cm.asave_characters
+    restore_entered = asyncio.Event()
+    release_restore = asyncio.Event()
+    save_calls = 0
+
+    async def controlled_save(payload):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            restore_entered.set()
+            await release_restore.wait()
+        return await original_save(payload)
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(cm, "asave_characters", controlled_save)
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", AsyncMock(return_value={"success": False}))
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    await asyncio.wait_for(restore_entered.wait(), timeout=5)
+    deletion.cancel()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(deletion), timeout=0.1)
+
+    release_restore.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(deletion, timeout=5)
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == name
+    assert name in stored["猫娘"]
+    assert crud._catgirl_switch_revision_target == name
+    socket.send_text.assert_not_awaited()
 
 
 @pytest.mark.unit
