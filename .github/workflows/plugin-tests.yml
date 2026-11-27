@@ -90,8 +90,10 @@ jobs:
     # Linux job skips them. Native-extra cohorts that are genuinely optional
     # (dxcam etc.) self-skip when not installed.
     runs-on: windows-latest
-    # The test step takes about 5 min with -n 4 (13 min serial).
-    timeout-minutes: 15
+    # The whole job takes about 6 min with -n 4 (14 min serial) when the uv
+    # cache hits. A uv.lock change misses the cache and makes `uv sync`
+    # slower, which that measurement does not include, hence the margin.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -107,7 +109,8 @@ jobs:
 
       - name: Install dependencies
         # Plain `uv sync` = main deps + dev group (pytest, pytest-asyncio,
-        # hypothesis, PyInstaller). The galgame group (rapidocr + cv2, ~130 MB) is NOT
+        # pytest-xdist for the -n 4 run below, hypothesis, PyInstaller).
+        # The galgame group (rapidocr + cv2, ~130 MB) is NOT
         # installed — the plugin degrades its OCR backend gracefully and the
         # affected tests mock or skip that cohort.
         run: uv sync
