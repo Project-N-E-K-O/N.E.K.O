@@ -415,6 +415,7 @@ class _Cues:
             cls._loaded = {
                 "generic": _patterns(texts.GENERIC_WORD_PATTERNS),
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
+                "stop_words": _patterns(texts.UNDER_WAY_STOP_WORD_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
             }
         return cls._loaded[name]
@@ -756,24 +757,29 @@ def _kin(one: Commission, other: Commission) -> bool:
 
 
 def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
-    """Whether the sentence shares a word with what tells these items apart.
+    """Whether the sentence shares a word with what tells each of these items apart.
 
     What each is (its title and the words it was asked with), its project,
     the familiar on it or that handed it on, its plugin, what it asks as the
-    list shows it (``_asked``), and the same of its members. Words every request has are left out
-    (``orchestrator.content_tokens``). Read where the list was cut only: a
-    stop the model says is named, of items whose words the sentence does not
-    share, is asked about (``read_under_way``).
+    list shows it (``_asked``), and the same of its members. Of the sentence,
+    words every request has (``orchestrator.content_tokens``) and words a
+    stop says without naming anything (stop, all, the work in progress:
+    ``UNDER_WAY_STOP_WORD_PATTERNS``) are left out. Each item must share a
+    word: one the model picked beside one the sentence names is not named
+    (owner's automatic review). Read where the list was cut only: a stop the
+    model says is named, of items whose words the sentence does not share,
+    is asked about (``read_under_way``).
     """
     from nekopower.host.orchestrator import content_tokens
 
-    said = content_tokens(request.match_text)
+    said = content_tokens(strip_cues("stop_words", request.match_text))
     if not said:
         return False
     plugins = {str(plugin.get("id") or ""): plugin for plugin in request.plugins}
 
     def words(item: Commission) -> list[str]:
-        found = [commission_text(item), item.project or "", item.plugin_id or ""]
+        # (A plugin's id in words: "weather_lookup" is "weather lookup".)
+        found = [commission_text(item), item.project or "", re.sub(r"[_.\-]+", " ", item.plugin_id or "")]
         found += [request.familiars.get(session or "", "") for session in (item.session_id, item.handed_by)]
         plugin = plugins.get(item.plugin_id or "") or {}
         found.append(str(plugin.get("name") or ""))
@@ -795,9 +801,9 @@ def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
         for member in request.children:
             if member.parent_id == item.id:
                 texts += words(member)
-        if said & content_tokens(" ".join(text for text in texts if text)):
-            return True
-    return False
+        if not said & content_tokens(" ".join(text for text in texts if text)):
+            return False
+    return True
 
 
 def _numbers(value: Any, count: int) -> list[int]:
@@ -1254,8 +1260,10 @@ class LexicalDecisionModel:
             shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
             if hidden and shown_stopped and not _words_name(request, shown_stopped):
                 # Named, the model says, while the list was cut, and the words
-                # say nothing of what it picked: no word of the sentence is in
-                # what those items are, their project, familiar or plugin. The
+                # say nothing of what it picked (of one of them, if several):
+                # no word of the sentence, beyond the stopping, the "all" and
+                # the work under way, is in what it is, its project, familiar
+                # or plugin. The
                 # model has read "cancel what is under way" as the items it
                 # saw at work, and those alone (measured: it leaves out what
                 # waits for the user), with the rest not shown: one was stopped

@@ -1497,6 +1497,8 @@ async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where
         (commission("c1", "alpha", route="task_agent", handed_by="s-boss"), "stop what the boss cat handed on", {}),
         (commission("c1", "alpha", route="plugin", plugin_id="weather"), "stop the weather run", {}),
         (commission("c1", "alpha", route="plugin", plugin_id="weather"), "天气那个停了", {}),
+        # (A plugin's id in words.)
+        (commission("c1", "alpha", route="plugin", plugin_id="weather_lookup"), "stop the weather one", {}),
         (commission("c1", "alpha", route="task_agent", user_text="redo the footer"), "stop the footer", {}),
         (_waiting("c1", "alpha", {"kind": "question", "question": "Which month first?", "id": "q1"}),
          "stop the one asking about the month", {}),
@@ -1524,6 +1526,54 @@ async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where
     # The list whole, the words are not looked at: what it names is stopped, as before.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 12)
     assert await read(these, "stop the work in progress", active) == ("stop", ["c1"])
+
+
+async def test_words_of_the_stop_itself_name_nothing_where_the_list_was_cut(monkeypatch):
+    # "Stop the work in progress" shares "work" with "work out the shop budget", and "进行中的活都取消"
+    # shares "进行" with "对竞品进行调研": those words say the stopping, how much and the work under way,
+    # not which (owner's automatic review). Left out of the sentence, in each language: which, the user is
+    # asked, among all.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    others = [commission("o1", "beta", route="task_agent"), commission("o2", "gamma", route="task_agent")]
+    these = {"does": "stop", "items": [1], "named": True, "scope": "these"}
+
+    async def read(reading: dict[str, Any], item: Commission, words: str, **values: Any) -> tuple[str, list[str]]:
+        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(
+            request(words, active=[item, *others], **values)
+        )
+        assert (calls, unread) == (1, False)
+        return triage.kind, sorted(triage.targets)
+
+    asked = ("ambiguous", ["c1", "o1", "o2"])
+    for title, words in (
+        ("对竞品进行调研", "进行中的活都取消"),
+        ("整理正在进行的任务清单", "正在办的都停了吧"),
+        ("work out the shop budget", "stop the work in progress"),
+        ("cancel the old jobs", "cancel all the ongoing work"),
+    ):
+        assert await read(these, commission("c1", title, route="task_agent"), words) == asked, words
+    # What is left of words that name it names it.
+    item = commission("c1", "对竞品进行调研", route="task_agent")
+    assert await read(these, item, "停掉竞品调研那个") == ("stop", ["c1"])
+    item = commission("c1", "work out the shop budget", route="task_agent")
+    assert await read(these, item, "stop working out the budget") == ("stop", ["c1"])
+    # The familiar's name as the host writes it ("Working cat") is not named by "working".
+    item = commission("c1", "alpha", route="task_agent", session_id="s-w")
+    assert await read(these, item, "stop everything that's working", familiars={"s-w": "Working cat"}) == asked
+    # In each language: a title with every word of the sentence in it, and one more.
+    for words in (
+        "在办的都取消吧", "進行中的都取消吧", "stop the work in progress", "進行中のタスクを全部キャンセルして",
+        "진행 중인 작업 전부 취소해", "отмени все текущие задачи", "cancela todas las tareas en curso",
+        "cancele todas as tarefas em andamento",
+    ):
+        assert await read(these, commission("c1", f"{words} alpha", route="task_agent"), words) == asked, words
+    # Several picked: each must be named. One the model picked beside the one the sentence names is not
+    # stopped with it (owner's automatic review).
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
+    shop = commission("c1", "shop site page", route="task_agent", project="Shop site")
+    two = {**these, "items": [1, 2]}
+    assert await read(two, shop, "stop the shop site page") == asked
+    assert await read(two, shop, "stop the shop site page and beta") == ("stop", ["c1", "o1"])
 
 
 async def test_all_of_nothing_under_way_stops_nothing():
