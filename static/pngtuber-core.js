@@ -460,11 +460,11 @@
                 return;
             }
             if (this.isLayeredActive()) {
-                this.scheduleReviewedReturn();
-                this.drawLayeredState(this.state || 'idle');
                 if (!this.layeredBlinkTimer && !this.layeredBlinkEndTimer) {
                     this.startLayeredBlinkLoop();
                 }
+                this.scheduleReviewedReturn();
+                this.drawLayeredState(this.state || 'idle');
                 this.startLayeredAnimationLoop({ preserveTimeline: true });
             }
             if (this.isSpeaking) {
@@ -1586,13 +1586,21 @@
             const deadline = this._reviewedReturnDeadline, playback = this._trackedPlayback;
             if (deadline == null || this._renderingPaused || this._reviewedHidden) return;
             const remaining = deadline - performance.now();
-            if (remaining <= 0) { this.finishReviewedAction(); return; }
+            if (remaining <= 0) { this.tryReviewedDeadline(); return; }
             this.layeredStateReturnTimer = setTimeout(() => {
                 this.layeredStateReturnTimer = null;
                 if (this._trackedPlayback !== playback || this._reviewedReturnDeadline !== deadline
                     || this._renderingPaused || this._reviewedHidden) return;
-                this.finishReviewedAction();
+                this.tryReviewedDeadline();
             }, remaining);
+        }
+
+        tryReviewedDeadline(timestamp = performance.now()) {
+            if (!this.hasReviewedActions() || this._renderingPaused || this._reviewedHidden
+                || this._reviewedPreparing || this._reviewedRetry || this._reviewedReturnDeadline == null
+                || timestamp < this._reviewedReturnDeadline) return false;
+            // Timer and render-clock expiry share precedence: accepted newer work wins.
+            return this.finishReviewedAction();
         }
 
         seedReviewedEntry(entries = []) {
@@ -1720,9 +1728,7 @@
                 }
                 return;
             }
-            if (this._reviewedReturnDeadline != null && timestamp >= this._reviewedReturnDeadline) {
-                this.finishReviewedAction(); return;
-            }
+            if (this.tryReviewedDeadline(timestamp)) return;
             const elapsed = timestamp - this.layeredAnimationStart;
             const group = this.layeredStateCatalog().find(x => x.state_index === this.layeredStateIndex)?.group;
             const activity = this.reviewedActivity();
@@ -5834,11 +5840,11 @@
                 this.applyTransform();
             }
             if (this.isLayeredActive()) {
-                this.scheduleReviewedReturn();
-                this.drawLayeredState();
                 if (!this.layeredBlinkTimer && !this.layeredBlinkEndTimer) {
                     this.startLayeredBlinkLoop();
                 }
+                this.scheduleReviewedReturn();
+                this.drawLayeredState();
                 if (preserveReviewed) this.startLayeredAnimationLoop({ preserveTimeline: true });
                 else this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();

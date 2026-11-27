@@ -1604,7 +1604,7 @@ function timedReviewedFixture() {
     const f = realReviewedFixture({ fakeTimers: true });
     const m = f.manager;
     m.container = { style: { display: 'block' }, classList: { contains: () => false, add() {}, remove() {} } };
-    m.startLayeredBlinkLoop = m.attachLayeredHotkeys = m.attachLayeredPlayEvent = m.attachLayeredPointerTracking = () => {};
+    m.attachLayeredHotkeys = m.attachLayeredPlayEvent = m.attachLayeredPointerTracking = () => {};
     return f;
 }
 
@@ -1927,4 +1927,69 @@ test('a direct request from the idle commit event wins over an older queued hand
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 5);
     assert.equal(m._reviewedQueued, null);
+});
+
+
+test('deadline tests retain the real blink initializer that clears layered timers', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    assert.equal(Object.hasOwn(m, 'startLayeredBlinkLoop'), false);
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    advance(300);
+    m.pauseRendering();
+    advance(500);
+    m.resumeRendering();
+    assert.notEqual(m.layeredStateReturnTimer, null);
+    advance(599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('old deadline cannot supersede a newer B request while B is decoding', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 5000 });
+    await flushReviewed();
+    m._trackedPlayback.lastIndex = 1;
+    advance(3100);
+    let resolveB;
+    m.prepareReviewedEntry = () => new Promise(resolve => { resolveB = resolve; });
+    m.requestReviewedState(3);
+    const token = m._reviewedRequest;
+    advance(5100);
+    m.reviewedPlaybackTick(5100);
+    assert.equal(m._reviewedRequest, token);
+    assert.equal(m._reviewedPreparing, true);
+    resolveB([{ image: {} }]);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 3);
+});
+
+test('old deadline cannot supersede a newer B request during retry backoff', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 5000 });
+    await flushReviewed();
+    m._trackedPlayback.lastIndex = 1;
+    advance(5000);
+    let attempts = 0;
+    m.prepareReviewedEntry = async () => {
+        if (++attempts === 1) throw Error('temporary B decode failure');
+        return [{ image: {} }];
+    };
+    m.requestReviewedState(3);
+    await flushReviewed();
+    const token = m._reviewedRequest;
+    advance(5100);
+    assert.equal(m._reviewedRequest, token);
+    assert.equal(m._reviewedRetry.at, 5250);
+    advance(5250);
+    m.reviewedPlaybackTick(5250);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 3);
+    assert.equal(attempts, 2);
 });
