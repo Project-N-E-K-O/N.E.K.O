@@ -834,6 +834,119 @@ def test_vrm_spring_bones_check_the_loader_dependencies(tmp_path, case, accepted
             validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("case,accepted", [
+    ("complete", True),
+    ("absent_bone_groups", True),
+    ("valid_v1_takes_precedence", True),
+    ("undeclared_legacy_extension", True),
+    ("unused_collider_node", True),
+    ("empty_bones", True),
+    ("bad_bone", False),
+    ("bad_group", False),
+    ("bad_collider_node", False),
+    ("bad_collider", False),
+    ("bad_bone_groups", False),
+    ("bad_bones", False),
+    ("bad_colliders", False),
+    ("fallback_from_unknown_v1", False),
+    ("fallback_with_no_extensions_used", False),
+])
+def test_vrm_legacy_spring_bones_check_the_loader_dependencies(tmp_path, case, accepted):
+    def graph(data):
+        data["nodes"] = [{"children": [1]}, {"translation": [0, 1, 0]}, {}]
+        data["scenes"][0]["nodes"] = [0, 2]
+        bone_group = {"bones": [0], "colliderGroups": [0], "center": -1}
+        collider_group = {"node": 2, "colliders": [{"radius": 0.1}]}
+        legacy = {"boneGroups": [bone_group], "colliderGroups": [collider_group]}
+        if case == "absent_bone_groups":
+            del legacy["boneGroups"]
+            legacy["colliderGroups"] = {}
+        if case in ("valid_v1_takes_precedence", "fallback_from_unknown_v1"):
+            data["extensionsUsed"].append("VRMC_springBone")
+            data["extensions"]["VRMC_springBone"] = {
+                "specVersion": "1.0" if case == "valid_v1_takes_precedence" else "2.0",
+            }
+        if case in ("bad_bone", "valid_v1_takes_precedence", "fallback_from_unknown_v1",
+                    "undeclared_legacy_extension", "fallback_with_no_extensions_used"):
+            bone_group["bones"] = [3]
+        if case == "undeclared_legacy_extension":
+            data["extensionsUsed"] = []
+        if case == "fallback_with_no_extensions_used":
+            del data["extensionsUsed"]
+        if case in ("bad_collider_node", "unused_collider_node"):
+            collider_group["node"] = 3
+        if case == "unused_collider_node":
+            collider_group["colliders"] = []
+        if case in ("bad_group", "empty_bones"):
+            bone_group["colliderGroups"] = [1]
+        if case == "empty_bones":
+            bone_group["bones"] = []
+        if case == "bad_collider":
+            collider_group["colliders"] = [None]
+        if case == "bad_bone_groups":
+            legacy["boneGroups"] = {}
+        if case == "bad_bones":
+            bone_group["bones"] = {}
+        if case == "bad_colliders":
+            collider_group["colliders"] = {}
+        data["extensions"]["VRM"]["secondaryAnimation"] = legacy
+
+    raw = vrm_bytes(version="0.0", change=graph)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("version,case,work", [
+    ("1.0", "repeated_colliders", 8),
+    ("1.0", "repeated_groups", 10),
+    ("1.0", "multiple_springs", 16),
+    ("1.0", "missing_colliders", 4),
+    ("1.0", "empty_groups", 6),
+    ("0.0", "descendants", 9),
+    ("0.0", "overlapping_roots", 15),
+    ("0.0", "multiple_springs", 18),
+    ("0.0", "attached_collider", 12),
+])
+def test_vrm_spring_bone_budget_counts_expanded_work(tmp_path, version, case, work):
+    def graph(data):
+        data["nodes"] = [{"children": [1]}, {"children": [2]}, {}, {}]
+        data["scenes"][0]["nodes"] = [0, 3]
+        if version == "0.0":
+            group = {"bones": [0, 1] if case == "overlapping_roots" else [0], "colliderGroups": [0]}
+            data["extensions"]["VRM"]["secondaryAnimation"] = {
+                "boneGroups": [group] * (2 if case == "multiple_springs" else 1),
+                "colliderGroups": [{"node": 1 if case == "attached_collider" else 3, "colliders": [{}]}],
+            }
+        else:
+            spring = {"joints": [{"node": node} for node in range(3)],
+                      "colliderGroups": [0, 0] if case in ("repeated_groups", "empty_groups") else [0]}
+            indices = [0, 0]
+            if case == "repeated_groups":
+                indices = [0]
+            if case == "empty_groups":
+                indices = []
+            if case == "missing_colliders":
+                indices = [0, 1]
+            # Two joints per spring. Missing colliders are omitted by the plugin.
+            data["extensionsUsed"].append("VRMC_springBone")
+            data["extensions"]["VRMC_springBone"] = {
+                "specVersion": "1.0",
+                "colliders": [{"node": 3, "shape": {"sphere": {}}}] if case != "missing_colliders" else [{"node": 4}],
+                "colliderGroups": [{"colliders": indices}],
+                "springs": [spring] * (2 if case == "multiple_springs" else 1),
+            }
+
+    raw = vrm_bytes(version=version, change=graph)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=work)).model_format == "vrm"
+    with pytest.raises(ModelFormatError, match="^model_physics_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=work - 1))
+
+
 @pytest.mark.parametrize("interleaved", [False, True])
 def test_vrm_inverse_bind_matrices_must_be_tightly_packed(tmp_path, interleaved):
     def graph(data):

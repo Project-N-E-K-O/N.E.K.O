@@ -46,6 +46,7 @@ class FormatLimits:
     vrm_morph_weights: int = 8000000
     vrm_skin_weight_work: int = 10000000
     vrm_instanced_vertices: int = 5000000
+    vrm_spring_bone_work: int = 500000
     live2d_physics_work: int = 3000000
     mmd_morph_bytes: int = 256 * 1024 * 1024
     mmd_tga_bytes: int = 512 * 1024 * 1024
@@ -598,16 +599,18 @@ def _gltf_extensions(data: dict, path: str) -> None:
             pending.extend(value)
 
 
-def _validate_vrm_spring_bones(definition, nodes: list, entry: str) -> None:
-    """Validate the dependencies used by the bundled spring-bone v1 loader."""
-    if definition is None:
-        return
-    _require(isinstance(definition, dict), entry)
-    if definition.get("specVersion") not in ("1.0", "1.0-beta"):
-        return
+def _vrm_spring_joint_work(indices, group_sizes: list, entry: str) -> int:
+    _require(indices is None or isinstance(indices, list), entry)
+    # Each joint visits every group and collider reference, including repeats.
+    return 1 + sum(1 + group_sizes[_index(index, group_sizes, entry)] for index in indices or [])
+
+
+def _validate_vrm_spring_bones(definition: dict, nodes: list, entry: str, work_limit: int) -> None:
+    """Validate VRM 1.0 spring dependencies and bound work for each physics update."""
     colliders, groups, springs = (definition.get(key) for key in ("colliders", "colliderGroups", "springs"))
     _require(all(items is None or isinstance(items, list) for items in (colliders, groups, springs)), entry)
-    for collider in colliders or []:
+    loaded_colliders = set()
+    for index, collider in enumerate(colliders or []):
         _require(isinstance(collider, dict), entry)
         node = collider.get("node")
         _require(node is None or type(node) is int, entry)
@@ -616,17 +619,19 @@ def _validate_vrm_spring_bones(definition, nodes: list, entry: str) -> None:
             shape = collider.get("shape")
             _require(isinstance(shape, dict) and any(isinstance(shape.get(kind), dict)
                                                      for kind in ("sphere", "capsule")), entry)
+            loaded_colliders.add(index)
+    group_sizes = []
     for group in groups or []:
         _require(isinstance(group, dict), entry)
         indices = group.get("colliders")
         # Missing colliders are skipped; numeric indices cannot alias array properties.
         _require(indices is None or (isinstance(indices, list) and all(type(index) is int for index in indices)), entry)
+        group_sizes.append(sum(index in loaded_colliders for index in indices or []))
+    work = 0
     for spring in springs or []:
         _require(isinstance(spring, dict), entry)
         indices, center, joints = (spring.get(key) for key in ("colliderGroups", "center", "joints"))
-        _require(indices is None or isinstance(indices, list), entry)
-        for index in indices or []:
-            _index(index, groups or [], entry)
+        joint_work = _vrm_spring_joint_work(indices, group_sizes, entry)
         _require(center is None or type(center) is int, entry)
         _require(isinstance(joints, list) and all(isinstance(joint, dict) for joint in joints), entry)
         # Each adjacent pair creates a spring joint. Its head must exist; an
@@ -636,6 +641,53 @@ def _validate_vrm_spring_bones(definition, nodes: list, entry: str) -> None:
         if len(joints) > 1:
             tail = joints[-1].get("node")
             _require(tail is None or type(tail) is int, entry)
+            work += (len(joints) - 1) * joint_work
+            _require(work <= work_limit, entry, "model_physics_budget_exceeded")
+
+
+def _validate_vrm_legacy_spring_bones(
+    definition: dict, nodes: list, meshes: list, node_order: list, entry: str, work_limit: int,
+) -> None:
+    """Validate legacy spring dependencies and count the objects under each spring root."""
+    bone_groups, collider_groups = definition["boneGroups"], definition.get("colliderGroups")
+    _require(isinstance(bone_groups, list), entry)
+    _require(collider_groups is None or isinstance(collider_groups, list), entry)
+    collider_counts = Counter()
+    group_sizes = []
+    for group in collider_groups or []:
+        _require(isinstance(group, dict), entry)
+        colliders = group.get("colliders")
+        _require(colliders is None or (isinstance(colliders, list)
+                                       and all(isinstance(collider, dict) for collider in colliders)), entry)
+        size = len(colliders) if colliders is not None else 0
+        if size:
+            collider_counts[_index(group.get("node"), nodes, entry)] += size
+        group_sizes.append(size)
+
+    subtree_sizes = [0] * len(nodes)
+    for index in node_order:
+        node = nodes[index]
+        # Legacy traversal includes children the loader attaches to glTF nodes.
+        size = 1 + collider_counts[index] + int("camera" in node)
+        if "mesh" in node:
+            count = len(meshes[node["mesh"]]["primitives"])
+            size += count + int(count > 1)
+        if "light" in (node.get("extensions", {}).get("KHR_lights_punctual") or {}):
+            size += 2  # Directional and spot lights attach a target object.
+        subtree_sizes[index] = size + sum(subtree_sizes[child] for child in node.get("children", []))
+
+    work = 0
+    for group in bone_groups:
+        _require(isinstance(group, dict), entry)
+        bones = group.get("bones")
+        if bones in (None, False, ""):
+            continue
+        _require(isinstance(bones, list), entry)
+        if bones:
+            joint_work = _vrm_spring_joint_work(group.get("colliderGroups"), group_sizes, entry)
+            # Overlapping roots are traversed independently by the plugin.
+            work += joint_work * sum(subtree_sizes[_index(bone, nodes, entry)] for bone in bones)
+            _require(work <= work_limit, entry, "model_physics_budget_exceeded")
 
 
 def _vrm(resources: _Resources) -> None:
@@ -681,8 +733,16 @@ def _vrm(resources: _Resources) -> None:
     buffers, views, images, nodes, textures = (data.get(key, []) for key in ("buffers", "bufferViews", "images", "nodes", "textures"))
     _require(all(isinstance(value, list) for value in (buffers, views, images, nodes, textures)) and bool(buffers), entry)
     extensions_used = data.get("extensionsUsed")
+    spring_bones = legacy_spring_bones = None
     if extensions_used is None or "VRMC_springBone" in extensions_used:
-        _validate_vrm_spring_bones(extensions.get("VRMC_springBone"), nodes, entry)
+        spring_bones = extensions.get("VRMC_springBone")
+        _require(spring_bones is None or isinstance(spring_bones, dict), entry)
+    if spring_bones is not None and spring_bones.get("specVersion") in ("1.0", "1.0-beta"):
+        _validate_vrm_spring_bones(spring_bones, nodes, entry, resources.limits.vrm_spring_bone_work)
+    elif kinds[0] == "VRM" and (extensions_used is None or "VRM" in extensions_used):
+        secondary_animation = vrm.get("secondaryAnimation")
+        if isinstance(secondary_animation, dict) and secondary_animation.get("boneGroups") not in (None, False, ""):
+            legacy_spring_bones = secondary_animation
     buffer_sizes = []
     for index, buffer in enumerate(buffers):
         _require(isinstance(buffer, dict) and buffer.get("type", "arraybuffer") == "arraybuffer", entry)
@@ -1096,6 +1156,7 @@ def _vrm(resources: _Resources) -> None:
                      entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors, heights = [0] * len(nodes), [1] * len(nodes)
+    legacy_node_order = []
     morph_subtrees = set()
     for start in range(len(nodes)):
         stack = [(start, False)]
@@ -1105,6 +1166,8 @@ def _vrm(resources: _Resources) -> None:
                 children = nodes[node].get("children", [])
                 heights[node] = 1 + max((heights[child] for child in children), default=0)
                 _require(heights[node] <= resources.limits.hierarchy_depth, entry, "model_accessor_budget_exceeded")
+                if legacy_spring_bones is not None:
+                    legacy_node_order.append(node)
                 if weight_animation_nodes:
                     # The bundled loader binds a weights track to every mesh
                     # with influences in this subtree, including child nodes.
@@ -1119,6 +1182,10 @@ def _vrm(resources: _Resources) -> None:
                 colors[node] = 1
                 stack.append((node, True))
                 stack.extend((child, False) for child in nodes[node].get("children", []))
+    if legacy_spring_bones is not None:
+        _validate_vrm_legacy_spring_bones(
+            legacy_spring_bones, nodes, meshes, legacy_node_order, entry, resources.limits.vrm_spring_bone_work,
+        )
     if node_constraints:
         # The plugin visits constraints on each dependency and its ancestors.
         # Separate the inherited node transform from its local constraint so
