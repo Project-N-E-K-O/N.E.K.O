@@ -55,6 +55,12 @@ def _unregister_result(
     return build_unregister_result(body, ok=ok, error=error, message=message)
 
 
+def _with_notes(exc: BaseException) -> str:
+    """``str(exc)`` plus the notes the registry attached (e.g. what the host
+    did about a register whose answer was lost), so the SDK caller sees them."""
+    return "; ".join([str(exc), *getattr(exc, "__notes__", ())])
+
+
 def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
     """Map an httpx error from the main_server call to an ``error`` code.
 
@@ -63,7 +69,7 @@ def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
     means main_server may have applied the change, so it is reported as
     ``timeout``: the outcome is unknown.
     """
-    message = f"{type(exc).__name__}: {exc}"
+    message = f"{type(exc).__name__}: {_with_notes(exc)}"
     if failed_before_send(httpx, exc):
         return "main_server_unavailable", message
     return "timeout", message
@@ -79,7 +85,7 @@ async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) 
     try:
         body = await register_remote_tool(plugin_id=ctx.from_plugin, **fields)
     except RemoteToolError as exc:
-        return _register_result(exc.body, ok=False, error=exc.code, message=str(exc))
+        return _register_result(exc.body, ok=False, error=exc.code, message=_with_notes(exc))
     except httpx.HTTPError as exc:
         error, message = _transport_failure(httpx, exc)
         return _register_result({}, ok=False, error=error, message=message)

@@ -3030,6 +3030,7 @@ async def test_register_answer_lost_while_running_is_withdrawn(monkeypatch, regi
 
     if result is not None:
         assert result["ok"] is False and result["error"] == "timeout"
+        assert "was withdrawn from main_server" in result["message"]  # the SDK caller sees it
     assert server.ops() == ["register", "unregister"]
     assert server.posts[1][1]["expected_registration_id"] == "reg-1"
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
@@ -3058,6 +3059,7 @@ async def test_register_answer_lost_and_withdrawal_failed_tracks_the_new_registr
 
     if result is not None:
         assert result["ok"] is False and result["error"] == "timeout"
+        assert "could not be confirmed" in result["message"]
     assert server.ops() == ["register", "unregister"]
     assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 12.0, "registration_id": "reg-1"}
     assert registry.get_plugin_tool_timeout(PLUGIN_ID, "tool_a") == 12.0
@@ -3142,15 +3144,20 @@ async def test_register_answer_lost_and_plugin_stopped_during_the_withdrawal_is_
 
     assert result["ok"] is False and result["error"] == "plugin_stopped"
     assert ("could not be confirmed" if withdrawal_fails else "was withdrawn") in result["message"]
+    if withdrawal_fails:  # the stop's own cleanup came after the register
+        assert "stop cleanup, sent after this register" in result["message"]
     assert server.ops() == ["register", "unregister", "clear"]
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     assert registry._name_locks == {}
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("withdrawal_fails", [False, True])
 async def test_notification_register_answer_lost_and_stopped_during_the_withdrawal_logs_no_traceback(
-    monkeypatch, registry,
+    monkeypatch, registry, withdrawal_fails,
 ):
+    import httpx
+
     from plugin.core.communication import PluginCommunicationResourceManager as Comm
 
     server = _RegisterAnswerLost(_lost_answer("read_timeout"))
@@ -3168,30 +3175,58 @@ async def test_notification_register_answer_lost_and_stopped_during_the_withdraw
     ))
     await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
     await registry.clear_plugin_tools(PLUGIN_ID)
+    if withdrawal_fails:
+        server.unregister_exc = httpx.ReadTimeout("no answer")
     server.release.set()
     await asyncio.wait_for(task, timeout=2.0)
 
     assert calls == ["info"]
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("withdrawal_fails", [False, True])
-async def test_register_answer_lost_error_says_what_the_host_did(monkeypatch, registry, withdrawal_fails):
+@pytest.mark.parametrize("kind", ["read_timeout", "unreadable"])
+async def test_register_answer_lost_error_says_what_the_host_did(monkeypatch, registry, withdrawal_fails, kind):
     """The original error is raised, carrying a note with the withdrawal's
     outcome (shown in the traceback the notification path logs)."""
     import httpx
 
-    server = _use_main_server(monkeypatch, registry, _RegisterAnswerLost(_lost_answer("read_timeout")))
+    server = _use_main_server(monkeypatch, registry, _RegisterAnswerLost(_lost_answer(kind)))
     if withdrawal_fails:
         server.unregister_exc = httpx.ReadTimeout("no answer")
+    expected = httpx.ReadTimeout if kind == "read_timeout" else registry.RemoteToolError
 
-    with pytest.raises(httpx.ReadTimeout) as caught:
+    with pytest.raises(expected) as caught:
         await registry.register_remote_tool(
             plugin_id=PLUGIN_ID, name="tool_a", description="d", parameters={}, timeout_seconds=12.0,
         )
 
     notes = " ".join(getattr(caught.value, "__notes__", []))
     assert ("could not be confirmed" if withdrawal_fails else "was withdrawn") in notes
+    if kind == "unreadable":
+        assert caught.value.code == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reconcile_does_not_replace_the_register_error(monkeypatch, registry):
+    """Should the reconcile itself raise, the register's own error is still
+    the one raised (the reconcile counts as not withdrawn)."""
+    import httpx
+
+    async def broken_reconcile(**_):
+        raise RuntimeError("reconcile broke")
+
+    _use_main_server(monkeypatch, registry, _RegisterAnswerLost(_lost_answer("read_timeout")))
+    monkeypatch.setattr(registry, "_reconcile_unknown_register", broken_reconcile)
+
+    with pytest.raises(httpx.ReadTimeout) as caught:
+        await registry.register_remote_tool(
+            plugin_id=PLUGIN_ID, name="tool_a", description="d", parameters={}, timeout_seconds=12.0,
+        )
+
+    assert "could not be confirmed" in " ".join(getattr(caught.value, "__notes__", []))
+    assert registry._name_locks == {}
 
 
 @pytest.mark.asyncio

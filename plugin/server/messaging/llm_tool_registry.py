@@ -569,12 +569,24 @@ async def _register_remote_tool_locked(
             ))
             if interrupted:
                 raise asyncio.CancelledError() from exc
-            withdrawn = task.result()
+            try:
+                withdrawn = task.result()
+            except Exception as reconcile_exc:
+                # Never let a reconcile failure replace the register's error.
+                logger.warning(
+                    "Reconciling a lost LLM tool register answer failed: plugin_id={}, name={}, "
+                    "err_type={}, err={}",
+                    plugin_id, name, type(reconcile_exc).__name__, str(reconcile_exc),
+                )
+                withdrawn = False
             if stopped():
                 # Stopped during the reconcile: nothing was tracked, report
-                # it like any other register that ended after the stop.
+                # it like any other register that ended after the stop. The
+                # stop's own cleanup was sent after this register.
                 raise _plugin_stopped_error(
                     plugin_id=plugin_id, name=name, withdrawn=withdrawn, body=None,
+                    unconfirmed="its withdrawal could not be confirmed; the plugin's stop"
+                    " cleanup, sent after this register, normally removes it",
                 ) from exc
             # Shown with the traceback the notification path logs.
             exc.add_note(
@@ -624,16 +636,17 @@ async def _withdraw_after_stop(
 
 def _plugin_stopped_error(
     *, plugin_id: str, name: str, withdrawn: bool, body: Optional[Dict[str, Any]],
+    unconfirmed: str = (
+        # Also used when nothing was stored (e.g. main_server unreachable),
+        # so don't claim that something remains.
+        "its withdrawal could not be confirmed; if main_server stored it,"
+        " it may remain until the plugin's next cleanup"
+    ),
 ) -> RemoteToolError:
     """The ``plugin_stopped`` error of a register that ended after the stop,
-    saying whether its withdrawal was confirmed."""
-    outcome = (
-        "the registration was withdrawn" if withdrawn
-        # Also reached when nothing was stored (e.g. main_server unreachable),
-        # so don't claim that something remains.
-        else "its withdrawal could not be confirmed; if main_server stored it,"
-        " it may remain until the plugin's next cleanup"
-    )
+    saying whether its withdrawal was confirmed (``unconfirmed`` is the
+    wording when it was not)."""
+    outcome = "the registration was withdrawn" if withdrawn else unconfirmed
     return RemoteToolError(
         f"plugin '{plugin_id}' was stopped while '{name}' was being registered; {outcome}",
         code="plugin_stopped",
