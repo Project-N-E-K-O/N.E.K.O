@@ -1,5 +1,6 @@
 <template>
   <section class="perm-tab">
+    <PluginLegacyConsentBanner :plugin-id="pluginId" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
       {{ t('pluginConsent.tab.loadFailed') }}
@@ -289,6 +290,7 @@ import {
   type PermissionPanel,
 } from '@/api/pluginPermissions'
 import { usePluginStore } from '@/stores/plugin'
+import PluginLegacyConsentBanner from './PluginLegacyConsentBanner.vue'
 import { capabilityMessageKey } from '@/utils/pluginCapabilities'
 import {
   blindSpotFiles,

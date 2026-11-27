@@ -22,6 +22,8 @@ const pluginStore = vi.hoisted(() => ({
   stop: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/api/pluginPermissions', () => api)
+// The earlier plugin-wide consent line has its own tests.
+vi.mock('./PluginLegacyConsentBanner.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
 vi.mock('@/i18n', () => ({
   i18n: { global: { t: (key: string) => key } },
