@@ -342,10 +342,13 @@
             && !window.vrmManager?._isLoadingModel && !window.isVRMStartupFor?.(name);
     }
 
-    function hasCommittedPageModel(name, revision) {
+    function hasCommittedPageModel(name, revision, { olderThan = false } = {}) {
         const config = window.lanlan_config;
-        if (!revision || config?.switch_revision !== revision || config.lanlan_name !== name
-            || committedRenderer?.name !== name || committedRenderer.revision !== revision
+        const committedRevision = committedRenderer?.revision || 0;
+        const revisionMatches = olderThan
+            ? committedRevision > 0 && committedRevision < revision
+            : config?.switch_revision === revision && committedRevision === revision;
+        if (!revision || !revisionMatches || config?.lanlan_name !== name || committedRenderer?.name !== name
             || (S.isSwitchingCatgirl && S._currentSwitchAttemptId !== committedRenderer.attemptId)) return false;
         const type = configuredRenderer(config);
         const mounted = getMountedRenderer(type);
@@ -2181,6 +2184,11 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            // IPC can publish the receipt high-water before this handler starts.
+            // Reflect the actual committed revision without lowering a newer receipt.
+            if (window.lanlan_config && switchRevision > (window.lanlan_config.switch_revision || 0)) {
+                window.lanlan_config.switch_revision = switchRevision;
+            }
             rolledBackRenderer = null;
             rolledBackPngtuberName = null;
             const mountedType = configuredRenderer(window.lanlan_config);
@@ -2195,8 +2203,9 @@
             const bootstrap = window.__nekoPageModelConfigPending;
             const queued = S._pendingCatgirlSwitch;
             const canRetireBoot = !queued || (queued.newCatgirl === newCatgirl && !(queued.switchRevision > switchRevision));
-            if (bootstrap && canRetireBoot && (bootstrap.name === newCatgirl
-                || (!bootstrap.pinned && switchRevision && switchRevision >= bootstrap.revision))) {
+            if (bootstrap && canRetireBoot
+                && (!bootstrap.revision || !switchRevision || switchRevision >= bootstrap.revision)
+                && (bootstrap.name === newCatgirl || (!bootstrap.pinned && switchRevision))) {
                 window.__nekoPageModelConfigPending = null;
                 bootstrap.retire?.();
             }

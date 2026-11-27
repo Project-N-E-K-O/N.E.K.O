@@ -429,6 +429,11 @@ window.isVRMStartupFor = name => !!name && !!ownsVRMStartup?.(name);
 
 // 自动初始化函数
 async function initVRMModel() {
+    return initVRMModelWithPathRetries(2);
+}
+
+async function initVRMModelWithPathRetries(pathRetries) {
+    let retryStartup;
     // 防止重复进入：使用共享锁，避免与 checkAndLoadVRM 并发
     if (window._isVRMLoading) {
         return;
@@ -448,8 +453,7 @@ async function initVRMModel() {
                     && (!window.vrmManager?.currentModel?.vrm
                         || window.appCharacter?.needsCurrentCharacterRecovery?.(startupName, { fromSnapshot: true }))));
         const stillOwnsStartupNow = () => !window.appState?.isSwitchingCatgirl && stillOwnsStartup();
-        const ownsStartupAfterSwitchSettlement = async () => {
-            const deadline = Date.now() + 46000;
+        const ownsStartupAfterSwitchSettlement = async (deadline = Date.now() + 46000) => {
             while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
@@ -553,6 +557,17 @@ async function initVRMModel() {
 
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
         const configuredPathAtSelection = window.vrmModel;
+        const retryIfPathChanged = () => {
+            if (window.vrmModel === configuredPathAtSelection) return false;
+            if (pathRetries > 0) {
+                // Re-enter the same boot path after unlocking, unless a central
+                // switch or a newer load token superseded this startup meanwhile.
+                retryStartup = () => {
+                    if (stillOwnsStartupNow()) void initVRMModelWithPathRetries(pathRetries - 1);
+                };
+            }
+            return true;
+        };
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {
             const rawValue = window.vrmModel;
@@ -667,26 +682,30 @@ async function initVRMModel() {
         const lightingConfig = window.lanlan_config?.lighting || null;
         startupManager = window.vrmManager;
         await startupManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
-        if (!await ownsStartupAfterSwitchSettlement()) return;
-
-        // A path save need not advance the character-switch revision. If a full
-        // snapshot changed it during Three.js initialization, retry from fresh
-        // config after finally releases the startup lock; never start the old asset.
-        if (window.vrmModel !== configuredPathAtSelection) {
-            Promise.resolve().then(initVRMModel);
-            return;
-        }
-        // 使用统一的路径转换工具函数
+        const deadline = Date.now() + 46000;
+        if (!await ownsStartupAfterSwitchSettlement(deadline)) return;
         const modelUrl = window.convertVRMModelPath(targetModelPath);
 
+        // A switch can start between the async check and this turn. Do not
+        // steal its load token; resume the still-current cold boot on rollback.
+        while (!stillOwnsStartupNow()) {
+            if (!window.appState?.isSwitchingCatgirl || Date.now() >= deadline
+                || !await ownsStartupAfterSwitchSettlement(deadline)) return;
+        }
+        if (retryIfPathChanged()) return;
 
         // 朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         const loading = startupManager.loadModel(modelUrl);
         loadToken = startupManager._activeLoadToken;
         loadStarted = true;
-        await loading;
-        if (!await ownsStartupAfterSwitchSettlement()) return;
+        let failed = false, loadError;
+        try { await loading; }
+        catch (error) { failed = true; loadError = error; }
+        // A same-revision asset save can arrive during the actual download,
+        // not just during Three.js initialization. Never confirm the old path.
+        if (!await ownsStartupAfterSwitchSettlement() || !stillOwnsStartupNow() || retryIfPathChanged()) return;
+        if (failed) throw loadError;
         window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel?.vrm);
 
         // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
@@ -715,6 +734,7 @@ async function initVRMModel() {
         // 无论成功还是失败，包括所有早期返回，最后都释放锁（共享锁）
         ownsVRMStartup = null;
         window._isVRMLoading = false;
+        if (retryStartup) Promise.resolve().then(retryStartup);
     }
 }
 

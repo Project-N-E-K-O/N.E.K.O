@@ -111,15 +111,20 @@ window.getPageSwitchRevision = latestPageSwitchRevision;
 
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
-function handoffPageSnapshotToSwitch(name, revision, retryHandoff) {
+function handoffPageSnapshotToSwitch(name, revision, modelBoot = null) {
     const state = window.appState;
+    const retryHandoff = modelBoot?.retryHandoff;
     const recover = !!retryHandoff && retryHandoff.name === name && revision >= retryHandoff.revision;
+    // A late IPC bootstrap can outlive a switch that mounted an older revision
+    // of the same role. A receipt/config revision alone does not own its model.
+    const replaceOlderRenderer = !!modelBoot
+        && window.appCharacter?.hasCommittedPageModel?.(name, revision, { olderThan: true });
     if (revision && name && typeof window.handleCatgirlSwitch === 'function'
-        && (recover || state?.isSwitchingCatgirl
+        && (recover || replaceOlderRenderer || state?.isSwitchingCatgirl
             || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
             || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }))) {
         return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
-            switchRevision: revision, ...(recover ? { forceReload: true } : {})
+            switchRevision: revision, ...((recover || replaceOlderRenderer) ? { forceReload: true } : {})
         })).then(applied => {
             const pending = state?._pendingCatgirlSwitch;
             const queued = applied !== true && pending?.newCatgirl === name
@@ -306,7 +311,7 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // Decide takeover against ordering evidence that existed before this
             // read. The first authoritative HTTP bootstrap must not turn itself
             // into a live switch merely by publishing its own revision early.
-            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision, modelBoot?.retryHandoff);
+            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision, modelBoot);
             if (liveSwitch) {
                 const outcome = await liveSwitch;
                 if (outcome.applied) return true;
