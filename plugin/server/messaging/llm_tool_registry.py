@@ -326,6 +326,19 @@ def _valid_tool_name(name: object) -> bool:
 _REGISTRATION_ID_MAX_LENGTH = 64
 
 
+def failed_before_send(httpx: Any, exc: BaseException) -> bool:
+    """Whether an httpx error from a main_server call certainly happened
+    before the request was sent (connect failure or timeout, no pooled
+    connection, proxy, unsupported scheme, invalid request on our side).
+    Anything else (read/write timeout or failure, connection dropped
+    mid-exchange, undecodable answer, ...) means main_server may have
+    applied the change: the outcome is unknown."""
+    return isinstance(exc, (
+        httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError,
+    ))
+
+
 def _registration_id(value: object) -> Optional[str]:
     """A caller-supplied registration id, or ``None`` when absent/unusable
     (main_server then generates one / applies no registration filter)."""
@@ -433,11 +446,17 @@ async def register_remote_tool(
       cleanup), nothing is tracked, and
       ``RemoteToolError(code="plugin_stopped")`` is raised, also when the
       register itself failed (chained from that error).
-    * The call is cancelled after the request was sent: main_server may
-      still store the tool, so the registration is removed by its id before
-      the cancellation propagates. If that removal fails while the plugin
-      is still running, the tool is tracked anyway, so model calls reaching
-      it are routed rather than answered with "not registered".
+    * The call is cancelled after the request was sent, or its answer was
+      lost while the plugin runs (an httpx error after sending, see
+      ``failed_before_send``, or an unreadable answer, ``code="timeout"``):
+      main_server may still store the tool, so the registration is removed
+      by its id before the cancellation / error propagates. If that removal
+      fails while the plugin is still running, this registration is tracked
+      anyway (replacing an earlier entry of the name, with this register's
+      ``timeout_seconds``), so model calls reaching it are routed rather
+      than answered with "not registered". The error is raised unchanged;
+      an SDK caller then sends its own cleanup by the same id, which is
+      harmless after the host's withdrawal (``removed: false``).
     """
     # Known before sending, so an interrupted register can be removed by
     # exactly this id and never a newer registration of the same name.
@@ -512,9 +531,10 @@ async def _register_remote_tool_locked(
                 }
     except asyncio.CancelledError:
         # Possibly stored on main_server, never tracked here.
-        await _finish_despite_cancellation(_reconcile_cancelled_register(
+        await _finish_despite_cancellation(_reconcile_unknown_register(
             plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
             timeout_seconds=timeout_seconds, stopped=stopped,
+            why="register cancelled after it was sent",
         ))
         raise
     except (httpx.HTTPError, RemoteToolError) as exc:
@@ -524,13 +544,31 @@ async def _register_remote_tool_locked(
         # ``ok: false`` after every role's sync failed still leaves it
         # stored), or anything unexpected. A removal by id is harmless when
         # nothing was stored, so withdraw on any failure.
-        if not stopped():
-            raise
-        await _withdraw_after_stop(
-            plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
-            why="register failed after plugin stop", cause=exc,
-            body=exc.body if isinstance(exc, RemoteToolError) else None,
+        if stopped():
+            await _withdraw_after_stop(
+                plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
+                why="register failed after plugin stop", cause=exc,
+                body=exc.body if isinstance(exc, RemoteToolError) else None,
+            )
+        # The plugin runs. A definite failure (nothing sent, an error status,
+        # ``rejected``) is raised as it is. A lost or unreadable answer leaves
+        # the outcome unknown: main_server may hold the tool while nothing
+        # here tracks it, and the notification / ``@llm_tool`` path sends no
+        # cleanup, so model calls would get "not registered" until the plugin
+        # stops. Reconcile it like a cancelled register.
+        unknown = (
+            exc.code == "timeout" if isinstance(exc, RemoteToolError)
+            else not failed_before_send(httpx, exc)
         )
+        if unknown:
+            _, interrupted = await _finish_despite_cancellation(_reconcile_unknown_register(
+                plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
+                timeout_seconds=timeout_seconds, stopped=stopped,
+                why="register answer lost",
+            ))
+            if interrupted:
+                raise asyncio.CancelledError() from exc
+        raise
 
     if plugin_stopped:
         await _withdraw_after_stop(
@@ -676,7 +714,7 @@ async def _remove_registration(
     return True
 
 
-async def _reconcile_cancelled_register(
+async def _reconcile_unknown_register(
     *,
     plugin_id: str,
     name: str,
@@ -684,20 +722,25 @@ async def _reconcile_cancelled_register(
     registration_id: str,
     timeout_seconds: float,
     stopped: Any,
+    why: str,
 ) -> None:
+    """Align host tracking with a register whose outcome is unknown (it was
+    sent, then cancelled or its answer was lost). Caller holds the per-name
+    lock."""
     if await _remove_registration(
-        plugin_id=plugin_id, name=name, role=role, registration_id=registration_id,
-        why="register cancelled after it was sent",
+        plugin_id=plugin_id, name=name, role=role, registration_id=registration_id, why=why,
     ):
         return
     # main_server may still hold the tool. The callback route answers model
     # calls for untracked tools with "not registered", so while the plugin
     # runs, track it: calls still reach the plugin, and a later unregister
-    # or the plugin-stop cleanup removes both sides. An existing entry (an
-    # earlier registration of the name) already routes calls and may be the
-    # one main_server still holds, so it is left as it is.
+    # or the plugin-stop cleanup removes both sides. This register was sent
+    # after any earlier registration of the name and main_server replaces
+    # on register, so it is the likelier one to be stored: an existing entry
+    # is replaced with its values (the callback route reads this
+    # ``timeout_seconds``).
     async with _lock:
-        if not stopped() and name not in _plugin_tools.get(plugin_id, {}):
+        if not stopped():
             _plugin_tools[plugin_id][name] = {
                 "timeout_seconds": float(timeout_seconds),
                 "registration_id": registration_id,
