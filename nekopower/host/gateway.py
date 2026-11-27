@@ -1551,6 +1551,11 @@ class CapabilityGateway:
                 current = await self._ledger.get(commission.id)
                 if current is None or not current.active:
                     return _text("this commission is no longer under way", error=True)
+                # Everything that waits comes first (the registry may ask the plugin server): what the
+                # answer stands on is looked at last, with nothing awaited between it and turning on.
+                turned_on_meanwhile = target.builtin_group is not None and any(
+                    item.group == target.builtin_group for item in await self._registry.callable_by_task_agents()
+                )
                 if await self._permissions.forbidden(target.permission):
                     record.status, record.reason = "denied", "settings"
                     return _text(DENIED_BY_SETTINGS, error=True)
@@ -1564,9 +1569,7 @@ class CapabilityGateway:
                     )
                     record.status, record.reason = "denied", "settings"
                     return _text(DENIED_BY_SETTINGS, error=True)
-                if target.builtin_group is not None and any(
-                    item.group == target.builtin_group for item in await self._registry.callable_by_task_agents()
-                ):
+                if turned_on_meanwhile:
                     # Turned on meanwhile by someone else (the user at the panel): not turned on again.
                     done, why = True, ""
                 else:

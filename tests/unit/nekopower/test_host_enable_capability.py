@@ -779,3 +779,30 @@ async def test_what_was_turned_on_meanwhile_by_someone_else_is_not_turned_on_aga
 
     assert answer["isError"] is False and "browser_navigate_page" in _text(answer)
     assert world.enabler.enable_calls == []
+
+
+async def test_text_added_while_the_registry_is_read_after_the_answer_turns_nothing_on(world):
+    # The registry may ask the plugin server (a cached list gone stale): what is awaited there is no
+    # reason to look at what the answer stands on any earlier than just before turning on.
+    armed: list[bool] = []
+
+    async def asked(commission_id: str, ask: Any) -> str:
+        armed.append(True)
+        return "once"
+
+    world.permissions.set_asker(asked)
+    grant = await _grant_for(world)
+    read = world.registry.callable_by_task_agents
+
+    async def read_then_text_arrives() -> Any:
+        found = await read()
+        if armed:
+            world.permissions.received_external_input(grant.commission_id)
+        return found
+
+    world.registry.callable_by_task_agents = read_then_text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert world.enabler.enable_calls == [] and not world.permissions.run_grants(grant.commission_id)
