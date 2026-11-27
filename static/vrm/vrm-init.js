@@ -472,8 +472,18 @@ async function initVRMModel() {
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;
         }
+        const resolvedStartupName = window.lanlan_config?.lanlan_name || '';
+        if (!startupName && resolvedStartupName) {
+            const resolvedModelType = (window.lanlan_config?.model_type || '').toLowerCase();
+            const resolvedLive3DSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+            const resolvedIsVRM = resolvedModelType === 'vrm'
+                || (resolvedModelType === 'live3d' && resolvedLive3DSubType === 'vrm');
+            if (resolvedIsVRM && !window.vrmManager?.currentModel?.vrm && !window.vrmManager?._isLoadingModel) {
+                startupName = resolvedStartupName;
+            }
+        }
         if (window.__nekoPageModelConfigPending || !await ownsStartupAfterSwitchSettlement()) return;
-        startupName ||= window.lanlan_config?.lanlan_name || '';
+        startupName ||= resolvedStartupName;
         // 在此处同步后端路径配置
         await fetchVRMConfig();
         if (!await ownsStartupAfterSwitchSettlement()) return;

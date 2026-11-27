@@ -2132,6 +2132,50 @@ for (const rejectBeforeTakeover of [false, true]) {
     });
 }
 
+
+test('unnamed VRM cold startup binds resolved identity before ownership check', async () => {
+    const h = harness(), w = h.window, ready = deferred(), loads = [];
+    w.location.pathname = '/'; w.location.href = 'https://example.test/';
+    h.context.document.querySelector = () => null;
+    h.context.requestAnimationFrame = () => 0;
+    h.context.URL = URL;
+    w.vrmModuleLoaded = true;
+    w.VRMCore = {};
+    w.lanlan_config = { lanlan_name: '', model_type: 'live3d', live3d_sub_type: 'vrm' };
+    w.vrmModel = '/static/vrm/A.vrm';
+    w.pageConfigReady = ready.promise;
+    w.appState._switchAttemptCounter = 0;
+    h.context.fetch = async url => ({ ok: true, json: async () => url === '/api/characters'
+        ? { '猫娘': { A: { model_type: 'live3d', live3d_sub_type: 'vrm', vrm: '/static/vrm/A.vrm',
+            _reserved: { character_uid: UID_A } } } }
+        : {} });
+    h.load('static/vrm/vrm-manager.js');
+    h.load('static/vrm/vrm-init.js');
+    const manager = Object.create(w.VRMManager.prototype);
+    Object.assign(manager, {
+        currentModel: null, _pendingModelLoadCount: 0, _activeLoadToken: 0,
+        initThreeJS: async () => {}, pauseRendering() {}, resumeRendering() {}, cleanupUI() {},
+        async _loadModelInternal(url, _options, token) {
+            loads.push(url);
+            if (this._isLoadTokenActive(token)) this.currentModel = { url, vrm: {} };
+            return this.currentModel;
+        }
+    });
+    w.vrmManager = manager;
+    h.load('static/app/app-character.js');
+
+    const boot = w.initVRMModel();
+    await new Promise(setImmediate);
+    w.lanlan_config.lanlan_name = 'A';
+    w.lanlan_config.switch_revision = 84;
+    w.appState._switchAttemptCounter = 1;
+    ready.resolve(true);
+    await boot;
+
+    assert.deepEqual(loads, ['/static/vrm/A.vrm']);
+    assert.equal(w.vrmManager.currentModel.url, '/static/vrm/A.vrm');
+});
+
 test('VRM startup waits for an in-flight switch to settle and resumes when takeover fails', async () => {
     const h = harness(), metadata = deferred(), metadataStarted = deferred();
     const heldRoles = deferred(), rolesStarted = deferred();
