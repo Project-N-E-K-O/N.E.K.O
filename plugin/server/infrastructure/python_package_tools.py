@@ -59,9 +59,11 @@ def _is_packaged() -> bool:
 
 
 def _tools_root() -> Path:
-    from plugin.settings import get_plugin_state_root
+    from utils.config_manager import get_config_manager
 
-    return get_plugin_state_root().parent / "python-package-tools"
+    # plugin-runtime/ is registered as regenerable. The uv-managed CPython here
+    # contains symlinks, which would fail a storage migration that copied it.
+    return get_config_manager().app_docs_dir / "plugin-runtime" / "python-package-tools"
 
 
 def _find_uv() -> str | None:
@@ -253,18 +255,33 @@ def _download_uv(
             os.replace(binary, destination)
 
 
+def pinned_uv_version() -> str:
+    """The uv release packaged servers download."""
+    return _UV_VERSION
+
+
+def packaged_python_request() -> str:
+    """The exact CPython a packaged server asks uv for.
+
+    python_full_version markers must resolve as they do in the host, not
+    against a newer patch release with the same extension-module ABI. uv ships
+    its list of downloadable Pythons inside each release, so the pinned uv must
+    know this patch release; scripts/check_nuitka_dist.py verifies that at
+    build time.
+    """
+    platform_name = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return f"cpython-{version}-{platform_name}-{_host_architecture()}"
+
+
 def _prepare_packaged_python(
     uv: str, run_command: CommandRunner, cancel_event: threading.Event,
     *, deadline: float,
 ) -> PackageTools:
     python_root = _tools_root() / "python"
     env = {"UV_PYTHON_INSTALL_DIR": str(python_root)}
-    # python_full_version markers must resolve as they do in the host, not
-    # against a newer patch release with the same extension-module ABI.
-    platform_name = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
     architecture = _host_architecture()
-    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    request = f"cpython-{version}-{platform_name}-{architecture}"
+    request = packaged_python_request()
     find = [uv, "python", "find", "--system", "--no-project", "--managed-python", "--no-python-downloads", request]
     found = run_command(find, label="Locate compatible Python", env=env)
     if found.returncode:

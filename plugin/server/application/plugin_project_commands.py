@@ -39,12 +39,15 @@ _project_leases: dict[str, BinaryIO] = {}
 
 
 def _project_lease_path(project_id: str) -> Path:
-    from plugin.settings import get_plugin_state_root
+    from utils.config_manager import get_config_manager
 
     # The caller may not have resolved the record yet. Never use an API-supplied
     # project ID as a filesystem path component.
     key = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
-    return get_plugin_state_root().parent / "project-operations" / f"{key}.lock"
+    # plugin-runtime/ is registered as regenerable: storage migration leaves
+    # it behind instead of copying it.
+    runtime_root = get_config_manager().app_docs_dir / "plugin-runtime"
+    return runtime_root / "project-operations" / f"{key}.lock"
 
 
 def _drop_inherited_project_leases() -> None:
@@ -217,10 +220,14 @@ class project_operation:
 
 
 def cli_child_env() -> dict[str, str]:
+    # Inherited GIT_DIR / GIT_WORK_TREE etc. would point the CLI's git calls
+    # (and uv / pip resolving git+ requirements) at another repository.
+    from plugin.neko_plugin_cli.git_env import git_env
+
     # UTF-8 mode also makes the CLI decode its own git/ruff/pytest pipes as
     # UTF-8, whatever the Windows code page is.
     return {
-        **os.environ,
+        **git_env(),
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",

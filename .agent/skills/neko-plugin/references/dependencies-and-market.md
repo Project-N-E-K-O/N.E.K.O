@@ -19,17 +19,22 @@ code disagree, the code wins.
   Do not lean on a package that merely happens to be importable from the host:
   undeclared, it is not shipped with the plugin and can disappear with any
   N.E.K.O update.
-- **The host never installs anything.** `vendor/` is filled by
-  `neko-plugin sync <plugin> --clean`, which removes the old `vendor/` first
-  so dropped dependencies do not linger. Run it after every dependency change,
-  then reload the plugin. Without a source checkout there is no `sync`: tell
-  the user, and either drop the dependency or move to a checkout.
+- **Starting a plugin installs nothing.** Start and reload only check
+  `vendor/`. It is filled by an explicit sync, either
+  `neko-plugin sync <plugin> --clean` (removes the old `vendor/` first so
+  dropped dependencies do not linger) or the plugin studio's **Dependencies**
+  tab, which runs the same sync
+  ([vendor_sync.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/neko_plugin_cli/core/vendor_sync.py))
+  for a registered project, in packaged N.E.K.O builds too. Sync after every
+  dependency change, then reload the plugin.
 - **Pure Python only.** The Market release workflow rebuilds `vendor/` with
   `sync --clean` on a Linux runner
   ([plugin-market-release.yml](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/.github/workflows/plugin-market-release.yml)),
   so a compiled wheel would ship Linux binaries to Windows and macOS users
-  (and binary files are on the Market's reject list below). Prefer a pure-Python library, or
-  call a service over HTTP.
+  (and binary files are on the Market's reject list below). A local sync,
+  from the CLI or the studio, installs wheels for your own platform, so a
+  compiled dependency can work locally and still break for others. Prefer a
+  pure-Python library, or call a service over HTTP.
 - **Do not commit `vendor/`.** The generated `.gitignore` excludes it; the
   release workflow and `precheck` regenerate it, so a committed copy only adds
   stale, possibly binary files.

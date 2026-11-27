@@ -1,5 +1,7 @@
 # Workbench Python dependencies
 
+> This page is maintained in English only for now.
+
 The authoring workbench's **Dependencies** tab edits the registered project's
 `pyproject.toml` and manages its own `vendor/`. The plugin keeps using the host
 runtime. Source installations and packaged applications use the same dependency
@@ -30,10 +32,23 @@ until the task has reconciled the resulting vendor and plugin metadata. Starting
 reloading, building, publishing, prechecking and removing that project respect the
 reservation. Other projects can continue to operate.
 
-Project-operation locks do not track live plugin hosts in other server instances
-or recover a moved source from a stale path. When sharing the same source across
-instances, stop every host using it and keep them stopped until synchronization
-finishes. Cross-instance host-lifetime coordination is outside this feature.
+The project reservation is narrower than "this source directory":
+
+- It is keyed by the workbench project ID, which a data root assigns when the
+  project is registered. Another N.E.K.O instance with a different data root
+  (an isolated instance, or another OS user) that registers the same source
+  directory holds a different reservation. Builds, publishes and syncs of that
+  source in the two instances do not exclude each other.
+- Two synchronizations of the same directory by one OS user are still kept
+  apart by the dependency lock, which the CLI and the workbench both take on the
+  plugin directory's identity. That lock lives in a per-user directory, so
+  syncs started by different OS users are not serialized.
+- The reservation does not see plugin hosts started by another instance, and it
+  does not follow a source moved away from its registered path.
+
+When sharing a source across instances, stop every host using it in every
+instance and keep them stopped until synchronization finishes. Cross-instance
+host-lifetime coordination is outside this feature.
 
 ## Inspection and checks
 
@@ -74,6 +89,12 @@ licenses. Python preparation uses `--no-bin --no-registry`, so it
 does not register a system interpreter. Packaged sync checks a system uv against
 the tested minimum version and prepares the pinned version when it is too old.
 Opening the tab performs no downloads or version-probe subprocesses.
+The interpreter request names the exact patch release the application runs on,
+and each uv release carries its own list of downloadable Pythons. The desktop
+build therefore checks (in `scripts/check_nuitka_dist.py`) that the pinned uv
+can download the build's Python patch release. Both tools live under
+`plugin-runtime/` in the application data root, which storage migration treats
+as regenerable.
 
 The installer bootstrap trusts PyPI HTTPS metadata and artifacts served from
 `files.pythonhosted.org`. The digest checks downloaded bytes against that

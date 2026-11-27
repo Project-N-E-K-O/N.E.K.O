@@ -10,7 +10,10 @@
 - 市场里已发布的插件页面不带 token，所以「插件页面路由强制 token」不是可以直接做的安全加固。更严的公网部署用 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`。
 - 只靠 hostname 兜底、又没有 `Sec-Fetch-Site` 头的请求是放行的。自动评审对这一点会给出互相矛盾的意见（一边要求缺头拒绝，一边要求别拒合法插件），按文档里的现行规则回复，不要来回改。
 
-## 2. `neko-plugin` 依赖同步（`plugin/neko_plugin_cli/commands/deps_cmd.py`）
+## 2. `neko-plugin` 依赖同步（`plugin/neko_plugin_cli/core/vendor_sync.py`）
+
+- 同步实现在 `core/vendor_sync.py`，CLI 的 `commands/deps_cmd.py` 只是薄适配层；插件制作工作台的「依赖」页（`plugin/server/application/plugin_project_python_packages.py`）调用同一份实现，打包版也能同步，工具由 `plugin/server/infrastructure/python_package_tools.py` 按需准备。
+- 识别链接 / junction 的 `is_link` 在 `core/fs_links.py`，`vendor_sync`、`validate_cmd`、`templates/agent_kit.py` 共用这一份。
 
 - **本项目强制用 uv。** 往 `vendor/` 装依赖一律是 `uv pip install --python <目标解释器> --target <目录>`。这是 uv 自己的安装器，不是 pip，目标解释器里不需要有 pip，读的是 uv 的配置。
 - 只有找不到 uv（先看 `UV` 环境变量，再看 PATH）时才回退到目标解释器的 `python -m pip`，并在前面打中英日三语的醒目警告，所有输出之后再提醒一次。uv 安装失败**不**回退 pip。

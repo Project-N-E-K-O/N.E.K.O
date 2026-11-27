@@ -30,6 +30,11 @@ packaging into Electron.
 - Built-in plugins that lost their ``plugin.toml`` (means the plugin scanner
   will produce zero plugins at runtime).
 
+- A pinned dependency-installer uv that cannot download the CPython patch
+  release this build is frozen from (packaged dependency sync would fail).
+  This is the one check that needs the network; it is skipped when uv is
+  not on PATH.
+
 ## What it does NOT do
 
 - Does not launch the exe. That's expensive, platform-specific, and would
@@ -262,6 +267,72 @@ def _check_plugin_stage(dist_root: Path, stage_root: Path) -> list[str]:
     return issues
 
 
+def _check_package_tools_python() -> list[str]:
+    """The pinned uv must be able to download this build's exact CPython.
+
+    A packaged server prepares dependency installs with a pinned uv and the
+    CPython patch release it runs on (see
+    plugin/server/infrastructure/python_package_tools.py). uv carries its list
+    of downloadable Pythons inside each release, while the build's Python patch
+    floats with setup-python; when the build picks up a patch the pinned uv does
+    not know, every packaged dependency sync would fail. Run with the build
+    interpreter, which is the one the dist is frozen from.
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    repository_root = Path(__file__).resolve().parents[1]
+    if str(repository_root) not in sys.path:
+        sys.path.insert(0, str(repository_root))
+    from plugin.server.infrastructure.python_package_tools import (
+        packaged_python_request,
+        pinned_uv_version,
+    )
+
+    uv = shutil.which("uv")
+    if uv is None:
+        print("[WARN] uv not found on PATH; skipped the dependency-installer Python check", file=sys.stderr)
+        return []
+    version = pinned_uv_version()
+    request = packaged_python_request()
+    env = dict(os.environ)
+    # Read the list built into the pinned release, as the packaged server does.
+    for name in ("UV_PYTHON_DOWNLOADS", "UV_PYTHON_DOWNLOADS_JSON_URL", "UV_OFFLINE"):
+        env.pop(name, None)
+    command = [
+        uv, "tool", "run", "--no-config", "--from", f"uv=={version}", "uv",
+        "python", "list", request, "--only-downloads", "--output-format", "json", "--no-config",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [f"could not run uv {version} to list Python downloads: {exc}"]
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
+        return [f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"]
+    try:
+        downloads = json.loads(result.stdout)
+    except ValueError:
+        downloads = None
+    if not isinstance(downloads, list):
+        return [f"uv {version} printed an unreadable Python download list"]
+    current = ".".join(str(part) for part in sys.version_info[:3])
+    if not any(
+        isinstance(item, dict)
+        and item.get("implementation") == "cpython"
+        and item.get("version") == current
+        for item in downloads
+    ):
+        return [
+            f"pinned uv {version} cannot download {request}; packaged dependency sync "
+            "would fail. Raise _UV_VERSION in python_package_tools.py to a uv release "
+            "that lists this Python patch (or pin the build's Python patch)."
+        ]
+    return []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument(
@@ -294,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     issues.extend(_check_plugin_tomls(dist_root))
     if args.plugin_stage is not None:
         issues.extend(_check_plugin_stage(dist_root, args.plugin_stage.resolve()))
+    issues.extend(_check_package_tools_python())
 
     if issues:
         print(f"[FAIL] Nuitka dist verification failed for {dist_root}:", file=sys.stderr)
