@@ -111,6 +111,7 @@ _HANDLER_MAX_CHARS = 128
 _POOL_MODULE = "concurrent.futures.thread"
 # A pool worker's own frames: below them is the job's boundary.
 _POOL_FRAMES = frozenset({"run", "_worker"})
+_BOUNDARY_NAMES = _POOL_FRAMES | {"_run"}
 TARGET_MAX_CHARS = 200
 _PATH_DIR_DEPTH = 3
 
@@ -759,11 +760,13 @@ class SystemAuditor:
             self._frame_kinds[filename] = kind
         return kind
 
-    def _attribution(self) -> tuple[int | None, tuple[int | None, str | None] | None]:
+    def _attribution(self, *, starting: bool = False) -> tuple[int | None, tuple[int | None, str | None] | None]:
         """``(kind, origin)``: kind is ``_PLUGIN``, ``_HOST``, or None when
         neither is on the stack; then origin is who started this thread or
         submitted this pool job (``(kind, handler)``, see ``note_origin``),
-        None when that is not known."""
+        None when that is not known. ``starting``: walking for who starts a
+        thread or submits a job, where host pass-through frames (``pass_through``)
+        are transparent."""
         frame = sys._getframe(1)
         own = globals()
         while frame is not None and frame.f_globals is own:
@@ -773,7 +776,8 @@ class SystemAuditor:
                 # The bottom of this thread's stack: who started the thread.
                 return None, self._thread_origin()
             code = frame.f_code
-            module = frame.f_globals.get("__name__")
+            # Module looked up only for the few boundary function names.
+            module = frame.f_globals.get("__name__") if code.co_name in _BOUNDARY_NAMES else None
             if code.co_name == "_run" and module == "asyncio.events":
                 # The event loop running a task or callback: whatever lies
                 # below is whoever started the loop (the host runner), not
@@ -785,6 +789,9 @@ class SystemAuditor:
                 # (started by an earlier submitter, maybe someone else).
                 item = frame.f_locals.get("self") if code.co_name == "run" else None
                 return None, getattr(item, _ORIGIN_ATTR, None)
+            if starting and code in _PASS_THROUGH:
+                frame = frame.f_back
+                continue
             kind = self._frame_kind(frame)
             if kind != _OTHER:
                 return kind, None
@@ -815,7 +822,7 @@ class SystemAuditor:
         if not self._active:
             return
         try:
-            kind, inherited = self._attribution()
+            kind, inherited = self._attribution(starting=True)
             if kind == _PLUGIN:
                 origin = (_PLUGIN, self._handler_label())
             elif kind == _HOST:
@@ -953,6 +960,16 @@ _HANDLED_EVENTS = frozenset({
 })
 
 _installed: SystemAuditor | None = None
+# Code of host functions that only pass a job on (e.g. the runtime's default
+# executor's submit): who starts a thread or submits a job is looked for past them.
+_PASS_THROUGH: set = set()
+
+
+def pass_through(function):
+    """Mark host ``function`` as passing jobs on for its caller (decorator):
+    a pool job it submits counts as its caller's, not the host's."""
+    _PASS_THROUGH.add(function.__code__)
+    return function
 
 
 def _note_origin(target: object) -> None:
@@ -1041,6 +1058,7 @@ __all__ = [
     "install",
     "installed",
     "interpreter_directories",
+    "pass_through",
     "document_name",
     "program_name",
     "redact_path",

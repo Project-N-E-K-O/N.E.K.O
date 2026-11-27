@@ -88,6 +88,27 @@ HOST_CODE = '''
 def call(hook, event, args):
     hook(event, args)
 
+def pass_through_executor(system_audit):
+    # Like the runtime's default executor (plugin.core.host): a host submit
+    # that only passes the job on.
+    import concurrent.futures
+
+    class Forwarding(concurrent.futures.ThreadPoolExecutor):
+        @system_audit.pass_through
+        def submit(self, fn, /, *args, **kwargs):
+            return super().submit(fn, *args, **kwargs)
+
+    return Forwarding(max_workers=1)
+
+def plain_executor():
+    import concurrent.futures
+
+    class Plain(concurrent.futures.ThreadPoolExecutor):
+        def submit(self, fn, /, *args, **kwargs):
+            return super().submit(fn, *args, **kwargs)
+
+    return Plain(max_workers=1)
+
 def start(target, *args):
     import threading
     worker = threading.Thread(target=target, args=args)
@@ -763,6 +784,24 @@ def test_a_pool_job_is_whoever_submitted_it(threads):
     assert second["flags"] == ["unattributed"] and third["flags"] == ["unattributed"]
 
 
+def test_a_host_pass_through_executor_keeps_the_submitter(threads):
+    env = threads
+    hook = env.auditor.hook
+    with env.host.pass_through_executor(system_audit) as executor:
+        env.plugin.submit(executor, env.other.call, hook, "open", (str(env.outside / "a.txt"), "r", 0))
+        env.host.submit(executor, env.other.call, hook, "open", (str(env.outside / "b.md"), "r", 0))
+    # Without the mark, the host's submit is who submitted it.
+    with env.host.plain_executor() as executor:
+        env.plugin.submit(executor, env.other.call, hook, "open", (str(env.outside / "c.csv"), "r", 0))
+    assert [record["flags"] for record in env.records()] == [["plugin_thread"], ["unattributed"], ["unattributed"]]
+
+
+def test_the_runtime_default_executor_passes_jobs_through():
+    from plugin.core import host
+
+    assert host._ContextCopyingThreadPoolExecutor.submit.__code__ in system_audit._PASS_THROUGH
+
+
 def test_asyncio_to_thread_from_plugin_code_is_the_plugins(threads):
     import asyncio
 
@@ -1048,6 +1087,20 @@ elif mode == "threads":
     # A thread host code starts.
     exec(compile("import threading\nt = threading.Thread(target=open, args=(p, 'w'))\nt.start(); t.join()",
                  "<string>", "exec"), {{"__name__": "plugin.fake_host", "p": os.path.join(outside, "h.host")}})
+    # The runtime's loop: a host default executor that passes jobs through.
+    import asyncio, concurrent.futures
+    namespace = {{"__name__": "plugin.fake_runtime", "concurrent": concurrent, "system_audit": system_audit}}
+    exec(compile(
+        "class Forwarding(concurrent.futures.ThreadPoolExecutor):\n"
+        "    @system_audit.pass_through\n"
+        "    def submit(self, fn, /, *args, **kwargs):\n"
+        "        return super().submit(fn, *args, **kwargs)\n",
+        "<string>", "exec"), namespace)
+    async def plugin_main():
+        asyncio.get_running_loop().set_default_executor(namespace["Forwarding"]())
+        await asyncio.to_thread(open, os.path.join(outside, "a.tothread"), "w")
+        await asyncio.get_running_loop().run_in_executor(None, open, os.path.join(outside, "r.executor"), "w")
+    asyncio.run(plugin_main())
 elif mode == "refuse":
     try:
         open(os.path.join(outside, "x.txt"), "w")
@@ -1120,7 +1173,8 @@ def test_real_hook_attributes_threads_the_plugin_starts(tmp_path):
     result = _run_driver(tmp_path, "threads")
     assert result["errors"] == 0
     flags = {r["target"].rsplit(".", 1)[-1]: r["flags"] for r in result["records"] if r["event"] == "open"}
-    assert flags == {"thr": ["plugin_thread"], "pool": ["plugin_thread"], "host": ["unattributed"]}
+    assert flags == {"thr": ["plugin_thread"], "pool": ["plugin_thread"], "host": ["unattributed"],
+                     "tothread": ["plugin_thread"], "executor": ["plugin_thread"]}
 
 
 def test_real_hook_refuses_when_switched_on(tmp_path):
