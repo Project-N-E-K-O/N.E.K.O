@@ -277,6 +277,7 @@ def _plugin_tool_check_skipped(reason: str) -> list[str]:
 def _pypi_lacks_uv_release(version: str) -> bool:
     """True only when PyPI answers that this uv release does not exist."""
     import http.client
+    import json
     import urllib.error
     import urllib.request
 
@@ -284,7 +285,15 @@ def _pypi_lacks_uv_release(version: str) -> bool:
         with urllib.request.urlopen(f"https://pypi.org/pypi/uv/{version}/json", timeout=30):
             return False
     except urllib.error.HTTPError as exc:
-        return exc.code == 404
+        with exc:
+            if exc.code != 404:
+                return False
+            # A proxy's own 404 page is not PyPI saying the release is missing.
+            try:
+                body = json.loads(exc.read(4096))
+            except (OSError, ValueError, http.client.HTTPException):
+                return False
+            return isinstance(body, dict) and body.get("message") == "Not Found"
     except (OSError, ValueError, http.client.HTTPException):
         return False  # Unreachable: the caller only warns.
 

@@ -1061,11 +1061,18 @@ def test_tool_env_drops_variables_that_redirect_python_or_its_environment(root):
         "PythonPath": "/elsewhere/mixed", "uv_index_url": "https://mirror.invalid",
         # Settings that only make Python stricter are kept.
         "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
+        # Forced values replace any spelling of the same name.
+        "PythonUtf8": "0", "pythonioencoding": "latin-1",
     }
     env = module.tool_runtime_env(base)
     assert sorted(name for name in env if name in base) == ["PATH", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"]
     assert env["PYTHONNOUSERSITE"] == "1"
-    assert module.tool_runtime_env({"PATH": "/bin"})["PYTHONNOUSERSITE"] == "1"
+    assert [name for name in env if name.upper() == "PYTHONUTF8"] == ["PYTHONUTF8"]
+    assert [name for name in env if name.upper() == "PYTHONIOENCODING"] == ["PYTHONIOENCODING"]
+    assert module.tool_runtime_env({"PythonNoUserSite": "0"}) == {
+        "UV_PYTHON_INSTALL_DIR": str(root / "python"), "PYTHONNOUSERSITE": "1",
+        "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+    }
     assert env["UV_PYTHON_INSTALL_DIR"] == str(root / "python")
 
 
@@ -1085,6 +1092,20 @@ def test_no_pinned_wheel_for_this_platform_falls_back_to_a_system_uv(root, monke
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: [])
     (root / "python.json").unlink()
     _expect_failure(FakeUv(root), "unsupported_platform")
+    # As final as an unsupported OS: not restarted in the background.
+    status = module.read_tool_runtime_status()
+    assert (status.state, status.error_code) == ("unsupported", "unsupported_platform")
+    assert module.start_tool_runtime_preparation().state == "unsupported"
+    assert module._background is None
+
+
+def test_falling_back_to_a_system_uv_reports_its_own_phase(root, monkeypatch):
+    FakePyPI(fail=True).install(monkeypatch)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    events: list = []
+    _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"}), progress=events.append)
+    phases = [event.phase for event in events]
+    assert phases.index("downloading_uv") < phases.index("checking_uv") < phases.index("installing_python")
 
 
 def test_lock_wait_timeout_behind_another_process_keeps_the_previous_state(root, monkeypatch):
@@ -1094,3 +1115,14 @@ def test_lock_wait_timeout_behind_another_process_keeps_the_previous_state(root,
         _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
     status = module.read_tool_runtime_status()
     assert (status.state, status.error_code) == ("failed", "checksum_mismatch")
+
+
+def test_background_lock_wait_timeout_behind_another_process_is_reported(root, monkeypatch):
+    # The background preparation has no caller to hand the timeout to.
+    FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+        module.start_tool_runtime_preparation(timeout=0.3)
+        module._background[0].join(10)
+    status = module.read_tool_runtime_status()
+    assert (status.state, status.error_code) == ("failed", "timeout")

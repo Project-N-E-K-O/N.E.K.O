@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -526,7 +527,7 @@ def test_dist_check_fails_when_the_pinned_uv_is_not_on_pypi(monkeypatch: pytest.
     import urllib.request
 
     def urlopen(url, **_kwargs):
-        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, io.BytesIO(b'{"message": "Not Found"}'))
 
     monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
     monkeypatch.setattr(
@@ -537,7 +538,7 @@ def test_dist_check_fails_when_the_pinned_uv_is_not_on_pypi(monkeypatch: pytest.
     assert len(issues) == 1 and "not published on PyPI" in issues[0]
 
 
-@pytest.mark.parametrize("failure", ["unreachable", "server_error"])
+@pytest.mark.parametrize("failure", ["unreachable", "server_error", "proxy_404", "empty_404"])
 def test_dist_check_warns_when_pypi_cannot_answer(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     import urllib.error
     import urllib.request
@@ -545,6 +546,11 @@ def test_dist_check_warns_when_pypi_cannot_answer(monkeypatch: pytest.MonkeyPatc
     def urlopen(url, **_kwargs):
         if failure == "unreachable":
             raise urllib.error.URLError("network unreachable")
+        if failure == "proxy_404":
+            # A proxy in front of the build machine answering with its own page.
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, io.BytesIO(b"<html>Not Found</html>"))
+        if failure == "empty_404":
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
         raise urllib.error.HTTPError(url, 503, "Unavailable", None, None)
 
     monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)

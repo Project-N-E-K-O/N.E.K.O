@@ -91,7 +91,7 @@ ErrorCode = Literal[
     "busy",
     "internal_error",
 ]
-ProgressPhase = Literal["waiting", "downloading_uv", "installing_python", "checking_python"]
+ProgressPhase = Literal["waiting", "downloading_uv", "checking_uv", "installing_python", "checking_python"]
 
 
 class ToolRuntimeError(RuntimeError):
@@ -252,6 +252,10 @@ def _with_utf8(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+# Set below; any spelling of them in the base is dropped so that one value remains.
+_FORCED_VARS = frozenset({"PYTHONNOUSERSITE", "PYTHONUTF8", "PYTHONIOENCODING"})
+
+
 def tool_runtime_env(base: Mapping[str, str] | None = None, *, root: Path | None = None) -> dict[str, str]:
     """Environment for packaged tool child processes.
 
@@ -270,7 +274,7 @@ def tool_runtime_env(base: Mapping[str, str] | None = None, *, root: Path | None
     env: dict[str, str] = {}
     for name, value in source.items():
         upper = name.upper()
-        if not upper.startswith("UV_") and upper not in _INHERITED_PYTHON_VARS:
+        if not upper.startswith("UV_") and upper not in _INHERITED_PYTHON_VARS and upper not in _FORCED_VARS:
             env[name] = value
     env["UV_PYTHON_INSTALL_DIR"] = str(python_install_dir() if root is None else root / "python")
     # Nor packages from the user's own site-packages (~/.local and the like).
@@ -356,6 +360,11 @@ def _background_alive() -> bool:
     return _background is not None and _background[0].is_alive()
 
 
+def _on_background_thread() -> bool:
+    background = _background
+    return background is not None and background[0] is threading.current_thread()
+
+
 def read_tool_runtime_status() -> RuntimeStatus:
     """Current state; no child process, network access or directory creation."""
     if not _is_packaged():
@@ -378,6 +387,13 @@ def read_tool_runtime_status() -> RuntimeStatus:
     ready = _prepared_status()
     if ready is not None:
         return ready
+    if error is not None and error.code == "unsupported_platform":
+        # No pinned uv for this platform and no compatible one installed: as
+        # final as an unsupported OS, so it is not started again by itself
+        # (a foreground preparation still tries, e.g. after a uv was installed).
+        return RuntimeStatus(
+            "unsupported", True, PINNED_UV_VERSION, error_code=error.code, error_detail=error.detail,
+        )
     if error is not None:
         return RuntimeStatus(
             "failed", True, PINNED_UV_VERSION, error_code=error.code, error_detail=error.detail,
@@ -746,6 +762,7 @@ def _ensure_uv(
     cancel: threading.Event, deadline: float, *, prefer_system_uv: bool,
 ) -> tuple[str, str]:
     if prefer_system_uv:
+        report(ProgressEvent("checking_uv"))
         system = _compatible_system_uv(run_command, env, cancel, deadline)
         if system is not None:
             return system
@@ -762,6 +779,7 @@ def _ensure_uv(
         # a checksum mismatch is not retried with whatever else is installed.
         if exc.code not in ("download_failed", "unsupported_platform") or prefer_system_uv:
             raise
+        report(ProgressEvent("checking_uv"))
         system = _compatible_system_uv(run_command, env, cancel, deadline)
         if system is None:
             raise
@@ -777,9 +795,10 @@ def _acquire_file_lock(lock: portalocker.Lock, cancel: threading.Event, deadline
         try:
             _check(cancel, deadline)
         except ToolRuntimeError as exc:
-            if held_elsewhere and exc.code == "timeout":
-                # The other process may well finish; like busy, this says
-                # nothing about the tools themselves.
+            if held_elsewhere and exc.code == "timeout" and not _on_background_thread():
+                # A foreground caller gets the error itself, and the other
+                # process may well finish; like busy, this says nothing about
+                # the tools. The background preparation has no caller to tell.
                 exc.reportable = False
             raise
         try:
@@ -861,7 +880,7 @@ def _record_unstarted(error: ToolRuntimeError) -> None:
     if error.code == "busy":
         return
     with _state_lock:
-        is_background = _background is not None and _background[0] is threading.current_thread()
+        is_background = _on_background_thread()
         if error.code == "timeout" and not is_background:
             return
         if _flight.locked() or (not is_background and _background_alive()):
