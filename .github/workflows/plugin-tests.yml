@@ -56,7 +56,8 @@ jobs:
   plugin-pytest-linux:
     name: Plugin pytest (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full suite takes about 4 min on ubuntu-latest with -n auto.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
