@@ -33,6 +33,98 @@ Memory Server /internal/knowledge/*
    └─ shared EmbeddingService                      (never reads or writes memory data)
 ```
 
+## Module ownership
+
+`KnowledgeService` is the runtime and transaction coordinator, not a second
+store. Its public API remains the entry point used by the Memory Server router.
+The workflows below are composed once per service and keep an explicit reference
+to that owner; they do not clone its registry, model, locks, queues or snapshots.
+
+| Module | Responsibility | Ownership boundary |
+| --- | --- | --- |
+| `knowledge/service.py` | Startup/recovery, source/import/export admission, removal, policy writes, registry/SQLite commit and rollback, management reads | Owns the shared write lock, registry and vector publication, model state, worker pools, query embedding admission, query leases and background task lifetimes |
+| `knowledge/querying.py` — `QueryEngine` | Tool lookup/sample and passive turn context, candidate filtering, fusion and rendering | Uses the service's query lease and current snapshots; thresholds and query budgets live here |
+| `knowledge/indexing.py` — `VectorIndexer` | Background batches and duty pauses, retained archive seeds and vector refresh orchestration | Scheduling constants live here; the service publishes matrix/key pairs, registers the single refresh task, validates model compatibility and coordinates transactional replanning/capacity |
+| `knowledge/exports.py` — `ExportManager` | Export format and frozen job identity, snapshot validation, publication, download and explicit export deletion | Submits jobs to runtime-owned admission/queueing; publication keeps the original cancellation gate, persistence and reference accounting |
+| `knowledge/jobs.py` | Shared job record, states and detached-task result consumption | No scheduler or persistent state; `ImportJob` remains importable from the service |
+| `knowledge/pack_files.py` | Bounded canonical-pack reads, file identity and verified history copies | Callers retain path selection, locking and retention decisions |
+| `knowledge/importing/commit_policy.py` | Pure construction of the next pack registry record, including disclosure defaults and retained user choices | Receives the checked pack/job, previous record and time; performs no IO, admission or publication |
+
+Import, source removal and startup recovery deliberately remain together where
+they coordinate one registry/SQLite transaction. Splitting these writes into
+independent managers would obscure arrival ordering, shared capacity and rollback.
+The query thread lease and detached writer tracking also stay with the runtime
+so moving a workflow cannot let shutdown abandon its real worker thread.
+
+Within `_commit_job`, source consent and capacity rechecks have named service
+methods, called synchronously inside the original locked worker. Capacity checks
+keep their refusal order and consult the service's live limits; disk accounting
+is not evaluated before simpler limits pass. The record policy receives
+`utc_now()` from the service at its original position. Canonical file/history
+writes, SQLite replacement, registry persistence, the cancellation gate and
+rollback remain visible together in the commit orchestrator.
+
+Queries capture the matrix and calibration key as one non-yielding pair through
+the runtime, then apply the existing resource compatibility check. They request
+embedding work only after candidate eligibility; the runtime owns the bounded
+task set and result/discard callbacks, including embeddings that outlive a query
+budget. Indexing asks the runtime to publish a matrix and start a refresh, so it
+cannot independently replace snapshot identity or bypass shutdown's task handle.
+Ordinary detached export/cleanup owners share `_own_background_task`; cancelled
+writes and import-admission callbacks retain their special lock/arrival ordering.
+
+`KnowledgeManager.vue` keeps overview/job request epochs, cross-tab mutation
+refreshes, job acknowledgement and the single polling lifecycle. Independent
+request state lives in two composables:
+
+- `useKnowledgeCatalog.ts`: filter/page refs, entry reads and details, pending
+  writes, selected-entry reconciliation and the two latest-request gates. The
+  page supplies error presentation and shared refresh callbacks.
+- `useKnowledgeDiagnostics.ts`: query/batch snapshot, loading and its gate.
+  The page invalidates a read when leaving the tab and disposes it on unmount.
+
+Both construct local refs only; they start no timers, requests or lifecycle
+hooks on construction. The page calls their `dispose` methods in its existing
+unmount sequence, after retiring the overview and jobs. Catalog writes still
+invalidate stale reads before reloading the current page and refreshing shared
+overview state. The polling decision stays at the page level.
+
+Its presentation components in
+`frontend/plugin-manager/src/components/knowledge/` own only their region:
+
+- `KnowledgeOverview.vue`: service status, global switch intent and progress.
+- `KnowledgeCatalog.vue`: filters, entry rows and pagination intent.
+- `KnowledgeEntryDrawer.vue`: selected entry details and term groups.
+- `KnowledgePacks.vue`: pack policy controls, import input and task actions.
+- `KnowledgeDiagnostics.vue`: local miss filtering, query outcomes and batches.
+
+They receive the page's current snapshots through props and emit user actions;
+they do not start extra polling or independently fetch mutable pack state.
+Existing `KnowledgePackDrawer.vue` and `KnowledgeSourceImport.vue` retain source
+history and preview flows. Region styles live with their components; shared
+`knowledgeTables.css` is imported as scoped styles by the three table regions.
+The catalog and writes share `knowledgeEntryKey` in `utils/knowledgeDisplay.ts`.
+
+Regression modules under `tests/unit/test_knowledge_*.py` are named for protected
+behavior (for example source ordering/admission, index refusal snapshots and
+export vector provenance), rather than review rounds. The broad subsystem and
+unified-core suites are split into focused behavior modules for query budgets,
+matching, snapshot isolation, import capacity/rollback, removal ordering,
+cancellation/shutdown, startup recovery, source lifecycle and export contracts.
+Shared helpers are separate from pytest's collected modules:
+
+- `tests/knowledge_fixtures.py`: fresh sample packs, fake encoders, explicit
+  index timing fixtures, service startup and observable task completion helpers.
+- `tests/knowledge_archive_fixtures.py`: independently written wire archives,
+  certified synthetic resource specifications and vector installation helpers.
+- `tests/knowledge_helpers.py`: real indexer suspension and lock-queue observation.
+
+These helper modules do not import collected test modules or own global fixtures.
+Each consumer explicitly imports its fixture and owns isolated files and service
+teardown. Specialized samples stay with their behavior suite. Fault injection
+follows the module that performs the work; public HTTP and service contracts stay
+unchanged.
+
 ## Storage
 
 - `registry.json` — installed packs, per-pack policy (automatic context, local vectors, material-type override), disabled entries, and the global switch. User data.
@@ -45,11 +137,16 @@ Storage migration moves the whole `knowledge/` directory, database included. Mig
 
 A schema-v1 pack is UTF-8 JSON with exactly `schema_version`, `pack_id`, `material_type` (`knowledge` or `corpus`), `source` (`name`, `homepage`, `license`) and `entries`. Each entry has at most `title`, `terms` (`alias`, `recognition`), `tags`, `summary` and `content`. System-derived data (chunks, hashes, vectors, model ids) is rejected.
 
-v1 ships raw text only. Vectors are computed locally by the shared `EmbeddingService`, whose model is chosen per hardware tier and can change; pre-built vectors would be tied to one model and silently go stale. They can come back once the pack format can declare its model and fall back on a mismatch.
+Schema-v1 JSON remains the canonical text format. The current product archive is
+a v2 ZIP with declared model/resource identity and reusable vectors; incompatible
+vectors fall back to local indexing. Source import, history, export and sharing
+contracts are specified in [the unified knowledge design](../design/personal-knowledge-base-and-pack-sharing.md).
 
 Limits: 10 MiB per pack file, 5,000 entries and 10,000 chunks per pack, 20,000 entries, 20,000 chunks and 64 MiB of pack files in total.
 
-Defaults for a newly imported pack: automatic context **off**, local vectors **on**. The global switch defaults to on.
+Local imports and replacement bodies default to retrieval **off**, automatic
+context **off**, local vectors **on**. Market subscriptions keep their existing
+installation policy. The global switch defaults to on.
 
 ## Import, indexing and retrieval
 
