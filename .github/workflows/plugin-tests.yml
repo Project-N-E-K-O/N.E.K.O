@@ -15,9 +15,9 @@ name: Plugin Tests
 #
 # The whole plugin/tests directory runs on both Linux and Windows. Each OS
 # executes cases the other one skips: POSIX fork/exec, symlink, file-mode and
-# audit cases only run on Linux; win32 cases (window inventory, DPI, WinError
-# handling) only run on Windows. Windows-only cases skip on Linux instead of
-# failing, so no file list is kept here.
+# audit cases only run on Linux; directory junction, Windows shell API and
+# msvcrt lock-retry cases only run on Windows. Windows-only cases skip on Linux
+# instead of failing, so no file list is kept here.
 on:
   push:
     branches: [main]
@@ -78,8 +78,8 @@ jobs:
 
   plugin-pytest:
     name: Plugin pytest (Windows)
-    # Windows is the product's primary desktop platform, and win32 code paths
-    # (GetForegroundWindow, window inventory, DPI) only execute here; the
+    # Windows is the product's primary desktop platform. Directory junction,
+    # Windows shell API and msvcrt lock-retry cases only execute here; the
     # Linux job skips them. Native-extra cohorts that are genuinely optional
     # (dxcam etc.) self-skip when not installed.
     runs-on: windows-latest
