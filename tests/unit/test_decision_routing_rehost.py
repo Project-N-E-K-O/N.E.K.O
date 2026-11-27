@@ -436,3 +436,78 @@ def test_openai_recognition_model_is_gpt_6_luna_with_thinking_off():
     assert DEFAULT_ASSIST_API_PROFILES["openai"]["RECOGNITION_MODEL"] == "gpt-6-luna"
     assert get_config(force_reload=True)["assist_api_providers"]["openai"]["recognition_model"] == "gpt-6-luna"
     assert get_extra_body("gpt-6-luna", "https://api.openai.com/v1") == {"reasoning_effort": "none"}
+
+
+# ---------------------------------------------------------------------------
+# ask_site_questions: one entry point for the sites
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ask_site_questions_native_never_uses_the_clients_chat_fallback():
+    from utils.decision_client import DecisionAnswer, DecisionClient, DecisionResponse, ask_site_questions
+
+    qs = {"kind": _question(2)}
+    resp = DecisionResponse(
+        answers={"kind": DecisionAnswer(question_type="choice", value="opt1", probabilities={"opt1": 0.9, "opt0": 0.1})},
+        model="decision-model", protocol="systemone",
+    )
+    with patch.object(DecisionClient, "decide", AsyncMock(return_value=resp)) as decide:
+        got = await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions=qs, chat_config=DOUBAO_CHAT,
+                                       decision_config=BAILIAN, timeout=2.0, call_type="x")
+    assert got["kind"].value == "opt1"
+    kw = decide.await_args.kwargs
+    assert kw["allow_fallback"] is False and kw["respect_cooldown"] is True
+    assert kw["config"] is BAILIAN and kw["timeout"] == 2.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ["raise", "partial"])
+async def test_ask_site_questions_native_miss_means_the_sites_chat(outcome):
+    from utils.decision_client import DecisionAnswer, DecisionClient, DecisionResponse, ask_site_questions
+
+    qs = {"a": _question(2), "b": _question(2)}
+    if outcome == "raise":
+        mock = AsyncMock(side_effect=RuntimeError("cooldown"))
+    else:
+        mock = AsyncMock(return_value=DecisionResponse(
+            answers={"a": DecisionAnswer(question_type="choice", value="opt0")}, model="m", protocol="systemone"))
+    with patch.object(DecisionClient, "decide", mock):
+        assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions=qs, chat_config=None,
+                                        decision_config=BAILIAN) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ask_site_questions_rehosts_or_returns_none_by_route():
+    from utils.decision_client import ask_site_questions
+
+    qs = {"kind": _question(2)}
+    sentinel = {"kind": object()}
+    with patch("utils.decision_client.rehost.rehost_choices", AsyncMock(return_value=sentinel)) as rh:
+        assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions=qs, chat_config=DOUBAO_CHAT,
+                                        decision_config=CHAT_FALLBACK) is sentinel
+        # A site without a rehost reading keeps its chat on Doubao.
+        assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions=qs, chat_config=DOUBAO_CHAT,
+                                        decision_config=CHAT_FALLBACK, rehost=False) is None
+        # Class C.
+        assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions=qs,
+                                        chat_config=_chat("https://open.bigmodel.cn/api/paas/v4"),
+                                        decision_config=CHAT_FALLBACK) is None
+    assert rh.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ask_site_questions_reads_the_decision_slot_when_not_given():
+    from unittest.mock import MagicMock
+
+    from utils.decision_client import ask_site_questions
+
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(return_value=CHAT_FALLBACK)
+    assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions={"k": _question(2)},
+                                    chat_config=None, config_manager=cm) is None
+    cm.aget_model_api_config.assert_awaited_once_with("decision")

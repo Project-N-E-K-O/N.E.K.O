@@ -141,10 +141,85 @@ def decide_route(
     *,
     decision_config: Mapping[str, Any] | None,
     chat_config: Mapping[str, Any] | None,
+    rehost: bool = True,
 ) -> str:
-    """Route of *site*: native decision first, then rehost, else the site's chat."""
+    """Route of *site*: native decision first, then rehost, else the site's chat.
+
+    *rehost* is False for a site whose question has no rehost reading (the
+    owner kept those on the site's chat for vendors without native decisions).
+    """
     if native_decision_usable(decision_config, site):
         return ROUTE_NATIVE
-    if chat_logprobs_usable(chat_config):
+    if rehost and chat_logprobs_usable(chat_config):
         return ROUTE_REHOST
     return ROUTE_CHAT
+
+
+async def ask_site_questions(
+    site: str,
+    *,
+    state: Any,
+    questions: Mapping[str, Any],
+    chat_config: Mapping[str, Any] | None,
+    decision_config: Mapping[str, Any] | None = None,
+    config_manager: Any | None = None,
+    rehost: bool = True,
+    timeout: float = 8.0,
+    call_type: str | None = None,
+) -> dict[str, Any] | None:
+    """Ask *site*'s decision *questions* on the route its vendor allows.
+
+    Returns the answers keyed by question ID, or ``None`` when the site should
+    use its own chat prompt instead: the route is ``ROUTE_CHAT``, or the native
+    call / rehost missed (error, timeout, cooldown, empty answers). Native
+    answers must cover every question. The native call never uses the decision
+    client's own chat fallback.
+
+    *decision_config* is read from *config_manager* (or the global one) when
+    not given. A rehosted site's questions must all be ``ChoiceQuestion``.
+    """
+    from utils.logger_config import get_module_logger
+
+    log = get_module_logger(__name__)
+    if decision_config is None:
+        try:
+            cm = config_manager
+            if cm is None:
+                from utils.config_manager import get_config_manager
+
+                cm = get_config_manager()
+            decision_config = await cm.aget_model_api_config("decision")
+        except Exception as exc:
+            log.debug("[routing] %s: decision config unavailable (%s)", site, type(exc).__name__)
+            decision_config = None
+    route = decide_route(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost)
+    if route == ROUTE_CHAT:
+        return None
+    if route == ROUTE_REHOST:
+        from .rehost import rehost_choices
+
+        return await rehost_choices(
+            state=state, questions=questions, chat_config=chat_config or {},
+            timeout=timeout, call_type=call_type,
+        )
+    from .client import DecisionClient
+
+    try:
+        resp = await DecisionClient(config_manager=config_manager).decide(
+            state=state,
+            questions=questions,
+            config=decision_config,
+            timeout=timeout,
+            allow_fallback=False,
+            respect_cooldown=True,
+            call_type=call_type,
+        )
+    except Exception as exc:
+        log.info("[routing] %s: native decision failed (%s); using the site's chat prompt",
+                 site, type(exc).__name__)
+        return None
+    answers = dict(resp.answers or {})
+    if any(answers.get(qid) is None for qid in questions):
+        log.info("[routing] %s: native decision left questions unanswered; using the site's chat prompt", site)
+        return None
+    return answers
