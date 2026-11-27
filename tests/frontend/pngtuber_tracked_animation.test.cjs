@@ -35,7 +35,7 @@ function fixture({ fakeTimers = false } = {}) {
         set src(value) { this.url = value; images.push(this); }
     }
     const window = { location: { pathname: '/' }, lanlan_config: {model_type: 'pngtuber'}, dispatchEvent: () => {} };
-    vm.runInNewContext(source, { window, document: { getElementById: () => null, body: { classList: { contains: () => false } } },
+    vm.runInNewContext(source, { window, document: { getElementById: () => null, createElement: () => ({ getContext: () => context }), body: { classList: { contains: () => false } } },
         console, Image, Date: class extends Date { static now() { return 1_000_000 + clock; } }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
         requestAnimationFrame: fn => { callbacks.set(++next, fn); return next; },
         cancelAnimationFrame: id => callbacks.delete(id), setTimeout: timerSet, clearTimeout: timerClear });
@@ -2171,4 +2171,36 @@ test('manual drawing while reviewed playback is paused uses the frozen body phas
     assert.equal(p.lastIndex,0,'show or an explicit redraw cannot skip ahead while paused');
     m.resumeRendering();m.drawTrackedPlayback(context,1800);
     assert.equal(p.lastIndex,0,'resuming uses the same visible phase');
+});
+
+
+test('tracked legacy touch zoom releases a real drag slot but a stationary touch does not replace state', async () => {
+    const {manager:m,metadata}=speechEndFixture();
+    metadata.state_catalog[1].name='drag';m.setModelDraggingState=()=>{};
+    m.isDragCompletionCurrent=()=>true;m.snapModelIntoScreen=async()=>{};m.saveOrStageCurrentConfig=async()=>{};
+    m.showDragImage();assert.equal(m.layeredStateIndex,1);
+    assert.ok(m.layeredTransientSlots.some(slot=>slot.kind==='drag'));
+    m._touchZoomState={changed:true};await m.endTouchZoom();
+    assert.equal(m.layeredStateIndex,0);assert.equal(m.layeredTransientSlots.some(slot=>slot.kind==='drag'),false);
+    const playback=m._trackedPlayback,start=m.layeredAnimationStart;
+    m._touchZoomState={changed:false};await m.endTouchZoom();
+    assert.equal(m._trackedPlayback,playback);assert.equal(m.layeredAnimationStart,start);
+});
+
+test('crossfade snapshot reuses the displayed weights without advancing or requesting frames', () => {
+    const {manager:m,context}=fixture();const p=m._trackedPlayback;
+    p.data.loop={crossfade_ms:200};p.data.width=720;p.data.height=960;
+    m.layeredMetadata={canvas:{width:720,height:960}};
+    for(let i=0;i<p.data.frames.length;i++)p.cache.set(i,{index:i});
+    const samples=[];let alpha=1;
+    const ctx=new Proxy({}, {get:(o,k)=>k==='drawImage'?()=>samples.push(alpha):()=>{},set:(o,k,v)=>{if(k==='globalAlpha')alpha=v;return true}});
+    m.drawTrackedPlayback(ctx,1850);
+    const selection=p.lastSelection,weights=samples.slice();assert.ok(selection.mix>0&&selection.mix<1);
+    assert.equal(weights.length,2);samples.length=0;
+    const lastDraw=p.lastDraw,openness=p.openness,lastIndex=p.lastIndex;
+    m.requestTrackedFrame=()=>{throw Error('snapshot requested frames')};
+    m.reviewedPlaybackTick=()=>{throw Error('snapshot advanced action')};
+    m.drawTrackedPlayback(ctx,99999,true);
+    assert.deepEqual(samples,weights);assert.equal(p.lastSelection,selection);
+    assert.equal(p.lastDraw,lastDraw);assert.equal(p.openness,openness);assert.equal(p.lastIndex,lastIndex);
 });

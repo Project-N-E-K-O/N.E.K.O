@@ -1924,7 +1924,7 @@
                 playback.cache.set(index, image);
                 if (mouthPatch) playback.mouthPatches.set(patch.image, mouthPatch);
                 while (playback.cache.size > 12) {
-                    const evicted = [...playback.cache.keys()].find(key => key !== playback.lastIndex);
+                    const evicted = [...playback.cache.keys()].find(key => key !== playback.lastIndex && key !== playback.lastSelection?.blendIndex);
                     playback.cache.delete(evicted);
                     const oldPatch = playback.data.frames[evicted].mouth_patch;
                     if (oldPatch && ![...playback.cache.keys()].some(key => playback.data.frames[key].mouth_patch?.image === oldPatch.image)) {
@@ -2145,11 +2145,11 @@
             const data = playback.data;
             const bodyTimestamp = this._reviewedBodyFrozenAt ?? timestamp;
             const elapsed = Math.max(0, bodyTimestamp - (this.layeredAnimationStart || bodyTimestamp));
-            const selection = snapshot ? { index: playback.lastIndex, blendIndex: null, mix: 0 }
+            const selection = snapshot ? (playback.lastSelection || { index: playback.lastIndex, blendIndex: null, mix: 0 })
                 : this.trackedLoopSelection(data, elapsed);
             const index = selection.index;
             if (!snapshot) this.requestTrackedFrame(index);
-            if (selection.blendIndex !== null) this.requestTrackedFrame(selection.blendIndex);
+            if (!snapshot && selection.blendIndex !== null) this.requestTrackedFrame(selection.blendIndex);
             // Decode contiguous upcoming samples. Fixed millisecond jumps can skip
             // the very next frame at 24 fps and repeatedly stall on an uncached frame.
             const loop = data.loop || {};
@@ -2189,6 +2189,8 @@
             const padding = Number(this.layeredCanvasPadding) || 0;
             const blendImage = selection.blendIndex === null ? null : playback.cache.get(selection.blendIndex);
             const mix = blendImage ? selection.mix : 0;
+            if (!snapshot) playback.lastSelection = { index: playback.lastIndex,
+                blendIndex: mix ? selection.blendIndex : null, mix, timestamp };
             if (!mix) {
                 ctx.save();
                 ctx.translate(padding, padding);
@@ -2199,10 +2201,11 @@
                 ctx.drawImage(image, 0, 0);
                 this.drawTrackedMouth(ctx, image, frame, amount);
                 ctx.restore();
-                this.drawReviewedTransition(ctx, timestamp, snapshot);
+                this.drawReviewedTransition(ctx, snapshot ? (selection.timestamp ?? timestamp) : timestamp, snapshot);
                 return true;
             }
-            const scratch = playback.mixCanvas || (playback.mixCanvas = document.createElement('canvas'));
+            const scratch = snapshot ? document.createElement('canvas')
+                : playback.mixCanvas || (playback.mixCanvas = document.createElement('canvas'));
             const reviewedScale = this.hasReviewedActions() && data.width && data.height;
             const width = Number(reviewedScale ? data.width : this.layeredMetadata.canvas.width);
             const height = Number(reviewedScale ? data.height : this.layeredMetadata.canvas.height);
@@ -4665,7 +4668,8 @@
             this._touchZoomState = null;
             this.resetLayeredDragVelocity();
             this.setModelDraggingState(false);
-            if (!this._trackedPlayback) {
+            const hasDragPerformance = this.layeredTransientSlots?.some(slot => slot.kind === 'drag');
+            if (!this._trackedPlayback || (state.changed && hasDragPerformance)) {
                 this.restoreStateImage();
                 this.restartLayeredAnimationLoop();
             }
