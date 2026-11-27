@@ -209,6 +209,16 @@ describe('KnowledgeManager diagnostics', () => {
 })
 
 describe('KnowledgeManager overview', () => {
+  it('shows broken vector data as unavailable instead of unfinished work', async () => {
+    api.packs.mockResolvedValue({ packs: [{ ...pack(), broken: true, vector_state: 'unavailable',
+      entries: 0, chunks_total: 0, chunks_ready: 0 }] })
+    const container = await mount()
+    await openTab('packs')
+    const tag = container.querySelector('.pack-count--left .el-tag')!
+    expect(tag.textContent).toBe(enUS.knowledge.brokenTag)
+    expect(tag.classList.contains('el-tag--danger')).toBe(true)
+  })
+
   it.each([
     { operation: 'new', outcome: 'active', staleFirst: false },
     { operation: 'append', outcome: 'active', staleFirst: false },

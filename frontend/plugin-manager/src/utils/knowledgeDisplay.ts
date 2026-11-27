@@ -39,6 +39,9 @@ export function visibleDiagnosticQueries(
 
 export function vectorStateTagType(state: KnowledgeVectorState | string): KnowledgeTagType {
   switch (state) {
+    // Reuse the pack's repair state instead of presenting an endless build.
+    case 'unavailable':
+      return 'danger'
     case 'complete':
       return 'success'
     case 'building':

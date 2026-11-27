@@ -128,6 +128,8 @@ export type KnowledgeMaterialType = 'knowledge' | 'corpus'
 export type KnowledgeServiceState = 'ready' | 'starting' | 'unavailable'
 export type KnowledgeEmbeddingState = 'ready' | 'loading' | 'disabled' | 'unavailable'
 export type KnowledgeVectorState =
+  // Retained index rows of a broken pack are not pending vector work.
+  | 'unavailable'
   | 'none'
   | 'complete'
   | 'building'

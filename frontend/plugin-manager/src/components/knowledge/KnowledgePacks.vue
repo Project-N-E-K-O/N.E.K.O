@@ -255,6 +255,8 @@ function materialTypeLabel(type: KnowledgeMaterialType | string | null | undefin
 
 function vectorStateLabel(state: KnowledgeVectorState | string): string {
   const keys: Record<string, string> = {
+    // This is the same repair state already described by the pack badge.
+    unavailable: 'knowledge.brokenTag',
     none: 'knowledge.vectorNone',
     complete: 'knowledge.vectorComplete',
     building: 'knowledge.vectorBuilding',

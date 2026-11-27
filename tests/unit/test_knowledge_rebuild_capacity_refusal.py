@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import struct
 from contextlib import asynccontextmanager
 
 import pytest
@@ -133,6 +134,26 @@ async def test_startup_refusal_keeps_index_registry_and_other_packs(tmp_path, mo
             assert (reopened.root / "registry.json").read_bytes() == registry_bytes
             assert (reopened.root / "packs" / record.file_name).read_bytes() == raw
             assert reopened._broken_packs == (record.pack_id,)
+            # The retained broken rows still reserve capacity, but cannot
+            # masquerade as usable catalog content or unfinished vector work.
+            pending = reopened._store.pending_chunks(model_id=specification()["model_id"], pack_ids=["imp.other"], limit=10)
+            vector = struct.pack("<64f", 1.0, *([0.0] * 63))
+            reopened._store.store_vectors(model_id=specification()["model_id"],
+                rows=[(chunk_id, text_hash, vector) for chunk_id, text_hash, _text in pending], specification=specification())
+            packs = {pack["pack_id"]: pack for pack in await reopened.list_packs()}
+            assert packs[record.pack_id]["entries"] == packs[record.pack_id]["disabled_entries"] == 0
+            assert packs[record.pack_id]["vector_state"] == "unavailable"
+            assert packs[record.pack_id]["chunks_total"] == packs[record.pack_id]["chunks_ready"] == 0
+            assert not packs[record.pack_id]["export_ready"]
+            assert (await reopened.list_entries(pack_id=record.pack_id))["items"] == []
+            assert (await reopened.list_entries())["total"] == 1
+            with pytest.raises(module.KnowledgeUnavailable) as error:
+                await reopened.get_entry(record.pack_id, "Example")
+            assert error.value.reason == "not_found"
+            status = await reopened.status()
+            assert status["entries"] == status["chunks_total"] == status["chunks_ready"] == 1
+            assert status["indexed_percent"] == 100.0
+            assert reopened._registry.packs[record.pack_id] == record
             # Reuse the existing repair entry after the user makes room.
             monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 2)
             monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", 3)
@@ -140,6 +161,8 @@ async def test_startup_refusal_keeps_index_registry_and_other_packs(tmp_path, mo
             assert (await _finished(reopened, repaired))["state"] == "active"
             assert record.pack_id not in reopened._broken_packs
             assert reopened._registry.packs[record.pack_id].chunks == 2
+            assert (await reopened.list_entries(pack_id=record.pack_id))["items"]
+            assert next(pack for pack in await reopened.list_packs() if pack["pack_id"] == record.pack_id)["vector_state"] != "unavailable"
         finally:
             await reopened.stop()
 

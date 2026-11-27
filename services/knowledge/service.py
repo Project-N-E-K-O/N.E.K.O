@@ -2596,6 +2596,9 @@ class KnowledgeService:
             pack_id
             for pack_id in pack_ids
             if (record := registry.packs.get(pack_id)) is not None
+            # Retained rows of a refused rebuild are repair inputs, even when
+            # their version still matches. Management must not expose them.
+            and pack_id not in self._broken_packs
             and (current := self._registry.packs.get(pack_id)) is not None and (management or current.enabled)
             and indexed.get(pack_id) == record.pack_sha256
         }
@@ -2804,10 +2807,15 @@ class KnowledgeService:
         # No await separates capturing this pair from projecting its active
         # rows. Later publications cannot lend a newer counter to older policy.
         registry, counter = self._registry_snapshot
+        broken = frozenset(self._broken_packs)
         packs: list[dict[str, Any]] = []
         for record in sorted(registry.packs.values(), key=lambda item: item.pack_id):
-            entries, disabled = counts.get(record.pack_id, (0, 0))
-            chunk = stats.get(record.pack_id, {"total": 0, "ready": 0, "failed": 0})
+            unavailable = record.pack_id in broken
+            # Keep raw rows and registry reservations for repair/capacity, but
+            # never report them as usable content or pending vector progress.
+            entries, disabled = (0, 0) if unavailable else counts.get(record.pack_id, (0, 0))
+            chunk = {"total": 0, "ready": 0, "failed": 0} if unavailable else stats.get(
+                record.pack_id, {"total": 0, "ready": 0, "failed": 0})
             packs.append(
                 {
                     "pack_id": record.pack_id,
@@ -2837,11 +2845,11 @@ class KnowledgeService:
                     # different revision; only the healthy active revision is ready.
                     "export_ready": (bool(chunk.get("export_ready", 0))
                                      and indexed_versions.get(record.pack_id) == record.pack_sha256
-                                     and record.pack_id not in self._broken_packs),
-                    "vector_state": self._vector_state(
+                                     and not unavailable),
+                    "vector_state": "unavailable" if unavailable else self._vector_state(
                         record, chunk, embedding_state, indexing=registry.enabled
                     ),
-                    "broken": record.pack_id in self._broken_packs,
+                    "broken": unavailable,
                     "subscription": record.subscription.to_json() if record.subscription else None,
                     "installed_at": record.installed_at,
                     "updated_at": record.updated_at,
@@ -2893,7 +2901,7 @@ class KnowledgeService:
         by_type = {kind: [p for p in packs if p["effective_material_type"] == kind] for kind in MATERIAL_TYPES}
         # Packs with local vectors off are keyword-only and never get more
         # vectors; counting them would keep the overview below 100% forever.
-        vector_packs = [p for p in packs if p["local_embedding"]]
+        vector_packs = [p for p in packs if p["local_embedding"] and not p["broken"]]
         chunks_total = sum(p["chunks_total"] for p in vector_packs)
         chunks_ready = sum(p["chunks_ready"] for p in vector_packs)
         base.update(
