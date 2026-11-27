@@ -1499,6 +1499,7 @@ async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where
         (commission("c1", "alpha", route="plugin", plugin_id="weather"), "天气那个停了", {}),
         # (A plugin's id in words.)
         (commission("c1", "alpha", route="plugin", plugin_id="weather_lookup"), "stop the weather one", {}),
+        (commission("c1", "alpha", route="plugin", plugin_id="weather_lookup"), "stop the weather_lookup one", {}),
         (commission("c1", "alpha", route="task_agent", user_text="redo the footer"), "stop the footer", {}),
         (_waiting("c1", "alpha", {"kind": "question", "question": "Which month first?", "id": "q1"}),
          "stop the one asking about the month", {}),

@@ -778,8 +778,10 @@ def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
     plugins = {str(plugin.get("id") or ""): plugin for plugin in request.plugins}
 
     def words(item: Commission) -> list[str]:
-        # (A plugin's id in words: "weather_lookup" is "weather lookup".)
-        found = [commission_text(item), item.project or "", re.sub(r"[_.\-]+", " ", item.plugin_id or "")]
+        # (A plugin's id as it is and in words: "weather_lookup" is said
+        # either way. Greptile, third round.)
+        plugin_id = item.plugin_id or ""
+        found = [commission_text(item), item.project or "", plugin_id, re.sub(r"[_.\-]+", " ", plugin_id)]
         found += [request.familiars.get(session or "", "") for session in (item.session_id, item.handed_by)]
         plugin = plugins.get(item.plugin_id or "") or {}
         found.append(str(plugin.get("name") or ""))
