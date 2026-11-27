@@ -387,6 +387,9 @@ _DYNAMIC_WRITERS = frozenset({
 # Writers whose name argument, when a str constant, is read statically.
 _NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
 _NAME_READERS = frozenset({"getattr", "getattr_static"})
+# Modules whose dynamic-writer names are the reflective ones when imported
+# (from builtins import getattr as g); from re import compile is not.
+_REFLECTION_MODULES = frozenset({"builtins", "operator", "inspect", "sys", "importlib", "functools"})
 
 
 def _constant_attribute_name(call: ast.Call, name: str) -> str | None:
@@ -543,14 +546,18 @@ def _families_written(sources, walker, written=None) -> bool:
             walker.poll()
             if _binds_super(node):
                 return True
-            if isinstance(node, ast.alias) and node.name.rsplit(".", 1)[-1] in _DYNAMIC_WRITERS:
-                # from builtins import getattr as g; from operator import attrgetter
-                return True
             if isinstance(node, ast.Import):
                 socket_names.update(item.asname or item.name for item in node.names if item.name == "socket")
             elif isinstance(node, ast.ImportFrom):
                 if node.module == "socket" and not node.level:
                     socket_names.update(item.asname or item.name for item in node.names)
+                if (
+                    not node.level
+                    and (node.module or "").split(".")[0] in _REFLECTION_MODULES
+                    and any(item.name in _DYNAMIC_WRITERS for item in node.names)
+                ):
+                    # from builtins import getattr as g; from operator import attrgetter
+                    return True
             elif isinstance(node, ast.Call):
                 callee = node.func
                 name = callee.id if isinstance(callee, ast.Name) else (
@@ -654,6 +661,8 @@ def _local_construction(node: ast.Call, called: str, external, bound, bindings) 
     itself (family is keyword-only on create_datagram_endpoint)."""
     # The constructor's root as written (getattr(net, "socket") is rooted in net).
     if not (external and bound) or _untrusted(_plain_root(node.func), bindings):
+        return False
+    if _constructor_via_attribute(node.func, bindings):
         return False
     if called == "socket.socket":
         return _unix_family(node, 0, bindings)
@@ -761,6 +770,25 @@ def _external_getattr(node: ast.AST, bindings, walker) -> str | None:
     return _Reflected(resolved + "." + attribute, "getattr()")
 
 
+def _through_attribute_binding(dotted: str, bindings) -> bool:
+    """dotted resolves through an attribute binding (ns.make = ...; ns.make,
+    ns.make.x). Attribute bindings are not tracked as certain, so a socket
+    constructor reached that way is not trusted to be the one assigned."""
+    if not dotted or "." not in dotted:
+        return False
+    parts = dotted.split(".")
+    return any(".".join(parts[:index]) in bindings for index in range(2, len(parts) + 1))
+
+
+def _constructor_via_attribute(func: ast.AST, bindings) -> bool:
+    """The callee is reached through an attribute binding (ns.make(...),
+    ns.mod.socket(...), getattr(ns.mod, "socket")(...))."""
+    found = _constant_getattr(func, bindings)
+    if found is not None:
+        return _through_attribute_binding(_name(found[0]), bindings)
+    return _through_attribute_binding(_dotted_name(func), bindings)
+
+
 # Kinds of chain root found by _resolve_chain_root.
 _ROOT_IMPORT = "import"
 _ROOT_GETATTR = "getattr"
@@ -818,7 +846,11 @@ def _resolve_chain_root(raw_node: ast.AST, bindings, walker) -> tuple[str, bool,
                         called = None
                 else:
                     called = None
-                if called == "socket.socket" and not _untrusted(_plain_root(func), bindings):
+                if (
+                    called == "socket.socket"
+                    and not _constructor_via_attribute(func, bindings)
+                    and not _untrusted(_plain_root(func), bindings)
+                ):
                     root = _extend(called, "()")
                     root = (
                         _Reflected(_UNIX_SOCKET, root.legacy) if isinstance(root, _Reflected) else _UNIX_SOCKET,
@@ -1255,6 +1287,18 @@ def _propagate_assignments(
     # A family name already bound (imported or inherited) and also assigned
     # here (from socket import AF_UNIX; AF_UNIX = 2).
     uncertain.update(key for key in counts if bindings.get(key, (None,))[0] in _UNIX_FAMILIES)
+    # A plain name read from an attribute binding (make = ns.make): the
+    # attribute may be bound more than once, or elsewhere.
+    attribute_keys = {key for key in counts if "." in key}
+    attribute_keys.update(key for key in bindings if "." in key and not key.startswith(_UNTRUSTED))
+    if attribute_keys:
+        for key, node in assignments:
+            walker.check()
+            if "." not in key:
+                found = _constant_getattr(node)
+                value = f"{_name(found[0])}.{found[1]}" if found is not None else _name(node)
+                if _through_attribute_binding(value, attribute_keys):
+                    uncertain.add(key)
     # Root names each plain-name assignment reads from (alias = family).
     roots: dict[str, set[str]] = {}
     readers: dict[str, list[str]] = {}

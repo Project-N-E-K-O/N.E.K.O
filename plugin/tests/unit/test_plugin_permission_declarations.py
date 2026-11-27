@@ -3085,3 +3085,47 @@ def test_writing_other_attributes_keeps_the_downgrade(tmp_path):
 def test_super_init_is_exempt_only_as_the_builtin_in_an_init(tmp_path, other):
     report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
     assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+_NS = "import socket\nfrom types import SimpleNamespace\nns = SimpleNamespace()\n"
+
+
+@pytest.mark.parametrize(
+    "construction",
+    [
+        # Conditionally rebound: with use_unix false this is an IPv4 listener.
+        "ns.make = lambda family: socket.socket()\nif use_unix:\n    ns.make = socket.socket\n"
+        "s = ns.make(socket.AF_UNIX)\n",
+        "ns.make = socket.socket\ns = ns.make(socket.AF_UNIX)\n",
+        "ns.make = socket.socket\nmake = ns.make\ns = make(socket.AF_UNIX)\n",
+        "ns.mod = socket\ns = ns.mod.socket(socket.AF_UNIX)\n",
+    ],
+)
+def test_a_constructor_held_in_an_attribute_is_not_trusted(tmp_path, construction):
+    source = _NS + construction + "s.bind(('', 0))\ns.listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_module_socket_rebound_through_globals_is_not_trusted(tmp_path):
+    source = (
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nglobals()['s'] = socket.socket()\n"
+        "s.bind(('', 0))\ns.listen()\n"
+    )
+    # As on main: definite evidence.
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "imports,downgraded",
+    [
+        ("from re import compile as rc\n", True),
+        ("from os.path import getattr_like\n", True),
+        ("from operator import attrgetter\n", False),
+        ("from inspect import getattr_static as g\n", False),
+        ("from builtins import getattr as g\n", False),
+    ],
+)
+def test_only_reflective_imports_disable_the_downgrade(tmp_path, imports, downgraded):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + imports, 1))
+    basis = "resolved_name" if downgraded else "resolved_call"
+    assert _bases(report) == {CONNECT: basis, LISTEN: basis}
