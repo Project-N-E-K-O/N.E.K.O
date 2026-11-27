@@ -432,7 +432,7 @@ async function initVRMModel() {
     return initVRMModelWithPathRetries(2);
 }
 
-async function initVRMModelWithPathRetries(pathRetries) {
+async function initVRMModelWithPathRetries(pathRetries, previousOwner = null) {
     let retryStartup;
     // 防止重复进入：使用共享锁，避免与 checkAndLoadVRM 并发
     if (window._isVRMLoading) {
@@ -444,14 +444,25 @@ async function initVRMModelWithPathRetries(pathRetries) {
         window._isVRMLoading = true;
         let startupName = window.lanlan_config?.lanlan_name || '';
         const initialAttempt = window.appState?._switchAttemptCounter || 0;
-        let startupManager, loadToken;
+        let startupManager, loadToken, selectedRenderer;
         let loadStarted = false;
-        const stillOwnsStartup = () => (!startupName || startupName === window.lanlan_config?.lanlan_name)
-            && (!startupManager || window.vrmManager === startupManager)
-            && (loadStarted ? startupManager._activeLoadToken === loadToken
-                : (window.appState?._switchAttemptCounter || 0) === initialAttempt || (startupName
-                    && (!window.vrmManager?.currentModel?.vrm
-                        || window.appCharacter?.needsCurrentCharacterRecovery?.(startupName, { fromSnapshot: true }))));
+        const rendererType = () => {
+            const config = window.lanlan_config;
+            const type = String(config?.model_type || '').trim().toLowerCase();
+            return type === 'live3d' ? String(config?.live3d_sub_type || '').trim().toLowerCase() : type;
+        };
+        const stillOwnsStartup = () => {
+            if ((startupName && startupName !== window.lanlan_config?.lanlan_name)
+                || (startupManager && window.vrmManager !== startupManager)
+                || (selectedRenderer !== undefined && selectedRenderer !== rendererType())) return false;
+            if (loadStarted) return startupManager._activeLoadToken === loadToken;
+            // A saved-path retry is still the same startup until its next load
+            // claims a token. An intervening failed attempt isn't a takeover.
+            if (previousOwner) return previousOwner();
+            return (window.appState?._switchAttemptCounter || 0) === initialAttempt || (startupName
+                && (!window.vrmManager?.currentModel?.vrm
+                    || window.appCharacter?.needsCurrentCharacterRecovery?.(startupName, { fromSnapshot: true })));
+        };
         const stillOwnsStartupNow = () => !window.appState?.isSwitchingCatgirl && stillOwnsStartup();
         const ownsStartupAfterSwitchSettlement = async (deadline = Date.now() + 46000) => {
             while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
@@ -556,14 +567,19 @@ async function initVRMModelWithPathRetries(pathRetries) {
         }
 
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
+        selectedRenderer = rendererType();
         const configuredPathAtSelection = window.vrmModel;
         const retryIfPathChanged = () => {
             if (window.vrmModel === configuredPathAtSelection) return false;
             if (pathRetries > 0) {
-                // Re-enter the same boot path after unlocking, unless a central
-                // switch or a newer load token superseded this startup meanwhile.
-                retryStartup = () => {
-                    if (stillOwnsStartupNow()) void initVRMModelWithPathRetries(pathRetries - 1);
+                retryStartup = async () => {
+                    const deadline = Date.now() + 46000;
+                    while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+                        await ownsStartupAfterSwitchSettlement(deadline);
+                    }
+                    if (stillOwnsStartupNow() && window.vrmModel !== configuredPathAtSelection) {
+                        await initVRMModelWithPathRetries(pathRetries - 1, stillOwnsStartup);
+                    }
                 };
             }
             return true;

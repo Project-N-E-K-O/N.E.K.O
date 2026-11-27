@@ -3300,3 +3300,86 @@ for (const takeoverSucceeds of [false, true]) test('post-load VRM path reconcili
     assert.equal(manager.currentModel.url, takeoverSucceeds ? other : fresh);
     assert.deepEqual(confirmed, takeoverSucceeds ? [] : [fresh]);
 });
+
+for (const [phase, outcome] of [
+    ['scheduled', 'failure'], ['scheduled', 'new role'],
+    ['started', 'failure'], ['started', 'same name, newer token'],
+    ['started', 'same name, MMD']
+]) test('saved VRM retry retains the same owner across a ' + phase + ' takeover (' + outcome + ')', async () => {
+    const h = harness(), w = h.window, requested = [], confirmed = [];
+    const p1 = '/static/vrm/A-before-save.vrm', p2 = '/static/vrm/A-saved.vrm';
+    const changedRenderer = outcome === 'same name, MMD';
+    const winner = changedRenderer ? '/static/mmd/A-successor.pmx' : '/static/vrm/successor.vrm';
+    const oldEntered = deferred(), releaseOld = deferred(), switchEntered = deferred(), releaseSwitch = deferred();
+    const releaseRetry = deferred();
+    const target = outcome.startsWith('same name') ? 'A' : 'C';
+    let configured = p1, threeCalls = 0, reachedRetry = false, switching, armed = false, loading = false;
+    const startSwitch = () => {
+        switching = w.handleCatgirlSwitch(target, 'A', { switchRevision: 83, forceReload: target === 'A' });
+    };
+
+    if (phase === 'scheduled') {
+        Object.defineProperty(w, '_isVRMLoading', { configurable: true, get() { return loading; },
+            set(value) {
+                loading = value;
+                if (!value && armed) { armed = false; queueMicrotask(startSwitch); }
+            }
+        });
+    }
+    const startup = startDesktopAvatarBootstrap(h, {lanlan_name: 'A', switch_revision: 82}, async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            return {json: async () => desktopAvatarConfig('A', 'vrm', 82, configured)};
+        }
+        if (url === '/api/characters' && w.appState.isSwitchingCatgirl) {
+            switchEntered.resolve(); await releaseSwitch.promise;
+            if (outcome === 'failure') return {ok: false};
+            const model = changedRenderer ? {model_type: 'mmd', mmd: winner} : {model_type: 'vrm', vrm: winner};
+            return {ok: true, json: async () => ({'猫娘': {[target]: model}})};
+        }
+        return {ok: true, json: async () => ({})};
+    });
+    const manager = w.vrmManager, load = manager._loadModelInternal;
+    if (phase === 'started') manager.initThreeJS = async () => {
+        // The retry has already selected its renderer and path at this await.
+        if (++threeCalls === 2) { reachedRetry = true; await releaseRetry.promise; }
+    };
+    manager._loadModelInternal = async function (url, options, token) {
+        requested.push(url);
+        if (url === p1) { oldEntered.resolve(); await releaseOld.promise; }
+        return load.call(this, url, options, token);
+    };
+    const confirm = w.appCharacter.confirmRestoredRenderer;
+    w.appCharacter.confirmRestoredRenderer = (...args) => {
+        confirmed.push(manager.currentModel?.url); return confirm(...args);
+    };
+
+    assert.equal(await startup.ready, true);
+    await oldEntered.promise;
+    configured = p2;
+    assert.equal(await w.reloadPageConfig(), true);
+    assert.deepEqual([w.lanlan_config.switch_revision, w.vrmModel], [82, p2]);
+    armed = phase === 'scheduled';
+    releaseOld.resolve();
+    if (phase === 'started') {
+        await new Promise(setImmediate);
+        assert.equal(reachedRetry, true, 'the second startup must reach its actual Three.js wait');
+        startSwitch();
+    }
+    await switchEntered.promise; await new Promise(setImmediate);
+    assert.deepEqual(requested, [p1], 'the saved path cannot start while the central switch owns the runtime');
+    releaseSwitch.resolve(); assert.equal(await switching, outcome !== 'failure');
+    if (phase === 'started') releaseRetry.resolve();
+    for (const [id,timer] of [...h.timers.entries()]) {
+        if (timer.delay === 50) { h.timers.delete(id); timer.callback(); }
+    }
+    await startup.vrmBoot; await new Promise(setImmediate);
+    const final = outcome === 'failure' ? p2 : winner;
+    assert.deepEqual(requested, changedRenderer ? [p1] : [p1, final]);
+    assert.deepEqual(startup.loads, [p1, final]);
+    assert.equal(w.lanlan_config.lanlan_name, outcome === 'failure' ? 'A' : target);
+    assert.equal(w.vrmManager, manager);
+    if (changedRenderer) assert.equal(w.mmdManager.currentModel.url, final);
+    else assert.equal(manager.currentModel.url, final);
+    assert.deepEqual(confirmed, outcome === 'failure' ? [p2] : []);
+    assert.equal(w._isVRMLoading, false);
+});
