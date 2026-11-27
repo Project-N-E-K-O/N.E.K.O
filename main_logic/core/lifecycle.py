@@ -2927,26 +2927,12 @@ class LifecycleMixin:
         def ended() -> bool:
             return not self.is_active or self.session is None
 
-        async def within_deadline(coro) -> bool:
-            # Closing a provider connection has no timeout of its own: waited for only as long
-            # as is left, then left to finish by itself (not cancelled).
-            task = asyncio.ensure_future(coro)
-            left = deadline - loop.time()
-            if left <= 0:
-                return False
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=left)
-            except asyncio.TimeoutError:
-                return False
-            return True
-
-        async def drop_preparation() -> None:
-            await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state()
+        async def drop_preparation() -> bool:
+            return await self._drop_renewal_preparation(closing_within=deadline - loop.time())
 
         # A preparation made with the switches as they were goes first: left warm, the end
         # of the turn under way would swap it in instead.
-        if not await within_deadline(drop_preparation()):
+        if not await drop_preparation():
             return False
         # The turn under way ends first, so that what it said is in memory for the new session.
         while not self._can_release_proactive():
@@ -2961,7 +2947,7 @@ class LifecycleMixin:
         def still_up() -> bool:
             return self.is_active and self.session is session
 
-        if not await within_deadline(drop_preparation()):
+        if not await drop_preparation():
             return False
         while True:
             # A turn begun while that was dropped ends first too (its cache would go with the reset).
@@ -2989,7 +2975,7 @@ class LifecycleMixin:
             if loop.time() >= deadline or preparing is None or (preparing.done() and not warmed.is_set()):
                 return False
             if not still_up():
-                await within_deadline(self._drop_renewal_preparation())
+                await drop_preparation()
                 return False
             await asyncio.sleep(0.2)
         while loop.time() < deadline:
@@ -2997,10 +2983,10 @@ class LifecycleMixin:
                 if self.is_active and self.session is not None:
                     return True
                 # Ended (or torn down) meanwhile: no swap is to bring a session back.
-                await within_deadline(self._drop_renewal_preparation())
+                await drop_preparation()
                 return False
             if not self.is_active:
-                await within_deadline(self._drop_renewal_preparation())
+                await drop_preparation()
                 return False
             swapping = self.final_swap_task is not None and not self.final_swap_task.done()
             if not swapping and not self.is_hot_swap_imminent and self._can_release_proactive():
@@ -3011,13 +2997,27 @@ class LifecycleMixin:
             await asyncio.sleep(0.5)
         return self.session is not session and self.is_active and self.session is not None
 
-    async def _drop_renewal_preparation(self) -> None:
-        """What ``renew_session_now`` prepared, for a session that ended meanwhile: dropped, not swapped in."""
+    async def _drop_renewal_preparation(self, *, closing_within: "float | None" = None) -> bool:
+        """Drop the pending preparation for ``renew_session_now``; whether it was dropped.
+
+        A swap under way is not cut short (it may have closed the old connection already).
+        Closing a provider connection has no timeout of its own: with ``closing_within`` it
+        is waited for only that long, then left to finish by itself (not cancelled), and
+        nothing is reset after it -- a reset that late could take a newer preparation or swap.
+        """
         swap = self.final_swap_task
         if self.is_hot_swap_imminent or (swap is not None and not swap.done()):
-            return
-        await self._cleanup_pending_session_resources()
+            return False
+        closing = asyncio.ensure_future(self._cleanup_pending_session_resources())
+        if closing_within is None:
+            await closing
+        else:
+            try:
+                await asyncio.wait_for(asyncio.shield(closing), timeout=max(0.0, closing_within))
+            except asyncio.TimeoutError:
+                return False
         await self._reset_preparation_state()
+        return True
 
     @staticmethod
     def _swap_session_is_dead(session) -> bool:

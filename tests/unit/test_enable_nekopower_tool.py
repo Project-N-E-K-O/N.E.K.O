@@ -877,6 +877,8 @@ def test_the_card_is_sent_as_soon_as_the_page_is_the_session_s():
 class _Flagged(ProactiveMixin, ToolCallingMixin):
     """What update_agent_flags reads and calls of the session manager."""
 
+    _drop_renewal_preparation = LifecycleMixin._drop_renewal_preparation
+
 
 def _flagged(*, session_up=True, master_on=False):
     manager = object.__new__(_Flagged)
@@ -1187,3 +1189,56 @@ def test_a_turn_begun_during_the_memory_wait_ends_and_is_written_before_preparin
     fake._wait_queued_memory_writes = memory_wait
     assert asyncio.run(LifecycleMixin.renew_session_now(fake, wait_seconds=5)) is True
     assert fake.calls[-5:] == ["memory", "turn ends", "memory", "prepare", "swap"]
+
+
+def test_a_close_that_finishes_late_resets_nothing_after_it():
+    # Greptile on #4155: past the deadline only the close is left to finish; a reset after it
+    # could take a newer preparation or a swap under way.
+    fake = _Renewing()
+    closed = asyncio.Event()
+
+    async def slow_cleanup():
+        fake.calls.append("close starts")
+        await closed.wait()
+        fake.calls.append("close done")
+
+    fake._cleanup_pending_session_resources = slow_cleanup
+
+    async def run():
+        # Not left waiting on the close: past the deadline it goes on by itself.
+        result = await asyncio.wait_for(LifecycleMixin.renew_session_now(fake, wait_seconds=0.3), 5)
+        closed.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return result
+
+    assert asyncio.run(run()) is False
+    assert fake.calls == ["close starts", "close done"]
+
+
+def test_a_hanging_close_on_switching_off_resets_nothing_late(monkeypatch):
+    # Greptile, CodeRabbit on #4155: the panel's dropping too leaves only the close to finish.
+    monkeypatch.setattr(nekopower_enable, "RENEWAL_WAIT_SECONDS", 0.2)
+    manager = _flagged()
+    closed = asyncio.Event()
+
+    async def slow_cleanup():
+        manager.dropped.append("close starts")
+        await closed.wait()
+        manager.dropped.append("close done")
+
+    manager._cleanup_pending_session_resources = slow_cleanup
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        _held_renewal(manager)
+        manager.update_agent_flags({"agent_enabled": True})
+        await asyncio.sleep(0)
+        manager.update_agent_flags({"agent_enabled": False})
+        await asyncio.wait_for(manager._nekopower_dropping, 2)
+        closed.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert manager.dropped == ["close starts", "close done"]

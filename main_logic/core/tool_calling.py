@@ -565,13 +565,10 @@ class ToolCallingMixin:
         self._nekopower_dropping = self._fire_task(self._drop_prepared_session())
 
     async def _drop_prepared_session(self) -> None:
-        swap = getattr(self, "final_swap_task", None)
-        if getattr(self, "is_hot_swap_imminent", False) or (swap is not None and not swap.done()):
-            # A swap under way may have closed the old connection already: cut short, it
-            # could leave no session at all. It is let finish.
-            return
-        await self._cleanup_pending_session_resources()
-        await self._reset_preparation_state()
+        # A swap under way is let finish (cut short, it could leave no session at all); a
+        # close that hangs is left to finish by itself, and nothing is reset after it, or a
+        # late reset could take the preparation of NekoPower coming on again.
+        await self._drop_renewal_preparation(closing_within=nekopower_enable.RENEWAL_WAIT_SECONDS)
 
     async def answer_enable_nekopower_card(self, question_id: str, *, choice: str = "", text: str = "") -> str:
         """The user answered the card.
