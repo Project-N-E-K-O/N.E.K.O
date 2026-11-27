@@ -155,7 +155,7 @@ A schema-v1 pack is UTF-8 JSON with exactly `schema_version`, `pack_id`, `materi
 Schema-v1 JSON remains the canonical text format. The current product archive is
 a v2 ZIP with declared model/resource identity and reusable vectors; incompatible
 vectors fall back to local indexing. Source import, history, export and sharing
-contracts are specified in [the unified knowledge design](../design/personal-knowledge-base-and-pack-sharing.md).
+contracts are specified in [the unified knowledge design](/design/personal-knowledge-base-and-pack-sharing).
 
 Limits: 10 MiB per pack file, 5,000 entries and 10,000 chunks per pack, 20,000 entries, 20,000 chunks and 64 MiB of pack files in total.
 

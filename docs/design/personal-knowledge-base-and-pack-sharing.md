@@ -257,7 +257,7 @@ Main 的本地原生读取保留既有访问方式，未向外部浏览器来源
 
 真实模型小样本可用 `NEKO_REAL_EMBEDDING_ROOT` 指向已有只读模型资产根（其下含 profile 目录），再运行 `uv run --no-sync pytest tests/unit/test_unified_embedding_real.py`。跨仓产物通过 `NEKO_UNIFIED_PACKAGE_FIXTURES` 指定临时目录，运行 `plugin/tests/unit/server/test_unified_knowledge_native_roundtrip.py`；远端市场传输是受控夹具，Main、Memory、任务与 SQLite 使用真实实现。市场配对浏览器 19 项及生产构建通过，共享包校验按 NEKO 提交精确同步；三仓统一沿各自 PR 收取 review 和 CI 结果，不以本地通过代替线上部署。
 
-可重复的跨进程验收与 10/100 条规模测量入口见 [原生验收与性能基线](../contributing/knowledge-validation.md)：只需已有只读模型，自动生成新 ZIP 和市场合同夹具，分别验证作者、上传安装、索引恢复及 Plugin→Main→Memory 安装。规模测量保留生产批次/暂停，通过 JUnit 输出分阶段时延、查询样本和进程 RSS；不将本机小样本视作大库、低配或完整桌面验收。
+可重复的跨进程验收与 10/100 条规模测量入口见 [原生验收与性能基线](/contributing/knowledge-validation)：只需已有只读模型，自动生成新 ZIP 和市场合同夹具，分别验证作者、上传安装、索引恢复及 Plugin→Main→Memory 安装。规模测量保留生产批次/暂停，通过 JUnit 输出分阶段时延、查询样本和进程 RSS；不将本机小样本视作大库、低配或完整桌面验收。
 
 此前 CI 故障按真实阶段区分：导入取消测试改为等待准入 owner 完成，避免仅看到内存 job 就断言持久化结束；管理器 boot 契约使用实际 `Knowledge base` 名称。NEKO 串行集成当时在 495 项测试通过后，因上游 CAM++ 声纹资产变化而下载校验失败（固定 28,281,164 字节，当时源为 28,281,165 字节且 SHA 不同），未修改固定摘要或放松校验。PC 当时的 review job 因 Actions 账单/额度未启动，无测试步骤。本轮只处理 review，没有重新验收这两项外部条件，不能据此声明当前 CI 已全绿。
 
