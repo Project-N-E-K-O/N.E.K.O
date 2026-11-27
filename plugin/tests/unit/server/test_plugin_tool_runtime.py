@@ -157,7 +157,8 @@ class FakeUv:
         assert isinstance(label, str) and isinstance(cancel, threading.Event) and deadline > 0
         self.calls.append((cmd, env))
         if cmd[1:] == ["--version"]:
-            version = self.versions.get(cmd[0])
+            # A real file is the uv this module downloaded (the fake wheel's).
+            version = self.versions.get(cmd[0]) or (module.PINNED_UV_VERSION if Path(cmd[0]).is_file() else None)
             return subprocess.CompletedProcess(cmd, 0 if version else 1, f"uv {version}\n" if version else "", "")
         if cmd[1:3] == ["python", "find"]:
             if self.installed:
@@ -502,6 +503,69 @@ def test_lock_held_elsewhere_reports_busy_without_waiting(root):
         _expect_failure(_no_runner, "busy", wait_for_lock=False)
 
 
+def test_busy_is_not_recorded_as_a_failure(root, monkeypatch):
+    root.mkdir(parents=True)
+    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+        _expect_failure(_no_runner, "busy", wait_for_lock=False)
+    assert module.read_tool_runtime_status().state == "missing"
+    FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+        _expect_failure(_no_runner, "busy", wait_for_lock=False)
+    assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
+
+
+def test_cancel_clears_an_earlier_failure(root, monkeypatch):
+    pypi = FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    assert module.read_tool_runtime_status().state == "failed"
+    pypi.metadata["urls"][0]["digests"]["sha256"] = hashlib.sha256(pypi.body).hexdigest()
+    canceled = threading.Event()
+    pypi.on_chunk = lambda chunk: canceled.set() if chunk.startswith(b"PK") else None
+    _expect_failure(FakeUv(root), "canceled", cancel=canceled)
+    assert module.read_tool_runtime_status().state == "missing"
+
+
+def test_damaged_cached_uv_is_downloaded_again(root, monkeypatch):
+    pypi = FakePyPI().install(monkeypatch)
+    cached = module.cached_uv_path()
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"damaged")
+    uv = FakeUv(root)
+
+    def runner(cmd, **kwargs):
+        if cmd == [str(cached), "--version"] and cached.read_bytes() == b"damaged":
+            return subprocess.CompletedProcess(cmd, 1, "", "exec format error")
+        return uv(cmd, **kwargs)
+
+    assert _prepare(runner).uv == str(cached)
+    assert pypi.wheel_downloads == 1
+    assert cached.read_bytes() == b"uv-executable"
+
+
+def test_intact_cached_uv_is_reused(root, monkeypatch):
+    pypi = FakePyPI().install(monkeypatch)
+    cached = module.cached_uv_path()
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"cached")
+    assert _prepare(FakeUv(root)).uv == str(cached)
+    assert pypi.wheel_downloads == 0
+
+
+def test_tools_root_does_not_run_config_migrations(tmp_path, monkeypatch):
+    import utils.config_manager as config_manager
+
+    calls = []
+
+    def get_config_manager(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(app_docs_dir=str(tmp_path))
+
+    monkeypatch.setattr(config_manager, "get_config_manager", get_config_manager)
+    assert module.tools_root() == tmp_path / "plugin-runtime" / "tools"
+    assert calls == [{"migrate": False}]
+
+
 def test_in_process_preparation_reports_busy_without_waiting(root):
     with module._flight:
         _expect_failure(_no_runner, "busy", wait_for_lock=False)
@@ -618,7 +682,7 @@ def test_tools_live_under_the_regenerable_plugin_runtime_entry(tmp_path, monkeyp
     import utils.config_manager as config_manager
     from utils.storage.migration import MIGRATED_RUNTIME_ENTRY_NAMES, REGENERABLE_RUNTIME_ENTRY_NAMES
 
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: SimpleNamespace(app_docs_dir=tmp_path))
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda **_kwargs: SimpleNamespace(app_docs_dir=tmp_path))
     relative = module.tools_root().relative_to(tmp_path)
     assert relative.parts[0] in REGENERABLE_RUNTIME_ENTRY_NAMES
     assert relative.parts[0] not in MIGRATED_RUNTIME_ENTRY_NAMES

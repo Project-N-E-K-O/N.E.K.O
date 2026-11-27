@@ -150,7 +150,9 @@ def tools_root() -> Path:
     # a storage migration leaves it behind and the tools are prepared again.
     # That is required, not just cheaper: the uv-managed CPython under python/
     # contains symlinks, which a migration copying files would fail on.
-    return get_config_manager().app_docs_dir / "plugin-runtime" / "tools"
+    # migrate=False: resolving a path must not run the config data migrations,
+    # so status reads stay free of writes in a process that has not run them.
+    return Path(get_config_manager(migrate=False).app_docs_dir) / "plugin-runtime" / "tools"
 
 
 def python_install_dir() -> Path:
@@ -305,6 +307,10 @@ def read_tool_runtime_status() -> RuntimeStatus:
         busy = _flight.locked() or _background_alive()
     if busy:
         return RuntimeStatus("preparing", True, PINNED_UV_VERSION, progress=progress)
+    # A preparation may have finished between the first check and the snapshot.
+    prepared = _prepared_runtime()
+    if prepared is not None:
+        return RuntimeStatus("ready", True, PINNED_UV_VERSION, python=prepared.python, uv=prepared.uv)
     if error is not None:
         return RuntimeStatus(
             "failed", True, PINNED_UV_VERSION, error_code=error.code, error_detail=error.detail,
@@ -613,7 +619,10 @@ def _ensure_uv(
             return system
     cached = cached_uv_path()
     if cached.is_file():
-        return str(cached), PINNED_UV_VERSION
+        if _uv_version(str(cached), run_command, env, cancel, deadline) is not None:
+            return str(cached), PINNED_UV_VERSION
+        # Damaged (or stripped of its executable bit): download it again.
+        cached.unlink()
     try:
         _download_uv(cached, report, cancel, deadline)
     except ToolRuntimeError as exc:
@@ -681,9 +690,12 @@ def _record_outcome(error: ToolRuntimeError | None) -> None:
     global _last_error, _progress
     with _state_lock:
         _progress = None
-        # A cancel is the caller's choice, not a failure to report.
-        if error is None or error.code != "canceled":
-            _last_error = error
+        if error is not None and error.code == "busy":
+            # Another process is preparing; this attempt says nothing new.
+            return
+        # A cancel is the caller's choice, not a failure to report, and it
+        # supersedes the outcome of any earlier attempt.
+        _last_error = None if error is not None and error.code == "canceled" else error
 
 
 # ---------------------------------------------------------------------------
