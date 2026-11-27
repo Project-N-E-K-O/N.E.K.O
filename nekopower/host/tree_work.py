@@ -1080,6 +1080,10 @@ class TreeWork:
         (``_pause_for_landing``). Each goes by how the commission
         stands once it is written. Entered with nothing awaited since
         it was last looked at whether more was said (``_stale``).
+
+        The end of a run that leaves a commission done outside a worktree
+        holds it the same way while that is written (``_end``'s ``hold``),
+        entered right after ``unless``, which is that last look.
         """
         written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
         live = self._sessions.get(commission_id)
