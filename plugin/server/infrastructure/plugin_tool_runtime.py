@@ -163,13 +163,16 @@ def tools_root() -> Path:
 def _known_tools_root() -> Path | None:
     """The tools root without creating the config manager, which writes to disk.
 
-    None before anything in this process has set up the app-data root; nothing
-    can have been prepared by this process then, and status reads say missing.
+    Resolved from an existing manager or the storage root the launcher exports
+    (``peek_app_docs_dir``), so tools prepared by an earlier run read as ready
+    before anything in this process has needed the config manager. None only
+    in a process started outside the launcher that has not set up its config
+    manager yet; status reads then say missing.
     """
-    from utils.config_manager import peek_config_manager
+    from utils.config_manager import peek_app_docs_dir
 
-    manager = peek_config_manager()
-    return None if manager is None else _root_under(manager.app_docs_dir)
+    app_docs_dir = peek_app_docs_dir()
+    return None if app_docs_dir is None else _root_under(app_docs_dir)
 
 
 def python_install_dir() -> Path:
@@ -407,7 +410,15 @@ def _run_command(
                 _check(cancel, deadline)
     except BaseException:
         process.kill()
-        process.communicate()
+        try:
+            # A grandchild that inherited the pipes can keep them open after
+            # the kill; do not let a cancel wait on it.
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            # The child itself is gone: reap it and drop the leftover pipes.
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
         raise
     return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
@@ -618,9 +629,7 @@ def _prepare_python(
         except OSError as exc:
             raise ToolRuntimeError("python_install_failed", f"Could not run {label.lower()}: {exc}") from exc
 
-    report(ProgressEvent("installing_python"))
-    found = run(find, "Locate managed Python")
-    if found.returncode:
+    def reinstall() -> None:
         _check(cancel, deadline)
         # uv answers "already installed" for an existing but broken interpreter
         # (emptied, or stripped of its executable bit) and leaves it alone, so
@@ -641,14 +650,39 @@ def _prepare_python(
         )
         if installed.returncode:
             raise ToolRuntimeError("python_install_failed", f"uv could not install {request}: {_tail(installed)}")
+
+    def locate() -> str:
         found = run(find, "Locate managed Python")
-    if found.returncode or not found.stdout.strip():
-        raise ToolRuntimeError("python_install_failed", f"uv could not locate {request} after installing it")
-    python = found.stdout.strip().splitlines()[-1]
-    _check(cancel, deadline)
-    report(ProgressEvent("checking_python"))
-    probe = run([python, "-I", "-c", _PROBE], "Check managed Python")
-    identity = _probe_identity(probe.stdout) if not probe.returncode else None
+        if found.returncode or not found.stdout.strip():
+            raise ToolRuntimeError("python_install_failed", f"uv could not locate {request} after installing it")
+        return found.stdout.strip().splitlines()[-1]
+
+    def probe(python: str) -> list[object] | None:
+        _check(cancel, deadline)
+        report(ProgressEvent("checking_python"))
+        try:
+            result = run_command(
+                [python, "-I", "-c", _PROBE], label="Check managed Python", env=env, cancel=cancel, deadline=deadline,
+            )
+        except OSError:
+            return None  # Could not even be started; treated like a failed probe.
+        return _probe_identity(result.stdout) if not result.returncode else None
+
+    report(ProgressEvent("installing_python"))
+    found = run(find, "Locate managed Python")
+    fresh = bool(found.returncode or not found.stdout.strip())
+    if fresh:
+        reinstall()
+        python = locate()
+    else:
+        python = found.stdout.strip().splitlines()[-1]
+    identity = probe(python)
+    if identity is None and not fresh:
+        # uv can still list an interpreter that no longer starts (a quarantined
+        # DLL, say): replace it once, as when `find` fails.
+        reinstall()
+        python = locate()
+        identity = probe(python)
     expected = [list(sys.version_info[:3]), sys.platform, struct.calcsize("P")]
     if (
         identity is None
@@ -760,18 +794,32 @@ def _record_outcome(error: ToolRuntimeError | None) -> None:
         _last_error = None if error is not None and error.code == "canceled" else error
 
 
+def _unexpected(exc: Exception) -> ToolRuntimeError:
+    from plugin.logging_config import get_logger
+
+    get_logger("server.infrastructure.plugin_tool_runtime").exception(
+        "plugin tool preparation failed unexpectedly",
+    )
+    return ToolRuntimeError("internal_error", f"{type(exc).__name__}: {exc}")
+
+
 def _record_unstarted(error: ToolRuntimeError) -> None:
     """Record an attempt that stopped before it took the in-process flight.
 
     Only when no other preparation is under way: that one reports its own
     progress and outcome, and an unstarted attempt must not overwrite them.
+    A foreground caller whose deadline had already passed did not attempt
+    anything and keeps the previous state; the background preparation has no
+    caller to tell, so its timeout is recorded.
     """
     global _last_error
     if error.code == "busy":
         return
     with _state_lock:
-        other_background = _background is not None and _background[0] is not threading.current_thread()
-        if _flight.locked() or (other_background and _background[0].is_alive()):
+        is_background = _background is not None and _background[0] is threading.current_thread()
+        if error.code == "timeout" and not is_background:
+            return
+        if _flight.locked() or (not is_background and _background_alive()):
             return
         _last_error = None if error.code == "canceled" else error
 
@@ -811,6 +859,10 @@ def prepare_tool_runtime(
     except ToolRuntimeError as exc:
         _record_unstarted(exc)
         raise
+    except Exception as exc:
+        unexpected = _unexpected(exc)
+        _record_unstarted(unexpected)
+        raise unexpected from exc
     runner = _run_command if run_command is None else run_command
     report = _Reporter(progress)
     outcome: ToolRuntimeError | None = None
@@ -823,12 +875,7 @@ def prepare_tool_runtime(
         outcome = exc
         raise
     except Exception as exc:
-        from plugin.logging_config import get_logger
-
-        get_logger("server.infrastructure.plugin_tool_runtime").exception(
-            "plugin tool preparation failed unexpectedly",
-        )
-        outcome = ToolRuntimeError("internal_error", f"{type(exc).__name__}: {exc}")
+        outcome = _unexpected(exc)
         raise outcome from exc
     finally:
         _record_outcome(outcome)

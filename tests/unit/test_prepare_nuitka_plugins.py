@@ -499,3 +499,22 @@ def test_dist_check_skips_python_download_check_without_uv(monkeypatch: pytest.M
     )
 
     assert _check_plugin_tool_python() == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [OSError("uv vanished"), subprocess.CompletedProcess([], 2, "", "error: network unreachable"),
+     subprocess.CompletedProcess([], 0, "not json", "")],
+)
+def test_dist_check_only_warns_when_the_download_list_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, outcome,
+) -> None:
+    def run(command, **kwargs):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert _check_plugin_tool_python() == []

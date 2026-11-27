@@ -32,8 +32,8 @@ packaging into Electron.
 
 - A pinned plugin-tools uv that cannot download the CPython patch release
   this build is frozen from (packaged plugin tool preparation would fail).
-  This is the one check that needs the network; it is skipped when uv is
-  not on PATH.
+  This is the one check that needs the network; it is skipped with a warning
+  when uv is not on PATH or the pinned uv or its list cannot be fetched.
 
 ## What it does NOT do
 
@@ -267,6 +267,13 @@ def _check_plugin_stage(dist_root: Path, stage_root: Path) -> list[str]:
     return issues
 
 
+def _plugin_tool_check_skipped(reason: str) -> list[str]:
+    # Fetching the pinned uv or its list needs PyPI; a transient outage must not
+    # fail an otherwise good build. Only a list without this patch release fails.
+    print(f"[WARN] {reason}; skipped the plugin-tools Python check", file=sys.stderr)
+    return []
+
+
 def _check_plugin_tool_python() -> list[str]:
     """The pinned uv must be able to download this build's exact CPython.
 
@@ -308,16 +315,18 @@ def _check_plugin_tool_python() -> list[str]:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return [f"could not run uv {version} to list Python downloads: {exc}"]
+        return _plugin_tool_check_skipped(f"could not run uv {version} to list Python downloads: {exc}")
     if result.returncode:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
-        return [f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"]
+        return _plugin_tool_check_skipped(
+            f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"
+        )
     try:
         downloads = json.loads(result.stdout)
     except ValueError:
         downloads = None
     if not isinstance(downloads, list):
-        return [f"uv {version} printed an unreadable Python download list"]
+        return _plugin_tool_check_skipped(f"uv {version} printed an unreadable Python download list")
     current = ".".join(str(part) for part in sys.version_info[:3])
     if not any(
         isinstance(item, dict)

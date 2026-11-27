@@ -177,6 +177,9 @@ class FakeUv:
             _write_executable(Path(self.python), b"#!python")
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == self.python:
+            if Path(self.python).read_bytes() != b"#!python":
+                # Listed by uv but no longer starts (a quarantined DLL, say).
+                return subprocess.CompletedProcess(cmd, 1, "", "error while loading shared libraries")
             return subprocess.CompletedProcess(cmd, 0, self.identity, "")
         raise AssertionError(f"unexpected command {cmd}")
 
@@ -798,6 +801,7 @@ def test_status_read_never_creates_the_config_manager(tmp_path, monkeypatch):
     import utils.config_manager as config_manager
 
     monkeypatch.setattr(config_manager, "_config_manager", None)
+    monkeypatch.delenv("NEKO_STORAGE_SELECTED_ROOT", raising=False)
     monkeypatch.setattr(module, "_is_packaged", lambda: True)
     monkeypatch.setattr(module, "_last_error", None)
     monkeypatch.setattr(module, "_progress", None)
@@ -892,3 +896,117 @@ def test_network_error_within_the_deadline_still_falls_back(root, monkeypatch):
 
     pypi.on_chunk = broken
     assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
+
+
+def _tree(path: Path) -> list[str]:
+    return sorted(str(item.relative_to(path)) for item in path.rglob("*"))
+
+
+def test_tools_from_an_earlier_run_read_ready_before_the_config_manager_exists(tmp_path, monkeypatch):
+    # A restarted packaged server: the launcher exported the storage root, the
+    # tools were prepared by the previous run, and nothing in this process has
+    # created the config manager yet.
+    import utils.config_manager as config_manager
+
+    docs = tmp_path / "docs"
+    tools = docs / "plugin-runtime" / "tools"
+    python = tools / "python" / "cpython" / "bin" / "python3"
+    uv = tools / "uv" / module.PINNED_UV_VERSION / "uv"
+    _write_executable(python, b"#!python")
+    _write_executable(uv, b"uv")
+    (tools / "python.json").write_text(json.dumps({
+        "executable": str(python), "uv": str(uv), "uv_version": module.PINNED_UV_VERSION,
+        "environment": module.build_environment(), "python_version": list(sys.version_info[:3]),
+        "python_architecture": module._host_architecture(),
+    }), encoding="utf-8")
+    before = _tree(tmp_path)
+    monkeypatch.setattr(config_manager, "_config_manager", None)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(docs))
+    monkeypatch.setattr(module, "_is_packaged", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", _no_runner)
+
+    status = module.read_tool_runtime_status()
+
+    assert (status.state, status.python, status.uv) == ("ready", str(python), str(uv))
+    assert config_manager._config_manager is None
+    assert _tree(tmp_path) == before
+
+
+def test_python_that_no_longer_starts_is_reinstalled_once(root, monkeypatch):
+    FakePyPI().install(monkeypatch)
+    uv = FakeUv(root)
+    first = _prepare(uv)
+    (root / "python.json").unlink()
+    Path(first.python).write_bytes(b"quarantined")  # still listed by `uv python find`
+    uv.calls.clear()
+    repaired = _prepare(uv)
+    assert Path(repaired.python).read_bytes() == b"#!python"
+    assert sum(1 for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"]) == 1
+    assert module.read_tool_runtime_status().state == "ready"
+
+
+def test_python_that_never_starts_is_a_mismatch_after_one_reinstall(root, monkeypatch):
+    FakePyPI().install(monkeypatch)
+    uv = FakeUv(root)
+    _prepare(uv)
+    (root / "python.json").unlink()
+    uv.identity = "garbage"
+    uv.calls.clear()
+    _expect_failure(uv, "python_mismatch")
+    assert sum(1 for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"]) == 1
+
+
+def test_unexpected_error_before_the_flight_is_internal_error(root, monkeypatch):
+    def broken():
+        raise PermissionError("app data unreadable")
+
+    monkeypatch.setattr(module, "_prepared_runtime", broken)
+    _expect_failure(_no_runner, "internal_error")
+    assert module.read_tool_runtime_status().error_code == "internal_error"
+    monkeypatch.setattr(module, "_last_error", None)
+    module.start_tool_runtime_preparation()
+    module._background[0].join(10)
+    assert module.read_tool_runtime_status().error_code == "internal_error"
+
+
+def test_foreground_call_past_its_deadline_keeps_the_previous_state(root, monkeypatch):
+    FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    _expect_failure(_no_runner, "timeout", deadline=time.monotonic() - 1)
+    assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
+    with pytest.raises(module.ToolRuntimeError):
+        asyncio.run(module.ensure_tool_runtime(timeout=0))
+    assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
+
+
+def test_cancel_does_not_wait_for_a_grandchild_holding_the_pipes():
+    canceled = threading.Event()
+    threading.Timer(0.3, canceled.set).start()
+    script = (
+        "import subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)']); "
+        "time.sleep(12)"
+    )
+    started = time.monotonic()
+    with pytest.raises(module.ToolRuntimeError) as raised:
+        module._run_command(
+            [sys.executable, "-c", script], label="spawn",
+            env=dict(os.environ), cancel=canceled, deadline=time.monotonic() + 60,
+        )
+    assert raised.value.code == "canceled"
+    assert time.monotonic() - started < 10
+
+
+def test_python_that_cannot_be_started_is_reinstalled_once(root, monkeypatch):
+    FakePyPI().install(monkeypatch)
+    uv = FakeUv(root)
+    first = _prepare(uv)
+    (root / "python.json").unlink()
+    Path(first.python).write_bytes(b"blocked")
+
+    def runner(cmd, **kwargs):
+        if cmd[0] == first.python and Path(first.python).read_bytes() == b"blocked":
+            raise PermissionError("[WinError 5] Access is denied")
+        return uv(cmd, **kwargs)
+
+    assert Path(_prepare(runner).python).read_bytes() == b"#!python"

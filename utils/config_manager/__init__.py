@@ -277,13 +277,26 @@ def get_config_manager(app_name=None, *, migrate=True):
     return _config_manager
 
 
-def peek_config_manager():
-    """The config manager if this process already created it, else None.
+def peek_app_docs_dir():
+    """The runtime data root (``app_docs_dir``) without creating the config manager.
 
-    Never creates one: constructing it probes and creates the app-data
-    directories, which read-only callers must not do.
+    Constructing ConfigManager probes and creates the app-data directories,
+    which read-only callers must not do. This answers from the manager when
+    this process already has one; otherwise from ``NEKO_STORAGE_SELECTED_ROOT``,
+    which the launcher exports to every service it starts and which
+    ConfigManager itself takes as ``app_docs_dir`` (see
+    StorageRootsMixin.__init__; only when resolving the storage policy raises
+    does it fall back to the default root instead). None when neither is
+    available.
     """
-    return _config_manager
+    if _config_manager is not None:
+        return Path(_config_manager.app_docs_dir)
+    selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+    if not selected_root:
+        return None
+    from utils.storage_policy import normalize_runtime_root
+
+    return normalize_runtime_root(selected_root)
 
 
 # Convenience functions
