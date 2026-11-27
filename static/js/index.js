@@ -150,7 +150,7 @@ window.restorePendingIpcAvatar = restorePendingIpcAvatar;
 
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
-function handoffPageSnapshotToSwitch(name, revision, modelBoot = null) {
+function handoffPageSnapshotToSwitch(name, revision, modelBoot = null, explicitPreview = false) {
     const state = window.appState;
     const retryHandoff = modelBoot?.retryHandoff;
     const recover = !!retryHandoff && retryHandoff.name === name && revision >= retryHandoff.revision;
@@ -158,12 +158,15 @@ function handoffPageSnapshotToSwitch(name, revision, modelBoot = null) {
     // of the same role. A receipt/config revision alone does not own its model.
     const replaceOlderRenderer = !!modelBoot
         && window.appCharacter?.hasCommittedPageModel?.(name, revision, { olderThan: true });
-    if (revision && name && typeof window.handleCatgirlSwitch === 'function'
-        && (recover || replaceOlderRenderer || state?.isSwitchingCatgirl
-            || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
-            || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }))) {
+    // A validated named revision-zero preview may replace a different mounted
+    // role without supplying evidence about the current-character ordering.
+    const previewTakeover = explicitPreview && window.appCharacter?.hasOtherCommittedPageModel?.(name);
+    const orderedHandoff = revision && (recover || replaceOlderRenderer || state?.isSwitchingCatgirl
+        || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
+        || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }));
+    if (name && typeof window.handleCatgirlSwitch === 'function' && (previewTakeover || orderedHandoff)) {
         return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
-            switchRevision: revision, ...((recover || replaceOlderRenderer) ? { forceReload: true } : {})
+            switchRevision: revision, ...((recover || replaceOlderRenderer || previewTakeover) ? { forceReload: true } : {})
         })).then(applied => {
             const pending = state?._pendingCatgirlSwitch;
             const queued = applied !== true && pending?.newCatgirl === name
@@ -172,6 +175,14 @@ function handoffPageSnapshotToSwitch(name, revision, modelBoot = null) {
         });
     }
     return null;
+}
+
+function publishPinnedPreviewRevision(name, revision) {
+    const config = window.lanlan_config;
+    if (revision === 0 && config?.lanlan_name === name && explicitPageCharacterName() === name) {
+        rememberPageSwitchRevision(config.switch_revision);
+        config.switch_revision = revision;
+    }
 }
 
 function queuedPageSwitchMatches(name, revision) {
@@ -266,6 +277,7 @@ async function finishModelBootstrap(expected) {
             const applied = await waitForQueuedPageHandoff(name, revision, expected);
             expected.handoffQueued = false;
             if (applied) {
+                if (expected.pinned) publishPinnedPreviewRevision(name, revision);
                 if (window.__nekoPageModelConfigPending === expected) {
                     window.__nekoPageModelConfigPending = null;
                     expected.retire?.();
@@ -350,10 +362,14 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // Decide takeover against ordering evidence that existed before this
             // read. The first authoritative HTTP bootstrap must not turn itself
             // into a live switch merely by publishing its own revision early.
-            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision, modelBoot);
+            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision, modelBoot,
+                explicitPreview && data.lanlan_name === name);
             if (liveSwitch) {
                 const outcome = await liveSwitch;
-                if (outcome.applied) return true;
+                if (outcome.applied) {
+                    if (explicitPreview) publishPinnedPreviewRevision(name, switchRevision);
+                    return true;
+                }
                 if (modelBoot) {
                     modelBoot.handoffQueued = outcome.queued ? { name, revision: switchRevision } : null;
                     modelBoot.retryable = !outcome.queued;
@@ -677,6 +693,10 @@ function startMultiWindowPageConfigLoad() {
             }
             const liveSwitch = handoffPageSnapshotToSwitch(d.lanlan_name, switchRevision);
             if (liveSwitch) {
+                // The switch may still be queued. Give its own commit gate the
+                // stamped portrait before returning from the IPC listener.
+                applyInjectedAvatar(d, switchRevision)
+                    .catch(error => console.warn('[主页] Could not restore the injected avatar:', error));
                 resolve((await liveSwitch).applied === true);
                 return;
             }

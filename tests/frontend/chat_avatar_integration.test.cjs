@@ -4012,3 +4012,180 @@ test('review e069 verified pinned role keeps its portrait through a revision-zer
     assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, avatar);
     assert.equal(w.__nekoPendingAvatar, undefined);
 });
+
+for (const [route, desktop, outcome] of [
+    ['/A', false, 'switched'], ['/web_chat_compact?lanlan_name=A', true, 'switched'],
+    ['/A', false, 'failed takeover'], ['/A', false, 'no conflict'],
+]) {
+    test('review d8 explicit VRM preview keeps its named renderer (' + route + ', ' + outcome + ')', {timeout: 6000}, async () => {
+        const page = new URL(route, 'https://example.test');
+        const h = setupReviewWindow(page.pathname, page.search), w = h.window, c = h.context;
+        w.__NEKO_MULTI_WINDOW__ = desktop;
+        w.vrmModuleLoaded = true; w.VRMCore = {};
+        c.document.querySelector = () => null;
+        c.requestAnimationFrame = () => 0;
+        const entered = deferred(), release = deferred(), loads = [], reads = [];
+        const a = '/static/vrm/A.vrm', b = '/static/vrm/B.vrm';
+        let roles = 0;
+        c.fetch = async url => {
+            const u = new URL(String(url), 'https://example.test');
+            reads.push(u);
+            if (u.pathname === '/api/config/page_config') {
+                entered.resolve();
+                await release.promise;
+                return {ok: true, json: async () => desktopAvatarConfig('A', 'vrm', 0, a)};
+            }
+            if (u.pathname === '/api/characters') {
+                if (++roles === 2 && outcome === 'failed takeover') {
+                    return {ok: false, status: 503, json: async () => ({})};
+                }
+                return {ok: true, json: async () => ({['\u732b\u5a18']: {
+                    A: {...desktopAvatarConfig('A', 'vrm', 0, a), vrm: a},
+                    B: {...desktopAvatarConfig('B', 'vrm', 83, b), vrm: b},
+                }})};
+            }
+            return {ok: true, json: async () => ({})};
+        };
+        h.load('static/js/index.js'); h.load('static/vrm/vrm-manager.js'); h.load('static/vrm/vrm-init.js');
+        w.vrmManager = Object.assign(Object.create(w.VRMManager.prototype), {
+            currentModel: null, _activeLoadToken: 0, _pendingModelLoadCount: 0,
+            async initThreeJS() {}, pauseRendering() {}, resumeRendering() {}, cleanupUI() {},
+            async _loadModelInternal(url, _options, token) {
+                if (!this._isLoadTokenActive(token)) return null;
+                loads.push(url);
+                return (this.currentModel = {url, vrm: {}});
+            },
+        });
+        h.load('static/app/app-character.js');
+        const ready = w.startPageConfigLoad(), boot = w.initVRMModel();
+        await entered.promise;
+        assert.equal(reads[0].searchParams.get('lanlan_name'), 'A', 'actual startup asks for pinned A, not the current role');
+        if (outcome !== 'no conflict') {
+            assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 83}), true);
+            assert.equal(w.vrmManager.currentModel?.url, b, 'actual central receiver mounted B while A HTTP was blocked');
+            assert.deepEqual(loads, [b]);
+        }
+        release.resolve();
+        const readyResult = await ready;
+        assert.equal(readyResult, outcome !== 'failed takeover', 'do not publish an unmounted preview as ready');
+        assert.equal(await w.pageConfigReady, readyResult);
+        await boot;
+        if (outcome === 'failed takeover') {
+            assert.equal(w.lanlan_config.lanlan_name, 'B');
+            assert.equal(w.vrmManager.currentModel?.url, b);
+            assert.deepEqual(loads, [b]);
+            return;
+        }
+        assert.equal(w.lanlan_config.lanlan_name, 'A');
+        assert.equal(w.vrmManager.currentModel?.url, a, 'commit the named A renderer, not just A config while B stays mounted');
+        assert.equal(w.vrmModel, a);
+        assert.equal(w.lanlan_config.switch_revision, 0, 'A/0 is a local preview, not the current-character revision');
+        if (outcome === 'no conflict') {
+            assert.deepEqual(loads, [a], 'normal cold named preview still boots directly once');
+            return;
+        }
+        assert.equal(w.getPageSwitchRevision(), 83, 'the current-character ordering watermark remains B/83');
+        assert.deepEqual(loads, [b, a], 'exactly one B and one A, no guessed startup or duplicate reload');
+        assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 82}), false);
+        assert.deepEqual(loads, [b, a], 'the old live B receipt is still stale');
+    });
+}
+
+for (const [route, source, alreadyLoaded, rollback] of [
+    ['/chat', 'cached', false], ['/chat_full/', 'event', true], ['/chat', 'event', true, true],
+]) {
+    test('review d8 a cold chat handoff keeps the original IPC portrait (' + route + ', ' + (rollback ? 'rollback/retry' : source) + ')', {timeout: 6000}, async () => {
+        const h = setupReviewWindow(route), w = h.window;
+        const began = deferred(), release = deferred(), fetched = [], saved = [];
+        const image = portraitInitNodes(h);
+        const portrait = 'data:image/png;base64,Yg==';
+        let roleReads = 0;
+        const detail = {lanlan_name: 'B', switch_revision: 83, model_type: 'live3d',
+            live3d_sub_type: 'vrm', avatarModelType: 'vrm', avatarDataUrl: portrait};
+        h.context.localStorage = {
+            getItem() { return null; },
+            setItem(key, value) { saved.push([key, JSON.parse(value).dataUrl]); },
+        };
+        h.context.fetch = async (url, options) => {
+            fetched.push([String(url), options?.method || 'GET']);
+            if (url === '/api/characters') {
+                const attempt = ++roleReads;
+                began.resolve(); await release.promise;
+                if (rollback && attempt <= 2) return {ok: false, status: 503, json: async () => ({})};
+                return {ok: true, json: async () => ({['\u732b\u5a18']: {B: {_reserved: {character_uid: UID_B},
+                    model_type: 'live3d', live3d_sub_type: 'vrm', vrm: '/static/vrm/B.vrm'}}})};
+            }
+            return {ok: true, json: async () => ({})};
+        };
+        h.load('static/js/index.js'); h.load('static/app/app-character.js');
+        if (alreadyLoaded) h.load('static/app/app-chat-avatar.js');
+        const switchB = w.handleCatgirlSwitch('B', '', {switchRevision: 83});
+        await began.promise;
+        if (source === 'cached') w.__nekoInjectedConfig = detail;
+        const ready = w.startPageConfigLoad();
+        if (source === 'event') {
+            await new Promise(setImmediate);
+            w.dispatchEvent(new h.context.CustomEvent('neko:config-injected',{detail}));
+        }
+        await ready;
+        assert.equal(w.appState._pendingCatgirlSwitch?.switchRevision, 83, 'real IPC startup handed the receipt to the active switch');
+        assert.equal(w.appChatAvatar?.getExternalAvatar() ?? null, null, 'no early display from an uncommitted receipt');
+        assert.deepEqual(saved, []);
+        release.resolve();
+        assert.equal(await switchB, !rollback);
+        if (rollback) {
+            for (let turn = 0; turn < 12 && (roleReads < 2 || w.appState.isSwitchingCatgirl); turn++) {
+                await new Promise(setImmediate);
+            }
+            assert.equal(roleReads, 2, 'watch the initial and queued matching attempts fail');
+            assert.equal(w.lanlan_config.lanlan_name, '');
+            assert.equal(w.appChatAvatar.getExternalAvatar(), null, 'a failed attempt cannot promote a portrait');
+            assert.deepEqual(saved, []);
+            assert.equal(await w.handleCatgirlSwitch('B', '', {switchRevision: 83}), true);
+        }
+        assert.equal(w.lanlan_config.lanlan_name, 'B');
+        if (!alreadyLoaded) h.load('static/app/app-chat-avatar.js');
+        assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, portrait, 'show the injected photo after the matching commit, without waiting for another receipt');
+        assert.equal(image.src, portrait);
+        assert.deepEqual(saved, [['neko_avatar:B',portrait]]);
+        assert.ok(!fetched.some(([path,method]) => path.startsWith('/api/model') || method === 'POST'));
+    });
+}
+
+
+for (const [scenario, keep] of [
+    ['new matching portrait', true],
+    ['previous cache with no new portrait', false],
+    ['different character sharing same model', false],
+    ['same character on a newer committed revision', false],
+    ['same character and revision on a different model', false],
+    ['explicit crop failure', false],
+]) {
+    test('a delayed popup IPC failure respects only a newer matching portrait: ' + scenario, async () => {
+        const h = popupHarness(), w = h.window, core = w.appChatAvatar;
+        w.avatarPortrait = null;
+        w.__NEKO_MULTI_WINDOW__ = true;
+        w.lanlan_config = {lanlan_name: 'B', switch_revision: 83, model_type: 'vrm'};
+        w.vrmModel = '/shared.vrm';
+        w.requestAnimationFrame = () => 0;
+        h.dom.chatAvatarPreviewCard = {hidden: false, style: {}, classList: {add() {}, remove() {}}};
+        const shown = 'data:image/png;base64,cG9ydHJhaXQ=';
+        let requests = 0;
+        w.__nekoRequestAvatarPreview = () => { ++requests; };
+        if (scenario === 'previous cache with no new portrait') core.setExternalAvatar(shown, 'vrm');
+        const result = core.showPopup(null, {forceRefresh: true, manualCrop: scenario === 'explicit crop failure'});
+        await new Promise(setImmediate);
+        assert.equal(requests, 1, 'the actual IPC capture must be pending before delivering a receipt');
+        if (scenario !== 'previous cache with no new portrait') core.setExternalAvatar(shown, 'vrm');
+        assert.equal(h.dom.chatAvatarPreviewImage.src, shown, 'intermediate portrait reached the real popup');
+        if (scenario === 'different character sharing same model') w.lanlan_config.lanlan_name = 'C';
+        if (scenario === 'same character on a newer committed revision') w.lanlan_config.switch_revision = 84;
+        if (scenario === 'same character and revision on a different model') w.vrmModel = '/different.vrm';
+        w.dispatchEvent(new h.context.CustomEvent('neko:avatar-preview-ipc-result', {detail: {error: true}}));
+        await result;
+        assert.equal(h.dom.chatAvatarPreviewImage.src, keep ? shown : undefined);
+        assert.equal(h.dom.chatAvatarPreviewImage.hidden, !keep);
+        assert.equal(h.dom.chatAvatarPreviewStatus.textContent,
+            keep ? 'chat.avatarPreviewReady · VRM' : 'chat.avatarPreviewFailed');
+    });
+}

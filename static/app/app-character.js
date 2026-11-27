@@ -342,6 +342,13 @@
             && !window.vrmManager?._isLoadingModel && !window.isVRMStartupFor?.(name);
     }
 
+    function hasOtherCommittedPageModel(name) {
+        const owner = committedRenderer;
+        if (!owner || owner.name === name || !ownsLocalRenderer()) return false;
+        const mounted = getMountedRenderer(owner.type);
+        return !!mounted && !mounted.destroyed && owner.objects.has(mounted);
+    }
+
     function hasCommittedPageModel(name, revision, { olderThan = false } = {}) {
         const config = window.lanlan_config;
         const committedRevision = committedRenderer?.revision || 0;
@@ -2448,6 +2455,7 @@
     mod.rolledBackRendererNeedsRecovery = rolledBackRendererNeedsRecovery;
     mod.confirmRestoredRenderer = confirmRestoredRenderer;
     mod.hasCommittedPageModel = hasCommittedPageModel;
+    mod.hasOtherCommittedPageModel = hasOtherCommittedPageModel;
 
     // Backward-compatible window global so app.js call-sites work unchanged
     window.handleCatgirlSwitch = handleCatgirlSwitch;

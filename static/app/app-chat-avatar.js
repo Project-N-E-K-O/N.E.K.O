@@ -1373,7 +1373,8 @@
         activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
         const captureRevision = cardDropModelRevision;
-        const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
+        const previewAtCaptureStart = cachedPreview;
+        const prevCachedPreview = previewAtCaptureStart ? Object.assign({}, previewAtCaptureStart) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
         }
@@ -1462,6 +1463,13 @@
             }
         } catch (error) {
             if (token !== activeCaptureToken) return;
+            // A fallback request may fail after IPC filled this same popup.
+            // The model cache key alone can be shared by different characters.
+            const ipcOwner = cachedPreview?.ipcOwner;
+            const current = window.lanlan_config;
+            if (!manualCrop && cachedPreview !== previewAtCaptureStart && ipcOwner?.name
+                && ipcOwner.name === current?.lanlan_name && ipcOwner.revision === current.switch_revision
+                && hasUsableCachedPreview()) return;
 
             if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
@@ -1852,7 +1860,9 @@
         // 把 IPC 注入的头像合并进 cachedPreview，让 renderAvatarPreview 的快路径直接命中，
         // 避免弹窗打开时再发一次 IPC（可能超时 → 用户看到失败态）。
         if (externalAvatarDataUrl) {
+            const { lanlan_name: name, switch_revision: revision } = window.lanlan_config || {};
             cachedPreview = {
+                ipcOwner: { name, revision },
                 cacheKey: getCurrentModelCacheKey(),
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
