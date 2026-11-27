@@ -120,8 +120,8 @@ jobs:
         # -n 4 --dist loadfile: in one measured run on windows-latest (4
         # logical / 2 physical cores) against serial, -n 2 and -n auto, -n 4
         # was the fastest with identical passed/skipped counts (PR #4176).
-        # -n auto is not used
-        # because it counts physical cores and starts only 2 workers here.
+        # -n auto is not used because it counts physical cores and starts
+        # only 2 workers here.
         # loadfile keeps each file on one worker in order, as in the Linux job.
         # --basetemp puts tmp_path on the runner work drive (D:) instead of the
         # default %TEMP% on C:, and outside the checkout.
