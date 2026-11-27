@@ -383,12 +383,22 @@ _DYNAMIC_WRITERS = frozenset({
     "getattr", "getattr_static",
     # Another module object behind "import socket".
     "modules", "meta_path", "path_hooks",
+    # A writable namespace dict (f.__globals__["socket"] = ...), or a writer
+    # looked up by a runtime string (pydoc.locate("builtins.setattr")).
+    "__globals__", "f_globals", "f_locals", "f_builtins", "_getframe", "currentframe",
+    "get_referents", "get_referrers", "getmembers", "locate", "resolve_name", "pythonapi",
 })
+# Modules that reach a writer without spelling its name (pickle.loads of a
+# builtins.setattr global, ctypes PyObject_SetAttr); importing one at all, by
+# import or from-import, disables the downgrade.
+_OPAQUE_WRITER_MODULES = frozenset(
+    {"ctypes", "_ctypes", "pickle", "_pickle", "marshal", "copyreg", "shelve", "gc", "pydoc", "pkgutil"}
+)
 # Writers whose name argument, when a str constant, is read statically.
 _NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
 _NAME_READERS = frozenset({"getattr", "getattr_static"})
-# Modules whose dynamic-writer names are the reflective ones when imported
-# (from builtins import getattr as g); from re import compile is not.
+# Modules any from-import of which disables the downgrade (from functools
+# import partial can wrap setattr; from sys import modules swaps socket).
 _REFLECTION_MODULES = frozenset(
     {"builtins", "operator", "_operator", "inspect", "sys", "importlib", "functools", "_functools"}
 )
@@ -494,29 +504,6 @@ def _super_call(node) -> bool:
     )
 
 
-def _module_suffixes(paths) -> set[str]:
-    """Every dotted tail of the plugin's own module paths (pkg/compat.py gives
-    pkg.compat and compat), so an absolute import of a plugin module matches
-    however deep the plugin is mounted (plugin.plugins.x.compat)."""
-    suffixes: set[str] = set()
-    for path in paths:
-        parts = str(path).replace("\\", "/").split("/")
-        if not parts[-1].endswith(".py"):
-            continue
-        parts[-1] = parts[-1][:-3]
-        if parts[-1] == "__init__":
-            parts.pop()
-        suffixes.update(".".join(parts[index:]) for index in range(len(parts)))
-    suffixes.discard("")
-    return suffixes
-
-
-def _own_module(module: str, own_modules: set[str]) -> bool:
-    """module (from module import ...) may be one of the plugin's own files."""
-    parts = module.split(".") if module else []
-    return any(".".join(parts[index:]) in own_modules for index in range(len(parts)))
-
-
 def _families_written(sources, walker, written=None) -> bool:
     """The plugin's own code may rebind a socket family constant.
 
@@ -547,8 +534,6 @@ def _families_written(sources, walker, written=None) -> bool:
     imports from socket (socket.socket.connect = ..., S.connect = ... after
     from socket import socket as S), directly or by a constant setattr.
     """
-    sources = list(sources)
-    own_modules = _module_suffixes(relative for relative, _ in sources)
     for relative, source in sources:
         walker.poll()
         parts = str(relative).replace("\\", "/").split("/")
@@ -575,19 +560,19 @@ def _families_written(sources, walker, written=None) -> bool:
                 return True
             if isinstance(node, ast.Import):
                 socket_names.update(item.asname or item.name for item in node.names if item.name == "socket")
+                if any(item.name.split(".")[0] in _OPAQUE_WRITER_MODULES for item in node.names):
+                    return True
             elif isinstance(node, ast.ImportFrom):
                 if node.module == "socket" and not node.level:
                     socket_names.update(item.asname or item.name for item in node.names)
-                module = node.module or ""
-                reflective = not node.level and module.split(".")[0] in _REFLECTION_MODULES
-                if (reflective or node.level or _own_module(module, own_modules)) and any(
-                    item.name in _DYNAMIC_WRITERS or (reflective and item.name == "*") for item in node.names
-                ):
-                    # from builtins import getattr as g; from operator import attrgetter;
-                    # from builtins import *; from .compat import setattr as sa
-                    # (re-exported by the plugin's own module). Matching by
-                    # module tail errs strict: from .utils import compile, or a
-                    # plugin json.py with from json import ..., also counts.
+                if (
+                    not node.level
+                    and (node.module or "").split(".")[0] in (_REFLECTION_MODULES | _OPAQUE_WRITER_MODULES)
+                ) or any(item.name in _DYNAMIC_WRITERS or item.name == "*" for item in node.names):
+                    # Strict on purpose: any name from a reflective module, a
+                    # writer name from any module (from .compat import setattr
+                    # as sa, from re import compile), and any star import
+                    # (compat.py: from builtins import *) may hand over a writer.
                     return True
             elif isinstance(node, ast.Call):
                 callee = node.func

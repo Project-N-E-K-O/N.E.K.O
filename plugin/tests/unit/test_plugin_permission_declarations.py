@@ -3121,15 +3121,19 @@ def test_a_globals_call_disables_the_downgrade(tmp_path):
 @pytest.mark.parametrize(
     "imports,downgraded",
     [
-        ("from re import compile as rc\n", True),
+        ("from re import compile as rc\n", False),
         ("from os.path import getattr_like\n", True),
+        ("from os.path import join\n", True),
+        ("from functools import partial\n", False),
+        ("from sys import argv\n", False),
+        ("from os.path import *\n", False),
         ("from operator import attrgetter\n", False),
         ("from _operator import methodcaller as mc\n", False),
         ("from inspect import getattr_static as g\n", False),
         ("from builtins import getattr as g\n", False),
     ],
 )
-def test_only_reflective_imports_disable_the_downgrade(tmp_path, imports, downgraded):
+def test_writer_reflective_and_star_imports_disable_the_downgrade(tmp_path, imports, downgraded):
     report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + imports, 1))
     basis = "resolved_name" if downgraded else "resolved_call"
     assert _bases(report) == {CONNECT: basis, LISTEN: basis}
@@ -3162,10 +3166,95 @@ def test_a_star_import_of_builtins_disables_the_downgrade(tmp_path):
     # writer re-exported from it is then used under any name.
     report = _scan(tmp_path, _UNIX_SERVER, **{"compat.py": "from builtins import *\n"})
     assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
-    report = _scan(tmp_path, _UNIX_SERVER, **{"compat.py": "from os.path import *\n"})
-    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
 
 
-def test_writer_names_from_third_party_modules_keep_the_downgrade(tmp_path):
-    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\nfrom re import compile\n", 1))
-    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+# Import and alias forms that may hand a rewritten socket or a writer to the
+# plugin; each keeps the whole plugin from the downgrade. (main.py, other files)
+_IMPORT_AND_ALIAS_FORMS = {
+    "relative_reexport": (
+        "from .compat import sa\nsa(socket, 'socket', Fake)\n",
+        {"compat.py": "from builtins import setattr as sa\n"},
+    ),
+    "two_hop_reexport_renamed": (
+        "from .c2 import w as q\nq(socket, 'socket', Fake)\n",
+        {"c1.py": "from builtins import setattr as w\n", "c2.py": "from .c1 import w\n"},
+    ),
+    "absolute_package_reexport": (
+        "from pkg.c2 import q\nq(socket, 'socket', Fake)\n",
+        {"pkg/__init__.py": "", "pkg/c1.py": "from builtins import setattr as w\n",
+         "pkg/c2.py": "from pkg.c1 import w as q\n"},
+    ),
+    "module_reexport": (
+        "from .compat import B\nB.setattr(socket, 'socket', Fake)\n",
+        {"compat.py": "import builtins as B\n"},
+    ),
+    "star_chain": (
+        "from .c2 import *\nsetattr(socket, 'socket', Fake)\n",
+        {"c1.py": "from builtins import *\n", "c2.py": "from .c1 import *\n"},
+    ),
+    "builtins_module_alias": ("import builtins as b\nb.setattr(socket, 'socket', Fake)\n", {}),
+    "dunder_builtins_attr": ("__builtins__.setattr(socket, 'socket', Fake)\n", {}),
+    "dunder_builtins_item": ("__builtins__['setattr'](socket, 'socket', Fake)\n", {}),
+    "dunder_import": ("__import__('builtins').setattr(socket, 'socket', Fake)\n", {}),
+    "import_module": (
+        "import importlib\nimportlib.import_module('builtins').setattr(socket, 'socket', Fake)\n", {}
+    ),
+    "importlib_util": ("from importlib.util import find_spec\n", {}),
+    "renamed": ("w = setattr\nw(socket, 'socket', Fake)\n", {}),
+    "in_container": ("ws = [setattr]\nws[0](socket, 'socket', Fake)\n", {}),
+    "as_argument": ("def f(w):\n    w(socket, 'socket', Fake)\nf(setattr)\n", {}),
+    "as_default": ("def f(w=setattr):\n    w(socket, 'socket', Fake)\nf()\n", {}),
+    "try_import": (
+        "try:\n    from builtins import setattr as w\nexcept ImportError:\n    w = None\n"
+        "w(socket, 'socket', Fake)\n", {}
+    ),
+    "if_import": ("if True:\n    from builtins import setattr as w\nw(socket, 'socket', Fake)\n", {}),
+    "local_import": (
+        "def f():\n    from builtins import setattr as w\n    w(socket, 'socket', Fake)\nf()\n", {}
+    ),
+    "sys_modules": ("import sys\nsys.modules['socket'].socket = Fake\n", {}),
+    "sys_modules_from": ("from sys import modules as M\nM['socket'].socket = Fake\n", {}),
+    "methodcaller": (
+        "import operator\noperator.methodcaller('__setattr__', 'socket', Fake)(socket)\n", {}
+    ),
+    "partial": ("import functools\nfunctools.partial(setattr, socket)('socket', Fake)\n", {}),
+    "from_functools": ("from functools import partial\n", {}),
+    "private_operator": ("import _operator\n_operator.attrgetter('socket')\n", {}),
+    "private_functools": ("from _functools import partial\n", {}),
+    "ctypes": (
+        "import ctypes\nctypes.pythonapi.PyObject_SetAttr(ctypes.py_object(socket), "
+        "ctypes.py_object('soc' + 'ket'), ctypes.py_object(Fake))\n", {}
+    ),
+    "function_globals": ("socket.create_connection.__globals__['soc' + 'ket'] = Fake\n", {}),
+    "globals_update": ("g = socket.create_connection\ng.__globals__.update({'soc' + 'ket': Fake})\n", {}),
+    "frame_globals": ("import sys\nsys._getframe().f_globals['soc' + 'ket'] = Fake\n", {}),
+    "inspect_frame": ("import inspect\ninspect.currentframe().f_globals['soc' + 'ket'] = Fake\n", {}),
+    "gc_referents": ("import gc\ngc.get_referents(socket)[0]['soc' + 'ket'] = Fake\n", {}),
+    "pydoc_locate": ("import pydoc\npydoc.locate('builtins.set' + 'attr')(socket, 'soc' + 'ket', Fake)\n", {}),
+    "pkgutil_resolve": (
+        "import pkgutil\npkgutil.resolve_name('builtins:set' + 'attr')(socket, 'soc' + 'ket', Fake)\n", {}
+    ),
+    "pickle_global": (
+        "import pickle\npickle.loads(b'cbuiltins\\nset' + b'attr\\n.')(socket, 'soc' + 'ket', Fake)\n", {}
+    ),
+    "getmembers": (
+        "import inspect, builtins\ndict(inspect.getmembers(builtins))['set' + 'attr'](socket, 'soc' + 'ket', Fake)\n",
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_IMPORT_AND_ALIAS_FORMS))
+def test_import_and_alias_forms_disable_the_downgrade(tmp_path, form):
+    code, files = _IMPORT_AND_ALIAS_FORMS[form]
+    source = "import socket\nclass Fake:\n    pass\n" + code + _UNIX_SERVER.replace("import socket\n", "", 1)
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_plain_imports_keep_the_downgrade(tmp_path):
+    source = "import socket\nimport os, json, types\nfrom pathlib import Path\n" + _UNIX_SERVER.replace(
+        "import socket\n", "", 1
+    )
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
