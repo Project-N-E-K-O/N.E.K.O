@@ -24,12 +24,13 @@ async function flushDialogTransition() {
 }
 function buttons(label: string) { return [...document.querySelectorAll<HTMLButtonElement>('button')].filter(row => row.textContent?.trim() === label) }
 
-async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack> = {}) {
+async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack> = {}, exportsOnly = false) {
   const root = document.createElement('div')
   document.body.append(root)
   const pack = { pack_id: 'imp.test', source: { name: 'Notes', homepage: '', license: '' }, enabled: false,
     origin: 'imported', sources_managed: true, chunks_ready: 2, chunks_total: 2, export_ready: true, vector_state: 'complete', ...extra } as KnowledgePack
-  const state = reactive({ modelValue: true, pack: pack as KnowledgePack | null, jobs, onUpdated: vi.fn() })
+  // A fresh global history hydrates durable jobs without an installed pack.
+  const state = reactive({ modelValue: true, pack: (exportsOnly ? null : pack) as KnowledgePack | null, jobs, exportsOnly, onUpdated: vi.fn() })
   const app = createApp({ render: () => h(KnowledgePackDrawer, state) })
   app.use(ElementPlus)
   app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': enUS } }))
@@ -65,6 +66,39 @@ afterEach(async () => {
 })
 
 describe('pack documents, versions and publication', () => {
+  it('loads retained v2 exports without an installed pack or source request', async () => {
+    const jobs = ['imp.deleted', 'imp.other'].map((pack_id, index) => ({
+      job_id: `retained-${index}`, pack_id, kind: 'pack_export', state: 'active',
+      created_at: '2026-11-19T07:00:00Z', result: { artifact_id: String(index).repeat(64),
+        name: `Retained ${index}`, format_version: 2, bytes: 1024 },
+    } as KnowledgePackJob))
+    // Retained legacy records are untrusted input outside the v2 API type.
+    const retired = { ...jobs[0]!, job_id: 'retired', result: { ...jobs[0]!.result!, format_version: 1 } } as unknown as KnowledgePackJob
+    await mount([...jobs,
+      { ...jobs[0]!, job_id: 'pending', state: 'queued', result: undefined }, retired,
+    ], {}, true)
+    expect([...document.querySelectorAll('.artifact-name')].map(row => row.textContent)).toEqual(['Retained 0', 'Retained 1'])
+    expect(document.querySelector('.export-count')!.textContent).toBe('2')
+    expect(buttons('Export data package')).toHaveLength(0)
+    expect(api.sources).not.toHaveBeenCalled()
+  })
+
+  it('downloads a retained export without a pack using its frozen response name', async () => {
+    const filename = 'Retained_2026-11-19_15-00-00.neko-knowledge.zip'
+    api.artifact.mockResolvedValue({ blob: new Blob(['zip']), filename })
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:retained-export')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function(this: HTMLAnchorElement) {
+      expect(this.download).toBe(filename)
+    })
+    await mount([{ job_id: 'retained', pack_id: 'imp.deleted', kind: 'pack_export', state: 'active',
+      result: { artifact_id: 'f'.repeat(64), format_version: 2, name: 'Retained' } } as KnowledgePackJob], {}, true)
+    expect(buttons('Download')).toHaveLength(1)
+    buttons('Download')[0]!.click()
+    await flush()
+    expect(api.artifact).toHaveBeenCalledWith('f'.repeat(64))
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+
   it.each([null, { pack_id: 'imp.other', source: { name: 'Other' }, sources_managed: true } as KnowledgePack])('does not delete a document after the confirmation target changes (%s)', async nextPack => {
     let confirm!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
     vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise(resolve => { confirm = resolve }))
@@ -79,9 +113,9 @@ describe('pack documents, versions and publication', () => {
     expect(document.body.textContent).toContain(enUS.knowledge.reasons.not_found)
   })
 
-  it('keeps a frozen publication request when switching between artifacts', async () => {
+  it.each([false, true])('keeps a frozen publication request when switching artifacts and global mode (%s)', async exportsOnly => {
     api.publish.mockRejectedValue(new KnowledgeApiError('knowledge_timeout'))
-    await mount(['a', 'b'].map(id => ({ job_id: `export-${id}`, pack_id: 'imp.test', kind: 'pack_export', state: 'active',
+    const state = await mount(['a', 'b'].map(id => ({ job_id: `export-${id}`, pack_id: 'imp.test', kind: 'pack_export', state: 'active',
       result: { artifact_id: id.repeat(64), format_version: 2, name: `Artifact ${id}` } } as KnowledgePackJob)))
     buttons('Publish to market')[0]!.click()
     await flush()
@@ -98,6 +132,11 @@ describe('pack documents, versions and publication', () => {
     const original = api.publish.mock.calls[0]![0]
     buttons('Cancel').at(-1)!.click()
     await flush()
+    if (exportsOnly) {
+      state.pack = null
+      state.exportsOnly = true
+      await flush()
+    }
     buttons('Publish to market')[1]!.click()
     await flush()
     buttons('Cancel').at(-1)!.click()
@@ -366,14 +405,14 @@ describe('pack documents, versions and publication', () => {
     expect(row.querySelectorAll('button')).toHaveLength(0)
   })
 
-  it.each([false, true])('confirms deletion and hides the row only after the server succeeds (retained=%s)', async retained => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])('confirms deletion and hides the row only after the server succeeds (retained=%s, global=%s)', async (retained, exportsOnly) => {
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(confirmAction)
     let finish!: (result: object) => void
     api.deleteExport.mockReturnValue(new Promise(resolve => { finish = resolve }))
     await mount([{ job_id: 'export-delete', pack_id: 'imp.test', kind: 'pack_export', state: 'active',
       created_at: '2026-11-19T07:00:00Z', result: {
         artifact_id: 'd'.repeat(64), name: 'Published notes', format_version: 2, bytes: 1024,
-      } } as KnowledgePackJob])
+      } } as KnowledgePackJob], {}, exportsOnly)
     buttons('Delete')[0]!.click()
     await flush()
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Published notes'), 'Delete this export', expect.any(Object))

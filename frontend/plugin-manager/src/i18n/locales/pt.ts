@@ -247,6 +247,7 @@ export default {
     exportReadyHint: "Os vetores estão prontos. Você já pode exportar o pacote.",
     exportAutoVersionHint: "As versões são gerenciadas automaticamente. Não é preciso preenchê-las.",
     exportHistoryTitle: "Pacotes exportados",
+    retainedExportsHint: "As exportações concluídas são mantidas separadamente. Você pode baixá-las, publicá-las ou excluí-las aqui mesmo após remover o pacote original.",
     exportEmpty: "As exportações concluídas aparecem aqui para baixar ou publicar no mercado.",
     exportCompleted: "Exportado",
     exportTime: "Data da exportação",

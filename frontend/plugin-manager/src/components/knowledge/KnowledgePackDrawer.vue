@@ -1,11 +1,11 @@
 <template>
-  <el-drawer :model-value="modelValue" :title="pack?.source.name || pack?.pack_id" size="min(760px, 96vw)" @close="emit('update:modelValue', false)">
-    <template v-if="pack">
-      <div class="pack-summary">
+  <el-drawer :model-value="modelValue" :title="exportsOnly ? t('knowledge.exportHistoryTitle') : pack?.source.name || pack?.pack_id" size="min(760px, 96vw)" @close="emit('update:modelValue', false)">
+    <template v-if="pack || exportsOnly">
+      <div v-if="pack && !exportsOnly" class="pack-summary">
         <el-tag :type="pack.enabled === false ? 'info' : 'success'">{{ t(pack.enabled === false ? 'knowledge.entryDisabled' : 'knowledge.entryEnabled') }}</el-tag>
         <span>{{ t('knowledge.vectorCounts', { ready: pack.chunks_ready, total: pack.chunks_total }) }}</span>
       </div>
-      <template v-if="pack.sources_managed === true">
+      <template v-if="pack && !exportsOnly && pack.sources_managed === true">
       <h3>{{ t('knowledge.sourceDocuments') }}</h3>
       <input ref="sourceInput" type="file" accept=".txt,.md,.docx,.pdf" hidden @change="selectSource" />
       <el-button v-if="!pack.retained" type="primary" plain @click="chooseSource()">{{ t('knowledge.addSource') }}</el-button>
@@ -24,7 +24,7 @@
       </template>
 
       <section class="export-panel">
-        <div class="export-create">
+        <div v-if="pack && !exportsOnly" class="export-create">
           <div class="export-heading">
             <span class="export-icon" aria-hidden="true"><el-icon :size="22"><FolderOpened /></el-icon></span>
             <div class="export-heading-copy">
@@ -46,6 +46,7 @@
             <p class="export-version-hint">{{ t('knowledge.exportAutoVersionHint') }}</p>
           </template>
         </div>
+        <p v-if="exportsOnly" class="export-version-hint">{{ t('knowledge.retainedExportsHint') }}</p>
         <div class="export-history-heading">
           <h4>{{ t('knowledge.exportHistoryTitle') }}</h4>
           <span class="export-count">{{ exports.length }}</span>
@@ -59,7 +60,7 @@
             <span class="artifact-icon" aria-hidden="true"><el-icon :size="22"><Document /></el-icon></span>
             <div class="artifact-info">
               <!-- Opaque task/release identities remain protocol metadata, never card titles. -->
-              <div class="artifact-name">{{ job.result?.name || pack.source.name || t('knowledge.pack') }}</div>
+              <div class="artifact-name">{{ job.result?.name || pack?.source.name || t('knowledge.pack') }}</div>
               <div class="artifact-meta">
                 <time :datetime="job.created_at" :title="t('knowledge.exportTime')">{{ formatTime(job.created_at, true) }}</time>
                 <span v-if="job.result" :title="t('knowledge.exportSize')">{{ formatSize(job.result.bytes) }}</span>
@@ -120,7 +121,9 @@ import dayjs from 'dayjs'
 import { createKnowledgePublicationId, knowledgeApi, knowledgeFailureReason, type KnowledgeDocument, type KnowledgeDocumentVersion, type KnowledgeImportResponse, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
 import KnowledgeSourceImport from './KnowledgeSourceImport.vue'
 
-const props = defineProps<{ modelValue: boolean; pack: KnowledgePack | null; jobs: KnowledgePackJob[] }>()
+// The global export history has no live pack. Reuse this instance's existing
+// deletion tombstones and frozen publication requests when switching modes.
+const props = defineProps<{ modelValue: boolean; pack: KnowledgePack | null; jobs: KnowledgePackJob[]; exportsOnly?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [boolean]; updated: [response?: KnowledgeImportResponse] }>()
 const { t, locale } = useI18n()
 const documents = ref<KnowledgeDocument[]>([])
@@ -169,21 +172,22 @@ let generation = 0
 let historyGeneration = 0
 // Retain old tasks on disk without exposing a retired JSON artifact's download.
 const exports = computed(() => props.jobs.filter(job => job.kind === 'pack_export'
-  && job.pack_id === props.pack?.pack_id && !deletedExports.value.has(job.job_id)
+  && (props.exportsOnly ? job.state === 'active' && Boolean(job.result?.artifact_id) : job.pack_id === props.pack?.pack_id)
+  && !deletedExports.value.has(job.job_id)
   && (!job.result || job.result.format_version === 2)))
 
-watch([() => props.modelValue, () => props.pack?.pack_id], () => {
+watch([() => props.modelValue, () => props.pack?.pack_id, () => props.exportsOnly], () => {
   generation += 1
   historyGeneration += 1
   documents.value = []
   historyOpen.value = false
   acknowledged.value = false
   sourceDialog.value = false
-  if (props.modelValue && props.pack) void loadDocuments()
+  if (props.modelValue && props.pack && !props.exportsOnly) void loadDocuments()
 }, { immediate: true })
 watch(requiresAcknowledgment, () => { acknowledged.value = false })
 watch(() => props.jobs.map(job => `${job.job_id}:${job.state}`).join('|'), () => {
-  if (props.modelValue && props.pack) void loadDocuments()
+  if (props.modelValue && props.pack && !props.exportsOnly) void loadDocuments()
 })
 onBeforeUnmount(() => { generation += 1; historyGeneration += 1 })
 

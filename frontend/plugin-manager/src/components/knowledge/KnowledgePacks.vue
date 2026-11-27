@@ -4,6 +4,10 @@
       <input ref="fileInput" type="file" accept=".json,.zip,.txt,.md,.docx,.pdf" hidden @change="emit('import', $event)" />
       <el-button type="primary" :loading="importing" @click="fileInput?.click()">{{ t('knowledge.importPack') }}</el-button>
       <span class="toolbar__hint">{{ t('knowledge.importHint') }}</span>
+      <!-- Completed artifacts remain accessible independently of installed packs. -->
+      <el-button data-testid="knowledge-completed-exports" @click="emit('open-exports')">
+        {{ t('knowledge.exportHistoryTitle') }}
+      </el-button>
       <el-button class="toolbar__end" :loading="marketOpening" @click="emit('open-market')">
         {{ t('knowledge.openMarket') }}
       </el-button>
@@ -224,6 +228,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   import: [event: Event]
   'open-market': []
+  'open-exports': []
   'cancel-job': [job: KnowledgePackJob]
   'retry-job': [job: KnowledgePackJob]
   'discard-job': [job: KnowledgePackJob]

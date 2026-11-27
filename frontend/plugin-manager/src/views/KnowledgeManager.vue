@@ -25,7 +25,7 @@
         <KnowledgePacks
           :packs="packs" :packs-loading="packsLoading" :jobs="packJobs" :retried-jobs="retriedJobs"
           :pending-jobs="pendingJobs" :pending-packs="pendingPacks" :importing="importing" :market-opening="marketOpening"
-          @import="importSelectedPack" @open-market="openKnowledgeMarket"
+          @import="importSelectedPack" @open-market="openKnowledgeMarket" @open-exports="openCompletedExports"
           @cancel-job="cancelJob" @retry-job="retryJob" @discard-job="discardJob"
           @enabled="setPackEnabled" @material-type="setPackMaterialType" @index-policy="setPackIndexPolicy"
           @auto-context="setPackAuto" @open-pack="openPack" @remove-pack="removePack"
@@ -37,7 +37,7 @@
     </el-tabs>
 
     <KnowledgeEntryDrawer v-model="drawerOpen" :selected-entry="selectedEntry" />
-    <KnowledgePackDrawer v-model="packDrawerOpen" :pack="selectedPack" :jobs="packJobs" @updated="sourceCommitted" />
+    <KnowledgePackDrawer v-model="packDrawerOpen" :pack="selectedPack" :jobs="packJobs" :exports-only="exportsOnly" @updated="sourceCommitted" />
     <KnowledgeSourceImport v-model="sourceDialogOpen" :file="sourceFile" :packs="packs" @committed="sourceCommitted" />
   </div>
 </template>
@@ -119,6 +119,7 @@ const marketOpening = ref(false)
 const sourceFile = ref<File | null>(null)
 const sourceDialogOpen = ref(false)
 const packDrawerOpen = ref(false)
+const exportsOnly = ref(false)
 const selectedPackId = ref('')
 const selectedPack = computed(() => packs.value.find(row => row.pack_id === selectedPackId.value) ?? null)
 
@@ -488,7 +489,16 @@ async function mutatePack(row: KnowledgePack, mutation: () => Promise<void>) {
 }
 
 function openPack(row: KnowledgePack) {
+  exportsOnly.value = false
   selectedPackId.value = row.pack_id
+  packDrawerOpen.value = true
+}
+
+function openCompletedExports() {
+  // Use retained task/artifact facts, never a fabricated installed pack. The
+  // same drawer preserves uncertain publication requests across both entries.
+  selectedPackId.value = ''
+  exportsOnly.value = true
   packDrawerOpen.value = true
 }
 

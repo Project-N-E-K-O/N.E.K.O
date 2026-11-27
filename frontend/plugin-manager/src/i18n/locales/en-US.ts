@@ -247,6 +247,7 @@ export default {
     exportReadyHint: "Vectors are ready. You can export this pack.",
     exportAutoVersionHint: "Versions are managed automatically. No input needed.",
     exportHistoryTitle: "Exported packages",
+    retainedExportsHint: "Completed exports are retained independently. You can download, publish or delete them here after removing the original pack.",
     exportEmpty: "Completed exports appear here for download or market publication.",
     exportCompleted: "Exported",
     exportTime: "Exported at",

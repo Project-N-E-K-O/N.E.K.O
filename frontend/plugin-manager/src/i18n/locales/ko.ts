@@ -247,6 +247,7 @@ export default {
     exportReadyHint: "벡터가 준비되었습니다. 팩을 내보낼 수 있습니다.",
     exportAutoVersionHint: "버전은 자동으로 관리되므로 입력할 필요가 없습니다.",
     exportHistoryTitle: "내보낸 패키지",
+    retainedExportsHint: "완료된 내보내기는 별도로 보관됩니다. 원본 팩을 제거한 후에도 여기에서 다운로드하거나 마켓에 게시하거나 삭제할 수 있습니다.",
     exportEmpty: "내보내기가 완료되면 여기에서 다운로드하거나 마켓에 공개할 수 있습니다.",
     exportCompleted: "내보내기 완료",
     exportTime: "내보낸 시간",

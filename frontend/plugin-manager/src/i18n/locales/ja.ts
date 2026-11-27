@@ -247,6 +247,7 @@ export default {
     exportReadyHint: "ベクトルの準備が完了しました。書き出せます。",
     exportAutoVersionHint: "バージョンは自動管理されるため、入力は不要です。",
     exportHistoryTitle: "書き出したパック",
+    retainedExportsHint: "完了したエクスポートは個別に保持されます。元のパックを削除した後も、ここからダウンロード、市場への公開、削除ができます。",
     exportEmpty: "書き出しが完了すると、ここからダウンロードやマーケットへの公開ができます。",
     exportCompleted: "書き出し完了",
     exportTime: "書き出し日時",

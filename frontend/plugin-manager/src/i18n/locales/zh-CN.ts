@@ -247,6 +247,7 @@ export default {
     exportReadyHint: "向量已就绪，可直接导出",
     exportAutoVersionHint: "版本由系统自动管理，无需填写。",
     exportHistoryTitle: "已导出的数据包",
+    retainedExportsHint: "导出会独立保留。即使原知识包已移除，仍可在这里下载、发布到市场或删除导出。",
     exportEmpty: "导出完成后，可在这里下载或发布到市场。",
     exportCompleted: "已导出",
     exportTime: "导出时间",
