@@ -517,6 +517,9 @@ const messages: PowerMessages = {
       mcp_server: 'MCP 서버 사용',
       usage_limit: '사용량 한도를 넘겨 계속하기',
       browser_reopen: '브라우저 다시 열기',
+      enable_browser: '브라우저 제어 켜기',
+      enable_keyboard_mouse: '키보드·마우스 제어 켜기',
+      enable_plugins: '사용자 플러그인 켜기',
       session_action: '다른 사역마에 대한 동작',
     },
     facts: {
