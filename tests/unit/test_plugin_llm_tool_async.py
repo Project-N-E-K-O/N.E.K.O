@@ -3225,7 +3225,10 @@ async def test_a_failing_reconcile_does_not_replace_the_register_error(monkeypat
             plugin_id=PLUGIN_ID, name="tool_a", description="d", parameters={}, timeout_seconds=12.0,
         )
 
-    assert "could not be confirmed" in " ".join(getattr(caught.value, "__notes__", []))
+    notes = " ".join(getattr(caught.value, "__notes__", []))
+    assert "reconciling the registration of 'tool_a' failed" in notes
+    assert "it is tracked" not in notes  # nothing was tracked
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     assert registry._name_locks == {}
 
 

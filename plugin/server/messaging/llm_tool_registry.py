@@ -569,6 +569,7 @@ async def _register_remote_tool_locked(
             ))
             if interrupted:
                 raise asyncio.CancelledError() from exc
+            reconcile_failed = False
             try:
                 withdrawn = task.result()
             except Exception as reconcile_exc:
@@ -578,7 +579,7 @@ async def _register_remote_tool_locked(
                     "err_type={}, err={}",
                     plugin_id, name, type(reconcile_exc).__name__, str(reconcile_exc),
                 )
-                withdrawn = False
+                withdrawn, reconcile_failed = False, True
             if stopped():
                 # Stopped during the reconcile: nothing was tracked, report
                 # it like any other register that ended after the stop. The
@@ -589,12 +590,20 @@ async def _register_remote_tool_locked(
                     " cleanup, sent after this register, normally removes it",
                 ) from exc
             # Shown with the traceback the notification path logs.
-            exc.add_note(
-                f"host: the registration of '{name}' was withdrawn from main_server"
-                if withdrawn else
-                f"host: withdrawing the registration of '{name}' could not be confirmed;"
-                " it is tracked so model calls are routed"
-            )
+            if withdrawn:
+                note = f"host: the registration of '{name}' was withdrawn from main_server"
+            elif reconcile_failed:
+                # The reconcile may have failed before tracking anything.
+                note = (
+                    f"host: reconciling the registration of '{name}' failed; its withdrawal"
+                    " could not be confirmed and it may not be tracked"
+                )
+            else:
+                note = (
+                    f"host: withdrawing the registration of '{name}' could not be confirmed;"
+                    " it is tracked so model calls are routed"
+                )
+            exc.add_note(note)
         raise
 
     if plugin_stopped:
