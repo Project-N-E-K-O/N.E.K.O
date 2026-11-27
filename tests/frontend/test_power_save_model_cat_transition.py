@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("model_type", ["live2d", "vrm", "mmd", "pngtuber"])
 def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     page.set_content(
-        f'<div id="{model_type}-container"><canvas width="160" height="230"></canvas></div>'
+        f'<div id="{model_type}-container"><canvas id="{model_type}-canvas" width="160" height="230"></canvas></div>'
     )
     page.add_style_tag(path=str(ROOT / "static/css/index.css"))
     page.add_style_tag(
@@ -51,11 +51,17 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     )
     container = page.locator(f"#{model_type}-container")
     if model_type == "live2d":
+        page.evaluate("""() => {
+            const canvas = document.getElementById('live2d-canvas');
+            canvas.style.setProperty('opacity', '0', 'important');
+            canvas.style.setProperty('pointer-events', 'none', 'important');
+        }""")
         page.add_script_tag(path=str(ROOT / "static/tutorial/core/universal-manager.js"))
         page.evaluate("UniversalTutorialManager.prototype.restoreTutorialLive2dDisplayState.call({}, 'pending-form-test')")
         assert not page.locator('body').evaluate("el => el.classList.contains('yui-guide-live2d-preparing')")
         assert not page.locator('body').evaluate("el => el.classList.contains('yui-guide-return-petal-fade')")
         assert page.locator('body').evaluate("el => el.style.getPropertyValue('--yui-guide-return-avatar-opacity')") == ""
+        assert container.locator("canvas").evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
     assert container.evaluate("el => getComputedStyle(el).opacity") == "0"
     assert container.locator("canvas").evaluate("el => getComputedStyle(el).opacity") == "1"
     assert container.locator("canvas").evaluate(
@@ -69,6 +75,7 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     assert container.evaluate("el => el.style.transition") == ""
     assert page.locator("#neko-model-cat-transition").count() == 0
     if model_type == "live2d":
+        assert container.locator("canvas").evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
         page.evaluate("UniversalTutorialManager.prototype.restoreTutorialLive2dDisplayState.call({}, 'form-ready-test')")
         assert container.evaluate("el => getComputedStyle(el).opacity") == "1"
 

@@ -2150,6 +2150,15 @@
                 if (isCurrentReturn()) {
                     I.nekoCatReturnOperation = null;
                     I.nekoCatReturnInProgress = false;
+                    try {
+                        const returnContainer = I.getVisibleIdleReturnBallContainer();
+                        if (returnContainer && (returnContainer.style.visibility === 'hidden'
+                            || returnContainer.style.opacity === '0')) {
+                            I.revealReturnBallContainer(returnContainer, 'return-aborted');
+                        }
+                    } catch (error) {
+                        console.warn('[App] 恢复中止返回按钮失败:', error);
+                    }
                 }
                 publishReturnAbort();
             };

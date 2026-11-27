@@ -2545,7 +2545,7 @@ class UniversalTutorialManager {
         const formPending = pendingContainer && typeof pendingContainer.getAttribute === 'function'
             && pendingContainer.getAttribute('data-neko-model-form-pending') === 'true';
         const preservePreparingOpacity = options && options.preservePreparingOpacity === true;
-        const preserveOpacity = formPending || (options && options.preserveOpacity === true);
+        const preserveOpacity = options && options.preserveOpacity === true;
         if (document.body && document.body.classList) {
             if (!preservePreparingOpacity) {
                 document.body.classList.remove('yui-guide-live2d-preparing');
@@ -2564,7 +2564,7 @@ class UniversalTutorialManager {
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            if (preserveOpacity) {
+            if (formPending || preserveOpacity) {
                 // 探身演出或省算力形态准备接管透明度，保活仍需清理教程隐藏状态。
             } else if (preservePreparingOpacity) {
                 live2dContainer.style.removeProperty('opacity');
@@ -2581,7 +2581,7 @@ class UniversalTutorialManager {
             live2dCanvas.style.visibility = 'visible';
             live2dCanvas.style.removeProperty('transition');
             if (preserveOpacity) {
-                // 探身演出或省算力形态准备接管透明度，保活仍需清理教程隐藏状态。
+                // 探身演出接管 canvas 透明度；形态准备只隐藏父容器，仍恢复画布。
             } else if (preservePreparingOpacity) {
                 live2dCanvas.style.removeProperty('opacity');
                 live2dCanvas.style.removeProperty('pointer-events');
