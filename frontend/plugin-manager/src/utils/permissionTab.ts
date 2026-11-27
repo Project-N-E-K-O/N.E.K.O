@@ -1,0 +1,201 @@
+/**
+ * View model of the plugin permission tab: declaration (left) against the
+ * scan (right), one line per permission, most dangerous tier first.
+ *
+ * Pure functions over the panel data, so every data state is unit tested
+ * without the component.
+ */
+import { isAxiosError } from 'axios'
+import type {
+  ManifestStatus,
+  PanelRow,
+  PermissionCatalog,
+  PermissionPanel,
+  PendingPermissions,
+  RiskTier,
+  UsageHistory,
+} from '@/api/pluginPermissions'
+import { readErrorCode } from '@/utils/request'
+import { permissionErrorKey } from '@/utils/pluginPermissionErrors'
+
+export const LISTED_TIERS: RiskTier[] = ['high', 'medium', 'low']
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** A plugin.toml that was read but cannot be used counts as no declaration. */
+export function declarationUsable(manifest: ManifestStatus): boolean {
+  return manifest === 'read' || manifest === 'cached'
+}
+
+/** Where the switch (declared) or the allow / refuse buttons (not declared) go. */
+export function controlSide(row: PanelRow, manifest: ManifestStatus): 'left' | 'right' {
+  return declarationUsable(manifest) && row.declared ? 'left' : 'right'
+}
+
+/**
+ * The marker between the two columns: '=' both sides, '≠' found but not
+ * declared, '?' declared but not found. Nothing when the declaration is
+ * unknown or the scan has not given an answer.
+ */
+export function reconcileMark(row: PanelRow): '=' | '≠' | '?' | '' {
+  switch (row.reconcile) {
+    case 'matched':
+      return '='
+    case 'undeclared':
+      return '≠'
+    case 'unscanned':
+      return '?'
+    default:
+      return ''
+  }
+}
+
+export interface TierSection {
+  tier: RiskTier
+  rows: PanelRow[]
+  collapsed: boolean
+}
+
+/** High, medium, low with their rows in the panel's order; safe is one sentence. */
+export function tierSections(panel: PermissionPanel): TierSection[] {
+  return LISTED_TIERS.map((tier) => {
+    const rows = panel.rows.filter((row) => row.tier === tier)
+    const info = panel.tiers.find((item) => item.tier === tier)
+    return { tier, rows, collapsed: info?.collapsed ?? false }
+  })
+}
+
+/** Some ways of reading this data are not covered yet (memory, conversations). */
+export function partialBlock(catalog: PermissionCatalog | null, permission: string): boolean {
+  if (!catalog) return false
+  return catalog.privacy_groups.some(
+    (group) => group.partial_block && group.permissions.includes(permission),
+  )
+}
+
+/** The small tag about what the host does with a use of this permission. */
+export function enforcementTag(row: PanelRow): 'notEnforcedNotTracked' | 'recordOnly' | null {
+  if (row.enforced) return null
+  return row.usage_tracked ? 'recordOnly' : 'notEnforcedNotTracked'
+}
+
+/** "When it may": granted, not required (a required item covers it). */
+export function showsCondition(row: PanelRow): boolean {
+  return row.state === 'granted' && row.declared?.level !== 'require'
+}
+
+export type ConditionLock = 'unavailable' | 'unusable' | 'notDeclared' | null
+
+/** Why "any time" cannot be chosen, or null when it can. */
+export function conditionLock(row: PanelRow, manifest: ManifestStatus): ConditionLock {
+  if (row.anytime_allowed === true) return null
+  if (row.anytime_allowed === null || manifest === 'unavailable') return 'unavailable'
+  if (manifest === 'unusable') return 'unusable'
+  return 'notDeclared'
+}
+
+export type UsageLine =
+  | { kind: 'last'; at: string; blocked: boolean; unused30d: boolean }
+  | { kind: 'unused30d' }
+  | { kind: 'unusedSince'; since: string }
+  | null
+
+/**
+ * The "last use" line. Nothing when uses are not recorded (never "never
+ * used"). "Unused for 30 days" only when the history covers 30 days; else
+ * "unused since X" from when it is complete. A system use the plugin
+ * process reported lost may hide a use: then nothing is claimed.
+ */
+export function usageLine(
+  row: PanelRow,
+  history: UsageHistory | null,
+  lostAt: string | null,
+): UsageLine {
+  if (!row.usage_tracked) return null
+  if (row.last_used) {
+    return {
+      kind: 'last',
+      at: row.last_used.at,
+      blocked: row.last_used.outcome !== 'allowed',
+      unused30d: row.unused_30d === true,
+    }
+  }
+  const granted = row.state === 'granted'
+  // The server's own answer for a granted item (it also weighs lost entries).
+  if (granted && row.unused_30d === true) return { kind: 'unused30d' }
+  if (row.permission.startsWith('system.') && lostAt) return null
+  if (!history) return null
+  if (history.last_use_covers_30d) {
+    // Granted: false (decided recently) or unknown, nothing to claim.
+    return granted ? null : { kind: 'unused30d' }
+  }
+  return history.last_use_since ? { kind: 'unusedSince', since: history.last_use_since } : null
+}
+
+/** Uses while undecided: "N times" or "at least N times". */
+export function firstUse(
+  pending: PendingPermissions | null,
+  pluginId: string,
+  row: PanelRow,
+): { count: number; atLeast: boolean } | null {
+  if (row.state !== 'undecided') return null
+  const item = pending?.first_use.find(
+    (use) => use.plugin_id === pluginId && use.permission === row.permission,
+  )
+  return item ? { count: item.count, atLeast: item.count_is_lower_bound } : null
+}
+
+/** The declaration is unknown this time: the tab is incomplete. */
+export function incomplete(panel: PermissionPanel, pending: PendingPermissions | null): boolean {
+  return panel.manifest === 'unavailable' || Boolean(pending?.incomplete.includes(panel.plugin_id))
+}
+
+/** "Today 14:02", "Yesterday 21:17", else the date. */
+export function relativeDay(value: string, now: Date = new Date()): 'today' | 'yesterday' | null {
+  const at = new Date(value)
+  if (Number.isNaN(at.getTime())) return null
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  if (at.getTime() >= start && at.getTime() < start + DAY_MS) return 'today'
+  if (at.getTime() >= start - DAY_MS && at.getTime() < start) return 'yesterday'
+  return null
+}
+
+/** Blind spot files, most first; rows without a file are not files. */
+export function blindSpotFiles(panel: PermissionPanel) {
+  return panel.blind_spots.files
+    .filter((row) => row.file && row.count > 0)
+    .slice()
+    .sort((a, b) => Number(b.high_risk) - Number(a.high_risk) || b.count - a.count)
+}
+
+/** Per file: how many finding sites and which calls, without line numbers. */
+export function scanFiles(panel: PermissionPanel, permission: string) {
+  const out = new Map<string, { file: string; sites: number; methods: string[] }>()
+  for (const finding of panel.developer.findings[permission] ?? []) {
+    const file = finding.file ?? ''
+    const entry = out.get(file) ?? { file, sites: 0, methods: [] }
+    entry.sites += 1
+    if (finding.method && !entry.methods.includes(finding.method)) entry.methods.push(finding.method)
+    out.set(file, entry)
+  }
+  return [...out.values()]
+}
+
+/** Message key for a failed allow / refuse / condition change. */
+export function decisionErrorKey(error: unknown): string {
+  if (isAxiosError(error)) {
+    const code = readErrorCode(error)
+    switch (code) {
+      case 'PLUGIN_MANIFEST_UNAVAILABLE':
+        return 'pluginConsent.tab.errors.manifestUnavailable'
+      case 'PLUGIN_MANIFEST_UNUSABLE':
+        return 'pluginConsent.tab.errors.manifestUnusable'
+      case 'PERMISSION_BACKGROUND_NOT_DECLARED':
+        return 'pluginConsent.tab.errors.backgroundNotDeclared'
+      case 'PLUGIN_OPERATION_BUSY':
+        return 'pluginConsent.tab.errors.busy'
+    }
+    const known = permissionErrorKey(code)
+    if (known) return known
+  }
+  return 'pluginConsent.saveFailed'
+}

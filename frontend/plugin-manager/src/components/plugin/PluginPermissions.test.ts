@@ -1,412 +1,390 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, getActivePinia, setActivePinia } from 'pinia'
+import { createPinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
+import { AxiosError, AxiosHeaders } from 'axios'
 import { ElMessage } from 'element-plus'
 import PluginPermissions from './PluginPermissions.vue'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
-import type { PluginConsent } from '@/api/pluginConsent'
+import type { PermissionPanel } from '@/api/pluginPermissions'
+import { panel, row } from '@/utils/permissionTab.fixtures'
 
 const api = vi.hoisted(() => ({
-  getPluginConsent: vi.fn(),
-  approvePluginConsent: vi.fn(),
-  rejectPluginConsent: vi.fn(),
-  revokePluginConsent: vi.fn(),
-  getPluginConsentNotices: vi.fn(),
-  analyzePluginCapabilities: vi.fn(),
+  getPermissionPanel: vi.fn(),
+  getPermissionCatalog: vi.fn(),
+  getPermissionAuditHistory: vi.fn(),
+  getPendingPermissions: vi.fn(),
+  decidePermission: vi.fn(),
+  clearPermission: vi.fn(),
 }))
 const pluginStore = vi.hoisted(() => ({
-  plugin: { id: 'demo', status: 'running' } as { id: string; status: string } | null,
-  getPluginById: vi.fn((id: string) =>
-    pluginStore.plugin?.id === id ? pluginStore.plugin : null,
-  ),
-  start: vi.fn().mockResolvedValue(undefined),
-  fetchPluginStatus: vi.fn().mockResolvedValue(undefined),
-  refreshLoadedPluginData: vi.fn().mockResolvedValue(undefined),
+  status: 'running',
+  getPluginById: vi.fn(() => ({ id: 'demo', status: pluginStore.status })),
+  stop: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('@/api/pluginConsent', () => api)
+vi.mock('@/api/pluginPermissions', () => api)
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
 vi.mock('@/i18n', () => ({
   i18n: { global: { t: (key: string) => key } },
   localeLoadState: { pending: null },
 }))
-
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) =>
       params ? `${key} ${JSON.stringify(params)}` : key,
-    // Every key exists except the labels of a permission id this build does not know.
     te: (key: string) => !key.includes('system_example_future'),
   }),
 }))
+
+const MEMORY = 'plugin_sdk.main_agent.memory:read'
+const PUSH = 'plugin_sdk.main_agent.messages:push'
+const NET = 'system.network:connect'
+
 const apps: Array<ReturnType<typeof createApp>> = []
 const flush = async () => {
   for (let n = 0; n < 10; n++) await nextTick()
 }
-function mount() {
+async function mount() {
   const root = document.createElement('div')
   document.body.append(root)
   const app = createApp(PluginPermissions, { pluginId: 'demo' })
-  app.use(getActivePinia() ?? createPinia())
+  app.use(createPinia())
   app.component(
     'el-button',
     defineComponent({
-      props: { disabled: Boolean, loading: Boolean },
-      setup:
-        (props, { slots }) =>
-        () =>
-          h('button', { disabled: props.disabled || props.loading }, slots.default?.()),
-    })
+      props: { disabled: Boolean, loading: Boolean, type: String },
+      emits: ['click'],
+      setup: (props, { slots, emit, attrs }) => () =>
+        h(
+          'button',
+          { ...attrs, disabled: props.disabled || props.loading, 'data-type': props.type, onClick: () => emit('click') },
+          slots.default?.(),
+        ),
+    }),
   )
   app.component(
-    'el-tag',
-    defineComponent({ setup: (_, { slots }) => () => h('i', slots.default?.()) })
-  )
-  app.component(
-    'el-icon',
-    defineComponent({ setup: (_, { slots }) => () => h('i', slots.default?.()) })
-  )
-  app.component(
-    'el-alert',
-    defineComponent({ props: ['title'], setup: (props) => () => h('aside', String(props.title)) })
+    'el-switch',
+    defineComponent({
+      props: { modelValue: Boolean, disabled: Boolean, loading: Boolean },
+      emits: ['update:modelValue'],
+      setup: (props, { emit, attrs }) => () =>
+        h('input', {
+          ...attrs,
+          type: 'checkbox',
+          checked: props.modelValue,
+          disabled: props.disabled,
+          onChange: () => emit('update:modelValue', !props.modelValue),
+        }),
+    }),
   )
   app.mount(root)
   apps.push(app)
+  await flush()
   return root
 }
-function buttons(root: HTMLElement, text: string) {
-  return [...root.querySelectorAll('button')].filter(
-    (button) => button.textContent?.trim() === text,
-  )
-}
-function buttonsContaining(root: HTMLElement, text: string) {
-  return [...root.querySelectorAll('button')].filter((button) =>
-    button.textContent?.includes(text),
-  )
-}
-function record(extras: Partial<PluginConsent> = {}): PluginConsent {
-  return {
-    plugin_id: 'demo',
-    version: '1.0.0',
-    decision: null,
-    decided_at: null,
-    approved_capabilities: [],
-    unconfirmed: ['memory.read', 'messages.push'],
-    state: 'confirm',
-    upgraded: false,
-    analysis: {
-      status: 'completed',
-      version: '1.0.0',
-      analyzed_at: '2026-11-10T09:00:00',
-      capabilities: ['memory.read', 'messages.push'],
-      evidence: [
-        { capability: 'memory.read', method: 'm', file: 'main.py', line: 12 },
-        { capability: 'memory.read', method: 'm', file: 'main.py', line: 40 },
-      ],
-      warnings: [],
-      files_analyzed: 3,
+const q = (root: HTMLElement, test: string) => root.querySelector(`[data-test="${test}"]`) as HTMLElement | null
+
+function serve(data: PermissionPanel, extras: { history?: object; lostAt?: string | null; pending?: object } = {}) {
+  api.getPermissionPanel.mockResolvedValue(data)
+  api.getPermissionCatalog.mockResolvedValue({
+    tiers: [],
+    permissions: {},
+    blind_spot_tiers: {},
+    privacy_groups: [
+      { group: 'memory', permissions: [MEMORY], tier: 'high', partial_block: true },
+      { group: 'network', permissions: [NET], tier: 'high', partial_block: false },
+    ],
+  })
+  api.getPermissionAuditHistory.mockResolvedValue({
+    history: extras.history ?? {
+      since: '2026-10-01T00:00:00Z',
+      covers_30d: true,
+      last_use_since: '2026-10-01T00:00:00Z',
+      last_use_covers_30d: true,
     },
-    ...extras,
-  }
+    lost_at: extras.lostAt ?? null,
+  })
+  api.getPendingPermissions.mockResolvedValue(extras.pending ?? { first_use: [], incomplete: [] })
 }
-function seed(extras: Partial<PluginConsent> = {}) {
-  const value = record(extras)
-  api.getPluginConsent.mockResolvedValue(value)
-  usePluginConsentState().details.demo = value
-  return value
+function failure(status: number, code: string) {
+  const headers = new AxiosHeaders({ 'X-Error-Code': code })
+  return new AxiosError('x', 'ERR', undefined, undefined, {
+    status, statusText: '', headers, config: { headers }, data: { detail: { code } },
+  })
 }
+
 beforeEach(() => {
-  setActivePinia(createPinia())
-  for (const mock of Object.values(api)) mock.mockReset()
-  pluginStore.plugin = { id: 'demo', status: 'running' }
-  pluginStore.start.mockClear()
+  vi.clearAllMocks()
+  pluginStore.status = 'running'
+  vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }) as never)
 })
 afterEach(() => {
-  apps.splice(0).forEach((app) => app.unmount())
+  for (const app of apps.splice(0)) app.unmount()
   document.body.innerHTML = ''
 })
 
-describe('PluginPermissions', () => {
-  it('running + confirm shows approve and deny actions', async () => {
-    seed()
-    const root = mount()
-    await flush()
-    expect(buttons(root, 'pluginConsent.approve')).toHaveLength(1)
-    expect(buttons(root, 'pluginConsent.reject')).toHaveLength(1)
-    expect(buttons(root, 'pluginConsent.approveAndStart')).toHaveLength(0)
+describe('PluginPermissions tab', () => {
+  it('shows the counts and the three reconcile states, with empty cells on the missing side', async () => {
+    serve(panel({
+      counts: { total: 3, granted: 1, denied: 0, undecided: 2, undeclared_found: 1 },
+      rows: [
+        row(),
+        row({ permission: 'system.env:read', declared: null, reconcile: 'undeclared', state: 'undecided', condition: null }),
+        row({ permission: 'system.fs:read', tier: 'medium', reconcile: 'unscanned', scan: null }),
+      ],
+    }))
+    const root = await mount()
+    const summary = q(root, 'summary')!.textContent!
+    expect(summary).toContain('1 / 3')
+    expect(summary).toContain('pluginConsent.tab.summary.undecided {"n":2}')
+    expect(summary).toContain('pluginConsent.tab.summary.undeclared {"n":1}')
+    expect(q(root, `row-${NET}`)!.querySelector('.perm-mark')!.textContent).toBe('=')
+    const env = q(root, 'row-system.env:read')!
+    expect(env.querySelector('.perm-mark')!.textContent).toBe('≠')
+    expect(env.querySelector('[data-test="left-empty"]')!.textContent).toContain('pluginConsent.tab.notDeclared')
+    expect(env.textContent).toContain('pluginConsent.tab.undeclaredWarning')
+    const fs = q(root, 'row-system.fs:read')!
+    expect(fs.querySelector('.perm-mark')!.textContent).toBe('?')
+    expect(fs.querySelector('[data-test="right-empty"]')!.textContent).toContain('pluginConsent.tab.scanNone')
   })
 
-  it('stopped + confirm shows approve-and-start which approves then starts', async () => {
-    seed()
-    pluginStore.plugin = { id: 'demo', status: 'stopped' }
-    const root = mount()
+  it('says the declaration cannot be read and lists the tab as incomplete', async () => {
+    serve(panel({
+      manifest: 'unavailable',
+      rows: [row({ declared: null, reconcile: null, anytime_allowed: null })],
+    }))
+    const root = await mount()
+    expect(q(root, 'notice-unavailable')).not.toBeNull()
+    expect(q(root, 'incomplete')).not.toBeNull()
+    expect(q(root, 'left-empty')!.textContent).toContain('pluginConsent.tab.manifestUnavailableCell')
+    // "Any time" cannot be chosen while the declaration is unknown.
+    const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
+    expect(select.disabled).toBe(true)
+    expect(q(root, `condition-lock-${NET}`)!.textContent).toBe('pluginConsent.tab.condition.lock.unavailable')
+  })
+
+  it('treats an unusable manifest as no declaration and says why', async () => {
+    serve(panel({ manifest: 'unusable', rows: [row({ anytime_allowed: false })] }))
+    const root = await mount()
+    expect(q(root, 'notice-unusable')).not.toBeNull()
+    expect(q(root, 'incomplete')).toBeNull()
+    expect(q(root, 'left-empty')).not.toBeNull()
+    expect(q(root, `switch-${NET}`)).toBeNull()
+    expect(q(root, `allow-${NET}`)).not.toBeNull()
+    expect(q(root, `condition-lock-${NET}`)!.textContent).toBe('pluginConsent.tab.condition.lock.unusable')
+  })
+
+  it('does not show "when it may" for a required item', async () => {
+    serve(panel({ rows: [row({ declared: { ...row().declared!, level: 'require' } })] }))
+    const root = await mount()
+    expect(q(root, `condition-${NET}`)).toBeNull()
+  })
+
+  it('shows "when it may" with the self-reported tag and saves a change', async () => {
+    serve(panel())
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ condition: 'anytime' })] }))
+    const root = await mount()
+    const condition = q(root, `condition-${NET}`)!
+    expect(condition.textContent).toContain('pluginConsent.tab.condition.selfReported')
+    const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    select.value = 'anytime'
+    select.dispatchEvent(new Event('change'))
     await flush()
-    const button = buttons(root, 'pluginConsent.approveAndStart')[0]
-    expect(button).toBeTruthy()
-    const approved = record({ decision: 'approved', unconfirmed: [], state: 'clear' })
-    api.approvePluginConsent.mockImplementation(async () => {
-      api.getPluginConsent.mockResolvedValue(approved)
-      return approved
-    })
-    button.click()
-    await vi.waitFor(() => {
-      expect(api.approvePluginConsent).toHaveBeenCalledWith('demo', {
-        version: '1.0.0',
-        unconfirmed: ['memory.read', 'messages.push'],
-        analysis_status: 'completed',
-      })
-      expect(pluginStore.start).toHaveBeenCalledWith('demo')
-    })
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', NET, 'granted', 'anytime')
+  })
+
+  it('does not let "any time" be chosen when anytime_allowed is false', async () => {
+    serve(panel({ rows: [row({ anytime_allowed: false })] }))
+    const root = await mount()
+    expect((q(root, `condition-select-${NET}`) as HTMLSelectElement).disabled).toBe(true)
+    expect(q(root, `condition-lock-${NET}`)!.textContent).toBe('pluginConsent.tab.condition.lock.notDeclared')
   })
 
   it.each([
-    { saved: false, message: 'pluginConsent.saveFailed' },
-    { saved: true, message: 'messages.startFailed' },
-  ])('reports the failure at the approve-and-start step that failed (saved=$saved)', async ({
-    saved,
-    message,
-  }) => {
-    const toast = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }))
-    pluginStore.plugin = { id: 'demo', status: 'stopped' }
-    seed()
-    if (saved) {
-      const approved = record({ decision: 'approved', unconfirmed: [], state: 'clear' })
-      api.approvePluginConsent.mockImplementation(async () => {
-        api.getPluginConsent.mockResolvedValue(approved)
-        return approved
-      })
-      pluginStore.start.mockRejectedValueOnce(new Error('start failed'))
-    } else {
-      api.approvePluginConsent.mockRejectedValue(new Error('save failed'))
-    }
-    try {
-      const root = mount()
-      await flush()
-      buttons(root, 'pluginConsent.approveAndStart')[0].click()
-      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith(message))
-      expect(pluginStore.start).toHaveBeenCalledTimes(saved ? 1 : 0)
-    } finally {
-      toast.mockRestore()
-    }
-  })
-
-  it('denied shows the denied banner with approve and withdraw actions', async () => {
-    seed({ decision: 'denied', decided_at: '2026-11-10T10:00:00Z' })
-    const root = mount()
+    [503, 'PLUGIN_MANIFEST_UNAVAILABLE', 'pluginConsent.tab.errors.manifestUnavailable'],
+    [422, 'PLUGIN_MANIFEST_UNUSABLE', 'pluginConsent.tab.errors.manifestUnusable'],
+  ])('reports %s %s when changing "when it may"', async (status, code, message) => {
+    serve(panel())
+    api.decidePermission.mockRejectedValue(failure(status, code))
+    const root = await mount()
+    const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
+    select.value = 'anytime'
+    select.dispatchEvent(new Event('change'))
     await flush()
-    expect(root.textContent).toContain('pluginConsent.decision.denied')
-    expect(root.textContent).toContain('pluginConsent.banner.deniedDesc')
-    expect(buttons(root, 'pluginConsent.revokeDecision')).toHaveLength(1)
-    expect(buttons(root, 'pluginConsent.reject')).toHaveLength(0)
+    expect(ElMessage.error).toHaveBeenCalledWith(message)
   })
 
-  it('approved + clear shows the success banner with revoke', async () => {
-    seed({
-      decision: 'approved',
-      decided_at: '2026-11-10T10:00:00Z',
-      state: 'clear',
-      unconfirmed: [],
-      approved_capabilities: ['memory.read', 'messages.push'],
+  it('allows, refuses, and returns a disclosure-only item to undecided', async () => {
+    const first = panel({
+      rows: [
+        row({ state: 'undecided', condition: null }),
+        row({ permission: 'system.env:read', declared: null, reconcile: 'undeclared', state: 'undecided' }),
+      ],
     })
-    const root = mount()
+    serve(first)
+    api.decidePermission.mockResolvedValue(first)
+    api.clearPermission.mockResolvedValue(first)
+    const root = await mount()
+    expect(q(root, `row-${NET}`)!.querySelector('[data-test="undecided"]')).not.toBeNull()
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
     await flush()
-    expect(root.textContent).toContain('pluginConsent.decision.approved')
-    expect(buttons(root, 'pluginConsent.revoke')).toHaveLength(1)
-    expect(buttons(root, 'pluginConsent.approve')).toHaveLength(0)
+    expect(api.decidePermission).toHaveBeenLastCalledWith('demo', NET, 'granted', 'in_use')
+
+    serve(panel({ rows: [row({ permission: PUSH, tier: 'medium', enforced: false, state: 'granted' })] }))
+    const second = await mount()
+    expect(q(second, `row-${PUSH}`)!.textContent).toContain('pluginConsent.tab.recordOnly')
+    q(second, `switch-${PUSH}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(api.clearPermission).toHaveBeenCalledWith('demo', PUSH)
+    expect(api.decidePermission).not.toHaveBeenCalledWith('demo', PUSH, 'denied', expect.anything())
+
+    q(root, 'refuse-system.env:read')!.click()
+    await flush()
+    expect(api.decidePermission).toHaveBeenLastCalledWith('demo', 'system.env:read', 'denied', 'in_use')
+    q(root, 'allow-system.env:read')!.click()
+    await flush()
+    expect(api.decidePermission).toHaveBeenLastCalledWith('demo', 'system.env:read', 'granted', 'in_use')
   })
 
-  describe('what the analysis found', () => {
-    const clearRecord = {
-      state: 'clear' as const,
-      unconfirmed: [],
-    }
-    function analysis(extras: Partial<PluginConsent['analysis']> = {}): PluginConsent['analysis'] {
-      return {
-        status: 'completed',
-        capabilities: [],
-        evidence: [],
-        warnings: [],
-        files_analyzed: 2,
-        permissions: {},
-        blind_spots: [],
-        ...extras,
-      }
-    }
-
-    it('lists used permissions instead of reporting nothing found', async () => {
-      seed({
-        ...clearRecord,
-        analysis: analysis({
-          permissions: {
-            'system.network:connect': {
-              declared: null,
-              findings: [{ file: 'main.py', line: 7 }],
-            },
-            'plugin_sdk.models:invoke': { declared: 'required', findings: [] },
-          },
-        }),
-      })
-      const root = mount()
-      await flush()
-      expect(root.textContent).not.toContain('pluginConsent.noneFound')
-      expect(root.textContent).toContain('pluginConsent.findings.usedBanner {"n":2}')
-      const listed = root.querySelector('[data-testid="used-permissions"]')!
-      expect(listed.textContent).toContain('pluginConsent.capabilities.system_network_connect.title')
-      expect(listed.textContent).toContain('pluginConsent.findings.detected')
-      expect(listed.textContent).toContain('pluginConsent.capabilities.plugin_sdk_models_invoke.title')
-      expect(listed.textContent).toContain('pluginConsent.findings.declared')
-      expect(root.querySelector('[data-testid="blind-spots"]')).toBeNull()
-    })
-
-    it('shows the origin of a permission listed under its earlier capability name', async () => {
-      seed({
-        ...clearRecord,
-        analysis: analysis({
-          capabilities: ['memory.read'],
-          permissions: {
-            'plugin_sdk.main_agent.memory:read': {
-              declared: 'require',
-              findings: [{ file: 'main.py', line: 900 }],
-            },
-          },
-        }),
-      })
-      const root = mount()
-      await flush()
-      expect(root.querySelector('[data-testid="used-permissions"]')).toBeNull()
-      const origin = root.querySelector('[data-testid="capability-origin"]')!
-      expect(origin.textContent).toContain('pluginConsent.findings.declared')
-      const toggle = root.querySelector<HTMLButtonElement>('.capability__toggle')!
-      expect(toggle.textContent).toContain('pluginConsent.evidenceToggle {"n":1}')
-      toggle.click()
-      await flush()
-      expect(root.querySelector('.evidence code')?.textContent).toBe('main.py:900')
-    })
-
-    it.each([
-      ['with permissions found', true],
-      ['without anything found', false],
-    ])('a partial analysis %s says the data use is unknown only when nothing is listed', async (_, found) => {
-      seed({
-        ...clearRecord,
-        analysis: analysis({
-          status: 'partial',
-          warnings: [{ code: 'budget_exceeded' }],
-          permissions: found
-            ? { 'system.network:connect': { declared: null, findings: [{ file: 'main.py', line: 2 }] } }
-            : {},
-        }),
-      })
-      const root = mount()
-      await flush()
-      expect(Boolean(root.querySelector('[data-testid="used-permissions"]'))).toBe(found)
-      expect(Boolean(root.querySelector('[data-testid="analysis-unknown"]'))).toBe(!found)
-    })
-
-    it('counts blind spots instead of reporting nothing found', async () => {
-      seed({
-        ...clearRecord,
-        analysis: analysis({
-          blind_spots: [
-            { type: 'dynamic_import', file: 'main.py', line: 4 },
-            { type: 'not_analyzed', file: 'vendor/big.py', line: null },
-            { type: 'not_analyzed', file: null, line: null },
-          ],
-        }),
-      })
-      const root = mount()
-      await flush()
-      expect(root.textContent).not.toContain('pluginConsent.noneFound')
-      expect(root.querySelector('.consent-banner')?.getAttribute('data-tone')).toBe('warning')
-      expect(root.textContent).toContain('pluginConsent.findings.blindSpotsTitle {"n":3}')
-      const spots = root.querySelector('[data-testid="blind-spots"]')!
-      expect(spots.querySelector('code')).toBeNull()
-      const toggle = buttonsContaining(spots as HTMLElement, 'pluginConsent.evidenceToggle')[0]!
-      toggle.click()
-      await flush()
-      expect([...spots.querySelectorAll('code')].map((node) => node.textContent)).toEqual([
-        'main.py:4',
-        'vendor/big.py',
-      ])
-      expect(spots.textContent).toContain('pluginConsent.findings.unlocated')
-      expect(spots.textContent).not.toContain('not_analyzed')
-    })
-
-    it('reports nothing found only without permissions and blind spots', async () => {
-      seed({ ...clearRecord, analysis: analysis() })
-      const root = mount()
-      await flush()
-      expect(root.textContent).toContain('pluginConsent.noneFound')
-      expect(root.querySelector('.consent-banner')?.getAttribute('data-tone')).toBe('success')
-      expect(root.querySelector('[data-testid="used-permissions"]')).toBeNull()
-      expect(root.querySelector('[data-testid="blind-spots"]')).toBeNull()
-    })
-
-    it('shows an unlabelled permission id as it is', async () => {
-      seed({
-        ...clearRecord,
-        analysis: analysis({
-          permissions: { 'system.example:future': { declared: 'optional', findings: [] } },
-        }),
-      })
-      const root = mount()
-      await flush()
-      const listed = root.querySelector('[data-testid="used-permissions"]')!
-      expect(listed.querySelector('strong')?.textContent).toBe('system.example:future')
-      expect(listed.textContent).not.toContain('system_example_future')
-    })
+  it('shows nothing about use when uses are not recorded', async () => {
+    serve(panel({ rows: [row({ permission: 'system.env:read', enforced: false, usage_tracked: false, state: 'undecided' })] }))
+    const root = await mount()
+    expect(q(root, 'usage-system.env:read')).toBeNull()
+    expect(root.textContent).toContain('pluginConsent.tab.notEnforcedNotTracked')
+    expect(root.textContent).not.toContain('unused30d')
   })
 
-  it('analyzing shows the analyzing banner without actions', async () => {
-    seed({
-      state: 'analyzing',
-      unconfirmed: [],
-      analysis: {
-        status: 'running',
-        capabilities: [],
-        evidence: [],
-        warnings: [],
+  it('writes "unused since X" when the history covers less than 30 days', async () => {
+    serve(panel({ rows: [row({ state: 'undecided' })] }), {
+      history: { since: null, covers_30d: false, last_use_since: '2026-11-20T00:00:00Z', last_use_covers_30d: false },
+    })
+    const root = await mount()
+    const line = q(root, `usage-${NET}`)!
+    expect(line.textContent).toContain('pluginConsent.tab.unusedSince {"date":"2026-11-20"}')
+    expect(line.querySelector('[data-test="unused30d"]')).toBeNull()
+  })
+
+  it('tags "unused for 30 days" and the kept earlier approval', async () => {
+    serve(panel({ rows: [row({ unused_30d: true, legacy_any: true })] }))
+    const root = await mount()
+    expect(q(root, `usage-${NET}`)!.querySelector('[data-test="unused30d"]')).not.toBeNull()
+    expect(q(root, 'legacy')).not.toBeNull()
+  })
+
+  it('marks a last use that would have been blocked as recorded only', async () => {
+    serve(panel({ rows: [row({ last_used: { at: '2026-11-01T10:00:00Z', origin_kind: null, outcome: 'would_block' } })] }))
+    const root = await mount()
+    expect(q(root, `usage-${NET}`)!.textContent).toContain('pluginConsent.tab.wouldBlock')
+  })
+
+  it('shows "at least N times" for a lower-bound count of uses while undecided', async () => {
+    serve(panel({ rows: [row({ state: 'undecided' })] }), {
+      pending: {
+        incomplete: [],
+        first_use: [{ plugin_id: 'demo', permission: NET, at: '2026-11-27T10:00:00Z', count: 4, count_is_lower_bound: true }],
       },
     })
-    const root = mount()
-    await flush()
-    expect(root.textContent).toContain('pluginConsent.banner.analyzingTitle')
-    expect(buttons(root, 'pluginConsent.approve')).toHaveLength(0)
+    const root = await mount()
+    expect(q(root, `first-use-${NET}`)!.textContent).toContain('pluginConsent.tab.firstUseAtLeast {"n":4}')
   })
 
-  it('renders a status tag per capability', async () => {
-    seed({
-      decision: 'approved',
-      decided_at: '2026-11-10T10:00:00Z',
-      approved_capabilities: ['memory.read'],
-      unconfirmed: ['messages.push'],
-      upgraded: true,
-    })
-    const root = mount()
-    await flush()
-    expect(root.textContent).toContain('pluginConsent.decision.approved')
-    expect(root.textContent).toContain('pluginConsent.upgraded')
-    expect(root.textContent).toContain('pluginConsent.capabilities.memory_read.title')
-    expect(root.textContent).toContain('pluginConsent.capabilities.messages_push.title')
+  it('notes that memory reads cannot all be blocked yet', async () => {
+    serve(panel({ rows: [row({ permission: MEMORY }), row()] }))
+    const root = await mount()
+    expect(q(root, `partial-${MEMORY}`)).not.toBeNull()
+    expect(q(root, `partial-${NET}`)).toBeNull()
   })
 
-  it('keeps evidence collapsed until the toggle is clicked', async () => {
-    seed()
-    const root = mount()
-    await flush()
-    expect(root.textContent).not.toContain('main.py:12')
-    const toggle = buttonsContaining(root, 'pluginConsent.evidenceToggle')[0]
-    expect(toggle).toBeTruthy()
-    toggle.click()
-    await flush()
-    expect(root.textContent).toContain('main.py:12')
-    expect(root.textContent).toContain('main.py:40')
+  it('shows a source reset whose time is not saved yet', async () => {
+    serve(panel({ grants_reset: { at: null, reason: 'source_changed' } }))
+    const root = await mount()
+    expect(q(root, 'notice-reset')!.textContent).toBe('pluginConsent.tab.notices.grantsResetPending')
   })
 
-  it('formats the footer analysis time as YYYY-MM-DD HH:mm', async () => {
-    seed()
-    const root = mount()
+  it('shows a source reset with its date', async () => {
+    serve(panel({ grants_reset: { at: '2026-11-25T08:00:00Z', reason: 'source_changed' } }))
+    const root = await mount()
+    expect(q(root, 'notice-reset')!.textContent).toContain('"date":"2026-11-25"')
+  })
+
+  it('says the source is not confirmed in the developer details', async () => {
+    serve(panel({ source: { channel: 'local', fingerprint8: null, confirmed: false } }))
+    const root = await mount()
+    expect(q(root, 'source-unconfirmed')).not.toBeNull()
+    serve(panel())
+    const confirmed = await mount()
+    expect(q(confirmed, 'source-unconfirmed')).toBeNull()
+  })
+
+  it('expands the scan side per row and all at once, without line numbers', async () => {
+    serve(panel({
+      developer: {
+        findings: { [NET]: [{ file: 'net.py', line: 42, method: 'httpx.get', basis: 'direct' }] },
+        blind_spots: [],
+        not_analyzed: [],
+        manifest_permissions: null,
+      },
+    }))
+    const root = await mount()
+    expect(q(root, 'scan-files')).toBeNull()
+    q(root, `expand-${NET}`)!.click()
     await flush()
-    expect(root.textContent).toContain('2026-11-10 09:00')
+    const files = q(root, 'scan-files')!.textContent!
+    expect(files).toContain('net.py')
+    expect(files).not.toContain('42')
+    q(root, 'expand-all')!.click()
+    await flush()
+    expect(q(root, 'scan-files')).toBeNull()
+  })
+
+  it('sums blind spots per file and counts files left out of the scan', async () => {
+    serve(panel({
+      blind_spots: {
+        files: [{ file: 'loader.py', count: 2, types: { dynamic_import: 2 }, high_risk: false }],
+        counted: 2,
+        not_analyzed_files: 6,
+      },
+    }))
+    const root = await mount()
+    const spots = q(root, 'blind-spots')!.textContent!
+    expect(spots).toContain('loader.py')
+    expect(spots).toContain('pluginConsent.tab.blindSpots.types.dynamic_import {"n":2}')
+    expect(spots).toContain('pluginConsent.tab.blindSpots.notAnalyzed {"n":6}')
+  })
+
+  it('folds a tier the server marks collapsed until clicked', async () => {
+    serve(panel({
+      rows: [row({ permission: 'plugin_sdk.models:invoke', tier: 'low' })],
+      tiers: [
+        { tier: 'high', count: 0, collapsed: false },
+        { tier: 'medium', count: 0, collapsed: false },
+        { tier: 'low', count: 1, collapsed: true },
+      ],
+    }))
+    const root = await mount()
+    expect(q(root, 'row-plugin_sdk.models:invoke')).toBeNull()
+    q(root, 'folded-low')!.click()
+    await flush()
+    expect(q(root, 'row-plugin_sdk.models:invoke')).not.toBeNull()
+  })
+
+  it('stays usable when the optional sources fail', async () => {
+    serve(panel())
+    api.getPermissionCatalog.mockRejectedValue(new Error('x'))
+    api.getPermissionAuditHistory.mockRejectedValue(new Error('x'))
+    api.getPendingPermissions.mockRejectedValue(new Error('x'))
+    const root = await mount()
+    expect(q(root, `row-${NET}`)).not.toBeNull()
+    expect(q(root, `usage-${NET}`)).toBeNull()
+  })
+
+  it('offers a retry when the panel cannot be loaded', async () => {
+    serve(panel())
+    api.getPermissionPanel.mockRejectedValueOnce(new Error('x'))
+    const root = await mount()
+    expect(root.textContent).toContain('pluginConsent.tab.loadFailed')
+    root.querySelector('button')!.click()
+    await flush()
+    expect(q(root, `row-${NET}`)).not.toBeNull()
   })
 })
