@@ -13,6 +13,7 @@ from tests.unit.test_model_workshop_install import (
     service as service,
 )
 from tests.unit.test_storage_migration import _DummyConfigManager
+from utils.storage import migration
 from utils.cloudsave_runtime.legacy_migration import runtime_root_has_user_content
 from utils.storage.migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
@@ -239,3 +240,35 @@ def test_real_legacy_reuse_rejects_unpaired_registry_and_keeps_both_trees(servic
     assert foreign.read_text() == "foreign"
     assert not (target / "model_workshop").exists()
     assert (service.paths.root / row["local_entrypoint"]).is_file()
+
+
+def test_legacy_reuse_rejects_a_model_directory_added_during_staging(service, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path)
+    row = install(service, path)["result"]
+    service.close()
+    config = _DummyConfigManager(tmp_path / "manager")
+    config.app_docs_dir = service.paths.root
+    (config.app_docs_dir / "memory").mkdir()
+    (config.app_docs_dir / "memory" / "note").write_text("source")
+    target, anchor = tmp_path / "target", tmp_path / "anchor"
+    (target / "config").mkdir(parents=True)
+    (target / "config" / "characters.json").write_text("{}")
+    foreign = target / row["local_entrypoint"]
+    original_copy = migration._copy_and_verify_entry
+
+    def copy_and_add_model(source, staged, **kwargs):
+        result = original_copy(source, staged, **kwargs)
+        if source == config.app_docs_dir / "memory":
+            foreign.parent.mkdir(parents=True)
+            foreign.write_text("foreign")
+        return result
+
+    monkeypatch.setattr(migration, "_copy_and_verify_entry", copy_and_add_model)
+    create_pending_storage_migration(config, source_root=config.app_docs_dir, target_root=target,
+                                     selection_source="legacy", anchor_root=anchor)
+    result = run_pending_storage_migration(config, anchor_root=anchor)
+    assert not result["completed"]
+    assert result["payload"]["error_code"] == "model_workshop_root_conflict"
+    assert foreign.read_text() == "foreign"
+    assert not (target / "model_workshop").exists()
+    assert (config.app_docs_dir / row["local_entrypoint"]).is_file()

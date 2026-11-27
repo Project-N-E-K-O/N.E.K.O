@@ -382,7 +382,10 @@ async def test_shutdown_interrupts_pending_metadata_before_storage(flow, monkeyp
         return network_json({'bridge_token': 'bridge'})
     monkeypatch.setattr(download, '_client', lambda base: httpx.Client(base_url=base, transport=httpx.MockTransport(network)))
     monkeypatch.setattr(download, '_metadata_client', lambda base: httpx.AsyncClient(base_url=base, transport=httpx.MockTransport(network)), raising=False)
-    def storage(_): raise AssertionError('cancelled metadata reached storage')
+    storage_calls = []
+    def storage(config):
+        storage_calls.append(config)
+        raise AssertionError('cancelled metadata reached storage')
     monkeypatch.setattr(download, 'get_service', storage)
     row = await opened(flow); await select(flow, row)
     assert await asyncio.to_thread(body.entered.wait, 3)
@@ -396,6 +399,7 @@ async def test_shutdown_interrupts_pending_metadata_before_storage(flow, monkeyp
             await asyncio.wait_for(asyncio.shield(closing), 1)
         assert body.closed and not flow.driver.jobs
         assert flow.driver.launches.get(row['request_id']).phase == 'cancelled'
+        assert not storage_calls
         assert not any('/package/' in path for path in calls)
     finally:
         body.release.set(); body.async_release.set()
@@ -424,7 +428,10 @@ async def test_shutdown_closes_real_pending_metadata_connection(flow, monkeypatc
     base = 'http://127.0.0.1:' + str(server.sockets[0].getsockname()[1])
     monkeypatch.setattr(download, 'resolve_user_plugin_base', lambda: base)
     monkeypatch.setattr(download, '_metadata_client', lambda target: httpx.AsyncClient(base_url=target, trust_env=False, proxy=None, timeout=20))
-    def storage(_): raise AssertionError('cancelled metadata reached storage')
+    storage_calls = []
+    def storage(config):
+        storage_calls.append(config)
+        raise AssertionError('cancelled metadata reached storage')
     monkeypatch.setattr(download, 'get_service', storage)
     try:
         row = await opened(flow); await select(flow, row)
@@ -432,5 +439,6 @@ async def test_shutdown_closes_real_pending_metadata_connection(flow, monkeypatc
         await asyncio.wait_for(flow.driver.close(), 1)
         await asyncio.wait_for(disconnected.wait(), 1)
         assert not flow.driver.jobs and flow.driver.launches.get(row['request_id']).phase == 'cancelled'
+        assert not storage_calls
     finally:
         server.close(); await server.wait_closed()

@@ -21,6 +21,7 @@ from plugin.server.routes.knowledge_bridge import main_write_headers
 from plugin.settings import MARKET_ORIGINS
 from services.model_workshop.bundle import BundleLimits
 from services.model_workshop.market import HASH, OPERATION, REQUEST
+from utils.http.internal_client import internal_service_event_hooks
 from utils.http.knowledge_proxy import BodyTooLarge, capped_body, is_body_too_large
 
 router = APIRouter(prefix="/market/models", tags=["market-models"])
@@ -31,6 +32,12 @@ _JSON_MAX = BundleLimits().manifest_bytes + 64 * 1024
 def _client():
     return httpx.AsyncClient(timeout=httpx.Timeout(20, connect=3),
                              follow_redirects=False, trust_env=False, proxy=None)
+
+
+def _relay_client(port):
+    return httpx.AsyncClient(timeout=httpx.Timeout(20, connect=3),
+                             follow_redirects=False, trust_env=False, proxy=None,
+                             event_hooks=internal_service_event_hooks(extra_trusted_ports=(port,)))
 
 
 def _failure(code="model_market_unavailable", status=502):
@@ -186,10 +193,11 @@ async def paired_model_command(request_id: str, request: Request, action: str = 
         raise HTTPException(403, "market origin forbidden")
     if not REQUEST.fullmatch(request_id) or action not in {"", "select", "cancel"}:
         raise HTTPException(404, "model operation not found")
-    headers = main_write_headers(auth._main_server_port())
+    port = auth._main_server_port()
+    headers = main_write_headers(port)
     headers["Content-Type"] = "application/json"
     headers["Accept-Encoding"] = "identity"
-    target = f"http://127.0.0.1:{auth._main_server_port()}/api/model-market/launch/{request_id}"
+    target = f"http://127.0.0.1:{port}/api/model-market/launch/{request_id}"
     if action:
         target += "/" + action
     elif "operation_id" in request.query_params:
@@ -200,7 +208,7 @@ async def paired_model_command(request_id: str, request: Request, action: str = 
             raise HTTPException(400, "invalid model operation")
         target += "?" + urlencode({"operation_id": values[0]})
     try:
-        async with asyncio.timeout(25), _client() as client:
+        async with asyncio.timeout(25), _relay_client(port) as client:
             async with client.stream(request.method, target, headers=headers,
                     content=capped_body(request, 4096) if request.method == "POST" else None) as response:
                 if response.headers.get("content-encoding", "identity").lower() != "identity":

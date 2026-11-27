@@ -919,9 +919,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # Load the current character configuration.
         _config_manager = get_config_manager()
-        for model_ref in (vrm_model, mmd_model):
-            if model_ref:
-                await _drain_sync(lambda: require_url(_config_manager, str(model_ref), for_binding=True))
+        if model_type_str == 'live3d':
+            await _drain_sync(lambda: require_url(_config_manager, vrm_model or mmd_model, for_binding=True))
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 

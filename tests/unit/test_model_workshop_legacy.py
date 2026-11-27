@@ -336,6 +336,26 @@ def test_config_edit_started_before_reinstall_cannot_overwrite_new_model(
     asyncio.run(run())
 
 
+def test_parameter_save_started_before_reinstall_keeps_the_new_install_unchanged(legacy, tmp_path):
+    _, config, service = legacy
+    package, _ = bundle_path(tmp_path)
+    old = install(service, package)["result"]
+    entry = service.paths.root / old["local_entrypoint"]
+    parameters = entry.parent / "parameters.json"
+
+    class Request:
+        async def json(self):
+            await asyncio.to_thread(runtime.remove_managed_model, config, old)
+            new = await asyncio.to_thread(install, service, package)
+            assert new["result"]["install_id"] != old["install_id"]
+            return {"parameters": {"old": 1}}
+
+    response = asyncio.run(live2d_router.save_model_parameters(entry.parent.name, Request()))
+    assert not parameters.exists()
+    assert response.status_code == 409
+    assert json.loads(response.body)["error_code"] == "model_workshop_install_conflict"
+
+
 def test_named_response_rechecks_a_publication_started_after_request_gate(
     legacy, tmp_path, monkeypatch
 ):

@@ -155,15 +155,22 @@ async def test_switch_while_waiting_for_save_lock_cannot_race_guard(application,
             return value
 
         monkeypatch.setattr(models, '_drain_sync', drained)
-        async with character_config_mutation_lock:
-            applying = asyncio.create_task(apply_installed(config, launch))
-            await asyncio.wait_for(checked.wait(), 5)
-            characters = config.load_characters()
-            characters['当前猫娘'] = OTHER
-            config.save_characters(characters)
-            characters['当前猫娘'] = NAME
-            config.save_characters(characters)
-            before = config.get_runtime_config_path('characters.json').read_bytes()
+        applying = None
+        try:
+            async with character_config_mutation_lock:
+                applying = asyncio.create_task(apply_installed(config, launch))
+                await asyncio.wait_for(checked.wait(), 5)
+                characters = config.load_characters()
+                characters['当前猫娘'] = OTHER
+                config.save_characters(characters)
+                characters['当前猫娘'] = NAME
+                config.save_characters(characters)
+                before = config.get_runtime_config_path('characters.json').read_bytes()
+        except BaseException:
+            if applying is not None:
+                applying.cancel()
+                await asyncio.gather(applying, return_exceptions=True)
+            raise
         with pytest.raises(WorkshopError, match='target_changed'):
             await applying
         assert config.get_runtime_config_path('characters.json').read_bytes() == before
@@ -293,14 +300,16 @@ async def test_status_during_own_write_and_ready_after_competing_edit(applicatio
             await asyncio.wait_for(written.wait(), 5)
             observed = driver.status(config, row.request_id)
             assert observed['phase'] == 'applying' and observed['connection_error'] is None
+            release.set()
+            assert (await applying)['phase'] == 'saved'
+            config.save_characters(config.load_characters())
+            with pytest.raises(WorkshopError, match='target_changed'):
+                await driver.ready(config, row.request_id, row.operation_id)
+            assert not driver.status(config, row.request_id)['can_select']
         finally:
             release.set()
-        assert (await applying)['phase'] == 'saved'
-        config.save_characters(config.load_characters())
-        with pytest.raises(WorkshopError, match='target_changed'):
-            await driver.ready(config, row.request_id, row.operation_id)
-        assert not driver.status(config, row.request_id)['can_select']
-        await driver.close()
+            await asyncio.gather(applying, return_exceptions=True)
+            await driver.close()
 
 
 @pytest.mark.asyncio
@@ -385,7 +394,6 @@ async def test_model_verification_keeps_event_loop_live_and_role_gate_on_main(
     application, owner, no_network, tmp_path, monkeypatch, cancel
 ):
     import threading
-    import time
     _, config = application
     package, _ = bundle_path(tmp_path, 'vrm')
     launch = Launches().create(config)
@@ -396,7 +404,9 @@ async def test_model_verification_keeps_event_loop_live_and_role_gate_on_main(
     original = owner.installer.registry.status
     def slow_status(row):
         checking_threads.append(threading.get_ident())
-        entered.set(); release.wait(2)
+        assert threading.get_ident() != main_thread
+        entered.set()
+        assert release.wait(10)
         return original(row)
     monkeypatch.setattr(owner.installer.registry, 'status', slow_status)
     async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
@@ -409,12 +419,12 @@ async def test_model_verification_keeps_event_loop_live_and_role_gate_on_main(
             return original_managers()
         monkeypatch.setattr(shared_state, 'get_session_manager', managers)
         before = config.get_runtime_config_path('characters.json').read_bytes()
-        started = time.monotonic()
         applying = asyncio.create_task(apply_installed(config, launch))
         try:
             assert await asyncio.to_thread(entered.wait, 3)
-            await asyncio.sleep(0)
-            assert time.monotonic() - started < 1
+            probe = asyncio.Event()
+            asyncio.get_running_loop().call_soon(probe.set)
+            await asyncio.wait_for(probe.wait(), 5)
             assert not applying.done()
             if cancel: launch.cancel.set()
             release.set()

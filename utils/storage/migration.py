@@ -70,6 +70,7 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 )
 
 _PLUGIN_INSTALLATION_ENTRIES = (".neko-plugin-installations/plugins", "plugins.lock.json")
+_MODEL_WORKSHOP_ENTRIES = ("model_workshop", "live2d", "vrm", "mmd")
 _PLUGIN_SCOPED_LOCK_NAME = re.compile(r"plugins\.[0-9a-f]{16}\.lock\.json")
 _PLUGIN_AUTOSTART_ENTRIES = (
     "config/plugin_runtime_overrides.json",
@@ -2162,13 +2163,21 @@ def _require_stopped_model_workshops(*roots: Path) -> None:
 
 
 def require_paired_model_workshop_roots(source: Path, target: Path, *, reuse_target: bool) -> None:
-    """Do not combine a kept registry with model directories from the other root."""
-    from utils.model_workshop_storage import model_workshop_has_user_content
-
     # Full overwrite selects source entries; legacy/recovery reuse keeps
     # existing target entries. A target-only entry is kept in either mode.
+    from_source = {
+        name for name in _MODEL_WORKSHOP_ENTRIES
+        if os.path.lexists(source / name) and not (reuse_target and os.path.lexists(target / name))
+    }
+    _require_paired_model_workshop_entries(source, target, from_source)
+
+
+def _require_paired_model_workshop_entries(source: Path, target: Path, from_source: Collection[str]) -> None:
+    """Keep the selected registry and model directories from the same root."""
+    from utils.model_workshop_storage import model_workshop_has_user_content
+
     def owner(name):
-        if os.path.lexists(source / name) and not (reuse_target and os.path.lexists(target / name)):
+        if name in from_source:
             return source
         return target if os.path.lexists(target / name) else None
 
@@ -2177,10 +2186,7 @@ def require_paired_model_workshop_roots(source: Path, target: Path, *, reuse_tar
         model_workshop_has_user_content(root / "model_workshop") for root in (source, target)
     ):
         return
-    if any(owner(name) not in (None, registry_root) for name in ("live2d", "vrm", "mmd")):
-        # Reject before copying or replacing either tree. Selecting an empty
-        # destination preserves the complete source group without guessing
-        # which root's individual registry rows should win.
+    if any(owner(name) not in (None, registry_root) for name in _MODEL_WORKSHOP_ENTRIES[1:]):
         raise StorageMigrationError("model_workshop_root_conflict", "model_workshop_root_conflict")
 
 
@@ -3332,6 +3338,9 @@ def run_pending_storage_migration(
                 _require_backup_unchanged(entry_name, expected)
             _require_no_unpaired_target_installation()
             _require_no_companion_left_by_the_target()
+            # A sync client may have populated the target while earlier entries
+            # were copied. Use the entries selected for publication now.
+            _require_paired_model_workshop_entries(source_root, target_root, entries_to_publish)
             if use_existing_target:
                 kept_install_entries = reused_target_entries.difference(identical_entries).intersection(
                     _PLUGIN_INSTALLATION_ENTRIES

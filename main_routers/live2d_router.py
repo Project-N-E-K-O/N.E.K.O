@@ -1381,6 +1381,10 @@ async def save_model_parameters(model_name: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
+        parameters_file = os.path.join(model_dir, 'parameters.json')
+        config_mgr = get_config_manager()
+        workshop_attempt = await _drain_sync(lambda: workshop_snapshot(config_mgr).record_for(parameters_file))
+
         # Get request-body parameters.
         body = await request.json()
         parameters = body.get('parameters', {})
@@ -1389,15 +1393,18 @@ async def save_model_parameters(model_name: str, request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
         
         # Save parameters.json; an existing entry whose real path leaves the model folder is refused.
-        parameters_file = os.path.join(model_dir, 'parameters.json')
         if os.path.lexists(parameters_file) and not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
             return JSONResponse(status_code=403, content={"success": False, "error": "参数文件不在模型目录内"})
         from services.model_workshop.runtime import write_managed_json
-        if not await _drain_sync(lambda: write_managed_json(get_config_manager(), parameters_file, parameters)):
+        if not await _drain_sync(lambda: write_managed_json(
+            config_mgr, parameters_file, parameters, captured=workshop_attempt
+        )):
             await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
         return {"success": True, "message": "参数保存成功"}
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"保存模型参数失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

@@ -866,6 +866,25 @@ def test_skinned_vrm_requires_joint_and_weight_attributes(tmp_path, missing, mod
         assert validate_vrm_bundle(path).model_format == "vrm"
 
 
+def test_vrm_skin_weight_budget_counts_each_skinned_triangle_primitive(tmp_path):
+    def graph(data):
+        data["accessors"] = [
+            {"componentType": 5126, "count": 3, "type": "VEC3"},
+            {"componentType": 5121, "count": 3, "type": "VEC4"},
+            {"componentType": 5126, "count": 3, "type": "VEC4"},
+        ]
+        triangle = {"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}
+        line = {"attributes": {"POSITION": 0}, "mode": 1}
+        data["meshes"] = [{"primitives": [triangle, triangle, line]}]
+        data["nodes"][0].update(mesh=0, skin=0)
+        data["skins"] = [{"joints": [0]}]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_skin_weight_work=6)).model_format == "vrm"
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_skin_weight_work=5))
+
+
 def test_vrm_extra_documentation_is_rejected_instead_of_discarded(tmp_path):
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(), "LICENSE.txt": b"Read me"})
     with pytest.raises(ModelFormatError, match="unsupported_model_resource"):
@@ -922,6 +941,38 @@ def test_mmd_tga_decoded_storage_has_a_budget(tmp_path, image_type, required):
     validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required))
     with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
         validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required - 1))
+
+
+@pytest.mark.parametrize("image_type,identifier,pixels,accepted", [
+    (2, b"id", bytes(6), True),
+    (2, b"id", bytes(5), False),
+    (10, b"", b"\x81" + bytes(3), True),
+    (10, b"", b"\x01" + bytes(6), True),
+    (10, b"", b"\x82" + bytes(3), False),
+    (10, b"", b"\x01" + bytes(5), False),
+    (10, b"", b"\x81" + bytes(2), False),
+    (10, b"", b"\x80" + bytes(3), False),
+])
+def test_mmd_tga_requires_complete_pixel_packets(tmp_path, image_type, identifier, pixels, accepted):
+    header = struct.pack("<BBBHHBHHHHBB", len(identifier), 0, image_type, 0, 0, 0, 0, 0, 2, 1, 24, 0)
+    files = {"Avatar.pmx": pmx_bytes("face.tga"), "face.tga": header + identifier + pixels}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    if accepted:
+        assert validate_mmd_bundle(path).model_format == "mmd"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_image$"):
+            validate_mmd_bundle(path)
+
+
+@pytest.mark.parametrize("extension", ["pmx", "pmd"])
+def test_mmd_tga_cannot_be_used_as_a_custom_toon(tmp_path, extension):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, 1, 1, 24, 0)
+    entry = "Avatar." + extension
+    model = pmx_bytes("ramp.tga", shared=False) if extension == "pmx" else pmd_bytes("", toon=0, toon_path="ramp.tga")
+    files = {entry: model, "ramp.tga": header + bytes(3)}
+    path = make_native_bundle(tmp_path, kind="mmd", entry=entry, files=files)
+    with pytest.raises(ModelFormatError, match="^invalid_model_image$"):
+        validate_mmd_bundle(path)
 
 
 @pytest.mark.parametrize("bits,accepted", [(8, True), (24, False)])
@@ -1170,26 +1221,28 @@ def test_normalized_animation_outputs_count_each_channel_allocation(tmp_path, bu
             validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
 
 
-@pytest.mark.parametrize("component,stride,required", [(5121, 12, 112), (5123, 12, 64)])
-def test_normalized_interleaved_animation_counts_the_backing_array(tmp_path, component, stride, required):
+@pytest.mark.parametrize("interleaved", ["time", "rotation", "translation"])
+def test_vrm_animation_does_not_read_interleaved_padding_as_keyframes(tmp_path, interleaved):
     def graph(data):
+        stride = 16
         blob = base64.b64encode(bytes(stride)).decode()
         data["buffers"] = [{"byteLength": stride, "uri": "data:application/octet-stream;base64," + blob}]
         data["bufferViews"] = [{"buffer": 0, "byteLength": stride, "byteStride": stride}]
+        rotation = interleaved == "rotation"
         data["accessors"] = [
             {"componentType": 5126, "count": 1, "type": "SCALAR"},
-            {"bufferView": 0, "componentType": component, "normalized": True, "count": 1, "type": "VEC4"},
+            {"componentType": 5121 if rotation else 5126, "count": 1,
+             "normalized": rotation, "type": "VEC4" if rotation else "VEC3"},
         ]
-        data["nodes"].append({})
+        data["accessors"][0 if interleaved == "time" else 1]["bufferView"] = 0
         data["animations"] = [{
             "samplers": [{"input": 0, "output": 1}],
-            "channels": [{"sampler": 0, "target": {"node": node, "path": "rotation"}} for node in range(2)],
+            "channels": [{"sampler": 0, "target": {"node": 0, "path": "rotation" if rotation else "translation"}}],
         }]
 
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
-    validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=required))
-    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
-        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=required - 1))
+    with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+        validate_vrm_bundle(path)
 
 
 @pytest.mark.parametrize("targets", [[{"POSITION": 999}], [], ["invalid"]])
@@ -1649,6 +1702,15 @@ def test_mmd_ik_effectors_match_the_loader_bone_slots(tmp_path, kind, effector, 
             validate_model_bundle(path)
 
 
+def test_pmd_ik_conversion_has_a_budget_even_without_solver_work(tmp_path):
+    model = mmd_runtime_bytes("pmd", iterations=[0, 0], links=0, owners=[0, 1])
+    files = {"Avatar.pmd": model}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmd", files=files)
+    assert validate_mmd_bundle(path, format_limits=FormatLimits(pmd_ik_scan_work=8)).model_format == "mmd"
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_mmd_bundle(path, format_limits=FormatLimits(pmd_ik_scan_work=7))
+
+
 @pytest.mark.parametrize("bone,owners,accepted", [
     (2, None, True), (3, None, False), (-1, None, True), (-2, None, False),
     (3, [0, 0], True), (4, [0, 0], False), (-1, [1, 0], False),
@@ -1883,6 +1945,9 @@ def test_vrm_morph_texture_is_not_charged_again_for_shared_mesh_nodes(tmp_path):
         data['scenes'][0]['nodes'] = list(range(20))
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     assert validate_model_bundle(path, format_limits=FormatLimits(vrm_morph_bytes=96)).model_format == 'vrm'
+    assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_morph_weights=21)).model_format == "vrm"
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_morph_weights=20))
 
 
 @pytest.mark.parametrize('table', ['light', 'mesh', 'node', 'camera', 'scene'])

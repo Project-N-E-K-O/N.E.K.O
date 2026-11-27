@@ -41,6 +41,8 @@ class FormatLimits:
     vrm_accessor_bytes: int = 256 * 1024 * 1024
     # Reserve worst-case row padding without rejecting ordinary multi-expression faces.
     vrm_morph_bytes: int = 512 * 1024 * 1024
+    vrm_morph_weights: int = 8000000
+    vrm_skin_weight_work: int = 10000000
     vrm_instanced_vertices: int = 5000000
     live2d_physics_work: int = 3000000
     mmd_morph_bytes: int = 256 * 1024 * 1024
@@ -48,6 +50,7 @@ class FormatLimits:
     mmd_morph_work: int = 10000000
     mmd_ik_iterations: int = 4096
     mmd_ik_work: int = 100000
+    pmd_ik_scan_work: int = 4000000
 
 
 def _require(condition, path: str, code: str = "invalid_model_structure") -> None:
@@ -342,7 +345,6 @@ def _image(resources: _Resources, path: str) -> int:
     """Check the image signature and return the TGA decoder allocation in bytes."""
     header = resources.prefix(path, 18)
     lower = path.lower()
-    tga_bytes = 0
     if lower.endswith(".png"):
         valid = header.startswith(b"\x89PNG\r\n\x1a\n")
     elif lower.endswith((".jpg", ".jpeg")):
@@ -356,6 +358,7 @@ def _image(resources: _Resources, path: str) -> int:
         _require(len(header) == 18, path, "invalid_model_image")
         width, height = struct.unpack_from("<HH", header, 12)
         kind, bits = header[2], header[16]
+        palette_length = 0
         if kind in (1, 9):
             palette_length = struct.unpack_from("<H", header, 5)[0]
             valid = bits == 8 and header[1] == 1 and header[7] == 24 and 0 < palette_length <= 256
@@ -363,13 +366,31 @@ def _image(resources: _Resources, path: str) -> int:
             valid = bits in (8, 16) and header[1] == 0
         else:
             valid = kind in (2, 10) and bits in (16, 24, 32) and header[1] == 0
-        valid = valid and width > 0 and height > 0
-        # TGALoader expands each pixel to RGBA and RLE needs a second pixel buffer.
-        tga_bytes = width * height * (4 + (bits // 8 if kind in (9, 10, 11) else 0))
+        _require(valid and width > 0 and height > 0, path, "invalid_model_image")
+        pixels, pixel_bytes = width * height, bits // 8
+        offset = 18 + header[0] + palette_length * 3
+        remaining = resources.files[path].byte_size - offset
+        if kind in (9, 10, 11):
+            with resources.archive.open("model/" + path) as handle:
+                _require(remaining > 0, path, "invalid_model_image")
+                handle.seek(offset)
+                unread_pixels = pixels
+                while unread_pixels:
+                    packet = handle.read(1)
+                    _require(packet, path, "invalid_model_image")
+                    count = (packet[0] & 0x7f) + 1
+                    length = pixel_bytes if packet[0] & 0x80 else count * pixel_bytes
+                    _require(count <= unread_pixels and len(handle.read(length)) == length,
+                             path, "invalid_model_image")
+                    unread_pixels -= count
+            # TGALoader keeps both its decoded source pixels and RGBA output.
+            return pixels * (4 + pixel_bytes)
+        _require(remaining >= pixels * pixel_bytes, path, "invalid_model_image")
+        return pixels * 4
     else:
         valid = header.startswith(b"RIFF") and header[8:12] == b"WEBP"
     _require(valid, path, "invalid_model_image")
-    return tga_bytes
+    return 0
 
 
 def _live2d(resources: _Resources) -> None:
@@ -732,7 +753,7 @@ def _vrm(resources: _Resources) -> None:
             for value in material.get("textureProperties", {}).values():
                 if value is not None:
                     _require(texture_sources[_index(value, textures, entry)], entry)
-    mesh_morph_counts, mesh_draw_counts = [], []
+    mesh_morph_counts, mesh_draw_counts, mesh_weight_counts = [], [], []
     morph_allocated = 0
     for mesh in meshes:
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
@@ -809,6 +830,7 @@ def _vrm(resources: _Resources) -> None:
         _require(len(set(counts)) <= 1, entry)
         mesh_morph_counts.append(tuple(set(counts)))
         mesh_draw_counts.append(draw_count)
+        mesh_weight_counts.append(sum(counts))
     for animation in animations:
         _require(isinstance(animation, dict), entry)
         samplers, channels = animation.get("samplers"), animation.get("channels")
@@ -837,12 +859,13 @@ def _vrm(resources: _Resources) -> None:
             normalized = (path in ("rotation", "weights") and output["componentType"] in (5120, 5121, 5122, 5123)
                           and output.get("normalized") is True)
             _require(floating or normalized, entry)
-            if normalized and "node" in target:
-                # GLTFLoader converts the whole backing array per channel,
-                # including any interleaved padding, even for shared outputs.
-                backing_bytes, _ = accessor_clones[sample["output"]]
-                allocated += (backing_bytes // component_sizes[output["componentType"]]) * 4
-                _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
+            if "node" in target:
+                # GLTFLoader passes the backing arrays directly to keyframe tracks.
+                _require(all(accessor_clones[sample[key]][1] is None for key in ("input", "output")),
+                         entry, "unsupported_model_structure")
+                if normalized:
+                    allocated += output["count"] * (1 if shape == "SCALAR" else int(shape[-1])) * 4
+                    _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
             cubic = sample.get("interpolation", "LINEAR") == "CUBICSPLINE"
             _require(not cubic or sample_input["count"] >= 2, entry)
             expected = sample_input["count"] * (3 if cubic else 1)
@@ -860,6 +883,7 @@ def _vrm(resources: _Resources) -> None:
             _require(output["count"] == expected, entry)
     instanced_vertices = 0
     skinned_meshes = set()
+    mesh_references: dict[int, int] = {}
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
@@ -898,11 +922,18 @@ def _vrm(resources: _Resources) -> None:
                 allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "mesh" in node:
+            mesh_index = node["mesh"]
+            mesh_references[mesh_index] = mesh_references.get(mesh_index, 0) + 1
             if "skin" in node:
-                skinned_meshes.add(node["mesh"])
-            instanced_vertices += instances * mesh_draw_counts[node["mesh"]]
+                skinned_meshes.add(mesh_index)
+            instanced_vertices += instances * mesh_draw_counts[mesh_index]
             _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
+    # Shared meshes keep their weights and clone them for every node reference.
+    morph_weights = sum(mesh_weight_counts[index] * (1 if refs == 1 else 1 + refs)
+                        for index, refs in mesh_references.items())
+    _require(morph_weights <= resources.limits.vrm_morph_weights, entry, "model_accessor_budget_exceeded")
     # GLTFLoader constructs a SkinnedMesh only for triangle primitives.
+    skin_weight_work = 0
     for mesh_index in skinned_meshes:
         for primitive in meshes[mesh_index]["primitives"]:
             if primitive.get("mode", 4) not in (4, 5, 6):
@@ -913,6 +944,10 @@ def _vrm(resources: _Resources) -> None:
             _require(joints["type"] == weights["type"] == "VEC4" and joints["count"] == weights["count"], entry)
             if "POSITION" in attrs:
                 _require(joints["count"] == accessors[attrs["POSITION"]]["count"], entry)
+            # Construction normalizes every primitive even when geometry is shared.
+            skin_weight_work += weights["count"]
+            _require(skin_weight_work <= resources.limits.vrm_skin_weight_work,
+                     entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors, heights = [0] * len(nodes), [1] * len(nodes)
     for start in range(len(nodes)):
@@ -1005,10 +1040,12 @@ class _MmdReader:
 _MMD_IMAGES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".sph", ".spa")
 
 
-def _mmd_texture(resources: _Resources, value: str, tga_references: dict[str, str]) -> None:
+def _mmd_texture(resources: _Resources, value: str, tga_references: dict[str, str], *, toon: bool = False) -> None:
     """Use the main file's parent, retaining legal internal parent references."""
     target = resources.dependency(value, base=posixpath.dirname(resources.bundle.entrypoint), suffixes=_MMD_IMAGES)
     if value.lower().endswith(".tga"):
+        # Only toon rotation requires a CanvasImageSource. TGALoader returns raw pixels.
+        _require(not toon, target, "invalid_model_image")
         # The loader caches the raw URL, even if several spellings resolve to this file.
         tga_references[value] = target
 
@@ -1080,10 +1117,10 @@ def _pmx(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
         _require(reader.index(vertex, signed=False) < vertices, path)
     textures = [reader.text() for _ in range(reader.count(minimum=4))]
 
-    def dependency(index: int, *, active: bool = True) -> None:
+    def dependency(index: int, *, active: bool = True, toon: bool = False) -> None:
         _require(-1 <= index < len(textures), path)
         if active and index != -1:
-            _mmd_texture(resources, textures[index], tga_references)
+            _mmd_texture(resources, textures[index], tga_references, toon=toon)
 
     covered = 0
     material_count = reader.count(minimum=79)
@@ -1101,7 +1138,7 @@ def _pmx(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
             _require(reader.scalar("B") < 10, path)
         else:
             # A custom PMX toon named toon01.bmp is still a package dependency.
-            dependency(reader.index(texture))
+            dependency(reader.index(texture), toon=True)
         reader.text()
         count = reader.scalar("i")
         _require(0 <= count <= indices and count % 3 == 0, path)
@@ -1269,16 +1306,20 @@ def _pmd(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
     # The remaining sections are still consumed so truncation cannot hide after textures.
     bones = reader.count("H", 39)
     parents, ik_weights, ik_owners, grants = [], {}, {}, {}
+    ik_bones = set()
     for index in range(bones):
         reader.skip(20)
         parents.append(reader.scalar("h"))
         tail, kind = reader.scalar("h"), reader.scalar("B")
+        if kind == 2:
+            ik_bones.add(index)
         if kind == 5:  # PmdReader turns RotateEffect into a non-local rotation grant.
             grants[index] = tail
         reader.skip(14)
     ik_work = 0
     max_ik_target = -1
-    for _ in range(reader.count("H", 11)):
+    ik_count = reader.count("H", 11)
+    for _ in range(ik_count):
         owner = reader.scalar("H")
         target = reader.scalar("H")
         if owner < bones:
@@ -1295,6 +1336,9 @@ def _pmd(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
             # PmdReader discards missing links and IKs with no owner bone.
             if owner < bones and index < bones:
                 ik_weights[index] = ik_weights.get(index, 0) + iterations
+    # _ConvertBones scans the table twice for each IK-enabled bone.
+    _require(2 * ik_count * len(ik_bones.union(ik_owners)) <= resources.limits.pmd_ik_scan_work,
+             path, "model_accessor_budget_exceeded")
     # PmdReader appends duplicate IK children in original bone order. Its later
     # reordering remaps both parents and links by identity, preserving subtree
     # sizes and weights; calculate in that identity space before the permutation.
@@ -1363,7 +1407,7 @@ def _pmd(resources: _Resources, reader: _MmdReader, tga_references: dict[str, st
     for index, (toon, _diffuse, _sphere) in enumerate(materials):
         if toon != -1 and not shared[index]:
             _require(toon < len(textures), path)
-            active.append(toon)
+            _mmd_texture(resources, textures[toon], tga_references, toon=True)
     for index in set(active):
         # Check the actual converted table entry, not the original case-folded key.
         _mmd_texture(resources, textures[index], tga_references)

@@ -11,6 +11,7 @@ from starlette.requests import Request, ClientDisconnect
 
 from plugin.server.routes import model_market as bridge
 from plugin.server.routes import market_bridge as auth
+from utils.instance_access import INTERNAL_SERVICE_HEADER
 
 LOCAL = 'http://127.0.0.1:48916'
 MARKET = 'https://market.example.test'
@@ -71,10 +72,13 @@ async def connected(monkeypatch):
     monkeypatch.setattr(auth, '_main_server_port', lambda: 48911)
     monkeypatch.setattr(bridge, 'MARKET_ORIGINS', [MARKET])
     monkeypatch.setattr(bridge, '_slots', asyncio.Semaphore(2))
-    monkeypatch.setattr(bridge, '_client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(upstream)))
+    async_client = httpx.AsyncClient
     app = FastAPI(); app.include_router(bridge.router)
     headers = {'Authorization': 'Bearer ' + auth.get_bridge_token(), 'Origin': LOCAL}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=('127.0.0.1', 41000)), base_url=LOCAL) as client:
+    async with async_client(transport=httpx.ASGITransport(app, client=('127.0.0.1', 41000)), base_url=LOCAL) as client:
+        monkeypatch.setattr(bridge.httpx, 'AsyncClient', lambda **kwargs: async_client(
+            transport=httpx.MockTransport(upstream), **kwargs
+        ))
         yield SimpleNamespace(client=client, state=state, descriptor=descriptor, headers=headers,
                               params={'expected_sha256': 'a' * 64, 'byte_size': 3})
 
@@ -103,7 +107,11 @@ async def test_remote_or_forwarded_pages_cannot_use_desktop_reader(connected, he
 
 
 @pytest.mark.asyncio
-async def test_remote_relay_preserves_only_command_and_main_auth_headers(connected):
+async def test_remote_relay_preserves_only_command_and_main_auth_headers(connected, monkeypatch):
+    from utils import deployment, instance_access
+
+    monkeypatch.setattr(deployment, 'is_behind_proxy', lambda: True)
+    monkeypatch.setattr(instance_access, 'instance_key', lambda: 'k' * 32)
     c = connected
     headers = {**c.headers, 'Origin': MARKET}
     payload = {'model_id': 7, 'expected_sha256': 'a' * 64, 'byte_size': 3}
@@ -114,6 +122,7 @@ async def test_remote_relay_preserves_only_command_and_main_auth_headers(connect
     assert json.loads(request.content) == payload
     assert 'authorization' not in request.headers and 'x-csrf-token' in request.headers
     assert request.headers['origin'] == 'http://127.0.0.1:48911'
+    assert request.headers.get(INTERNAL_SERVICE_HEADER)
 
 
 @pytest.mark.asyncio

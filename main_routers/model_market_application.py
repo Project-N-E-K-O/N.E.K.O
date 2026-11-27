@@ -67,6 +67,7 @@ async def apply_installed(config, launch: Launch):
         # This is the role commit gate, distinct from the installer's file gate.
         # Cancellation after this point reports the real save result, not rollback.
         launch.phase = "applying"
+        return False
 
     async def guard(actual, characters):
         if actual is not config:
