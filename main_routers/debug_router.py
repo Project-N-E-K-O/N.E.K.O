@@ -58,11 +58,45 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+
+from main_routers.local_access import validate_local_browser_request
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+class _DebugAccessGuardRoute(APIRoute):
+    """Enforce local/origin and JSON Content-Type checks before body parsing."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def guarded_handler(request: Request):
+            rejection = validate_local_browser_request(
+                request,
+                require_json=request.method.upper() in _BODY_METHODS,
+            )
+            if rejection is not None:
+                status_code, error_code, error_message = rejection
+                return JSONResponse(
+                    status_code=status_code,
+                    content={
+                        "ok": False,
+                        "error_code": error_code,
+                        "error": error_message,
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+            return await handler(request)
+
+        return guarded_handler
+
+
+router = APIRouter(route_class=_DebugAccessGuardRoute)
 
 # ---------------------------------------------------------------------------
 # Module-level state.
@@ -438,7 +472,7 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
 
         snap["widget_mode"] = widget_mode_coordinator.snapshot()
     except Exception as exc:
-        snap["widget_mode"] = {"error": str(exc)[:160]}
+        snap["widget_mode"] = {"error_type": type(exc).__name__}
     if include_deep:
         try:
             snap['session_lifecycle'] = _safe_session_lifecycle()
@@ -609,7 +643,10 @@ def start_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/debug/health")
-async def debug_health(deep: bool = False) -> dict[str, Any]:
+async def debug_health(
+    deep: bool = False,
+    response: Response = None,
+) -> dict[str, Any]:
     """Return the current snapshot + the recent ring buffer.
 
     The ring buffer means users need not wait for the next 5-min tick — a
@@ -630,6 +667,8 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
 
     Passes ``channel="endpoint"`` for an independent psutil cpu_percent
     baseline that does not disturb the watchdog's 5-min window."""
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
     current = _collect_snapshot(include_deep=deep, channel="endpoint")
     # Resolve log path once instead of calling _resolve_log_path() twice
     _log_path = _resolve_log_path()
@@ -638,7 +677,8 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
         "ring": list(_HEALTH_RING),
         "ring_capacity": _HEALTH_RING.maxlen,
         "watchdog_interval_sec": _WATCHDOG_INTERVAL_SECONDS,
-        "log_path": str(_log_path) if _log_path else None,
+        "log_enabled": _log_path is not None,
+        "log_file": _log_path.name if _log_path else None,
     }
 
 
@@ -693,7 +733,7 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
 
 
 @router.post("/api/debug/health/client")
-async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
+async def debug_health_client(payload: dict[str, Any]) -> Any:
     """Browser-side snapshot POSTed by the frontend ``debug-health.js``.
 
     Flow:
@@ -716,5 +756,9 @@ async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
         entry = {"ts": time.time(), "client": sanitized}
         _HEALTH_RING.append(entry)
         return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    except Exception:
+        logger.exception("debug_health_client: failed to record client snapshot")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "internal_error"},
+        )
