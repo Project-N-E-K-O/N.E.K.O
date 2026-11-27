@@ -69,6 +69,13 @@ _MAX_OUTPUT_BYTES = 1024 * 1024
 _SUPPORTED_PLATFORMS = frozenset({"win32", "darwin", "linux"})
 # How often lock waits re-check the cancel event and the deadline.
 _POLL_SECONDS = 0.1
+# Inherited settings that would make the managed Python or uv use another
+# standard library, packages or environment than the prepared one.
+_INHERITED_PYTHON_VARS = frozenset({
+    "PYTHONHOME", "PYTHONPATH", "PYTHONPLATLIBDIR", "PYTHONSTARTUP", "PYTHONINSPECT",
+    "PYTHONUSERBASE", "PYTHONEXECUTABLE", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
+    "__PYVENV_LAUNCHER__",
+})
 _DEFAULT_BACKGROUND_TIMEOUT = 30 * 60.0
 
 RuntimeState = Literal["source", "ready", "missing", "preparing", "failed", "unsupported"]
@@ -92,6 +99,9 @@ class ToolRuntimeError(RuntimeError):
         super().__init__(detail)
         self.code: ErrorCode = code
         self.detail = detail
+        # False when the status should keep its previous state, e.g. a timeout
+        # spent waiting for another process that is preparing the same tools.
+        self.reportable = True
 
 
 @dataclass(frozen=True)
@@ -248,14 +258,23 @@ def tool_runtime_env(base: Mapping[str, str] | None = None, *, root: Path | None
     Based on ``git_env()`` (``os.environ`` without git's repository-locating
     variables) unless ``base`` is given. Inherited ``UV_*`` variables are
     dropped: they could point uv at another Python directory, cache or index
-    than the one prepared here. UTF-8 is forced for Python children.
+    than the one prepared here. So are the variables that redirect a Python
+    interpreter or uv's target environment (``PYTHONHOME``, ``PYTHONPATH``,
+    ``VIRTUAL_ENV``...): the identity probe runs isolated (``-I``) and would
+    not notice them, but tools started with this environment would. The user
+    site directory is disabled for the same reason. Names are compared
+    case-insensitively, as Windows treats them. UTF-8 is forced for Python
+    children.
     """
     source = git_env() if base is None else base
     env: dict[str, str] = {}
     for name, value in source.items():
-        if not name.startswith("UV_"):
+        upper = name.upper()
+        if not upper.startswith("UV_") and upper not in _INHERITED_PYTHON_VARS:
             env[name] = value
     env["UV_PYTHON_INSTALL_DIR"] = str(python_install_dir() if root is None else root / "python")
+    # Nor packages from the user's own site-packages (~/.local and the like).
+    env["PYTHONNOUSERSITE"] = "1"
     return _with_utf8(env)
 
 
@@ -667,16 +686,20 @@ def _prepare_python(
             raise ToolRuntimeError("python_install_failed", f"uv could not locate {request} after installing it")
         return found.stdout.strip().splitlines()[-1]
 
-    def probe(python: str) -> list[object] | None:
+    def probe(python: str) -> tuple[list[object] | None, str]:
+        """(identity, why it could not be read)."""
         _check(cancel, deadline)
         report(ProgressEvent("checking_python"))
         try:
             result = run_command(
                 [python, "-I", "-c", _PROBE], label="Check managed Python", env=env, cancel=cancel, deadline=deadline,
             )
-        except OSError:
-            return None  # Could not even be started; treated like a failed probe.
-        return _probe_identity(result.stdout) if not result.returncode else None
+        except OSError as exc:
+            return None, f"could not start it: {exc}"
+        if result.returncode:
+            return None, f"exit {result.returncode}: {_tail(result)}"
+        identity = _probe_identity(result.stdout)
+        return identity, "" if identity is not None else f"unreadable output: {_tail(result)}"
 
     report(ProgressEvent("installing_python"))
     found = run(find, "Locate managed Python")
@@ -686,17 +709,20 @@ def _prepare_python(
         python = locate()
     else:
         python = found.stdout.strip().splitlines()[-1]
-    identity = probe(python)
+    identity, problem = probe(python)
     if identity is None and not fresh:
         # uv can still list an interpreter that no longer starts (a quarantined
         # DLL, say): replace it once, as when `find` fails.
         reinstall()
         python = locate()
-        identity = probe(python)
+        identity, problem = probe(python)
+    if identity is None:
+        # A freshly installed interpreter that does not run is an install
+        # failure, not a host mismatch.
+        raise ToolRuntimeError("python_install_failed", f"The managed Python {request} does not run ({problem})")
     expected = [list(sys.version_info[:3]), sys.platform, struct.calcsize("P")]
     if (
-        identity is None
-        or identity[:3] != expected
+        identity[:3] != expected
         or not isinstance(identity[3], str)
         or _python_architecture(identity[3], identity[4] if isinstance(identity[4], str) else None) != architecture
     ):
@@ -732,9 +758,9 @@ def _ensure_uv(
     try:
         _download_uv(cached, report, cancel, deadline)
     except ToolRuntimeError as exc:
-        # Only a failed download falls back; a checksum mismatch is not retried
-        # with whatever else happens to be installed.
-        if exc.code != "download_failed" or prefer_system_uv:
+        # A failed download, or no pinned wheel for this platform, falls back;
+        # a checksum mismatch is not retried with whatever else is installed.
+        if exc.code not in ("download_failed", "unsupported_platform") or prefer_system_uv:
             raise
         system = _compatible_system_uv(run_command, env, cancel, deadline)
         if system is None:
@@ -746,14 +772,23 @@ def _ensure_uv(
 def _acquire_file_lock(lock: portalocker.Lock, cancel: threading.Event, deadline: float, *, wait: bool) -> None:
     # Never block inside the OS call: a cancel or the deadline must be noticed
     # while another process holds the lock.
+    held_elsewhere = False
     while True:
-        _check(cancel, deadline)
+        try:
+            _check(cancel, deadline)
+        except ToolRuntimeError as exc:
+            if held_elsewhere and exc.code == "timeout":
+                # The other process may well finish; like busy, this says
+                # nothing about the tools themselves.
+                exc.reportable = False
+            raise
         try:
             lock.acquire()
             return
         except portalocker.exceptions.LockException:
             if not wait:
                 raise ToolRuntimeError("busy", "Another N.E.K.O. process is preparing plugin tools") from None
+            held_elsewhere = True
         cancel.wait(_POLL_SECONDS)
 
 
@@ -796,7 +831,7 @@ def _record_outcome(error: ToolRuntimeError | None) -> None:
     global _last_error, _progress
     with _state_lock:
         _progress = None
-        if error is not None and error.code == "busy":
+        if error is not None and (error.code == "busy" or not error.reportable):
             # Another process is preparing; this attempt says nothing new.
             return
         # A cancel is the caller's choice, not a failure to report, and it

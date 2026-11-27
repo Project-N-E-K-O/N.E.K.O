@@ -516,5 +516,40 @@ def test_dist_check_only_warns_when_the_download_list_is_unavailable(
 
     monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("scripts.check_nuitka_dist._pypi_lacks_uv_release", lambda _version: False)
 
+    assert _check_plugin_tool_python() == []
+
+
+def test_dist_check_fails_when_the_pinned_uv_is_not_on_pypi(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+    import urllib.request
+
+    def urlopen(url, **_kwargs):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 2, "", "error: not found"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    issues = _check_plugin_tool_python()
+    assert len(issues) == 1 and "not published on PyPI" in issues[0]
+
+
+@pytest.mark.parametrize("failure", ["unreachable", "server_error"])
+def test_dist_check_warns_when_pypi_cannot_answer(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    import urllib.error
+    import urllib.request
+
+    def urlopen(url, **_kwargs):
+        if failure == "unreachable":
+            raise urllib.error.URLError("network unreachable")
+        raise urllib.error.HTTPError(url, 503, "Unavailable", None, None)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 2, "", "error: offline"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     assert _check_plugin_tool_python() == []

@@ -274,6 +274,21 @@ def _plugin_tool_check_skipped(reason: str) -> list[str]:
     return []
 
 
+def _pypi_lacks_uv_release(version: str) -> bool:
+    """True only when PyPI answers that this uv release does not exist."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/uv/{version}/json", timeout=30):
+            return False
+    except urllib.error.HTTPError as exc:
+        return exc.code == 404
+    except (OSError, ValueError, http.client.HTTPException):
+        return False  # Unreachable: the caller only warns.
+
+
 def _check_plugin_tool_python() -> list[str]:
     """The pinned uv must be able to download this build's exact CPython.
 
@@ -318,6 +333,11 @@ def _check_plugin_tool_python() -> list[str]:
         return _plugin_tool_check_skipped(f"could not run uv {version} to list Python downloads: {exc}")
     if result.returncode:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
+        if _pypi_lacks_uv_release(version):
+            return [
+                f"pinned uv {version} is not published on PyPI; packaged plugin tool preparation "
+                "would fail. Fix PINNED_UV_VERSION in plugin_tool_runtime.py."
+            ]
         return _plugin_tool_check_skipped(
             f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"
         )

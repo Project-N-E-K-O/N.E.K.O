@@ -389,9 +389,10 @@ def test_python_of_another_architecture_is_rejected(root, monkeypatch):
 
 
 @pytest.mark.parametrize("stdout", ["not json", "{}", "[1, 2]"])
-def test_unreadable_python_probe_is_a_mismatch(root, monkeypatch, stdout):
+def test_freshly_installed_python_with_unreadable_probe_is_an_install_failure(root, monkeypatch, stdout):
     FakePyPI().install(monkeypatch)
-    _expect_failure(FakeUv(root, identity=stdout), "python_mismatch")
+    error = _expect_failure(FakeUv(root, identity=stdout), "python_install_failed")
+    assert "does not run" in error.detail and "unreadable output" in error.detail
 
 
 def test_python_install_failure(root, monkeypatch):
@@ -945,14 +946,14 @@ def test_python_that_no_longer_starts_is_reinstalled_once(root, monkeypatch):
     assert module.read_tool_runtime_status().state == "ready"
 
 
-def test_python_that_never_starts_is_a_mismatch_after_one_reinstall(root, monkeypatch):
+def test_python_that_never_starts_fails_the_install_after_one_reinstall(root, monkeypatch):
     FakePyPI().install(monkeypatch)
     uv = FakeUv(root)
     _prepare(uv)
     (root / "python.json").unlink()
     uv.identity = "garbage"
     uv.calls.clear()
-    _expect_failure(uv, "python_mismatch")
+    _expect_failure(uv, "python_install_failed")
     assert sum(1 for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"]) == 1
 
 
@@ -1047,3 +1048,49 @@ def test_python_that_cannot_be_started_is_reinstalled_once(root, monkeypatch):
         return uv(cmd, **kwargs)
 
     assert Path(_prepare(runner).python).read_bytes() == b"#!python"
+
+
+def test_tool_env_drops_variables_that_redirect_python_or_its_environment(root):
+    base = {
+        "PATH": "/bin", "PYTHONHOME": "/elsewhere", "PYTHONPATH": "/elsewhere/lib",
+        "PYTHONSTARTUP": "/elsewhere/startup.py", "PYTHONUSERBASE": "/elsewhere/user",
+        "PYTHONEXECUTABLE": "/elsewhere/python", "VIRTUAL_ENV": "/elsewhere/venv",
+        "CONDA_PREFIX": "/elsewhere/conda", "__PYVENV_LAUNCHER__": "/elsewhere/python",
+        "PYTHONINSPECT": "1", "PYTHONPLATLIBDIR": "lib64",
+        # Windows spells names any way it likes; they are the same variable.
+        "PythonPath": "/elsewhere/mixed", "uv_index_url": "https://mirror.invalid",
+        # Settings that only make Python stricter are kept.
+        "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
+    }
+    env = module.tool_runtime_env(base)
+    assert sorted(name for name in env if name in base) == ["PATH", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"]
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert module.tool_runtime_env({"PATH": "/bin"})["PYTHONNOUSERSITE"] == "1"
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(root / "python")
+
+
+def test_source_environment_keeps_python_settings(root, monkeypatch):
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setenv("VIRTUAL_ENV", "/developer/venv")
+    assert module.prepare_tool_runtime(cancel=threading.Event(), deadline=time.monotonic() + 60).env["VIRTUAL_ENV"] == (
+        "/developer/venv"
+    )
+
+
+def test_no_pinned_wheel_for_this_platform_falls_back_to_a_system_uv(root, monkeypatch):
+    pypi = FakePyPI().install(monkeypatch)
+    pypi.metadata["urls"][0]["filename"] = f"uv-{module.PINNED_UV_VERSION}-py3-none-plan9_amd64.whl"
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: [])
+    (root / "python.json").unlink()
+    _expect_failure(FakeUv(root), "unsupported_platform")
+
+
+def test_lock_wait_timeout_behind_another_process_keeps_the_previous_state(root, monkeypatch):
+    FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
+    status = module.read_tool_runtime_status()
+    assert (status.state, status.error_code) == ("failed", "checksum_mismatch")
