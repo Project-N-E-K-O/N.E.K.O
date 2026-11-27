@@ -3094,8 +3094,10 @@ _NS = "import socket\nfrom types import SimpleNamespace\nns = SimpleNamespace()\
     "construction",
     [
         # Conditionally rebound: with use_unix false this is an IPv4 listener.
-        "ns.make = lambda family: socket.socket()\nif use_unix:\n    ns.make = socket.socket\n"
-        "s = ns.make(socket.AF_UNIX)\n",
+        (
+            "ns.make = lambda family: socket.socket()\nif use_unix:\n    ns.make = socket.socket\n"
+            "s = ns.make(socket.AF_UNIX)\n"
+        ),
         "ns.make = socket.socket\ns = ns.make(socket.AF_UNIX)\n",
         "ns.make = socket.socket\nmake = ns.make\ns = make(socket.AF_UNIX)\n",
         "ns.mod = socket\ns = ns.mod.socket(socket.AF_UNIX)\n",
@@ -3121,6 +3123,7 @@ def test_a_module_socket_rebound_through_globals_is_not_trusted(tmp_path):
         ("from re import compile as rc\n", True),
         ("from os.path import getattr_like\n", True),
         ("from operator import attrgetter\n", False),
+        ("from _operator import methodcaller as mc\n", False),
         ("from inspect import getattr_static as g\n", False),
         ("from builtins import getattr as g\n", False),
     ],

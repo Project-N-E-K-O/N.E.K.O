@@ -389,7 +389,9 @@ _NAMED_WRITERS = frozenset({"setattr", "delattr", "__setattr__", "__delattr__"})
 _NAME_READERS = frozenset({"getattr", "getattr_static"})
 # Modules whose dynamic-writer names are the reflective ones when imported
 # (from builtins import getattr as g); from re import compile is not.
-_REFLECTION_MODULES = frozenset({"builtins", "operator", "inspect", "sys", "importlib", "functools"})
+_REFLECTION_MODULES = frozenset(
+    {"builtins", "operator", "_operator", "inspect", "sys", "importlib", "functools", "_functools"}
+)
 
 
 def _constant_attribute_name(call: ast.Call, name: str) -> str | None:
