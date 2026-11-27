@@ -38,6 +38,7 @@ from config.prompts.prompts_nekopower_enable import (
     ENABLE_REPORT_EXPIRED,
     ENABLE_REPORT_FAILED,
     ENABLE_REPORT_NOTE,
+    ENABLE_REPORT_OFF_AGAIN,
     ENABLE_REPORT_WORDS,
     ENABLE_REMOTE,
     ENABLE_UNAVAILABLE,
@@ -378,7 +379,7 @@ def test_a_stale_answer_changes_nothing():
 
 @pytest.mark.parametrize("renewed", [True, False])
 def test_after_yes_the_session_is_renewed_and_then_she_is_told(renewed):
-    manager = _session(page=_Page())
+    manager = _session(page=_Page(), master_on=True)
     order = []
 
     async def renew():
@@ -394,7 +395,7 @@ def test_after_yes_the_session_is_renewed_and_then_she_is_told(renewed):
 
 @pytest.mark.parametrize("failure", ["", "refused"])
 def test_what_the_user_typed_beside_yes_goes_with_the_report(failure):
-    manager = _session(page=_Page())
+    manager = _session(page=_Page(), master_on=True)
 
     async def renew():
         return True
@@ -413,6 +414,17 @@ def test_what_the_user_typed_beside_no_goes_with_the_report():
     assert manager.reports[-1]["summary"] == (
         ENABLE_REPORT_DECLINED["zh"] + ENABLE_REPORT_NOTE["zh"].format(text="现在不方便")
     )
+
+
+def test_switched_off_again_on_the_panel_meanwhile_she_is_not_told_it_is_on():
+    # CodeRabbit on #4155: the command went through, then the panel switched it off again
+    # before the report; the session's switch says off, and so does the report.
+    manager = _session(page=_Page(), master_on=False)
+    manager.renew_session_now = None  # not to be called
+    asyncio.run(manager.after_nekopower_enabled("", note="好"))
+    assert [report["summary"] for report in manager.reports] == [
+        ENABLE_REPORT_OFF_AGAIN["zh"] + ENABLE_REPORT_NOTE["zh"].format(text="好"),
+    ]
 
 
 @pytest.mark.parametrize("failure", ["unreachable", "refused", "unknown", "something else"])

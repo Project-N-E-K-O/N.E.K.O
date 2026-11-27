@@ -154,6 +154,18 @@ ENABLE_REPORT_ACCEPTED_NOT_RENEWED = {
     "es": "El usuario aceptó y NekoPower está activado, pero la sesión aún no se ha renovado: si tienes las herramientas de tareas, sigue con lo que pidió el usuario; si no, dile que NekoPower ya está activado y que hace falta esperar un momento.",
     "pt": "O usuário concordou e o NekoPower está ativado, mas a sessão ainda não foi renovada: se você tem as ferramentas de tarefas, continue com o que o usuário pediu; se não, diga que o NekoPower já está ativado e que é preciso esperar um pouco.",
 }
+# The command went through, yet NekoPower is off again by the time she is told (switched
+# off on the panel meanwhile).
+ENABLE_REPORT_OFF_AGAIN = {
+    "zh": "用户同意了，但喵能力随后又被关掉了；照实告诉对方现在办不到。",
+    "zh-TW": "使用者同意了，但喵能力隨後又被關掉了；照實告訴對方現在辦不到。",
+    "en": "The user agreed, but NekoPower was switched off again right after; tell them plainly you cannot do it now.",
+    "ja": "ユーザーは許可しましたが、その後にゃんパワーがまたオフにされました。いまはできないと正直に伝えてください。",
+    "ko": "사용자가 허락했지만 그 뒤에 냥파워가 다시 꺼졌습니다. 지금은 할 수 없다고 솔직하게 말하세요.",
+    "ru": "Пользователь согласился, но сразу после этого NekoPower снова выключили; честно скажите, что сейчас это невозможно.",
+    "es": "El usuario aceptó, pero justo después NekoPower se volvió a desactivar; dile con franqueza que ahora no puedes.",
+    "pt": "O usuário concordou, mas logo depois o NekoPower foi desativado de novo; diga com franqueza que agora não dá.",
+}
 # What the user typed beside a click on "yes" or "no" ({text}), added to the report.
 ENABLE_REPORT_NOTE = {
     "zh": "用户还补了一句：「{text}」。",

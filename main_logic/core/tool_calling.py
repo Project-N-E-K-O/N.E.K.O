@@ -61,6 +61,7 @@ from config.prompts.prompts_nekopower_enable import (
     ENABLE_REPORT_EXPIRED,
     ENABLE_REPORT_FAILED,
     ENABLE_REPORT_NOTE,
+    ENABLE_REPORT_OFF_AGAIN,
     ENABLE_REPORT_WORDS,
     ENABLE_REMOTE,
     ENABLE_UNAVAILABLE,
@@ -548,6 +549,11 @@ class ToolCallingMixin:
         if failure:
             reason = _loc(ENABLE_FAILURE_REASONS.get(failure) or ENABLE_FAILURE_REASONS["unknown"], lang)
             self._report_enable_nekopower(_loc(ENABLE_REPORT_FAILED, lang).format(reason=reason), note=note)
+            return
+        if not self._nekopower_master_on():
+            # Switched off again on the panel while the command was on its way: the newer
+            # switch stands (_Unconfirmed), and she is not told it is on.
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
             return
         try:
             renewed = await self.renew_session_now()
