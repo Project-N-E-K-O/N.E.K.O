@@ -156,6 +156,14 @@ def test_letter_probabilities_keep_letters_only_and_renormalise():
     assert letter_probabilities([("Hello", -0.1)], keys) == {}
 
 
+@pytest.mark.unit
+def test_letter_probabilities_drop_non_finite_log_probabilities():
+    keys = ["a", "b"]
+    assert letter_probabilities([("A", float("nan"))], keys) == {}
+    probs = letter_probabilities([("A", float("nan")), ("B", math.log(0.4))], keys)
+    assert probs == {"b": pytest.approx(1.0)}
+
+
 # ---------------------------------------------------------------------------
 # Rehost: the call
 # ---------------------------------------------------------------------------

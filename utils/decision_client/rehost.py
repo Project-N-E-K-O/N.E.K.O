@@ -97,6 +97,8 @@ def letter_probabilities(candidates: Iterable[tuple[str, float]], keys: list[str
             p = math.exp(float(logprob))
         except (TypeError, ValueError, OverflowError):
             continue
+        if not math.isfinite(p):
+            continue  # a NaN log probability must not become an answer
         probs[keys[idx]] = probs.get(keys[idx], 0.0) + p
     total = sum(probs.values())
     if total <= 0.0:
