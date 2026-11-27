@@ -1455,6 +1455,29 @@ def test_vrm_instancing_requires_meshes_the_renderer_can_draw(tmp_path, mode, mo
             validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("modes", [(0,), (1,), (4, 1), (4,)])
+@pytest.mark.parametrize("budget", ["draw", "matrix"])
+def test_vrm_instancing_budgets_only_count_instantiated_meshes(tmp_path, modes, budget):
+    def graph(data):
+        data["accessors"] = [
+            {"componentType": 5126, "count": 3, "type": "VEC3"},
+            {"componentType": 5126, "count": 4, "type": "VEC3"},
+        ]
+        data["meshes"] = [{"primitives": [{"attributes": {"POSITION": 0}, "mode": mode} for mode in modes]}]
+        data["extensionsUsed"].append("EXT_mesh_gpu_instancing")
+        data["nodes"][0].update(mesh=0, extensions={
+            "EXT_mesh_gpu_instancing": {"attributes": {"TRANSLATION": 1}},
+        })
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    limits = FormatLimits(vrm_instanced_vertices=9) if budget == "draw" else FormatLimits(vrm_accessor_bytes=200)
+    if modes == (4,):
+        with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+            validate_vrm_bundle(path, format_limits=limits)
+    else:
+        assert validate_vrm_bundle(path, format_limits=limits).model_format == "vrm"
+
+
 @pytest.mark.parametrize('case', ['vrm0_texture', 'missing_source'])
 def test_vrm_texture_dependencies_must_be_loadable(tmp_path, case):
     def graph(data):
@@ -2273,6 +2296,52 @@ def test_vrm_nodes_allow_only_one_parent_edge(tmp_path, parent_lists):
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
     with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
         validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("roots,accepted", [([0], True), ([0, 1], False), ([1], False)])
+def test_vrm_scenes_only_reference_root_nodes(tmp_path, roots, accepted):
+    def graph(data):
+        data["nodes"] = [{"children": [1], "translation": [1, 0, 0]}, {}]
+        data["scenes"] = [{"nodes": roots}, {"nodes": roots}]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("descendant,accepted", [
+    ("direct_morph", False), ("nested_morph", False), ("plain", True), ("ignored_morph", True),
+])
+def test_vrm_weight_animation_does_not_target_descendant_meshes(tmp_path, descendant, accepted):
+    def graph(data):
+        data["accessors"] = [
+            {"componentType": 5126, "count": 3, "type": "VEC3"},
+            {"componentType": 5126, "count": 1, "type": "SCALAR"},
+            {"componentType": 5126, "count": 2, "type": "SCALAR"},
+        ]
+        animated = {"attributes": {"POSITION": 0}, "targets": [{"POSITION": 0}, {"POSITION": 0}]}
+        child = {"attributes": {"POSITION": 0}}
+        if descendant != "plain":
+            child["targets"] = [{"TANGENT" if descendant == "ignored_morph" else "POSITION": 0}]
+        data["meshes"] = [{"primitives": [animated, animated]}, {"primitives": [child]}]
+        data["nodes"] = [{"mesh": 0, "children": [1]}, {"mesh": 1}]
+        if descendant == "nested_morph":
+            data["nodes"][1] = {"children": [2]}
+            data["nodes"].append({"mesh": 1})
+        data["animations"] = [{
+            "samplers": [{"input": 1, "output": 2}],
+            "channels": [{"sampler": 0, "target": {"node": 0, "path": "weights"}}],
+        }]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+            validate_vrm_bundle(path)
 
 
 @pytest.mark.parametrize('semantic', ['NORMAL', 'COLOR_0'])

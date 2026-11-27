@@ -783,6 +783,7 @@ def _vrm(resources: _Resources) -> None:
                 if value is not None:
                     _require(texture_sources[_index(value, textures, entry)], entry)
     mesh_morph_counts, mesh_draw_counts, mesh_weight_counts = [], [], []
+    mesh_supports_instancing = []
     triangle_modes = (4, 5, 6)
     meshes_with_rendered_morphs, meshes_without_node_influences = set(), set()
     morph_allocated = 0
@@ -791,10 +792,12 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(mesh.get("name"), str) or mesh.get("name") in (None, False, ""), entry)
         counts = []
         draw_count = 0
+        supports_instancing = True
         for primitive in mesh["primitives"]:
             _require(isinstance(primitive, dict) and isinstance(primitive.get("attributes"), dict), entry)
             mode = primitive.get("mode", 4)
             _require(type(mode) in (int, float) and mode in range(7), entry)
+            supports_instancing = supports_instancing and mode in triangle_modes
             for accessor in primitive["attributes"].values():
                 _index(accessor, accessors, entry)
             if "indices" in primitive:
@@ -873,6 +876,8 @@ def _vrm(resources: _Resources) -> None:
         mesh_morph_counts.append(target_count)
         mesh_draw_counts.append(draw_count)
         mesh_weight_counts.append(sum(counts))
+        mesh_supports_instancing.append(supports_instancing)
+    weight_animation_nodes = set()
     for animation in animations:
         _require(isinstance(animation, dict), entry)
         samplers, channels = animation.get("samplers"), animation.get("channels")
@@ -933,6 +938,7 @@ def _vrm(resources: _Resources) -> None:
                 target_count = mesh_morph_counts[_index(node.get("mesh"), meshes, entry)]
                 _require(target_count > 0, entry)
                 expected *= target_count
+                weight_animation_nodes.add(target["node"])
             _require(output["count"] == expected, entry)
     instanced_vertices = 0
     skinned_meshes = set()
@@ -968,6 +974,7 @@ def _vrm(resources: _Resources) -> None:
         instances = 1
         instancing = node.get("extensions", {}).get("EXT_mesh_gpu_instancing")
         if instancing is not None and "mesh" in node:
+            mesh_index = node["mesh"]
             _require(isinstance(instancing, dict) and isinstance(instancing.get("attributes"), dict), entry)
             instance_counts = set()
             for name, index in instancing["attributes"].items():
@@ -976,17 +983,15 @@ def _vrm(resources: _Resources) -> None:
                 _require(shape is None or accessor["type"] == shape, entry)
                 instance_counts.add(accessor["count"])
             _require(len(instance_counts) <= 1, entry)
-            if instance_counts:
-                primitives = meshes[node["mesh"]]["primitives"]
-                # The loader falls back for lines/points. Its InstancedMesh path
-                # has no morph influences or morph texture for the renderer.
-                _require(node["mesh"] not in meshes_with_rendered_morphs
-                         or any(primitive.get("mode", 4) not in triangle_modes for primitive in primitives),
+            # A single line or point primitive makes the loader use ordinary meshes.
+            if instance_counts and mesh_supports_instancing[mesh_index]:
+                # InstancedMesh has no morph influences or morph texture here.
+                _require(mesh_index not in meshes_with_rendered_morphs,
                          entry, "unsupported_model_structure")
                 instances = next(iter(instance_counts))
                 # GLTFMeshGpuInstancing creates count*16 Float32 values per
                 # node and primitive, even when all nodes share one accessor.
-                allocated += instances * 64 * len(primitives)
+                allocated += instances * 64 * len(meshes[mesh_index]["primitives"])
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "mesh" in node:
             mesh_index = node["mesh"]
@@ -1017,13 +1022,23 @@ def _vrm(resources: _Resources) -> None:
                      entry, "model_accessor_budget_exceeded")
     # A cyclic child graph cannot become a scene tree in the current loader.
     colors, heights = [0] * len(nodes), [1] * len(nodes)
+    morph_subtrees = set()
     for start in range(len(nodes)):
         stack = [(start, False)]
         while stack:
             node, leaving = stack.pop()
             if leaving:
-                heights[node] = 1 + max((heights[child] for child in nodes[node].get("children", [])), default=0)
+                children = nodes[node].get("children", [])
+                heights[node] = 1 + max((heights[child] for child in children), default=0)
                 _require(heights[node] <= resources.limits.hierarchy_depth, entry, "model_accessor_budget_exceeded")
+                if weight_animation_nodes:
+                    # The bundled loader binds a weights track to every mesh
+                    # with influences in this subtree, including child nodes.
+                    descendant_morph = any(child in morph_subtrees for child in children)
+                    _require(not descendant_morph or node not in weight_animation_nodes,
+                             entry, "unsupported_model_structure")
+                    if descendant_morph or nodes[node].get("mesh") in meshes_with_rendered_morphs:
+                        morph_subtrees.add(node)
                 colors[node] = 2
             elif colors[node] != 2:
                 _require(colors[node] == 0, entry)
@@ -1045,7 +1060,7 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(scene, dict) and isinstance(scene.get("nodes", []), list), entry)
         _require(isinstance(scene.get("name"), str) or scene.get("name") in (None, False, ""), entry)
         for node in scene.get("nodes", []):
-            _index(node, nodes, entry)
+            _require(_index(node, nodes, entry) not in children_seen, entry)
     if "scene" in data:
         _index(data["scene"], scenes, entry)
 
