@@ -602,6 +602,36 @@ def test_docx_skips_hidden_runs():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("vanish", ["", ' w:val="true"', ' w:val="0"'])
+def test_docx_textbox_in_hidden_run_follows_outer_visibility(vanish):
+    """A nested paragraph cannot override its enclosing run's visibility."""
+    document = _word_document_xml(
+        _word_paragraph_xml("Visible before")
+        + '<w:p><w:r><w:rPr><w:vanish' + vanish + '/></w:rPr>'
+        + '<w:txbxContent>' + _word_paragraph_xml("Text box draft")
+        + '</w:txbxContent></w:r></w:p>'
+        + _word_paragraph_xml("Visible after")
+    )
+    parsed = parse_document("textbox.docx", "", _docx_bytes("", {"word/document.xml": document}))
+    assert "Visible before" in parsed["content"] and "Visible after" in parsed["content"]
+    assert ("Text box draft" in parsed["content"]) is ("0" in vanish)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("inside_paragraph", [False, True])
+def test_docx_deep_visible_xml_does_not_use_python_recursion(inside_paragraph):
+    """Exercise both document traversal and deeply wrapped paragraph runs."""
+    depth = 1500
+    wrapped = '<w:customXml>' * depth + '<w:r><w:t>Deep visible text</w:t></w:r>' + '</w:customXml>' * depth
+    body = '<w:p>' + wrapped + '</w:p>' if inside_paragraph else (
+        '<w:customXml>' * depth + _word_paragraph_xml("Deep visible text") + '</w:customXml>' * depth
+    )
+    document = _word_document_xml(_word_paragraph_xml("First") + body + _word_paragraph_xml("Last"))
+    parsed = parse_document("deep.docx", "", _docx_bytes("", {"word/document.xml": document}))
+    assert parsed["content"].index("First") < parsed["content"].index("Deep visible text") < parsed["content"].index("Last")
+
+
+@pytest.mark.unit
 def test_docx_preserves_runs_when_vanish_is_disabled():
     parsed = parse_document("visible-run.docx", "", _docx_with_vanish_disabled_run())
 
