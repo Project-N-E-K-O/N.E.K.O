@@ -255,6 +255,23 @@ def test_not_offered_with_built_in_tools_off_nor_over_another_source(monkeypatch
     assert manager.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME).description == "a plugin's"
 
 
+def test_taken_back_once_a_plugin_that_held_its_name_goes_away(monkeypatch):
+    # CodeRabbit on #4155: a same-name plugin tool held the name; removed, the builtin comes
+    # back as the other yielding builtins do, while the master switch is off.
+    monkeypatch.delenv("NEKO_DISABLE_BUILTIN_TOOLS", raising=False)
+    manager = _session()
+    theirs = ToolDefinition(
+        name=ENABLE_NEKOPOWER_TOOL_NAME, description="a plugin's", parameters={"type": "object", "properties": {}},
+        handler=lambda args: "", metadata={"source": "plugin"},
+    )
+    manager.tool_registry.register(theirs)
+    held = manager._yielding_builtin_holders()
+    manager.tool_registry.unregister(ENABLE_NEKOPOWER_TOOL_NAME)
+    manager._refill_vacated_builtins(held)
+    tool = manager.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME)
+    assert tool is not None and tool.metadata.get("source") == "builtin"
+
+
 def test_calling_it_puts_the_card_up_and_returns_at_once():
     page = _Page()
     manager = _session(page=page)
@@ -767,8 +784,18 @@ def _flagged(*, session_up=True, master_on=False):
     async def sync_tools():
         return None
 
+    manager.dropped = []
+
+    async def cleanup():
+        manager.dropped.append("cleanup")
+
+    async def reset():
+        manager.dropped.append("reset")
+
     manager.renew_session_now = renew
     manager._sync_tools_to_active_session = sync_tools
+    manager._cleanup_pending_session_resources = cleanup
+    manager._reset_preparation_state = reset
     return manager
 
 
@@ -809,3 +836,84 @@ def test_the_card_and_the_switch_share_one_renewal():
     asyncio.run(run())
     assert manager.renewals == [True]
     assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_ACCEPTED["zh"]]
+
+
+def _held_renewal(manager):
+    """A renewal that waits until it is let go: ``(let_go, started)``."""
+    let_go = asyncio.Event()
+
+    async def renew():
+        manager.renewals.append(True)
+        await let_go.wait()
+        return True
+
+    manager.renew_session_now = renew
+    return let_go
+
+
+def test_taken_back_before_the_agent_process_took_it_the_renewal_is_dropped():
+    # Greptile on #4155: the switch is written before the command is taken; taken back,
+    # the renewal and the session it prepared must not stay, or it would open with NekoPower on.
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        _held_renewal(manager)
+        manager.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+        await asyncio.sleep(0)
+        renewal = manager._nekopower_renewal[1]
+        manager.update_agent_flags({"agent_enabled": False, "user_plugin_enabled": False})
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return renewal
+
+    renewal = asyncio.run(run())
+    assert renewal.cancelled()
+    assert manager.dropped == ["cleanup", "reset"]
+
+
+def test_a_renewal_done_before_the_card_reports_is_not_done_again():
+    # Greptile on #4155: the renewal may be over while the command is still on its way.
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        manager.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+        await manager._nekopower_renewal[1]
+        await manager.after_nekopower_enabled("")
+
+    asyncio.run(run())
+    assert manager.renewals == [True]
+    assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_ACCEPTED["zh"]]
+
+
+def test_switched_off_while_the_card_waits_for_the_renewal_she_is_told_so():
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        _held_renewal(manager)
+        manager.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+        report = asyncio.ensure_future(manager.after_nekopower_enabled(""))
+        await asyncio.sleep(0)
+        manager.update_agent_flags({"agent_enabled": False})
+        # Not left waiting for a renewal that was dropped.
+        await asyncio.wait_for(report, 2)
+
+    asyncio.run(run())
+    assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_OFF_AGAIN["zh"]]
+
+
+def test_switched_on_again_later_is_renewed_again():
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        manager.update_agent_flags({"agent_enabled": True})
+        await manager._nekopower_renewal[1]
+        manager.update_agent_flags({"agent_enabled": False})
+        manager.update_agent_flags({"agent_enabled": True})
+        await manager._nekopower_renewal[1]
+
+    asyncio.run(run())
+    assert manager.renewals == [True, True]

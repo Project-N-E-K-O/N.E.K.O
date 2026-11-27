@@ -237,10 +237,17 @@ class ProactiveMixin:
             logger.debug("[%s] task tools not re-registered after a flag update", self.lanlan_name, exc_info=True)
         # Switched on while a session is up (the panel, or the enable_nekopower card): that
         # session opened with NekoPower off and says so, and Gemini Live fixes its tools at
-        # connect. It is renewed (owner, 2026-11-27).
+        # connect. It is renewed (owner, 2026-11-27). The switch is written here before the
+        # agent process takes the command; taken back (or switched off again) meanwhile, the
+        # renewal is dropped with the session it prepared.
         try:
-            if not was_on and self.agent_flags.get('agent_enabled') and self.session is not None and self.is_active:
-                self._renew_for_nekopower_on()
+            now_on = bool(self.agent_flags.get('agent_enabled'))
+            if not was_on and now_on:
+                self._nekopower_on_count = getattr(self, "_nekopower_on_count", 0) + 1
+                if self.session is not None and self.is_active:
+                    self._renew_for_nekopower_on()
+            elif was_on and not now_on:
+                self._drop_nekopower_renewal()
         except Exception:
             logger.debug("[%s] session not renewed after NekoPower came on", self.lanlan_name, exc_info=True)
 

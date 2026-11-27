@@ -524,14 +524,34 @@ class ToolCallingMixin:
     def _renew_for_nekopower_on(self) -> "asyncio.Task":
         """The one renewal for NekoPower coming on: the panel switch and the card share it.
 
-        ``update_agent_flags`` starts it as the master switch comes on mid-session;
-        ``after_nekopower_enabled`` waits for the same one instead of renewing again.
+        ``update_agent_flags`` starts it as the master switch comes on mid-session and
+        counts each time it comes on; ``after_nekopower_enabled`` waits for the renewal of
+        the same coming on (under way or done) instead of renewing again.
         """
-        task = getattr(self, "_nekopower_renewal", None)
-        if task is None or task.done():
-            task = self._fire_task(self.renew_session_now())
-            self._nekopower_renewal = task
+        count = getattr(self, "_nekopower_on_count", 0)
+        held = getattr(self, "_nekopower_renewal", None)
+        if held is not None and held[0] == count:
+            return held[1]
+        task = self._fire_task(self.renew_session_now())
+        self._nekopower_renewal = (count, task)
         return task
+
+    def _drop_nekopower_renewal(self) -> None:
+        """NekoPower went off again (a command taken back, the panel): a renewal under way for it is dropped.
+
+        The session it prepared goes too, or the end of a turn would swap it in with
+        the NekoPower opening while NekoPower is off.
+        """
+        held = getattr(self, "_nekopower_renewal", None)
+        if held is None or held[1].done():
+            return
+        self._nekopower_renewal = None
+        held[1].cancel()
+        self._fire_task(self._drop_prepared_session())
+
+    async def _drop_prepared_session(self) -> None:
+        await self._cleanup_pending_session_resources()
+        await self._reset_preparation_state()
 
     async def answer_enable_nekopower_card(self, question_id: str, *, choice: str = "", text: str = "") -> str:
         """The user answered the card.
@@ -569,11 +589,19 @@ class ToolCallingMixin:
             # switch stands (_Unconfirmed), and she is not told it is on.
             self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
             return
-        try:
-            renewed = await self._renew_for_nekopower_on()
-        except Exception as e:
-            renewed = False
-            logger.warning("[%s] enable_nekopower: session not renewed: %s", self.lanlan_name, type(e).__name__)
+        renewal = self._renew_for_nekopower_on()
+        # Waited for without taking on its fate: a renewal dropped because NekoPower went off
+        # again is not this report's cancellation.
+        await asyncio.wait({renewal})
+        renewed = False
+        if not renewal.cancelled():
+            if renewal.exception() is not None:
+                logger.warning(
+                    "[%s] enable_nekopower: session not renewed: %s",
+                    self.lanlan_name, type(renewal.exception()).__name__,
+                )
+            else:
+                renewed = bool(renewal.result())
         if not self._nekopower_master_on():
             # Switched off while the session was being renewed: as above.
             self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
@@ -746,14 +774,14 @@ class ToolCallingMixin:
         """The tools holding the names of the builtins that yield to other sources, before a removal."""
         return {
             name: self.tool_registry.get(name)
-            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME)
+            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME, ENABLE_NEKOPOWER_TOOL_NAME)
         }
 
     def _refill_vacated_builtins(self, previous_holders: dict[str, ToolDefinition | None] | None) -> None:
         """Take a builtin's name back from another source's tool just removed.
 
         Only for builtins that yield to same-name tools of other sources
-        (``query_public_knowledge`` and the two task tools): when such a tool
+        (``query_public_knowledge``, the two task tools and ``enable_nekopower``): when such a tool
         goes away neither the availability flag nor a switch changes, so
         nothing else would restore the builtin. Removing the builtin itself
         (e.g. clearing the "builtin" source) is respected: nothing is put back.
@@ -772,8 +800,9 @@ class ToolCallingMixin:
 
         if vacated(public_knowledge.TOOL_NAME) and public_knowledge.tool_available():
             self._register_public_knowledge_tool()
-        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME):
-            # Registers what the switches call for and leaves the rest alone.
+        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME) or vacated(ENABLE_NEKOPOWER_TOOL_NAME):
+            # Registers what the switches call for and leaves the rest alone
+            # (enable_nekopower is registered on the same path).
             self._register_task_tools()
 
     def _on_public_knowledge_availability(self) -> None:
