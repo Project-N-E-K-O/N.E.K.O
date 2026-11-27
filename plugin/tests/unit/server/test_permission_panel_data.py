@@ -2309,3 +2309,58 @@ async def test_any_time_in_the_rows_matches_what_the_route_accepts(env):
                 {"state": "granted", "condition": "anytime"},
             )
             assert (response.status_code == 200) is row["anytime_allowed"], (plugin_id, row["permission"], response.text)
+
+
+def test_a_summary_item_of_the_wrong_type_hides_nothing_else(tmp_path):
+    index = _index(tmp_path)
+    good = {"last": {"at": _ts(timedelta(days=2)), "outcome": "allowed"}}
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(timedelta(days=40)),
+        "plugins": {
+            "a": {"permissions": {MEMORY: {"last": {"at": _ts(), "outcome": []}},
+                                  CONNECT: {"last": {"at": _ts(), "outcome": {}}}}},
+            "b": {"permissions": {MEMORY: good}},
+        },
+    }), encoding="utf-8")
+    assert index.last_use("a", MEMORY) is None and index.last_use("a", CONNECT) is None
+    assert index.last_use("b", MEMORY).at == NOW - timedelta(days=2)
+
+
+def test_a_new_last_effective_use_alone_is_saved(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=9))))
+    index.observe(_decision("a", MEMORY, verdict="would_deny", enforcing=True, reason="denied", ts=_ts()))
+    assert index.save_summary() is True
+    # Read back from the audit files later: a use between the first and the
+    # last changes only the last one not refused.
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=3))))
+    assert index.save_summary() is True
+    saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+    assert saved["plugins"]["a"]["permissions"][MEMORY]["last_effective"]["at"] == _ts(timedelta(days=3))
+
+
+def test_the_saver_reads_the_audit_files_first(monkeypatch, tmp_path):
+    """After a crash the audit files can hold uses newer than the summary:
+    they are read at start, before the files can rotate, with no query."""
+    from plugin.server.application.plugins import permission_usage
+
+    old = _index(tmp_path)
+    old.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=20))))
+    old.save_summary()
+    audit = tmp_path / "audit" / "call_audit.jsonl"
+    audit.write_text(json.dumps(_decision("a", MEMORY, ts=_ts(timedelta(days=1)))) + "\n", encoding="utf-8")
+    index = _index(tmp_path)
+    monkeypatch.setattr(permission_usage, "usage_index", index)
+    monkeypatch.setattr(permission_usage, "_saver", None)
+    permission_usage.start_summary_saver(interval=3600)
+    try:
+        for _ in range(500):
+            saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+            if saved["plugins"]["a"]["permissions"][MEMORY]["last"]["at"] == _ts(timedelta(days=1)):
+                break
+            threading.Event().wait(0.01)
+    finally:
+        permission_usage.stop_summary_saver()
+    assert index._seeded is True
+    saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+    assert saved["plugins"]["a"]["permissions"][MEMORY]["last"]["at"] == _ts(timedelta(days=1))

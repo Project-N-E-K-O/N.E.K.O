@@ -832,6 +832,24 @@ def test_the_event_loop_boundary_still_holds(threads):
     assert first["flags"] == ["unattributed"] and second["flags"] == ["plugin_thread"]
 
 
+def test_a_loop_inside_a_pool_job_is_the_jobs(threads):
+    from concurrent.futures import ThreadPoolExecutor
+
+    env = threads
+    hook, run = env.auditor.hook, env.other.run_loop_with_inner_task
+    # The plugin's job starts the only worker; the host's job then runs an
+    # event loop on it: its library task is the host job's, not the plugin's.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        env.plugin.submit(executor, int)
+        env.host.submit(executor, run, hook, "socket.connect", (None, ("192.0.2.1", 443)))
+    # The other way round: a host-started worker, a plugin job running a loop.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        env.host.submit(executor, int)
+        env.plugin.submit(executor, run, hook, "socket.connect", (None, ("192.0.2.2", 443)))
+    first, second = env.records()
+    assert first["flags"] == ["unattributed"] and second["flags"] == ["plugin_thread"]
+
+
 def test_plugin_thread_uses_are_never_refused(threads, monkeypatch):
     env = threads
     monkeypatch.setattr(system_audit, "REFUSES_SYSTEM_USES", True)

@@ -773,6 +773,7 @@ class SystemAuditor:
         own = globals()
         while frame is not None and frame.f_globals is own:
             frame = frame.f_back  # this module's own frames
+        in_loop = False
         for _ in range(_MAX_FRAMES):
             if frame is None:
                 # The bottom of this thread's stack: who started the thread.
@@ -784,21 +785,23 @@ class SystemAuditor:
                 # The event loop running a task or callback: whatever lies
                 # below is whoever started the loop (the host runner), not
                 # who made this use. A task with no plugin or host frame of
-                # its own (one a library created) counts as the loop's thread.
-                return None, self._thread_origin()
-            if module == _POOL_MODULE and code.co_name in _POOL_FRAMES:
+                # its own (one a library created) counts as whoever runs the
+                # loop: the pool job it runs in, else the loop's thread.
+                in_loop = True
+            elif module == _POOL_MODULE and code.co_name in _POOL_FRAMES:
                 # A pool job: whoever submitted it, never the worker thread
                 # (started by an earlier submitter, maybe someone else).
                 item = frame.f_locals.get("self") if code.co_name == "run" else None
                 return None, getattr(item, _ORIGIN_ATTR, None)
-            if starting and code in _PASS_THROUGH:
+            if in_loop or (starting and code in _PASS_THROUGH):
+                # Below the loop only a pool job decides; code frames do not.
                 frame = frame.f_back
                 continue
             kind = self._frame_kind(frame)
             if kind != _OTHER:
                 return kind, None
             frame = frame.f_back
-        return None, None  # too deep to tell
+        return None, None  # too deep to tell (also below a loop: no job found in reach)
 
     @staticmethod
     def _thread_origin() -> tuple[int | None, str | None] | None:

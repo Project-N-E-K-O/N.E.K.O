@@ -209,7 +209,7 @@ def _summary_use(plugin_id: str, permission: str, value: object) -> Use | None:
         return None
     at = _parse_time(value.get("at"))
     outcome = value.get("outcome")
-    if at is None or outcome not in _OUTCOMES:
+    if at is None or not isinstance(outcome, str) or outcome not in _OUTCOMES:
         return None
     return Use(at, plugin_id, permission, outcome, _text(value.get("origin_kind")))
 
@@ -354,6 +354,8 @@ class UsageIndex:
                 with self._lock:
                     self._note_loss_locked(plugin_id, at or self._now())
         except Exception:
+            # Called from call_audit's drop path: noting a loss must never
+            # make recording (or dropping) an entry fail.
             pass
 
     def note_dropped(self, entry: object) -> None:
@@ -381,6 +383,7 @@ class UsageIndex:
             last = self._last_effective.get(key)
             if last is None or use.at >= last.at:
                 self._last_effective[key] = use
+                self._dirty = True
             day = use.at.date()
             oldest = self._now().date() - timedelta(days=DAYS_KEPT)
             if not use.summarized and day >= oldest:
@@ -754,8 +757,9 @@ _saver_lock = threading.Lock()
 
 
 def start_summary_saver(interval: float = SUMMARY_SAVE_SECONDS) -> None:
-    """Save ``usage_index``'s summary every ``interval`` seconds when it fell
-    behind (host start; idempotent)."""
+    """Read the audit files into ``usage_index`` on a background thread,
+    then save its summary every ``interval`` seconds when it fell behind
+    (host start; idempotent)."""
     global _saver
     with _saver_lock:
         if _saver is not None and _saver[0].is_alive():
@@ -763,6 +767,13 @@ def start_summary_saver(interval: float = SUMMARY_SAVE_SECONDS) -> None:
         stop = threading.Event()
 
         def run() -> None:
+            # Read the audit files now, before they can rotate: uses newer
+            # than the summary (e.g. after a crash) must reach it.
+            try:
+                usage_index.ensure_seeded()
+            except Exception as exc:
+                logger.warning("permission usage: audit files not read: error={}", type(exc).__name__)
+            usage_index.save_summary()
             while not stop.wait(interval):
                 usage_index.save_summary()
 
