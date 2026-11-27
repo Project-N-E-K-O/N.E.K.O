@@ -7,55 +7,19 @@ import stat
 import struct
 import zipfile
 from datetime import datetime
-from pathlib import Path
 
 import pytest
+
+# Shared factories are not collected tests and never own global test state.
+from tests.knowledge_archive_fixtures import make_archive, specification
 
 from utils import knowledge_package as package
 
 pytestmark = pytest.mark.unit_fast
 
 
-def specification(dimension=64, quantization="int8"):
-    """Use a complete synthetic identity, never loading a native encoder."""
-    return {"model_id": f"local-text-retrieval-v1-{dimension}d-{quantization}-mlen1024",
-            "profile": "local-text-retrieval-v1", "dimension": dimension,
-            "quantization": quantization, "max_length": 1024,
-            "processing_version": "neko-onnx-last-token-truncate-l2-v1",
-            "weights_sha256": {key: "a" * 64 for key in ("model", "external_data", "tokenizer")}}
 
 
-def make_archive(path: Path, *, mutate=None, zip64=False):
-    """Write the public data contract directly so tests do not mirror its builder."""
-    text = "Example\nA violet lighthouse marks the coast."
-    pack = {"schema_version": 1, "pack_id": "imp.example", "material_type": "knowledge",
-            "source": {"name": "Example", "homepage": "", "license": "CC0"},
-            "entries": [{"title": "Example", "summary": "", "terms": {"alias": [], "recognition": []}, "tags": [],
-                         "content": "A violet lighthouse marks the coast."}]}
-    row = {"entry_title": "Example", "chunk_index": 0, "embedding_text": text,
-           "text_hash": hashlib.sha256(text.encode()).hexdigest()}
-    vector = [1 / math.sqrt(64)] * 64
-    members = {"pack.json": package.canonical_json(pack),
-               "chunks.jsonl": package.canonical_json(row) + b"\n",
-               "vectors.f32": struct.pack("<64f", *vector)}
-    manifest = {"format": "neko.knowledge-package", "format_version": 2,
-                "package_id": "imp.example", "name": "Example", "version": "1.0.0",
-                "source": {"author": "Example", "license": "CC0", "url": ""},
-                "chunking_version": "neko-pack-chunks-v1", "embedding_spec": specification(),
-                "counts": {"documents": 1, "chunks": 1},
-                "files": {name: {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-                          for name, raw in members.items()}}
-    if mutate:
-        mutate(manifest, members)
-    members["manifest.json"] = package.canonical_json(manifest)
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, raw in members.items():
-            if zip64:
-                with archive.open(name, "w", force_zip64=True) as output:
-                    output.write(raw)
-            else:
-                archive.writestr(name, raw)
-    return path
 
 
 def test_unified_archive_contains_a_v1_pack_and_streamed_vectors(tmp_path):

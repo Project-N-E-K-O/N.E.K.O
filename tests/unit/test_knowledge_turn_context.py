@@ -20,7 +20,7 @@ import pytest
 
 from knowledge.retrieval import named_in_text
 from knowledge.store import StoredEntry
-from tests.unit.test_knowledge_subsystem import _import, _pack, _started, fast_indexer  # noqa: F401
+from tests.knowledge_fixtures import _import, _pack, _started, fast_indexer  # noqa: F401
 from utils.semantic_calibration import (
     Background,
     background_from_scores,

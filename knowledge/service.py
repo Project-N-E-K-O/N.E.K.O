@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The knowledge subsystem as one object owned by the Memory Server.
+"""The knowledge runtime and transactional coordinator owned by Memory Server.
+
+QueryEngine, ExportManager and VectorIndexer contain their domain workflows.
+This service remains the single owner of mutable state, admission, worker
+lifetimes and the registry/SQLite transaction boundary; collaborators never
+copy those resources or create independent locks.
 
 Concurrency model
 -----------------
@@ -44,19 +49,15 @@ import inspect
 import json
 import hashlib
 import shutil
-import random
 import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Protocol, Sequence, TypeVar
-
-import numpy as np
+from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Protocol, Sequence, TypeVar
 
 from utils.file_utils import atomic_write_bytes, atomic_write_json
-from utils.embedding_contract import EmbedDeferred
 
 from .diagnostics import KnowledgeDiagnostics
 from .models import (
@@ -82,18 +83,8 @@ from .registry import (
     save_registry,
     utc_now,
 )
-from .chunking import MAX_HEADER_CHARS, chunk_bodies
 from .subscriptions import KnowledgeSubscription, Release, identity_conflict, parse_subscription
-from .passive import PASSIVE_SEMANTIC_CANDIDATES, Calibration, PassiveHit, select_hits, thresholds_for
-from .render import RenderCard, render_reference_block, render_turn_cards
-from .retrieval import (
-    LEXICAL_CANDIDATES,
-    RankedHit,
-    SemanticMatch,
-    best_excerpt_index,
-    fuse,
-    semantic_candidates,
-)
+from .passive import Calibration
 from .store import (
     MAX_CHUNKS_PER_PACK,
     MAX_TOTAL_CHUNKS,
@@ -102,16 +93,16 @@ from .store import (
     StoredEntry,
     VectorSnapshot,
     count_pack_chunks,
-    normalize_vector,
 )
 from .text import title_key
 from .importing.sources import SourceStore
 from .importing.projection import project_pack
-
-from config.turn_context_settings import (
-    TURN_CONTEXT_ITEM_MAX_TOKENS,
-    TURN_CONTEXT_QUERY_MAX_CHARS,
-)
+from .importing.commit_policy import build_import_record
+from .querying import DEFAULT_QUERY_BUDGET_MS, QueryEngine
+from .exports import ExportManager
+from .indexing import VectorIndexer, _ReplanInputRefusal, _ReplanLimitRefusal
+from .pack_files import read_pack_bytes as _read_bounded, retain_revision as _retain_revision
+from .jobs import ACTIVE_JOB_STATES, TERMINAL_JOB_STATES, ImportJob, consume_task_result as _consume
 
 
 logger = logging.getLogger("N.E.K.O.Knowledge")
@@ -121,17 +112,10 @@ DATABASE_FILE = "knowledge.db"
 STAGING_DIR = ".staging"
 WRITE_LOCK_TIMEOUT_SECONDS = 5.0
 QUERY_CONCURRENCY = 4
-DEFAULT_QUERY_BUDGET_MS = 1_500
-MAX_QUERY_BUDGET_MS = 5_000
-QUERY_RENDER_RESERVE_SECONDS = 0.15
 # How often one import may give way to removals that then fail.
 MAX_IMPORT_YIELDS = 8
 # How long shutdown waits for writes whose caller was cancelled.
 DETACHED_WRITE_WAIT_SECONDS = 10.0
-MAX_QUERY_EMBEDDINGS = 2
-MAX_QUERY_CHARS = 2_000
-MAX_QUERY_LIMIT = 10
-PASSIVE_DIAGNOSTIC_RESULTS = frozenset({"matched", "timeout", "busy", "error"})
 MAX_TRACKED_JOBS = 50
 # One bound for every durable task-record reader. Records hold only bounded
 # metadata; a source selection is frozen in the job's own ``.pack.json``.
@@ -140,27 +124,6 @@ MAX_PENDING_IMPORTS = 3
 # Packs are listed whole on the management page; keep that list small.
 MAX_PACKS = 200
 STATUS_SOURCES = 12
-ACTIVE_JOB_STATES = frozenset({"queued", "building"})
-TERMINAL_JOB_STATES = frozenset({"active", "failed", "cancelled"})
-
-# Background embedding budget: small batches, a pause between them and a
-# longer one after each round, so inference never monopolizes the shared
-# EmbeddingService or the CPU that memory recall also needs.
-# Small batches keep each burst of inference short, so memory and chat
-# requests get the shared model sooner.
-INDEX_BATCH_SIZE = 4
-INDEX_ROUND_CHUNKS = 64
-# Minimum pause after a batch; the actual pause also scales with how long the
-# batch took, so that background indexing is busy at most INDEX_TARGET_DUTY of
-# the time (inference may use several threads while it runs).
-INDEX_BATCH_PAUSE_SECONDS = 0.5
-INDEX_TARGET_DUTY = 0.25
-# The measured time is wall-clock: it includes waiting for the shared model and
-# a laptop sleeping mid-batch. Cap the pause so neither stalls indexing.
-INDEX_MAX_BATCH_PAUSE_SECONDS = 30.0
-INDEX_ROUND_PAUSE_SECONDS = 5.0
-INDEX_IDLE_SECONDS = 30.0
-VECTOR_REFRESH_SECONDS = 60.0
 
 
 class Embedder(Protocol):
@@ -183,76 +146,6 @@ class KnowledgeUnavailable(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-class _ReplanLimitRefusal(KnowledgePackError):
-    """A pack limit refusal with the inputs checked under the mutation lock."""
-
-    def __init__(self, reason: str, keys: Mapping[str, tuple[str, str, int] | None]) -> None:
-        super().__init__(reason)
-        self.replan_keys = keys
-
-
-class _ReplanInputRefusal(ValueError):
-    """An unfittable header retaining the original ValueError contract."""
-
-    def __init__(self, keys: Mapping[str, tuple[str, str, int] | None]) -> None:
-        super().__init__("embedding_input_too_large")
-        self.replan_keys = keys
-
-
-@dataclass(slots=True)
-class ImportJob:
-    job_id: str
-    pack_id: str
-    state: str
-    created_at: str
-    updated_at: str
-    entries_total: int = 0
-    chunks_total: int = 0
-    reason: str = ""
-    cancel_requested: bool = False
-    arrived_at: int = 0
-    staged_bytes: int = 0
-    staged_sha256: str = ""
-    # Set once the index write commits; from then on the import is no longer
-    # cancellable. The lock makes "cancel" and "commit" exclusive.
-    committed: bool = False
-    # Registry/artifact publication is the user-visible commit point. The
-    # earlier SQLite gate alone does not prove an install became active.
-    published: bool = False
-    # Market metadata of a subscription install; None for a local import.
-    subscription: KnowledgeSubscription | None = None
-    kind: str = "pack_import"
-    origin: str = ""
-    initial_enabled: bool | None = None
-    archive_sha256: str = ""
-    result: dict[str, Any] | None = None
-    seed_vectors: list[dict] = field(default_factory=list, repr=False, compare=False)
-    # Keep the persisted format only to reject retries of retired text exports;
-    # every newly admitted export is a complete v2 package.
-    export_format: int = 2
-    export_version: str = "1"
-    # Explicitly deleted/discarded jobs cannot be revived by a worker flush.
-    # Evicted history is still persisted, so absence from _jobs is not enough.
-    export_deleted: bool = field(default=False, repr=False, compare=False)
-    frozen_input: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
-    gate: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "job_id": self.job_id,
-            "pack_id": self.pack_id,
-            "state": self.state,
-            "reason": self.reason,
-            "entries_total": self.entries_total,
-            "chunks_total": self.chunks_total,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "subscription": self.subscription.to_json() if self.subscription else None,
-            "kind": self.kind,
-            "result": self.result,
-        }
 
 
 # The thread work of the query running in the current task (see _query_lease).
@@ -306,19 +199,6 @@ def _count_admitted_chunks(pack: KnowledgePack, *, fit, seed_vectors: Sequence[M
         raise
 
 
-def _file_identity(path: Path) -> tuple[int, ...] | None:
-    """Cache key for a file's state, or None when it cannot be read.
-
-    Inode and change time are included, so restoring a same-size file with a
-    preserved mtime (``cp -p``, ``rsync -a``) still counts as a change.
-    """
-    try:
-        info = path.stat()
-    except OSError:
-        return None
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-
-
 def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> frozenset[str]:
     """File names whose bytes are counted from ``jobs`` (their ``staged_bytes``).
 
@@ -337,52 +217,6 @@ def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> fro
             if (record := installing.packs.get(job.pack_id)) is not None
         }
     return frozenset(names)
-
-
-def _retain_revision(history: Path, raw: bytes, expected_sha256: str) -> None:
-    """Keep a pack revision in history without ever replacing a good copy.
-
-    History file names carry the revision digest, so an existing copy is
-    only overwritten by bytes that match the registry. A damaged active file
-    is still kept when no copy exists yet, and never blocks the caller.
-    """
-    if pack_sha256(raw) != expected_sha256 and history.exists():
-        return
-    history.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_bytes(history, raw)
-
-
-def _batch_pause(inference_seconds: float) -> float:
-    """Pause after an index batch: idle at least (1 - duty) / duty times as long
-    as the batch computed, so indexing stays at or below INDEX_TARGET_DUTY."""
-    idle_ratio = (1.0 - INDEX_TARGET_DUTY) / INDEX_TARGET_DUTY
-    pause = max(INDEX_BATCH_PAUSE_SECONDS, inference_seconds * idle_ratio)
-    return min(pause, INDEX_MAX_BATCH_PAUSE_SECONDS)
-
-
-def _disabled_in(entry: StoredEntry, registry: Registry) -> bool:
-    """Disabled per the index or per the query's registry snapshot.
-
-    A toggle writes the index before the registry; whichever says "disabled"
-    wins, so re-enabling never shows an entry before the registry agrees.
-    """
-    record = registry.packs.get(entry.pack_id)
-    return entry.disabled or (record is not None and title_key(entry.title) in record.disabled_titles)
-
-
-def _read_bounded(path: Path) -> bytes:
-    """Read a raw pack, never more than the pack limit (+1 to detect overflow).
-
-    A damaged or replaced file of any size must not be loaded whole into the
-    shared Memory Server; an oversized one simply fails the hash check.
-    """
-    with path.open("rb") as handle:
-        return handle.read(MAX_PACK_BYTES + 1)
-
-
-def _consume(task: asyncio.Task[Any]) -> None:
-    if not task.cancelled():
-        task.exception()
 
 
 def _covers(releases: frozenset[Release] | None, subscription: KnowledgeSubscription | None) -> bool:
@@ -471,6 +305,15 @@ class KnowledgeService:
         # are reopened and the replan is tried once more.
         self._refused_replans: dict[str, tuple[tuple[str, str, int], str]] = {}
         self._source_capabilities: dict[str, tuple[tuple, bool]] = {}
+        # Queries borrow this owner so snapshot replacement and shutdown still
+        # share the original leases, thread tracking and model state.
+        self._queries = QueryEngine(self)
+        # Export publication uses this same job queue, write lock and shutdown
+        # ownership; the manager owns orchestration, not a second runtime.
+        self._exports = ExportManager(self)
+        # The indexer schedules against this owner; transactional replanning
+        # and capacity reconciliation keep using the service's single lock.
+        self._indexer = VectorIndexer(self)
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -496,9 +339,9 @@ class KnowledgeService:
             return
         self._tasks = [
             asyncio.create_task(self._job_loop(), name="knowledge-import-jobs"),
-            asyncio.create_task(self._index_loop(), name="knowledge-indexer"),
+            asyncio.create_task(self._indexer._index_loop(), name="knowledge-indexer"),
         ]
-        self._schedule_vector_refresh()
+        self._indexer._schedule_vector_refresh()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -902,7 +745,7 @@ class KnowledgeService:
 
         record = await self._locked(run)
         self._vector_generation += 1
-        self._schedule_vector_refresh()
+        self._indexer._schedule_vector_refresh()
         self._index_wakeup.set()
         return {"pack_id": pack_id, "local_embedding": record.local_embedding}
 
@@ -1109,7 +952,7 @@ class KnowledgeService:
                 self._pending_removals.pop(pack_id, None)
             settled, self._removal_settled = self._removal_settled, asyncio.Event()
             settled.set()
-        self._schedule_vector_refresh()
+        self._indexer._schedule_vector_refresh()
         return result
 
     def _identity_conflict(self, pack_id: str, subscription: KnowledgeSubscription | None) -> bool:
@@ -1512,157 +1355,23 @@ class KnowledgeService:
             if temporary is not None:
                 running = [future for future in parse_work if not future.done()]
                 cleanup = asyncio.create_task(clean_input(temporary, running), name="knowledge-archive-input-cleanup")
-                self._detached.add(cleanup)
-                cleanup.add_done_callback(self._detached.discard)
-                cleanup.add_done_callback(_consume)
+                self._own_background_task(cleanup)
                 if not running:
                     await asyncio.shield(cleanup)
 
     async def export_pack(self, pack_id: str, *, format_version: int = 2,
                           _retry_version: str | None = None) -> dict[str, Any]:
-        """Queue v2 with a server-owned release version, frozen across retries."""
-        self._require_ready()
-        # Retired clients may still send a format selector. Refuse v1 instead
-        # of silently producing a different file from the one they requested.
-        if (type(format_version) is not int or format_version != 2
-                or (_retry_version is not None and not isinstance(_retry_version, str))):
-            raise KnowledgePackError("invalid_request")
-        record = self._registry.packs.get(pack_id)
-        if record is None:
-            raise KnowledgePackError("not_found")
-        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
-        if pack_id in self._admitting or any(job.pack_id == pack_id for job in active):
-            raise KnowledgePackError("job_in_progress")
-        if self._admission_count() >= MAX_PENDING_IMPORTS:
-            raise KnowledgePackError("knowledge_busy")
-        stamp = utc_now()
-        job_id = uuid.uuid4().hex
-        # Reuse the existing unique task identity instead of maintaining a
-        # counter that could reset after task cleanup, restore or pack import.
-        # Persist this value before queueing; only retry_job supplies an old one.
-        version = _retry_version if _retry_version is not None else f"auto-{job_id}"
-        job = ImportJob(job_id, pack_id, "queued", stamp, stamp,
-                        kind="pack_export", staged_sha256=record.pack_sha256,
-                        export_version=version)
-        job.arrived_at = self._reserve_arrival()
-        self._remember_job(job)
-        async def admit():
-            # The request may stop waiting while its write thread is alive.
-            # One owner must finish persistence and queueing (and shutdown
-            # drains it), just as for ordinary import admission.
-            try:
-                await self._persist_job(job)
-            except OSError:
-                self._jobs.pop(job.job_id, None)
-                raise
-            if self._stopping:
-                self._finish_job(job, "failed", "knowledge_stopping")
-                await self._persist_job(job)
-            elif job.state == "queued":
-                # Explicit cancellation may finish while the first durable
-                # record is being written; do not revive its queue entry.
-                self._job_queue.append(job.job_id)
-                self._job_queued.set()
-            return {"ok": True, **job.to_json()}
+        """Delegate export work while retaining the shared runtime owner."""
+        return await self._exports.export_pack(pack_id, format_version=format_version, _retry_version=_retry_version)
 
-        owner = asyncio.create_task(admit())
-        self._detached.add(owner)
-        owner.add_done_callback(self._detached.discard)
-        owner.add_done_callback(_consume)
-        return await asyncio.shield(owner)
-
-    async def _export_job(self, job: ImportJob) -> None:
-        """Snapshot under the mutation lock, then serialize after releasing it."""
-        from .archive import export_archive
-
-        # Durable jobs are another input boundary: an old text-export task
-        # cannot bypass admission by reaching the worker or retry path.
-        if type(job.export_format) is not int or job.export_format != 2:
-            raise KnowledgePackError("invalid_request")
-
-        async def snapshot():
-            record = self._registry.packs.get(job.pack_id)
-            if record is None or record.pack_sha256 != job.staged_sha256:
-                raise KnowledgePackError("pack_changed")
-            def read():
-                # Direct exports and retries must snapshot the registered,
-                # healthy revision, just like the list's export-ready flag.
-                if (job.pack_id in self._broken_packs
-                        or self._store.pack_versions().get(job.pack_id) != record.pack_sha256):
-                    raise KnowledgePackError("vectors_not_ready")
-                # Metadata can change without invalidating stored text/vectors.
-                # Check and decode the same bytes of the registered revision.
-                raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
-                if pack_sha256(raw) != record.pack_sha256:
-                    raise KnowledgePackError("pack_file_mismatch")
-                payload = json.loads(raw)
-                # Export the unique stored identity, even when another encoder
-                # is loaded or local inference is unavailable or switched off.
-                spec = self._store.vector_specification(None, pack_id=job.pack_id)
-                vectors = self._store.vectors_for_pack(job.pack_id, spec["model_id"]) if spec else []
-                return payload, spec, vectors
-            return await self._thread(read)
-
-        payload, spec, vectors = await self._locked(snapshot, wait=True)
-        def check():
-            if self._superseded(job) or self._stopping:
-                raise InterruptedError("cancelled")
-        def commit_gate():
-            # The archive calls this immediately before publication. Keep
-            # accepting cancellation through fsync, then make that decision
-            # exclusive with cancel_job rather than waiting for thread return.
-            with job.gate:
-                if self._superseded(job) or self._stopping:
-                    return False
-                job.committed = True
-                return True
-        async def publish():
-            # The runner may stop waiting after the publication gate. Keep
-            # one owner for the native result and its durable download record.
-            job.result = await self._thread(export_archive, self.root / "artifacts", payload,
-                                            version=job.export_version, specification=spec,
-                                            vectors=vectors, created_at=job.created_at,
-                                            check_cancelled=check, commit_gate=commit_gate)
-            job.published = True
-            if self._stopping:
-                self._finish_job(job, "active")
-                await self._persist_job(job)
-
-        owner = asyncio.create_task(publish(), name="knowledge-export-publication")
-        self._detached.add(owner)
-        owner.add_done_callback(self._detached.discard)
-        owner.add_done_callback(_consume)
-        await asyncio.shield(owner)
 
     def artifact_path(self, artifact_id: str) -> Path:
-        """Resolve only retained SHA identities; never accept an arbitrary path."""
-        import re
-
-        if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
-            raise KnowledgePackError("invalid_request")
-        folder = self.root / "artifacts"
-        # The download surface serves complete packages only. Previously
-        # exported JSON files stay on disk without reviving their old route.
-        path = folder / (artifact_id + ".neko-knowledge.zip")
-        if path.is_file() and not path.is_symlink() and path.resolve().parent == folder.resolve():
-            return path
-        raise KnowledgePackError("not_found")
+        """Delegate export work while retaining the shared runtime owner."""
+        return self._exports.artifact_path(artifact_id)
 
     async def artifact_download(self, artifact_id: str) -> tuple[Path, str]:
-        """Resolve artifact bytes and their readable download metadata off-loop."""
-        from .archive import archive_download_filename
-
-        # Snapshot retained job metadata before entering a thread. The archive
-        # supplies its frozen name even if today's pack has changed or vanished.
-        created_at = next((job.created_at for job in self._jobs.values()
-                           if job.kind == "pack_export" and isinstance(job.result, dict)
-                           and job.result.get("artifact_id") == artifact_id), None)
-
-        def read():
-            path = self.artifact_path(artifact_id)
-            return path, archive_download_filename(path, created_at=created_at)
-
-        return await self._thread(read)
+        """Delegate export work while retaining the shared runtime owner."""
+        return await self._exports.artifact_download(artifact_id)
 
     async def import_pack(
         self, raw: bytes | Path, *, subscription: KnowledgeSubscription | None = None,
@@ -1796,10 +1505,59 @@ class KnowledgeService:
         registered_imports = {job.pack_id for job in active if job.kind != "pack_export"}
         return len(active) + sum(pack_id not in registered_imports for pack_id in self._admitting)
 
+    def _job_capacity_reached(self) -> bool:
+        """Use one admission budget for imports and exports, including reservations."""
+        return self._admission_count() >= MAX_PENDING_IMPORTS
+
+    def _export_admission_record(self, pack_id: str) -> PackRecord:
+        """Check export admission against the same jobs and import reservations."""
+        record = self._registry.packs.get(pack_id)
+        if record is None:
+            raise KnowledgePackError("not_found")
+        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        if pack_id in self._admitting or any(job.pack_id == pack_id for job in active):
+            raise KnowledgePackError("job_in_progress")
+        if self._job_capacity_reached():
+            raise KnowledgePackError("knowledge_busy")
+        return record
+
+    async def _admit_export(self, job: ImportJob) -> dict[str, Any]:
+        """Reserve before yielding, then own the first durable flush and queueing.
+
+        ExportManager validates its format and builds the frozen job identity.
+        This owner retains all queue/accounting writes, including a cancelled
+        first flush and shutdown retiring the import/export runner.
+        """
+        job.arrived_at = self._reserve_arrival()
+        self._remember_job(job)
+
+        async def admit():
+            # The request may stop waiting while its write thread is alive.
+            # One owner must finish persistence and queueing (and shutdown
+            # drains it), just as for ordinary import admission.
+            try:
+                await self._persist_job(job)
+            except OSError:
+                self._jobs.pop(job.job_id, None)
+                raise
+            if self._stopping:
+                self._finish_job(job, "failed", "knowledge_stopping")
+                await self._persist_job(job)
+            elif job.state == "queued":
+                # Explicit cancellation may finish while the first durable
+                # record is being written; do not revive its queue entry.
+                self._job_queue.append(job.job_id)
+                self._job_queued.set()
+            return {"ok": True, **job.to_json()}
+
+        owner = asyncio.create_task(admit())
+        self._own_background_task(owner)
+        return await asyncio.shield(owner)
+
     def import_busy(self) -> bool:
         """Whether a new import would be refused for lack of room right now."""
         return (
-            self._admission_count() >= MAX_PENDING_IMPORTS
+            self._job_capacity_reached()
             or self._parsing >= MAX_PENDING_IMPORTS
         )
 
@@ -1874,7 +1632,7 @@ class KnowledgeService:
         pending = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
         if pack.pack_id in self._admitting or any(job.pack_id == pack.pack_id for job in pending):
             return {"ok": False, "reason": "job_in_progress"}
-        if self._admission_count() >= MAX_PENDING_IMPORTS:
+        if self._job_capacity_reached():
             return {"ok": False, "reason": "knowledge_busy"}
         self._admitting[pack.pack_id] = len(canonical)
 
@@ -2075,6 +1833,13 @@ class KnowledgeService:
             raise
         return await asyncio.wrap_future(future)
 
+    def _own_background_task(self, task: asyncio.Task[_T]) -> asyncio.Task[_T]:
+        """Retain an already-started owner until shutdown can observe its result."""
+        self._detached.add(task)
+        task.add_done_callback(self._detached.discard)
+        task.add_done_callback(_consume)
+        return task
+
     def _track_thread_work(self, future: concurrent.futures.Future[Any]) -> None:
         with self._thread_work_lock:
             self._thread_work.add(future)
@@ -2222,50 +1987,13 @@ class KnowledgeService:
                 self._jobs.pop(job_id, None)
                 return True
         task = asyncio.create_task(discard())
-        self._detached.add(task)
-        task.add_done_callback(self._detached.discard)
-        task.add_done_callback(_consume)
+        self._own_background_task(task)
         # A disconnected caller cannot interrupt the durable deletion owner.
         return await asyncio.shield(task)
 
     async def delete_export(self, job_id: str) -> dict[str, Any]:
-        """Remove one completed local export, retaining any shared recovery ZIP."""
-        import re
-
-        if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
-            raise KnowledgePackError("invalid_request")
-
-        async def run():
-            job = self._jobs.get(job_id)
-            if (job is None or job.kind != "pack_export" or job.state != "active"
-                    or not isinstance(job.result, dict)):
-                raise KnowledgePackError("invalid_request")
-            artifact_id = job.result.get("artifact_id")
-            if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
-                raise KnowledgePackError("invalid_request")
-
-            async with self._job_persist_lock:
-                records = [self._job_record(other) for other in self._jobs.values() if other.job_id != job_id]
-
-                def remove():
-                    protected = self._archive_referenced_blocking(artifact_id, records, exclude_job_id=job_id)
-                    path = self.root / "artifacts" / (artifact_id + ".neko-knowledge.zip")
-                    if not protected:
-                        if path.is_symlink():
-                            raise KnowledgePackError("invalid_request")
-                        # Missing files are already cleaned. If the later task
-                        # unlink fails, preserve the card and allow a retry to
-                        # finish rather than report success before persistence.
-                        path.unlink(missing_ok=True)
-                    (self.root / "jobs" / (job_id + ".json")).unlink(missing_ok=True)
-                    return protected
-
-                retained = await self._thread(remove)
-                job.export_deleted = True
-                self._jobs.pop(job_id, None)
-                return {"ok": True, "job_id": job_id, "artifact_retained": retained}
-
-        return await self._locked(run)
+        """Delegate export work while retaining the shared runtime owner."""
+        return await self._exports.delete_export(job_id)
 
     def _archive_referenced_blocking(self, artifact_id: str, records: list[dict], *, exclude_job_id: str = "") -> bool:
         """Honor current installs and retained task history under mutation/persist locks."""
@@ -2353,7 +2081,7 @@ class KnowledgeService:
             job.state, job.updated_at = "building", utc_now()
             try:
                 if job.kind == "pack_export":
-                    await self._export_job(job)
+                    await self._exports.run(job)
                     self._finish_job(job, "active")
                     continue
                 for attempt in range(MAX_IMPORT_YIELDS + 1):
@@ -2377,10 +2105,10 @@ class KnowledgeService:
                 # snapshot before reporting "active", or vector lookups would
                 # still point at the old ids until a background refresh.
                 self._vector_generation += 1
-                await self._refresh_vectors_now()
+                await self._indexer._refresh_vectors_now()
                 self._finish_job(job, "active")
                 self._index_wakeup.set()
-                self._schedule_vector_refresh()
+                self._indexer._schedule_vector_refresh()
             except InterruptedError:
                 self._finish_job(job, "active" if job.published else "cancelled")
             except KnowledgeUnavailable as exc:
@@ -2413,6 +2141,70 @@ class KnowledgeService:
         while self._removal_pending_over(job):
             await self._removal_settled.wait()
 
+    def _check_commit_sources(
+        self, pack: KnowledgePack, sha: str, previous: PackRecord | None, job: ImportJob,
+    ) -> None:
+        """Validate frozen source consent under the caller's existing write lock.
+
+        Source authority and selected versions are read here before capacity
+        planning or any file/index mutation. This keeps retries bound to the
+        acknowledged source body, including repairs of the same digest.
+        """
+        if (job.kind == "import_commit" and previous is not None and sha != previous.pack_sha256
+                and not self._sources_managed(job.pack_id)):
+            # A source task (including a retry of its frozen input) may
+            # only replace a pack that is still the projection of its local
+            # sources; an unrelated pack that took the id since is not its
+            # target, even though the old source history is still on disk.
+            # Input with the registered digest is that same pack: it may
+            # rewrite a missing or unreadable active file.
+            raise KnowledgePackError("pack_changed")
+        enabled_on_commit = previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)
+        if (job.frozen_input.get("source_confirmation_required")
+                and enabled_on_commit
+                and not job.frozen_input.get("enabled_confirmed")):
+            raise KnowledgePackError("source_confirmation_required")
+        if (job.kind == "import_commit" and enabled_on_commit
+                and (previous is None or sha != previous.pack_sha256)):
+            # A whole-pack retry can resurrect other sources removed or
+            # changed after this task was confirmed. Permit only its one
+            # acknowledged version beyond today's verified active selection.
+            current = self._source_pack(job.pack_id)
+            selected = {(row["doc_id"], row["version"]) for row in self._source_documents(pack, job.pack_id)}
+            active = {(row["doc_id"], row["version"]) for row in self._sources.documents(current, job.pack_id)}
+            target = job.frozen_input.get("source_target")
+            allowed = set()
+            if (job.frozen_input.get("enabled_confirmed") is True and isinstance(target, dict)
+                    and isinstance(target.get("doc_id"), str) and type(target.get("version")) is int):
+                allowed.add((target["doc_id"], target["version"]))
+            # Missing scope in old records grants no new disclosure;
+            # users can still retry that exact input while the pack is off.
+            if not selected - active <= allowed:
+                raise KnowledgePackError("source_confirmation_required")
+
+    def _check_commit_capacity(
+        self, pack: KnowledgePack, chunks: int, raw_size: int, active_jobs: frozenset[str],
+    ) -> None:
+        """Recheck the runtime's live budgets inside the locked commit worker.
+
+        Keep each refusal before the following check: the disk usage scan
+        must still run only after pack/entry/chunk limits pass. Constants stay
+        in this module so admission and commit use the same runtime limits.
+        """
+        if chunks > MAX_CHUNKS_PER_PACK:
+            raise KnowledgePackError("too_many_chunks")
+        # Admission checked capacity without the lock; two imports racing
+        # through it must not both land, so check again under the lock.
+        others = [r for r in self._registry.packs.values() if r.pack_id != pack.pack_id]
+        if len(others) + 1 > MAX_PACKS:
+            raise KnowledgePackError("capacity_packs")
+        if sum(r.entries for r in others) + len(pack.entries) > MAX_TOTAL_ENTRIES:
+            raise KnowledgePackError("capacity_entries")
+        if sum(r.chunks for r in others) + chunks > MAX_TOTAL_CHUNKS:
+            raise KnowledgePackError("capacity_chunks")
+        if self._installed_pack_bytes(pack.pack_id, active_jobs) + raw_size > MAX_TOTAL_PACK_BYTES:
+            raise KnowledgePackError("capacity_bytes")
+
     async def _commit_job(self, job: ImportJob) -> None:
         if self._superseded(job):
             raise InterruptedError("cancelled")
@@ -2435,93 +2227,19 @@ class KnowledgeService:
                 # and chunk count were for other bytes.
                 raise KnowledgeUnavailable("knowledge_error")
             pack = decode_pack_bytes(raw)
-            if (job.kind == "import_commit" and previous is not None and sha != previous.pack_sha256
-                    and not self._sources_managed(job.pack_id)):
-                # A source task (including a retry of its frozen input) may
-                # only replace a pack that is still the projection of its local
-                # sources; an unrelated pack that took the id since is not its
-                # target, even though the old source history is still on disk.
-                # Input with the registered digest is that same pack: it may
-                # rewrite a missing or unreadable active file.
-                raise KnowledgePackError("pack_changed")
-            enabled_on_commit = previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)
-            if (job.frozen_input.get("source_confirmation_required")
-                    and enabled_on_commit
-                    and not job.frozen_input.get("enabled_confirmed")):
-                raise KnowledgePackError("source_confirmation_required")
-            if (job.kind == "import_commit" and enabled_on_commit
-                    and (previous is None or sha != previous.pack_sha256)):
-                # A whole-pack retry can resurrect other sources removed or
-                # changed after this task was confirmed. Permit only its one
-                # acknowledged version beyond today's verified active selection.
-                current = self._source_pack(job.pack_id)
-                selected = {(row["doc_id"], row["version"]) for row in self._source_documents(pack, job.pack_id)}
-                active = {(row["doc_id"], row["version"]) for row in self._sources.documents(current, job.pack_id)}
-                target = job.frozen_input.get("source_target")
-                allowed = set()
-                if (job.frozen_input.get("enabled_confirmed") is True and isinstance(target, dict)
-                        and isinstance(target.get("doc_id"), str) and type(target.get("version")) is int):
-                    allowed.add((target["doc_id"], target["version"]))
-                # Missing scope in old records grants no new disclosure;
-                # users can still retry that exact input while the pack is off.
-                if not selected - active <= allowed:
-                    raise KnowledgePackError("source_confirmation_required")
+            self._check_commit_sources(pack, sha, previous, job)
             # Assets may become available between admission and commit. Use
             # this single fit for capacity, registry metadata and SQLite.
             fit = self._chunk_fit()
             chunks = _count_admitted_chunks(pack, fit=fit, seed_vectors=job.seed_vectors)
-            if chunks > MAX_CHUNKS_PER_PACK:
-                raise KnowledgePackError("too_many_chunks")
-            # Admission checked capacity without the lock; two imports racing
-            # through it must not both land, so check again under the lock.
-            others = [r for r in self._registry.packs.values() if r.pack_id != pack.pack_id]
-            if len(others) + 1 > MAX_PACKS:
-                raise KnowledgePackError("capacity_packs")
-            if sum(r.entries for r in others) + len(pack.entries) > MAX_TOTAL_ENTRIES:
-                raise KnowledgePackError("capacity_entries")
-            if sum(r.chunks for r in others) + chunks > MAX_TOTAL_CHUNKS:
-                raise KnowledgePackError("capacity_chunks")
-            if self._installed_pack_bytes(pack.pack_id, active_jobs) + len(raw) > MAX_TOTAL_PACK_BYTES:
-                raise KnowledgePackError("capacity_bytes")
+            self._check_commit_capacity(pack, chunks, len(raw), active_jobs)
             # Admission checked identity without the lock too; another import
             # may have installed this pack or this market package since.
             installed = {key: r.subscription for key, r in self._registry.packs.items()}
             if identity_conflict(pack.pack_id, job.subscription, installed):
                 raise KnowledgePackError("subscription_identity_mismatch")
-            now = utc_now()
-            keys = {entry.key for entry in pack.entries}
-            # Ordinary local file replacement introduces new disclosure scope:
-            # both retrieval and automatic context start off again. Confirmed
-            # source-version updates retain their switches.
-            new_disclosure = job.kind == "pack_import" and job.initial_enabled is False
-            # A different local body replaces the built-in provenance. Same-body
-            # repairs and source updates keep their existing record's origin.
-            imported_replacement = (
-                previous is not None and previous.origin == "builtin"
-                and job.kind == "pack_import" and job.origin == "imported"
-                and sha != previous.pack_sha256
-            )
-            record = PackRecord(
-                pack_id=pack.pack_id,
-                pack_sha256=sha,
-                source=pack.source,
-                declared_material_type=pack.material_type,
-                entries=len(pack.entries),
-                chunks=chunks,
-                material_type_override=previous.material_type_override if previous else None,
-                auto_context=False if new_disclosure else previous.auto_context if previous else False,
-                local_embedding=previous.local_embedding if previous else True,
-                disabled_titles=tuple(
-                    sorted(set(previous.disabled_titles) & keys) if previous else ()
-                ),
-                installed_at=previous.installed_at if previous else now,
-                updated_at=now,
-                subscription=job.subscription,
-                enabled=(False if new_disclosure
-                         else previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)),
-                origin=("imported" if imported_replacement else previous.origin if previous
-                        else (job.origin or ("market" if job.subscription else "builtin"))),
-                archive_sha256=job.archive_sha256,
+            record = build_import_record(
+                pack, previous, job, sha=sha, chunks=chunks, now=utc_now(),
             )
             final_path = self.root / PACKS_DIR / record.file_name
             if previous is not None and previous.file_name != record.file_name:
@@ -2662,7 +2380,20 @@ class KnowledgeService:
         except Exception:
             return None
 
-    def _install_vectors(self, snapshot: VectorSnapshot | None, key: tuple[int, str]) -> None:
+    # ── shared vector publication ─────────────────────────────────────
+
+    def _vector_snapshot(self) -> tuple[VectorSnapshot | None, tuple[int, str] | None]:
+        """Capture a matrix and its calibration key without yielding between them."""
+        return self._vectors, self._vectors_built_for
+
+    def _vector_refresh_key(self) -> tuple[int, str] | None:
+        """Name the current model/generation only while the runtime is ready."""
+        model_id = self._current_model_id()
+        if model_id is None or self._state != "ready":
+            return None
+        return self._vector_generation, model_id
+
+    def _publish_vector_snapshot(self, snapshot: VectorSnapshot | None, key: tuple[int, str]) -> None:
         """Use ``snapshot`` unless one loaded for a later generation is in place."""
         built = self._vectors_built_for
         if built is not None and built[1] == key[1] and built[0] > key[0]:
@@ -2672,32 +2403,7 @@ class KnowledgeService:
         # Keep the same generation eligible for the next scheduled refresh.
         self._vectors_built_for = key if snapshot is not None else None
 
-    async def _refresh_vectors_now(self) -> None:
-        model_id = self._current_model_id()
-        if model_id is None or self._state != "ready":
-            return
-        key = (self._vector_generation, model_id)
-        try:
-            snapshot = await self._thread(self._load_vector_snapshot, model_id)
-        except Exception as exc:
-            # The scheduled refresh retries; lookups meanwhile skip ids that
-            # no longer exist.
-            logger.warning("[Knowledge] vector snapshot reload failed (%s)", type(exc).__name__)
-            return
-        self._install_vectors(snapshot, key)
-        await self._clear_damaged_vectors(snapshot)
-
-    def _load_vector_snapshot(self, model_id: str) -> VectorSnapshot | None:
-        """Run off-loop: a profile name cannot certify a different resource set."""
-        provider = getattr(self.embedder, "spec", None)
-        if callable(provider):
-            specification = provider()
-            if specification is None:
-                return None
-            return self._store.load_vectors(model_id, specification=specification)
-        return self._store.load_vectors(model_id)
-
-    async def _compatible_snapshot(self, snapshot: VectorSnapshot | None) -> VectorSnapshot | None:
+    async def _compatible_vector_snapshot(self, snapshot: VectorSnapshot | None) -> VectorSnapshot | None:
         """Fail closed if on-disk resources changed after the matrix was loaded."""
         provider = getattr(self.embedder, "spec", None)
         if snapshot is not None and callable(provider):
@@ -2706,92 +2412,28 @@ class KnowledgeService:
                 return None
         return snapshot
 
-    async def _clear_damaged_vectors(self, snapshot: VectorSnapshot | None) -> None:
-        """Hand unusable stored vectors back to the indexer, under the write lock.
+    def _advance_dirty_vectors(self) -> None:
+        """Consume one dirty generation before the indexer schedules its reload."""
+        if self._vectors_dirty:
+            self._vectors_dirty = False
+            self._vector_generation += 1
 
-        Best effort: the snapshot is already in use without them, so a failed
-        clear only means they are skipped again on the next load.
+    def _start_vector_refresh(
+        self, key: tuple[int, str], rebuild: Callable[[], Coroutine[Any, Any, bool]],
+        completed: Callable[[asyncio.Task[bool]], None],
+    ) -> None:
+        """Register the single matrix loader that stop() must cancel and drain.
+
+        The factory is invoked only after the duplicate guard, so a skipped
+        refresh never creates an unawaited coroutine. The indexer retains its
+        success/retry callback and the original task name.
         """
-        if snapshot is None or not snapshot.damaged:
-            return
-        damaged = snapshot.damaged
-        try:
-            await self._locked(
-                lambda: self._thread(self._store.clear_vectors, damaged), wait=True
-            )
-        except Exception as exc:
-            logger.warning("[Knowledge] could not clear damaged vectors (%s)", type(exc).__name__)
-            return
-        self._index_wakeup.set()
-
-    def _schedule_vector_refresh(self) -> None:
-        model_id = self._current_model_id()
-        if model_id is None or self._state != "ready":
-            return
-        key = (self._vector_generation, model_id)
         if self._vectors_built_for == key:
             return
         if self._vector_task is not None and not self._vector_task.done():
             return
-
-        async def rebuild() -> bool:
-            try:
-                snapshot = await self._thread(self._load_vector_snapshot, model_id)
-            except Exception as exc:
-                logger.warning("[Knowledge] vector snapshot rebuild failed (%s)", type(exc).__name__)
-                return False
-            self._install_vectors(snapshot, key)
-            await self._clear_damaged_vectors(snapshot)
-            return snapshot is not None  # Do not immediately reschedule an unavailable snapshot.
-
-        def rebuilt(task: asyncio.Task[bool]) -> None:
-            # A change that arrived while this rebuild ran was skipped above.
-            # Re-check once the task is done (from inside it, it still counts
-            # as running); a failed rebuild waits for the indexer instead of
-            # retrying in a tight loop.
-            if task.cancelled() or task.exception() is not None or not task.result():
-                return
-            if not self._stopping:
-                self._schedule_vector_refresh()
-
         self._vector_task = asyncio.create_task(rebuild(), name="knowledge-vector-snapshot")
-        self._vector_task.add_done_callback(rebuilt)
-
-    async def _index_loop(self) -> None:
-        last_refresh = time.monotonic()
-        while not self._stopping:
-            # Consume only the previous round's wake-up; a busy batch can
-            # schedule the next round while this one is still running.
-            self._index_wakeup.clear()
-            try:
-                processed = await self._index_round(until=last_refresh + VECTOR_REFRESH_SECONDS)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("[Knowledge] indexer round failed (%s)", type(exc).__name__)
-                processed = 0
-            # New vectors become searchable once the backlog drains, or at
-            # least every VECTOR_REFRESH_SECONDS while a long backfill runs;
-            # reloading the matrix after every batch would cost more than the
-            # batch itself.
-            if processed == 0 or time.monotonic() - last_refresh >= VECTOR_REFRESH_SECONDS:
-                if self._vectors_dirty:
-                    self._vectors_dirty = False
-                    self._vector_generation += 1
-                self._schedule_vector_refresh()
-                last_refresh = time.monotonic()
-            delay = INDEX_ROUND_PAUSE_SECONDS if processed else INDEX_IDLE_SECONDS
-            try:
-                await asyncio.wait_for(self._index_wakeup.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass  # the idle delay elapsed without a wake-up; run another round
-
-    def _vector_pack_ids(self) -> list[str] | None:
-        """Packs whose chunks may be embedded now; ``None`` when indexing is off."""
-        if self._stopping or self._state != "ready" or not self._registry.enabled:
-            return None
-        return [record.pack_id for record in self._registry.packs.values()
-                if record.local_embedding and record.pack_id not in self._broken_packs]
+        self._vector_task.add_done_callback(completed)
 
     async def _replan_vector_inputs(
         self, pack_ids: list[str], *, triggers: Mapping[str, Sequence[tuple[int, str]]] | None = None,
@@ -2917,248 +2559,6 @@ class KnowledgeService:
         self._publish_registry(registry)
         self._pending_chunk_reconcile = False
 
-    async def _seed_retained_packages(
-        self, pack_ids: list[str], specification: dict, observed_ready: set[tuple[str, str, str, str]] | None = None,
-    ) -> None:
-        """Recover product-package vectors when assets arrive after text install.
-
-        ``observed_ready`` lives for one index round: complete packs are not
-        re-aggregated every batch, yet the next round observes them afresh.
-        """
-        from .archive import read_archive
-
-        identity = self._store._spec_hash(specification)
-        readiness = None
-        for pack_id in pack_ids:
-            record = self._registry.packs.get(pack_id)
-            if record is None or not record.archive_sha256:
-                continue
-            key = (record.archive_sha256, identity)
-            if key in self._seeded_artifacts:
-                continue
-            ready_key = (pack_id, record.pack_sha256, record.archive_sha256, identity)
-            if observed_ready is not None and ready_key in observed_ready:
-                continue
-            if readiness is None:
-                # One aggregate scan for all candidates, without loading each
-                # pack's vector BLOBs or revalidating already-installed ZIPs.
-                readiness = await self._thread(lambda: (
-                    self._store.chunk_stats(specification["model_id"], specification=specification),
-                    self._store.pack_versions(),
-                ))
-            if self._registry.packs.get(pack_id) != record:
-                continue
-            counts, indexed = readiness
-            stats = counts.get(pack_id, {})
-            if (indexed.get(pack_id) == record.pack_sha256 and record.chunks > 0
-                    and stats.get("ready") == stats.get("total") == record.chunks):
-                # Do not cache this observation beyond the round: missing
-                # vectors, changed resources or shared snapshot damage cleanup
-                # must reopen it.
-                if observed_ready is not None:
-                    observed_ready.add(ready_key)
-                continue
-            # Identity of the expected location: a missing optional ZIP is
-            # remembered as None and retried once a file appears there.
-            stamp = await self._thread(
-                _file_identity, self.root / "artifacts" / (record.archive_sha256 + ".neko-knowledge.zip"))
-            if key in self._seed_failures and self._seed_failures[key] == stamp:
-                continue  # A damaged ZIP is not re-hashed and re-validated every batch.
-            try:
-                # Resolved inside the guard: a missing retained ZIP must not
-                # stop ordinary backfill of this or any other pack.
-                path = self.artifact_path(record.archive_sha256)
-                checked = await self._thread(read_archive, path, expected_spec=specification)
-                if checked["artifact_sha256"] != record.archive_sha256:
-                    self._seed_failures[key] = stamp
-                    continue
-                async def write():
-                    if self._registry.packs.get(pack_id) != record:
-                        return None  # Retry the same archive against the new policy record.
-                    return await self._thread(self._store.seed_pack_vectors, pack_id, checked["seed_vectors"])
-                stored = await self._locked(write, wait=True)
-                if stored is None:
-                    continue
-                if stored:
-                    self._vectors_dirty = True
-                self._seeded_artifacts.add(key)
-                self._seed_failures.pop(key, None)
-            except KnowledgePackError:
-                # Valid canonical text can still use ordinary backfill. Only a
-                # verdict on the bytes is remembered; I/O errors (a file locked
-                # by a scanner) are retried on the next batch.
-                self._seed_failures[key] = stamp
-            except OSError:
-                pass
-
-    async def _index_round(self, until: float | None = None) -> int:
-        """Embed pending chunks; return how many were tried.
-
-        The round ends early once ``until`` (when the vector snapshot is due
-        for a reload) has passed, so a long backfill with slow inference still
-        makes its new vectors searchable every VECTOR_REFRESH_SECONDS.
-        """
-        if self._pending_chunk_reconcile:
-            await self._locked(lambda: self._thread(self._reconcile_chunk_counts_blocking), wait=True)
-        if self._state != "ready" or not self._registry.enabled or self.embedder is None:
-            return 0
-        model_id = self._current_model_id()
-        if model_id is None:
-            return 0
-        if self._index_model_id != model_id:
-            provider = getattr(self.embedder, "spec", None)
-            if callable(provider) and await self._thread(provider) is None:
-                # A modern provider has not certified this model transition
-                # yet. Preserve failures until its resources are available.
-                return 0
-            # Failure counts belong to the model (and process) that produced
-            # them: a new model, or a restart, retries every chunk once more.
-            await self._locked(lambda: self._thread(self._store.reset_attempts), wait=True)
-            self._index_model_id = model_id
-        processed = 0
-        deferred_packs: set[str] = set()
-        observed_ready: set[tuple[str, str, str, str]] = set()
-        while processed < INDEX_ROUND_CHUNKS and not self._stopping:
-            # Re-read the switches every batch: the user may turn knowledge or
-            # a pack's vectors off while a batch is embedding.
-            pack_ids = self._vector_pack_ids()
-            if pack_ids is None:
-                break
-            pack_ids = [pack_id for pack_id in pack_ids if pack_id not in deferred_packs]
-            specification = await self._thread(getattr(self.embedder, "spec", lambda: None))
-            if callable(getattr(self.embedder, "spec", None)) and specification is None:
-                # A modern provider that cannot prove its loaded resources
-                # must wait, rather than emit uncertified/truncated vectors.
-                break
-            if specification is not None:
-                if self._refused_replans:
-                    await self._reopen_refused_replans(specification)
-                await self._seed_retained_packages(pack_ids, specification, observed_ready)
-            rows = await self._thread(
-                self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE,
-                require_spec=specification is not None,
-                specification=specification,
-            )
-            if not rows:
-                break
-            counter = getattr(self.embedder, "count_tokens", None)
-            if specification is not None and callable(counter):
-                counts = await self._thread(counter, [text for _id, _hash, text in rows])
-                if counts is None:
-                    break  # Missing assets are deferred, never failed attempts.
-                if any(size > specification["max_length"] for size in counts):
-                    owners = await self._thread(self._store.chunk_pack_ids, [
-                        row[0] for row, size in zip(rows, counts) if size > specification["max_length"]
-                    ])
-                    if not owners:
-                        break  # Concurrent replacement removed this batch's rows.
-                    refused: set[str] = set()
-                    for pack_id in sorted(set(owners.values())):
-                        observed_key = self._replan_key(pack_id, specification)
-                        if observed_key is not None and pack_id in self._refused_replans:
-                            # Entries whose inputs changed were reopened above.
-                            refused.add(pack_id)
-                            continue
-                        trigger_rows = [(row[0], row[1]) for row, size in zip(rows, counts)
-                                        if size > specification["max_length"] and owners.get(row[0]) == pack_id]
-                        try:
-                            await self._replan_vector_inputs([pack_id], triggers={pack_id: trigger_rows},
-                                                             specification=specification)
-                        except KnowledgePackError as exc:
-                            key = exc.replan_keys.get(pack_id) if isinstance(exc, _ReplanLimitRefusal) else None
-                            if exc.reason in {"too_many_chunks", "capacity_chunks"} and key is not None:
-                                # Remember the limit refusal: re-tokenizing the
-                                # whole pack every round cannot change it.
-                                self._refused_replans[pack_id] = (key, exc.reason)
-                                refused.add(pack_id)
-                            else:
-                                deferred_packs.add(pack_id)
-                            if self._pending_chunk_reconcile:
-                                return processed  # Reconcile before planning or encoding another pack.
-                        except ValueError as exc:
-                            key = exc.replan_keys.get(pack_id) if isinstance(exc, _ReplanInputRefusal) else None
-                            if str(exc) == "embedding_input_too_large" and key is not None:
-                                # An entry header alone exceeds the token budget:
-                                # like a limit refusal, re-tokenizing the pack
-                                # cannot change it until the pack or encoder does.
-                                self._refused_replans[pack_id] = (key, "embedding_input_too_large")
-                                refused.add(pack_id)
-                            else:
-                                deferred_packs.add(pack_id)
-                            if self._pending_chunk_reconcile:
-                                return processed  # Reconcile before planning or encoding another pack.
-                        except OSError:
-                            # One missing source cannot starve unrelated packs.
-                            # Exclude it for this round so re-reading the same
-                            # rows cannot spin forever.
-                            deferred_packs.add(pack_id)
-                            if self._pending_chunk_reconcile:
-                                return processed  # Reconcile before planning or encoding another pack.
-                    if refused:
-                        # Over-long rows of a refused pack stay keyword-only and
-                        # show as failed, so progress can finish; its other rows
-                        # still get vectors. A new model or restart retries once.
-                        over_long = [(row[0], row[1], owners[row[0]]) for row, size in zip(rows, counts)
-                                     if size > specification["max_length"] and owners.get(row[0]) in refused]
-                        marked = await self._locked(
-                            lambda ids=over_long: self._thread(self._store.exhaust_attempts, ids), wait=True)
-                        if marked:
-                            # Progress: those rows leave the pending set, so the
-                            # loop moves on to the pack's next batch this round.
-                            processed += marked
-                        else:
-                            # Nothing changed; skip the pack so the loop cannot
-                            # re-read the same rows.
-                            deferred_packs.update(refused)
-                    continue  # Re-read the new complete inputs before inference.
-            started = time.monotonic()
-            try:
-                compute = getattr(self.embedder, "embed_documents", self.embedder.embed_batch)
-                vectors = await compute([text for _id, _hash, text in rows])
-            except EmbedDeferred as deferred:
-                # Scheduling pressure is not an encoding attempt. Keep the
-                # same pending rows and let the next round retry them.
-                await asyncio.sleep(max(0.05, deferred.retry_after_ms / 1000))
-                self._index_wakeup.set()
-                return processed
-            after_specification = await self._thread(getattr(self.embedder, "spec", lambda: None))
-            if after_specification != specification:
-                break  # Changed resources cannot certify the batch just computed.
-            inference_seconds = time.monotonic() - started
-            if self._current_model_id() != model_id:
-                break
-            pack_ids = self._vector_pack_ids()
-            if pack_ids is None:
-                break
-            blobs = [
-                (chunk_id, text_hash, normalize_vector(vector) if vector is not None else None)
-                for (chunk_id, text_hash, _text), vector in zip(rows, vectors)
-            ]
-            stored, failed = await self._locked(
-                lambda blobs=blobs, pack_ids=pack_ids: self._thread(
-                    self._store.store_vectors, model_id=model_id, rows=blobs, pack_ids=pack_ids,
-                    specification=specification,
-                ),
-                wait=True,
-            )
-            if stored:
-                self._vectors_dirty = True
-            self.diagnostics.record_index_batch(
-                model_id=model_id,
-                selected=len(rows),
-                stored=stored,
-                failed=failed,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-            )
-            processed += len(rows)
-            # Every batch that ran inference pauses, also one that stored
-            # nothing: failing chunks must not push indexing past its duty.
-            await asyncio.sleep(_batch_pause(inference_seconds))
-            if stored == 0:
-                break
-            if until is not None and time.monotonic() >= until:
-                break
-        return processed
 
     # ── queries ─────────────────────────────────────────────────────
 
@@ -3178,13 +2578,6 @@ class KnowledgeService:
             and indexed.get(pack_id) == record.pack_sha256
         }
 
-    def _allowed_pack_ids(self, registry: Registry, material_type: str) -> list[str]:
-        wanted = MATERIAL_TYPES if material_type in ("", "auto", "all") else (material_type,)
-        return [
-            record.pack_id
-            for record in registry.packs.values()
-            if record.enabled and record.effective_material_type in wanted and record.pack_id not in self._broken_packs
-        ]
 
     async def query(
         self,
@@ -3196,89 +2589,11 @@ class KnowledgeService:
         budget_ms: int = DEFAULT_QUERY_BUDGET_MS,
         language: str | None = None,
     ) -> dict[str, Any]:
-        """Look up or sample entries; the result never raises.
-
-        ``result`` is one of matched / miss / timeout / busy / error / disabled
-        / unavailable, and ``context`` is the fenced reference block (empty
-        unless matched).
-        """
-        started = time.monotonic()
-        mode = mode if mode in ("lookup", "sample") else "lookup"
-        query = str(query or "").strip()[:MAX_QUERY_CHARS]
-        limit = min(max(int(limit or 1), 1), MAX_QUERY_LIMIT)
-        budget = min(max(int(budget_ms or DEFAULT_QUERY_BUDGET_MS), 50), MAX_QUERY_BUDGET_MS) / 1000
-
-        def finish(result: str, **extra: Any) -> dict[str, Any]:
-            elapsed = int((time.monotonic() - started) * 1000)
-            hits = extra.get("hits") or []
-            self.diagnostics.record_query(
-                mode=mode,
-                result=result,
-                retrieval_mode=extra.get("retrieval_mode", ""),
-                hits=len(hits),
-                # Imported entry titles can contain original filenames. Keep
-                # diagnostics to structural counts and opaque pack identities.
-                entry_title="",
-                pack_id=hits[0]["pack_id"] if hits else "",
-                elapsed_ms=elapsed,
-                error_type=extra.get("error_type", ""),
-            )
-            return {
-                "ok": True,
-                "result": result,
-                "context": extra.get("context", ""),
-                "hits": hits,
-                "card_ids": [f"{hit['pack_id']}/{title_key(hit['title'])}" for hit in hits],
-                "retrieval_mode": extra.get("retrieval_mode", ""),
-                "elapsed_ms": elapsed,
-            }
-
-        if self._state != "ready":
-            return finish("unavailable")
-        if not self._registry.enabled:
-            return finish("disabled")
-        if not query:
-            return finish("miss")
-        # One registry snapshot decides eligibility, vector policy and the
-        # labels in the rendered cards, even if a policy changes mid-query.
-        registry = self._registry
-        allowed = self._allowed_pack_ids(registry, str(material_type or "auto"))
-        if not allowed:
-            return finish("miss")
-        if self._query_slots.locked():
-            return finish("busy")
-        async with self._query_lease():
-            deadline = started + budget
-            try:
-                async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
-                    # A pack being replaced (rows newer than this snapshot)
-                    # would take sample picks or candidate slots and then be
-                    # dropped at rendering, hiding matches of other packs.
-                    current = await self._query_thread(self._current_packs, allowed, registry)
-                    allowed = [pack_id for pack_id in allowed if pack_id in current]
-                    if not allowed:
-                        return finish("miss")
-                    if mode == "sample":
-                        ranked = await self._sample(query, allowed, limit, registry)
-                        retrieval_mode = "sample"
-                    else:
-                        ranked, retrieval_mode = await self._lookup(
-                            query, allowed, limit, deadline, registry
-                        )
-                    if not ranked:
-                        return finish("miss", retrieval_mode=retrieval_mode)
-                    excerpt_query = query if mode == "lookup" else ""
-                    hits, context = await self._query_thread(
-                        self._render, ranked, excerpt_query, language, registry
-                    )
-            except TimeoutError:
-                return finish("timeout")
-            except Exception as exc:
-                logger.warning("[Knowledge] query failed: %s", type(exc).__name__)
-                return finish("error", error_type=type(exc).__name__)
-        if not hits:
-            return finish("miss", retrieval_mode=retrieval_mode)
-        return finish("matched", hits=hits, context=context, retrieval_mode=retrieval_mode)
+        """Delegate tool lookup; the service retains all runtime ownership."""
+        return await self._queries.query(
+            query=query, mode=mode, material_type=material_type, limit=limit,
+            budget_ms=budget_ms, language=language,
+        )
 
     async def turn_context(
         self,
@@ -3288,296 +2603,33 @@ class KnowledgeService:
         budget_ms: int = DEFAULT_QUERY_BUDGET_MS,
         language: str | None = None,
     ) -> dict[str, Any]:
-        """Cards a chat message brings in unasked (passive turn context).
+        """Delegate passive selection without retaining per-session state."""
+        return await self._queries.turn_context(
+            text=text, exclude_card_ids=exclude_card_ids,
+            budget_ms=budget_ms, language=language,
+        )
 
-        Only packs whose ``auto_context`` is on take part, under the global
-        switch. Knowledge and corpus are chosen separately (``passive``) and
-        returned as two sections of bare cards for Main to wrap:
-        ``{"knowledge": {"context", "card_ids", "tokens"}, "corpus": {...}}``.
-        ``exclude_card_ids`` are cards the session still carries; they are
-        left out before anything is ranked. Nothing about the session is kept
-        here. The result never raises.
+
+    def _start_query_embedding(
+        self, text: str, *, limit: int, probe_model_id: str | None = None,
+    ) -> asyncio.Task[Any] | None:
+        """Admit one query embedding and retain it after a caller's timeout.
+
+        Callers supply the query-domain limit at the actual admission point.
+        Passive context starts its calibration probes only after this slot is
+        available; tool lookup keeps its existing model-readiness precondition.
         """
-        started = time.monotonic()
-        text = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
-        budget = min(max(int(budget_ms or DEFAULT_QUERY_BUDGET_MS), 50), MAX_QUERY_BUDGET_MS) / 1000
-        excluded = {str(card_id) for card_id in exclude_card_ids or ()}
-
-        def finish(result: str, **extra: Any) -> dict[str, Any]:
-            elapsed = int((time.monotonic() - started) * 1000)
-            sections = {
-                kind: extra.get(kind) or {"context": "", "card_ids": [], "tokens": 0}
-                for kind in MATERIAL_TYPES
-            }
-            hits = sum(len(section["card_ids"]) for section in sections.values())
-            # Runs on every text turn: only outcomes worth a look are kept,
-            # so routine misses do not push tool lookups out of the log.
-            if result in PASSIVE_DIAGNOSTIC_RESULTS:
-                self.diagnostics.record_query(
-                    mode="passive",
-                    result=result,
-                    retrieval_mode=extra.get("retrieval_mode", ""),
-                    hits=hits,
-                    entry_title="",
-                    pack_id="",
-                    elapsed_ms=elapsed,
-                    error_type=extra.get("error_type", ""),
-                )
-            return {
-                "ok": True,
-                "result": result,
-                **sections,
-                "retrieval_mode": extra.get("retrieval_mode", ""),
-                "elapsed_ms": elapsed,
-            }
-
-        if self._state != "ready":
-            return finish("unavailable")
-        if not self._registry.enabled:
-            return finish("disabled")
-        if not text:
-            return finish("miss")
-        registry = self._registry
-        allowed = [
-            pack_id
-            for pack_id in self._allowed_pack_ids(registry, "auto")
-            if (record := registry.packs.get(pack_id)) is not None and record.auto_context
-        ]
-        if not allowed:
-            return finish("off")
-        if self._query_slots.locked():
-            return finish("busy")
-        async with self._query_lease():
-            deadline = started + budget
-            try:
-                async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
-                    current = await self._query_thread(self._current_packs, allowed, registry)
-                    allowed = [pack_id for pack_id in allowed if pack_id in current]
-                    if not allowed:
-                        return finish("miss")
-                    picked, retrieval_mode = await self._passive_pick(
-                        text, allowed, deadline, registry, excluded
-                    )
-                    if not any(picked.values()):
-                        return finish("miss", retrieval_mode=retrieval_mode)
-                    sections = await self._query_thread(
-                        self._render_turn_sections, picked, text, language, registry
-                    )
-            except TimeoutError:
-                return finish("timeout")
-            except Exception as exc:
-                logger.warning("[Knowledge] turn context failed: %s", type(exc).__name__)
-                return finish("error", error_type=type(exc).__name__)
-        if not any(section["card_ids"] for section in sections.values()):
-            return finish("miss", retrieval_mode=retrieval_mode)
-        return finish("matched", retrieval_mode=retrieval_mode, **sections)
-
-    async def _passive_pick(
-        self,
-        text: str,
-        allowed: list[str],
-        deadline: float,
-        registry: Registry,
-        excluded: set[str],
-    ) -> tuple[dict[str, list[PassiveHit]], str]:
-        """Candidates from all three signals, judged per material type."""
-        model_id = self._current_model_id()
-        # Read together, with no await between: the generation names this
-        # very snapshot in the calibration cache.
-        snapshot = self._vectors
-        snapshot_key = self._vectors_built_for
-        snapshot = await self._compatible_snapshot(snapshot)
-        vector_packs = [
-            pack_id
-            for pack_id in allowed
-            if (record := registry.packs.get(pack_id)) is not None
-            and record.local_embedding
-            and (
-                snapshot is None
-                or snapshot.pack_versions is None
-                or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
-            )
-        ]
-        type_packs = {
-            material_type: [
-                pack_id
-                for pack_id in allowed
-                if registry.packs[pack_id].effective_material_type == material_type
-            ]
-            for material_type in MATERIAL_TYPES
-        }
-        embed_task: asyncio.Task[Any] | None = None
-        if (
-            model_id is not None
-            and snapshot is not None
-            and snapshot.model_id == model_id
-            and set(vector_packs) & set(snapshot.pack_ids)
-            and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
-            and self.embedder is not None
-        ):
-            self._calibration.ensure_probes(model_id, self.embedder.embed_batch)
-            embed_task = asyncio.create_task(getattr(self.embedder, "embed_query", self.embedder.embed)(text))
-            embed_task.add_done_callback(_consume)
-            self._query_embeddings.add(embed_task)
-            embed_task.add_done_callback(self._query_embeddings.discard)
-        # Cards the session still carries are left out before any cut, so
-        # they cannot take the slots of the next-best cards. Disabled cards
-        # stay out of the vector cut and the calibration background too.
-        excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids = await self._query_thread(
-            self._passive_lexical_search, text, allowed, registry, excluded
-        )
-        query_vector: np.ndarray | None = None
-        if embed_task is not None:
-            remaining = deadline - time.monotonic()
-            done, _pending = await asyncio.wait(
-                {embed_task}, timeout=max(remaining - QUERY_RENDER_RESERVE_SECONDS, 0)
-            )
-            if embed_task in done and embed_task.exception() is None and embed_task.result():
-                blob = normalize_vector(embed_task.result())
-                if blob is not None:
-                    query_vector = np.frombuffer(blob, dtype="<f4")
-        # Each material type gets its own candidate cut, so many close cards
-        # of one type never push the other type's leader out.
-        semantic_by_type: dict[str, list[SemanticMatch]] = {}
-        if query_vector is not None:
-            vector_excluded = excluded_ids | disabled_ids
-            # One hop per type: a query cancelled or timed out between them
-            # does not go on scanning the other type while holding its slot.
-            for material_type, packs in type_packs.items():
-                type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
-                if type_vector_packs:
-                    semantic_by_type[material_type] = await self._query_thread(
-                        self._passive_semantic_search, snapshot, query_vector,
-                        type_vector_packs, vector_excluded,
-                    )
-        semantic = [match for matches in semantic_by_type.values() for match in matches]
-        candidate_ids = list(dict.fromkeys(
-            [*exact_ids, *named_ids, *lexical_ids, *(m.entry_id for m in semantic)]
-        ))
-        entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
-        allowed_set = await self._query_thread(self._current_packs, allowed, registry)
-        picked: dict[str, list[PassiveHit]] = {}
-        for material_type in MATERIAL_TYPES:
-            type_set = {pack_id for pack_id in type_packs[material_type] if pack_id in allowed_set}
-            if not type_set:
-                picked[material_type] = []
-                continue
-            usable = {
-                entry_id
-                for entry_id, entry in entries.items()
-                if entry.pack_id in type_set
-                and not _disabled_in(entry, registry)
-                and f"{entry.pack_id}/{title_key(entry.title)}" not in excluded
-            }
-            type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in type_set]
-            background = (
-                self._calibration.background(
-                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread,
-                    excluded_entry_ids=disabled_ids,
-                )
-                if query_vector is not None and type_vector_packs
-                else None
-            )
-            picked[material_type] = select_hits(
-                text,
-                entries=entries,
-                usable=usable,
-                exact_ids=[entry_id for entry_id in exact_ids if entry_id in usable],
-                named_ids=[entry_id for entry_id in named_ids if entry_id in usable],
-                lexical_ids=[entry_id for entry_id in lexical_ids if entry_id in usable],
-                semantic=[
-                    match for match in semantic_by_type.get(material_type, ())
-                    if match.entry_id in usable
-                ],
-                thresholds=thresholds_for(material_type, background),
-            )
-        return picked, ("hybrid" if query_vector is not None else "bm25")
-
-    def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
-        """Entry ids of ``pack_id/title_key`` card ids."""
-        titles: dict[str, list[str]] = {}
-        for card_id in card_ids:
-            pack_id, _, key = card_id.partition("/")
-            if pack_id and key:
-                titles.setdefault(pack_id, []).append(key)
-        return self._store.entry_ids_by_title(titles) if titles else set()
-
-    def _passive_lexical_search(
-        self, text: str, pack_ids: list[str], registry: Registry, excluded_cards: set[str]
-    ) -> tuple[set[int], set[int], list[int], list[int], list[int]]:
-        """Exclusions and keyword candidates in one worker-thread hop.
-
-        Returns the entry ids of ``excluded_cards``, the disabled entry ids of
-        ``pack_ids`` (index and registry snapshot), then the exact, keyword
-        and named candidates.
-        """
-        excluded_ids = self._excluded_entry_ids(excluded_cards)
-        snapshot_disabled = self._snapshot_only_disabled(pack_ids, registry)
-        disabled_ids = self._store.disabled_entry_ids(pack_ids) | snapshot_disabled
-        # Disabled index rows are filtered in SQL already.
-        excluded = excluded_ids | snapshot_disabled
-        exact_ids, lexical_ids = self._store.lexical_candidates(
-            text, pack_ids=pack_ids, limit=LEXICAL_CANDIDATES, exclude_ids=excluded,
-        )
-        named_ids = self._store.named_candidates(text, pack_ids=pack_ids, exclude_ids=excluded)
-        return excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids
-
-    def _passive_semantic_search(
-        self,
-        snapshot: VectorSnapshot | None,
-        query_vector: np.ndarray,
-        pack_ids: list[str],
-        excluded_ids: set[int],
-    ) -> list[SemanticMatch]:
-        """Vector candidates of one material type, with its own cut so many
-        close cards of one type never push the other type's leader out."""
-        return semantic_candidates(
-            snapshot,
-            query_vector,
-            allowed_pack_ids=pack_ids,
-            exclude_entry_ids=excluded_ids,
-            limit=PASSIVE_SEMANTIC_CANDIDATES,
-            threshold=-1.0,
-        )
-
-    def _render_turn_sections(
-        self,
-        picked: dict[str, list[PassiveHit]],
-        text: str,
-        language: str | None,
-        registry: Registry,
-    ) -> dict[str, dict[str, Any]]:
-        ids = [hit.entry_id for hits in picked.values() for hit in hits]
-        entries = self._store.fetch_entries(ids)
-        current = self._current_packs([entry.pack_id for entry in entries.values()], registry)
-        sections: dict[str, dict[str, Any]] = {}
-        for material_type in MATERIAL_TYPES:
-            cards: list[RenderCard] = []
-            card_ids: list[str] = []
-            for hit in picked.get(material_type, ()):
-                entry = entries.get(hit.entry_id)
-                record = registry.packs.get(entry.pack_id) if entry is not None else None
-                if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
-                    continue
-                bodies = self._excerpt_bodies(entry, hit.semantic_chunk)
-                index = best_excerpt_index(text, bodies, hit.semantic_chunk)
-                excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
-                cards.append(
-                    RenderCard(
-                        title=entry.title,
-                        material_type=material_type,
-                        summary=entry.summary,
-                        content=excerpt,
-                        source_name=record.source.name,
-                        source_license=record.source.license,
-                    )
-                )
-                card_ids.append(f"{entry.pack_id}/{title_key(entry.title)}")
-            context, tokens = render_turn_cards(
-                cards, language=language, max_tokens_per_card=TURN_CONTEXT_ITEM_MAX_TOKENS
-            )
-            sections[material_type] = {"context": context, "card_ids": card_ids, "tokens": tokens}
-        return sections
+        if len(self._query_embeddings) >= limit:
+            return None
+        if probe_model_id is not None:
+            if self.embedder is None:
+                return None
+            self._calibration.ensure_probes(probe_model_id, self.embedder.embed_batch)
+        task = asyncio.create_task(getattr(self.embedder, "embed_query", self.embedder.embed)(text))
+        task.add_done_callback(_consume)
+        self._query_embeddings.add(task)
+        task.add_done_callback(self._query_embeddings.discard)
+        return task
 
     @contextlib.asynccontextmanager
     async def _query_lease(self) -> AsyncIterator[None]:
@@ -3625,220 +2677,6 @@ class KnowledgeService:
         self._track_thread_work(future)
         return await asyncio.wrap_future(future)
 
-    async def _sample(
-        self, tag: str, allowed: list[str], limit: int, registry: Registry
-    ) -> list[RankedHit]:
-        rows = await self._query_thread(self._store.entries_with_tag, tag, allowed)
-        # Read the versions after the rows: a pack replaced since the query's
-        # version check has its new rows here, which would take picks and then
-        # be dropped at rendering. Choose among unchanged packs only.
-        current = await self._query_thread(self._current_packs, allowed, registry)
-        # Drop entries the query's registry snapshot disables before choosing,
-        # or one of them could take a slot and then be rejected at rendering.
-        ids = [
-            entry_id
-            for entry_id, pack_id, title in rows
-            if pack_id in current
-            and (
-                (record := registry.packs.get(pack_id)) is None
-                or title_key(title) not in record.disabled_titles
-            )
-        ]
-        return [
-            RankedHit(entry_id=i, score=0.0, exact=False, lexical_rank=None, semantic_score=None)
-            for i in random.sample(ids, min(limit, len(ids)))
-        ]
-
-    async def _lookup(
-        self, query: str, allowed: list[str], limit: int, deadline: float, registry: Registry
-    ) -> tuple[list[RankedHit], str]:
-        embed_task: asyncio.Task[Any] | None = None
-        model_id = self._current_model_id()
-        snapshot = self._vectors
-        snapshot = await self._compatible_snapshot(snapshot)
-        # A pack with local vectors turned off is keyword-only, even if
-        # vectors from before the switch are still in the snapshot; when no
-        # eligible pack has vectors, the query is not embedded at all.
-        vector_packs = [
-            pack_id
-            for pack_id in allowed
-            if (record := registry.packs.get(pack_id)) is not None
-            and record.local_embedding
-            # Vectors read for another version of the pack (it was replaced
-            # and the snapshot is still being reloaded) point at entry ids
-            # that no longer exist: they would fill the semantic cutoff and
-            # then be dropped. Until the reload the pack is keyword-only.
-            and (
-                snapshot is None
-                or snapshot.pack_versions is None
-                or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
-            )
-        ]
-        if (
-            model_id is not None
-            and snapshot is not None
-            and snapshot.model_id == model_id
-            and set(vector_packs) & set(snapshot.pack_ids)
-            # A lookup that ran out of budget leaves its embedding running.
-            # Cap those, or slow inference piles up on the shared model.
-            and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
-        ):
-            embed_task = asyncio.create_task(getattr(self.embedder, "embed_query", self.embedder.embed)(query))
-            embed_task.add_done_callback(_consume)
-            self._query_embeddings.add(embed_task)
-            embed_task.add_done_callback(self._query_embeddings.discard)
-        exact_ids, lexical_ids = await self._query_thread(
-            self._lexical_search, query, allowed, registry
-        )
-        query_vector: np.ndarray | None = None
-        if embed_task is not None:
-            remaining = deadline - time.monotonic()
-            # Leave room for fetching and rendering the cards; a late vector
-            # is dropped and the lookup goes on with BM25 alone.
-            done, _pending = await asyncio.wait(
-                {embed_task}, timeout=max(remaining - QUERY_RENDER_RESERVE_SECONDS, 0)
-            )
-            if embed_task in done and embed_task.exception() is None and embed_task.result():
-                blob = normalize_vector(embed_task.result())
-                if blob is not None:
-                    query_vector = np.frombuffer(blob, dtype="<f4")
-        for attempt in range(2):
-            if attempt:
-                exact_ids, lexical_ids = await self._query_thread(
-                    self._lexical_search, query, allowed, registry
-                )
-            semantic = (
-                await self._query_thread(
-                    self._semantic_search, snapshot, query_vector, vector_packs, registry
-                )
-                if query_vector is not None and vector_packs
-                else []
-            )
-            candidate_ids = list(
-                dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)])
-            )
-            entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
-            # Read the versions after the rows: rows of a pack replaced in
-            # between then show a newer version and are left out, never
-            # mislabelled.
-            allowed_set = await self._query_thread(self._current_packs, allowed, registry)
-            if attempt or not allowed_set or set(allowed) <= allowed_set:
-                break
-            # A pack was replaced while candidates were chosen: its rows (or
-            # its stale vectors) may have pushed valid matches of other packs
-            # below the cutoffs. Choose once more without it.
-            allowed = [pack_id for pack_id in allowed if pack_id in allowed_set]
-            vector_packs = [pack_id for pack_id in vector_packs if pack_id in allowed_set]
-        usable = {
-            entry_id
-            for entry_id, entry in entries.items()
-            if not _disabled_in(entry, registry) and entry.pack_id in allowed_set
-        }
-        # Coverage scoring scans entry text: keep it off the event loop.
-        ranked = await self._query_thread(
-            fuse,
-            query,
-            exact_ids=exact_ids,
-            lexical_ids=lexical_ids,
-            semantic=semantic,
-            entries=entries,
-            usable=usable,
-            limit=limit,
-        )
-        return ranked, ("hybrid" if query_vector is not None else "bm25")
-
-    def _snapshot_only_disabled(self, pack_ids: Sequence[str], registry: Registry) -> set[int]:
-        """Entries the registry snapshot disables but the index has enabled.
-
-        A re-enable writes the index first, so for a moment the snapshot a
-        query holds can still disable entries the index already serves.
-        Disabled index rows are filtered in SQL anyway; these few are not.
-        """
-        return self._store.entry_ids_by_title(
-            {
-                pack_id: record.disabled_titles
-                for pack_id in pack_ids
-                if (record := registry.packs.get(pack_id)) is not None and record.disabled_titles
-            },
-            enabled_only=True,
-        )
-
-    def _lexical_search(
-        self, query: str, pack_ids: list[str], registry: Registry
-    ) -> tuple[list[int], list[int]]:
-        return self._store.lexical_candidates(
-            query,
-            pack_ids=pack_ids,
-            limit=LEXICAL_CANDIDATES,
-            exclude_ids=self._snapshot_only_disabled(pack_ids, registry),
-        )
-
-    def _semantic_search(
-        self,
-        snapshot: VectorSnapshot | None,
-        query_vector: np.ndarray,
-        pack_ids: list[str],
-        registry: Registry,
-    ) -> list[SemanticMatch]:
-        # Disabled now in the index, or in the query's registry snapshot (a
-        # re-enable writes the index first): neither may take a slot.
-        excluded = self._store.disabled_entry_ids(pack_ids) | self._snapshot_only_disabled(
-            pack_ids, registry
-        )
-        return semantic_candidates(
-            snapshot, query_vector, allowed_pack_ids=pack_ids, exclude_entry_ids=excluded
-        )
-
-    def _render(
-        self, ranked: list[RankedHit], query: str, language: str | None, registry: Registry
-    ) -> tuple[list[dict[str, Any]], str]:
-        entries = self._store.fetch_entries([hit.entry_id for hit in ranked])
-        current = self._current_packs([entry.pack_id for entry in entries.values()], registry)
-        cards: list[RenderCard] = []
-        hits: list[dict[str, Any]] = []
-        for ranked_hit in ranked:
-            entry = entries.get(ranked_hit.entry_id)
-            record = registry.packs.get(entry.pack_id) if entry is not None else None
-            if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
-                continue
-            # Show the passage that matched, not just the start of the entry.
-            bodies = self._excerpt_bodies(entry, ranked_hit.semantic_chunk)
-            index = best_excerpt_index(query, bodies, ranked_hit.semantic_chunk)
-            excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
-            cards.append(
-                RenderCard(
-                    title=entry.title,
-                    material_type=record.effective_material_type,
-                    summary=entry.summary,
-                    content=excerpt,
-                    source_name=record.source.name,
-                    source_license=record.source.license,
-                )
-            )
-            hits.append(
-                {
-                    "pack_id": entry.pack_id,
-                    "title": entry.title,
-                    "material_type": record.effective_material_type,
-                }
-            )
-        return hits, render_reference_block(cards, language=language)
-
-    def _excerpt_bodies(self, entry: StoredEntry, semantic_chunk: int | None) -> list[str]:
-        """Render the actual token-fitted chunk instead of a different char split."""
-        if semantic_chunk is not None:
-            inputs = self._store.entry_embedding_inputs(entry.entry_id)
-            bodies = []
-            for index, text in enumerate(inputs):
-                header = entry.title + ("\n" + entry.summary if index == 0 and entry.summary else "")
-                prefix = header[:MAX_HEADER_CHARS] + "\n"
-                if not text.startswith(prefix):
-                    break
-                bodies.append(text[len(prefix):])
-            else:
-                if bodies:
-                    return bodies
-        return chunk_bodies(entry.content) or [entry.content]
 
     # ── management reads ────────────────────────────────────────────
 

@@ -127,7 +127,7 @@ async def test_pack_toggle_keeps_pack_enabled_distinct_from_global_availability(
 
 
 async def test_local_zip_defaults_disabled_without_fabricating_original_history(client, tmp_path):
-    from tests.unit.test_knowledge_archive_v2 import make_archive
+    from tests.knowledge_archive_fixtures import make_archive
 
     http, service = client
     raw = make_archive(tmp_path / "source.zip").read_bytes()
@@ -234,7 +234,7 @@ async def test_delete_export_route_validates_body_and_removes_the_completed_card
 
 async def test_artifact_route_serves_zip_and_preserves_retired_json_without_serving_it(client):
     """Removing the JSON download path must not delete historical bytes."""
-    from tests.unit.test_knowledge_archive_v2 import make_archive
+    from tests.knowledge_archive_fixtures import make_archive
 
     http, service = client
     folder = service.root / "artifacts"
@@ -257,8 +257,9 @@ async def test_artifact_route_serves_zip_and_preserves_retired_json_without_serv
 
 async def test_artifact_download_uses_frozen_readable_name_for_old_and_new_results(client):
     """HTTP and UI names agree without renaming stored archives or old tasks."""
-    from tests.unit.test_knowledge_subsystem import _import, _pack
-    from tests.unit.test_knowledge_unified_core import _finished, _prepare_export_vectors
+    from tests.knowledge_fixtures import _import, _pack
+    from tests.knowledge_fixtures import _finished
+    from tests.knowledge_archive_fixtures import _prepare_export_vectors
 
     http, service = client
     payload = _pack()
