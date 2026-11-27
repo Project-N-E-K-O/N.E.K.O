@@ -841,8 +841,10 @@ def test_rejects_invalid_glb_framing_even_with_valid_outer_hashes(tmp_path, dama
         validate_vrm_bundle(path)
 
 
-@pytest.mark.parametrize("missing", [None, "JOINTS_0", "WEIGHTS_0"])
-def test_skinned_vrm_requires_joint_and_weight_attributes(tmp_path, missing):
+@pytest.mark.parametrize("missing,mode,accepted", [
+    (None, 4, True), ("JOINTS_0", 4, False), ("WEIGHTS_0", 4, False), ("WEIGHTS_0", 1, True),
+])
+def test_skinned_vrm_requires_joint_and_weight_attributes(tmp_path, missing, mode, accepted):
     def graph(data):
         data["accessors"] = [
             {"componentType": 5126, "count": 3, "type": "VEC3"},
@@ -852,12 +854,12 @@ def test_skinned_vrm_requires_joint_and_weight_attributes(tmp_path, missing):
         attributes = {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}
         if missing:
             del attributes[missing]
-        data["meshes"] = [{"primitives": [{"attributes": attributes}]}]
+        data["meshes"] = [{"primitives": [{"attributes": attributes, "mode": mode}]}]
         data["nodes"][0].update(mesh=0, skin=0)
         data["skins"] = [{"joints": [0]}]
 
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
-    if missing:
+    if not accepted:
         with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
             validate_vrm_bundle(path)
     else:
@@ -870,7 +872,7 @@ def test_vrm_extra_documentation_is_rejected_instead_of_discarded(tmp_path):
         validate_vrm_bundle(path)
 
 
-def pmx_bytes(texture="../Textures/face.png", *, shared=True, version=2.0, broken_weight=False):
+def pmx_bytes(texture="../Textures/face.png", *, shared=True, version=2.0, broken_weight=False, second_reference=None):
     """Build every PMX section, retaining the real texture/material byte layout."""
     def text(value):
         raw = value.encode("utf-8")
@@ -880,10 +882,13 @@ def pmx_bytes(texture="../Textures/face.png", *, shared=True, version=2.0, broke
     raw += struct.pack("<i", 1 if broken_weight else 0)
     if broken_weight:
         raw += bytes(32) + bytes([99]) + bytes(5)
-    raw += struct.pack("<2i", 0, 1) + text(texture)
-    raw += struct.pack("<i", 1) + text("Material") + text("") + bytes(65)
-    raw += struct.pack("<bbBBB", 0, -1, 0, 1 if shared else 0, 0)
-    raw += text("") + struct.pack("<i", 0)
+    textures = (texture,) if second_reference is None else (texture, second_reference)
+    raw += struct.pack("<2i", 0, len(textures)) + b"".join(text(name) for name in textures)
+    raw += struct.pack("<i", len(textures))
+    for index in range(len(textures)):
+        raw += text("Material") + text("") + bytes(65)
+        raw += struct.pack("<bbBBB", index, -1, 0, 1 if shared else 0, 0)
+        raw += text("") + struct.pack("<i", 0)
     # Bones, morphs, display frames, rigid bodies and joints are empty sections.
     raw += struct.pack("<5i", 0, 0, 0, 0, 0)
     if version > 2.05:
@@ -917,6 +922,30 @@ def test_mmd_tga_decoded_storage_has_a_budget(tmp_path, image_type, required):
     validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required))
     with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
         validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=required - 1))
+
+
+@pytest.mark.parametrize("bits,accepted", [(8, True), (24, False)])
+def test_mmd_gray_tga_matches_the_loader_depth(tmp_path, bits, accepted):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 3, 0, 0, 0, 0, 0, 1, 1, bits, 0)
+    files = {"Avatar.pmx": pmx_bytes("face.tga"), "face.tga": header + bytes(bits // 8)}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    if accepted:
+        validate_mmd_bundle(path)
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_image$"):
+            validate_mmd_bundle(path)
+
+
+@pytest.mark.parametrize("reference,accepted", [("face.tga", True), ("./face.tga", False)])
+def test_mmd_tga_budget_counts_distinct_texture_cache_keys(tmp_path, reference, accepted):
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, 2, 2, 24, 0)
+    files = {"Avatar.pmx": pmx_bytes("face.tga", second_reference=reference), "face.tga": header + bytes(12)}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    if accepted:
+        validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=16))
+    else:
+        with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+            validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=16))
 
 
 @pytest.mark.parametrize("kind", ["pmx", "pmx21", "pmd"])
@@ -1553,7 +1582,10 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
         else:
             raw += b''.join(struct.pack('<if', offset, 1.0) if morph_kind == 0 else struct.pack('<I3f', offset, 0.0, 0.0, 0.0)
                             for offset in offsets)
-    return raw + struct.pack('<3i', 0, 0, 0)
+    raw += struct.pack('<i', 0)  # Display frames.
+    if rigid_bone is None:
+        return raw + struct.pack('<2i', 0, 0)
+    return raw + struct.pack('<i', 1) + text('') * 2 + struct.pack('<' + bone_code, rigid_bone) + bytes(61) + struct.pack('<i', 0)
 
 
 @pytest.mark.parametrize('kind', ['pmx', 'pmd'])
@@ -1618,7 +1650,7 @@ def test_mmd_ik_effectors_match_the_loader_bone_slots(tmp_path, kind, effector, 
 
 
 @pytest.mark.parametrize("bone,owners,accepted", [
-    (2, None, True), (3, None, False), (-1, None, True),
+    (2, None, True), (3, None, False), (-1, None, True), (-2, None, False),
     (3, [0, 0], True), (4, [0, 0], False), (-1, [1, 0], False),
 ])
 def test_pmd_rigid_body_bones_match_converted_slots(tmp_path, bone, owners, accepted):
@@ -1626,6 +1658,17 @@ def test_pmd_rigid_body_bones_match_converted_slots(tmp_path, bone, owners, acce
     path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmd", files={"Avatar.pmd": raw})
     if accepted:
         assert validate_mmd_bundle(path).model_format == "mmd"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_mmd_bundle(path)
+
+
+@pytest.mark.parametrize("bone,accepted", [(2, True), (-1, True), (3, False), (-2, False)])
+def test_pmx_rigid_body_bones_are_in_range(tmp_path, bone, accepted):
+    raw = mmd_runtime_bytes("pmx", rigid_bone=bone)
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files={"Avatar.pmx": raw})
+    if accepted:
+        validate_mmd_bundle(path)
     else:
         with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
             validate_mmd_bundle(path)

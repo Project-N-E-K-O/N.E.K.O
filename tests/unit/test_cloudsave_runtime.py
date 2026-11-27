@@ -5804,7 +5804,7 @@ def test_legacy_bootstrap_preserves_old_root_with_unfinished_workshop(tmp_path, 
     ('unreadable', 'model_workshop_state_unreadable'),
 ])
 def test_legacy_bootstrap_does_not_replace_current_workshop_with_unfinished_state(tmp_path, state, error):
-    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
 
     cm = _make_config_manager(tmp_path / 'current')
     cm._get_localized_characters_source = lambda: None
@@ -5826,7 +5826,7 @@ def test_legacy_bootstrap_does_not_replace_current_workshop_with_unfinished_stat
     current_before = (cm.config_dir / 'characters.json').read_bytes()
     cm.get_legacy_app_root_candidates = lambda: [old]
 
-    result = import_legacy_runtime_root_if_needed(cm)
+    result = bootstrap_local_cloudsave_environment(cm)['legacy_import']
 
     assert not result['migrated'] and result['result'] == 'legacy_root_' + error
     assert result['backup_path'] == '' and result['copied_paths'] == []
@@ -5834,6 +5834,20 @@ def test_legacy_bootstrap_does_not_replace_current_workshop_with_unfinished_stat
     assert evidence.read_bytes() == evidence_before[1]
     assert legacy_characters.read_bytes() == legacy_before
     assert (cm.config_dir / 'characters.json').read_bytes() == current_before
+    root_state = cm.load_root_state()
+    assert root_state.get('last_migration_source') != str(old)
+    root_state['last_successful_boot_at'] = '2026-11-27T00:00:00Z'
+    if state == 'pending':
+        # Recover a state file previously written by a build with the bug.
+        root_state.update(last_migration_source=str(old), last_migration_result=result['result'])
+    cm.save_root_state(root_state)
+    evidence.unlink()
+
+    retry = bootstrap_local_cloudsave_environment(cm)['legacy_import']
+
+    assert retry['migrated'] and retry['result'] == 'legacy_root_imported'
+    assert cm.load_root_state()['last_migration_source'] == str(old)
+    assert cm.load_root_state()['last_migration_result'] == retry['result']
 
 
 def test_legacy_bootstrap_preserves_both_completed_workshop_registries(tmp_path):

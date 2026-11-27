@@ -356,7 +356,14 @@ def _image(resources: _Resources, path: str) -> int:
         _require(len(header) == 18, path, "invalid_model_image")
         width, height = struct.unpack_from("<HH", header, 12)
         kind, bits = header[2], header[16]
-        valid = width > 0 and height > 0 and kind in (1, 2, 3, 9, 10, 11) and bits in (8, 16, 24, 32)
+        if kind in (1, 9):
+            palette_length = struct.unpack_from("<H", header, 5)[0]
+            valid = bits == 8 and header[1] == 1 and header[7] == 24 and 0 < palette_length <= 256
+        elif kind in (3, 11):
+            valid = bits in (8, 16) and header[1] == 0
+        else:
+            valid = kind in (2, 10) and bits in (16, 24, 32) and header[1] == 0
+        valid = valid and width > 0 and height > 0
         # TGALoader expands each pixel to RGBA and RLE needs a second pixel buffer.
         tga_bytes = width * height * (4 + (bits // 8 if kind in (9, 10, 11) else 0))
     else:
@@ -895,9 +902,11 @@ def _vrm(resources: _Resources) -> None:
                 skinned_meshes.add(node["mesh"])
             instanced_vertices += instances * mesh_draw_counts[node["mesh"]]
             _require(instanced_vertices <= resources.limits.vrm_instanced_vertices, entry, "model_accessor_budget_exceeded")
-    # GLTFLoader marks the mesh definition once and normalizes every primitive.
+    # GLTFLoader constructs a SkinnedMesh only for triangle primitives.
     for mesh_index in skinned_meshes:
         for primitive in meshes[mesh_index]["primitives"]:
+            if primitive.get("mode", 4) not in (4, 5, 6):
+                continue
             attrs = primitive["attributes"]
             _require("JOINTS_0" in attrs and "WEIGHTS_0" in attrs, entry)
             joints, weights = accessors[attrs["JOINTS_0"]], accessors[attrs["WEIGHTS_0"]]
@@ -996,9 +1005,12 @@ class _MmdReader:
 _MMD_IMAGES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".sph", ".spa")
 
 
-def _mmd_texture(resources: _Resources, value: str) -> None:
+def _mmd_texture(resources: _Resources, value: str, tga_references: dict[str, str]) -> None:
     """Use the main file's parent, retaining legal internal parent references."""
-    resources.dependency(value, base=posixpath.dirname(resources.bundle.entrypoint), suffixes=_MMD_IMAGES)
+    target = resources.dependency(value, base=posixpath.dirname(resources.bundle.entrypoint), suffixes=_MMD_IMAGES)
+    if value.lower().endswith(".tga"):
+        # The loader caches the raw URL, even if several spellings resolve to this file.
+        tga_references[value] = target
 
 
 def _mmd_ik_budget(resources: _Resources, parents: list[int], weights: dict[int, int], *, strict_parents=False) -> None:
@@ -1041,7 +1053,7 @@ def _mmd_grant_depth(resources: _Resources, grants: dict[int, int]) -> None:
         pending.extend((child, depth + 1) for child in grant_children[index])
 
 
-def _pmx(resources: _Resources, reader: _MmdReader) -> None:
+def _pmx(resources: _Resources, reader: _MmdReader, tga_references: dict[str, str]) -> None:
     """Walk the PMX layout used by the bundled PmxReader, without rewriting it."""
     path = reader.path
     _require(reader.read(4) == b"PMX ", path)
@@ -1071,7 +1083,7 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
     def dependency(index: int, *, active: bool = True) -> None:
         _require(-1 <= index < len(textures), path)
         if active and index != -1:
-            _mmd_texture(resources, textures[index])
+            _mmd_texture(resources, textures[index], tga_references)
 
     covered = 0
     material_count = reader.count(minimum=79)
@@ -1192,8 +1204,9 @@ def _pmx(resources: _Resources, reader: _MmdReader) -> None:
     for _ in range(reader.count(minimum=8 + bone + 61)):
         reader.text()
         reader.text()
-        # Bone index, collision/shape fields, three vectors and physics scalars.
-        reader.skip(bone + 61)
+        rigid_bone = reader.index(bone)
+        _require(rigid_bone == -1 or 0 <= rigid_bone < bones, path)
+        reader.skip(61)
     for _ in range(reader.count(minimum=9 + rigid * 2 + 96)):
         reader.text()
         reader.text()
@@ -1221,7 +1234,7 @@ def _pmd_normalized(value: str) -> str:
     return "/".join(parts).lower()
 
 
-def _pmd(resources: _Resources, reader: _MmdReader) -> None:
+def _pmd(resources: _Resources, reader: _MmdReader, tga_references: dict[str, str]) -> None:
     """Keep PMD's optional tail and toon conversion separate from PMX flags."""
     path = reader.path
     _require(reader.read(3) == b"Pmd" and reader.scalar("f") == 1.0, path)
@@ -1322,9 +1335,10 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             for _ in range(reader.count("I", 83)):
                 reader.skip(20)
                 rigid_bone = reader.scalar("h")
-                if not reordered:
-                    rigid_bone = max(0, rigid_bone)
-                _require(0 <= rigid_bone < len(parents), path)
+                # Physics accepts only -1 as an unbound rigid body. Position
+                # normalization still needs bone zero before the physics module.
+                _require(0 <= rigid_bone < len(parents)
+                         or (rigid_bone == -1 and not reordered and bool(parents)), path)
                 reader.skip(61)
             reader.skip(reader.count("I", 124) * 124)
     # static/libs/three-mmd.module.js PmdReader.ParseAsync/_ConvertMaterials leaves a
@@ -1352,22 +1366,28 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             active.append(toon)
     for index in set(active):
         # Check the actual converted table entry, not the original case-folded key.
-        _mmd_texture(resources, textures[index])
+        _mmd_texture(resources, textures[index], tga_references)
 
 
 def _mmd(resources: _Resources) -> None:
     """Validate binary framing plus all texture paths consumed by the loader."""
     _allowed_files(resources, (".pmx", ".pmd") + _MMD_IMAGES)
     entry = resources.bundle.entrypoint
+    tga_references: dict[str, str] = {}
     with resources.archive.open("model/" + entry) as handle:
         reader = _MmdReader(handle, resources.files[entry].byte_size, entry, resources.limits)
-        (_pmx if entry.endswith(".pmx") else _pmd)(resources, reader)
+        (_pmx if entry.endswith(".pmx") else _pmd)(resources, reader, tga_references)
         _require(reader.offset == reader.size, entry, "unsupported_model_structure")
-    tga_allocated = 0
+    tga_sizes = {}
     for name in resources.files:
         if name.lower().endswith(_MMD_IMAGES):
-            tga_allocated += _image(resources, name)
-            _require(tga_allocated <= resources.limits.mmd_tga_bytes, name, "model_accessor_budget_exceeded")
+            decoded = _image(resources, name)
+            if decoded:
+                tga_sizes[name] = decoded
+    tga_allocated = 0
+    for target in tga_references.values():
+        tga_allocated += tga_sizes[target]
+        _require(tga_allocated <= resources.limits.mmd_tga_bytes, target, "model_accessor_budget_exceeded")
 
 
 def validate_mmd_bundle(path, *, limits: BundleLimits = BundleLimits(),

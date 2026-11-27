@@ -754,7 +754,8 @@ def _legacy_source_was_already_imported(
     if str(root_state.get("last_migration_source") or "") != str(source_root):
         return False
     last_result = str(root_state.get("last_migration_result") or "")
-    return last_result.startswith("legacy_root_")
+    # Older builds could persist a deferred result with the same prefix.
+    return last_result in {"legacy_root_imported", "legacy_root_repaired_target"}
 
 
 def _root_has_staged_cloudsave_snapshot(root: Path) -> bool:
