@@ -20,8 +20,8 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     if model_type == "live2d":
         page.add_style_tag(path=str(ROOT / "static/css/yui-guide.css"))
         page.evaluate("""() => {
-            document.body.classList.add('yui-guide-return-petal-fade');
-            document.body.style.setProperty('--yui-guide-return-avatar-opacity', '1');
+            document.body.classList.add('yui-guide-live2d-preparing', 'yui-guide-return-petal-fade');
+            document.body.style.setProperty('--yui-guide-return-avatar-opacity', '0');
         }""")
     page.evaluate(
         """() => {
@@ -53,6 +53,9 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     if model_type == "live2d":
         page.add_script_tag(path=str(ROOT / "static/tutorial/core/universal-manager.js"))
         page.evaluate("UniversalTutorialManager.prototype.restoreTutorialLive2dDisplayState.call({}, 'pending-form-test')")
+        assert not page.locator('body').evaluate("el => el.classList.contains('yui-guide-live2d-preparing')")
+        assert not page.locator('body').evaluate("el => el.classList.contains('yui-guide-return-petal-fade')")
+        assert page.locator('body').evaluate("el => el.style.getPropertyValue('--yui-guide-return-avatar-opacity')") == ""
     assert container.evaluate("el => getComputedStyle(el).opacity") == "0"
     assert container.locator("canvas").evaluate("el => getComputedStyle(el).opacity") == "1"
     assert container.locator("canvas").evaluate(
@@ -68,6 +71,29 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     if model_type == "live2d":
         page.evaluate("UniversalTutorialManager.prototype.restoreTutorialLive2dDisplayState.call({}, 'form-ready-test')")
         assert container.evaluate("el => getComputedStyle(el).opacity") == "1"
+
+
+def test_instant_cat_return_blocks_child_hits_until_explicit_recovery(page):
+    page.set_content('''<div id="cat-container" style="position:fixed;left:20px;top:20px;width:80px;height:80px;pointer-events:auto">
+        <button style="width:80px;height:80px;pointer-events:auto">Return</button></div>''')
+    page.evaluate('''() => {
+        window.appUi = {};
+        window.__appUiParts = { nekoModelCatTransitionToken: 0 };
+        window.nekoPetPowerSave = { isEnabled: () => true, prepareFormChange: async () => true };
+    }''')
+    page.add_script_tag(path=str(ROOT / "static/app/app-ui/return-transitions.js"))
+    page.evaluate('''async () => {
+        const I = window.__appUiParts;
+        I.getPendingModelViewportRestoreBounds = () => null;
+        I.isNativeReturnBallViewportSize = () => false;
+        I.scheduleIdleReturnBallDesktopBridge = () => {};
+        await I.playNekoModelCatTransition({ direction:'cat-to-model', container:document.getElementById('cat-container') });
+    }''')
+    assert page.evaluate("!document.elementFromPoint(50, 50).closest('#cat-container')")
+    page.evaluate("window.__appUiParts.revealReturnBallContainer(document.getElementById('cat-container'), 'aborted-return')")
+    assert page.evaluate("document.elementFromPoint(50, 50).tagName") == 'BUTTON'
+    assert page.locator('#cat-container').evaluate("el => getComputedStyle(el).opacity") == '1'
+    assert page.locator('#cat-container').evaluate("el => el.style.transition") == ''
 
 
 @pytest.mark.parametrize("model_type,display_path", [

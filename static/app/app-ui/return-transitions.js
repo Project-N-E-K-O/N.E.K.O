@@ -99,6 +99,13 @@
             clearTimeout(window._nekoModelReturnEnterTimer);
             window._nekoModelReturnEnterTimer = null;
         }
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.getAttribute === 'function'
+            && container.getAttribute('data-neko-model-form-pending') === 'true') {
+            container.style.removeProperty('opacity');
+            container.style.removeProperty('transition');
+            container.style.removeProperty('transform');
+        }
         resolveModelReturnEnter(reason);
     };
 
@@ -763,7 +770,11 @@
             container.setAttribute('data-neko-model-form-pending', 'true');
             I.prepareModelCatForm('model').then(() => {
                 if (window._nekoModelReturnEnterPromise !== enterPromise) return;
-                if (container.isConnected) container.style.removeProperty('opacity');
+                if (container.isConnected) {
+                    // 教程保活等清理可能移除内联 transition；揭示前重新禁止淡入。
+                    container.style.transition = 'none';
+                    container.style.removeProperty('opacity');
+                }
                 resolveModelReturnEnter('power-save');
                 if (container.isConnected) {
                     // 先提交无动画的最终样式，再交还 hover/锁定淡化等既有 CSS。
@@ -998,6 +1009,7 @@
                 container.style.transition = 'none';
                 container.style.opacity = '0';
                 container.style.visibility = 'hidden';
+                container.style.pointerEvents = 'none';
             }
             const ready = direction === 'model-to-cat' ? I.prepareModelCatForm('cat') : Promise.resolve();
             return ready.then(() => {
@@ -1009,7 +1021,9 @@
                 return { completed: true, direction, animationSkipped: true };
             }).finally(() => {
                 if (container && direction === 'cat-to-model' && isNekoModelCatTransitionTokenCurrent(token)) {
-                    container.style.removeProperty('visibility');
+                    // 等统一 hide/reveal 恢复可见性，避免透明子按钮仍可点击或拖拽。
+                    container.style.removeProperty('opacity');
+                    container.style.removeProperty('transition');
                 }
                 I.releaseNekoModelCatTransition(token);
             });

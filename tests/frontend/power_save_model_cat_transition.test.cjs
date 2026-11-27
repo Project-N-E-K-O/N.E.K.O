@@ -132,6 +132,26 @@ for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
         assert.equal(model.style.opacity, '0');
         assert.equal(h.window._nekoModelReturnEnterPromise, null);
     });
+
+    test(`${type}: replacing a pending entrance releases the old model styles`, async () => {
+        const h = harness();
+        const oldModel = h.element(type);
+        const nextModel = h.element('replacement');
+        h.I.playModelReturnEnter(oldModel, null);
+        const oldEntrance = h.window._nekoModelReturnEnterPromise;
+        h.I.playModelReturnEnter(nextModel, null);
+        const nextEntrance = h.window._nekoModelReturnEnterPromise;
+        await oldEntrance;
+        assert.equal(oldModel.getAttribute('data-neko-model-form-pending'), undefined);
+        assert.equal(oldModel.style.opacity, undefined);
+        assert.equal(oldModel.style.transition, undefined);
+        assert.equal(oldModel.style.transform, undefined);
+        assert.equal(nextModel.getAttribute('data-neko-model-form-pending'), 'true');
+        assert.equal(nextModel.style.opacity, '0');
+        h.prepare(true);
+        await nextEntrance;
+        assert.equal(nextModel.getAttribute('data-neko-model-form-pending'), undefined);
+    });
 }
 
 test('a stalled form bridge cannot leave the model return hidden indefinitely', { timeout: 1000 }, async () => {
@@ -167,12 +187,20 @@ test('an instant cleanup callback failure releases the transition token', async 
     assert.equal(h.I.isNekoModelCatTransitionActive(), false);
 });
 
-test('instant cat-to-model cleanup restores the return container visibility property', async () => {
+test('instant cat-to-model cleanup keeps the cat hidden until hide or recovery', async () => {
     const h = harness();
     const cat = h.element('cat');
     await h.I.playNekoModelCatTransition({ direction: 'cat-to-model', container: cat });
-    assert.equal(cat.style.visibility, undefined);
+    assert.equal(cat.style.visibility, 'hidden');
+    assert.equal(cat.style.pointerEvents, 'none');
+    assert.equal(cat.style.opacity, undefined);
+    assert.equal(cat.style.transition, undefined);
     assert.equal(h.I.isNekoModelCatTransitionActive(), false);
+    h.I.scheduleIdleReturnBallDesktopBridge = () => {};
+    h.I.revealReturnBallContainer(cat, 'aborted-return');
+    assert.equal(cat.style.visibility, 'visible');
+    assert.equal(cat.style.pointerEvents, 'auto');
+    assert.equal(cat.style.opacity, '1');
 });
 
 test('return preparation ignores inactive model containers hidden by stylesheets', async () => {
