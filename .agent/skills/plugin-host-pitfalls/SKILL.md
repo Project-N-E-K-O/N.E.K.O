@@ -39,7 +39,7 @@ description: 改插件宿主和插件框架（`plugin/core`、`plugin/server`、
 
 ## 测试和 CI 覆盖到哪
 
-- `plugin/**` 有改动且 PR 的目标分支是 `main` 时，`.github/workflows/plugin-tests.yml` 在 Windows（`uv run pytest plugin/tests -q`，串行）和 Linux（`uv run pytest plugin/tests -n auto --dist loadfile`）上各跑一遍整个 `plugin/tests`。目标分支不是 `main` 的 PR 不会自动跑，要手动触发：`gh workflow run plugin-tests.yml --ref <分支>`。
+- `plugin/**` 有改动且 PR 的目标分支是 `main` 时，`.github/workflows/plugin-tests.yml` 在 Windows（`uv run pytest plugin/tests -n 4 --dist loadfile`，临时目录在 runner 工作盘）和 Linux（`uv run pytest plugin/tests -n auto --dist loadfile`）上各跑一遍整个 `plugin/tests`。目标分支不是 `main` 的 PR 不会自动跑，要手动触发：`gh workflow run plugin-tests.yml --ref <分支>`。
 - `frontend/plugin-manager` 的 vitest（`npm run test:unit`）、类型检查（`npm run type-check`）和启动 e2e（`npm run test:boot:e2e`）在 `.github/workflows/unit-tests.yml` 里。
 - ⚠️ 这几条**没有任何 workflow 会跑**，改了相关代码要自己在本地跑：`npm run check-hosted-tsx`、`npm run test:hosted-script`、`npm run test:hosted:e2e`、`scripts/check-hosted-ui.sh`。
 - plugin-manager 的 `vite.config.ts` 在 `VITEST === 'true'` 时关掉 Element Plus 组件自动导入。原因：自动导入会把模板里的 `<el-tabs>` 编译成显式 import，绕过测试里用 `app.component()` 注册的全局桩。别在测试环境把它打开。
