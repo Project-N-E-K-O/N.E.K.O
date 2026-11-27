@@ -1509,6 +1509,9 @@ async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where
          "stop the one about cats or dogs", {}),
         (_waiting("c1", "alpha", {"kind": "report", "question": "What time?", "details": "Two tables are free."}),
          "stop the tables one", {}),
+        # (Read as written, not as quoted for the list: a word after a line break is a word.)
+        (_waiting("c1", "alpha", {"kind": "question", "question": "Choose a\nmonth.", "id": "q1"}),
+         "stop the month one", {}),
         (commission("c1", "alpha", route="task_agent"), "stop compressing the photos", {"children": [member]}),
         (commission("c1", "alpha", route="task_agent"), "stop the images cat", {"children": [member]}),
     ]

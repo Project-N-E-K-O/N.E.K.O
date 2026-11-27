@@ -784,8 +784,10 @@ def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
             # As the list shows it (``_asked``): the command or path a request
             # for approval asks about, each question one put together asks
             # and the answers they offer, a report's details (Greptile, first
-            # round: "stop the npm install one").
-            found.append(_asked(item)[1])
+            # round: "stop the npm install one"). Unquoted first: a line break
+            # quoted is "\n", which would join the word after it (CodeRabbit,
+            # second round).
+            found.append(json.loads(_asked(item)[1]))
         return found
 
     for item in items:
