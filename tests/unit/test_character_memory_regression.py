@@ -6441,6 +6441,74 @@ async def test_synced_delete_cancel_during_restore_finishes_restore_then_propaga
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_current_rename_notifies_page_that_connects_during_finalize_when_none_were_connected(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    old_manager = SimpleNamespace(websocket=None, is_active=False, session=None)
+    watcher_manager = SimpleNamespace(websocket=None, is_active=False, session=None)
+    late_socket = SimpleNamespace(send_text=AsyncMock())
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch('utils.config_manager._config_manager', cm):
+        init_shared_state(
+            role_state=_make_role_state_for_test({'Old': old_manager, 'Watcher': watcher_manager}),
+            steamworks=None, templates=None, config_manager=cm,
+            initialize_character_data=_noop, switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop, remove_one_catgirl=_noop,
+        )
+        from main_routers.characters_router import crud
+        crud = reload_module('main_routers.characters_router.crud')
+
+        chars = cm.load_characters()
+        chars.setdefault('猫娘', {})['Old'] = {
+            '昵称': 'Old', '_reserved': {'character_id': 'character_' + 'a' * 32},
+        }
+        chars['猫娘']['Watcher'] = {
+            '昵称': 'Watcher', '_reserved': {'character_id': 'character_' + 'b' * 32},
+        }
+        chars['当前猫娘'] = 'Old'
+        cm.save_characters(chars, bypass_write_fence=True)
+        recent = Path(cm.memory_dir) / 'Old' / 'recent.json'
+        recent.parent.mkdir(parents=True, exist_ok=True)
+        recent.write_text('[]', encoding='utf-8')
+
+        monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+        monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'Old')
+        finalize_entered = asyncio.Event()
+        release_finalize = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def finalize_success(_result):
+            loop.call_soon_threadsafe(finalize_entered.set)
+            if not release_finalize.wait(8):
+                raise TimeoutError('release rename finalize')
+            return None
+
+        with (
+            patch.object(crud, 'release_memory_server_character', AsyncMock(return_value=True)),
+            patch.object(crud, 'notify_memory_server_reload', AsyncMock(return_value=True)),
+            patch.object(crud, 'finalize_character_recent_rename', side_effect=finalize_success),
+        ):
+            rename = asyncio.create_task(
+                crud.rename_catgirl('Old', _DummyRequest({'new_name': 'New'}))
+            )
+            await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+            watcher_manager.websocket = late_socket
+            release_finalize.set()
+            response = await asyncio.wait_for(rename, timeout=5)
+
+        assert response['success'] is True
+        late_socket.send_text.assert_awaited_once()
+        frame = json.loads(late_socket.send_text.await_args.args[0])
+        assert (frame['old_catgirl'], frame['new_catgirl']) == ('Old', 'New')
+        assert frame['switch_revision'] == crud._catgirl_switch_revision > 71
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_synced_delete_publishes_surviving_authority_when_inner_config_restore_fails(tmp_path, monkeypatch):
     from main_routers.characters_router import crud
 

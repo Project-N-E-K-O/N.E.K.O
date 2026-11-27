@@ -1976,7 +1976,7 @@ async def _rename_catgirl_transaction(
     # Notify all open character pages only after the rename is durable. This
     # matches ordinary switch/delete delivery so every page advances the same
     # revision high-water instead of waiting for a later poll.
-    if memory_server_reloaded and rename_notification_sockets and switch_revision:
+    if memory_server_reloaded and switch_revision:
         try:
             _, notify_cancelled = await _await_coroutine_to_completion(notify_committed_rename())
             logger.info("已广播角色重命名通知: %s -> %s", old_name, new_name)
