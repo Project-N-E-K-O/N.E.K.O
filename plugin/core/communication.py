@@ -1110,10 +1110,11 @@ class PluginCommunicationResourceManager:
             except RemoteToolError as exc:
                 if exc.code != "plugin_stopped":
                     raise
-                # Expected race with plugin stop; the host already withdrew it.
+                # Expected race with plugin stop; the message says whether
+                # the host's withdrawal was confirmed.
                 self.logger.info(
-                    "LLM tool register dropped, plugin stopped meanwhile: plugin={} name={}",
-                    self.plugin_id, fields["name"],
+                    "LLM tool register dropped, plugin stopped meanwhile: plugin={} name={}: {}",
+                    self.plugin_id, fields["name"], str(exc),
                 )
                 return
             self.logger.info(

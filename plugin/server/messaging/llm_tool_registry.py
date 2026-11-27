@@ -288,6 +288,10 @@ class RemoteToolError(RuntimeError):
     * ``"timeout"`` -- the answer is not a JSON object: main_server may have
       applied the change, so the outcome is unknown (the SDK then cleans up
       after a register, as for a timeout).
+    * ``"plugin_stopped"`` -- register: the plugin was stopped meanwhile;
+      nothing is tracked, and anything main_server may have stored was
+      withdrawn by registration id on a best-effort basis (the message says
+      whether the withdrawal was confirmed). ``body`` is empty once withdrawn.
 
     ``body`` is the parsed JSON body when there is one, so callers can report
     the per-role outcome instead of a flattened message. Subclasses
@@ -559,14 +563,20 @@ async def _withdraw_after_stop(
     ))
     if interrupted:
         raise asyncio.CancelledError() from cause
+    withdrawn = task.result()
     outcome = (
-        "the registration was withdrawn" if task.result()
-        else "withdrawing the registration failed; it may remain until the plugin's next cleanup"
+        "the registration was withdrawn" if withdrawn
+        # Also reached when nothing was stored (e.g. main_server unreachable),
+        # so don't claim that something remains.
+        else "its withdrawal could not be confirmed; if main_server stored it,"
+        " it may remain until the plugin's next cleanup"
     )
     raise RemoteToolError(
         f"plugin '{plugin_id}' was stopped while '{name}' was being registered; {outcome}",
         code="plugin_stopped",
-        body=body,
+        # Once withdrawn, the roles of the register's answer no longer hold
+        # the tool: don't report them as affected.
+        body=None if withdrawn else body,
     ) from cause
 
 
