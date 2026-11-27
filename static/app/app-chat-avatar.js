@@ -772,6 +772,12 @@
         }
     }
 
+    function publishPreview(preview) {
+        if (preview.displayOnly) return;
+        saveToStorage(preview);
+        syncAvatarToCardDrop(preview.dataUrl);
+    }
+
     function applyPreviewResult(result, cacheKey, captureRevision) {
         if (
             !cacheKey ||
@@ -788,8 +794,7 @@
             modelType: result.modelType || getCurrentModelType(),
             capturedAt: Date.now()
         };
-        saveToStorage(cachedPreview);
-        syncAvatarToCardDrop(cachedPreview.dataUrl);
+        publishPreview(cachedPreview);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -1492,7 +1497,7 @@
             return;
         }
         if (hasUsableCachedPreview()) {
-            scheduleCharacterReferenceSync(reason || 'cached-preview');
+            if (!cachedPreview.displayOnly) scheduleCharacterReferenceSync(reason || 'cached-preview');
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
@@ -1528,7 +1533,7 @@
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
             // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            if (!cachedPreview.displayOnly) syncAvatarToCardDrop(cachedPreview.dataUrl);
             return;
         }
         // 头像捕获失败或尚未完成时，也先同步已知角色名，避免社区卡片流程
@@ -1677,11 +1682,10 @@
         //   3) 都没有，则进入等待态。
         var stored = loadFromStorage();
         if (cachedPreview && cachedPreview.dataUrl) {
-            // 保留内存缓存；刷新 cacheKey 并补写一次 localStorage
-            // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
+            // Refresh the cache key once the model configuration is ready.
+            // A display-only IPC portrait must stay in memory after init too.
             cachedPreview.cacheKey = getCurrentModelCacheKey();
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            publishPreview(cachedPreview);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1852,12 +1856,10 @@
                 cacheKey: getCurrentModelCacheKey(),
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
-                capturedAt: Date.now()
+                capturedAt: Date.now(),
+                displayOnly,
             };
-            if (!displayOnly) {
-                saveToStorage(cachedPreview);
-                syncAvatarToCardDrop(cachedPreview.dataUrl);
-            }
+            publishPreview(cachedPreview);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
@@ -1916,26 +1918,8 @@
     mod.restoreModelAvatar = function () { return window.appChatAvatarEditor.restore(); };
     mod.getCustomEditState = function () { return window.appChatAvatarEditor.getState(); };
 
-    mod.consumePendingIpcAvatar = function () {
-        const avatar = window.__nekoPendingAvatar;
-        if (!avatar) return;
-        if (!avatar.identity?.name) {
-            delete window.__nekoPendingAvatar;
-            return;
-        }
-        // Only a successful publisher retires another role's portrait.
-        // The module may arrive before its queued switch commits.
-        if (avatar.identity.name !== window.lanlan_config?.lanlan_name) return;
-        delete window.__nekoPendingAvatar;
-        try {
-            mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
-        } catch (error) {
-            console.warn('[chat-avatar] Could not restore the pending IPC avatar:', error);
-        }
-    };
-
     window.appChatAvatar = mod;
-    mod.consumePendingIpcAvatar();
+    window.restorePendingIpcAvatar?.();
     if (window.__nekoPendingTutorialChatIdentity) {
         if (window.__nekoPendingTutorialChatIdentity.active) {
             mod.setTutorialAvatarOverride(

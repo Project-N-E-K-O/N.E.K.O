@@ -109,19 +109,44 @@ function latestPageSwitchRevision() {
 // A named preview can publish revision zero without erasing an earlier committed receipt.
 window.getPageSwitchRevision = latestPageSwitchRevision;
 
-function reconcilePendingIpcAvatar(name, revision) {
+// Avatar eligibility follows the applied identity, not the receipt high-water
+// (which can already include a queued or failed switch).
+let pageAvatarIdentity = null;
+function applyReadyPendingIpcAvatar(retireUnversioned = false) {
     const avatar = window.__nekoPendingAvatar;
     if (!avatar) return;
     const identity = avatar.identity;
-    // An intermediate commit does not own a portrait for a newer receipt.
-    if (identity?.name && identity.revision > revision) return;
-    if (!identity?.name || identity.name !== name || identity.revision < revision) {
+    if (identity?.name && (!pageAvatarIdentity || identity.revision > pageAvatarIdentity.revision)) return;
+    // Unversioned Guide relay data can fill the same displayed identity, but
+    // cannot survive an authoritative change. Positive stamps must match exactly.
+    if (!identity?.name || identity.name !== pageAvatarIdentity.name
+        || (identity.revision < pageAvatarIdentity.revision && (identity.revision || retireUnversioned))) {
         delete window.__nekoPendingAvatar;
         return;
     }
-    window.appChatAvatar?.consumePendingIpcAvatar?.();
+    const target = window.appChatAvatar;
+    if (typeof target?.setExternalAvatar !== 'function') return;
+    delete window.__nekoPendingAvatar;
+    return target.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
+}
+
+async function restorePendingIpcAvatar(retireUnversioned = false) {
+    try { await applyReadyPendingIpcAvatar(retireUnversioned); }
+    catch (error) { console.warn('[chat-avatar] Could not restore the pending IPC avatar:', error); }
+}
+
+function reconcilePendingIpcAvatar(name, revision) {
+    const previous = pageAvatarIdentity;
+    // A revision-zero snapshot in a pinned preview still confirms the preview's
+    // already accepted portrait identity, not a change of the current character.
+    if (!revision && previous?.name === name && explicitPageCharacterName() === name) {
+        revision = previous.revision;
+    }
+    pageAvatarIdentity = { name, revision };
+    restorePendingIpcAvatar(previous?.name !== name || previous?.revision !== revision);
 }
 window.reconcilePendingIpcAvatar = reconcilePendingIpcAvatar;
+window.restorePendingIpcAvatar = restorePendingIpcAvatar;
 
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
@@ -537,18 +562,14 @@ function startMultiWindowPageConfigLoad() {
             }, typeof delay === 'number' ? delay : 0);
         }
         async function applyInjectedAvatar(detail, revision, options) {
-            if (!detail.avatarDataUrl) return;
-            const modelType = detail.avatarModelType || '';
-            if (typeof window.appChatAvatar?.setExternalAvatar === 'function') {
-                await window.appChatAvatar.setExternalAvatar(detail.avatarDataUrl, modelType, options);
-            } else {
-                window.__nekoPendingAvatar = {
-                    dataUrl: detail.avatarDataUrl,
-                    modelType,
-                    identity: { name: detail.lanlan_name, revision },
-                    ...options,
-                };
-            }
+            if (!detail.avatarDataUrl || !detail.lanlan_name || window.__nekoPendingAvatar?.identity?.revision > revision) return;
+            window.__nekoPendingAvatar = {
+                dataUrl: detail.avatarDataUrl,
+                modelType: detail.avatarModelType || '',
+                identity: { name: detail.lanlan_name, revision },
+                ...options,
+            };
+            await applyReadyPendingIpcAvatar();
         }
         async function loadMatchingPageConfig(name, revision, pinned = false, injected = null) {
             const priorHighWater = latestPageSwitchRevision();
@@ -581,6 +602,7 @@ function startMultiWindowPageConfigLoad() {
                 && (!priorHighWater || revision >= priorHighWater)) {
                 lanlan_config.lanlan_name = name;
                 lanlan_config.switch_revision = revision;
+                reconcilePendingIpcAvatar(name, revision);
                 document.title = name + ' Terminal - Project N.E.K.O.';
             }
             rememberPageSwitchRevision(revision);
@@ -645,6 +667,7 @@ function startMultiWindowPageConfigLoad() {
                 && (!priorHighWater || switchRevision >= priorHighWater)) {
                 lanlan_config.lanlan_name = d.lanlan_name || '';
                 lanlan_config.switch_revision = switchRevision;
+                reconcilePendingIpcAvatar(lanlan_config.lanlan_name, switchRevision);
             }
             rememberPageSwitchRevision(switchRevision);
             if (!/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '')) {
