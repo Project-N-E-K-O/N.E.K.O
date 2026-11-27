@@ -123,6 +123,11 @@ _USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S = 0.75
 _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S = 8.0
 _USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S = 12.0
 _USER_PLUGIN_EMPTY_CONFIRMATIONS = 3
+# What the task that brings the plugins up answers when it is not the one to say (``_bg_plugin_enable``):
+# a newer toggle took its generation over, or the plugin server did not answer in time. A task agent that
+# asked for the plugins reads these (``nekopower_mount``): the first is followed to the newer task.
+PLUGIN_ENABLE_SUPERSEDED = "plugin state changed while starting"
+PLUGIN_ENABLE_UNAVAILABLE = "the plugin server did not respond in time"
 
 
 async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
@@ -404,7 +409,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         should_start=_may_start_generation
                     )
                     if not _owns_generation():
-                        return False, "plugin state changed while starting"
+                        return False, PLUGIN_ENABLE_SUPERSEDED
                     if not Modules.analyzer_enabled:
                         return False, "NekoPower is switched off"
                     if not started:
@@ -415,7 +420,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
                     registry = await _check_user_plugin_registry_readiness()
                     if not _owns_generation():
-                        return False, "plugin state changed while starting"
+                        return False, PLUGIN_ENABLE_SUPERSEDED
 
                     registry_status = registry.get("status")
                     if registry_status == "empty":
@@ -449,7 +454,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                             registry.get("last_error", "unknown"),
                         )
-                        return False, "the plugin server did not respond in time"
+                        return False, PLUGIN_ENABLE_UNAVAILABLE
                 except Exception as exc:
                     if _owns_generation():
                         _put_switch_off("user_plugin_enabled")
@@ -463,6 +468,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
             _bg = asyncio.create_task(_bg_plugin_enable())
             Modules.user_plugin_enable_task = _bg
+            # Handed to whoever asked for it before anything is awaited again: the global may be
+            # another task by the time this call returns (a task agent that asked for the plugins
+            # waits for the one its own call made).
+            on_plugin_task = (payload or {}).get("_on_plugin_task")
+            if callable(on_plugin_task):
+                on_plugin_task(_bg)
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:  # Disabling UserPlugin — non-blocking

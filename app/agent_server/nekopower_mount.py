@@ -471,6 +471,16 @@ class _HostCapabilityEnabler:
             return False, str((availability.get("reasons") or ["unavailable"])[0])
         return False, f"unknown capability {capability}"
 
+    def may_request(self, capability: str) -> bool:
+        """Whether a task agent may be told it can ask for this one here; nothing is looked at that takes time.
+
+        Not the keyboard and mouse where the user has to share the screen at the panel first: asking
+        would only end in a refusal.
+        """
+        if capability == "keyboard_mouse":
+            return not _screen_capture_needs_the_user()
+        return capability in ("browser", "plugins")
+
     async def enable(self, capability: str, *, lanlan_name: Optional[str] = None) -> tuple[bool, str]:
         if not _shared.Modules.analyzer_enabled:
             return False, "NekoPower is switched off"
@@ -484,24 +494,84 @@ class _HostCapabilityEnabler:
             ready, reason = _state(capability)
             return (True, "") if ready else (False, reason or "not ready")
         if capability == "plugins":
-            await set_agent_flags({"user_plugin_enabled": True, "lanlan_name": lanlan_name, "_persist_intent": False})
-            starting = _shared.Modules.user_plugin_enable_task
-            if starting is not None and not starting.done():
-                await asyncio.wait({starting}, timeout=_PLUGIN_ENABLE_WAIT_SECONDS)
-                if not starting.done():
-                    return False, "the plugins are still starting; try again in a moment"
-            if starting is not None and starting.done() and not starting.cancelled() and starting.exception() is None:
-                outcome = starting.result()
-                if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
-                    return False, str(outcome[1] or "the plugin server did not come up")
-            if not (_shared.Modules.agent_flags or {}).get("user_plugin_enabled", False):
-                return False, "no plugin could be started (none installed, or the plugin server did not come up)"
-            from nekopower.host import mount
+            return await self._enable_plugins(lanlan_name)
+        return False, f"unknown capability {capability}"
 
-            # The host's plugin list is fetched again at once.
+    async def _enable_plugins(self, lanlan_name: Optional[str]) -> tuple[bool, str]:
+        """Turn the plugins on, or wait for the start that is under way, and say whether they came up.
+
+        A start under way is shared, not started over: another ``set_agent_flags`` would end it
+        (``PLUGIN_ENABLE_SUPERSEDED``) and the first to ask would be told it failed. The task waited
+        for is the one the switch's own call made (``_on_plugin_task``), not whatever the global
+        holds after that call awaited; and one that was ended by a newer start, with the switch
+        still on, is followed to that one, within the same time.
+        """
+        from nekopower.host import mount
+
+        from .api_routes import PLUGIN_ENABLE_SUPERSEDED, set_agent_flags
+
+        modules = _shared.Modules
+
+        def switch_on() -> bool:
+            return bool(modules.analyzer_enabled and (modules.agent_flags or {}).get("user_plugin_enabled", False))
+
+        def finished(task: Any) -> Any:
+            if task is None or not task.done() or task.cancelled() or task.exception() is not None:
+                return None
+            return task.result()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _PLUGIN_ENABLE_WAIT_SECONDS
+        existing = modules.user_plugin_enable_task
+        if switch_on() and existing is not None and not existing.done():
+            starting = existing
+        elif switch_on() and (existing is None or finished(existing) == (True, "")):
+            # On and up already (the user's own switch): nothing to start.
             mount.notify_plugins_changed()
             return True, ""
-        return False, f"unknown capability {capability}"
+        else:
+            made: list[Any] = []
+            await set_agent_flags(
+                {
+                    "user_plugin_enabled": True,
+                    "lanlan_name": lanlan_name,
+                    "_persist_intent": False,
+                    "_on_plugin_task": made.append,
+                }
+            )
+            starting = made[-1] if made else modules.user_plugin_enable_task
+        seen: set[int] = set()
+        while True:
+            seen.add(id(starting))
+            if starting is not None and not starting.done():
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.wait({starting}, timeout=remaining)
+                if not starting.done():
+                    return False, "the plugins are still starting; try again in a moment"
+            replacement = modules.user_plugin_enable_task
+            can_follow = switch_on() and replacement is not None and id(replacement) not in seen
+            if starting is not None and starting.cancelled():
+                # Ended by a newer toggle's own cleanup, or by shutdown: followed if a newer start is there.
+                if can_follow:
+                    starting = replacement
+                    continue
+                return False, "starting the plugin server was cancelled"
+            if starting is not None and starting.exception() is not None:
+                return False, "starting the plugin server failed"
+            outcome = finished(starting)
+            if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
+                reason = str(outcome[1] or "the plugin server did not come up")
+                if reason == PLUGIN_ENABLE_SUPERSEDED and can_follow:
+                    starting = replacement
+                    continue
+                return False, reason
+            break
+        if not switch_on():
+            return False, "no plugin could be started (none installed, or the plugin server did not come up)"
+        # The host's plugin list is fetched again at once.
+        mount.notify_plugins_changed()
+        return True, ""
 
 
 def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> None:
