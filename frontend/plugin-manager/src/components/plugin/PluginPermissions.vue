@@ -99,6 +99,7 @@
                   :loading="busy === row.permission"
                   :disabled="busy !== null"
                   :data-test="`switch-${row.permission}`"
+                  :aria-label="label(row.permission)"
                   @update:model-value="(on: string | number | boolean) => toggle(row, Boolean(on))"
                 />
               </div>
@@ -526,6 +527,7 @@ const RowFacts = defineComponent({
               {
                 value: row.condition ?? 'in_use',
                 disabled: lock !== null || busy.value !== null,
+                'aria-label': `${label(row.permission)} · ${t('pluginConsent.tab.condition.label')}`,
                 'data-test': `condition-select-${row.permission}`,
                 onChange: (event: Event) =>
                   decide(row, 'granted', (event.target as HTMLSelectElement).value as PermissionCondition),
