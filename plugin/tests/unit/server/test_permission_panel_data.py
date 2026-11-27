@@ -2601,3 +2601,34 @@ def test_a_gap_stops_mattering_after_thirty_days(tmp_path):
     }), encoding="utf-8")
     assert index.last_use_since() == NOW - timedelta(days=31)
     assert index.last_use_covers_days(30) is True
+
+
+def test_a_gap_is_saved_before_the_rotation_goes_on(env, monkeypatch):
+    """Read fails at the first rotation, the unread backup is deleted by it,
+    and the process dies before any other save: the gap is on disk already."""
+    import logging
+
+    now = datetime.now(timezone.utc)
+    _summary_with_an_old_use(env, now)
+    directory = env.tmp_path / "audit"
+    backup = directory / "call_audit.jsonl.1"
+    backup.write_text(json.dumps(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat())) + "\n",
+                      encoding="utf-8")
+    base = directory / "call_audit.jsonl"
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    restore = _unreadable(monkeypatch, backup, "open")
+    first = _rebuilt(env)
+    call_audit.add_rollover_observer(first.ensure_seeded)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, "{}", None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(first.ensure_seeded)
+        restore()
+    assert "weather" not in backup.read_text(encoding="utf-8")  # the unread backup is gone
+    # No other save: as after a crash here.
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is None
+    assert index.last_use_since() == first._created

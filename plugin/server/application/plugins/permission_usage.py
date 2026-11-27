@@ -466,6 +466,10 @@ class UsageIndex:
                     if self._gap_at is None or self._created > self._gap_at:
                         self._gap_at = self._created
                         self._dirty = True
+                # Saved now, before a rotation waiting on this read goes on
+                # (it may delete the unread file): a crash right after must
+                # not leave the old summary vouching for the gap.
+                self.save_summary()
             # Not read again in this run (a file read in part would count
             # twice, and the files may have rotated since); the next start
             # reads them again.
