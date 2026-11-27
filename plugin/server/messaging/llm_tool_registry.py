@@ -731,8 +731,9 @@ async def unregister_remote_tool(
     after this call.
 
     Cancelled after the request was sent, it sends the same unregister once
-    more (still under the lock) and updates tracking from that answer before
-    the cancellation propagates. If the retry fails too, tracking is kept:
+    more (still under the lock), aimed at a registration id (the expected
+    one, else the tracked one; no retry without either), and updates
+    tracking from that answer before the cancellation propagates. If the retry fails too, tracking is kept:
     a tracked tool main_server no longer holds is harmless, while an
     untracked one it still holds would fail every model call.
     """
@@ -807,11 +808,30 @@ async def _unregister_remote_tool_locked(
 async def _retry_cancelled_unregister(
     *, plugin_id: str, name: str, role: Optional[str], expected_registration_id: Optional[str],
 ) -> None:
+    drop_tracking_only_of: Optional[str] = None
+    if expected_registration_id is None:
+        # The retry is bounded, so main_server may still be applying it after
+        # the name lock is released. Unfiltered, it could then remove a later
+        # registration of the name; aim it at the registration the host
+        # tracks instead. Without one, nothing here routes to the tool, so
+        # leave it to the request already sent.
+        async with _lock:
+            tracked = _plugin_tools.get(plugin_id, {}).get(name)
+            expected_registration_id = (tracked or {}).get("registration_id") or None
+        if expected_registration_id is None:
+            logger.warning(
+                "unregister_remote_tool cancelled after it was sent; no tracked registration id, "
+                "not retried: plugin_id={}, name={}",
+                plugin_id, name,
+            )
+            return
+        drop_tracking_only_of = expected_registration_id
     try:
         await _unregister_remote_tool_locked(
             plugin_id=plugin_id, name=name, role=role,
             expected_registration_id=expected_registration_id,
             request_timeout=_RECONCILE_TIMEOUT_SECONDS, reconcile_on_cancel=False,
+            drop_tracking_only_of=drop_tracking_only_of,
         )
     except Exception as exc:
         logger.warning(

@@ -2769,7 +2769,8 @@ async def test_unregister_cancelled_and_retry_failed_keeps_tracking(monkeypatch,
 
     from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
 
-    await _seed_tracking(registry)
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 12.0, "registration_id": "reg-1"}
     server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
     task = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
     await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
@@ -2780,6 +2781,35 @@ async def test_unregister_cancelled_and_retry_failed_keeps_tracking(monkeypatch,
 
     assert server.ops() == ["unregister", "unregister"]
     assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked_id", ["reg-1", None])
+async def test_unfiltered_unregister_cancelled_after_sending_retries_only_by_id(monkeypatch, registry, tracked_id):
+    """A bounded retry may still run at main_server after the name lock is
+    released; unfiltered it could remove a later registration of the name.
+    So it targets the tracked registration, and is skipped without one."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
+
+    entry = {"timeout_seconds": 12.0, **({"registration_id": tracked_id} if tracked_id else {})}
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = entry
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
+    task = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert "expected_registration_id" not in server.posts[0][1]  # the caller's unfiltered request
+    if tracked_id:
+        assert server.ops() == ["unregister", "unregister"]
+        assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+        assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    else:
+        assert server.ops() == ["unregister"]
+        assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}
 
 
 @pytest.mark.asyncio
