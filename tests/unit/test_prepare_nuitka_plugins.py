@@ -12,6 +12,7 @@ import pytest
 from plugin.neko_plugin_cli.core.build_rules import _DEFAULT_EXCLUDE_DIR_NAMES
 from scripts.check_nuitka_dist import (
     _MARKETPLACE_ONLY_PLUGIN_IDS,
+    _check_plugin_tool_python,
     _check_plugin_stage,
     _check_plugin_tomls,
     _plugin_manifest_id,
@@ -463,3 +464,38 @@ def test_no_bundled_plugin_ships_a_dotted_directory_besides_github() -> None:
         "dotted directories under plugin/plugins/ break `codesign --deep` on the "
         f"macOS backend bundle; add them to _DEFAULT_EXCLUDE_DIR_NAMES: {offenders}"
     )
+
+
+@pytest.mark.parametrize(
+    ("listed_version", "expect_issue"),
+    [(".".join(map(str, sys.version_info[:3])), False), ("3.0.0", True)],
+)
+def test_dist_check_requires_pinned_uv_to_list_build_python(
+    monkeypatch: pytest.MonkeyPatch, listed_version: str, expect_issue: bool,
+) -> None:
+    from plugin.server.infrastructure import plugin_tool_runtime as tools
+
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        payload = [{"implementation": "cpython", "version": listed_version}]
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    issues = _check_plugin_tool_python()
+
+    assert bool(issues) is expect_issue
+    assert calls and f"uv=={tools.pinned_uv_version()}" in calls[0]
+    assert tools.packaged_python_request() in calls[0]
+
+
+def test_dist_check_skips_python_download_check_without_uv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: pytest.fail("uv must not run"),
+    )
+
+    assert _check_plugin_tool_python() == []
