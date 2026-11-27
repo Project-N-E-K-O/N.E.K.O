@@ -25,6 +25,8 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      # test_plugin_market_workflows.py pins these reusable workflows' structure.
+      - '.github/workflows/plugin-market-*.yml'
       # The neko-plugin skill is copied into new plugin projects; its text
       # guards live in plugin/tests (test_neko_plugin_agent_guides.py).
       - '.agent/skills/neko-plugin/**'
@@ -39,6 +41,8 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      # test_plugin_market_workflows.py pins these reusable workflows' structure.
+      - '.github/workflows/plugin-market-*.yml'
       - '.agent/skills/neko-plugin/**'
       - 'pyproject.toml'
       - 'uv.lock'

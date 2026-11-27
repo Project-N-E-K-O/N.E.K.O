@@ -38,7 +38,7 @@ uv run pytest plugin/tests -q
 
 ## CI 覆盖范围
 
-- `.github/workflows/plugin-tests.yml`：Windows 上的插件测试和选定根契约。
+- `.github/workflows/plugin-tests.yml`：Linux 和 Windows 上的完整插件测试（`plugin/tests`）和选定根契约。
 - `.github/workflows/analyze.yml`：Ruff 与项目专用静态契约。
 - `.github/workflows/docs.yml`：`npm ci` 和 VitePress 构建。
 - 桌面与 Docker workflow 分别验证打包路径。

@@ -838,3 +838,40 @@ async def test_market_proxy_uses_runtime_user_plugin_server_port(monkeypatch, pa
     assert seen_urls == [f"http://127.0.0.1:49123{path}"]
     for name, value in upstream_headers.items():
         assert response.headers[name] == value
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_through_the_real_app_drops_content_encoding(monkeypatch):
+    # Same check as above, but through app.main_server.app and its middleware
+    # stack (host/origin guard, body limits): nothing on the way may put a
+    # Content-Encoding header back on the already-decompressed body.
+    import gzip
+
+    from app.main_server import app as main_app
+
+    real_client = httpx.AsyncClient
+    body = b'{"ok":true}'
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(body),
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+        )
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_app),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        async with client.stream("GET", "/market/encoding-probe") as response:
+            raw_body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert raw_body == body
+    assert "content-encoding" not in response.headers

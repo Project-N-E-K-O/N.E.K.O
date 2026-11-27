@@ -70,7 +70,6 @@ Keep `test_*.py` naming; split by domain folder under each level:
 - `unit/server/infrastructure/...`
 - `unit/sdk/...`
 - `integration/server/...`
-- `e2e/plugin_ui/...`
 
 This preserves pytest discovery while making ownership and review scope obvious.
 
