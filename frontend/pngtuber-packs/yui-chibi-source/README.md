@@ -40,4 +40,4 @@ node --test tests/frontend/pngtuber_tracked_animation.test.cjs tests/frontend/pn
 待机常驻缓存有512 MiB预算；当前两段共148张720×960身体帧，仅RGBA理论数据约390 MiB，另有动作和浏览器缓存。Q90压缩主要减少下载和磁盘体积，不等比例降低解码内存。
 
 
-PR #4178 联合审查修复阶段：运行包中的历史制作备注不是当前验收状态；当前进度以 PROGRESS.md 为准。资源打包的失败回滚与恢复由发布事务实现；解包回滚独立处理。
+资源打包的失败回滚与恢复由发布事务实现；解包回滚独立处理。

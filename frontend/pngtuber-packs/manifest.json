@@ -118,15 +118,15 @@
         },
         {
           "archive": "yui-chibi-007.zip",
-          "archive_sha256": "97c9371de7208982510091e5c9aa33f5f0de48feaebdb126b30998290dc9cbe5",
-          "archive_size": 940963,
+          "archive_sha256": "8a42a90e6eab0e5cff3878f2432e6586d4a8fe9b0236689cc5f4af9bb1c9c465",
+          "archive_size": 940672,
           "file_count": 64,
-          "unpacked_size": 2114302
+          "unpacked_size": 2113701
         }
       ],
-      "archive_sha256": "55e80bdc4879b4dbd2cc11057c057baf8fed8f436f27057df309cbcb842310ae",
+      "archive_sha256": "946399bda0e868b35dc960e9966e31d8d3a0219a242de6e25c4d1bc98dfca9ae",
       "file_count": 3664,
-      "unpacked_size": 281851065
+      "unpacked_size": 281850464
     }
   ]
 }

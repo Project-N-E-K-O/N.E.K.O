@@ -12,22 +12,5 @@
     "adapter": "layered_canvas_v1",
     "layered_metadata": "metadata.actions.json",
     "state_priority": "emotion"
-  },
-  "_authoring": {
-    "stage": "idle-entry-20261127-v2",
-    "actions": "actions/index.json",
-    "lipsync_ready": true,
-    "notes": "23 reviewed actions;18 speech tracks;5 leisure original mouths. User will launch and test AI replies.",
-    "resource_encoding": {
-      "body_frames": "webp_q90",
-      "method": 4,
-      "alpha_quality": 100,
-      "mouth_plates": "original_png"
-    },
-    "validation_status": {
-      "local_user_smoke_test": "positive_feedback",
-      "confirmed_date": "2026-11-27",
-      "real_visit_and_cross_platform": "not_separately_confirmed"
-    }
   }
 }

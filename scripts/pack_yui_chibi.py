@@ -50,6 +50,7 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
         (source / "metadata.actions.json").read_text(encoding="utf-8")
     )
     model = json.loads((source / "model.json").read_text(encoding="utf-8"))
+    model.pop("_authoring", None)
     authoring = packs / "yui-chibi-source"
     records = []
     # This temporary directory is owned by this invocation; never clear the source.

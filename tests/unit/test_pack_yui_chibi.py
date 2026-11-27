@@ -318,3 +318,16 @@ def test_corrupt_installed_null_track_is_rebuilt_from_valid_archive(tmp_path):
     path.write_text(json.dumps(metadata))
     unpack.unpack_model(entry, dest, tmp_path / "runtime")
     assert json.loads(path.read_text())["tracked_animations"]["0"]["playback"] == "loop"
+
+
+def test_build_removes_authoring_notes_without_modifying_the_mother_source(tmp_path):
+    src, dest = source(tmp_path), packs(tmp_path)
+    path = src / "model.json"
+    model = json.loads(path.read_text())
+    model["_authoring"] = {"notes": "historical production log"}
+    path.write_text(json.dumps(model))
+    entry = pack.build(src, dest)
+    target = unpack.unpack_model(entry, dest, tmp_path / "runtime")
+    assert "_authoring" not in json.loads((target / "model.json").read_text())
+    assert "_authoring" not in json.loads((dest / "yui-chibi-source/model.json").read_text())
+    assert json.loads(path.read_text())["_authoring"] == model["_authoring"]

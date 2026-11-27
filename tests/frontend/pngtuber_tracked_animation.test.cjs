@@ -5,9 +5,31 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../static/pngtuber-core.js'), 'utf8');
 
-function fixture() {
+function fixture({ fakeTimers = false } = {}) {
     let clock = 100, next = 0;
     const callbacks = new Map(), images = [];
+    const timers = new Map();
+    let timerId = 10000;
+    const timerSet = fakeTimers ? (fn, delay = 0) => {
+        const id = ++timerId;
+        timers.set(id, { at: clock + Math.max(0, Number(delay) || 0), fn });
+        return id;
+    } : setTimeout;
+    const timerClear = fakeTimers ? id => timers.delete(id) : clearTimeout;
+    const advance = value => {
+        if (!fakeTimers) { clock = value; return; }
+        assert.ok(value >= clock, 'the shared test clock cannot move backwards');
+        let iterations = 0;
+        while (true) {
+            const due = [...timers].filter(([, timer]) => timer.at <= value).sort((a, b) => a[1].at - b[1].at)[0];
+            if (!due) break;
+            assert.ok(++iterations < 10000, 'timer callback loop');
+            clock = due[1].at;
+            timers.delete(due[0]);
+            due[1].fn();
+        }
+        clock = value;
+    };
     class Image {
         removeAttribute() {}
         set src(value) { this.url = value; images.push(this); }
@@ -16,7 +38,7 @@ function fixture() {
     vm.runInNewContext(source, { window, document: { getElementById: () => null, body: { classList: { contains: () => false } } },
         console, Image, Date: class extends Date { static now() { return 1_000_000 + clock; } }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
         requestAnimationFrame: fn => { callbacks.set(++next, fn); return next; },
-        cancelAnimationFrame: id => callbacks.delete(id), setTimeout, clearTimeout });
+        cancelAnimationFrame: id => callbacks.delete(id), setTimeout: timerSet, clearTimeout: timerClear });
     const manager = new window.PNGTuberManager();
     manager.layeredImages = new Map([[0, { name: 'body' }], [1, { name: 'mouth' }]]);
     const metadata = { tracked_animation: { duration_ms: 2000, mouth_crop: [0, 0, 30, 20],
@@ -29,7 +51,7 @@ function fixture() {
     manager.stopTalkingHopAnimation = () => {};
     manager.syncLayeredSpeechSlot = () => {};
     manager.setState = () => {};
-    return { window, manager, metadata, context, callbacks, images, wallNow: () => 1_000_000 + clock, advance: value => { clock = value; } };
+    return { window, manager, metadata, context, callbacks, images, wallNow: () => 1_000_000 + clock, timers, advance };
 }
 
 test('rejects a discontinuous frame clock before starting playback', () => {
@@ -598,8 +620,8 @@ test('dedicated tracked drag state still takes over and returns to its home stat
     assert.equal(m.layeredStateIndex,0);assert.equal(m.layeredTransientSlots.length,0);
     assert.ok(restarts.length>=2);
 });
-function reviewedFixture() {
-    const f=fixture(),m=f.manager;
+function reviewedFixture(options = {}) {
+    const f=fixture(options),m=f.manager;
     m.isLayeredActive=()=>true;
     const clip=(playback='once')=>({duration_ms:2000,playback,width:720,height:960,mouth_crop:[0,0,1,1],mouth_renderer:'viseme_v1',lipsync:true,frames:[{time_ms:0,duration_ms:1000,image:'a.png',x:20,y:25},{time_ms:1000,duration_ms:1000,image:'b.png',x:20,y:25}]});
     const groups = {
@@ -778,8 +800,8 @@ test('reviewed pause during entry decode cancels the stale commit even after res
 
 
 // Integration regressions intentionally retain the real commit and animation-loop methods.
-function realReviewedFixture() {
-    const f = reviewedFixture(), m = f.manager;
+function realReviewedFixture(options = {}) {
+    const f = reviewedFixture(options), m = f.manager;
     delete m.setLayeredStateIndex;
     delete m.setState;
     m.drawLayeredState = () => {};
@@ -1129,11 +1151,15 @@ test('a throwing model cannot block real parent ended-event teardown', () => {
 
 
 test('a positive explicit API return delay is honored even before the clip ends', async () => {
-    const { manager: m } = realReviewedFixture();
+    const { manager: m, advance } = realReviewedFixture({ fakeTimers: true });
     m.requestReviewedState(2, { returnToDefaultAfterMs: 40 });
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 2);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    advance(139);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(140);
+    await flushReviewed();
     assert.equal(m.layeredStateIndex, 0);
     m.clearLayeredTimers();
 });
@@ -1234,11 +1260,15 @@ test('missing-analyser fallback resets a closed viseme without disturbing an act
 
 
 test('explicit return timer hands off to an accepted queued action', async () => {
-    const { manager: m } = realReviewedFixture();
+    const { manager: m, advance } = realReviewedFixture({ fakeTimers: true });
     m.requestReviewedState(2, { returnToDefaultAfterMs: 80 });
     await flushReviewed();
     m.requestReviewedState(3);
-    await new Promise(resolve => setTimeout(resolve, 110));
+    advance(179);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(180);
+    await flushReviewed();
     assert.equal(m.layeredStateIndex, 3);
     m.clearLayeredTimers();
 });
@@ -1406,7 +1436,7 @@ test('reviewed fixture catalog matches disjoint drag and visit groups', () => {
 
 for (const nextIndex of [4, 3]) {
     test(`queued handoff preserves a newer C request (${nextIndex}) accepted while B decodes`, async t => {
-        const { manager: m, window, advance } = realReviewedFixture();
+        const { manager: m, window, advance } = realReviewedFixture({ fakeTimers: true });
         t.after(() => m.clearLayeredTimers());
         const committed = [];
         window.dispatchEvent = () => committed.push(m.layeredStateIndex);
@@ -1417,7 +1447,8 @@ for (const nextIndex of [4, 3]) {
         await flushReviewed();
         m.requestReviewedState(3);
         const bQueue = m._reviewedQueued;
-        await new Promise(resolve => setTimeout(resolve, 110));
+        advance(180);
+        await flushReviewed();
         assert.equal(m._reviewedPreparing, true);
         assert.equal(m.layeredStateIndex, 2);
         m.requestReviewedState(nextIndex);
@@ -1536,14 +1567,18 @@ for (const durationMs of [0, '0']) {
 }
 
 test('emotion duration positive value hands off at the requested visible delay', async t => {
-    const { manager: m } = realReviewedFixture();
+    const { manager: m, advance } = realReviewedFixture({ fakeTimers: true });
     t.after(() => m.clearLayeredTimers());
     m.reviewedPick = () => 2;
     m.setEmotion('happy', { durationMs: 80 });
     await flushReviewed();
     assert.equal(m._reviewedReturnAfterMs, 80);
     assert.equal(m.layeredStateIndex, 2);
-    await new Promise(resolve => setTimeout(resolve, 110));
+    advance(179);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(180);
+    await flushReviewed();
     assert.equal(m.layeredStateIndex, 0);
     assert.equal(m.currentEmotion, null);
 });
@@ -1562,4 +1597,334 @@ test('emotion duration omitted follows the clip rather than creating a return ti
     m.reviewedPlaybackTick(2200);
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 0);
+});
+
+
+function timedReviewedFixture() {
+    const f = realReviewedFixture({ fakeTimers: true });
+    const m = f.manager;
+    m.container = { style: { display: 'block' }, classList: { contains: () => false, add() {}, remove() {} } };
+    m.startLayeredBlinkLoop = m.attachLayeredHotkeys = m.attachLayeredPlayEvent = m.attachLayeredPointerTracking = () => {};
+    return f;
+}
+
+test('direct replacement C discards pending B and its old queue without replay', async t => {
+    const { manager: m, window, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    const events = [];
+    window.dispatchEvent = () => events.push(m.layeredStateIndex);
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let resolveB;
+    m.prepareReviewedEntry = index => index === 3
+        ? new Promise(resolve => { resolveB = resolve; }) : Promise.resolve([{ image: {} }]);
+    m.requestReviewedState(3);
+    m._trackedPlayback.lastIndex = 1;
+    advance(2100);
+    m.reviewedPlaybackTick(2100);
+    assert.equal(m._reviewedPreparing, true);
+    m.requestReviewedState(4);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    assert.equal(m._reviewedQueued, null);
+    resolveB([{ image: { name: 'stale B' } }]);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    m._trackedPlayback.lastIndex = 1;
+    advance(4100);
+    m.reviewedPlaybackTick(4100);
+    await flushReviewed();
+    assert.deepEqual(events, [2, 4, 0]);
+});
+
+test('same playing clip accepts emotion hold policy without restarting its clock', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    const start = m.layeredAnimationStart;
+    advance(300);
+    m.reviewedPick = () => 2;
+    m.setEmotion('happy', { durationMs: 0 });
+    assert.equal(m.currentEmotion, 'happy');
+    assert.equal(m.activeLayeredEmotionIndex, 2);
+    assert.equal(m.layeredAnimationStart, start);
+    assert.equal(m.layeredStateReturnTimer, null);
+    advance(2600);
+    m._trackedPlayback.lastIndex = 1;
+    m.reviewedPlaybackTick(2600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+});
+
+test('same playing clip starts a new explicit deadline at the policy update', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    const start = m.layeredAnimationStart;
+    advance(400);
+    m.reviewedPick = () => 2;
+    m.setEmotion('happy', { durationMs: 500 });
+    assert.equal(m.layeredAnimationStart, start);
+    advance(899);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(900);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('same playing clip with no explicit duration leaves its existing deadline intact', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    advance(300);
+    m.requestReviewedState(2);
+    advance(599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('same clip explicit policy invalidates an older pending replacement', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let resolveB;
+    m.prepareReviewedEntry = () => new Promise(resolve => { resolveB = resolve; });
+    m.requestReviewedState(3);
+    m._trackedPlayback.lastIndex = 1;
+    advance(2100);
+    m.reviewedPlaybackTick(2100);
+    m.reviewedPick = () => 2;
+    m.setEmotion('happy', { durationMs: 0 });
+    resolveB([{ image: {} }]);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    assert.equal(m._reviewedHoldLast, true);
+    assert.equal(m._reviewedQueued, null);
+});
+
+test('fallback idle immediately hands off C accepted during its entry decode', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let resolveIdle;
+    m.prepareReviewedEntry = index => {
+        if (index === 3) return Promise.reject(Error('B unavailable'));
+        if (index === 0) return new Promise(resolve => { resolveIdle = resolve; });
+        return Promise.resolve([{ image: {} }]);
+    };
+    m.requestReviewedState(3);
+    m.finishReviewedAction();
+    await flushReviewed();
+    for (const time of [350, 850, 1850]) {
+        advance(time);
+        m.reviewedPlaybackTick(time);
+        await flushReviewed();
+    }
+    assert.equal(m._reviewedPreparing, true);
+    m.requestReviewedState(4);
+    assert.equal(m._reviewedQueued.index, 4);
+    resolveIdle([{ image: {} }]);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    assert.equal(m._reviewedQueued, null);
+});
+
+for (const nextIndex of [4, 5]) {
+    test(`retry handoff reads replacement D (${nextIndex}) identity and options together`, async t => {
+        const { manager: m, advance } = timedReviewedFixture();
+        t.after(() => m.clearLayeredTimers());
+        m.requestReviewedState(2);
+        await flushReviewed();
+        let failB;
+        m.prepareReviewedEntry = index => index === 3
+            ? new Promise((_, reject) => { failB = reject; }) : Promise.resolve([{ image: {} }]);
+        m.requestReviewedState(3);
+        m.finishReviewedAction();
+        m.requestReviewedState(4, { returnToDefaultAfterMs: 500 });
+        for (const time of [100, 350, 850]) {
+            advance(time);
+            if (time !== 100) m.reviewedPlaybackTick(time);
+            failB(Error('B unavailable'));
+            await flushReviewed();
+        }
+        advance(1000);
+        m.requestReviewedState(nextIndex, { returnToDefaultAfterMs: 0 });
+        const latest = m._reviewedQueued;
+        advance(1850);
+        m.reviewedPlaybackTick(1850);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, nextIndex);
+        assert.equal(m._reviewedHoldLast, true);
+        assert.equal(m._reviewedQueued, null);
+        assert.equal(m.layeredStateReturnTimer, null);
+        assert.equal(latest.options.returnToDefaultAfterMs, 0);
+        advance(4000);
+        m._trackedPlayback.lastIndex = 1;
+        m.reviewedPlaybackTick(4000);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, nextIndex);
+    });
+}
+
+test('pause/resume re-arms only the remaining explicit return deadline', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    const start = m.layeredAnimationStart;
+    advance(300);
+    m.pauseRendering();
+    advance(500);
+    m.resumeRendering();
+    assert.equal(m.layeredAnimationStart, start);
+    advance(599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('pause past an explicit deadline hands off immediately on resume', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    advance(300);
+    m.pauseRendering();
+    advance(900);
+    m.resumeRendering();
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('repeated pause/resume never extends the explicit deadline', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    for (const [paused, resumed] of [[300, 400], [450, 550]]) {
+        advance(paused);
+        m.pauseRendering();
+        advance(resumed);
+        m.resumeRendering();
+    }
+    advance(599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('pause/resume without an explicit deadline keeps natural completion semantics', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    advance(300);
+    m.pauseRendering();
+    advance(900);
+    m.resumeRendering();
+    m._trackedPlayback.lastIndex = 1;
+    advance(1000);
+    m.reviewedPlaybackTick(1000);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(2100);
+    m.reviewedPlaybackTick(2100);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('held-last policy survives pause/resume without a return timer', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 0 });
+    await flushReviewed();
+    advance(300);
+    m.pauseRendering();
+    advance(2500);
+    m.resumeRendering();
+    m._trackedPlayback.lastIndex = 1;
+    m.reviewedPlaybackTick(2500);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    assert.equal(m.layeredStateReturnTimer, null);
+});
+
+test('hide/show moves the explicit deadline with the frozen body clock', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    advance(300);
+    m.hide();
+    advance(1300);
+    m.show();
+    assert.equal(m.layeredAnimationStart, 1100);
+    advance(1599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(1600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('deadline fallback does not wait for the natural final frame', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    m.clearLayeredTimers(); // Exercise the render-clock safety net instead of the timer.
+    advance(599);
+    m.reviewedPlaybackTick(599);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(600);
+    m.reviewedPlaybackTick(600);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+});
+
+test('an idle deadline settles once without repeatedly scheduling redundant idle requests', async t => {
+    const { manager: m, advance } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(1, { reviewedIdleEntry: true, returnToDefaultAfterMs: 500 });
+    await flushReviewed();
+    advance(600);
+    await flushReviewed();
+    assert.equal(m._reviewedReturnDeadline, null);
+    const token = m._reviewedRequest;
+    for (let time = 601; time < 620; time++) m.reviewedPlaybackTick(time);
+    assert.equal(m._reviewedRequest, token);
+});
+
+
+test('a direct request from the idle commit event wins over an older queued handoff', async t => {
+    const { manager: m, window } = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let resolveIdle;
+    m.prepareReviewedEntry = index => index === 0
+        ? new Promise(resolve => { resolveIdle = resolve; }) : Promise.resolve([{ image: {} }]);
+    m.requestReviewedState(0, { force: true, failureFallback: true });
+    m.requestReviewedState(4);
+    window.dispatchEvent = () => {
+        if (m.layeredStateIndex === 0) m.requestReviewedState(5);
+    };
+    resolveIdle([{ image: {} }]);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 5);
+    assert.equal(m._reviewedQueued, null);
 });
