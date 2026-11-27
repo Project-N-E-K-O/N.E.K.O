@@ -928,7 +928,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             # Only the in-process market caller supplies this guard. Revalidate
             # its captured target inside the same lock as the real avatar save;
             # ordinary HTTP model/parameter edits retain their existing path.
-            market_guard = getattr(request.state, 'model_workshop_guard', None)
+            market_state = getattr(request, 'state', None)
+            market_guard = getattr(market_state, 'model_workshop_guard', None)
             if market_guard is not None and await market_guard(_config_manager, characters):
                 # Only the internal workshop guard can confirm this exact asset
                 # is already active. Ordinary HTTP saves keep their original behavior.
@@ -1113,7 +1114,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
             # The connected import distinguishes persistence from a later
             # runtime-refresh failure; external HTTP callers have no callback.
-            market_saved = getattr(request.state, 'model_workshop_saved', None)
+            market_saved = getattr(market_state, 'model_workshop_saved', None)
             if market_saved is not None:
                 market_saved()
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).

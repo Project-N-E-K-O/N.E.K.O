@@ -18,11 +18,11 @@ import httpx
 from config.network import resolve_user_plugin_base
 from utils.character_memory import character_config_mutation_lock
 from utils.cloudsave_runtime import assert_cloudsave_writable, MaintenanceModeError
+from utils.internal_http_client import internal_service_event_hooks
 from utils.market_config import get_market_web_url
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason_readonly
 
 from .catalog import public_result
-from .application import apply_installed
 from .market import Launches, PackageStream
 from .paths import WorkshopError
 from .runtime import get_service
@@ -31,16 +31,19 @@ from .tasks import _drain_sync
 
 def _client(base):
     return httpx.Client(base_url=base, timeout=httpx.Timeout(20, connect=3),
-                        follow_redirects=False, trust_env=False, proxy=None)
+                        follow_redirects=False, trust_env=False, proxy=None,
+                        event_hooks=internal_service_event_hooks(sync=True))
 
 
 def _metadata_client(base):
     return httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(20, connect=3),
-                             follow_redirects=False, trust_env=False, proxy=None)
+                             follow_redirects=False, trust_env=False, proxy=None,
+                             event_hooks=internal_service_event_hooks())
 
 
 def _pair_client():
-    return httpx.AsyncClient(timeout=8, trust_env=False, proxy=None, follow_redirects=False)
+    return httpx.AsyncClient(timeout=8, trust_env=False, proxy=None, follow_redirects=False,
+                             event_hooks=internal_service_event_hooks())
 
 
 def _json(response, maximum=4096):
@@ -103,7 +106,8 @@ def _ready(config):
 class ConnectedDownloads:
     """Keep bounded jobs alive after HTTP disconnect, and drain them at shutdown."""
 
-    def __init__(self):
+    def __init__(self, apply_installed):
+        self._apply_installed = apply_installed
         self.launches = Launches()
         self.jobs: dict[tuple[str, str], asyncio.Task] = {}
         self.closed = False
@@ -325,7 +329,7 @@ class ConnectedDownloads:
         if row.phase == "installed" and (job is None or job.done()):
             async def save():
                 try:
-                    await apply_installed(config, row)
+                    await self._apply_installed(config, row)
                 except Exception as error:
                     if isinstance(error, WorkshopError) and str(error) == "market_auth_pending":
                         return  # The next local apply retries its locked authorization.

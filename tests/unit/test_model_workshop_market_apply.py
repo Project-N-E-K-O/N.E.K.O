@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_routers import shared_state
+from main_routers.model_market_application import apply_installed
 from main_routers.model_market_router import _public_result
-from services.model_workshop.application import apply_installed
 from services.model_workshop.market import Launches
 from services.model_workshop.paths import WorkshopError
 from tests.model_workshop_main_runtime import main_character_runtime
@@ -182,7 +182,7 @@ async def test_native_apply_http_reuses_real_save_and_duplicate_is_read_only(app
     async with main_character_runtime(config, {NAME: 'idle', OTHER: 'active'}) as harness:
         shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
                                        steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
-        driver = ConnectedDownloads()
+        driver = ConnectedDownloads(apply_installed)
         launch = driver.launches.create(config)
         driver.launches.select(config, launch.request_id, 1, 'a' * 64, 1, '1' * 32)
         package, _ = bundle_path(tmp_path, kind)
@@ -224,7 +224,7 @@ async def test_one_pairing_saves_a_b_a_and_active_reselection_is_read_only(appli
     async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
         shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
                                        steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
-        driver = ConnectedDownloads()
+        driver = ConnectedDownloads(apply_installed)
         connection = driver.launches.create(config)
         entries = []
         for index, format_name in enumerate((kind, 'vrm' if kind != 'vrm' else 'live2d')):
@@ -275,7 +275,7 @@ async def test_status_during_own_write_and_ready_after_competing_edit(applicatio
     async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
         shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
                                        steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
-        driver = ConnectedDownloads(); row = driver.launches.create(config)
+        driver = ConnectedDownloads(apply_installed); row = driver.launches.create(config)
         package, _ = bundle_path(tmp_path, 'vrm')
         driver.launches.select(config, row.request_id, 1, 'a' * 64, 100, '1' * 32)
         row.result, row.phase = _public_result(config, install(owner, package)['result']), 'installed'
@@ -311,7 +311,7 @@ async def test_pending_auth_at_save_is_retryable_without_reinstall(application, 
     async with main_character_runtime(config, {NAME: 'idle', OTHER: 'idle'}) as harness:
         shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
             steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
-        driver = ConnectedDownloads(); row = driver.launches.create(config)
+        driver = ConnectedDownloads(apply_installed); row = driver.launches.create(config)
         row, _ = driver.launches.select(config, row.request_id, 1, 'a' * 64, 1, '1' * 32)
         package, _ = bundle_path(tmp_path)
         row.result, row.phase = _public_result(config, install(owner, package)['result']), 'installed'

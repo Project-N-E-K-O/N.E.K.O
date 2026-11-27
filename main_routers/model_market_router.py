@@ -14,6 +14,7 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse
 
 from main_routers.local_access import is_direct_loopback_request
+from main_routers.model_market_application import apply_installed
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import (
     _is_loopback_request,
@@ -43,7 +44,7 @@ router = APIRouter(
 )
 MAX_IMPORT_BODY = BundleLimits().archive_bytes + 1024 * 1024
 # Construction is inert: no network, writer or recovery is started at import.
-connected_downloads = ConnectedDownloads()
+connected_downloads = ConnectedDownloads(apply_installed)
 
 
 def _preflight(scope):

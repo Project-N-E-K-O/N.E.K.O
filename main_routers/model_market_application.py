@@ -10,10 +10,10 @@ from starlette.requests import Request
 
 from utils.config_manager import get_reserved
 
-from .market import Launch
-from .paths import WorkshopError
-from .runtime import installed_selection
-from .tasks import _drain_sync
+from services.model_workshop.market import Launch
+from services.model_workshop.paths import WorkshopError
+from services.model_workshop.runtime import installed_selection
+from services.model_workshop.tasks import _drain_sync
 
 
 async def apply_installed(config, launch: Launch):

@@ -1393,7 +1393,6 @@ async def save_model_parameters(model_name: str, request: Request):
         if os.path.lexists(parameters_file) and not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
             return JSONResponse(status_code=403, content={"success": False, "error": "参数文件不在模型目录内"})
         from services.model_workshop.runtime import write_managed_json
-        from services.model_workshop.tasks import _drain_sync
         if not await _drain_sync(lambda: write_managed_json(get_config_manager(), parameters_file, parameters)):
             await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
@@ -1823,7 +1822,6 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             # A missing entrypoint can be an unfinished managed publication;
             # the legacy residue cleanup must never claim that directory.
             from services.model_workshop.runtime import reject_managed_upload
-            from services.model_workshop.tasks import _drain_sync
             await _drain_sync(lambda: reject_managed_upload(config_mgr, target_model_dir))
             
             # Existing target: error or overwrite; choose error here.
@@ -1840,10 +1838,8 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     await _run_cancellation_safe_io(shutil.rmtree, target_model_dir, ignore_errors=True)
 
             # Copy model root to user-documents live2d directory.
-            await _run_cancellation_safe_io(reserve_target)
-            await _run_cancellation_safe_io(
-                shutil.copytree, model_root_dir, target_model_dir, dirs_exist_ok=True
-            )
+            await _drain_sync(reserve_target)
+            await _drain_sync(lambda: shutil.copytree(model_root_dir, target_model_dir, dirs_exist_ok=True))
 
             # After upload iterate all *.motion3.json files,
             # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.

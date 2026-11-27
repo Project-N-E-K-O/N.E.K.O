@@ -82,7 +82,7 @@ async def flow(owner, tmp_path, monkeypatch):
     monkeypatch.setattr(download, '_client', lambda base: httpx.Client(base_url=base, transport=httpx.MockTransport(loopback)))
     monkeypatch.setattr(download, '_metadata_client', lambda base: httpx.AsyncClient(base_url=base, transport=httpx.MockTransport(loopback)), raising=False)
     monkeypatch.setattr(download, '_pair_client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(pair)))
-    driver = download.ConnectedDownloads()
+    driver = download.ConnectedDownloads(api.apply_installed)
     monkeypatch.setattr(api, 'connected_downloads', driver)
     monkeypatch.setattr(api, 'get_config_manager', lambda: owner.config)
     monkeypatch.setattr(_shared, 'AUTOSTART_CSRF_TOKEN', AUTH['X-CSRF-Token'])

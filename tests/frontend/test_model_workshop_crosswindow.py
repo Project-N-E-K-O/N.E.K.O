@@ -145,7 +145,7 @@ def test_connected_native_owner_reloads_and_continues_a_b_a_without_manual_save(
     from playwright.sync_api import sync_playwright
 
     url, cfg, applied = full_manager_app
-    driver = ConnectedDownloads()
+    driver = ConnectedDownloads(api.apply_installed)
     monkeypatch.setattr(api, 'connected_downloads', driver)
     launches = []
     installed = {}

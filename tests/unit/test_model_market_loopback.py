@@ -52,7 +52,7 @@ def test_pair_select_stream_install_over_real_service_hops(owner, tmp_path, monk
     raw = package.read_bytes(); digest = hashlib.sha256(raw).hexdigest()
     urls, calls = {}, []
     market = 'https://market.example.test'
-    driver = download.ConnectedDownloads()
+    driver = download.ConnectedDownloads(api.apply_installed)
     monkeypatch.setattr(api, 'connected_downloads', driver)
     monkeypatch.setattr(api, 'get_config_manager', lambda: cfg)
     monkeypatch.setattr(config, 'AUTOSTART_CSRF_TOKEN', 'loopback-test-csrf')

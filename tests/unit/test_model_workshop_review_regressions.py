@@ -213,7 +213,9 @@ async def test_anyio_cancelled_native_waits_do_not_spin(monkeypatch, operation):
 
     monkeypatch.setattr(asyncio, "shield", shield)
     if operation == "close":
-        driver = ConnectedDownloads()
+        from main_routers.model_market_application import apply_installed
+
+        driver = ConnectedDownloads(apply_installed)
         driver.jobs[("r", "o")] = asyncio.create_task(job())
         wait = driver.close
     else:
