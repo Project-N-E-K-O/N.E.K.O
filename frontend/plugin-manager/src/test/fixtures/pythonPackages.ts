@@ -5,6 +5,7 @@ import type {
   PythonPackagesSnapshot,
   PythonPackagesTask,
   PythonRequirement,
+  ToolRuntimeStatus,
 } from '@/api/projectPythonPackages'
 
 export function pythonRequirement(
@@ -106,18 +107,30 @@ export function pythonPackagesSnapshot(
     running: false,
     environment: {
       python_version: '3.11.14',
-      python_executable: '/python',
       platform: 'linux',
       architecture: 'x86_64',
-      installer: 'uv',
-      installer_path: '/uv',
       packaged: false,
+      installer: 'uv',
       can_sync: true,
-      setup_required: false,
       reason: null,
+      tools: toolRuntimeStatus(),
     },
     task: null,
     operation: null,
+    ...overrides,
+  }
+}
+
+export function toolRuntimeStatus(overrides: Partial<ToolRuntimeStatus> = {}): ToolRuntimeStatus {
+  return {
+    state: 'source',
+    packaged: false,
+    uv_version: '0.13.6',
+    python: '/python',
+    uv: '/uv',
+    progress: null,
+    error_code: null,
+    error_detail: null,
     ...overrides,
   }
 }

@@ -28,18 +28,26 @@
         :closable="false"
         show-icon
       >
-        <details v-if="snapshot.environment.reason">
+        <p v-if="snapshot.environment.reason">{{ reasonText(snapshot.environment.reason) }}</p>
+        <details v-if="snapshot.environment.tools.error_detail">
           <summary>{{ t('pythonPackages.technical') }}</summary>
-          {{ snapshot.environment.reason }}
+          {{ snapshot.environment.tools.error_detail }}
         </details>
       </el-alert>
       <el-alert
-        v-if="snapshot.environment.setup_required"
-        :title="t('pythonPackages.setupRequired')"
-        type="info"
+        v-else-if="toolsNotice"
+        :title="toolsNotice.title"
+        :type="toolsNotice.type"
         :closable="false"
         show-icon
-      />
+        data-testid="python-tools-status"
+      >
+        <p v-if="toolsNotice.text">{{ toolsNotice.text }}</p>
+        <details v-if="toolsNotice.detail">
+          <summary>{{ t('pythonPackages.technical') }}</summary>
+          {{ toolsNotice.detail }}
+        </details>
+      </el-alert>
       <el-alert
         v-if="snapshot.running"
         :title="t('pythonPackages.running')"
@@ -138,6 +146,14 @@
             t('pythonPackages.cancel')
           }}</el-button>
         </div>
+        <el-alert
+          v-if="task.status === 'failed' && task.error_code"
+          :title="reasonText(task.error_code)"
+          type="error"
+          :closable="false"
+          show-icon
+          data-testid="python-tools-error"
+        />
         <details v-if="task.message">
           <summary>{{ t('pythonPackages.technical') }}</summary>
           <pre>{{ task.message }}</pre>
@@ -199,7 +215,11 @@ import { ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import type { AuthoringProject } from '@/api/pluginProjects'
 import { projectErrorCode } from '@/api/pluginProjects'
-import type { PythonPackageIssue, PythonRequirement } from '@/api/projectPythonPackages'
+import type {
+  PythonPackageIssue,
+  PythonRequirement,
+  ToolProgress,
+} from '@/api/projectPythonPackages'
 import { stopPlugin } from '@/api/plugins'
 import { useProjectPythonPackages } from '@/composables/useProjectPythonPackages'
 import { formatHttpError } from '@/utils/request'
@@ -266,11 +286,75 @@ const elapsed = computed(() =>
     )
   )
 )
-const phaseLabel = computed(() =>
-  t(
+const toolPhaseKeys: Record<ToolProgress['phase'], string> = {
+  waiting: 'toolWaiting',
+  downloading_uv: 'toolDownloadingUv',
+  checking_uv: 'toolCheckingUv',
+  installing_python: 'toolInstallingPython',
+  checking_python: 'toolCheckingPython',
+}
+// Codes of the shared plugin tool layer (plus the source-only installer_missing).
+const reasonKeys: Record<string, string> = {
+  unsupported_platform: 'toolErrorUnsupportedPlatform',
+  download_failed: 'toolErrorDownloadFailed',
+  checksum_mismatch: 'toolErrorChecksumMismatch',
+  python_install_failed: 'toolErrorPythonInstallFailed',
+  python_mismatch: 'toolErrorPythonMismatch',
+  timeout: 'toolErrorTimeout',
+  busy: 'toolErrorBusy',
+  internal_error: 'toolErrorInternal',
+  installer_missing: 'installerMissing',
+}
+function reasonText(code: string) {
+  return t(
+    `pythonPackages.${Object.hasOwn(reasonKeys, code) ? reasonKeys[code] : 'toolErrorInternal'}`
+  )
+}
+const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1)
+function toolProgressLabel(progress: ToolProgress) {
+  const label = t(`pythonPackages.${toolPhaseKeys[progress.phase] ?? 'prepare'}`)
+  if (progress.phase !== 'downloading_uv' || !progress.downloaded_bytes) return label
+  const size = progress.total_bytes
+    ? t('pythonPackages.toolBytes', {
+        received: megabytes(progress.downloaded_bytes),
+        total: megabytes(progress.total_bytes),
+      })
+    : t('pythonPackages.toolBytesUnknown', { received: megabytes(progress.downloaded_bytes) })
+  return `${label} (${size})`
+}
+const phaseLabel = computed(() => {
+  if (task.value?.phase === 'preparing' && task.value.tool_progress) {
+    return toolProgressLabel(task.value.tool_progress)
+  }
+  return t(
     `pythonPackages.${{ preparing: 'prepare', installing: 'installing', checking: 'checking', replacing: 'replacing', refreshing: 'refreshing', finished: 'succeeded' }[task.value?.phase ?? 'preparing']}`
   )
-)
+})
+// Packaged builds only: what the shared plugin tool layer says about uv and Python.
+const toolsNotice = computed(() => {
+  const tools = snapshot.value?.environment.tools
+  if (!tools?.packaged || active.value) return null
+  if (tools.state === 'missing') {
+    return { title: t('pythonPackages.setupRequired'), type: 'info' as const, text: '', detail: '' }
+  }
+  if (tools.state === 'preparing') {
+    return {
+      title: t('pythonPackages.toolsPreparing'),
+      type: 'info' as const,
+      text: tools.progress ? toolProgressLabel(tools.progress) : '',
+      detail: '',
+    }
+  }
+  if (tools.state === 'failed') {
+    return {
+      title: t('pythonPackages.toolsFailed'),
+      type: 'warning' as const,
+      text: tools.error_code ? reasonText(tools.error_code) : '',
+      detail: tools.error_detail ?? '',
+    }
+  }
+  return null
+})
 const errorKeys: Record<string, string> = {
   PYTHON_PACKAGES_RUNNING: 'running',
   PYTHON_PACKAGES_TASK_NOT_FOUND: 'taskMissing',

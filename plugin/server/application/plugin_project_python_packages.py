@@ -8,12 +8,14 @@ All filesystem work and child output reads run outside the server event loop.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import re
 import subprocess
+import sys
+import sysconfig
 import threading
 import time
 from collections import deque
-from concurrent.futures import CancelledError as ToolPreparationCanceled
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -46,7 +48,12 @@ from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
 from plugin.server.infrastructure.process_output import iter_process_output
-from plugin.server.infrastructure.python_package_tools import prepare_package_tools, read_package_tools
+from plugin.server.infrastructure.plugin_tool_runtime import (
+    ProgressEvent,
+    ToolRuntimeError,
+    prepare_tool_runtime,
+    read_tool_runtime_status,
+)
 from utils import process_creation
 
 logger = get_logger("server.application.plugin_project_python_packages")
@@ -80,6 +87,10 @@ class _Task:
     deadline: float = 0.0
     vendor_touched: bool = False
     lease_released: bool = False
+    # While plugin tools are prepared: the shared layer's latest progress event.
+    tool_progress: dict | None = None
+    # A ToolRuntimeError code when tool preparation failed, for localized text.
+    error_code: str | None = None
 
 
 _lock = threading.RLock()
@@ -129,7 +140,31 @@ def _snapshot(task: _Task) -> dict:
             "message": task.message, "log": list(task.log),
             "started_at": task.started_at, "updated_at": task.updated_at,
             "finished_at": task.finished_at, "result": task.result,
+            "tool_progress": task.tool_progress, "error_code": task.error_code,
         }
+
+
+def _environment() -> dict:
+    """Installer facts for the page; reads only (no child process or download)."""
+    tools = read_tool_runtime_status()
+    if tools.packaged:
+        # Packaged sync always installs with the prepared uv and managed Python.
+        installer = "uv" if tools.state != "unsupported" else None
+        reason = tools.error_code if tools.state == "unsupported" else None
+    else:
+        pip = importlib.util.find_spec("pip") is not None
+        installer = "uv" if tools.uv else "pip" if pip else None
+        reason = None if installer else "installer_missing"
+    return {
+        "python_version": ".".join(str(part) for part in sys.version_info[:3]),
+        "platform": sys.platform,
+        "architecture": sysconfig.get_platform().rsplit("-", 1)[-1],
+        "packaged": tools.packaged,
+        "installer": installer,
+        "can_sync": installer is not None,
+        "reason": reason,
+        "tools": tools.as_dict(),
+    }
 
 
 def _read_project_packages(project_id: str) -> tuple[Path, str, dict]:
@@ -147,7 +182,7 @@ def _with_project_state(project_id: str, directory: Path, result: dict) -> dict:
         current = _snapshot(task) if task else None
     return {
         **result, "vendor_exists": (directory / "vendor").is_dir(),
-        "running": _running(directory), "environment": read_package_tools(),
+        "running": _running(directory), "environment": _environment(),
         "task": current, "operation": project_operation_name(project_id),
     }
 
@@ -279,11 +314,12 @@ def _terminate(task: _Task) -> None:
 
 
 def _command(task: _Task, argv: list[str], *, label: str, env: dict[str, str] | None = None):
+    """Run one installer command; ``env`` replaces the inherited environment."""
     _check_stop(task)
     _log(task, label)
     try:
         process = start_cli(
-            argv, cwd=task.source_dir, merge_stderr=True, env=env,
+            argv, cwd=task.source_dir, merge_stderr=True, env=env, replace_env=env is not None,
             deadline=task.deadline, cancel_event=task.cancel_event,
         )
     except (process_creation.ProcessCreationCancelled, process_creation.ProcessCreationTimeout):
@@ -365,22 +401,51 @@ def _task_result(before: dict, after: dict) -> dict:
     }
 
 
+def _tool_progress(task: _Task, event: ProgressEvent) -> None:
+    with _lock:
+        changed = task.tool_progress is None or task.tool_progress["phase"] != event.phase
+        task.tool_progress = {
+            "phase": event.phase, "downloaded_bytes": event.downloaded_bytes, "total_bytes": event.total_bytes,
+        }
+        task.updated_at = time.time()
+    if changed:
+        _log(task, f"Preparing plugin tools: {event.phase}")
+
+
+def _installer_options(task: _Task) -> dict:
+    """uv and Python from the shared plugin tool layer.
+
+    Source checkouts get the host interpreter and the developer's uv (pip
+    when there is none); packaged servers get the prepared uv and managed
+    CPython, downloaded on first use. Installer children run with the
+    layer's environment as is. Raises ToolRuntimeError.
+    """
+    try:
+        runtime = prepare_tool_runtime(
+            cancel=task.cancel_event, deadline=task.deadline,
+            progress=lambda event: _tool_progress(task, event),
+        )
+    finally:
+        with _lock:
+            task.tool_progress = None
+    return {
+        "python": runtime.python,
+        "uv_executable": runtime.uv,
+        # A packaged build has no pip of its own to fall back to.
+        "allow_pip_fallback": not runtime.packaged,
+        "installer_runner": lambda argv, **kwargs: _command(task, argv, env=runtime.env, **kwargs),
+    }
+
+
 def _execute(task: _Task) -> dict:
     _check_stop(task)
     if task.operation == "sync":
-        runner = lambda argv, **kwargs: _command(task, argv, **kwargs)
         has_external = any(row["status"] != "host_provided" for row in task.before["requirements"])
-        options = {"installer_runner": runner}
-        if has_external:
-            tools = prepare_package_tools(
-                runner, lambda line: _log(task, line), task.cancel_event,
-                deadline=task.deadline,
-            )
-            options = {
-                "python": tools.python, "uv_executable": tools.uv_executable,
-                "allow_pip_fallback": tools.allow_pip_fallback,
-                "installer_runner": lambda argv, **kwargs: runner(argv, env=tools.env, **kwargs),
-            }
+        # Only installs need tools: emptying vendor/ prepares nothing.
+        options = (
+            _installer_options(task) if has_external
+            else {"installer_runner": lambda argv, **kwargs: _command(task, argv, **kwargs)}
+        )
         _phase(task, "installing")
         task.vendor_touched = True
         code = sync_vendor(
@@ -419,10 +484,20 @@ async def _run(task: _Task) -> None:
             task.message = "The dependency task was canceled during server shutdown"
         outcome = "canceled"
         raise
-    except (_Canceled, ToolPreparationCanceled) as exc:
+    except _Canceled as exc:
         with _lock:
             task.message = str(exc)
         outcome = "canceled"
+    except ToolRuntimeError as exc:
+        with _lock:
+            task.message = _redact(exc.detail)
+            if exc.code == "canceled":
+                outcome = "canceled"
+            else:
+                task.error_code = exc.code
+        if outcome != "canceled":
+            logger.warning("Dependency task could not prepare plugin tools: task={}, code={}", task.task_id, exc.code)
+            _log(task, task.message)
     except Exception as exc:
         message = _redact(str(exc))
         logger.warning("Dependency task failed: task={}, error={}", task.task_id, message)

@@ -83,27 +83,30 @@ source of truth. Canceling terminates installer subprocess trees. The existing
 staging, backup and recovery rules protect ordinary vendor directories; linked
 or mounted vendors retain their documented in-place update limitations.
 
-Source servers use their Python interpreter and existing uv, with the existing
-pip fallback when uv is unavailable. A packaged server prepares a matching
-CPython interpreter in application data. If uv is missing, an explicit sync can
-download a pinned-version uv wheel from PyPI, verify its integrity against the
-SHA-256 returned by PyPI HTTPS metadata, and extract only the executable and
-licenses. Python preparation uses `--no-bin --no-registry`, so it
-does not register a system interpreter. Packaged sync checks a system uv against
-the tested minimum version and prepares the pinned version when it is too old.
-Opening the tab performs no downloads or version-probe subprocesses.
-The interpreter request names the exact patch release the application runs on,
-and each uv release carries its own list of downloadable Pythons. The desktop
-build therefore checks (in `scripts/check_nuitka_dist.py`) that the pinned uv
-can download the build's Python patch release. Both tools live under
-`plugin-runtime/` in the application data root, which storage migration treats
-as regenerable.
+Installer tools come from the shared plugin tool layer
+(`plugin/server/infrastructure/plugin_tool_runtime.py`), which other packaged
+plugin tools use as well. Source servers use their Python interpreter and
+existing uv, with the existing pip fallback when uv is unavailable. A packaged
+server prepares the tools on the first sync that has packages to install: it
+downloads a pinned uv release from PyPI (SHA-256 checked against PyPI HTTPS
+metadata; a compatible uv already installed is only a fallback when that
+download fails), then installs the CPython release matching the application's
+exact version and architecture with `--no-bin --no-registry`, so no system
+interpreter is registered. Preparation can be canceled with the task, counts
+against the task's time budget, and waits for another N.E.K.O. process that is
+preparing the same tools. The task reports the layer's phases (waiting,
+downloading uv, checking uv, installing Python, checking Python) and, when it
+fails, the layer's error code. Opening the tab performs no downloads or
+version-probe subprocesses; it shows the layer's status (ready, missing,
+preparing, failed or unsupported).
 
-The installer bootstrap trusts PyPI HTTPS metadata and artifacts served from
-`files.pythonhosted.org`. The digest checks downloaded bytes against that
-metadata; it is not a digest embedded in this repository or an independent
-signature. Packaged interpreter requests include the running host process
-architecture, which is also checked before installing plugin dependencies.
+In a packaged build, installer children run with the layer's environment:
+inherited `UV_*` variables and variables that redirect Python (`PYTHONPATH`,
+`VIRTUAL_ENV` and the like) are removed, so an index or mirror set through
+`UV_*` variables does not apply there. The desktop build checks (in
+`scripts/check_nuitka_dist.py`) that the pinned uv can download the build's
+Python patch release. The tools live under `plugin-runtime/` in the
+application data root, which storage migration treats as regenerable.
 
 ## Implementation
 
@@ -113,8 +116,9 @@ architecture, which is also checked before installing plugin dependencies.
   ownership, staging and replacement; the CLI is a thin adapter.
 - `plugin/server/application/plugin_project_python_packages.py`: project identity,
   task lifetime, cancellation and runtime reconciliation.
-- `plugin/server/infrastructure/python_package_tools.py`: installer discovery and
-  application-owned tool preparation.
+- `plugin/server/infrastructure/plugin_tool_runtime.py` (shared): uv and Python
+  for packaged plugin tools; the dependency task calls `prepare_tool_runtime()`
+  and the page reads `read_tool_runtime_status()`.
 
 The `/plugin-projects/{project_id}/python-packages` routes expose local state,
 requirement writes and synchronization/check tasks. Existing admin and mutation

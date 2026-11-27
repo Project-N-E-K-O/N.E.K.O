@@ -5,6 +5,7 @@ import {
   pythonRequirement,
   pythonDependencyGraph,
   pythonDependencyNode,
+  toolRuntimeStatus,
 } from '@/test/fixtures/pythonPackages'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, reactive } from 'vue'
@@ -227,7 +228,10 @@ describe('project dependency management', () => {
       requirement: 'anyio',
       message: 'httpx requires anyio: missing',
     }
-    const broken = { code: 'invalid_metadata', message: 'distribution metadata must contain Name and Version' }
+    const broken = {
+      code: 'invalid_metadata',
+      message: 'distribution metadata must contain Name and Version',
+    }
     const checkedState = state()
     api.getProjectPythonPackages.mockResolvedValue(
       state({
@@ -498,6 +502,91 @@ describe('project dependency management', () => {
       'p2',
       ['anyio>=4'],
       'p2-revision'
+    )
+  })
+  it('shows the shared tool layer status of a packaged build', async () => {
+    const packaged = (tools: Parameters<typeof toolRuntimeStatus>[0]) =>
+      state({
+        environment: {
+          ...state().environment,
+          packaged: true,
+          tools: toolRuntimeStatus({ packaged: true, python: null, uv: null, ...tools }),
+        },
+      })
+    api.getProjectPythonPackages.mockResolvedValue(packaged({ state: 'missing' }))
+    await mount()
+    expect(document.querySelector('[data-testid="python-tools-status"]')?.textContent).toContain(
+      en.setupRequired
+    )
+    app?.unmount()
+    document.body.innerHTML = ''
+    api.getProjectPythonPackages.mockResolvedValue(
+      packaged({ state: 'failed', error_code: 'download_failed', error_detail: 'HTTP 503' })
+    )
+    await mount()
+    const failed = document.querySelector('[data-testid="python-tools-status"]')!.textContent!
+    expect(failed).toContain(en.toolsFailed)
+    expect(failed).toContain(en.toolErrorDownloadFailed)
+    expect(failed).toContain('HTTP 503')
+    app?.unmount()
+    document.body.innerHTML = ''
+    api.getProjectPythonPackages.mockResolvedValue(packaged({ state: 'ready' }))
+    await mount()
+    expect(document.querySelector('[data-testid="python-tools-status"]')).toBeNull()
+  })
+  it('explains why a sync is unavailable with the layer code', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        environment: {
+          ...state().environment,
+          packaged: true,
+          installer: null,
+          can_sync: false,
+          reason: 'unsupported_platform',
+          tools: toolRuntimeStatus({ state: 'unsupported', packaged: true }),
+        },
+      })
+    )
+    const { container } = await mount()
+    expect(container.textContent).toContain(en.unavailable)
+    expect(container.textContent).toContain(en.toolErrorUnsupportedPlatform)
+  })
+  it.each([
+    [
+      { phase: 'downloading_uv', downloaded_bytes: 1048576, total_bytes: 4194304 },
+      'Downloading uv (1.0 / 4.0 MB)',
+    ],
+    [
+      { phase: 'downloading_uv', downloaded_bytes: 1048576, total_bytes: null },
+      'Downloading uv (1.0 MB)',
+    ],
+    [{ phase: 'checking_uv', downloaded_bytes: null, total_bytes: null }, 'Checking uv ·'],
+    [
+      { phase: 'installing_python', downloaded_bytes: null, total_bytes: null },
+      'Installing Python ·',
+    ],
+  ] as const)('labels the tool preparation phase %o', async (progress, label) => {
+    const running = task({ phase: 'preparing', tool_progress: { ...progress } })
+    api.getProjectPythonPackages.mockResolvedValue(state({ task: running }))
+    api.getProjectPythonTask.mockResolvedValue(running)
+    const { container } = await mount()
+    expect(container.textContent).toContain(label)
+  })
+  it('shows a localized message when tool preparation failed', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        task: task({
+          status: 'failed',
+          phase: 'finished',
+          error_code: 'checksum_mismatch',
+          message: 'uv download failed its SHA-256 check',
+          finished_at: Date.now() / 1000,
+        }),
+      })
+    )
+    await mount()
+    expect(document.querySelector('[data-testid="python-tools-error"]')?.textContent).toContain(
+      en.toolErrorChecksumMismatch
     )
   })
 })

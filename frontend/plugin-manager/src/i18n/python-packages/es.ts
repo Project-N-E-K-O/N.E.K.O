@@ -73,6 +73,31 @@ const messages: PythonPackageMessages = {
   notChecked: 'Aún no se ha comprobado.',
   setupRequired:
     'La primera sincronización descarga herramientas y un Python compatible en el directorio de datos de la aplicación.',
+  toolsPreparing: 'Se están preparando las herramientas de instalación.',
+  toolsFailed:
+    'La última preparación de las herramientas de instalación falló. La próxima sincronización lo intentará de nuevo.',
+  toolWaiting: 'Esperando a que termine otra preparación',
+  toolDownloadingUv: 'Descargando uv',
+  toolCheckingUv: 'Comprobando uv',
+  toolInstallingPython: 'Instalando Python',
+  toolCheckingPython: 'Comprobando Python',
+  toolBytes: '{received} / {total} MB',
+  toolBytesUnknown: '{received} MB',
+  toolErrorUnsupportedPlatform: 'No hay herramientas de instalación disponibles para este sistema.',
+  toolErrorDownloadFailed:
+    'No se pudieron descargar las herramientas de instalación. Comprueba la conexión de red e inténtalo de nuevo.',
+  toolErrorChecksumMismatch:
+    'La herramienta de instalación descargada no superó la comprobación de integridad y no se usó.',
+  toolErrorPythonInstallFailed:
+    'No se pudo instalar el intérprete de Python para las dependencias. Comprueba la conexión de red e inténtalo de nuevo.',
+  toolErrorPythonMismatch: 'El intérprete de Python preparado no coincide con esta aplicación.',
+  toolErrorTimeout: 'La preparación de las herramientas de instalación tardó demasiado.',
+  toolErrorBusy:
+    'Otro proceso de N.E.K.O. está preparando las herramientas de instalación. Inténtalo más tarde.',
+  toolErrorInternal:
+    'La preparación de las herramientas de instalación falló de forma inesperada. Consulta los detalles técnicos.',
+  installerMissing:
+    'No se encontró ningún instalador de paquetes. Instala uv, o pip para el Python que ejecuta N.E.K.O.',
   formatUnsupported:
     'Este formato no se puede editar aquí. Edita pyproject.toml en tu editor y actualiza.',
   fileFailed:

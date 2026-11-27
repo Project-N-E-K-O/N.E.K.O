@@ -34,8 +34,7 @@ const messages: PythonPackageMessages = {
   vendor: '설치 디렉터리',
   installer: '설치 도구',
   unavailable: '현재 환경에서는 패키지를 설치할 수 없습니다.',
-  running:
-    '동기화 전에 플러그인을 중지하세요. 저장된 선언은 동기화하고 다시 시작한 후 적용됩니다.',
+  running: '동기화 전에 플러그인을 중지하세요. 저장된 선언은 동기화하고 다시 시작한 후 적용됩니다.',
   stop: '플러그인 중지',
   task: '의존성 작업',
   queued: '대기 중',
@@ -71,6 +70,29 @@ const messages: PythonPackageMessages = {
   notChecked: '아직 확인하지 않았습니다.',
   setupRequired:
     '첫 동기화에서 설치 도구와 호환 Python을 내려받아 앱 데이터 디렉터리에 저장합니다.',
+  toolsPreparing: '설치 도구를 준비하는 중입니다.',
+  toolsFailed: '지난번 설치 도구 준비에 실패했습니다. 다음 동기화 때 다시 시도합니다.',
+  toolWaiting: '다른 준비 작업이 끝나기를 기다리는 중',
+  toolDownloadingUv: 'uv 다운로드 중',
+  toolCheckingUv: 'uv 확인 중',
+  toolInstallingPython: 'Python 설치 중',
+  toolCheckingPython: 'Python 확인 중',
+  toolBytes: '{received} / {total} MB',
+  toolBytesUnknown: '{received} MB',
+  toolErrorUnsupportedPlatform: '이 시스템에서 사용할 수 있는 설치 도구가 없습니다.',
+  toolErrorDownloadFailed:
+    '설치 도구를 다운로드할 수 없습니다. 네트워크 연결을 확인한 후 다시 시도하세요.',
+  toolErrorChecksumMismatch:
+    '다운로드한 설치 도구가 무결성 검사를 통과하지 못해 사용하지 않았습니다.',
+  toolErrorPythonInstallFailed:
+    '의존성용 Python 인터프리터를 설치할 수 없습니다. 네트워크 연결을 확인한 후 다시 시도하세요.',
+  toolErrorPythonMismatch: '준비된 Python 인터프리터가 이 애플리케이션과 일치하지 않습니다.',
+  toolErrorTimeout: '설치 도구 준비가 너무 오래 걸렸습니다.',
+  toolErrorBusy: '다른 N.E.K.O. 프로세스가 설치 도구를 준비하고 있습니다. 잠시 후 다시 시도하세요.',
+  toolErrorInternal:
+    '설치 도구를 준비하는 중 예기치 않은 오류가 발생했습니다. 기술 세부 정보를 확인하세요.',
+  installerMissing:
+    '패키지 설치 프로그램을 찾을 수 없습니다. uv를 설치하거나 N.E.K.O.를 실행하는 Python에 pip를 설치하세요.',
   formatUnsupported:
     '이 파일 구조는 화면에서 편집할 수 없습니다. 편집기에서 pyproject.toml을 수정한 후 새로 고치세요.',
   fileFailed: '의존성 파일을 읽거나 쓸 수 없습니다. 기술 세부 정보를 확인하세요.',

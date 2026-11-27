@@ -22,10 +22,17 @@ from plugin.server.application import plugin_project_python_packages as packages
 from plugin.server.application.plugins import operation_lock
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import authoring_project_store as store
+from plugin.server.infrastructure import plugin_tool_runtime as tool_runtime
 from plugin.server.infrastructure.mutation_auth import csrf_token, require_plugin_mutation_access
 from plugin.server.routes.plugin_projects import router
 
 ORIGIN = "http://127.0.0.1:48916"
+
+
+def fake_runtime(python, uv, env, *, packaged=True):
+    """prepare_tool_runtime stand-in returning a fixed runtime."""
+    runtime = tool_runtime.ToolRuntime(python, uv, env, None, packaged)
+    return lambda **_kwargs: runtime
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +106,7 @@ async def test_routes_read_save_revision_and_check(app, record):
         task = await finish(response.json())
         assert task["status"] == "succeeded", task
         assert set(task["result"]) == {"after", "changes"}
-        assert set(task["result"]["after"]) == {"revision", "installed", "issues"}
+        assert set(task["result"]["after"]) == {"revision", "installed", "issues", "check_issues"}
         assert task["result"]["after"]["issues"]
         snapshot = (await http.get(base)).json()
         assert snapshot["task"]["task_id"] == task["task_id"]
@@ -129,9 +136,7 @@ async def test_sync_uses_injected_tools_and_shared_transaction(record, monkeypat
     before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
     seen = []
     monkeypatch.setattr(packages, "source_repo_root", lambda: None)
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
-        python="managed-python", uv_executable="managed-uv", allow_pip_fallback=False, env={},
-    ))
+    monkeypatch.setattr(packages, "prepare_tool_runtime", fake_runtime("managed-python", "managed-uv", {}))
 
     def sync(directory, **kwargs):
         seen.append((directory, kwargs))
@@ -253,8 +258,9 @@ async def test_offline_wheel_install_through_task_and_cleanup(record, tmp_path, 
         archive.writestr("workbench_demo-1.0.0.dist-info/RECORD", "")
     pyproject = record.source_dir / "pyproject.toml"
     pyproject.write_text(f'[project]\nname="package_demo"\nversion="0.1.0"\ndependencies=["workbench-demo @ {wheel.as_uri()}"]\n')
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
-        python=sys.executable, uv_executable=uv, allow_pip_fallback=False, env={"UV_OFFLINE": "1"},
+    # The runtime's environment replaces the inherited one for installer children.
+    monkeypatch.setattr(packages, "prepare_tool_runtime", fake_runtime(
+        sys.executable, uv, {**tool_runtime.tool_runtime_env(root=tmp_path / "tools"), "UV_OFFLINE": "1"},
     ))
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     async def refresh(_self, _plugin_id):
@@ -271,9 +277,9 @@ async def test_offline_wheel_install_through_task_and_cleanup(record, tmp_path, 
     assert imported.stdout.strip() == "installed-from-wheel"
     # Removing the final dependency must clean vendor without preparing any tool.
     before = packages.save_requirements(record.project_id, [], packages.read_packages(record.project_id)["revision"])
-    def no_tools(*args):
+    def no_tools(**_kwargs):
         raise AssertionError("An empty dependency sync should need no installer")
-    monkeypatch.setattr(packages, "prepare_package_tools", no_tools)
+    monkeypatch.setattr(packages, "prepare_tool_runtime", no_tools)
     result = await finish(await packages.start_task(record.project_id, "sync", before["revision"]))
     assert result["status"] == "succeeded", result
     assert packages.read_packages(record.project_id)["installed"] == []
@@ -339,9 +345,7 @@ async def test_request_cancellation_during_preparation_releases_lease(record, mo
 async def test_cancel_after_vendor_commit_still_refreshes_actual_state(record, monkeypatch):
     before = packages.read_packages(record.project_id)
     before = packages.save_requirements(record.project_id, ["commit-demo"], before["revision"])
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
-        python=sys.executable, uv_executable="uv", allow_pip_fallback=False, env={},
-    ))
+    monkeypatch.setattr(packages, "prepare_tool_runtime", fake_runtime(sys.executable, "uv", {}))
     def sync(directory, **kwargs):
         metadata = directory / "vendor" / "commit_demo-1.0.dist-info"
         metadata.mkdir(parents=True)
@@ -438,27 +442,96 @@ async def test_cancel_during_os_spawn_reaps_process_and_closes_output(record, mo
 async def test_tool_setup_lock_obeys_task_budget_and_releases_project(record, monkeypatch, tmp_path):
     import portalocker
 
-    from plugin.server.infrastructure import python_package_tools as tools
-
     root = tmp_path / "shared-tools"
     root.mkdir()
-    monkeypatch.setattr(tools, "_tools_root", lambda: root)
-    monkeypatch.setattr(tools, "_is_packaged", lambda: False)
-    monkeypatch.setattr(tools, "_find_uv", lambda: None)
-    monkeypatch.setattr(tools, "_pip_available", lambda: False)
-    monkeypatch.setattr(packages, "env_seconds", lambda *args: 0.05)
+    monkeypatch.setattr(tool_runtime, "_is_packaged", lambda: True)
+    monkeypatch.setattr(tool_runtime, "tools_root", lambda: root)
+    monkeypatch.setattr(tool_runtime, "_known_tools_root", lambda: root)
+    monkeypatch.setattr(packages, "env_seconds", lambda *args: 0.3)
     before = packages.read_packages(record.project_id)
     before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
+    # Another process holds the shared preparation lock for the whole budget.
     with portalocker.Lock(root / ".prepare.lock", timeout=0):
         task = await packages.start_task(record.project_id, "sync", before["revision"])
         try:
-            result = await asyncio.wait_for(finish(task), timeout=1)
+            result = await asyncio.wait_for(finish(task), timeout=5)
             assert result["status"] == "failed", result
+            assert result["error_code"] == "timeout"
             assert "time budget" in result["message"]
+            assert result["tool_progress"] is None
             assert commands.project_operation_name(record.project_id) is None
             assert not (record.source_dir / "vendor").exists()
         finally:
             await packages.shutdown_tasks()
+
+
+@pytest.mark.asyncio
+async def test_tool_progress_is_reported_and_cancel_stops_preparation(record, monkeypatch):
+    before = packages.read_packages(record.project_id)
+    before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
+    seen = threading.Event()
+    snapshots = []
+
+    def prepare(*, cancel, deadline, progress):
+        progress(tool_runtime.ProgressEvent("downloading_uv", 10, 100))
+        snapshots.append(packages._snapshot(packages._tasks[packages._latest[record.project_id]]))
+        progress(tool_runtime.ProgressEvent("checking_uv"))
+        seen.set()
+        cancel.wait(5)
+        raise tool_runtime.ToolRuntimeError("canceled", "Plugin tool preparation was canceled")
+
+    monkeypatch.setattr(packages, "prepare_tool_runtime", prepare)
+    monkeypatch.setattr(packages, "sync_vendor", lambda *args, **kwargs: pytest.fail("must not install"))
+    task = await packages.start_task(record.project_id, "sync", before["revision"])
+    assert await asyncio.to_thread(seen.wait, 5)
+    current = packages.read_task(record.project_id, task["task_id"])
+    assert current["tool_progress"] == {"phase": "checking_uv", "downloaded_bytes": None, "total_bytes": None}
+    assert snapshots[0]["tool_progress"] == {"phase": "downloading_uv", "downloaded_bytes": 10, "total_bytes": 100}
+    await packages.cancel_task(record.project_id, task["task_id"])
+    result = await finish(task)
+    assert result["status"] == "canceled", result
+    assert result["error_code"] is None
+    assert result["tool_progress"] is None
+    assert commands.project_operation_name(record.project_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["download_failed", "checksum_mismatch", "python_install_failed"])
+async def test_tool_preparation_failure_reports_its_code(record, monkeypatch, code):
+    before = packages.read_packages(record.project_id)
+    before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
+
+    def prepare(**_kwargs):
+        raise tool_runtime.ToolRuntimeError(code, "uv https://user:secret@mirror.example/simple failed")
+
+    monkeypatch.setattr(packages, "prepare_tool_runtime", prepare)
+    result = await finish(await packages.start_task(record.project_id, "sync", before["revision"]))
+    assert result["status"] == "failed"
+    assert result["error_code"] == code
+    assert "secret" not in result["message"] and "secret" not in "\n".join(result["log"])
+
+
+def test_environment_follows_the_shared_tool_status(record, monkeypatch):
+    status = tool_runtime.RuntimeStatus(
+        "preparing", True, "0.13.6", progress=tool_runtime.ProgressEvent("installing_python"),
+    )
+    monkeypatch.setattr(packages, "read_tool_runtime_status", lambda: status)
+    environment = packages.read_packages(record.project_id)["environment"]
+    assert environment["packaged"] is True and environment["can_sync"] is True
+    assert environment["installer"] == "uv"
+    assert environment["tools"]["state"] == "preparing"
+    assert environment["tools"]["progress"]["phase"] == "installing_python"
+    unsupported = tool_runtime.RuntimeStatus(
+        "unsupported", True, "0.13.6", error_code="unsupported_platform", error_detail="no",
+    )
+    monkeypatch.setattr(packages, "read_tool_runtime_status", lambda: unsupported)
+    environment = packages.read_packages(record.project_id)["environment"]
+    assert environment["can_sync"] is False and environment["reason"] == "unsupported_platform"
+    source = tool_runtime.RuntimeStatus("source", False, "0.13.6", python=sys.executable, uv=None)
+    monkeypatch.setattr(packages, "read_tool_runtime_status", lambda: source)
+    monkeypatch.setattr(packages.importlib.util, "find_spec", lambda name: None)
+    environment = packages.read_packages(record.project_id)["environment"]
+    assert environment["installer"] is None and environment["reason"] == "installer_missing"
 
 
 @pytest.mark.asyncio
@@ -580,3 +653,18 @@ async def test_command_omits_oversized_lines_without_exposing_credential_prefixe
 
 def test_incomplete_authentication_url_is_not_retained_at_pipe_cutoff():
     assert packages._redact("download https://user:secret", incomplete=True) == "download https://[redacted]"
+
+
+def test_installer_children_get_the_runtime_environment_only(record, monkeypatch, tmp_path):
+    import os
+    import time
+
+    monkeypatch.setenv("UV_INDEX_URL", "https://inherited.example/simple")
+    task = packages._Task("env", record.project_id, "sync", record.source_dir, "package_demo", {})
+    task.deadline = time.monotonic() + 30
+    probe = [sys.executable, "-c", "import os; print(os.environ.get('UV_INDEX_URL'), os.environ.get('PYTHONUNBUFFERED'))"]
+    runtime_env = tool_runtime.tool_runtime_env(dict(os.environ), root=tmp_path / "tools")
+    replaced = packages._command(task, probe, label="probe", env=runtime_env)
+    assert replaced.stdout.split() == ["None", "1"]
+    inherited = packages._command(task, probe, label="probe")
+    assert inherited.stdout.split() == ["https://inherited.example/simple", "1"]

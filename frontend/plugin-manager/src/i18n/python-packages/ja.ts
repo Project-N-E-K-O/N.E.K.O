@@ -72,6 +72,30 @@ const messages: PythonPackageMessages = {
   notChecked: 'まだ確認していません。',
   setupRequired:
     '初回同期では、インストールツールと互換性のある Python をダウンロードしてアプリのデータ領域に保存します。',
+  toolsPreparing: 'インストールツールを準備しています。',
+  toolsFailed: '前回のインストールツールの準備に失敗しました。次回の同期で再試行します。',
+  toolWaiting: '別の準備処理の完了を待っています',
+  toolDownloadingUv: 'uv をダウンロード中',
+  toolCheckingUv: 'uv を確認中',
+  toolInstallingPython: 'Python をインストール中',
+  toolCheckingPython: 'Python を確認中',
+  toolBytes: '{received} / {total} MB',
+  toolBytesUnknown: '{received} MB',
+  toolErrorUnsupportedPlatform: 'このシステムで使えるインストールツールがありません。',
+  toolErrorDownloadFailed:
+    'インストールツールをダウンロードできませんでした。ネットワーク接続を確認して再試行してください。',
+  toolErrorChecksumMismatch:
+    'ダウンロードしたインストールツールは整合性チェックに失敗したため使用しませんでした。',
+  toolErrorPythonInstallFailed:
+    '依存関係用の Python インタープリターをインストールできませんでした。ネットワーク接続を確認して再試行してください。',
+  toolErrorPythonMismatch: '準備した Python インタープリターがこのアプリケーションと一致しません。',
+  toolErrorTimeout: 'インストールツールの準備に時間がかかりすぎました。',
+  toolErrorBusy:
+    '別の N.E.K.O. プロセスがインストールツールを準備中です。しばらくしてから再試行してください。',
+  toolErrorInternal:
+    'インストールツールの準備中に予期しないエラーが発生しました。技術的な詳細を確認してください。',
+  installerMissing:
+    'パッケージインストーラーが見つかりません。uv をインストールするか、N.E.K.O. を実行する Python に pip を入れてください。',
   formatUnsupported:
     'このファイル形式は画面で編集できません。エディターで pyproject.toml を変更して再読み込みしてください。',
   fileFailed: '依存関係ファイルを読み書きできません。技術的な詳細を確認してください。',

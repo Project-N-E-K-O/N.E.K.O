@@ -12,7 +12,7 @@
 
 ## 2. `neko-plugin` 依赖同步（`plugin/neko_plugin_cli/core/vendor_sync.py`）
 
-- 同步实现在 `core/vendor_sync.py`，CLI 的 `commands/deps_cmd.py` 只是薄适配层；插件制作工作台的「依赖」页（`plugin/server/application/plugin_project_python_packages.py`）调用同一份实现，打包版也能同步，工具由 `plugin/server/infrastructure/python_package_tools.py` 按需准备。
+- 同步实现在 `core/vendor_sync.py`，CLI 的 `commands/deps_cmd.py` 只是薄适配层；插件制作工作台的「依赖」页（`plugin/server/application/plugin_project_python_packages.py`）调用同一份实现，打包版也能同步，uv 和 Python 由公共层 `plugin/server/infrastructure/plugin_tool_runtime.py` 按需准备（`prepare_tool_runtime()` 准备、`read_tool_runtime_status()` 只读状态），其他打包版插件工具也接同一层。
 - 识别链接 / junction 的 `is_link` 在 `core/fs_links.py`，`vendor_sync`、`validate_cmd`、`templates/agent_kit.py` 共用这一份。
 
 - **本项目强制用 uv。** 往 `vendor/` 装依赖一律是 `uv pip install --python <目标解释器> --target <目录>`。这是 uv 自己的安装器，不是 pip，目标解释器里不需要有 pip，读的是 uv 的配置。

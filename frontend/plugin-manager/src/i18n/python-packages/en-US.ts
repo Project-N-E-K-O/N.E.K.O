@@ -78,6 +78,28 @@ const messages = {
   notChecked: 'Not checked yet.',
   setupRequired:
     'The first sync downloads installation tools and a compatible Python interpreter into application data.',
+  toolsPreparing: 'Installation tools are being prepared.',
+  toolsFailed: 'The last preparation of the installation tools failed. The next sync tries again.',
+  toolWaiting: 'Waiting for another preparation to finish',
+  toolDownloadingUv: 'Downloading uv',
+  toolCheckingUv: 'Checking uv',
+  toolInstallingPython: 'Installing Python',
+  toolCheckingPython: 'Checking Python',
+  toolBytes: '{received} / {total} MB',
+  toolBytesUnknown: '{received} MB',
+  toolErrorUnsupportedPlatform: 'Installation tools are not available for this system.',
+  toolErrorDownloadFailed:
+    'Could not download the installation tools. Check the network connection and try again.',
+  toolErrorChecksumMismatch:
+    'The downloaded installation tool failed its integrity check and was not used.',
+  toolErrorPythonInstallFailed:
+    'Could not install the Python interpreter for dependencies. Check the network connection and try again.',
+  toolErrorPythonMismatch: 'The prepared Python interpreter does not match this application.',
+  toolErrorTimeout: 'Preparing the installation tools took too long.',
+  toolErrorBusy: 'Another N.E.K.O. process is preparing the installation tools. Try again later.',
+  toolErrorInternal: 'Preparing the installation tools failed unexpectedly. See technical details.',
+  installerMissing:
+    'No package installer was found. Install uv, or pip for the Python that runs N.E.K.O.',
   formatUnsupported:
     'This dependency file layout cannot be edited here. Edit pyproject.toml in your editor, then refresh.',
   fileFailed: 'Could not read or write the dependency files. See technical details.',

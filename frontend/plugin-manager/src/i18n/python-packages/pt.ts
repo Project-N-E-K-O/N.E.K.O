@@ -73,6 +73,31 @@ const messages: PythonPackageMessages = {
   notChecked: 'Ainda não verificado.',
   setupRequired:
     'A primeira sincronização baixa ferramentas e um Python compatível no diretório de dados do aplicativo.',
+  toolsPreparing: 'As ferramentas de instalação estão sendo preparadas.',
+  toolsFailed:
+    'A última preparação das ferramentas de instalação falhou. A próxima sincronização tentará novamente.',
+  toolWaiting: 'Aguardando outra preparação terminar',
+  toolDownloadingUv: 'Baixando uv',
+  toolCheckingUv: 'Verificando uv',
+  toolInstallingPython: 'Instalando Python',
+  toolCheckingPython: 'Verificando Python',
+  toolBytes: '{received} / {total} MB',
+  toolBytesUnknown: '{received} MB',
+  toolErrorUnsupportedPlatform: 'Não há ferramentas de instalação disponíveis para este sistema.',
+  toolErrorDownloadFailed:
+    'Não foi possível baixar as ferramentas de instalação. Verifique a conexão de rede e tente novamente.',
+  toolErrorChecksumMismatch:
+    'A ferramenta de instalação baixada falhou na verificação de integridade e não foi usada.',
+  toolErrorPythonInstallFailed:
+    'Não foi possível instalar o interpretador Python para as dependências. Verifique a conexão de rede e tente novamente.',
+  toolErrorPythonMismatch: 'O interpretador Python preparado não corresponde a este aplicativo.',
+  toolErrorTimeout: 'A preparação das ferramentas de instalação demorou demais.',
+  toolErrorBusy:
+    'Outro processo do N.E.K.O. está preparando as ferramentas de instalação. Tente novamente mais tarde.',
+  toolErrorInternal:
+    'A preparação das ferramentas de instalação falhou inesperadamente. Veja os detalhes técnicos.',
+  installerMissing:
+    'Nenhum instalador de pacotes foi encontrado. Instale o uv, ou o pip para o Python que executa o N.E.K.O.',
   formatUnsupported:
     'Este formato não pode ser editado aqui. Edite pyproject.toml no editor e atualize.',
   fileFailed:

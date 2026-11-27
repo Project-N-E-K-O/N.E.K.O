@@ -254,13 +254,18 @@ def cli_child_env() -> dict[str, str]:
 def start_cli(
     argv: list[str], *, cwd: Path, merge_stderr: bool,
     env: dict[str, str] | None = None,
+    replace_env: bool = False,
     deadline: float | None = None,
     cancel_event: threading.Event | None = None,
 ) -> subprocess.Popen[str]:
+    """Start a CLI child. ``env`` is added to :func:`cli_child_env`, or with
+    ``replace_env`` is the whole environment (e.g. a prepared plugin tool
+    runtime's, which must not regain the inherited variables it dropped)."""
+    base = {} if replace_env else cli_child_env()
     return process_creation.popen(
         argv,
         cwd=cwd,
-        env={**cli_child_env(), **(env or {})},
+        env={**base, **(env or {}), "PYTHONUNBUFFERED": "1"},
         text=True,
         encoding="utf-8",
         errors="replace",

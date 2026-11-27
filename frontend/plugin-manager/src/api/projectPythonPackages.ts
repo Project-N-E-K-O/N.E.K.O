@@ -63,18 +63,47 @@ export interface PythonPackagesSnapshot {
   running: boolean
   environment: {
     python_version: string
-    python_executable: string | null
     platform: string
     architecture: string
-    installer: string | null
-    installer_path: string | null
     packaged: boolean
+    installer: 'uv' | 'pip' | null
     can_sync: boolean
+    /** Why can_sync is false: a ToolErrorCode, or 'installer_missing' from source. */
     reason: string | null
-    setup_required: boolean
+    tools: ToolRuntimeStatus
   }
   task: PythonPackagesTask | null
   operation: string | null
+}
+/** Mirrors plugin_tool_runtime.ProgressPhase. */
+export type ToolProgressPhase =
+  'waiting' | 'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python'
+/** Mirrors plugin_tool_runtime.ErrorCode. */
+export type ToolErrorCode =
+  | 'unsupported_platform'
+  | 'download_failed'
+  | 'checksum_mismatch'
+  | 'python_install_failed'
+  | 'python_mismatch'
+  | 'canceled'
+  | 'timeout'
+  | 'busy'
+  | 'internal_error'
+export interface ToolProgress {
+  phase: ToolProgressPhase
+  downloaded_bytes: number | null
+  total_bytes: number | null
+}
+/** Mirrors plugin_tool_runtime.RuntimeStatus (shared plugin tool layer). */
+export interface ToolRuntimeStatus {
+  state: 'source' | 'ready' | 'missing' | 'preparing' | 'failed' | 'unsupported'
+  packaged: boolean
+  uv_version: string
+  python: string | null
+  uv: string | null
+  progress: ToolProgress | null
+  error_code: ToolErrorCode | null
+  error_detail: string | null
 }
 export interface PythonPackagesTask {
   task_id: string
@@ -87,6 +116,10 @@ export interface PythonPackagesTask {
   started_at: number | null
   finished_at: number | null
   updated_at: number
+  /** Set while the task prepares plugin tools (phase 'preparing'). */
+  tool_progress?: ToolProgress | null
+  /** The tool layer's code when preparing the tools failed. */
+  error_code?: ToolErrorCode | null
   result: {
     after: Pick<PythonPackagesSnapshot, 'revision' | 'installed' | 'issues'> & {
       /** Findings only the full check produces (a subset of issues). */

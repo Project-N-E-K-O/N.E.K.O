@@ -54,11 +54,6 @@ class VendorSyncOptions:
     clear_empty_vendor: bool = True
 
 
-def find_uv() -> str | None:
-    """Locate uv using the same environment and PATH rules as the CLI."""
-    return _find_uv()
-
-
 def _diagnostic_emitter(report: Callable[[str], None] | None):
     if report is None:
         return print
