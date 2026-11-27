@@ -203,15 +203,17 @@ def _audit_order(use: Use) -> tuple:
     return (use.at, use.permission, use.operation or "", use.subject or "", use.outcome, use.count)
 
 
-def _summary_use(plugin_id: str, permission: str, value: object) -> Use | None:
-    """One last use read back from the summary file."""
+def _summary_use(plugin_id: str, permission: str, value: object, now: datetime) -> Use | None:
+    """One last use read back from the summary file; a time later than
+    ``now`` (saved while the clock was ahead) is taken as ``now``, so newer
+    real uses replace it."""
     if not isinstance(value, dict):
         return None
     at = _parse_time(value.get("at"))
     outcome = value.get("outcome")
     if at is None or not isinstance(outcome, str) or outcome not in _OUTCOMES:
         return None
-    return Use(at, plugin_id, permission, outcome, _text(value.get("origin_kind")))
+    return Use(min(at, now), plugin_id, permission, outcome, _text(value.get("origin_kind")))
 
 
 def _summary_dict(use: Use | None) -> dict | None:
@@ -538,8 +540,9 @@ class UsageIndex:
 
     def _merge_summary(self, document: dict, plugins: dict) -> None:
         # A time later than now (the clock was ahead when it was saved)
-        # would hold coverage in the future for good: taken as now, which
-        # keeps the gap (or loss) and lets it age out.
+        # would hold coverage, a loss or a last use in the future for good:
+        # taken as now, which keeps the gap (or loss) and lets it age out,
+        # and lets newer real uses replace the last use.
         now = self._now()
 
         def not_after_now(value: object) -> datetime | None:
@@ -567,17 +570,17 @@ class UsageIndex:
                     if not permission or not isinstance(item, dict):
                         continue
                     key = (plugin_id, permission)
-                    last = _summary_use(plugin_id, permission, item.get("last"))
+                    last = _summary_use(plugin_id, permission, item.get("last"), now)
                     if last is None:
                         continue
                     if key not in self._last or last.at > self._last[key].at:
                         self._last[key] = last
-                    effective = _summary_use(plugin_id, permission, item.get("last_effective"))
+                    effective = _summary_use(plugin_id, permission, item.get("last_effective"), now)
                     if effective is not None and effective.outcome != OUTCOME_BLOCKED and (
                         key not in self._last_effective or effective.at > self._last_effective[key].at
                     ):
                         self._last_effective[key] = effective
-                    first = _parse_time(item.get("first_at")) or last.at
+                    first = not_after_now(item.get("first_at")) or last.at
                     if key not in self._first or first < self._first[key]:
                         self._first[key] = first
 

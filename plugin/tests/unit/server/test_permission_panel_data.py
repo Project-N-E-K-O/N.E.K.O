@@ -2645,6 +2645,26 @@ def test_summary_times_after_now_are_taken_as_now(tmp_path):
     assert later.last_use_covers_days(30) is True
 
 
+def test_summary_uses_after_now_are_taken_as_now(tmp_path):
+    """A last use saved while the clock was ahead does not outrank the real
+    uses that come after it."""
+    index = _index(tmp_path)
+    future = _ts(-timedelta(days=10))
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(timedelta(days=40)), "gap_at": None,
+        "plugins": {"a": {"lost_at": None, "permissions": {MEMORY: {
+            "last": {"at": future, "outcome": "allowed", "origin_kind": "chat_tool"},
+            "last_effective": {"at": future, "outcome": "allowed", "origin_kind": "chat_tool"},
+            "first_at": future,
+        }}}},
+    }), encoding="utf-8")
+    assert index.last_use("a", MEMORY).at == NOW
+    assert index.last_effective_use("a", MEMORY).at == NOW
+    assert index.first_use("a", MEMORY) == NOW
+    index.observe(_decision("a", MEMORY, verdict="would_deny", enforcing=True))
+    assert index.last_use("a", MEMORY).outcome == "blocked"
+
+
 def test_a_gap_is_saved_before_the_rotation_goes_on(env, monkeypatch):
     """Read fails at the first rotation, the unread backup is deleted by it,
     and the process dies before any other save: the gap is on disk already."""
