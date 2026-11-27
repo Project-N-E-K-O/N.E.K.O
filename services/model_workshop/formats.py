@@ -600,12 +600,21 @@ def _vrm(resources: _Resources) -> None:
         _require(0 < json_size <= resources.limits.json_bytes and json_size % 4 == 0 and 20 + json_size <= size, entry)
         data = _json_object(handle.read(json_size), entry, resources.limits)
         binary_size = 0
-        if 20 + json_size < size:
-            binary_header = handle.read(8)
-            _require(len(binary_header) == 8, entry)
-            binary_size, binary_type = struct.unpack("<2I", binary_header)
-            _require(binary_type == 0x004E4942 and binary_size % 4 == 0 and 28 + json_size + binary_size == size, entry)
-        # Container verification already read/hash-checked the whole binary chunk.
+        offset, chunk_count = 20 + json_size, 1
+        while offset < size:
+            _require(chunk_count < resources.limits.binary_records, entry, "model_binary_too_complex")
+            chunk_header = handle.read(8)
+            _require(len(chunk_header) == 8, entry)
+            chunk_size, chunk_type = struct.unpack("<2I", chunk_header)
+            offset += 8 + chunk_size
+            _require(chunk_size % 4 == 0 and offset <= size and chunk_type != 0x4E4F534A, entry)
+            if chunk_type == 0x004E4942:
+                _require(chunk_count == 1, entry)
+                binary_size = chunk_size
+            chunk_count += 1
+            # The bundle verifier has already read and hashed all chunk payloads.
+            if offset < size:
+                handle.seek(offset)
     asset = data.get("asset")
     _require(isinstance(asset, dict) and asset.get("version") == "2.0" and asset.get("minVersion", "2.0") == "2.0", entry)
     _gltf_extensions(data, entry)
@@ -724,8 +733,8 @@ def _vrm(resources: _Resources) -> None:
         # Geometry.clone() copies ordinary arrays independently. Interleaved
         # attributes share a clone of their backing view, including stride padding.
         clone_size = count * (view.get("byteStride", element_size) if view is not None else element_size)
-        clone_view = accessor["bufferView"] if interleaved and "sparse" not in accessor else None
-        accessor_clones.append((clone_size, clone_view))
+        clone_source = (accessor["bufferView"], (offset // stride) * stride) if interleaved else None
+        accessor_clones.append((clone_size, clone_source))
         if view is None or "sparse" in accessor:
             # Sparse data over an existing view clones private backing storage.
             # Sum every private array before checking supported sparse layouts.
@@ -774,8 +783,10 @@ def _vrm(resources: _Resources) -> None:
                 if value is not None:
                     _require(texture_sources[_index(value, textures, entry)], entry)
     mesh_morph_counts, mesh_draw_counts, mesh_weight_counts = [], [], []
+    triangle_modes = (4, 5, 6)
+    meshes_with_rendered_morphs, meshes_without_node_influences = set(), set()
     morph_allocated = 0
-    for mesh in meshes:
+    for mesh_index, mesh in enumerate(meshes):
         _require(isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list), entry)
         _require(isinstance(mesh.get("name"), str) or mesh.get("name") in (None, False, ""), entry)
         counts = []
@@ -810,6 +821,7 @@ def _vrm(resources: _Resources) -> None:
             slots = max((slot for semantic, slot in (("POSITION", 1), ("NORMAL", 2), ("COLOR_0", 3))
                          if any(semantic in morph for morph in morphs)), default=0)
             if slots:
+                meshes_with_rendered_morphs.add(mesh_index)
                 _require(any("POSITION" in morph for morph in morphs), entry)
                 _require("POSITION" in primitive["attributes"], entry)
                 position = accessors[primitive["attributes"]["POSITION"]]
@@ -824,6 +836,9 @@ def _vrm(resources: _Resources) -> None:
                             _require(accessors[morph[semantic]]["count"] == position["count"], entry)
                 morph_allocated += position["count"] * slots * 32 * len(morphs)
                 _require(morph_allocated <= resources.limits.vrm_morph_bytes, entry, "model_accessor_budget_exceeded")
+            elif morphs and mode in triangle_modes:
+                # createNodeMesh writes node weights on every triangle mesh.
+                meshes_without_node_influences.add(mesh_index)
             if mode in (5, 6):
                 # toTrianglesDrawMode clones each primitive's geometry even when
                 # its source accessors are shared, then allocates triangle indices.
@@ -835,12 +850,16 @@ def _vrm(resources: _Resources) -> None:
                 for index in clone_indices:
                     if index is None:
                         continue
-                    size, view_index = accessor_clones[index]
-                    if view_index is None:
+                    size, clone_source = accessor_clones[index]
+                    if clone_source is None:
                         allocated += size
                     else:
-                        cloned_views[view_index] = max(cloned_views.get(view_index, 0), size)
-                allocated += sum(cloned_views.values()) + primitive_count * 4
+                        view_index, start = clone_source
+                        # InterleavedBuffer.clone caches the first copy per underlying
+                        # buffer, including its slice bounds. Different slices would alias.
+                        _require(cloned_views.setdefault(view_index, (start, size)) == (start, size),
+                                 entry, "unsupported_model_structure")
+                allocated += sum(size for _, size in cloned_views.values()) + primitive_count * 4
                 # The original index is also cloned before being replaced. For
                 # unindexed geometry the helper first generates a sequential index.
                 allocated += accessor_clones[primitive["indices"]][0] if "indices" in primitive else max(
@@ -858,12 +877,22 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(animation, dict), entry)
         samplers, channels = animation.get("samplers"), animation.get("channels")
         _require(isinstance(samplers, list) and bool(samplers) and isinstance(channels, list) and bool(channels), entry)
+        parameters = animation.get("parameters")
+        _require("parameters" not in animation or isinstance(parameters, dict), entry)
+        sampler_accessors = []
         for sampler in samplers:
             _require(isinstance(sampler, dict), entry)
-            source = accessors[_index(sampler.get("input"), accessors, entry)]
-            _index(sampler.get("output"), accessors, entry)
+            input_ref, output_ref = sampler.get("input"), sampler.get("output")
+            if parameters is not None:
+                # GLTFLoader supports legacy sampler names, even in a GLB 2 file.
+                _require(all(type(ref) in (int, str) for ref in (input_ref, output_ref)), entry)
+                input_ref, output_ref = parameters.get(str(input_ref)), parameters.get(str(output_ref))
+            input_index = _index(input_ref, accessors, entry)
+            output_index = _index(output_ref, accessors, entry)
+            source = accessors[input_index]
             _require(source["type"] == "SCALAR" and source["componentType"] == 5126, entry)
             _require(sampler.get("interpolation", "LINEAR") in ("LINEAR", "STEP", "CUBICSPLINE"), entry)
+            sampler_accessors.append((input_index, output_index))
         for channel in channels:
             _require(isinstance(channel, dict), entry)
             _index(channel.get("sampler"), samplers, entry)
@@ -872,7 +901,8 @@ def _vrm(resources: _Resources) -> None:
             if "node" in target:
                 _index(target["node"], nodes, entry)
             sample = samplers[channel["sampler"]]
-            sample_input, output = accessors[sample["input"]], accessors[sample["output"]]
+            input_index, output_index = sampler_accessors[channel["sampler"]]
+            sample_input, output = accessors[input_index], accessors[output_index]
             path = target["path"]
             shape = {"translation": "VEC3", "scale": "VEC3", "rotation": "VEC4", "weights": "SCALAR"}[path]
             _require(output["type"] == shape, entry)
@@ -884,7 +914,7 @@ def _vrm(resources: _Resources) -> None:
             _require(floating or normalized, entry)
             if "node" in target:
                 # GLTFLoader passes the backing arrays directly to keyframe tracks.
-                _require(all(accessor_clones[sample[key]][1] is None for key in ("input", "output")),
+                _require(all(accessor_clones[index][1] is None for index in (input_index, output_index)),
                          entry, "unsupported_model_structure")
                 if normalized:
                     allocated += output["count"] * (1 if shape == "SCALAR" else int(shape[-1])) * 4
@@ -907,17 +937,22 @@ def _vrm(resources: _Resources) -> None:
     instanced_vertices = 0
     skinned_meshes = set()
     mesh_references: dict[int, int] = {}
+    children_seen = set()
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
         for child in node.get("children", []):
             _index(child, nodes, entry)
+            _require(child not in children_seen, entry)
+            children_seen.add(child)
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
             if field in node:
                 _index(node[field], table, entry)
         if "weights" in node:
             _require("mesh" in node, entry)
             _require_morph_weights(node["weights"], mesh_morph_counts[node["mesh"]], entry)
+            _require(not node["weights"] or node["mesh"] not in meshes_without_node_influences,
+                     entry, "unsupported_model_structure")
         light = node.get("extensions", {}).get("KHR_lights_punctual")
         if light is not None:
             _require(isinstance(light, dict), entry)
@@ -942,10 +977,16 @@ def _vrm(resources: _Resources) -> None:
                 instance_counts.add(accessor["count"])
             _require(len(instance_counts) <= 1, entry)
             if instance_counts:
+                primitives = meshes[node["mesh"]]["primitives"]
+                # The loader falls back for lines/points. Its InstancedMesh path
+                # has no morph influences or morph texture for the renderer.
+                _require(node["mesh"] not in meshes_with_rendered_morphs
+                         or any(primitive.get("mode", 4) not in triangle_modes for primitive in primitives),
+                         entry, "unsupported_model_structure")
                 instances = next(iter(instance_counts))
                 # GLTFMeshGpuInstancing creates count*16 Float32 values per
                 # node and primitive, even when all nodes share one accessor.
-                allocated += next(iter(instance_counts)) * 64 * len(meshes[node["mesh"]]["primitives"])
+                allocated += instances * 64 * len(primitives)
                 _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "mesh" in node:
             mesh_index = node["mesh"]
@@ -962,7 +1003,7 @@ def _vrm(resources: _Resources) -> None:
     skin_weight_work = 0
     for mesh_index in skinned_meshes:
         for primitive in meshes[mesh_index]["primitives"]:
-            if primitive.get("mode", 4) not in (4, 5, 6):
+            if primitive.get("mode", 4) not in triangle_modes:
                 continue
             attrs = primitive["attributes"]
             _require("JOINTS_0" in attrs and "WEIGHTS_0" in attrs, entry)
@@ -994,9 +1035,12 @@ def _vrm(resources: _Resources) -> None:
         for joint in skin["joints"]:
             _index(joint, nodes, entry)
         if "inverseBindMatrices" in skin:
-            matrices = accessors[_index(skin["inverseBindMatrices"], accessors, entry)]
+            matrix_index = _index(skin["inverseBindMatrices"], accessors, entry)
+            matrices = accessors[matrix_index]
             _require(matrices["type"] == "MAT4" and matrices["componentType"] == 5126
                      and matrices["count"] >= len(skin["joints"]), entry)
+            # loadSkin passes the backing array straight to Matrix4.fromArray.
+            _require(accessor_clones[matrix_index][1] is None, entry, "unsupported_model_structure")
     for scene in scenes:
         _require(isinstance(scene, dict) and isinstance(scene.get("nodes", []), list), entry)
         _require(isinstance(scene.get("name"), str) or scene.get("name") in (None, False, ""), entry)

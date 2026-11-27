@@ -472,14 +472,19 @@ def test_referenced_generic_json_motion_is_checked_by_content(tmp_path, malforme
 def test_generic_optional_physics_uses_the_physics_schema(tmp_path, name):
     files = live2d_files()
     model = json.loads(files["Avatar.model3.json"])
-    # The bare standard basename is recognizable even when an exporter points elsewhere.
-    model["FileReferences"]["Physics"] = "Physics.json"
+    if name != "physics3.json":
+        model["FileReferences"]["Physics"] = name
     files["Avatar.model3.json"] = json.dumps(model).encode()
-    files[name] = b'{"Version":3,"Meta":{"PhysicsSettingCount":0},"PhysicsSettings":[]}'
-    assert validate_model_bundle(make_native_bundle(tmp_path, files=files)).model_format == "live2d"
+    files[name] = json.dumps({
+        "Version": 3, "Meta": {"PhysicsSettingCount": 0, "EffectiveForces": {
+            "Gravity": {"X": 0, "Y": -1}, "Wind": {"X": 0, "Y": 0},
+        }}, "PhysicsSettings": [],
+    }).encode()
+    assert validate_model_bundle(make_native_bundle(tmp_path, files=files)).compatibility_warning_count == 0
     files[name] = b'{"Version":3}'
-    with pytest.raises(ModelFormatError):
+    with pytest.raises(ModelFormatError) as exc:
         validate_model_bundle(make_native_bundle(tmp_path, files=files))
+    assert exc.value.path == name
 
 
 @pytest.mark.parametrize(("extension", "header"), [("mp3", b'\xff\xfb\xb0\x04'), ("mp3", b'ID3'),
@@ -625,6 +630,31 @@ def test_accepts_supported_vrm_extensions_and_preserves_bytes(tmp_path, version)
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("kind,position,length,accepted", [
+    (b"TEST", "after_bin", 4, True),
+    (b"TEST", "after_bin", 0, True),
+    (b"TEST", "before_bin", 4, False),
+    (b"TEST", "after_bin", 3, False),
+    (b"TEST", "after_bin", 8, False),
+    (b"BIN\x00", "after_bin", 4, False),
+    (b"JSON", "after_bin", 4, False),
+])
+def test_vrm_validates_framing_of_additional_glb_chunks(tmp_path, kind, position, length, accepted):
+    raw = bytearray(vrm_bytes())
+    chunk = struct.pack("<I4s", length, kind) + bytes(min(4, length))
+    if position == "before_bin":
+        raw[-12:-12] = chunk
+    else:
+        raw.extend(chunk)
+    struct.pack_into("<I", raw, 8, len(raw))
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
 def vrm_graph(data):
     """Independent loader dependency fixture: texture, animation, skin and accessors."""
     matrix = struct.pack("<16f", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
@@ -640,6 +670,47 @@ def vrm_graph(data):
     data["nodes"][0]["skin"] = 0
     data["animations"] = [{"samplers": [{"input": 0, "output": 1}],
                            "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]}]
+
+
+@pytest.mark.parametrize("parameters,selectors,accepted", [
+    ({"0": 0, "1": 1}, (0, 1), True),
+    ({"time": 0, "motion": 1}, ("time", "motion"), True),
+    ({}, (0, 1), False),
+    ({"0": 0, "1": 2}, (0, 1), False),
+    (None, (0, 1), False),
+])
+def test_vrm_checks_resolved_legacy_animation_accessors(tmp_path, parameters, selectors, accepted):
+    def graph(data):
+        vrm_graph(data)
+        animation = data["animations"][0]
+        animation["parameters"] = parameters
+        animation["samplers"][0].update(input=selectors[0], output=selectors[1])
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("interleaved", [False, True])
+def test_vrm_inverse_bind_matrices_must_be_tightly_packed(tmp_path, interleaved):
+    def graph(data):
+        vrm_graph(data)
+        matrix = data["accessors"][2]
+        if interleaved:
+            raw = bytes(68)
+            data["buffers"].append({"byteLength": len(raw), "uri": "data:application/octet-stream;base64," + base64.b64encode(raw).decode()})
+            data["bufferViews"].append({"buffer": 2, "byteLength": len(raw), "byteStride": 68})
+            matrix.update(bufferView=2, byteOffset=4)
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if interleaved:
+        with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+            validate_vrm_bundle(path)
+    else:
+        assert validate_vrm_bundle(path).model_format == "vrm"
 
 
 @pytest.mark.parametrize("reference", ["tool.vtube.json#x.json", "tool.vtube.json?x.json", "tool%2Evtube.json", "TOOL.vtube.json"])
@@ -1363,6 +1434,27 @@ def test_gpu_instances_validate_attributes_and_per_node_matrix_budget(tmp_path, 
         with pytest.raises(ModelFormatError): validate_model_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=512))
 
 
+@pytest.mark.parametrize("mode,morphs,accepted", [(4, True, False), (5, True, False), (0, True, True), (4, False, True)])
+def test_vrm_instancing_requires_meshes_the_renderer_can_draw(tmp_path, mode, morphs, accepted):
+    def graph(data):
+        data["accessors"] = [{"componentType": 5126, "count": 3, "type": "VEC3"}]
+        primitive = {"attributes": {"POSITION": 0}, "mode": mode}
+        if morphs:
+            primitive["targets"] = [{"POSITION": 0}]
+        data["meshes"] = [{"primitives": [primitive]}]
+        data["extensionsUsed"].append("EXT_mesh_gpu_instancing")
+        data["nodes"][0].update(mesh=0, extensions={
+            "EXT_mesh_gpu_instancing": {"attributes": {"TRANSLATION": 0}},
+        })
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+            validate_vrm_bundle(path)
+
+
 @pytest.mark.parametrize('case', ['vrm0_texture', 'missing_source'])
 def test_vrm_texture_dependencies_must_be_loadable(tmp_path, case):
     def graph(data):
@@ -1518,6 +1610,27 @@ def test_triangle_conversion_counts_interleaved_padding_and_shares_its_clone(tmp
     else:
         with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
             validate_model_bundle(path, format_limits=limits)
+
+
+@pytest.mark.parametrize("mode", [5, 6])
+@pytest.mark.parametrize("offset,count,accepted", [(12, 3, True), (72, 3, False), (12, 2, False)])
+def test_triangle_conversion_preserves_shared_interleaved_slices(tmp_path, mode, offset, count, accepted):
+    def graph(data):
+        raw = bytes(144)
+        data["buffers"].append({"byteLength": len(raw), "uri": "data:application/octet-stream;base64," + base64.b64encode(raw).decode()})
+        data["bufferViews"].append({"buffer": 1, "byteLength": len(raw), "byteStride": 24})
+        position = {"bufferView": 1, "componentType": 5126, "type": "VEC3", "count": 3}
+        normal = {**position, "byteOffset": offset, "count": count}
+        data["accessors"] = [position, normal]
+        data["meshes"] = [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "mode": mode}]}]
+        data["nodes"][0]["mesh"] = 0
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+            validate_vrm_bundle(path)
 
 
 def test_triangle_conversion_counts_missing_morphs_that_fall_back_to_base_attributes(tmp_path):
@@ -2026,6 +2139,30 @@ def test_vrm_node_weights_require_a_mesh(tmp_path):
         validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("mode,semantic,weights,accepted", [
+    (4, "POSITION", [0.5], True),
+    (4, "TANGENT", [0.5], False),
+    (4, "TANGENT", None, True),
+    (1, "TANGENT", [0.5], True),
+])
+def test_vrm_node_weights_only_override_initialized_mesh_influences(tmp_path, mode, semantic, weights, accepted):
+    def graph(data):
+        data["accessors"] = [{"componentType": 5126, "type": "VEC3", "count": 3}]
+        data["meshes"] = [{"primitives": [{
+            "attributes": {"POSITION": 0}, "mode": mode, "targets": [{semantic: 0}],
+        }]}]
+        data["nodes"][0]["mesh"] = 0
+        if weights is not None:
+            data["nodes"][0]["weights"] = weights
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^unsupported_model_structure$"):
+            validate_vrm_bundle(path)
+
+
 @pytest.mark.parametrize('table', ['light', 'mesh', 'node', 'camera', 'scene'])
 @pytest.mark.parametrize('name,valid', [(5, False), (True, False), ([], False), ({}, False),
     ('Avatar', True), ('', True), (None, True), (False, True), (0, True)])
@@ -2118,13 +2255,24 @@ def test_model_default_hierarchy_limit_rejects_deep_flat_references(tmp_path, ki
     with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'): validate_model_bundle(path)
 
 
-def test_vrm_shared_descendants_keep_longest_path_even_when_already_checked(tmp_path):
+def test_vrm_single_parent_chain_counts_depth_even_when_children_are_already_checked(tmp_path):
     def graph(data):
-        data['nodes'] = [{}, {'children': [0]}, {'children': [1]}, {'children': [2]}, {'children': [1]}]
+        data['nodes'] = [{}, {'children': [0]}, {'children': [1]}, {'children': [2]}, {}]
         data['scenes'][0]['nodes'] = [3, 4]
     path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': vrm_bytes(change=graph)})
     with pytest.raises(ModelFormatError): validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=3))
     assert validate_model_bundle(path, format_limits=FormatLimits(hierarchy_depth=4)).model_format == 'vrm'
+
+
+@pytest.mark.parametrize("parent_lists", [([0], [0]), ([0, 0], [])])
+def test_vrm_nodes_allow_only_one_parent_edge(tmp_path, parent_lists):
+    def graph(data):
+        data["nodes"] = [{}, *({"children": children} for children in parent_lists)]
+        data["scenes"][0]["nodes"] = [1, 2]
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+        validate_vrm_bundle(path)
 
 
 @pytest.mark.parametrize('semantic', ['NORMAL', 'COLOR_0'])
