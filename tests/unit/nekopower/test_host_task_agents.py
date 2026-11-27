@@ -3568,8 +3568,18 @@ async def _ended(host: Any, commission_id: str) -> bool:
 
 
 async def _child_working(host: Any, commission_id: str) -> bool:
+    """Whether the first child task agent is working and its start is over.
+
+    The ledger says ``working`` before the start is done with the session: a
+    stop that comes in between is seen by the start, which closes the session
+    itself, rather than by the stop. Tests that look at what the stop does wait
+    for the session to be ready as well.
+    """
     children = await host.ledger.select(parent_id=commission_id)
-    return bool(children) and children[0].status == "working"
+    if not children or children[0].status != "working":
+        return False
+    session = host.task_agents._sessions.get(children[0].id)
+    return session is not None and session.ready
 
 
 async def test_a_task_agent_being_started_outlives_whoever_handed_it_over(tmp_path, hosts):
