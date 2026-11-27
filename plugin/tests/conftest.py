@@ -172,6 +172,37 @@ def _no_background_host_model_autobind(request: pytest.FixtureRequest, monkeypat
     )
 
 
+_GIT_IDENTITY_ENV = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep the developer's git identity and global config out of test repos.
+
+    Identity variables beat ``git -c user.name=...``, and a global or system
+    config (signing, hooks, default branch, aliases) changes what the CLI's
+    git calls see. CI runners have neither, so a test that passed there could
+    fail on a developer machine.
+    """
+    for name in _GIT_IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    # Not under tmp_path: many tests turn tmp_path itself into the repository.
+    empty_config = tmp_path_factory.getbasetemp() / "gitconfig-isolated"
+    if not empty_config.exists():
+        empty_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 @pytest.fixture(autouse=True)
 def _clear_leaked_running_loop(request: pytest.FixtureRequest):
     """Temporarily clear any running event loop leaked by Playwright's greenlet

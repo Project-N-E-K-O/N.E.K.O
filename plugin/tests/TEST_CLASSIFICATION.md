@@ -6,7 +6,7 @@ This file is the canonical taxonomy for `plugin/tests`.
 
 - `unit/`: isolated logic tests, mocked dependencies, no real network/service boot.
 - `integration/`: in-process ASGI integration (`httpx` + `ASGITransport`).
-- `e2e/`: browser/UI smoke via Playwright (`--run-plugin-e2e` opt-in).
+- Browser/UI E2E: none at present; tests marked `plugin_e2e` need `--run-plugin-e2e`.
 
 ## 2) Current Unit Test Domains
 
@@ -59,10 +59,6 @@ This file is the canonical taxonomy for `plugin/tests`.
 - `integration/test_health_routes.py`: health endpoint contracts.
 - `integration/test_metrics_routes.py`: metrics endpoint contracts.
 - `integration/test_runs_upload_route.py`: run upload route behavior.
-
-### E2E
-
-- `e2e/test_plugin_ui_smoke.py`: plugin UI smoke.
 
 ## 4) Recommended Target Layout (Next Step)
 

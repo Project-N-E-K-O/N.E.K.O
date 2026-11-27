@@ -102,20 +102,32 @@ def test_media_backpressure_does_not_block_control_uplink() -> None:
             image_uplink_endpoint=host.image_uplink_endpoint,
         )
         payload = b"x" * (512 * 1024)
-        flood = [
-            asyncio.create_task(
-                child.send_image(
-                    f"flood-{index}",
-                    mime="image/jpeg",
-                    data=payload,
-                    timeout=0.25,
-                )
-            )
-            for index in range(32)
-        ]
+        flood: list[asyncio.Task[None]] = []
         try:
-            outcomes = await asyncio.gather(*flood, return_exceptions=True)
-            assert any(isinstance(item, TimeoutError) for item in outcomes)
+            # Nobody drains the host's image socket, so sends must start timing
+            # out once it is full. How much fits is platform dependent: besides
+            # the two 8-message HWMs, Linux autotunes loopback TCP buffers to
+            # several MB, enough to absorb a single 32 x 512 KiB wave. Flood in
+            # concurrent waves until one send times out (bounded at 8 waves).
+            saturated = False
+            for wave in range(8):
+                batch = [
+                    asyncio.create_task(
+                        child.send_image(
+                            f"flood-{wave}-{index}",
+                            mime="image/jpeg",
+                            data=payload,
+                            timeout=0.25,
+                        )
+                    )
+                    for index in range(32)
+                ]
+                flood.extend(batch)
+                outcomes = await asyncio.gather(*batch, return_exceptions=True)
+                if any(isinstance(item, TimeoutError) for item in outcomes):
+                    saturated = True
+                    break
+            assert saturated
             await asyncio.wait_for(
                 asyncio.to_thread(
                     child.send_uplink,
