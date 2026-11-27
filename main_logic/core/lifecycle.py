@@ -2927,10 +2927,27 @@ class LifecycleMixin:
         def ended() -> bool:
             return not self.is_active or self.session is None
 
+        async def within_deadline(coro) -> bool:
+            # Closing a provider connection has no timeout of its own: waited for only as long
+            # as is left, then left to finish by itself (not cancelled).
+            task = asyncio.ensure_future(coro)
+            left = deadline - loop.time()
+            if left <= 0:
+                return False
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=left)
+            except asyncio.TimeoutError:
+                return False
+            return True
+
+        async def drop_preparation() -> None:
+            await self._cleanup_pending_session_resources()
+            await self._reset_preparation_state()
+
         # A preparation made with the switches as they were goes first: left warm, the end
         # of the turn under way would swap it in instead.
-        await self._cleanup_pending_session_resources()
-        await self._reset_preparation_state()
+        if not await within_deadline(drop_preparation()):
+            return False
         # The turn under way ends first, so that what it said is in memory for the new session.
         while not self._can_release_proactive():
             if loop.time() >= deadline or ended():
@@ -2944,18 +2961,25 @@ class LifecycleMixin:
         def still_up() -> bool:
             return self.is_active and self.session is session
 
-        await self._cleanup_pending_session_resources()
-        await self._reset_preparation_state()
-        # A turn begun while that was dropped ends first too (its cache would go with the reset).
-        while not self._can_release_proactive():
-            if loop.time() >= deadline or not still_up():
-                return False
-            await asyncio.sleep(0.2)
-        # The turn just ended reaches memory before the new session reads it (/new_dialog), as
-        # on a cold start, but the summary under way is not preempted: the hot swap takes it in.
-        await self._wait_queued_memory_writes(self.lanlan_name)
-        if not still_up():
+        if not await within_deadline(drop_preparation()):
             return False
+        while True:
+            # A turn begun while that was dropped ends first too (its cache would go with the reset).
+            while not self._can_release_proactive():
+                if loop.time() >= deadline or not still_up():
+                    return False
+                await asyncio.sleep(0.2)
+            # The turn just ended reaches memory before the new session reads it (/new_dialog), as
+            # on a cold start, but the summary under way is not preempted: the hot swap takes it in.
+            await self._wait_queued_memory_writes(self.lanlan_name)
+            if not still_up():
+                return False
+            if self._can_release_proactive():
+                break
+            # A turn began during that wait: it ends, and is written, before preparing (nothing
+            # of it is cached for the new session until the preparation starts).
+            if loop.time() >= deadline:
+                return False
         await self._trigger_immediate_preparation_for_extra()
         warmed = self.pending_session_warmed_up_event
         if warmed is None:
@@ -2965,7 +2989,7 @@ class LifecycleMixin:
             if loop.time() >= deadline or preparing is None or (preparing.done() and not warmed.is_set()):
                 return False
             if not still_up():
-                await self._drop_renewal_preparation()
+                await within_deadline(self._drop_renewal_preparation())
                 return False
             await asyncio.sleep(0.2)
         while loop.time() < deadline:
@@ -2973,10 +2997,10 @@ class LifecycleMixin:
                 if self.is_active and self.session is not None:
                     return True
                 # Ended (or torn down) meanwhile: no swap is to bring a session back.
-                await self._drop_renewal_preparation()
+                await within_deadline(self._drop_renewal_preparation())
                 return False
             if not self.is_active:
-                await self._drop_renewal_preparation()
+                await within_deadline(self._drop_renewal_preparation())
                 return False
             swapping = self.final_swap_task is not None and not self.final_swap_task.done()
             if not swapping and not self.is_hot_swap_imminent and self._can_release_proactive():

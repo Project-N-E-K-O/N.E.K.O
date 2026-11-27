@@ -51,6 +51,8 @@ TASK_ID_PREFIX = "nekopower-enable:"
 REFUSALS_TO_COOL_DOWN = 2
 COOLDOWN_SECONDS = 5 * 60
 CARD_SECONDS = 2 * 60
+# How long the report waits for the session renewal (renew_session_now waits 60 s itself).
+RENEWAL_WAIT_SECONDS = 90
 
 # What a card's answer comes to.
 ACCEPTED = "accepted"

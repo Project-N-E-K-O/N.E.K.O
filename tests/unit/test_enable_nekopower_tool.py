@@ -1125,3 +1125,65 @@ def test_stopping_does_not_cut_short_a_swap_under_way():
     fake.is_hot_swap_imminent = True
     asyncio.run(LifecycleMixin._drop_renewal_preparation(fake))
     assert fake.calls == []
+
+
+def test_a_close_that_hangs_does_not_hang_the_renewal():
+    # CodeRabbit on #4155: closing a provider connection has no timeout of its own; the
+    # renewal gives up within its deadline and leaves the close to finish (not cancelled).
+    fake = _Renewing()
+    closes = []
+
+    async def hanging_cleanup():
+        closes.append(asyncio.current_task())
+        await asyncio.sleep(30)
+
+    fake._cleanup_pending_session_resources = hanging_cleanup
+
+    async def run():
+        started = asyncio.get_running_loop().time()
+        result = await LifecycleMixin.renew_session_now(fake, wait_seconds=0.3)
+        return result, closes[0].cancelled(), asyncio.get_running_loop().time() - started
+
+    result, cancelled, took = asyncio.run(run())
+    assert result is False
+    assert took < 5, took
+    assert cancelled is False
+    assert "prepare" not in fake.calls
+
+
+def test_the_report_does_not_wait_for_ever_for_a_renewal(monkeypatch):
+    monkeypatch.setattr(nekopower_enable, "RENEWAL_WAIT_SECONDS", 0.2)
+    manager = _session(page=_Page(), master_on=True)
+
+    async def renew():
+        await asyncio.sleep(30)
+        return True
+
+    manager.renew_session_now = renew
+    manager._fire_task = asyncio.ensure_future  # renewals run for real here
+    asyncio.run(manager.after_nekopower_enabled(""))
+    assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_ACCEPTED_NOT_RENEWED["zh"]]
+
+
+def test_a_turn_begun_during_the_memory_wait_ends_and_is_written_before_preparing():
+    # Greptile on #4155: nothing of a turn begun before the preparation starts is cached for
+    # the new session; it ends, and is written, first.
+    fake = _Renewing()
+    waits = []
+
+    async def memory_wait(lanlan_name):
+        fake.calls.append("memory")
+        waits.append(True)
+        if len(waits) == 1:
+            fake.idle = False
+
+            async def turn_ends():
+                await asyncio.sleep(0.3)
+                fake.calls.append("turn ends")
+                fake.idle = True
+
+            asyncio.ensure_future(turn_ends())
+
+    fake._wait_queued_memory_writes = memory_wait
+    assert asyncio.run(LifecycleMixin.renew_session_now(fake, wait_seconds=5)) is True
+    assert fake.calls[-5:] == ["memory", "turn ends", "memory", "prepare", "swap"]

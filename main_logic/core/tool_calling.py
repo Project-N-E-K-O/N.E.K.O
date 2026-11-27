@@ -540,7 +540,7 @@ class ToolCallingMixin:
         """Renew, once an earlier renewal's dropping is over: its cleanup must not take this one's preparation."""
         dropping = getattr(self, "_nekopower_dropping", None)
         if dropping is not None and not dropping.done():
-            await asyncio.wait({dropping})
+            await asyncio.wait({dropping}, timeout=nekopower_enable.RENEWAL_WAIT_SECONDS)
         return await self.renew_session_now()
 
     def _drop_nekopower_renewal(self) -> None:
@@ -612,9 +612,9 @@ class ToolCallingMixin:
         renewal = self._renew_for_nekopower_on()
         # Waited for without taking on its fate: a renewal dropped because NekoPower went off
         # again is not this report's cancellation.
-        await asyncio.wait({renewal})
+        await asyncio.wait({renewal}, timeout=nekopower_enable.RENEWAL_WAIT_SECONDS)
         renewed = False
-        if not renewal.cancelled():
+        if renewal.done() and not renewal.cancelled():
             if renewal.exception() is not None:
                 logger.warning(
                     "[%s] enable_nekopower: session not renewed: %s",
