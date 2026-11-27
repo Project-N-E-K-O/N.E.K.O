@@ -104,26 +104,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
         # Stream downloads to strictly limit resource size and prevent memory overflow or large-file attacks
         MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
-        # CDN domains with known SSL-certificate issues (such as Qiniu CDN hostname mismatches);
-        # use permissive SSL from the first request for these domains to avoid wasting a timeout.
-        # 2026-04-16: disable qn.doutub.com with the doutub.com ownership change; the allowlist is currently empty,
-        # and other domains still use the ssl.SSLError downgrade fallback.
-        _SSL_RELAXED_HOSTS: set[str] = set()
-        need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
-
-        def _make_client(relaxed: bool = False) -> httpx.AsyncClient:
-            if relaxed:
-                ctx = ssl.create_default_context()
-                try:
-                    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
-                except Exception as e:
-                    logger.debug("[Meme Proxy] set_ciphers SECLEVEL=1 不可用，使用默认密码套件: %s", e)
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                return httpx.AsyncClient(timeout=15.0, follow_redirects=False, verify=ctx)
-            return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
-
-        async with _make_client(relaxed=need_relaxed_ssl) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             current_url = decoded_url
             for _ in range(4):  # Follow at most 3 redirects (4 requests)
                 async with client.stream("GET", current_url, headers=headers) as resp:
@@ -136,8 +117,11 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
                         new_parsed = urlparse(new_url)
                         new_hostname = (new_parsed.hostname or '').lower()
                         
-                        if not any(new_hostname == host or new_hostname.endswith('.' + host) for host in allowed_hosts):
-                            logger.warning(f"[Meme Proxy] 重定向到非法域名: {new_hostname}")
+                        if new_parsed.scheme not in ('http', 'https') or not any(
+                            new_hostname == host or new_hostname.endswith('.' + host)
+                            for host in allowed_hosts
+                        ):
+                            logger.warning(f"[Meme Proxy] 重定向到非法域名或协议: {new_parsed.scheme}://{new_hostname}")
                             return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
                         
                         current_url = new_url
@@ -198,36 +182,11 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
     except (ssl.SSLError, httpx.ConnectError) as e:
-        # SSL handshake failed: retry allowlisted meme domains with downgraded, permissive SSL
-        is_ssl = isinstance(e, ssl.SSLError) or 'SSL' in str(e) or 'certificate' in str(e).lower()
-        if is_ssl and not need_relaxed_ssl:
-            logger.warning(f"[Meme Proxy] SSL 失败，降级重试: {hostname} ({e})")
-            try:
-                async with _make_client(relaxed=True) as fallback_client:
-                    async with fallback_client.stream("GET", decoded_url, headers=headers) as resp:
-                        resp.raise_for_status()
-                        raw_ct = resp.headers.get('Content-Type', '').lower()
-                        ct = raw_ct.split(';', 1)[0].strip()
-                        allowed_ct = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'}
-                        if ct not in allowed_ct:
-                            return JSONResponse(content={"success": False, "error": "格式不支持"}, status_code=403)
-                        body = bytearray()
-                        async for chunk in resp.aiter_bytes():
-                            body.extend(chunk)
-                            if len(body) > MAX_IMAGE_SIZE:
-                                return JSONResponse(content={"success": False, "error": "资源超过大小限制"}, status_code=413)
-                        body_bytes = bytes(body)
-                        if write_cache:
-                            MEME_PROXY_CACHE[cache_key] = {'body': body_bytes, 'content_type': ct}
-                        return Response(
-                            content=body_bytes, media_type=ct,
-                            headers={'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS-SSL-FALLBACK', 'X-Content-Type-Options': 'nosniff'}
-                        )
-            except Exception as fallback_e:
-                logger.error(f"[Meme Proxy] SSL 降级重试也失败: {fallback_e}")
-                return JSONResponse(content={"success": False, "error": str(fallback_e)}, status_code=500)
-        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+        logger.warning("[Meme Proxy] TLS/连接失败: host=%s error=%s", hostname, e)
+        return JSONResponse(content={"success": False, "error": "上游 TLS 校验或连接失败"}, status_code=502)
+    except httpx.HTTPStatusError as e:
+        logger.warning("[Meme Proxy] 上游返回错误状态: host=%s status=%s", hostname, e.response.status_code)
+        return JSONResponse(content={"success": False, "error": "上游图片请求失败"}, status_code=502)
     except Exception as e:
-        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+        logger.error("[Meme Proxy] 代理失败: host=%s error=%s", hostname, e)
+        return JSONResponse(content={"success": False, "error": "代理请求失败"}, status_code=500)

@@ -30,7 +30,9 @@ from ._shared import (
 import os
 import re
 from urllib.parse import unquote
+from fastapi import Request
 from fastapi.responses import JSONResponse
+from main_routers.local_access import validate_local_browser_request
 from utils.workshop_utils import get_workshop_library_roots, get_workshop_path_async
 
 
@@ -79,8 +81,17 @@ async def _get_file_exists_allowed_dirs() -> list[str]:
 
 
 @router.get('/file-exists')
-async def check_file_exists(path: str = None):
+async def check_file_exists(request: Request, path: str = None):
     """Check whether a file exists within trusted application or user data directories."""
+    rejection = validate_local_browser_request(request, require_json=False)
+    if rejection is not None:
+        status_code, error_code, _ = rejection
+        logger.warning("Rejected file-exists request: %s", error_code)
+        return JSONResponse(
+            content={"exists": False, "error_code": error_code},
+            status_code=status_code,
+        )
+
     try:
         if not path:
             return JSONResponse(content={"exists": False}, status_code=400)
