@@ -26,6 +26,7 @@
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
     I.pendingPngtuberReturnConfig = null;
+    I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 3000;
 
     I.shouldAnimateModelCatTransition = function shouldAnimateModelCatTransition() {
         const bridge = window.nekoPetPowerSave;
@@ -39,10 +40,21 @@
 
     I.prepareModelCatForm = async function prepareModelCatForm(target) {
         if (I.shouldAnimateModelCatTransition()) return;
+        let timeoutId = null;
         try {
-            await window.nekoPetPowerSave.prepareFormChange(target);
+            await Promise.race([
+                window.nekoPetPowerSave.prepareFormChange(target),
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => {
+                        console.warn('[App] prepare model/cat window timed out:', target);
+                        resolve(false);
+                    }, I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS);
+                })
+            ]);
         } catch (error) {
             console.warn('[App] prepare model/cat window failed:', error);
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
         }
     };
 
@@ -718,7 +730,7 @@
     }
 
     I.playModelReturnEnter = function playModelReturnEnter(container, rect) {
-        if (!container || !rect) return false;
+        if (!container) return false;
         if (!I.shouldAnimateModelCatTransition()) {
             I.cancelModelReturnEnter('replaced');
             const enterPromise = startModelReturnEnterWait(container);
@@ -739,6 +751,7 @@
             });
             return true;
         }
+        if (!rect) return false;
         setModelExitTransformOrigin(container, rect);
         I.cancelModelReturnEnter('replaced');
         const enterPromise = startModelReturnEnterWait(container);
@@ -965,7 +978,11 @@
             }
             const ready = direction === 'model-to-cat' ? I.prepareModelCatForm('cat') : Promise.resolve();
             return ready.then(() => {
-                if (isNekoModelCatTransitionTokenCurrent(token) && onBeforeOverlayCleanup) onBeforeOverlayCleanup();
+                if (isNekoModelCatTransitionTokenCurrent(token) && onBeforeOverlayCleanup) {
+                    try { onBeforeOverlayCleanup(); } catch (error) {
+                        console.warn('[App] model/cat transition cleanup failed:', error);
+                    }
+                }
                 return { completed: true, direction, animationSkipped: true };
             }).finally(() => I.releaseNekoModelCatTransition(token));
         }

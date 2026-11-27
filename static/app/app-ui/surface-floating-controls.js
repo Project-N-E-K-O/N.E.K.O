@@ -2323,7 +2323,7 @@
             // 使用 showCurrentModel() 做最终裁决
             let modelDisplayReady = true;
             try {
-                modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn });
+                modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn, prepareModelForm: true });
             } catch (error) {
                 if (!isCurrentReturn()) return;
                 console.error('[App] showCurrentModel 失败:', error);

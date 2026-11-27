@@ -203,6 +203,7 @@ jobs:
 
       - name: Run frontend contract tests
         run: |
+          node --test tests/frontend/power_save_model_cat_transition.test.cjs
           node --test static/voice-identity.test.cjs static/voice-readiness.test.cjs
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/audio_message_host.test.cjs

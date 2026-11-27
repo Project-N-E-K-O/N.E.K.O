@@ -56,3 +56,48 @@ def test_instant_return_waits_for_window_without_canvas_fade(page, model_type):
     assert container.get_attribute("data-neko-model-form-pending") is None
     assert container.evaluate("el => el.style.transition") == ""
     assert page.locator("#neko-model-cat-transition").count() == 0
+
+
+@pytest.mark.parametrize("model_type", ["live2d", "vrm", "mmd", "pngtuber"])
+@pytest.mark.parametrize("power_save,request_form", [(True, True), (False, True), (True, False), (None, True)])
+def test_model_display_prepares_a_requested_return_without_a_rect(page, model_type, power_save, request_form):
+    page.set_content(
+        f'<div id="{model_type}-container" class="hidden" style="display:none">'
+        f'<canvas id="{model_type}-canvas" width="160" height="230"></canvas></div>'
+    )
+    page.add_style_tag(path=str(ROOT / "static/css/index.css"))
+    page.evaluate("""({type, enabled}) => {
+        window.appUi = {};
+        window.__appUiParts = {mod: {}};
+        window.lanlan_config = {lanlan_name: 'test', model_type: type};
+        window.fetch = async () => ({ok: true, json: async () => ({'猫娘': {test: {model_type: type}}})});
+        window.prepareTargets = [];
+        window.nekoPetPowerSave = {
+            isEnabled: () => enabled,
+            prepareFormChange: target => {
+                window.prepareTargets.push(target);
+                return new Promise(resolve => { window.finishForm = resolve; });
+            }
+        };
+        if (enabled === null) delete window.nekoPetPowerSave;
+    }""", {"type": model_type, "enabled": power_save})
+    for name in ("return-transitions.js", "model-display.js"):
+        page.add_script_tag(path=str(ROOT / "static/app/app-ui" / name))
+    page.evaluate("""() => {
+        const I = window.__appUiParts;
+        I.ensureModelViewportReadyBeforeShowCurrentModel = async () => ({ready: true});
+        I.ensureActiveModelOverlayControls = () => ({});
+        I.keepAvatarRootContainerPassthrough = () => false;
+    }""")
+    page.evaluate("prepareModelForm => window.__appUiParts.showCurrentModel({prepareModelForm})", request_form)
+    container = page.locator(f"#{model_type}-container")
+    if power_save and request_form:
+        assert page.evaluate("window.prepareTargets") == ["model"]
+        assert container.get_attribute("data-neko-model-form-pending") == "true"
+        assert container.evaluate("el => getComputedStyle(el).opacity") == "0"
+        page.evaluate("window.finishForm(true)")
+        page.wait_for_function("window._nekoModelReturnEnterPromise === null")
+        assert container.evaluate("el => getComputedStyle(el).opacity") == "1"
+    else:
+        assert page.evaluate("window.prepareTargets") == []
+        assert container.get_attribute("data-neko-model-form-pending") is None

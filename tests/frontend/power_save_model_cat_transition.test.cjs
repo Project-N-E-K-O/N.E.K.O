@@ -49,6 +49,21 @@ test('animation policy uses the enabled setting even after the physical crop has
 });
 
 for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    test(`${type}: a missing return rect still prepares an instant form`, async () => {
+        const h = harness();
+        const model = h.element(type);
+        assert.equal(h.I.playModelReturnEnter(model, null), true);
+        const entrance = h.window._nekoModelReturnEnterPromise;
+        assert.deepEqual(h.targets, ['model']);
+        assert.equal(model.getAttribute('data-neko-model-form-pending'), 'true');
+        h.prepare(true);
+        await entrance;
+        assert.equal(model.getAttribute('data-neko-model-form-pending'), undefined);
+        const normal = harness(false);
+        assert.equal(normal.I.playModelReturnEnter(normal.element(type), null), false);
+        assert.deepEqual(normal.targets, []);
+    });
+
     test(`${type}: instant departure hides the old model, then reveals the cat after its window is ready`, async () => {
         const h = harness();
         const model = h.element(type);
@@ -89,7 +104,7 @@ for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
     test(`${type}: a newer departure cancels a pending instant return`, async () => {
         const h = harness();
         const model = h.element(type);
-        h.I.playModelReturnEnter(model, {});
+        h.I.playModelReturnEnter(model, null);
         h.I.cancelModelReturnEnter('new-goodbye');
         h.I.playModelGoodbyeExit(model, null);
         h.prepare(true);
@@ -99,3 +114,36 @@ for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
         assert.equal(h.window._nekoModelReturnEnterPromise, null);
     });
 }
+
+test('a stalled form bridge cannot leave the model return hidden indefinitely', { timeout: 1000 }, async () => {
+    const h = harness();
+    h.I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 5;
+    const model = h.element('live2d');
+    h.I.playModelReturnEnter(model, null);
+    await h.window._nekoModelReturnEnterPromise;
+    assert.equal(model.getAttribute('data-neko-model-form-pending'), undefined);
+    assert.equal(h.window._nekoModelReturnEnterPromise, null);
+    assert.equal(model.style.opacity, undefined);
+    h.prepare(true);
+    await flush();
+    assert.equal(model.style.opacity, undefined, 'a late reply does not replay the reveal');
+});
+
+test('a stalled form bridge cannot leave the cat departure token held', { timeout: 1000 }, async () => {
+    const h = harness();
+    h.I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 5;
+    let reveals = 0;
+    await h.I.playNekoModelCatTransition({ direction: 'model-to-cat', onBeforeOverlayCleanup: () => reveals++ });
+    assert.equal(reveals, 1);
+    assert.equal(h.I.isNekoModelCatTransitionActive(), false);
+    h.prepare(true);
+});
+
+test('an instant cleanup callback failure releases the transition token', async () => {
+    const h = harness();
+    h.prepare(true);
+    const result = await h.I.playNekoModelCatTransition({ direction: 'model-to-cat',
+        onBeforeOverlayCleanup() { throw new Error('cleanup unavailable'); } });
+    assert.equal(result.completed, true);
+    assert.equal(h.I.isNekoModelCatTransitionActive(), false);
+});
