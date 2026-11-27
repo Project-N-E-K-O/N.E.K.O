@@ -496,6 +496,7 @@ class _Renewing:
         self.pending_session_final_prime_complete_event = None
         self.background_preparation_task = None
         self.calls = []
+        self.lanlan_name = NAME
         self.prepares = prepares
         self.idle = idle
         self.swap_running = swap_running
@@ -521,6 +522,9 @@ class _Renewing:
     def _can_release_proactive(self):
         return self.idle
 
+    async def _wait_queued_memory_writes(self, lanlan_name):
+        self.calls.append("memory")
+
     async def _perform_final_swap_sequence(self):
         self.calls.append("swap")
         self.session = object()
@@ -536,7 +540,7 @@ def test_renewal_prepares_anew_and_swaps_at_once_when_nothing_is_under_way():
     old = fake.session
     assert _renew(fake, wait_seconds=5) is True
     assert fake.session is not old
-    assert fake.calls == ["cleanup", "reset", "cleanup", "reset", "prepare", "swap"]
+    assert fake.calls == ["cleanup", "reset", "cleanup", "reset", "memory", "prepare", "swap"]
 
 
 def test_renewal_lets_the_turn_under_way_end_before_it_prepares():
@@ -555,7 +559,47 @@ def test_renewal_lets_the_turn_under_way_end_before_it_prepares():
 
     assert asyncio.run(run()) is True
     # The older preparation goes before the wait; the new one is made after the turn.
-    assert fake.calls == ["cleanup", "reset", "turn ends", "cleanup", "reset", "prepare", "swap"]
+    assert fake.calls == ["cleanup", "reset", "turn ends", "cleanup", "reset", "memory", "prepare", "swap"]
+
+
+def test_renewal_waits_again_for_a_turn_begun_while_the_older_preparation_was_dropped():
+    # CodeRabbit on #4155: dropping takes a while; a turn begun meanwhile ends before preparing.
+    fake = _Renewing()
+    real_reset = fake._reset_preparation_state
+    resets = []
+
+    async def reset_then_busy():
+        await real_reset()
+        resets.append(True)
+        if len(resets) == 2:
+            fake.idle = False
+
+            async def turn_ends():
+                await asyncio.sleep(0.3)
+                fake.calls.append("turn ends")
+                fake.idle = True
+
+            asyncio.ensure_future(turn_ends())
+
+    fake._reset_preparation_state = reset_then_busy
+    assert asyncio.run(LifecycleMixin.renew_session_now(fake, wait_seconds=5)) is True
+    assert fake.calls[-4:] == ["turn ends", "memory", "prepare", "swap"]
+
+
+def test_the_memory_writes_wait_preempts_no_summary():
+    # CodeRabbit on #4155: before the new session reads memory, the queued writes are sent;
+    # unlike a cold start, the summary under way is not preempted (the hot swap takes it in).
+    class _Queue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+            item["_memory_flush_done"].set_result(None)
+
+    fake = SimpleNamespace(sync_message_queue=_Queue())
+    asyncio.run(LifecycleMixin._wait_queued_memory_writes(fake, NAME))
+    assert [item["data"] for item in fake.sync_message_queue.items] == ["memory flush"]
 
 
 def test_an_ordinary_swap_while_the_turn_ends_is_renewed_from_not_taken_for_an_end():

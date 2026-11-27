@@ -1624,6 +1624,10 @@ class LifecycleMixin:
             )
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 打断摘要请求失败，继续开会话: {type(e).__name__}: {e}")
+        await self._wait_queued_memory_writes(lanlan_name)
+
+    async def _wait_queued_memory_writes(self, lanlan_name) -> None:
+        """Wait, bounded, for the connector to send the memory writes queued so far (no summary preempted)."""
         queue = getattr(self, "sync_message_queue", None)
         if queue is None:
             return
@@ -2942,6 +2946,14 @@ class LifecycleMixin:
 
         await self._cleanup_pending_session_resources()
         await self._reset_preparation_state()
+        # A turn begun while that was dropped ends first too (its cache would go with the reset).
+        while not self._can_release_proactive():
+            if loop.time() >= deadline or not still_up():
+                return False
+            await asyncio.sleep(0.2)
+        # The turn just ended reaches memory before the new session reads it (/new_dialog), as
+        # on a cold start, but the summary under way is not preempted: the hot swap takes it in.
+        await self._wait_queued_memory_writes(self.lanlan_name)
         if not still_up():
             return False
         await self._trigger_immediate_preparation_for_extra()
