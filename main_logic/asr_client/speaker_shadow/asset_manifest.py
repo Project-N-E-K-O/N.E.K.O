@@ -15,8 +15,8 @@ CAMPPLUS_MODEL_ID = "iic/speech_campplus_sv_zh_en_16k-common_advanced"
 CAMPPLUS_MODEL_REVISION = "v1.0.0"
 CAMPPLUS_LICENSE = "Apache-2.0"
 CAMPPLUS_SOURCE = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    "speaker-recongition-models/"
+    "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/"
+    "0743f301363dec56491a490f6d6cbc9d67f9a3bf/"
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
 )
 CAMPPLUS_EXPORT_SOURCE = "k2-fsa/sherpa-onnx"

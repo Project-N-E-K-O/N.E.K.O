@@ -382,7 +382,7 @@ async def test_approved_profile_survives_response_loss_without_mixing_new_edit(t
         local = await runtime.profiles.local(UID)
         await runtime.profiles.approve(UID, local["local_hash"], 0)
         service.fail_once = True
-        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+        with pytest.raises(ValueError, match="^chat_sync_network_unavailable$"):
             await runtime.profiles.step(UID, manual=True)
         first = service.profile_requests[0].content
         config.data["猫娘"]["Synthetic"]["设定"] = "later declined edit"
@@ -862,12 +862,14 @@ async def test_initial_profile_retry_gate_keeps_error_until_a_confirmed_upload(t
         presence = await runtime.session_presence_provider()
         runtime.scheduler.failure(DOMAIN.key(), "profile", runtime.state.binding(UID)["generation"], presence, OSError())
         await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
-        assert runtime.state.new_role_errors() == {UID: "chat_sync_unavailable"}
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {UID: "chat_sync_unavailable"}
         assert service.profile_requests == []
         assert runtime.profiles.store.status(DOMAIN.key())["pending"] == 1
         runtime.test_clock[0] += 30_000
         await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
         assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {}
         assert runtime.state.new_role(UID)["requestId"] == saved["requestId"]
     finally:
         await runtime.close()
@@ -883,7 +885,8 @@ async def test_session_change_during_setup_is_retryable_and_keeps_the_saved_choi
         saved = runtime.state.new_role(UID)
         # The scheduler's attempt records the retryable code instead of raising it.
         assert await runtime._run_new_role_sync(UID, saved, "stale-session") is None
-        assert runtime.state.new_role_errors() == {UID: "chat_sync_session_changed"}
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {UID: "chat_sync_session_changed"}
         retained = runtime.state.new_role(UID)
         assert retained["requestId"] == saved["requestId"] and "error" not in retained
         assert service.profile_requests == []
@@ -1068,10 +1071,18 @@ async def test_current_role_profile_waiting_lock_rechecks_selection(tmp_path, co
 
 
 @pytest.mark.asyncio
-async def test_current_role_profile_waiting_config_lock_defers_automatic_apply(tmp_path, config):
+async def test_current_role_profile_waiting_config_lock_defers_automatic_apply(tmp_path, config, monkeypatch):
     """The character selection and automatic settings apply share the existing lock."""
     from tests.unit.test_chat_sync_runtime import select_runtime_current, wait_notification
-    from utils.character_memory import character_config_mutation_lock
+    from utils import character_memory
+
+    # Making the apply wait on the process-wide asyncio.Lock binds that lock to
+    # this test's event loop for good; a later test that contends it on its own
+    # loop then fails with "bound to a different event loop" (seen in
+    # test_chat_avatar_router under random order). profile_sync looks the lock
+    # up at call time, so a test-local lock keeps the shared-lock contract.
+    character_config_mutation_lock = asyncio.Lock()
+    monkeypatch.setattr(character_memory, "character_config_mutation_lock", character_config_mutation_lock)
     runtime, service, _ = await bound(tmp_path, config)
     try:
         config.data["当前猫娘"] = "Synthetic"

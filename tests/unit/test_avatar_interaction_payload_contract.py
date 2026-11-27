@@ -91,7 +91,7 @@ _RPS_MEMORY_NOTES = {
 
 @pytest.mark.unit
 def test_avatar_interaction_contract_declares_three_action_tools_and_rps_round_facts():
-    assert set(AVATAR_INTERACTION_TOOL_CONTRACT) == {"lollipop", "fist", "hammer", "rps"}
+    assert set(AVATAR_INTERACTION_TOOL_CONTRACT) == {"lollipop", "fist", "hammer", "tap", "rps"}
     assert AVATAR_INTERACTION_TOOL_CONTRACT["lollipop"]["actions"] == {
         "offer": frozenset({"normal"}),
         "tease": frozenset({"normal"}),
@@ -102,6 +102,12 @@ def test_avatar_interaction_contract_declares_three_action_tools_and_rps_round_f
     }
     assert AVATAR_INTERACTION_TOOL_CONTRACT["hammer"]["actions"] == {
         "bonk": frozenset({"normal", "rapid", "burst", "easter_egg"}),
+    }
+    assert AVATAR_INTERACTION_TOOL_CONTRACT["tap"] == {
+        "actions": {"poke": frozenset({"normal", "rapid", "angry"})},
+        "touch_zone": False,
+        "boolean_field": None,
+        "round_choice": False,
     }
     assert AVATAR_INTERACTION_TOOL_CONTRACT["rps"] == {
         "actions": {},
@@ -381,6 +387,7 @@ def test_rps_prompt_and_memory_reject_a_contradictory_round():
         ("lollipop", "tap_soft", None),
         ("fist", "poke", "head"),
         ("hammer", "bonk", "head"),
+        ("tap", "poke", None),
     ],
 )
 def test_every_established_action_rejects_missing_or_invalid_intensity(
@@ -964,3 +971,49 @@ async def test_delivered_reply_whose_completion_was_skipped_drops_its_meta(monke
     assert result["accepted"] is True
     assert seen and seen[0]["kind"] == "avatar_interaction"
     assert runtime._pending_turn_meta is None
+
+
+_TAP_LOCALES = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+@pytest.mark.unit
+def test_tap_payload_accepts_the_three_combo_levels_and_rejects_extra_facts():
+    base = {
+        "interaction_id": "tap-1",
+        "tool_id": "tap",
+        "action_id": "poke",
+        "target": "avatar",
+        "timestamp": 1,
+    }
+    for intensity in ("normal", "rapid", "angry"):
+        normalized = normalize_avatar_interaction_payload({**base, "intensity": intensity})
+        assert normalized is not None
+        assert normalized["intensity"] == intensity
+        assert normalized["touch_zone"] == ""
+    # A plain click carries no body part, and "angry" belongs only to tap.
+    assert normalize_avatar_interaction_payload(
+        {**base, "intensity": "normal", "touch_zone": "head"}
+    ) is None
+    assert normalize_avatar_interaction_payload({**base, "intensity": "burst"}) is None
+    assert normalize_avatar_interaction_payload({
+        **base, "tool_id": "fist", "intensity": "angry", "touch_zone": "head",
+    }) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", _TAP_LOCALES)
+def test_tap_prompt_and_memory_escalate_in_every_locale(locale):
+    instructions = []
+    ranks = []
+    for intensity in ("normal", "rapid", "angry"):
+        payload = {"tool_id": "tap", "action_id": "poke", "intensity": intensity}
+        instruction = _build_avatar_interaction_instruction(locale, "YUI", "Alice", payload)
+        meta = _build_avatar_interaction_memory_meta(locale, payload, "Alice")
+        assert "Alice" in instruction
+        assert "{" not in instruction
+        assert meta["memory_note"].startswith("[") and "Alice" in meta["memory_note"]
+        assert meta["memory_dedupe_key"] == "avatar_tap"
+        instructions.append(instruction)
+        ranks.append(meta["memory_dedupe_rank"])
+    assert len(set(instructions)) == 3
+    assert ranks == [1, 2, 3]

@@ -339,6 +339,11 @@ async def _periodic_rebuttal_loop():
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
                 cursor_now = datetime.now()
                 for name in catgirl_names:
+                    # A fenced name keeps its cursor. If the rename / delete rolls back
+                    # and strong memory is turned on before the next round, the first
+                    # round catches up on the whole disabled-period backlog (rare, accepted).
+                    if not await review.ais_character_periodic_write_admitted(name):
+                        continue
                     try:
                         await runtime.cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
@@ -374,6 +379,8 @@ async def _periodic_rebuttal_loop():
             multiple ticks with bounded LLM prompt size per tick; no messages are lost
             (the cursor advances strictly by processed position).
             """
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 confirmed = await runtime.reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
@@ -552,6 +559,8 @@ async def _periodic_auto_promote_loop():
         powerful = await gates._ais_powerful_memory_enabled()
 
         async def _promote_one(name: str):
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 transitions = await _auto_promote_character(name, powerful)
                 if transitions:
@@ -615,6 +624,8 @@ async def _periodic_idle_maintenance_loop():
                 if not gates._is_idle():
                     logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
                     break
+                if not await review.ais_character_periodic_write_admitted(name):
+                    continue
 
                 try:
                     history = await runtime.recent_history_manager.aget_recent_history(name)
@@ -651,13 +662,14 @@ async def _periodic_idle_maintenance_loop():
                     # fact_dedup_resolver is None when vectors are disabled
                     # or bootstrap failed — legacy hash + FTS5 dedup
                     # remains the entire dedup pipeline in that case.
-                    # Strong memory disabled: skip entirely (vector deduplication was added late in evidence-RFC).
-                    if powerful_enabled and runtime.fact_dedup_resolver is not None:
+                    # Recover already-committed handoffs even when strong memory is now disabled; only LLM review is gated.
+                    if runtime.fact_dedup_resolver is not None:
                         if not gates._is_idle():
                             break
                         try:
+                            await runtime.fact_store.aretry_pending_near_dups(name)
                             pending_dedup = await runtime.fact_dedup_resolver.aload_pending(name)
-                            if pending_dedup:
+                            if powerful_enabled and pending_dedup:
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
                                 )
@@ -668,6 +680,17 @@ async def _periodic_idle_maintenance_loop():
                                     )
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
+
+                    # -- Task 1c: One-time cleanup of duplicates older versions left. --
+                    # The organizer runs it once; the snapshot tells every other device.
+                    if not gates._is_idle():
+                        break
+                    try:
+                        from . import legacy_dedup
+                        await _run_with_character_language(
+                            name, lambda character: legacy_dedup.run(character, still_idle=gates._is_idle))
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 旧重复事实清理失败: {type(e).__name__}")
 
                     # -- Task 2: Review persona contradictions (skip when strong memory is disabled). --
                     # resolve_corrections came from evidence-RFC. Contradictions may still be queued
@@ -960,6 +983,8 @@ async def _periodic_slow_memory_recheck_loop():
         # Touch only one entry per outer loop to prevent one character's reflections monopolizing work.
         did_one = False
         for name in ordered:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
                 if await runtime.reflection_engine.arecheck_one_legacy_reflection(name):
                     did_one = True
@@ -968,6 +993,8 @@ async def _periodic_slow_memory_recheck_loop():
                 logger.debug(f"[MemoryRecheck] {name} reflection recheck 异常: {e}")
         if not did_one:
             for name in ordered:
+                if not await review.ais_character_periodic_write_admitted(name):
+                    continue
                 try:
                     if await runtime.fact_store.arecheck_one_legacy_fact(name):
                         did_one = True
@@ -981,6 +1008,50 @@ async def _periodic_slow_memory_recheck_loop():
 # In-process throttling for time-based scoped-subject archival (day-level criteria need no persistence:
 # an extra first sweep after restart is idempotent).
 _subject_archive_last_run: dict[str, datetime] = {}
+
+# Star Map 周级主题缓存刷新的进程内日粒度节流（真正的 7 天 + corpus_hash 门控
+# 持久化在 star_map_clusters_cache.json 内，进程内节流只为避免每小时重扫磁盘）。
+_star_map_label_last_probe: dict[str, datetime] = {}
+_STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS = 86400
+
+
+async def _amaybe_refresh_star_map_labels(name: str, now: datetime) -> None:
+    """Weekly low-cost Star Map theme label cache refresh piggybacked on ArchiveSweep.
+
+    Runs only while ``powerful_memory_enabled`` is on: with it off this makes no
+    model call at all. Otherwise skips at zero LLM cost when fewer than
+    ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the corpus hash
+    has not changed, when cached labels are newer than 7 days, or when the last
+    automatic attempt failed less than 7 days ago.
+    """
+    if not await gates._ais_powerful_memory_enabled():
+        return
+    last = _star_map_label_last_probe.get(name)
+    if (
+        last is not None
+        and (now - last).total_seconds() < _STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS
+    ):
+        return
+    _star_map_label_last_probe[name] = now
+    try:
+        from memory.analytics import alabel_star_map_clusters
+
+        async def _op(character_name: str):
+            return await alabel_star_map_clusters(
+                character_name,
+                config_manager=runtime._config_manager,
+                force=False,
+                now=now,
+            )
+
+        res = await run_with_character_prompt_locale(name, _op, name)
+        if isinstance(res, dict) and not res.get("skipped"):
+            logger.info(
+                f"[StarMapCache] {name}: 周级自动刷新星云主题缓存 "
+                f"({len(res.get('labels') or {})} 个主题)"
+            )
+    except Exception as e:
+        logger.debug(f"[StarMapCache] {name}: 周级主题刷新跳过/失败 (非致命): {e}")
 
 
 async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
@@ -1077,6 +1148,8 @@ async def _periodic_archive_sweep_loop():
             writes) re-read the view under the per-char lock, so this
             outer scan can use a stale snapshot safely.
             """
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 # ── reflections ──
                 refls = await runtime.reflection_engine._aload_reflections_full(name)
@@ -1121,7 +1194,7 @@ async def _periodic_archive_sweep_loop():
                     for entry in section.get('facts', []):
                         if not isinstance(entry, dict):
                             continue
-                        if entry.get('protected'):
+                        if entry.get('protected') or entry.get('user_pinned'):
                             continue
                         eid = entry.get('id')
                         if not eid:
@@ -1146,7 +1219,7 @@ async def _periodic_archive_sweep_loop():
                     if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
                         try:
                             await runtime.persona_manager.aarchive_persona_entry(
-                                name, entity_key, eid,
+                                name, entity_key, eid, skip_pinned=True,
                             )
                         except Exception as e:
                             logger.warning(
@@ -1155,6 +1228,9 @@ async def _periodic_archive_sweep_loop():
 
                 # -- Scoped subjects (time-driven, group-memory series 5/7). --
                 await _amaybe_sweep_subject_archive(name, now)
+
+                # ── Star Map 周级主题缓存刷新（7 天 + corpus_hash 门控，零成本跳过） ──
+                await _amaybe_refresh_star_map_labels(name, now)
             except Exception as e:
                 logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
 
@@ -1225,6 +1301,8 @@ def _log_event_log_compaction(name: str, result) -> None:
             f"[EventLogCompact] {name}: {result.pinned} 条归档事件在分片里找不到"
             f"同一份副本，作为唯一副本留在日志里（event_id: {shown}{more}）",
         )
+    if result.kept_restore:
+        logger.debug(f"[EventLogCompact] {name}: 保留最近一次快照恢复事件（全量重放的起点）")
     if result.pending_tail:
         _event_log_compact_warn_once(
             name, 'pending_tail',
@@ -1261,10 +1339,14 @@ async def _acompact_event_log_one(raw_name: str) -> None:
         char_dir = os.path.join(str(runtime._config_manager.memory_dir), name)
         if not await asyncio.to_thread(os.path.isdir, char_dir):
             return
+        from memory.analytics.snapshots import make_restore_cancelled_check, make_restore_completed_check
         from memory.evidence_handlers import make_archive_copy_check
         check = make_archive_copy_check(char_dir)
+        cancelled = await asyncio.to_thread(make_restore_cancelled_check, char_dir)
+        completed = await asyncio.to_thread(make_restore_completed_check, char_dir)
         result = await event_log.acompact_applied_history(
             name, needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
+            restore_cancelled=cancelled, restore_completed=completed,
         )
         _log_event_log_compaction(name, result)
     except Exception as e:
@@ -1295,6 +1377,8 @@ async def _acompact_event_logs_once() -> None:
         logger.debug(f"[EventLogCompact] 加载角色列表失败: {e}")
         return
     for raw_name in raw_names:
+        if not await review.ais_character_periodic_write_admitted(raw_name):
+            continue
         await _acompact_event_log_one(raw_name)
 
 

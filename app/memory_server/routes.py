@@ -30,9 +30,9 @@ from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from fastapi import Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -86,7 +86,7 @@ from utils.natural_expression_candidates import (
     normalize_language,
 )
 
-from . import gates, locale_state, outbox_infra, post_turn, review, runtime
+from . import gates, habitual_phrase_loop, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
@@ -129,6 +129,29 @@ class TheaterEpisodeRetractRequest(BaseModel):
     # Identify the archive attempts to fence against late /cache writes.
     archive_request_id: str = Field(default="", max_length=160)
     archive_attempt: int = Field(default=0, ge=0)
+
+
+class RecordSurfacedRequest(BaseModel):
+    commitment_ids: list[str] = Field(default_factory=list)
+    reflection_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("commitment_ids", "reflection_ids", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, value: object) -> object:
+        return [] if value is None else value
+
+
+async def _refuse_browsers(request: Request) -> None:
+    """Reject browser-originated requests before handling internal memory routes."""
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+
+
+async def _require_json_content_type(request: Request) -> None:
+    """Reject non-JSON Content-Type payloads such as text/plain CORS simple requests."""
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise HTTPException(status_code=415, detail={"ok": False, "reason": "unsupported_media_type"})
 
 
 def _theater_story_event_id(lanlan_name: str, message) -> str:
@@ -1083,7 +1106,7 @@ async def _periodic_new_dialog_qps_log_loop():
 
 # --- Reflection API (HTTP callers: main_server/system_router) ---
 
-@app.post("/reflect/{lanlan_name}")
+@app.post("/reflect/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def api_reflect(lanlan_name: str):
     """Synthesize reflections + automatic state migration, returning the result.
 
@@ -1186,7 +1209,10 @@ async def api_followup_topics(lanlan_name: str):
     return {"topics": topics, "commitment": await _due_commitment_topic(lanlan_name)}
 
 
-@app.post("/record_surfaced/{lanlan_name}")
+@app.post(
+    "/record_surfaced/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
 async def api_record_surfaced(request: Request, lanlan_name: str):
     """Record which reflections this proactive chat mentioned, refreshing the cooldown.
 
@@ -1196,14 +1222,23 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     a failed one is retried with the delivery record.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    body = await request.json()
+    try:
+        raw_body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"ok": False, "reason": "invalid_json"}) from exc
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=422, detail={"ok": False, "reason": "invalid_payload"})
+    try:
+        payload = RecordSurfacedRequest.model_validate(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"ok": False, "reason": "invalid_payload"}) from exc
     result: dict[str, object] = {"ok": True}
-    commitment_ids = body.get("commitment_ids") or []
+    commitment_ids = payload.commitment_ids
     if commitment_ids:
-        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+        result["commitments_recorded"] = await _record_surfaced_commitments(
             lanlan_name, commitment_ids,
         )
-    reflection_ids = body.get("reflection_ids", [])
+    reflection_ids = payload.reflection_ids
     if not reflection_ids:
         return result
     try:
@@ -1211,6 +1246,24 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
     return result
+
+
+@app.post("/internal/memory/{lanlan_name}/legacy_dedup/restore")
+async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
+    """Bring back the facts the one-time duplicate cleanup folded away.
+
+    They come back under new ids, so a peer that still holds the archived rows
+    cannot fold them away again; the folded rows stay archived. A device that
+    syncs should look at the result after its next sync.
+    """
+    from . import legacy_dedup
+    # Loopback skips credentials, so a page in a browser could post here; only
+    # the app's own services may (same rule as the knowledge routes).
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    restored = await legacy_dedup.restore(lanlan_name)
+    return {"ok": True, "restored": restored, "restored_as_new_ids": True}
 
 
 @app.post("/cache/{lanlan_name}")
@@ -1611,7 +1664,9 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
             return {"ok": True, "written": written_n, "deduped": deduped_n, "duplicate": True}
         # Missing content hash or malformed counts: infer from this visit's fact-pool rows as for absent records, filling only gaps.
         try:
-            rows = await runtime.fact_store.aload_facts_strict(lanlan_name, include_archive=True)
+            rows = await runtime.fact_store.aload_facts_strict(
+                lanlan_name, include_archive=True, include_cold_stubs=True,
+            )
         except RuntimeError as exc:
             # Never guess on read failure: permissive active-pool loading caches an empty list, whose writeback would erase existing facts.
             logger.warning(f"[MemoryServer] visit_facts {lanlan_name}: fact pool unreadable: {exc}")
@@ -1619,8 +1674,12 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
         mine = [row for row in rows if row.get("origin") == "neko_visit" and row.get("visit_id") == req.visit_id]
         already = len(mine)
         known_effects = {row.get("effect_key") for row in mine}
-        expected = {idempotency.effect_key_for(key, i): text for i, text in enumerate(texts)}
-        if any(expected.get(row.get("effect_key")) != row.get("text") for row in mine):
+        # Compared by wording hash: a cold row is only a stub, without its text.
+        from memory.cold_store import text_sha256
+        expected = {idempotency.effect_key_for(key, i): text_sha256(text) for i, text in enumerate(texts)}
+        if any(expected.get(row.get("effect_key"))
+               != (row["text_sha256"] if "text_sha256" in row else text_sha256(row.get("text")))
+               for row in mine):
             # Reach fact-pool recovery only for missing/malformed key records: if this visit's rows differ from current request text,
             # current content cannot be reported written (same handling as content_hash mismatch).
             raise HTTPException(status_code=422, detail="visit_id reused with different facts")
@@ -2510,7 +2569,7 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
             # the operator's only cue that ``scoped_forget`` is still needed.
             # The loader already collapses rows present in both files and
             # degrades to active-only on a corrupt archive.
-            rows = await runtime.fact_store.aload_facts_full(name)
+            rows = await runtime.fact_store.aload_facts_full(name, include_cold_stubs=True)
         except Exception as exc:  # noqa: BLE001 - same
             logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
             return None
@@ -3098,6 +3157,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 "speaker_provenance": speaker_provenance,
                 "speaker_label": speaker_label,
                 "messages": input_history,
+                "label_own_words": FactStore.group_history_has_own_words(
+                    input_history, subject,
+                ),
                 "trust_state": trust_state,
             }],
         )
@@ -3152,6 +3214,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
             reconciled_facts=reconciled_facts,
+            label_own_words=FactStore.group_history_has_own_words(
+                input_history, subject,
+            ),
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -4241,6 +4306,7 @@ async def _generate_keyed_facts(
             context["messages"],
             treat_malformed_as_failure=True,
             speaker_label=context.get("speaker_label"),
+            label_own_words=bool(context.get("label_own_words")),
         )
         if extracted is None:
             raise failure
@@ -6143,30 +6209,16 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # holds. Authorization uses the flattened expansion, while rendering gets
     # the participant groups so budget, heading and id stay one-per-person.
     groups, subjects = _fold_request_subjects(req.subjects)
-    # Suppression expiry only occurs in aupdate_suppressions, previously called only by
-    # legacy /get_settings and /new_dialog. Group-only deployments never reach
-    # them, making scoped reflections permanently invisible after their first suppression.
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as exc:
-        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    rendered = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name,
-        pending_reflections,
-        confirmed_reflections,
-        subjects=subjects,
-        include_legacy_private=False,
-        participant_groups=groups,
+    # The render the weekly scoped review reads too (one definition, so the
+    # two cannot drift). It refreshes suppressions first: their expiry only
+    # happens there, and group-only deployments never reach /new_dialog, so
+    # without it a scoped reflection stays invisible after its first
+    # suppression.
+    from memory.introspection import arender_scoped_injected_memory
+
+    rendered = await arender_scoped_injected_memory(
+        runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+        subjects, participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -6279,6 +6331,15 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
         )
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
+    # A pending snapshot journal restores its before-image when recovered, which
+    # would bring back whatever this erase removes. Settle it first or refuse;
+    # the erase checks again once it holds the lock snapshot commits take.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, require_consistent_views
+    from .long_term_sync import recover_pending_snapshot
+    try:
+        await recover_pending_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as error:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from error
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
@@ -6405,6 +6466,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
+        await asyncio.to_thread(
+            require_consistent_views,
+            os.path.join(runtime._config_manager.memory_dir, lanlan_name),
+        )
         for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
@@ -6505,6 +6570,8 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             )
     except _ForgetAlreadyErased:
         raise
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -7029,6 +7096,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     archived_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
     )
+    # Cold facts count too (archived subjects live there), as stubs without text.
+    from memory import cold_store
+    try:
+        archived_facts = list(archived_facts) + await cold_store.astatus(character_dir)
+    except cold_store.ColdStoreUnreadable as exc:
+        logger.warning(f"[MemoryServer] list_scoped_subjects {lanlan_name}: cold facts unreadable: {exc}")
     def _fact_id(fact: dict):
         # Old/manual files may have unhashable list/object IDs: accept strings/integers only;
         # treat others as no ID, preventing one corrupt row from making the entire listing return 500.
@@ -7735,6 +7808,31 @@ async def get_settings(lanlan_name: str):
     )
 
 
+@app.get("/internal/memory/{lanlan_name}/persona")
+async def get_private_persona_snapshot(lanlan_name: str):
+    """Return the native retained private persona projection."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    manager = runtime.persona_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    try:
+        return await manager.aget_private_persona_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
+    except OverflowError as exc:
+        raise HTTPException(status_code=413, detail={
+            "code": "MEMORY_RESPONSE_TOO_LARGE",
+            "message": "Persona snapshot exceeds internal limit",
+        }) from exc
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "MEMORY_PROTOCOL_ERROR", "message": "Malformed persona data",
+        }) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Persona storage unavailable") from exc
+
+
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""
@@ -7816,7 +7914,7 @@ async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: s
     }
 
 
-@app.post("/cancel_correction/{lanlan_name}")
+@app.post("/cancel_correction/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def cancel_correction(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     """Interrupt a character's memory-organization tasks so memory edits take effect immediately."""
@@ -7905,7 +8003,7 @@ async def set_prompt_locale_preference(
 PREEMPT_SUMMARY_WINDOW_S = 10.0
 
 
-@app.post("/preempt_summary/{lanlan_name}")
+@app.post("/preempt_summary/{lanlan_name}", dependencies=[Depends(_refuse_browsers)])
 async def preempt_summary(lanlan_name: str):
     """Abandon ``lanlan_name``'s summary LLM calls to background compression (#3601).
 
@@ -8047,6 +8145,24 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8075,6 +8191,9 @@ async def _new_dialog(
         return PlainTextResponse("")
 
     if not has_explicit_language:
+        # This session speaks its request (UI) language; the habitual-phrase
+        # miner follows it. Noted in memory only, never persisted.
+        habitual_phrase_loop.note_session_render_language(lanlan_name, render_language)
         try:
             durable_language = await asyncio.to_thread(
                 locale_state.get_character_prompt_locale,
@@ -8271,6 +8390,14 @@ async def _new_dialog(
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
 
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
+
         return PlainTextResponse(result)
 
 @app.get("/last_conversation_gap/{lanlan_name}")
@@ -8286,3 +8413,972 @@ async def last_conversation_gap(lanlan_name: str):
     except Exception as e:
         logger.exception(f"查询对话间隔失败: {e}")
         return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
+
+
+# ── Memory Browser Phase 1: Imprint, Long-term Correction & Health Diagnostics ──
+
+
+class _BrowserPersonaEditRequest(BaseModel):
+    character_name: str
+    entity: str
+    entry_id: str
+    text: str
+
+
+class _BrowserPersonaFlagsRequest(BaseModel):
+    character_name: str
+    entity: str
+    entry_id: str
+    user_pinned: bool | None = None
+    suppress: bool | None = None
+
+
+class _BrowserPersonaArchiveRequest(BaseModel):
+    character_name: str
+    entity: str
+    entry_id: str
+
+
+class _BrowserPersonaRestoreRequest(BaseModel):
+    character_name: str
+    entity: str
+    entry_id: str
+    version_index: int
+    expected_text: str | None = None
+    expected_replaced_at: str | None = None
+
+
+class _BrowserCorrectionResolveRequest(BaseModel):
+    character_name: str
+    correction_index: int | None = None
+    correction_id: str | None = None
+    expected_old_text: str | None = None
+    expected_new_text: str | None = None
+    expected_entity: str | None = None
+    expected_scope: str | None = None
+    expected_queued_at: str | None = None
+    action: Literal["keep_new", "keep_old", "merge", "keep_both"]
+    merged_text: str | None = None
+
+
+class _BrowserReflectionReviewRequest(BaseModel):
+    character_name: str
+    reflection_id: str
+    decision: Literal["confirm", "edit", "forget"]
+    edited_text: str | None = None
+
+
+class _BrowserFactEditRequest(BaseModel):
+    character_name: str
+    fact_id: str
+    text: str
+
+
+class _BrowserFactArchiveRequest(BaseModel):
+    character_name: str
+    fact_id: str
+
+
+class _BrowserDuplicateMergeRequest(BaseModel):
+    character_name: str
+    kind: Literal["persona", "reflection", "fact"]
+    entity: str
+    keep_id: str
+    drop_id: str
+    merged_text: str
+
+
+class _BrowserDirectiveRequest(BaseModel):
+    character_name: str
+    term: str
+    language: str | None = None
+
+
+class _BrowserImprintNoteRequest(BaseModel):
+    language: str | None = None
+
+
+class _BrowserSearchRequest(BaseModel):
+    query: str
+    top_k: int = 20
+
+
+@app.get(
+    "/internal/memory/browser/overview/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_memory_overview(lanlan_name: str):
+    """Return read-only Imprint, editable long-term memory groups, and 6-axis health diagnostics."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import abuild_memory_overview
+    try:
+        data = await abuild_memory_overview(
+            name,
+            memory_dir=runtime._config_manager.memory_dir,
+        )
+        return {"success": True, **data}
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] overview failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/imprint_note/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_generate_imprint_note(
+    lanlan_name: str,
+    request: _BrowserImprintNoteRequest,
+):
+    """Manually trigger warm relationship summary/commentary/blessing generation and cache it."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import agenerate_imprint_note
+    try:
+        note = await agenerate_imprint_note(
+            name,
+            language=request.language,
+            config_manager=runtime._config_manager,
+        )
+        return {"success": True, "note": note}
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("[MemoryBrowser] imprint note failed for %s: %s", name, exc)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/search/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest):
+    """Search across persona entries + hybrid recall (facts & reflections)."""
+    name = validate_lanlan_name(lanlan_name)
+    query = str(request.query or "").strip()
+    if not query:
+        return {"success": True, "results": []}
+    top_k = max(1, min(int(request.top_k or 20), 50))
+    results: list[dict] = []
+    q_low = query.casefold()
+
+    # 1. Direct read-only persona match (never calls aensure_persona so search cannot write persona.json).
+    try:
+        from pathlib import Path
+        from memory.analytics.imprint import _read_json_safe
+        persona_path = Path(runtime._config_manager.memory_dir) / name / "persona.json"
+        persona = await asyncio.to_thread(_read_json_safe, persona_path, {})
+        if isinstance(persona, dict):
+            for entity_key in ("master", "relationship", "neko"):
+                section = persona.get(entity_key)
+                if not isinstance(section, dict):
+                    continue
+                for entry in section.get("facts", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    text = str(entry.get("text") or "").strip()
+                    if not text or q_low not in text.casefold():
+                        continue
+                    is_protected = bool(entry.get("protected")) or entry.get("source") == "character_card"
+                    results.append({
+                        "kind": "persona",
+                        "id": str(entry.get("id") or ""),
+                        "entity": entity_key,
+                        "text": text,
+                        "protected": is_protected,
+                        "user_pinned": bool(entry.get("user_pinned")),
+                        "suppress": bool(entry.get("suppress")),
+                        "permanent_suppression": bool(entry.get("permanent_suppression")),
+                        "created_at": entry.get("created_at") or entry.get("promoted_at"),
+                        "subject_kind": str(entry.get("subject_kind") or ""),
+                        "subject_id": str(entry.get("subject_id") or ""),
+                        "scope": str(entry.get("scope") or ""),
+                        "score": 1.0,
+                    })
+    except Exception as exc:
+        logger.debug("[MemoryBrowser] persona search error: %s", exc)
+
+    # 2. Hybrid recall over reflections + facts (BM25 + local ONNX vectors when available).
+    try:
+        from memory.hybrid_recall import hybrid_recall
+        recalled_payload = await hybrid_recall(
+            lanlan_name=name,
+            query=query,
+            fact_store=runtime.fact_store,
+            reflection_engine=runtime.reflection_engine,
+            config_manager=runtime._config_manager,
+        )
+        recalled_items = (
+            recalled_payload.get("results")
+            if isinstance(recalled_payload, dict)
+            else recalled_payload
+        ) or []
+        from memory.scopes import LEGACY_PRIVATE_SCOPE
+
+        seen_ids = {(r["kind"], r["id"]) for r in results if r.get("id")}
+        for item in recalled_items:
+            if not isinstance(item, dict):
+                continue
+            tier = str(item.get("tier") or item.get("type") or item.get("kind") or "fact")
+            kind = "reflection" if "reflection" in tier else "fact"
+            is_archived_hit = "archive" in tier or bool(item.get("archived_at"))
+            iid = str(item.get("id") or "")
+            if iid and (kind, iid) in seen_ids:
+                continue
+            seen_ids.add((kind, iid))
+            subj_kind = str(item.get("subject_kind") or "")
+            subj_id = str(item.get("subject_id") or "")
+            raw_scope = str(item.get("scope") or "")
+            if raw_scope == LEGACY_PRIVATE_SCOPE and not subj_kind and not subj_id:
+                raw_scope = ""
+            results.append({
+                "kind": kind,
+                "id": iid,
+                "entity": str(item.get("entity") or "master"),
+                "text": str(item.get("text") or "").strip(),
+                "status": item.get("status"),
+                "archived": is_archived_hit,
+                "protected": False,
+                "created_at": item.get("created_at"),
+                "subject_kind": subj_kind,
+                "subject_id": subj_id,
+                "scope": raw_scope,
+                "score": float(item.get("score") or 0.0),
+            })
+    except Exception as exc:
+        logger.debug("[MemoryBrowser] hybrid recall fallback to substring: %s", exc)
+        # Fallback substring search across reflections & facts if hybrid_recall isn't ready.
+        if runtime.reflection_engine is not None:
+            try:
+                refls = await runtime.reflection_engine.aload_reflections(name, include_archived=False)
+                for r in refls:
+                    if not isinstance(r, dict):
+                        continue
+                    text = str(r.get("text") or "").strip()
+                    if text and q_low in text.casefold():
+                        results.append({
+                            "kind": "reflection",
+                            "id": str(r.get("id") or ""),
+                            "entity": str(r.get("entity") or "master"),
+                            "text": text,
+                            "status": r.get("status"),
+                            "created_at": r.get("created_at"),
+                            "subject_kind": str(r.get("subject_kind") or ""),
+                            "subject_id": str(r.get("subject_id") or ""),
+                            "scope": str(r.get("scope") or ""),
+                            "score": 0.8,
+                        })
+            except Exception as refl_exc:
+                logger.debug("[MemoryBrowser] reflection fallback search skipped: %s", refl_exc)
+        if runtime.fact_store is not None:
+            try:
+                facts = await runtime.fact_store.aload_facts(name)
+                for f in facts:
+                    if not isinstance(f, dict):
+                        continue
+                    text = str(f.get("text") or "").strip()
+                    if text and q_low in text.casefold():
+                        results.append({
+                            "kind": "fact",
+                            "id": str(f.get("id") or ""),
+                            "entity": str(f.get("entity") or "master"),
+                            "text": text,
+                            "created_at": f.get("created_at"),
+                            "subject_kind": str(f.get("subject_kind") or ""),
+                            "subject_id": str(f.get("subject_id") or ""),
+                            "scope": str(f.get("scope") or ""),
+                            "score": 0.7,
+                        })
+            except Exception as fact_exc:
+                logger.debug("[MemoryBrowser] fact fallback search skipped: %s", fact_exc)
+
+    return {"success": True, "results": results[:top_k]}
+
+
+from contextlib import contextmanager
+
+
+def _queue_long_term_capture(name: str, *, force: bool = False) -> None:
+    """Let multi-device sync publish what a Memory Browser write just saved."""
+    try:
+        from .long_term_sync import queue_capture
+        queue_capture(name, force=force)
+    except Exception as exc:
+        logger.debug("[MemoryBrowser] sync capture not queued for %s: %s", name, exc)
+
+
+@contextmanager
+def _admit_browser_character_write(name: str):
+    """Register body-addressed browser mutations in the character release-draining ledger."""
+    token = runtime._begin_character_request(name)
+    if token is None:
+        raise HTTPException(status_code=409, detail="character release in progress")
+    try:
+        yield
+    finally:
+        runtime._end_character_request(name, token)
+
+
+@app.post(
+    "/internal/memory/browser/persona/edit",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_edit_persona(request: _BrowserPersonaEditRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="PersonaManager not ready")
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.aedit_persona_entry(
+                name, request.entity, request.entry_id, request.text,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
+    return {"success": True, "entry": updated}
+
+
+@app.post(
+    "/internal/memory/browser/persona/flags",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_set_persona_flags(request: _BrowserPersonaFlagsRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="PersonaManager not ready")
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.aset_persona_flags(
+                name,
+                request.entity,
+                request.entry_id,
+                user_pinned=request.user_pinned,
+                suppress=request.suppress,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
+    return {"success": True, "entry": updated}
+
+
+@app.post(
+    "/internal/memory/browser/persona/archive",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_archive_persona(request: _BrowserPersonaArchiveRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="PersonaManager not ready")
+    with _admit_browser_character_write(name):
+        ok = await runtime.persona_manager.aarchive_persona_entry(
+            name, request.entity, request.entry_id,
+        )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Persona entry not found or protected")
+    _queue_long_term_capture(name)
+    return {"success": True}
+
+
+@app.post(
+    "/internal/memory/browser/persona/restore_version",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="PersonaManager not ready")
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.arestore_persona_version(
+                name,
+                request.entity,
+                request.entry_id,
+                request.version_index,
+                expected_text=request.expected_text,
+                expected_replaced_at=request.expected_replaced_at,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except (IndexError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
+    return {"success": True, "entry": updated}
+
+
+@app.post(
+    "/internal/memory/browser/correction/resolve",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="PersonaManager not ready")
+    with _admit_browser_character_write(name):
+        try:
+            res = await runtime.persona_manager.aresolve_correction_manual(
+                name,
+                request.correction_index,
+                request.action,
+                merged_text=request.merged_text,
+                correction_id=request.correction_id,
+                expected_old_text=request.expected_old_text,
+                expected_new_text=request.expected_new_text,
+                expected_entity=request.expected_entity,
+                expected_scope=request.expected_scope,
+                expected_queued_at=request.expected_queued_at,
+            )
+        except (IndexError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    _queue_long_term_capture(name)
+    return {"success": True, **res}
+
+
+@app.post(
+    "/internal/memory/browser/reflection/review",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_review_reflection(request: _BrowserReflectionReviewRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.reflection_engine is None:
+        raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
+    with _admit_browser_character_write(name):
+        try:
+            res = await runtime.reflection_engine.amanual_review_reflection(
+                name,
+                request.reflection_id,
+                request.decision,
+                edited_text=request.edited_text,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if res is None:
+        raise HTTPException(status_code=404, detail="Reflection not found")
+    _queue_long_term_capture(name)
+    return {"success": True, **res}
+
+
+@app.post(
+    "/internal/memory/browser/fact/edit",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_edit_fact(request: _BrowserFactEditRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.fact_store is None:
+        raise HTTPException(status_code=503, detail="FactStore not ready")
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.fact_store.aedit_fact_manual(
+                name, request.fact_id, request.text,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    _queue_long_term_capture(name)
+    return {"success": True, "fact": updated}
+
+
+@app.post(
+    "/internal/memory/browser/fact/archive",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_archive_fact(request: _BrowserFactArchiveRequest):
+    name = validate_lanlan_name(request.character_name)
+    if runtime.fact_store is None:
+        raise HTTPException(status_code=503, detail="FactStore not ready")
+    with _admit_browser_character_write(name):
+        try:
+            ok = await runtime.fact_store.aarchive_fact_manual(name, request.fact_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    _queue_long_term_capture(name)
+    return {"success": True}
+
+
+@app.post(
+    "/internal/memory/browser/duplicate/merge",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
+    name = validate_lanlan_name(request.character_name)
+    merged = str(request.merged_text or "").strip()
+    if not merged or len(merged) > 1000:
+        raise HTTPException(status_code=400, detail="merged_text must be 1..1000 chars")
+    if request.keep_id == request.drop_id:
+        raise HTTPException(status_code=400, detail="keep_id and drop_id must differ")
+
+    async def _take_pre_merge_snapshot() -> None:
+        try:
+            from memory.analytics import acreate_snapshot
+            await acreate_snapshot(
+                name,
+                label="Before duplicate merge",
+                reason="pre_merge",
+                config_manager=runtime._config_manager,
+                persona_manager=runtime.persona_manager,
+                fact_store=runtime.fact_store,
+                reflection_engine=runtime.reflection_engine,
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
+
+    with _admit_browser_character_write(name):
+        if request.kind == "persona":
+            if runtime.persona_manager is None:
+                raise HTTPException(status_code=503, detail="PersonaManager not ready")
+            # Fast pre-check before taking a snapshot; atomic re-validation runs under manager lock.
+            persona_view = await runtime.persona_manager.aensure_persona(name)
+            section = persona_view.get(request.entity) if isinstance(persona_view, dict) else None
+            facts_list = section.get("facts", []) if isinstance(section, dict) else []
+            by_id = {
+                str(e.get("id") or ""): e
+                for e in facts_list
+                if isinstance(e, dict) and e.get("id")
+            }
+            keep_obj = by_id.get(request.keep_id)
+            drop_obj = by_id.get(request.drop_id)
+            if keep_obj is None:
+                raise HTTPException(status_code=404, detail="keep_id not found")
+            if drop_obj is None:
+                raise HTTPException(status_code=404, detail="drop_id not found")
+            if (
+                keep_obj.get("protected") or keep_obj.get("source") == "character_card"
+                or drop_obj.get("protected") or drop_obj.get("source") == "character_card"
+            ):
+                raise HTTPException(status_code=403, detail="Character card entries are protected")
+
+            await _take_pre_merge_snapshot()
+            try:
+                updated = await runtime.persona_manager.amerge_persona_entries(
+                    name, request.entity, request.keep_id, request.drop_id, merged,
+                )
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            _queue_long_term_capture(name)
+            return {"success": True, "kept": updated, "dropped": True}
+
+        if request.kind == "fact":
+            if runtime.fact_store is None:
+                raise HTTPException(status_code=503, detail="FactStore not ready")
+            facts = await runtime.fact_store.aload_facts(name)
+            fact_ids = {str(f.get("id") or "") for f in facts if isinstance(f, dict)}
+            if request.keep_id not in fact_ids:
+                raise HTTPException(status_code=404, detail="keep_id not found")
+            if request.drop_id not in fact_ids:
+                raise HTTPException(status_code=404, detail="drop_id not found")
+
+            await _take_pre_merge_snapshot()
+            try:
+                updated = await runtime.fact_store.amerge_facts_manual(
+                    name, request.keep_id, request.drop_id, merged,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            _queue_long_term_capture(name)
+            return {"success": True, "kept": updated, "dropped": True}
+
+        if runtime.reflection_engine is None:
+            raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
+        # Include pending, confirmed, AND promoted reflections (matching overview duplicate pairs).
+        refls = await runtime.reflection_engine._aload_reflections_full(name)
+        eligible_ids = {
+            str(r.get("id") or "")
+            for r in refls
+            if isinstance(r, dict) and str(r.get("status") or "pending") not in ("archived", "merged", "denied")
+        }
+        if request.keep_id not in eligible_ids:
+            raise HTTPException(status_code=404, detail="keep_id not found")
+        if request.drop_id not in eligible_ids:
+            raise HTTPException(status_code=404, detail="drop_id not found")
+
+        await _take_pre_merge_snapshot()
+        try:
+            updated = await runtime.reflection_engine.amerge_reflections(
+                name, request.keep_id, request.drop_id, merged,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        _queue_long_term_capture(name)
+        return {"success": True, "kept": updated, "dropped": True}
+
+
+@app.post(
+    "/internal/memory/browser/directive/add",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_add_directive(request: _BrowserDirectiveRequest):
+    from memory.user_directives import _normalize_term, get_user_directives_manager
+    name = validate_lanlan_name(request.character_name)
+    if _normalize_term(request.term) is None:
+        raise HTTPException(status_code=400, detail="Directive term must be 2..40 characters")
+    with _admit_browser_character_write(name):
+        assert_cloudsave_writable(
+            runtime._config_manager,
+            operation="save",
+            target=f"memory/{name}/user_directives.json",
+        )
+        locale = normalize_language_code(request.language or get_global_language_full(), format="short")
+        created = await get_user_directives_manager().arecord(
+            name,
+            locale=locale,
+            kind="ban_topic",
+            term=request.term,
+            source="manual",
+        )
+    if not created:
+        raise HTTPException(
+            status_code=409,
+            detail="Directive could not be retained because the directive list is at capacity with newer entries",
+        )
+    _queue_long_term_capture(name)
+    return {"success": True, "directive": created}
+
+
+@app.post(
+    "/internal/memory/browser/directive/remove",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_remove_directive(request: _BrowserDirectiveRequest):
+    from memory.user_directives import get_user_directives_manager
+    name = validate_lanlan_name(request.character_name)
+    with _admit_browser_character_write(name):
+        assert_cloudsave_writable(
+            runtime._config_manager,
+            operation="save",
+            target=f"memory/{name}/user_directives.json",
+        )
+        removed = await get_user_directives_manager().aremove(name, request.term)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Directive not found")
+    _queue_long_term_capture(name)
+    return {"success": True}
+
+
+# ── Memory Browser Phase 2: Star Map, 3-Step Lineage & Related Memories ──
+
+
+class _BrowserStarMapLabelRequest(BaseModel):
+    language: str | None = None
+
+
+class _BrowserRelatedMemoriesRequest(BaseModel):
+    kind: Literal["persona", "reflection", "fact"]
+    entry_id: str
+    text: str = ""
+    top_k: int = 4
+    subject_kind: str | None = None
+    subject_id: str | None = None
+    scope: str | None = None
+
+
+@app.get(
+    "/internal/memory/browser/star_map/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_memory_star_map(lanlan_name: str):
+    """Return read-only 2D PCA Memory Star Map + high-dim clusters + cached theme labels."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import abuild_star_map
+    try:
+        data = await abuild_star_map(
+            name,
+            memory_dir=runtime._config_manager.memory_dir,
+        )
+        return {"success": True, **data}
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] star_map failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/star_map/label_clusters/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_label_star_map_clusters(
+    lanlan_name: str,
+    request: _BrowserStarMapLabelRequest,
+):
+    """Manually trigger summary-tier theme labeling for Star Map clusters and cache it."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import alabel_star_map_clusters
+    from memory.analytics.star_map import StarMapLabelModelNotConfigured
+    try:
+        res = await alabel_star_map_clusters(
+            name,
+            language=request.language,
+            config_manager=runtime._config_manager,
+            force=True,
+        )
+        return {"success": True, **res}
+    except MaintenanceModeError:
+        raise
+    except StarMapLabelModelNotConfigured:
+        return JSONResponse(
+            {"success": False, "error": "summary_model_not_configured"}, status_code=409,
+        )
+    except Exception as exc:
+        logger.warning("[MemoryBrowser] star_map label failed for %s: %s", name, exc)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.get(
+    "/internal/memory/browser/lineage/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_memory_lineage(
+    lanlan_name: str,
+    kind: Literal["persona", "reflection", "fact"],
+    entry_id: str,
+):
+    """Return 3-step lineage story (conversations -> facts -> impression) for one memory."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import abuild_memory_lineage_story
+    try:
+        story = await abuild_memory_lineage_story(
+            name,
+            kind=kind,
+            entry_id=entry_id,
+            memory_dir=runtime._config_manager.memory_dir,
+        )
+        if story is None:
+            raise HTTPException(status_code=404, detail="Memory entry not found")
+        return {"success": True, **story}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] lineage failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/related/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_related_memories(
+    lanlan_name: str,
+    request: _BrowserRelatedMemoriesRequest,
+):
+    """Find closely related memories for cascade review after editing/forgetting an entry."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import afind_related_memories
+    try:
+        items = await afind_related_memories(
+            name,
+            kind=request.kind,
+            entry_id=request.entry_id,
+            text=request.text,
+            top_k=request.top_k,
+            memory_dir=runtime._config_manager.memory_dir,
+            subject_kind=request.subject_kind,
+            subject_id=request.subject_id,
+            scope=request.scope,
+        )
+        return {"success": True, "related": items}
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] related memories failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+# ── Memory Browser Phase 3: Snapshots, ZIP Export, 5-Lane DAG & Deep Conflict Check ──
+
+
+class _BrowserSnapshotCreateRequest(BaseModel):
+    label: str = ""
+    reason: str = "manual"
+
+
+class _BrowserSnapshotRestoreRequest(BaseModel):
+    snapshot_id: str
+
+
+class _BrowserDeepConflictRequest(BaseModel):
+    language: str | None = None
+
+
+@app.get(
+    "/internal/memory/browser/snapshots/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_list_snapshots(lanlan_name: str):
+    """List per-character safety snapshots (newest first)."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import alist_snapshots
+    try:
+        items = await alist_snapshots(name, memory_dir=runtime._config_manager.memory_dir)
+        return {"success": True, "snapshots": items}
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] list_snapshots failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/snapshots/create/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_create_snapshot(
+    lanlan_name: str,
+    request: _BrowserSnapshotCreateRequest,
+):
+    """Create a per-character safety snapshot."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import acreate_snapshot
+    try:
+        snap = await acreate_snapshot(
+            name,
+            label=request.label,
+            reason=request.reason,
+            config_manager=runtime._config_manager,
+            persona_manager=runtime.persona_manager,
+            fact_store=runtime.fact_store,
+            reflection_engine=runtime.reflection_engine,
+        )
+        return {"success": True, "snapshot": snap}
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] create_snapshot failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/snapshots/restore/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_restore_snapshot(
+    lanlan_name: str,
+    request: _BrowserSnapshotRestoreRequest,
+):
+    """Restore a safety snapshot under manager locks with automatic pre-restore backup."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import arestore_snapshot
+    from .long_term_sync import _views_locked
+    if (
+        runtime.persona_manager is None
+        or runtime.fact_store is None
+        or runtime.reflection_engine is None
+        or runtime.event_log is None
+    ):
+        raise HTTPException(status_code=503, detail="Memory managers not ready")
+    try:
+        result = await arestore_snapshot(
+            name,
+            request.snapshot_id,
+            config_manager=runtime._config_manager,
+            persona_manager=runtime.persona_manager,
+            fact_store=runtime.fact_store,
+            reflection_engine=runtime.reflection_engine,
+            event_log=runtime.event_log,
+            views_lock=_views_locked,
+        )
+    except MaintenanceModeError:
+        raise
+    except ValueError as exc:
+        if str(exc) == "character_release_in_progress":
+            raise HTTPException(status_code=409, detail="character release in progress")
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] restore_snapshot failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+    _queue_long_term_capture(name, force=True)
+    return {"success": True, **result}
+
+
+@app.get(
+    "/internal/memory/browser/export/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_export_memory_zip(
+    lanlan_name: str,
+    mode: Literal["keepsake", "diagnostics"] = "keepsake",
+):
+    """Build and download a keepsake or redacted diagnostics ZIP archive."""
+    name = validate_lanlan_name(lanlan_name)
+    from urllib.parse import quote
+    from memory.analytics import abuild_memory_export_zip
+    try:
+        zip_bytes, filename = await abuild_memory_export_zip(
+            name,
+            mode=mode,
+            memory_dir=runtime._config_manager.memory_dir,
+        )
+        ascii_fallback = f"memory_{mode}.zip"
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_fallback}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Memory-Export-Filename": quote(filename),
+        }
+        return Response(content=zip_bytes, media_type="application/zip", headers=headers)
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] export zip failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.get(
+    "/internal/memory/browser/lineage_graph/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers)],
+)
+async def browser_full_lineage_graph(lanlan_name: str):
+    """Return Developer Mode 5-lane causal DAG (message -> memo -> fact -> reflection -> persona)."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import abuild_full_lineage_graph
+    try:
+        graph = await abuild_full_lineage_graph(
+            name,
+            memory_dir=runtime._config_manager.memory_dir,
+        )
+        return {"success": True, **graph}
+    except Exception as exc:
+        logger.exception("[MemoryBrowser] lineage_graph failed for %s", name)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+
+@app.post(
+    "/internal/memory/browser/deep_conflicts/{lanlan_name}",
+    dependencies=[Depends(_refuse_browsers), Depends(_require_json_content_type)],
+)
+async def browser_deep_conflict_check(
+    lanlan_name: str,
+    request: _BrowserDeepConflictRequest,
+):
+    """Run manual summary-tier semantic conflict/duplicate check (Developer Mode)."""
+    name = validate_lanlan_name(lanlan_name)
+    from memory.analytics import arun_deep_conflict_check
+    try:
+        result = await arun_deep_conflict_check(
+            name,
+            language=request.language,
+            config_manager=runtime._config_manager,
+        )
+        return {"success": True, **result}
+    except Exception as exc:
+        logger.warning("[MemoryBrowser] deep_conflict_check failed for %s: %s", name, exc)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)

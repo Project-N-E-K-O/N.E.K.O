@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import copy
 import importlib
 import importlib.machinery
@@ -16,9 +18,10 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
 from config import (
     MAIN_SERVER_PORT,
@@ -32,9 +35,12 @@ from plugin.core.communication import (
     PluginCommunicationResourceManager,
 )
 from plugin.core.context import PluginContext
+from plugin.sdk.shared.core.call_chain_view import call_chain_scope
+from plugin.sdk.shared.permissions.runtime import PERMISSIONS_UPDATE
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
-from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
+from plugin.core.rpc import request_deadline
 from plugin.core.state import state
 from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
@@ -73,14 +79,22 @@ from plugin.settings import (
 from utils import process_creation
 
 
+from plugin.core.ui_manifest import sanitize_json_value as _sanitize_json_value
 from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
     from utils.config_manager import get_config_manager
-    from utils.storage_layout import resolve_storage_layout
+    from utils.storage_layout import build_storage_layout
 
-    return resolve_storage_layout(get_config_manager())
+    # The launcher has already selected the runtime layout. Reading the default
+    # policy again can redirect an isolated or recovering instance's plugins.
+    manager = get_config_manager(migrate=False)
+    return build_storage_layout(
+        selected_root=manager.app_docs_dir,
+        anchor_root=manager.anchor_root,
+        source="active_runtime",
+    )
 
 
 def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
@@ -230,6 +244,9 @@ if hasattr(os, "register_at_fork"):
     # POSIX only; spawn platforms re-execute children and inherit no such descriptors.
     os.register_at_fork(after_in_child=_close_inherited_host_sockets)
     _FORK_SOCKET_HOOK_REGISTERED = True
+    # A parent thread may hold stdout/stderr buffer locks at fork; see the hook.
+    from plugin._logging_runtime import reopen_inherited_std_streams as _reopen_inherited_std_streams
+    os.register_at_fork(after_in_child=_reopen_inherited_std_streams)
 
 
 # ============================================================================
@@ -330,6 +347,113 @@ async def _await_within_budget(awaitable: Any, budget: float) -> tuple[bool, Any
     task.cancel()
     task.add_done_callback(_discard_abandoned_task_result)
     return False, None
+
+
+def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """The plugin process's first entry tables: ``collect_entries()``, else a method scan.
+
+    Returns ``(entry_map, entry_meta_map, events_by_type)``.
+    """
+    entry_map: Dict[str, Any] = {}
+    entry_meta_map: Dict[str, Any] = {}
+    events_by_type: Dict[str, Dict[str, Any]] = {}
+    # Prefer collect_entries(), supporting Hook wrappers.
+    collected_ok = False
+    if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
+        try:
+            collected = instance.collect_entries(wrap_with_hooks=True)
+            collected_ok = True
+            for eid, event_handler in collected.items():
+                entry_map[eid] = event_handler.handler
+                entry_meta_map[eid] = event_handler.meta
+                etype = getattr(event_handler.meta, "event_type", "plugin_entry")
+                events_by_type.setdefault(etype, {})
+                events_by_type[etype][eid] = event_handler.handler
+            logger.info("Plugin entries collected via collect_entries(): {}", list(entry_map.keys()))
+        except Exception as e:
+            logger.warning("Failed to collect entries via collect_entries(): {}, falling back to scan", e)
+            entry_map.clear()
+            entry_meta_map.clear()
+            events_by_type.clear()
+    
+    # Fall back to method scanning if collect_entries is missing or fails.
+    # A plugin whose components were all refused by the narrowing check
+    # collected nothing on purpose: scanning would bring them back, plus
+    # every public method as an entry.
+    refused_all = collected_ok and bool(getattr(instance, "_narrowing_refused", None))
+    if not entry_map and not refused_all:
+        # The same narrowing check collect_entries() runs, for the case
+        # collect_entries() failed.
+        narrow = getattr(instance, "_apply_permission_narrowing", None)
+        scanned: list[tuple[str, Any, Any]] = []
+        for name, member in inspect.getmembers(instance, predicate=callable):
+            if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
+                continue
+            event_meta = getattr(member, EVENT_META_ATTR, None)
+            if not event_meta:
+                wrapped = getattr(member, "__wrapped__", None)
+                if wrapped is not None:
+                    event_meta = getattr(wrapped, EVENT_META_ATTR, None)
+            scanned.append((name, member, event_meta))
+        # Keyed by (event_type, id): a timer and an entry may share an id.
+        kept: Dict[tuple[str, str], Any] | None = None
+        check_failed = False
+        if callable(narrow):
+            from plugin.sdk.shared.core.events import EventHandler as _SdkEventHandler
+
+            try:
+                kept = {}
+                by_type: Dict[str, Dict[str, Any]] = {}
+                for name, member, event_meta in scanned:
+                    if event_meta:
+                        by_type.setdefault(str(getattr(event_meta, "event_type", None) or "plugin_entry"), {})[
+                            str(getattr(event_meta, "id", name))
+                        ] = _SdkEventHandler(meta=event_meta, handler=member)
+                for etype_key, group in by_type.items():
+                    for eid_key, item in narrow(group).items():
+                        kept[(etype_key, eid_key)] = item
+            except Exception as e:
+                kept = None
+                check_failed = True
+                logger.warning("Permission narrowing check failed during fallback scan: {}", e)
+
+        for name, member, event_meta in scanned:
+            if event_meta:
+                eid = getattr(event_meta, "id", name)
+                if check_failed and getattr(event_meta, "permissions", None) is not None:
+                    # The check could not run: a component that narrows is not
+                    # registered unverified. Components without narrowing are
+                    # mapped as before.
+                    logger.error(
+                        "Component not registered: {} {!r} narrows permissions and the narrowing check failed",
+                        getattr(event_meta, "event_type", "plugin_entry"), eid,
+                    )
+                    continue
+                if kept is not None:
+                    key = (str(getattr(event_meta, "event_type", None) or "plugin_entry"), str(eid))
+                    if key not in kept:
+                        continue
+                    event_meta = kept[key].meta
+                etype = getattr(event_meta, "event_type", "plugin_entry")
+                events_by_type.setdefault(etype, {})
+                events_by_type[etype][eid] = member
+                # The id-keyed maps hold one handler and its metadata per id:
+                # a plugin_entry keeps them when another event type shares the
+                # id (that one stays in events_by_type). Same type: later wins.
+                current = entry_meta_map.get(eid)
+                if (
+                    current is not None
+                    and (getattr(current, "event_type", None) or "plugin_entry") == "plugin_entry"
+                    and (etype or "plugin_entry") != "plugin_entry"
+                ):
+                    continue
+                entry_map[eid] = member
+                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
+            # Members without event metadata are not mapped: they are not
+            # declared entries. Plain methods the manifest declares are
+            # reached through the executor's attribute fallback.
+        logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
+    return entry_map, entry_meta_map, events_by_type
 
 
 def _find_project_root(config_path: Path) -> Path:
@@ -523,7 +647,7 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
     except OSError as exc:
         logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
         return
-    if plugin_id != plugin_dir.name:
+    if not plugin_package_matches_directory(plugin_id, plugin_dir.name):
         return
 
     package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
@@ -560,7 +684,7 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         logger.debug("[Plugin Process] Failed to resolve plugin directory for import fallback: {}", exc)
         return None
 
-    if parts[1] != plugin_dir.name:
+    if not plugin_package_matches_directory(parts[1], plugin_dir.name):
         logger.debug(
             "[Plugin Process] Import fallback skipped because module '{}' does not match plugin dir '{}'",
             module_path,
@@ -654,7 +778,7 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
         canonical = module_path.removeprefix("plugin.")
         parts = canonical.split(".")
         directory = config_path.resolve().parent
-        if len(parts) < 2 or parts[0] != "plugins" or parts[1] != directory.name:
+        if len(parts) < 2 or parts[0] != "plugins" or not plugin_package_matches_directory(parts[1], directory.name):
             raise ValueError("Source-only plugin module must match its source directory")
         package = ".".join(parts[:2])
         _evict_plugin_module_tree(package)
@@ -716,9 +840,11 @@ async def _handle_config_update_command(
     ``res_sender`` is the :class:`ChannelSender` for the result channel.
     """
     req_id = msg.get("req_id", "unknown")
-    new_config = msg.get("config", {})
+    raw_new_config = msg.get("config", {})
+    new_config = dict(raw_new_config) if isinstance(raw_new_config, Mapping) else {}
     mode = msg.get("mode", "temporary")  # temporary | permanent
     profile_name = msg.get("profile")
+    replace = bool(msg.get("replace", False))
     
     ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
     
@@ -728,34 +854,254 @@ async def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        # Deep-copy old configuration for callbacks, avoiding shared nested references.
-        old_config = {}
-        if hasattr(ctx, '_effective_config'):
-            old_config = copy.deepcopy(ctx._effective_config) if ctx._effective_config else {}
-        
-        # Update process-local configuration cache.
-        if hasattr(ctx, '_effective_config') and ctx._effective_config is not None:
-            # Deep-merge configuration.
-            _deep_merge(ctx._effective_config, new_config)
-            logger.debug("[Plugin Process] Config cache updated")
-        else:
-            ctx._effective_config = new_config
-
+        replace_for_host = getattr(ctx, "_replace_effective_config_cache_for_host", None)
+        merge_for_host = getattr(ctx, "_merge_effective_config_cache_for_host", None)
+        apply_hydrated_merge_for_host = getattr(ctx, "_apply_hydrated_merge_for_host", None)
+        rollback_for_host = getattr(ctx, "_rollback_effective_config_cache_for_host", None)
+        wait_write_settled = getattr(ctx, "_wait_for_in_flight_config_write", None)
+        uses_context_publisher = (
+            callable(replace_for_host)
+            and callable(merge_for_host)
+            and callable(apply_hydrated_merge_for_host)
+            and callable(rollback_for_host)
+            and callable(wait_write_settled)
+        )
+        bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
-        if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
-            refresh_runtime_config(ctx._effective_config)
-        
-        # Trigger config_change lifecycle callbacks when present.
         lifecycle_events = events_by_type.get("lifecycle", {})
         config_change_handler = lifecycle_events.get("config_change")
+        register_pending_on_publish = bool(uses_context_publisher and config_change_handler)
+        pending_host_change_registered = False
+        applied_config: dict[str, Any] | None = None
+        applied_owner_token = 0
+        rollback_runtime_snapshot: dict[str, Any] | None = None
+
+        if uses_context_publisher:
+            if replace:
+                (
+                    had_cached_config,
+                    had_uncertain_config,
+                    old_config,
+                    applied_config,
+                    applied_owner_token,
+                    rollback_runtime_snapshot,
+                ) = replace_for_host(
+                    new_config,
+                    register_pending_change=register_pending_on_publish,
+                )
+                pending_host_change_registered = register_pending_on_publish
+                logger.debug("[Plugin Process] Config cache replaced")
+            else:
+                merge_budget = 8.0
+                raw_timeout = msg.get("timeout")
+                if (
+                    isinstance(raw_timeout, (int, float))
+                    and not isinstance(raw_timeout, bool)
+                    and math.isfinite(raw_timeout)
+                ):
+                    merge_budget = min(8.0, float(raw_timeout))
+                merge_deadline = time.monotonic() + merge_budget
+                applied_ok = False
+                for _ in range(8):
+                    if time.monotonic() >= merge_deadline:
+                        break
+                    (
+                        merge_status,
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_owner_token,
+                        expected_gen,
+                        pre_runtime_snapshot,
+                    ) = merge_for_host(
+                        new_config,
+                        merge_fn=_deep_merge,
+                        register_pending_change=register_pending_on_publish,
+                    )
+                    if merge_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
+                        rollback_runtime_snapshot = (
+                            pre_runtime_snapshot
+                            if isinstance(pre_runtime_snapshot, dict)
+                            else copy.deepcopy(old_config)
+                        )
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if merge_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+
+                    remaining_budget = merge_deadline - time.monotonic()
+                    if remaining_budget <= 0.0:
+                        ret_payload["error"] = (
+                            "Timed out waiting to hydrate config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    hydrated_base: dict[str, Any] | None = None
+                    get_own_config = getattr(ctx, "get_own_config", None)
+                    if callable(get_own_config):
+                        try:
+                            accepts_timeout = False
+                            try:
+                                sig = inspect.signature(get_own_config)
+                                accepts_timeout = "timeout" in sig.parameters or any(
+                                    param.kind == inspect.Parameter.VAR_KEYWORD
+                                    for param in sig.parameters.values()
+                                )
+                            except (TypeError, ValueError):
+                                accepts_timeout = False
+                            loaded = (
+                                get_own_config(timeout=remaining_budget)
+                                if accepts_timeout
+                                else get_own_config()
+                            )
+                            if inspect.isawaitable(loaded):
+                                loaded = await asyncio.wait_for(loaded, timeout=remaining_budget)
+                            if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                                hydrated_base = copy.deepcopy(dict(loaded["config"]))
+                        except TimeoutError:
+                            ret_payload["error"] = (
+                                "Timed out hydrating config before temporary update"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        except Exception:
+                            logger.debug(
+                                "[Plugin Process] Failed to hydrate base config before temporary update",
+                                exc_info=True,
+                            )
+                    if time.monotonic() >= merge_deadline:
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    (
+                        apply_status,
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_owner_token,
+                        _post_gen,
+                        rollback_runtime_snapshot,
+                    ) = apply_hydrated_merge_for_host(
+                        base_config=hydrated_base,
+                        new_config=new_config,
+                        merge_fn=_deep_merge,
+                        expected_gen=expected_gen,
+                        fallback_uncertain=had_uncertain_config,
+                        pre_runtime_snapshot=pre_runtime_snapshot,
+                        register_pending_change=register_pending_on_publish,
+                    )
+                    if apply_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if apply_status == "hydrate_failed":
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    if apply_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+                    if time.monotonic() >= merge_deadline:
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                if not applied_ok:
+                    ret_payload["error"] = (
+                        "Timed out hydrating config before temporary update"
+                        if time.monotonic() >= merge_deadline
+                        else "Config cache changed concurrently; temporary update could not be applied"
+                    )
+                    res_sender.put(ret_payload, timeout=10.0)
+                    return
+        else:
+            had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
+            had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
+            if replace:
+                old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
+                ctx._effective_config = copy.deepcopy(new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                if hasattr(ctx, "_effective_config_uncertain"):
+                    ctx._effective_config_uncertain = False
+                logger.debug("[Plugin Process] Config cache replaced")
+            elif had_cached_config:
+                old_config = copy.deepcopy(ctx._effective_config)
+                _deep_merge(ctx._effective_config, new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                logger.debug("[Plugin Process] Config cache updated")
+            else:
+                base_config: dict[str, Any] = {}
+                get_own_config = getattr(ctx, "get_own_config", None)
+                if callable(get_own_config):
+                    hydrated_base_fallback: dict[str, Any] | None = None
+                    try:
+                        loaded = get_own_config()
+                        if inspect.isawaitable(loaded):
+                            loaded = await loaded
+                        if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                            hydrated_base_fallback = copy.deepcopy(dict(loaded["config"]))
+                    except Exception:
+                        logger.debug(
+                            "[Plugin Process] Failed to hydrate base config before temporary update",
+                            exc_info=True,
+                        )
+                    if hydrated_base_fallback is None:
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    base_config = hydrated_base_fallback
+                old_config = copy.deepcopy(base_config)
+                _deep_merge(base_config, new_config)
+                ctx._effective_config = base_config
+                if callable(bump_gen):
+                    bump_gen()
+            applied_config = ctx._effective_config
+            if callable(refresh_runtime_config) and isinstance(applied_config, dict):
+                refresh_runtime_config(applied_config)
         
+        # Trigger config_change lifecycle callbacks when present.
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
+            begin_host_change = getattr(ctx, "_begin_host_config_change", None)
+            end_host_change = getattr(ctx, "_end_host_config_change", None)
+            host_change_owner_token = applied_owner_token if uses_context_publisher else None
+            handler_error: Exception | None = None
             try:
+                if not pending_host_change_registered and callable(begin_host_change):
+                    if host_change_owner_token is not None:
+                        begin_host_change(host_change_owner_token)
+                    else:
+                        begin_host_change()
+                    pending_host_change_registered = True
                 with ctx._handler_scope("lifecycle.config_change"):
                     result = config_change_handler(
-                        old_config=old_config,
-                        new_config=ctx._effective_config,
+                        old_config=copy.deepcopy(old_config),
+                        new_config=copy.deepcopy(applied_config),
                         mode=mode,
                     )
                     if inspect.isawaitable(result):
@@ -763,12 +1109,40 @@ async def _handle_config_update_command(
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
-                # Restore prechange configuration.
-                ctx._effective_config = old_config
-                if callable(refresh_runtime_config) and isinstance(old_config, dict):
-                    refresh_runtime_config(old_config)
-                logger.debug("[Plugin Process] Config rolled back after handler failure")
-                ret_payload["error"] = f"config_change handler failed: {e}"
+                handler_error = e
+                # Restore prechange configuration while pending host guard and lineage remain active.
+                if uses_context_publisher:
+                    rolled_back = rollback_for_host(
+                        expected_owner_token=applied_owner_token,
+                        had_cached=had_cached_config,
+                        old_config=old_config,
+                        uncertain=had_uncertain_config,
+                        fallback_notify_config=rollback_runtime_snapshot,
+                    )
+                    if rolled_back:
+                        logger.debug("[Plugin Process] Config rolled back after handler failure")
+                    else:
+                        logger.debug(
+                            "[Plugin Process] Skipped config rollback after handler failure because a newer snapshot was published"
+                        )
+                else:
+                    ctx._effective_config = old_config if had_cached_config else None
+                    if callable(bump_gen):
+                        bump_gen()
+                    if hasattr(ctx, "_effective_config_uncertain"):
+                        ctx._effective_config_uncertain = had_uncertain_config
+                    if callable(refresh_runtime_config) and isinstance(old_config, dict):
+                        refresh_runtime_config(old_config)
+                    logger.debug("[Plugin Process] Config rolled back after handler failure")
+            finally:
+                if pending_host_change_registered and callable(end_host_change):
+                    pending_host_change_registered = False
+                    if host_change_owner_token is not None:
+                        end_host_change(host_change_owner_token)
+                    else:
+                        end_host_change()
+            if handler_error is not None:
+                ret_payload["error"] = f"config_change handler failed: {handler_error}"
                 res_sender.put(ret_payload, timeout=10.0)
                 return
         
@@ -810,6 +1184,31 @@ async def _handle_config_update_command(
         logger.exception("[Plugin Process] Failed to send CONFIG_UPDATE response")
 
 
+def _resolve_cancel_run_id(msg: Mapping[str, Any]) -> Optional[str]:
+    raw_run_id = msg.get("run_id")
+    if isinstance(raw_run_id, str):
+        stripped = raw_run_id.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _resolve_trigger_task_key(msg: Mapping[str, Any]) -> str:
+    run_id: Optional[str] = None
+    args = msg.get("args")
+    if isinstance(args, Mapping):
+        ctx_obj = args.get("_ctx")
+        if isinstance(ctx_obj, Mapping):
+            raw_run_id = ctx_obj.get("run_id")
+            if isinstance(raw_run_id, str):
+                stripped = raw_run_id.strip()
+                if stripped:
+                    run_id = stripped
+    if run_id is not None:
+        return run_id
+    return f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+
+
 def _deep_merge(base: dict, updates: dict) -> None:
     """
     Deep-merge updates into base.
@@ -819,14 +1218,41 @@ def _deep_merge(base: dict, updates: dict) -> None:
         updates: Updates dictionary.
     """
     for key, value in updates.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+        if value == "__DELETE__":
+            base.pop(key, None)
+            continue
+        if isinstance(value, dict):
+            if not isinstance(base.get(key), dict):
+                base[key] = {}
             _deep_merge(base[key], value)
         else:
             base[key] = value
 
 
+class _ContextCopyingThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    """Run each submitted call in a copy of the submitting thread's context.
+
+    Installed as the loop's default executor, so ``run_in_executor(None, ...)``
+    and asyncio's own executor work (``loop.getaddrinfo``) see the context
+    variables of the task that scheduled them, like ``asyncio.to_thread`` does.
+    The copy is taken at submit time, so each call gets its own snapshot.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, fn, *args, **kwargs)
+
+
 async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> Any:
-    """Release this loop's HTTP client before an asyncio.run loop closes."""
+    """Run plugin code on this asyncio.run loop and clean up before it closes.
+
+    The loop gets a context-copying default executor; ``asyncio.run`` shuts it
+    down when the loop finishes. This loop's HTTP client is released here.
+    """
+    # Same thread name prefix as asyncio's lazily created default executor.
+    asyncio.get_running_loop().set_default_executor(
+        _ContextCopyingThreadPoolExecutor(thread_name_prefix="asyncio")
+    )
     try:
         return await awaitable
     finally:
@@ -837,6 +1263,185 @@ async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> 
             except Exception as exc:
                 # Cleanup must not replace a plugin result or hide its error.
                 logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
+
+
+async def _persist_plugin_state(
+    instance: object,
+    freezable_keys: list[str],
+    reason: str,
+    log: Any = logger,
+) -> None:
+    """Persist freezable plugin state and raise on explicit Result failure."""
+    sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+    if not sp:
+        return
+
+    save_method = getattr(sp, "save", None)
+    if not callable(save_method):
+        return
+
+    use_legacy_sig = False
+    try:
+        sig = inspect.signature(save_method)
+    except (ValueError, TypeError):
+        sig = None
+
+    if sig is not None:
+        try:
+            sig.bind(instance)
+        except TypeError:
+            sig.bind(instance, freezable_keys, reason=reason)
+            use_legacy_sig = True
+
+    if use_legacy_sig:
+        save_result = save_method(instance, freezable_keys, reason=reason)
+    else:
+        save_result = save_method(instance)
+
+    if inspect.isawaitable(save_result):
+        save_result = await save_result
+
+    is_ok = getattr(save_result, "is_ok", None)
+    if callable(is_ok) and not is_ok():
+        error_obj = getattr(save_result, "error", None)
+        log.warning(
+            "[Plugin Process] State persistence save failed (reason={}): {}",
+            reason,
+            error_obj,
+        )
+        raise RuntimeError(f"state persistence save failed: {error_obj}")
+
+
+def _resolve_persist_mode(
+    instance: object,
+    effective_cfg: object,
+    plugin_id: str = "",
+    log: Any = logger,
+) -> str:
+    """Return the state persist mode for a plugin instance.
+
+    Order: a valid ``[plugin_state].persist_mode`` wins, including an explicit
+    ``"off"``. Otherwise start from the instance default: ``__persist_mode__``
+    (``NekoPluginBase`` defines it as ``"off"``, so ``__freeze_mode__`` is only
+    read for objects without that attribute), else ``"off"``. When that default
+    is ``"off"``, a valid legacy ``[plugin_checkpoint].freeze_mode`` still applies.
+
+    An invalid instance default only logs a warning, and only when it is the
+    value that takes effect: it keeps its current effect (not "auto", so no
+    class-level auto persistence, yet not "off", so explicit method-level
+    persist settings still apply).
+    """
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
+    persist_mode = getattr(instance, "__persist_mode__", None)
+    if persist_mode is None:
+        persist_mode = getattr(instance, "__freeze_mode__", "off")
+    resolved = _resolve_configured_persist_mode(persist_mode, effective_cfg, valid_persist_modes, log)
+    if resolved is persist_mode and persist_mode not in valid_persist_modes:
+        log.warning(
+            "[Plugin Process] Plugin {} declares an invalid class persist mode {!r}; expected one of: {}",
+            plugin_id,
+            persist_mode,
+            ", ".join(valid_persist_modes),
+        )
+    return resolved
+
+
+def _resolve_configured_persist_mode(
+    persist_mode: Any,
+    effective_cfg: object,
+    valid_persist_modes: tuple[str, ...],
+    log: Any,
+) -> Any:
+    """Apply [plugin_state] and the legacy [plugin_checkpoint] on top of the instance default."""
+    if not isinstance(effective_cfg, dict):
+        return persist_mode
+
+    # New [plugin_state] settings; an explicit valid value is final.
+    state_cfg = effective_cfg.get("plugin_state")
+    if isinstance(state_cfg, dict):
+        cfg_persist_mode = state_cfg.get("persist_mode")
+        if cfg_persist_mode in valid_persist_modes:
+            log.debug("[Plugin Process] persist_mode from effective config: {}", cfg_persist_mode)
+            return cfg_persist_mode
+
+    # Backward-compatible old [plugin_checkpoint] settings, only when
+    # [plugin_state] left persist_mode unset or invalid.
+    if persist_mode == "off":
+        checkpoint_cfg = effective_cfg.get("plugin_checkpoint")
+        if isinstance(checkpoint_cfg, dict):
+            cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
+            if cfg_freeze_mode in valid_persist_modes:
+                log.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", cfg_freeze_mode)
+                return cfg_freeze_mode
+    return persist_mode
+
+
+def _install_system_audit(
+    plugin_id: str,
+    config_path: Path,
+    project_root: Path,
+    permissions: Any,
+    message_sender: Any,
+    logger: Any,
+) -> Any | None:
+    """Record this process's own ``system.*`` uses (observe only, see system_audit).
+
+    Installed before the plugin module is imported. A failure here leaves the
+    plugin running without the records.
+    """
+    try:
+        from types import SimpleNamespace
+
+        from plugin.core import system_audit
+        from plugin.logging_config import resolve_plugin_log_directory
+        from plugin.sdk.shared.core.base_runtime import (
+            resolve_plugin_shared_dir,
+            resolve_plugin_storage_dir,
+        )
+
+        exempt_dirs = [
+            resolve_plugin_storage_dir(SimpleNamespace(plugin_id=plugin_id)),
+            resolve_plugin_shared_dir(plugin_id),
+        ]
+        own_files = None
+        try:
+            from plugin.logging_layout import plugin_log_service_name
+            from utils.logging_layout import is_service_log_file
+
+            # Only this plugin's own log files (with error copies and
+            # rotations): the plugin log directory is shared by all plugins,
+            # and the log root also holds the host's logs and the audit.
+            service = plugin_log_service_name(plugin_id)
+            own_files = (
+                resolve_plugin_log_directory(log_subdir="plugin"),
+                lambda name: is_service_log_file(name, service),
+            )
+        except Exception:
+            pass  # no log directory known: its files are simply not exempt
+        auditor = system_audit.SystemAuditor(
+            plugin_dir=Path(config_path).parent,
+            exempt_dirs=exempt_dirs,
+            project_root=project_root,
+            permissions=permissions,
+            sender=message_sender.put_nowait,
+            own_files=own_files,
+        )
+        return system_audit.install(auditor)
+    except Exception as exc:
+        logger.warning("[Plugin Process] system permission audit not installed: {}", type(exc).__name__)
+        return None
+
+
+def _close_system_audit(auditor: Any | None) -> None:
+    """Send the records still queued while the uplink is open; never raises."""
+    if auditor is None:
+        return
+    try:
+        auditor.close()
+    except Exception:
+        pass  # shutting down: losing the last records must not stop the exit
 
 
 def _plugin_process_runner(
@@ -892,6 +1497,18 @@ def _plugin_process_runner(
     message_sender = child_transport.channel_sender(CH_MSG)
     comm_sender = child_transport.channel_sender(CH_COMM)
 
+    # Grants as the host sent them at launch. ctx.permissions adopts this copy
+    # below; the audit hook reads it from before the plugin module is imported.
+    from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+    launch_permissions = PluginPermissions(logger)
+    initial_permissions = (startup_options or {}).get("permissions")
+    if initial_permissions is not None:
+        launch_permissions.apply(initial_permissions)
+    system_auditor = _install_system_audit(
+        plugin_id, config_path, project_root, launch_permissions, message_sender, logger,
+    )
+
     try:
         _prepare_child_plugin_import_roots(logger)
         _prepare_child_current_plugin_import_root(config_path, logger)
@@ -937,6 +1554,12 @@ def _plugin_process_runner(
         # The context owns this instance's credential from now on.
         if model_gateway_options is not None:
             model_gateway_options.clear()
+        ctx._permissions = launch_permissions
+        if initial_permissions is None:
+            logger.warning(
+                "[Plugin Process] no permission snapshot at launch; ctx.permissions reports "
+                "enforced permissions as denied until the host sends one"
+            )
         # Cleared until the downlink loop starts reading. Uploads launched by
         # timer / custom-event handlers before that point would have no reader
         # for their reply, so they wait here instead of timing out (Codex).
@@ -961,6 +1584,7 @@ def _plugin_process_runner(
                          "/ 请在普通插件中用 include_router() 挂载。"
                          "/ 通常プラグインから include_router() でマウントしてください。",
             })
+            _close_system_audit(system_auditor)
             try:
                 ctx.close()
             except Exception as e:
@@ -1017,29 +1641,13 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
-        # Configuration overrides instance defaults, preserving old checkpoint fallback order.
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        persist_mode = getattr(instance, "__persist_mode__", None)
-        if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")
         try:
-            # New [plugin_state] settings.
-            state_cfg = effective_cfg.get("plugin_state", {})
-            if isinstance(state_cfg, dict):
-                cfg_persist_mode = state_cfg.get("persist_mode")
-                if cfg_persist_mode in ("auto", "manual", "off"):
-                    persist_mode = cfg_persist_mode
-                    logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
-            # Backward-compatible old [plugin_checkpoint] settings.
-            if persist_mode == "off":
-                checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
-                if isinstance(checkpoint_cfg, dict):
-                    cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in ("auto", "manual", "off"):
-                        persist_mode = cfg_freeze_mode
-                        logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
+            persist_mode = _resolve_persist_mode(instance, effective_cfg, plugin_id, logger)
         except Exception as e:
-            logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+            # Keep startup alive on odd class values, as the inline resolution did.
+            logger.warning("[Plugin Process] Could not resolve persist mode, using \"off\": {}", type(e).__name__)
+            persist_mode = "off"
 
         # Mark restored frozen state for unfreeze lifecycle events.
         ctx._restored_from_freeze = False
@@ -1141,7 +1749,13 @@ def _plugin_process_runner(
             # including action whitelists, from sending, leaving parents waiting until timeout.
             # Custom classes unavailable to parent imports also fail pickle.loads. Failing here
             # becomes ordinary context_error at callers, symmetric with provider exceptions.
-            data = json.loads(json.dumps(data, default=str, ensure_ascii=False))
+            data = json.loads(
+                json.dumps(_sanitize_json_value(data), default=str, ensure_ascii=False, allow_nan=False)
+            )
+            if schema is not None:
+                schema = json.loads(
+                    json.dumps(_sanitize_json_value(schema), default=str, ensure_ascii=False, allow_nan=False)
+                )
             return {"state": data, "state_schema": schema}
 
         def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
@@ -1197,7 +1811,12 @@ def _plugin_process_runner(
             # json.dumps would let default=str turn it into
             # a useless string.
             return json.loads(
-                json.dumps(normalize_structured_data(actions), default=str, ensure_ascii=False)
+                json.dumps(
+                    _sanitize_json_value(normalize_structured_data(actions)),
+                    default=str,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
             )
 
         def _rebuild_entry_map() -> None:
@@ -1214,44 +1833,15 @@ def _plugin_process_runner(
                 events_by_type[etype][eid] = eh.handler
             ctx._entry_map = entry_map
 
-        # Prefer collect_entries(), supporting Hook wrappers.
-        if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
-            try:
-                collected = instance.collect_entries(wrap_with_hooks=True)
-                for eid, event_handler in collected.items():
-                    entry_map[eid] = event_handler.handler
-                    entry_meta_map[eid] = event_handler.meta
-                    etype = getattr(event_handler.meta, "event_type", "plugin_entry")
-                    events_by_type.setdefault(etype, {})
-                    events_by_type[etype][eid] = event_handler.handler
-                logger.info("Plugin entries collected via collect_entries(): {}", list(entry_map.keys()))
-            except Exception as e:
-                logger.warning("Failed to collect entries via collect_entries(): {}, falling back to scan", e)
-                entry_map.clear()
-                entry_meta_map.clear()
-                events_by_type.clear()
-        
-        # Fall back to method scanning if collect_entries is missing or fails.
-        if not entry_map:
-            for name, member in inspect.getmembers(instance, predicate=callable):
-                if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
-                    continue
-                event_meta = getattr(member, EVENT_META_ATTR, None)
-                if not event_meta:
-                    wrapped = getattr(member, "__wrapped__", None)
-                    if wrapped is not None:
-                        event_meta = getattr(wrapped, EVENT_META_ATTR, None)
-
-                if event_meta:
-                    eid = getattr(event_meta, "id", name)
-                    entry_map[eid] = member
-                    entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
-                    etype = getattr(event_meta, "event_type", "plugin_entry")
-                    events_by_type.setdefault(etype, {})
-                    events_by_type[etype][eid] = member
-                else:
-                    entry_map[name] = member
-            logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
+        # The components generation the maps reflect, read before the snapshot:
+        # a change made while it is taken leaves the recorded value behind, so
+        # the first call rebuilds (same order as EntryExecutor._resolve). The
+        # executor is built after on_startup, which may change components again.
+        initial_maps_generation = getattr(instance, "_components_generation", None)
+        initial_map, initial_meta_map, initial_events = _initial_entry_tables(instance, logger)
+        entry_map.update(initial_map)
+        entry_meta_map.update(initial_meta_map)
+        events_by_type.update(initial_events)
         
         ctx._entry_map = entry_map
         ctx._instance = instance
@@ -1358,6 +1948,7 @@ def _plugin_process_runner(
         _send_startup_result(startup_error)
         if startup_error is not None and startup_failure_policy == "fail":
             logger.info("[Plugin Process] Startup failed with policy='fail'; skipping auto-start work")
+            _close_system_audit(system_auditor)
             try:
                 ctx.close()
             except Exception as e:
@@ -1445,21 +2036,7 @@ def _plugin_process_runner(
 
 
         async def _save_plugin_state(reason: str) -> None:
-            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if not sp:
-                return
-
-            save_method = getattr(sp, "save", None)
-            if not callable(save_method):
-                return
-
-            try:
-                save_result = save_method(instance)
-            except TypeError:
-                save_result = save_method(instance, freezable_keys, reason=reason)
-
-            if inspect.isawaitable(save_result):
-                await save_result
+            await _persist_plugin_state(instance, freezable_keys, reason, log=logger)
 
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}
@@ -1468,12 +2045,17 @@ def _plugin_process_runner(
             plugin_id=plugin_id, context=ctx, instance=instance, entries=entry_map,
             metadata=entry_meta_map, events=events_by_type, default_timeout=PLUGIN_TRIGGER_TIMEOUT,
             refresh=_rebuild_entry_map, should_persist=_should_persist, persist=_save_plugin_state, logger=logger,
+            maps_generation=initial_maps_generation,
+            manifest_entry_ids=(startup_options or {}).get("manifest_entry_ids"),
         )
 
         async def _execute_command(msg: dict):
             logger.info("[Plugin Process] {} entry={} req_id={}", msg.get("type"),
                         msg.get("event_id") or msg.get("entry_id"), msg.get("req_id"))
-            ret = await execute_entry_command(executor, msg)
+            # Host-built call-chain view for ctx.call_chain; covers function,
+            # router and dynamic entries alike since all run through the executor.
+            with call_chain_scope(plugin_id, msg.get("_call_chain")):
+                ret = await execute_entry_command(executor, msg)
             try:
                 await asyncio.to_thread(res_sender.put, ret, timeout=10.0)
             except Exception:
@@ -1504,6 +2086,16 @@ def _plugin_process_runner(
                     ret.update(success=True, data={"state": {}, "actions": actions})
                     return
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
+                # The caller's clock started when it sent the request, not when this process read
+                # it: a busy process reads late, and that wait must come out of the provider's share.
+                deadline = request_deadline(msg, None)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    provider_budget = (
+                        min(provider_budget, _ui_context_provider_budget(remaining))
+                        if remaining >= _UI_CONTEXT_MIN_SENSIBLE_BUDGET
+                        else 0.0
+                    )
 
                 provider = ui_context_map.get(context_id)
                 if provider is None:
@@ -1587,6 +2179,9 @@ def _plugin_process_runner(
             # this instead of sending into a void (Codex).
             try:
                 ctx._downlink_ready.set()
+                from plugin.core.bus.rev import notify_receiver_ready
+
+                notify_receiver_ready()
             except Exception:
                 logger.exception("[Plugin Process] failed to mark downlink ready")
 
@@ -1626,7 +2221,7 @@ def _plugin_process_runner(
 
                 # ── CANCEL_RUN ──
                 if msg_type == "CANCEL_RUN":
-                    run_id = msg.get("run_id")
+                    run_id = _resolve_cancel_run_id(msg)
                     task = _run_tasks.get(run_id) if run_id else None
                     if task and not task.done():
                         task.cancel()
@@ -1670,6 +2265,15 @@ def _plugin_process_runner(
                         logger.debug("Failed to dispatch bus change: {}", e)
                     continue
 
+                # ── PERMISSIONS_UPDATE ──
+                if msg_type == PERMISSIONS_UPDATE:
+                    try:
+                        with ctx._handler_scope("lifecycle.permissions_update"):
+                            ctx.permissions.apply(msg)
+                    except Exception:
+                        logger.exception("[Plugin Process] failed to apply permission update")
+                    continue
+
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
                     # Preserve the image-upload gate during config changes.
@@ -1706,17 +2310,10 @@ def _plugin_process_runner(
 
                 # ── TRIGGER ──
                 if msg_type == "TRIGGER":
-                    run_id = None
-                    try:
-                        ctx_obj = msg.get("args", {}).get("_ctx")
-                        if isinstance(ctx_obj, dict):
-                            run_id = ctx_obj.get("run_id")
-                    except Exception:
-                        pass
                     task = asyncio.create_task(_handle_trigger(msg))
                     # Register every trigger so shutdown cancels it before the
                     # model clients close; only run_id keys are cancellable by CANCEL_RUN.
-                    task_key = run_id if run_id else f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+                    task_key = _resolve_trigger_task_key(msg)
                     _run_tasks[task_key] = task
                     task.add_done_callback(
                         lambda _t, key=task_key: _run_tasks.pop(key, None) if _run_tasks.get(key) is _t else None
@@ -1761,6 +2358,7 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.exception("Error in lifecycle.shutdown: {}", e)
 
+        _close_system_audit(system_auditor)
         try:
             ctx.close()
         except Exception as e:
@@ -1787,6 +2385,7 @@ def _plugin_process_runner(
                         asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
         except BaseException:
             pass
+        _close_system_audit(system_auditor)
         try:
             ctx.close()
         except Exception:
@@ -1798,6 +2397,7 @@ def _plugin_process_runner(
     except Exception as e:
         # Process crash: record details.
         logger.exception("Plugin process {} crashed", plugin_id)
+        _close_system_audit(system_auditor)
         # Try reporting errors through the result queue.
         try:
             res_sender.put({
@@ -2276,12 +2876,27 @@ class PluginHost:
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         await self.comm_manager.push_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
 
+    def set_initial_permissions(self, snapshot: Dict[str, Any]) -> None:
+        """Permission snapshot handed to the child with its launch options,
+        so ``ctx.permissions`` is filled before plugin code runs."""
+        self._startup_options["permissions"] = snapshot
+
+    def set_manifest_entry_ids(self, entry_ids: list[str]) -> None:
+        """Entry ids the effective manifest's ``entries`` table declares,
+        handed to the child with its launch options (see ``EntryExecutor``)."""
+        self._startup_options["manifest_entry_ids"] = [str(eid) for eid in entry_ids]
+
+    async def push_permissions(self, snapshot: Dict[str, Any]) -> None:
+        """Send a newer permission snapshot to the running child."""
+        await self.comm_manager.push_permissions(snapshot)
+
     async def send_config_update(
         self,
         config: Dict[str, Any],
         mode: str = "temporary",
         profile: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        replace: bool = False,
     ) -> Dict[str, Any]:
         """
         Send CONFIG_UPDATE to children for hot updates.
@@ -2291,6 +2906,8 @@ class PluginHost:
             mode: "temporary" | "permanent"
             profile: Profile name in permanent mode.
             timeout: Timeout.
+            replace: When True, replace the child's effective config cache
+                instead of deep-merging into it.
         
         Returns:
             {
@@ -2300,13 +2917,20 @@ class PluginHost:
             }
         """
         req_id = str(uuid.uuid4())
-        cmd = {
+        cmd: Dict[str, Any] = {
             "type": "CONFIG_UPDATE",
             "req_id": req_id,
             "config": config,
             "mode": mode,
             "profile": profile,
+            "replace": bool(replace),
         }
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(timeout)
+        ):
+            cmd["timeout"] = float(timeout)
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:

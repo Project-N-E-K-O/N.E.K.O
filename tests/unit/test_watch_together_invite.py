@@ -7,8 +7,9 @@ from main_logic.watch_together import engine, preparation
 
 def manager(vision=True, disabled=False, supported=True, key='tts-key', provider='provider', base_url='http://127.0.0.1:9881'):
     return SimpleNamespace(
-        _config_manager=SimpleNamespace(get_model_api_config=lambda kind: {'api_key': 'vision-key' if vision else '', 'model': 'vision-model'}
-                                        if kind == 'vision' else {'base_url': base_url}),
+        # Images go to the chat model: "vision" here means a usable chat model.
+        _config_manager=SimpleNamespace(get_model_api_config=lambda kind: {'api_key': 'chat-key' if vision else '', 'model': 'chat-model'}
+                                        if kind in ('conversation', 'vision') else {'base_url': base_url}),
         _resolve_tts_worker_spec=lambda: (None, key, '', provider, disabled, {'base_url': base_url}),
         _tts_worker_supports_completion=lambda *args: supported,
     )
@@ -62,12 +63,13 @@ def test_gptsovits_readiness_uses_worker_tts_custom_url(monkeypatch, route_url, 
     requested = []
     def model_config(kind):
         requested.append(kind)
-        if kind == 'vision':
-            return {'api_key': 'vision-key', 'model': 'vision-model'}
+        if kind in ('conversation', 'vision'):
+            return {'api_key': 'chat-key', 'model': 'chat-model'}
         return {'base_url': worker_url}
     current._config_manager.get_model_api_config = model_config
     assert preparation.is_available(current) is available
-    assert requested == ['vision', 'tts_custom']
+    # Image readiness reads the chat model and the retired vision slot.
+    assert requested == ['conversation', 'vision', 'tts_custom']
 
 
 @pytest.mark.parametrize('missing', [True, False])

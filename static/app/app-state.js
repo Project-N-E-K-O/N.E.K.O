@@ -159,6 +159,9 @@
         gameVoiceSttSessionId: '',
         gameVoiceSttRecognition: null,
         gameVoiceSttListening: false,
+        // Set only once the recogniser confirms it started (onstart);
+        // gameVoiceSttListening is already true while start() is pending.
+        gameVoiceSttCapturing: false,
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,
@@ -260,6 +263,7 @@
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: true,
         proactiveMiniGameInviteEnabled: true,
+        proactiveTheaterInviteEnabled: true,
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
@@ -275,9 +279,9 @@
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
         _proactiveStartupDelayApplied: false,
-        proactiveChatInterval: 15,
+        proactiveChatInterval: window.appConst.DEFAULT_PROACTIVE_CHAT_INTERVAL,
         proactiveVisionFrameTimer: null,
-        proactiveVisionInterval: 10,
+        proactiveVisionInterval: window.appConst.DEFAULT_PROACTIVE_VISION_INTERVAL,
         _lastProactiveChatScreenTime: 0,
 
         // --- 角色切换 ---
@@ -294,6 +298,9 @@
         // 自然表达（slop reduction）总开关，默认开。promptOnly：仅改喂回模型的
         // 历史副本，用户看到的原文与持久化历史都不动（后端 utils/slop_filter.py）。
         slopFilterEnabled: true,
+        // Mask N.E.K.O's own chat history / option regions in screen frames
+        // sent to the model (app-capture-mask.js reads it on every frame).
+        captureSelfUiMaskEnabled: true,
         // 串门（docs/design/visit-infrastructure.md §3.7.6 / OD-15 v3）：visitEnabled 默认关；
         // visitVoiceEnabled 默认开（她在邻居家说话、你在自家听见）
         visitEnabled: false,
@@ -609,10 +616,10 @@
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled', 'proactiveTheaterInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled', 'autoMemoryRecallEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
-        'slopFilterEnabled', 'visitEnabled', 'visitVoiceEnabled',
+        'slopFilterEnabled', 'captureSelfUiMaskEnabled', 'visitEnabled', 'visitVoiceEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];
 

@@ -87,16 +87,22 @@ def test_new_models_use_existing_dialect_constants():
     assert P.MODELS_EXTRA_BODY_MAP["qwen3.8-omni-flash"] is P.EXTRA_BODY_OPENAI
     assert P.MODELS_EXTRA_BODY_MAP["gemini-3.6-flash"] is P.EXTRA_BODY_GEMINI_3
     assert P.MODELS_EXTRA_BODY_MAP["gemini-3.8-flash"] is P.EXTRA_BODY_GEMINI_3
+    # Flash-Lite sits on minimal; Focus still flips to low.
+    for model in ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite"):
+        assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_GEMINI_3_MINIMAL
+        assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_GEMINI_3_THINKING
+    assert P.MODELS_EXTRA_BODY_MAP["gemini-3.7-flash"] is P.EXTRA_BODY_GEMINI_3
     # OpenRouter Gemini sits on the upstream floor: minimal (Focus flips it to low) ...
     for model in (
         "google/gemini-2.5-flash", "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite",
-        "google/gemini-3.5-flash", "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3.6-flash",
     ):
         assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_MINIMAL
         assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_THINKING
-    # ... except 3.8-flash, which rejects minimal: low, so Focus has nothing to flip.
-    assert P.MODELS_EXTRA_BODY_MAP["google/gemini-3.8-flash"] is P.EXTRA_BODY_OPENROUTER_LOW
-    assert P.MODELS_FOCUS_EXTRA_BODY_MAP["google/gemini-3.8-flash"] is P.EXTRA_BODY_OPENROUTER_LOW
+    # ... except 3.7 / 3.8-flash, which reject minimal: low, so Focus has nothing to flip.
+    for model in ("google/gemini-3.7-flash", "google/gemini-3.8-flash"):
+        assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_LOW
+        assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_LOW
     # 2.5-flash-lite has no upstream floor and keeps effort=none.
     assert P.MODELS_EXTRA_BODY_MAP["google/gemini-2.5-flash-lite"] is P.EXTRA_BODY_OPENROUTER
 
@@ -117,6 +123,8 @@ def test_omni_streams_thinking_outside_content():
     ("https://dashscope-us.aliyuncs.com/compatible-mode/v1", "EXTRA_BODY_DASHSCOPE_MEMORY_THINKING"),
     ("https://api.siliconflow.cn/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
     ("https://api.siliconflow.com/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
+    # K3 defaults to max effort; low bounds the memory call's thinking.
+    ("https://api.moonshot.cn/v1", "EXTRA_BODY_KIMI_MEMORY_THINKING"),
     ("https://open.bigmodel.cn/api/paas/v4", None),
     ("https://llm.example.com/v1", None),
     (None, None),

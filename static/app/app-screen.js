@@ -788,6 +788,7 @@
             // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
             // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
             // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
+            var shareWasEngaged = isManualScreenShareEngaged();
             stopScreening();
             if (S.screenCaptureStream) {
                 try {
@@ -806,11 +807,26 @@
             }
             // 旧源已停止推流，所有分享控件也必须回到未分享状态。
             resetScreenSharingControls();
+            if (shareWasEngaged) notifyScreenShareStopped();
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
         // 再做会产生回环/重复 IPC。
     });
+
+    // Speech-time vision may see the screen only when app-proactive's
+    // canProactiveVisionRunDuringSpeech says so; treat a missing gate as "no".
+    function canSpeechVisionSeeScreen() {
+        return typeof window.canProactiveVisionRunDuringSpeech === 'function'
+            && window.canProactiveVisionRunDuringSpeech() === true;
+    }
+
+    // Whether proactive vision still needs the stream; the rule lives in
+    // app-proactive (holdsProactiveVisionStream). A missing rule means "no".
+    function isProactiveVisionHoldingStream() {
+        return typeof window.holdsProactiveVisionStream === 'function'
+            && window.holdsProactiveVisionStream() === true;
+    }
 
     // ======================== scheduleScreenCaptureIdleCheck ========================
     function scheduleScreenCaptureIdleCheck() {
@@ -832,14 +848,18 @@
             if (S.screenCaptureStream && S.screenCaptureStreamLastUsed) {
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
+                    // A manual share still starting may be about to use this
+                    // stream; releasing it here would cancel that start.
+                    if (isScreenSharingStartPending()) {
+                        scheduleScreenCaptureIdleCheck();
+                        return;
+                    }
                     // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）。
                     // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面，
                     // 不得据设置值保留流。
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-                        S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-                    );
+                    var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
                     if (proactiveVisionActive && !isManualScreenShare) {
                         console.log('[屏幕流闲置] 主动视觉活跃中，跳过释放并续约定时器');
@@ -1068,6 +1088,57 @@
     mod.captureFrameFromStream = captureFrameFromStream;
 
     // ======================== acquireOrReuseCachedStream ========================
+    // A cached capture stream is usable while it is active and has a live video track.
+    function isLiveCaptureStream(stream) {
+        if (!stream || !stream.active || typeof stream.getVideoTracks !== 'function') {
+            return false;
+        }
+        return stream.getVideoTracks().some(function (track) {
+            return track.readyState === 'live';
+        });
+    }
+
+    // Another acquisition (a manual share or another proactive capture) may have
+    // cached a live stream while this one was still waiting for its own. Keep the
+    // stream already in use: stop the redundant new one and hand back the cached
+    // one instead of overwriting it, which would orphan the cached stream's tracks
+    // and cut off the share sending from it.
+    function reuseLiveCachedStreamInsteadOf(newStream) {
+        var cached = S.screenCaptureStream;
+        if (!cached || cached === newStream || !isLiveCaptureStream(cached)) {
+            return null;
+        }
+        try {
+            newStream.getTracks().forEach(function (track) {
+                try { track.stop(); } catch (_) { }
+            });
+        } catch (_) { }
+        S.screenCaptureStreamLastUsed = Date.now();
+        scheduleScreenCaptureIdleCheck();
+        return cached;
+    }
+
+    // 流实际截的是哪个桌面源（#3474 遮罩查询要用）。选中源失效时，下面会清空
+    // S.selectedScreenSourceId 并回退到第一个 screen: 源，事后读选中状态只能拿到 null。
+    var streamCaptureSourceIds = typeof WeakMap === 'function' ? new WeakMap() : null;
+    function getStreamCaptureSourceId(stream) {
+        if (!stream || !streamCaptureSourceIds) return null;
+        return streamCaptureSourceIds.get(stream) || null;
+    }
+    mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
+    // getDisplayMedia numbered by the mask module (#3474), so frames of an
+    // older stream are not masked at a newer request's source.
+    function requestDisplayMediaStream(constraints) {
+        var mask = window.appCaptureMask;
+        return mask && typeof mask.requestDisplayMedia === 'function'
+            ? mask.requestDisplayMedia(navigator.mediaDevices, constraints)
+            : navigator.mediaDevices.getDisplayMedia(constraints);
+    }
+    function recordStreamCaptureSource(stream, sourceId) {
+        if (stream && sourceId && streamCaptureSourceIds) streamCaptureSourceIds.set(stream, sourceId);
+        return stream;
+    }
+
     /**
      * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
      * @param {Object} opts
@@ -1134,13 +1205,12 @@
         }
 
         // 1. 缓存流有效且 tracks live → 直接返回（~0ms）
+        if (isLiveCaptureStream(S.screenCaptureStream)) {
+            S.screenCaptureStreamLastUsed = Date.now();
+            scheduleScreenCaptureIdleCheck();
+            return S.screenCaptureStream;
+        }
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
-            var tracks = S.screenCaptureStream.getVideoTracks();
-            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                S.screenCaptureStreamLastUsed = Date.now();
-                scheduleScreenCaptureIdleCheck();
-                return S.screenCaptureStream;
-            }
             // tracks 已结束，废弃流
             console.warn('[acquireStream] 缓存流 tracks 已结束，废弃');
             try { S.screenCaptureStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
@@ -1209,6 +1279,7 @@
                                 }
                             }
                         });
+                        recordStreamCaptureSource(stream, captureSourceId);
                         // 超时后晚到的流需要立即释放，防止资源泄漏
                         if (timedOut) {
                             console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
@@ -1229,6 +1300,11 @@
                 ]);
 
                 if (newStream) {
+                    var liveCachedStream = reuseLiveCachedStreamInsteadOf(newStream);
+                    if (liveCachedStream) {
+                        console.warn('[acquireStream] 已有正在使用的缓存流，释放并发取到的 Electron 流');
+                        return liveCachedStream;
+                    }
                     S.screenCaptureStream = newStream;
                     S.screenCaptureStreamLastUsed = Date.now();
                     S.screenCaptureAutoPromptFailed = false;
@@ -1238,14 +1314,7 @@
                     newStream.getVideoTracks().forEach(function (track) {
                         track.addEventListener('ended', function () {
                             console.log('[acquireStream] 流被终止');
-                            if (S.screenCaptureStream === newStream) {
-                                S.screenCaptureStream = null;
-                                S.screenCaptureStreamLastUsed = null;
-                                if (S.screenCaptureStreamIdleTimer) {
-                                    clearTimeout(S.screenCaptureStreamIdleTimer);
-                                    S.screenCaptureStreamIdleTimer = null;
-                                }
-                            }
+                            handleScreenCaptureTrackEnded(newStream);
                         });
                     });
 
@@ -1273,7 +1342,7 @@
                     readRememberedWindowTitle()
                 );
                 var pickerRememberedEnabled = isScreenSourceTitleMatchEnabled();
-                var displayStream = await navigator.mediaDevices.getDisplayMedia({
+                var displayStream = await requestDisplayMediaStream({
                     video: { cursor: 'always', frameRate: { max: 1 } },
                     audio: false,
                 });
@@ -1291,6 +1360,12 @@
                     return null;
                 }
 
+                var liveCachedDisplayStream = reuseLiveCachedStreamInsteadOf(displayStream);
+                if (liveCachedDisplayStream) {
+                    console.warn('[acquireStream] 已有正在使用的缓存流，释放并发取到的 picker 流');
+                    return liveCachedDisplayStream;
+                }
+
                 S.screenCaptureStream = displayStream;
                 S.screenCaptureStreamLastUsed = Date.now();
                 S.screenCaptureAutoPromptFailed = false;
@@ -1299,14 +1374,7 @@
                 displayStream.getVideoTracks().forEach(function (track) {
                     track.addEventListener('ended', function () {
                         console.log('[acquireStream] getDisplayMedia 流被用户终止');
-                        if (S.screenCaptureStream === displayStream) {
-                            S.screenCaptureStream = null;
-                            S.screenCaptureStreamLastUsed = null;
-                            if (S.screenCaptureStreamIdleTimer) {
-                                clearTimeout(S.screenCaptureStreamIdleTimer);
-                                S.screenCaptureStreamIdleTimer = null;
-                            }
-                        }
+                        handleScreenCaptureTrackEnded(displayStream);
                     });
                 });
 
@@ -1549,25 +1617,14 @@
      *        「已确认无法判定」→ 不叠加。省略时按 sourceId / 缓存流推断。
      */
     function buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType) {
-        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
+        // live_share: a continuous share frame (manual screen share, voice-time
+        // vision heartbeat), not an image the user chose to attach. The backend
+        // keeps these out of a text session's attachment queue and its replay.
+        // User screenshot attachments are sent by app-buttons.js without it.
+        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type, live_share: true };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            var captureType;
-            if (typeof explicitCaptureType !== 'undefined') {
-                // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
-                // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
-                // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
-                captureType = explicitCaptureType;
-            } else if (sourceId) {
-                // 原生帧按显式源判定。
-                captureType = detectScreenshotCaptureType(null, sourceId);
-            } else {
-                // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
-                // 持续屏幕分享不会再进入后端整屏截图轮询。
-                captureType = S.screenCaptureStream
-                    ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                    : 'screen';
-            }
+            var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -1576,6 +1633,78 @@
         return msg;
     }
     mod.buildStreamDataMessage = buildStreamDataMessage;
+
+    /**
+     * 屏幕帧的画面来源（Avatar 标注和聊天区遮罩共用同一判据）。
+     * @param {string|null|undefined} sourceId 原生帧的显式源 ID
+     * @param {'screen'|'viewport'|null|undefined} explicitCaptureType 见 buildStreamDataMessage
+     */
+    function resolveStreamFrameCaptureType(sourceId, explicitCaptureType) {
+        if (typeof explicitCaptureType !== 'undefined') {
+            // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
+            // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+            // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
+            return explicitCaptureType;
+        }
+        if (sourceId) {
+            // 原生帧按显式源判定。
+            return detectScreenshotCaptureType(null, sourceId);
+        }
+        // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
+        // 持续屏幕分享不会再进入后端整屏截图轮询。
+        return S.screenCaptureStream
+            ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+            : 'screen';
+    }
+
+    // ======================== self-UI mask (#3474) ========================
+    // 遮罩实现在 app-capture-mask.js；模块缺失时按「拿不到区域」处理（原样发送，等同改动前）。
+    function beginScreenFrameMaskSession(inputType, hint) {
+        if (inputType !== 'screen') return null;
+        var mask = window.appCaptureMask;
+        if (!mask || typeof mask.beginMaskSession !== 'function') return null;
+        try { return mask.beginMaskSession(hint); } catch (e) { return null; }
+    }
+    mod.beginScreenFrameMaskSession = beginScreenFrameMaskSession;
+
+    // 浏览器流和原生屏幕分享的抓帧质量；被遮的屏幕帧按它重编码，帧不会因遮罩变大。
+    var STREAM_FRAME_JPEG_QUALITY = 0.8;
+
+    /**
+     * 持续屏幕分享、原生屏幕分享、语音期间视觉心跳共用的发送前一步：
+     * 先把这一帧里 N.E.K.O 自己的聊天记录 / 选项区遮住，再构造 stream_data。
+     * 画面来源在 await 之前钉住，避免遮罩期间换源导致 Avatar 标注按新源解释旧帧。
+     *
+     * @param {{sourceId?: string|null, via?: string, session?: object, stream?: MediaStream}} [maskOptions]
+     *        stream：浏览器流帧所属的流，用来判断共享的是不是本标签页
+     * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
+     */
+    async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
+        // 后端整屏兜底图是桌面截图：移动端会把它标成 'camera'，但它照样拍得到聊天区，也要遮。
+        var opts0 = maskOptions || {};
+        if (input_type !== 'screen' && opts0.via !== 'backend') {
+            return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
+        }
+        var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
+        // 消息骨架（含 avatar_position）在遮罩等待之前按拍图这一刻算好，遮完只换 data。
+        var msg = buildStreamDataMessage(dataUrl, input_type, sourceId, captureType);
+        var opts = maskOptions || {};
+        var mask = window.appCaptureMask;
+        if (mask && typeof mask.maskFrameForModel === 'function') {
+            var maskedDataUrl = await mask.maskFrameForModel(dataUrl, {
+                captureType: captureType,
+                sourceId: opts.sourceId || sourceId || null,
+                via: opts.via || (sourceId ? 'native' : 'stream'),
+                stream: opts.stream || null,
+                // 语音心跳的原生帧可能是壳的默认质量，这里统一按 0.8 重编码。
+                jpegQuality: STREAM_FRAME_JPEG_QUALITY
+            }, opts.session);
+            if (!maskedDataUrl) return null;
+            msg.data = maskedDataUrl;
+        }
+        return msg;
+    }
+    mod.buildMaskedStreamDataMessage = buildMaskedStreamDataMessage;
 
     function getLiveVisionStreamBlockedReason(inputType) {
         if (inputType !== 'screen' && inputType !== 'camera') {
@@ -1650,7 +1779,10 @@
                 }
             }
 
-            var senderInterval = setInterval(async function () {
+            // 遮罩（#3474）让每帧多了一次异步等待：上一帧还没发完时跳过这一拍，
+            // 避免相邻两帧重叠、乱序发送。
+            var frameInFlight = false;
+            async function sendOneScreenShareFrame() {
                 if (!isCurrentStream()) {
                     clearInterval(senderInterval);
                     if (S.videoSenderInterval === senderInterval) {
@@ -1662,14 +1794,42 @@
                     return;
                 }
                 if (!isCurrentStream()) return;
+                if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                // 帧属于抓帧时的那条连接：遮罩等待期间重连换了 S.socket 的话只丢这一帧，
+                // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
+                var captureSocket = S.socket;
+                // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
+                // Only the recorded source of this stream, never the selection cache;
+                // null lets the shell use its getDisplayMedia record (see
+                // streamCaptureSourceId in app-proactive.js).
+                var frameSourceId = getStreamCaptureSourceId(stream);
+                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream', stream: stream });
                 var frame = captureCanvasFrame(video, 0.8);
-                if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
+                if (frame && frame.dataUrl) {
+                    var frameMessage = await buildMaskedStreamDataMessage(
+                        frame.dataUrl, input_type, undefined, undefined,
+                        { sourceId: frameSourceId, via: 'stream', session: maskSession, stream: stream }
+                    );
+                    // 遮罩期间可能停止 / 换源 / 断线：旧帧不能落到新会话里。
+                    if (!frameMessage || !isCurrentStream()) return;
+                    if (!canSendLiveVisionStreamFrame(input_type)) return;
+                    if (S.socket !== captureSocket || captureSocket.readyState !== WebSocket.OPEN) return;
+                    captureSocket.send(JSON.stringify(frameMessage));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
                     if (isCurrentStream()) {
                         S.screenCaptureStreamLastUsed = Date.now();
                     }
+                }
+            }
+
+            var senderInterval = setInterval(async function () {
+                if (frameInFlight) return;
+                frameInFlight = true;
+                try {
+                    await sendOneScreenShareFrame();
+                } finally {
+                    frameInFlight = false;
                 }
             }, 1000);
             if (!isCurrentStream()) {
@@ -1677,6 +1837,23 @@
                 return;
             }
             S.videoSenderInterval = senderInterval;
+        }, function (playError) {
+            // Without playback no sender is installed and no frame is ever sent.
+            // Stop the share fully so the UI does not stay on "sharing" and the
+            // backend gets screen_share_stopped, like the native capture failures.
+            if (!isCurrentStream()) return;
+            console.warn('[屏幕分享] 视频播放失败，停止屏幕分享:', playError);
+            stopScreenSharing(true).catch(function (stopError) {
+                console.warn('[屏幕分享] 视频播放失败后停止屏幕分享出错:', stopError);
+            }).then(function () {
+                window.showStatusToast(
+                    safeT(
+                        'app.screenSource.captureFailed',
+                        '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                    ),
+                    5000
+                );
+            });
         }); // 每1000ms一帧
     }
     mod.startScreenVideoStreaming = startScreenVideoStreaming;
@@ -1712,6 +1889,7 @@
                 await stopScreenSharing(true);
                 return false;
             }
+            var maskSession = beginScreenFrameMaskSession(inputType, { sourceId: sourceId, via: 'native' });
             var result = await window.captureDesktopSourceWithTimeout(
                 provider,
                 'captureSourceAsDataUrl',
@@ -1744,14 +1922,26 @@
             if (!streamDataUrl) {
                 throw new Error('Native screen capture image conversion failed');
             }
-            if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
-                captureSocket.send(JSON.stringify(
-                    buildStreamDataMessage(streamDataUrl, inputType, sourceId)
-                ));
-            } else if (isCurrentNativeCapture()) {
-                stopScreening();
+            // 遮住聊天记录 / 选项区后才发（#3474）；遮罩是异步的，回来后重新确认会话仍有效。
+            var nativeMessage = await buildMaskedStreamDataMessage(
+                streamDataUrl, inputType, sourceId, undefined,
+                { sourceId: sourceId, via: 'native', session: maskSession }
+            );
+            if (!isCurrentNativeCapture()) return false;
+            // 遮罩是异步的：等待期间连接断开或被重连替换时，和前面几处一样完整停止分享
+            // （更新 UI、通知后端、释放原生源），不能只停帧循环。
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
                 return false;
             }
+            if (!nativeMessage) return true;
+            if (!canSendLiveVisionStreamFrame(inputType)) {
+                // 遮罩等待期间语音结束 / 进入告别模式：和函数开头一样完整停止分享，
+                // 不只停帧循环（否则界面仍显示共享中、后端也不知道）。
+                if (isCurrentNativeCapture()) await stopLiveVisionStreamIfBlocked(inputType);
+                return false;
+            }
+            captureSocket.send(JSON.stringify(nativeMessage));
             return true;
         }
 
@@ -1841,7 +2031,9 @@
             });
     }
 
-    function releaseActiveScreenCaptureForSourceChange() {
+    // notifyBackend: the share ends here (not restarted right away), so tell the backend.
+    function releaseActiveScreenCaptureForSourceChange(notifyBackend) {
+        var shareWasEngaged = !!notifyBackend && isManualScreenShareEngaged();
         stopScreening();
         if (S.screenCaptureStream) {
             try {
@@ -1859,6 +2051,7 @@
             S.screenCaptureStreamIdleTimer = null;
         }
         resetScreenSharingControls();
+        if (shareWasEngaged) notifyScreenShareStopped();
     }
 
     function isScreenSharingActiveForSourceChange() {
@@ -1881,7 +2074,21 @@
         var shouldRestart = isScreenSharingActiveForSourceChange();
         releaseActiveScreenCaptureForSourceChange();
         if (!shouldRestart) return;
-        Promise.resolve(startScreenSharing()).catch(function (error) {
+        // A stop during the restart (e.g. the user cancels it) already sent the
+        // notice; only a restart that ends without a share and without one sends it.
+        var noticeSeqAtRestart = screenShareStopNoticeSeq;
+        function notifyIfRestartEndedWithoutShare() {
+            if (!isScreenShareRunningOrStarting()
+                && screenShareStopNoticeSeq === noticeSeqAtRestart) {
+                notifyScreenShareStopped();
+            }
+        }
+        Promise.resolve(startScreenSharing()).then(function () {
+            // The restart handles its own failures and resolves without a share;
+            // the old source's frames then need the stop notice it skipped.
+            notifyIfRestartEndedWithoutShare();
+        }, function (error) {
+            notifyIfRestartEndedWithoutShare();
             console.warn('[屏幕源] 标题恢复后重启流捕获失败:', error);
             window.showStatusToast(
                 safeT(
@@ -1895,7 +2102,7 @@
 
     function stopActiveCaptureForRememberedSourceRejection() {
         if (!isScreenSharingActiveForSourceChange() && !S.screenCaptureStream) return;
-        releaseActiveScreenCaptureForSourceChange();
+        releaseActiveScreenCaptureForSourceChange(true);
     }
 
     // ======================== getMobileCameraStream ========================
@@ -1986,6 +2193,7 @@
     // 只临时停发送、分享要继续的调用方（切换麦克风、隐私模式停主动视觉）
     // 仍用 window.stopScreening。
     function teardownScreenSharing() {
+        var wasEngaged = isManualScreenShareEngaged();
         var cancelledStart = sourceSwitchRestart !== null || isScreenSharingStartPending();
         sourceSwitchRestart = null;
         manualScreenShareRunning = false;
@@ -1995,7 +2203,72 @@
         // 所以这里只撤掉「共享中」的样式和停止按钮：不按录音状态重新启用按钮，
         // 也不恢复主动视觉，其余按钮交给调用方自己的收尾。
         if (cancelledStart) clearScreenSharingIndicators();
+        if (wasEngaged) notifyScreenShareStopped();
     }
+
+    // Whether a manual share is in use: running, starting or restarting for a
+    // source switch, holding a native capture source, still sending frames, or
+    // shown as sharing. The voice-time vision heartbeat does not count.
+    function isManualScreenShareEngaged() {
+        var screen = screenButton();
+        return manualScreenShareRunning
+            || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null
+            || activeNativeCaptureSourceId !== null
+            || !!S.videoSenderInterval
+            || !!(screen && screen.classList.contains('active'));
+    }
+
+    // Tell the backend the manual share has ended so it forgets earlier share
+    // frames (the voice session's cached frame, frames still buffered or being
+    // validated). Sent however the share ends; a temporary pause of the sender
+    // (pauseScreenFrameSender) does not send it.
+    var screenShareStopNoticeSeq = 0;
+    function notifyScreenShareStopped() {
+        screenShareStopNoticeSeq += 1;
+        try {
+            if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify({ action: 'screen_share_stopped' }));
+            }
+        } catch (e) {
+            console.warn('[ScreenShare] failed to send screen_share_stopped:', e);
+        }
+    }
+    mod.notifyScreenShareStopped = notifyScreenShareStopped;
+
+    // The stream's video track was ended by the browser or the system (the
+    // browser's "stop sharing", the window closing, a display unplugged; our own
+    // track.stop() does not fire it). If a manual share owns the stream, release
+    // it fully (buttons, manualScreenShareRunning, frame sender, stream) and tell
+    // the backend. This does not start the voice-time vision heartbeat; whether it
+    // runs is decided by its own switches. A stream only cached for proactive
+    // vision just leaves the cache.
+    function handleScreenCaptureTrackEnded(stream) {
+        if (S.screenCaptureStream !== stream) {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(function (track) {
+                    try { track.stop(); } catch (e) { }
+                });
+            }
+            return;
+        }
+        // Native capture (Tauri etc.) does not use this stream; its end does not end that share.
+        // A start still before its sender (e.g. waiting on audio init or the remembered-window
+        // check) has not adopted the stream yet: leave it to acquire a fresh one, as before.
+        var startNotAdopted = isScreenSharingStartPending() && !S.videoSenderInterval;
+        if (isManualScreenShareEngaged() && activeNativeCaptureSourceId === null && !startNotAdopted) {
+            sourceSwitchRestart = null;
+            releaseScreenSharing(true, false, { resumeProactiveVision: false });
+            return;
+        }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+    }
+    mod.handleScreenCaptureTrackEnded = handleScreenCaptureTrackEnded;
 
     // 外部的 stopScreening：只停发送。启动还在进行时（例如原生捕获在等首帧）
     // 不能推进原生代次，否则那次启动会被当成过期丢掉，而切换麦克风这类调用方
@@ -2095,15 +2368,15 @@
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;
             }
-            releaseReusedStreamUnderPrivacy(attempt);
+            releaseReusedStreamIfUnheld(attempt);
         }
     }
 
-    // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
-    // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
-    // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
-    function releaseReusedStreamUnderPrivacy(attempt) {
-        if (S.proactiveVisionEnabled !== false) return;
+    // 手动启动进行中打开隐私模式、或关掉「主动搭话」/「屏幕分享」时，不动那次
+    // 启动复用的主动视觉流（释放会被跳过）。启动最终没跑起来（失败或被取消）
+    // 时，若主动视觉也不再需要这条流，在这里补释放，不用等 idle 检查。
+    function releaseReusedStreamIfUnheld(attempt) {
+        if (isProactiveVisionHoldingStream()) return;
         if (manualScreenShareRunning || isScreenSharingStartPending()
             || sourceSwitchRestart !== null) return;
         var stream = attempt.initialStream;
@@ -2200,7 +2473,7 @@
                         || !initialCaptureIsCurrent
                         || !initialStreamStillOwned) {
                         if (initialStreamStillOwned) {
-                            releaseActiveScreenCaptureForSourceChange();
+                            releaseActiveScreenCaptureForSourceChange(true);
                         } else {
                             try {
                                 captureStream.getTracks().forEach(function (track) {
@@ -2446,6 +2719,7 @@
                                     }
                                 }
                             }));
+                            recordStreamCaptureSource(captureStream, selectedSourceId);
                             if (discardSupersededManualCapture()) return;
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
@@ -2483,6 +2757,7 @@
                                                 }
                                             }
                                         }));
+                                        recordStreamCaptureSource(captureStream, fallbackSources[0].id);
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
@@ -2507,7 +2782,7 @@
                                 if (!manualCaptureIdentityIsCurrent()) return;
                                 try {
                                     console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
-                                    captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                                    captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                         video: { cursor: 'always', frameRate: 1 },
                                         audio: false,
                                     }));
@@ -2564,7 +2839,7 @@
                         // 使用标准的getDisplayMedia（显示系统选择器）
                         var displayCaptureGeneration = screenSourceSelectionGeneration;
                         try {
-                            captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                            captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                 video: {
                                     cursor: 'always',
                                     frameRate: 1,
@@ -2607,6 +2882,17 @@
 
             if (discardCancelledScreenSharingStart(attempt)) return;
             if (captureStream !== attempt.initialStream) {
+                // A proactive capture may have cached its own stream while this
+                // start was acquiring. The user's explicit pick replaces it; stop
+                // the replaced stream so its tracks do not leak.
+                var replacedStream = S.screenCaptureStream;
+                if (captureStream && replacedStream && replacedStream !== captureStream) {
+                    try {
+                        replacedStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    } catch (_) { }
+                }
                 S.screenCaptureStream = captureStream;
             }
 
@@ -2648,26 +2934,7 @@
                         return;
                     }
 
-                    stopScreening();
-                    screenButton().classList.remove('active');
-                    manualScreenShareRunning = false;
-                    syncFloatingScreenButtonState(false);
-
-                    if (typeof captureStream.getTracks === 'function') {
-                        captureStream.getTracks().forEach(function (track) {
-                            try { track.stop(); } catch (e) { }
-                        });
-                    }
-
-                    if (S.screenCaptureStream === captureStream) {
-                        S.screenCaptureStream = null;
-                        S.screenCaptureStreamLastUsed = null;
-
-                        if (S.screenCaptureStreamIdleTimer) {
-                            clearTimeout(S.screenCaptureStreamIdleTimer);
-                            S.screenCaptureStreamIdleTimer = null;
-                        }
-                    }
+                    handleScreenCaptureTrackEnded(captureStream);
                 };
             } else {
                 // 连续分享必须保持系统/窗口选择器授予的来源。后端 pyautogui 只能
@@ -2757,7 +3024,11 @@
     // forSourceSwitch：换源重启自己的停止。保留重启令牌，停完接着启动新来源；
     // 界面保持「共享中」，停顿和重新启动期间各个开关都按「停止」处理，与显示
     // 一致；重启没能恢复分享时由 resetControlsIfNotSharing 复位。
-    function releaseScreenSharing(forceRelease, forSourceSwitch) {
+    // options.resumeProactiveVision === false: do not start the voice-time vision
+    // heartbeat while finishing (used when the track was ended externally, which
+    // never started it before either).
+    function releaseScreenSharing(forceRelease, forSourceSwitch, options) {
+        var wasEngaged = isManualScreenShareEngaged();
         manualScreenShareRunning = false;
         cancelPendingScreenSharingStart();
         stopScreening();
@@ -2766,9 +3037,7 @@
         // 不得据设置真值保留流，否则停止分享后屏幕流被无限期扣住）。
         var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
             && window.isNekoHomeTutorialProactiveSuppressed() === true;
-        var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-            S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-        );
+        var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
 
         // 条件释放流
         if (forceRelease || !proactiveVisionActive) {
@@ -2799,19 +3068,26 @@
         }
 
         if (!forSourceSwitch) {
-            finishScreenSharingStopped();
+            finishScreenSharingStopped({
+                notify: wasEngaged,
+                resumeProactiveVision: !(options && options.resumeProactiveVision === false)
+            });
         }
     }
     mod.stopScreenSharing = stopScreenSharing;
 
     // 分享真正停下后的界面与主动视觉收尾。
-    function finishScreenSharingStopped() {
+    // options.notify: the share was in use; tell the backend it has stopped.
+    // options.resumeProactiveVision === false: do not resume the voice-time vision timer.
+    function finishScreenSharingStopped(options) {
         // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
         resetScreenSharingControls();
+        if (options && options.notify) notifyScreenShareStopped();
+        if (options && options.resumeProactiveVision === false) return;
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
-            if (S.proactiveVisionEnabled && S.isRecording) {
+            if (S.isRecording && canSpeechVisionSeeScreen()) {
                 if (window.startProactiveVisionDuringSpeech) {
                     window.startProactiveVisionDuringSpeech();
                 }
@@ -2854,7 +3130,7 @@
         var stop = stopButton();
         var showsSharing = !!(screen && screen.classList.contains('active'))
             || !!(stop && !stop.disabled);
-        if (showsSharing) finishScreenSharingStopped();
+        if (showsSharing) finishScreenSharingStopped({ notify: true });
     }
 
     // ======================== switchMicCapture ========================

@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Already asynchronous directories: repository-owned backend code. plugin/ and its synchronous wrappers
 # (_get_text_guard_max_length / _start_tts_thread etc.) belong to later batches, outside this gate.
-GUARDED_DIRS = ("app", "brain", "main_logic", "main_routers", "memory", "utils")
+GUARDED_DIRS = ("app", "main_logic", "main_routers", "memory", "utils")
 
 SYNC_CONFIG_READERS = frozenset({"get_core_config", "get_model_api_config"})
 
@@ -43,7 +43,7 @@ _MAX_TOLERATED_GAP_S = 0.2
 
 _MINIMAL_CORE_CONFIG = {
     "ENABLE_CUSTOM_API": False,
-    "SUMMARY_MODEL": "summary-model",
+    "MEMORY_MODEL": "summary-model",
     "OPENROUTER_API_KEY": "assist-key",
     "OPENROUTER_URL": "https://assist.example/v1",
 }
@@ -99,7 +99,7 @@ async def test_aget_model_api_config_keeps_the_heartbeat_alive():
     manager = _SlowReadManager()
 
     async def body():
-        config = await manager.aget_model_api_config("summary")
+        config = await manager.aget_model_api_config("memory")
         assert config["model"] == "summary-model"
         assert config["base_url"] == "https://assist.example/v1"
 
@@ -118,7 +118,7 @@ async def test_sync_get_model_api_config_stalls_the_heartbeat():
     manager = _SlowReadManager()
 
     async def body():
-        manager.get_model_api_config("summary")
+        manager.get_model_api_config("memory")
 
     max_gap = await _max_heartbeat_gap(body)
     assert max_gap > _MAX_TOLERATED_GAP_S, "同步读没有卡住心跳，说明用例分辨不出阻塞（假绿）"
@@ -130,7 +130,7 @@ async def test_aget_model_api_config_reuses_a_caller_snapshot():
     manager = _ExplodingReadManager()
 
     config = await manager.aget_model_api_config(
-        "summary", core_config=dict(_MINIMAL_CORE_CONFIG)
+        "memory", core_config=dict(_MINIMAL_CORE_CONFIG)
     )
 
     assert config["model"] == "summary-model"
@@ -292,12 +292,12 @@ import asyncio
 
 async def offloads_it():
     def _resolve():
-        return cm.get_model_api_config('summary')
+        return cm.get_model_api_config('memory')
     return await asyncio.to_thread(_resolve)
 
 async def calls_it_on_the_loop():
     def _resolve():
-        return cm.get_model_api_config('summary')
+        return cm.get_model_api_config('memory')
     return _resolve()
 '''
     path = tmp_path / "scoped.py"
@@ -317,7 +317,7 @@ import asyncio
 
 async def outer():
     def _resolve():
-        return cm.get_model_api_config('summary')
+        return cm.get_model_api_config('memory')
 
     async def inner():
         def _resolve():
@@ -349,7 +349,7 @@ import asyncio
 
 async def both_ways(fast_path):
     def _resolve():
-        return cm.get_model_api_config('summary')
+        return cm.get_model_api_config('memory')
     if fast_path:
         return _resolve()
     return await asyncio.to_thread(_resolve)
@@ -370,11 +370,11 @@ import asyncio
 
 async def offloads_it():
     def _resolve():
-        return cm.get_model_api_config('summary')
+        return cm.get_model_api_config('memory')
     return await asyncio.to_thread(_resolve)
 
 async def uses_a_lambda():
-    return await asyncio.to_thread(lambda: cm.get_model_api_config('summary'))
+    return await asyncio.to_thread(lambda: cm.get_model_api_config('memory'))
 '''
     path = tmp_path / "pure_offload.py"
     path.write_text(src, encoding="utf-8")

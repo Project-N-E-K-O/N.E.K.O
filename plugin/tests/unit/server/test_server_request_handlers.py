@@ -150,6 +150,9 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
         "PLUGIN_TO_PLUGIN",
         "PLUGIN_QUERY",
         "PLUGIN_CONFIG_GET",
+        "PLUGIN_CONFIG_PROFILE_UPSERT",
+        "PLUGIN_CONFIG_PROFILE_DELETE",
+        "PLUGIN_CONFIG_PROFILE_ACTIVATE",
         "PLUGIN_CONFIG_REPLACE",
         "PLUGIN_SYSTEM_CONFIG_GET",
         "MEMORY_QUERY",
@@ -166,3 +169,60 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
     import plugin.server.messaging.handlers.messages as messages_module
 
     assert messages_module is not None
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_args",
+    [
+        {"amap_key": "secret"},
+        {"amap_key": "secret", "_ctx": {"channel": "ui", "host_reply": {"token": "x"}, "run_id": "r1"}},
+        {"amap_key": "secret", "_ctx": None},
+        {"amap_key": "secret", "_ctx": "ui"},
+    ],
+)
+async def test_plugin_to_plugin_tags_channel_and_blocks_lifekit_secret_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_args: dict[str, object],
+) -> None:
+    from pathlib import Path
+    from plugin.plugins.lifekit import LifeKitPlugin
+    from plugin.plugins.lifekit._i18n import I18n
+    from plugin.plugins.lifekit._write_confirmation import WriteConfirmationGate
+    from plugin.sdk.plugin import Err
+
+    captured_calls: list[dict[str, object]] = []
+    caller_args_snapshot = dict(raw_args)
+
+    async def _trigger_custom_event(**kwargs) -> dict[str, object]:
+        captured_calls.append(kwargs)
+        plugin = object.__new__(LifeKitPlugin)
+        plugin._i18n = I18n(Path(LifeKitPlugin.__module__.replace(".", "/")).parent / "locales")
+        plugin._write_confirmations = WriteConfirmationGate()
+        plugin._resolve_locale = lambda: None
+        res = await plugin.update_config_entry(**kwargs["args"])
+        assert isinstance(res, Err)
+        return {"ok": False, "error": str(res.error)}
+
+    monkeypatch.setattr(p2p_module.plugin_dispatch_service, "trigger_custom_event", _trigger_custom_event)
+    send = _Recorder()
+    await _invoke(
+        p2p_module.handle_plugin_to_plugin,
+        {
+            "from_plugin": "peer_plugin",
+            "request_id": "req-p2p",
+            "to_plugin": "lifekit",
+            "event_type": "plugin_entry",
+            "event_id": "update_config",
+            "args": raw_args,
+        },
+        send,
+    )
+
+    assert raw_args == caller_args_snapshot
+    assert len(captured_calls) == 1
+    dispatched_ctx = captured_calls[0]["args"]["_ctx"]
+    assert dispatched_ctx["channel"] == "plugin_to_plugin"
+    assert "host_reply" not in dispatched_ctx
+    assert send.calls[-1][2]["ok"] is False

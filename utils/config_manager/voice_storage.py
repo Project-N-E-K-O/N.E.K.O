@@ -22,6 +22,7 @@ import asyncio
 from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
+from config.api_profiles import TTS_KEY_BOOK_FIELDS as _TTS_KEY_BOOK_FIELDS
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
 from utils.glm_tts import GLM_VOICE_STORAGE_KEY
 from utils.tts.native_voice_registry import (
@@ -135,15 +136,19 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
+        - deepseek: ASSIST_API_KEY_DEEPSEEK
         - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
           then the dedicated Doubao Speech keybook entry
+        - qwen_token_plan: same as doubao_tts, with the Bailian Token Plan
+          keybook entry (assistApiKeyQwenTokenPlan)
         - glm_tts: ASSIST_API_KEY_GLM (assist GLM keybook entry; core/assist=glm
           falls back to coreApiKey via the core_config snapshot)
         """
-        if provider == 'glm_tts':
+        if provider in ('glm_tts', 'deepseek'):
             core_config = self.get_core_config()
-            key = (core_config.get('ASSIST_API_KEY_GLM') or '').strip()
-            if '***' in key:
+            field = 'ASSIST_API_KEY_GLM' if provider == 'glm_tts' else 'ASSIST_API_KEY_DEEPSEEK'
+            key = str(core_config.get(field) or '').strip()
+            if '***' in key or key == '__NEKO_SECRET_MASKED__' or (key and set(key) == {'•'}):
                 return None
             return key or None
         if provider == 'cosyvoice':
@@ -189,18 +194,18 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             if '***' in key:
                 return None
             return key or None
-        if provider == 'doubao_tts':
+        if provider in _TTS_KEY_BOOK_FIELDS:
             try:
                 raw_core_config = self.load_json_config('core_config.json', {})
             except Exception:
                 raw_core_config = {}
             key = ''
-            if str(raw_core_config.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+            if str(raw_core_config.get('ttsModelProvider') or '').strip() == provider:
                 key = (raw_core_config.get('ttsModelApiKey') or '').strip()
                 if '***' in key:
                     key = ''
             if not key:
-                key = (raw_core_config.get('assistApiKeyDoubaoTts') or '').strip()
+                key = (raw_core_config.get(_TTS_KEY_BOOK_FIELDS[provider]) or '').strip()
                 if '***' in key:
                     key = ''
             return key or None

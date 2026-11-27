@@ -775,6 +775,11 @@
                 ? detail.tier
                 : I.IDLE_DOCK_TIER_NONE;
 
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
+            }
+
             var overlay = I.getOverlay();
             if (!overlay || overlay.hidden || I.isElectronChatWindow()) return;
 
@@ -786,9 +791,20 @@
             }
 
             if (I.hasIdleDockPendingOrActive()) {
+                // Waking up on her own is not the user coming back: keep the chat
+                // minimized where it is and leave the reopen for the real return.
+                var catWokeUpAlone = detail.source === 'cat-sleep-wake-demotion';
                 I.exitIdleDock({
-                    preserveCurrentPosition: I.idleDockActive && detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: I.idleDockActive && (
+                        detail.source === 'return-ball-drag-demotion' || catWokeUpAlone
+                    ),
+                    parkRestoreForReturn: catWokeUpAlone,
                 });
+                return;
+            }
+
+            if (I.idleDockParkedRestore && detail.tier === I.IDLE_DOCK_TIER_NONE) {
+                I.exitIdleDock({});
                 return;
             }
 
@@ -805,6 +821,11 @@
                 I.idleDockTier = currentTier === I.IDLE_DOCK_TIER_CAT2 || currentTier === I.IDLE_DOCK_TIER_CAT3
                     ? currentTier
                     : I.IDLE_DOCK_TIER_NONE;
+            }
+
+            if (I.isIdleDockPlaygroundBlocked()) {
+                I.suspendIdleDockForPlayground();
+                return;
             }
 
             var overlay = I.getOverlay();
@@ -841,6 +862,7 @@
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', I.handleIdleCat1PlayYarnVisibility);
         window.addEventListener('neko:idle-cat1-playground-yarn-request', I._handleIdleCat1PlaygroundYarnRequest);
         window.addEventListener('neko:idle-cat1-playground-yarn-activate', I._handleIdleCat1PlaygroundYarnActivate);
+        window.addEventListener('neko:idle-cat1-playground-state', I._handleIdleCat1PlaygroundState);
         window.addEventListener('live2d-goodbye-click', function () {
             I.setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });
@@ -851,8 +873,8 @@
                 return;
             }
             I.setGoodbyeComposerHidden(false, 'return-complete');
-            if (I.hasElectronIdleDockPendingOrActive()) { I.exitElectronIdleDock(); }
-            if (I.hasIdleDockPendingOrActive()) { I.exitIdleDock(); return; }
+            if (I.hasElectronIdleDockPendingOrActive() || I.electronIdleDockParkedRestoreBounds) { I.exitElectronIdleDock(); }
+            if (I.hasIdleDockPendingOrActive() || I.idleDockParkedRestore) { I.exitIdleDock(); return; }
             I.clearIdleDockState();
         });
 
@@ -953,6 +975,8 @@
         removeMessage: I.removeMessage,
         clearGuideMessages: I.clearGuideMessages,
         clearMessages: I.clearMessages,
+        captureSwitchSnapshot: I.captureSwitchSnapshot,
+        restoreSwitchSnapshot: I.restoreSwitchSnapshot,
         getState: I.getStateSnapshot,
         setOnMessageAction: function (handler) {
             I.state.onMessageAction = typeof handler === 'function' ? handler : null;
@@ -969,6 +993,33 @@
         },
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
+        },
+        setOnComposerAudioMessage: function (handler) {
+            I.state.onComposerAudioMessage = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        // 返回是否已生效。清空目标会让聊天窗当作换角色而丢掉草稿，所以收起麦克风时：
+        // options.keepDraft（线路暂不可用、角色没变）：有录音或草稿就推迟到草稿结束；
+        // options.stopCapture（实时语音要用麦克风）：只停掉正在采集的录音，试听 / 发送中的
+        // 草稿保留到请求结束，失败后仍可重发
+        setAudioMessageTarget: function (target, options) {
+            var next = typeof target === 'string' ? target.trim() : '';
+            if (I.state.audioMessageTarget === next) {
+                I.state.deferredAudioMessageTarget = null;
+                return true;
+            }
+            var phase = I.state.audioMessagePhase;
+            var capturing = phase === 'recording' || phase === 'starting';
+            if (!next && options && (options.keepDraft || options.stopCapture)
+                    && typeof I.isAudioMessageActive === 'function' && I.isAudioMessageActive()
+                    && !(options.stopCapture && capturing)) {
+                I.state.deferredAudioMessageTarget = next;
+                return false;
+            }
+            I.state.deferredAudioMessageTarget = null;
+            I.state.audioMessageTarget = next;
+            I.renderWindow();
+            return true;
         },
         setOnTheaterSubmit: function (handler) {
             I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
@@ -1033,6 +1084,13 @@
         handleMiniGameInviteResolved: I.handleMiniGameInviteResolved,
         isMounted: function () { return I.mounted; }
     });
+
+    if (window.nekoChatHistory) {
+        window.nekoChatHistory.connect({
+            getMessages: function () { return I.state.messages; },
+            restore: I.restoreChatHistory
+        });
+    }
 
     delete window.__appReactChatWindowParts;
 })();

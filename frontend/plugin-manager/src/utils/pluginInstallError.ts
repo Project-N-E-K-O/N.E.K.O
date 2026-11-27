@@ -1,3 +1,5 @@
+import { PERMISSION_ERROR_KEYS } from '@/utils/pluginPermissionErrors'
+
 const INSTALL_ERROR_KEYS: Record<string, string> = {
   version_already_at_target: 'market.upgradeAlreadyAtTarget',
   upgrade_target_not_greater: 'market.upgradeTargetNotGreater',
@@ -47,6 +49,7 @@ const INSTALL_ERROR_KEYS: Record<string, string> = {
   plugin_install_blocked: 'market.autoUpgradeBlocked',
   plugin_builtin_override_market_required: 'market.autoUpgradeBlocked',
   plugin_builtin_override_blocked: 'market.autoUpgradeBlocked',
+  ...PERMISSION_ERROR_KEYS,
 }
 
 export function normalizePluginInstallErrorCode(code: unknown): string {

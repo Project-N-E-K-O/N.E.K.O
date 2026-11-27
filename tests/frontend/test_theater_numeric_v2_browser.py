@@ -93,9 +93,11 @@ def _install_selector_routes(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('via_market', [False, True])
 def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page: Page,
     running_server: str,
+    via_market: bool,
 ):
     """Close the main-app-opened selection page after capsule takeover, without waiting for the opening model request."""  # noqa: DOCSTRING_CJK
 
@@ -122,10 +124,17 @@ def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
 
+    if via_market:
+        mock_page.context.route('http://market.test/selected', lambda route: route.fulfill(
+            body=f'<button onclick="location.replace(\'{running_server}/theater?story_id={STORY["story_id"]}\')">Import</button>'))
     with mock_page.expect_popup() as popup_info:
-        mock_page.evaluate("() => window.open('/theater', 'neko_theater_test')")
+        mock_page.evaluate("url => window.open(url, 'neko_theater_test')", 'http://market.test/selected' if via_market else '/theater')
     selector = popup_info.value
+    if via_market:
+        selector.get_by_role('button', name='Import', exact=True).click()
+        selector.wait_for_url(f'{running_server}/theater?story_id={STORY["story_id"]}')
     selector.wait_for_load_state("domcontentloaded")
+    assert selector.evaluate('!!window.opener && !window.opener.closed')
     expect(selector.locator("#theater-start-btn")).to_be_enabled()
     with mock_page.expect_request("**/api/theater-numeric/session/start"):
         selector.locator("#theater-start-btn").click()
@@ -1178,3 +1187,57 @@ def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page
     assert launch['story_id'] == STORY['story_id']
     assert launch['session_id'] == session['session_id']
     expect(mock_page.locator('#theater-detail-title')).to_have_text(STORY['title'])
+
+
+def _status_box(page: Page) -> dict:
+    return page.evaluate(
+        """() => {
+            const box = (el) => { const r = el.getBoundingClientRect(); return {x: r.x, y: r.y, w: r.width, h: r.height, bottom: r.bottom}; };
+            return {
+                status: box(document.getElementById('theater-selector-status')),
+                bar: box(document.querySelector('.theater-title-bar')),
+                library: box(document.querySelector('.theater-library-heading')),
+            };
+        }"""
+    )
+
+
+@pytest.mark.frontend
+def test_selector_status_chip_stays_in_title_bar_when_clicked_or_focused(mock_page: Page, running_server: str):
+    """Regression for #3753: the status chip must not jump over the story library heading."""
+    _install_selector_routes(mock_page)
+    mock_page.set_viewport_size({"width": 1000, "height": 640})
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    status = mock_page.locator("#theater-selector-status")
+    expect(status).to_have_text("就绪")
+
+    # Text fits: the chip is not focusable and clicking it leaves the layout untouched.
+    expect(status).not_to_have_attribute("tabindex", "0")
+    before = _status_box(mock_page)
+    status.click()
+    after = _status_box(mock_page)
+    assert after == before
+    assert mock_page.evaluate("document.activeElement && document.activeElement.id") != "theater-selector-status"
+
+    # Narrow window with a long status: the chip becomes focusable and exposes the full text.
+    mock_page.set_viewport_size({"width": 400, "height": 640})
+    long_text = "The performance is ready. Connecting to N.E.K.O..."
+    mock_page.evaluate("text => { document.getElementById('theater-selector-status').textContent = text; }", long_text)
+    expect(status).to_have_attribute("tabindex", "0")
+    expect(status).to_have_attribute("title", long_text)
+    collapsed = _status_box(mock_page)
+
+    status.focus()
+    expanded = _status_box(mock_page)
+    assert expanded["status"]["w"] > collapsed["status"]["w"]
+    # Expanded in place: still inside the title bar, which stays above the story library heading.
+    assert expanded["status"]["bottom"] <= expanded["bar"]["bottom"] + 0.5
+    assert expanded["library"]["y"] >= expanded["bar"]["bottom"]
+
+    status.blur()
+    assert _status_box(mock_page)["status"] == collapsed["status"]
+
+    # Back to a short status: no longer focusable, no tooltip.
+    mock_page.evaluate("() => { document.getElementById('theater-selector-status').textContent = '就绪'; }")
+    expect(status).not_to_have_attribute("tabindex", "0")
+    expect(status).not_to_have_attribute("title", long_text)

@@ -7,7 +7,7 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     # Capture console logs
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     # This tests API-settings saving, not first-run tutorials; mark the tutorial read so it cannot lock the save button.
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     
     # Go to the settings page (route is /api_key)
     url = f"{running_server}/api_key"
@@ -80,7 +80,7 @@ def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
 ):
     """API explanations use the N.E.K.O card language in both themes."""
     mock_page.set_viewport_size({"width": 1280, "height": 720})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -194,7 +194,7 @@ def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
     """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
     mock_page.set_viewport_size({"width": 1280, "height": 1200})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -324,7 +324,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
 ):
     """Cards follow the requested order and retain their paired two-column behavior."""
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -358,15 +358,17 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             )).map(light => light.dataset.modelType),
             rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
             conversation: rect(cards[0]),
-            vision: rect(cards[1]),
-            summary: rect(cards[2]),
-            correction: rect(cards[3]),
-            emotion: rect(cards[4]),
-            omni: rect(cards[5]),
-            agent: rect(cards[6]),
-            tts: rect(cards[7]),
-            game: rect(cards[8]),
-            image: rect(cards[9]),
+            memory: rect(cards[1]),
+            recognition: rect(cards[2]),
+            decision: rect(cards[3]),
+            omni: rect(cards[4]),
+            tts: rect(cards[5]),
+            agentAdvanced: rect(cards[6]),
+            agent: rect(cards[7]),
+            agentSmall: rect(cards[8]),
+            game: rect(cards[9]),
+            image: rect(cards[10]),
+            cardCount: cards.length,
         };
     }""")
 
@@ -374,63 +376,73 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["columns"] == 2
     assert desktop["contentIds"] == [
         "conversation-model-content",
-        "vision-model-content",
-        "summary-model-content",
-        "correction-model-content",
-        "emotion-model-content",
+        "memory-model-content",
+        "recognition-model-content",
+        "decision-model-content",
         "omni-model-content",
-        "agent-model-content",
         "tts-model-content",
+        "agent-advanced-model-content",
+        "agent-model-content",
+        "agent-small-model-content",
         "game-model-content",
         "image-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
-        "api.visionModelConfig",
         "api.summaryModelConfig",
-        "api.correctionModelConfig",
         "api.emotionModelConfig",
+        "api.decisionModelConfig",
         "api.realtimeModelConfig",
-        "api.agentApiConfigTitle",
         "api.ttsModelConfig",
+        "api.agentAdvancedApiConfigTitle",
+        "api.agentApiConfigTitle",
+        "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "vision",
-        "summary",
-        "correction",
-        "emotion",
+        "memory",
+        "recognition",
         "omni",
         "agent",
+        "agentAdvanced",
+        "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
+        "gameRecognition",
+        "decision",
     ]
     assert desktop["rowPairs"] == {
-        "conversation": "vision",
-        "vision": "conversation",
-        "summary": "correction",
-        "correction": "summary",
-        "emotion": "omni",
-        "omni": "emotion",
-        "agent": "tts",
-        "tts": "agent",
-        "game": "image",
-        "image": "game",
+        "conversation": "memory",
+        "memory": "conversation",
+        "recognition": "decision",
+        "decision": "recognition",
+        "omni": "tts",
+        "tts": "omni",
+        "agent-advanced": "agent",
+        "agent": "agent-advanced",
+        "agent-small": "game",
+        "game": "agent-small",
     }
-    assert desktop["conversation"]["top"] == desktop["vision"]["top"]
-    assert desktop["conversation"]["left"] < desktop["vision"]["left"]
-    assert abs(desktop["conversation"]["width"] - desktop["vision"]["width"]) <= 1
-    assert desktop["summary"]["top"] == desktop["correction"]["top"]
-    assert desktop["summary"]["left"] < desktop["correction"]["left"]
-    assert abs(desktop["summary"]["width"] - desktop["correction"]["width"]) <= 1
-    assert desktop["emotion"]["top"] == desktop["omni"]["top"]
-    assert desktop["agent"]["top"] == desktop["tts"]["top"]
-    assert desktop["game"]["top"] > desktop["agent"]["top"]
-    assert desktop["game"]["top"] == desktop["image"]["top"]
-    assert desktop["game"]["left"] < desktop["image"]["left"]
+    assert desktop["conversation"]["top"] == desktop["memory"]["top"]
+    assert desktop["conversation"]["left"] < desktop["memory"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["memory"]["width"]) <= 1
+    assert desktop["recognition"]["top"] == desktop["decision"]["top"]
+    assert desktop["recognition"]["left"] < desktop["decision"]["left"]
+    assert abs(desktop["recognition"]["width"] - desktop["decision"]["width"]) <= 1
+    assert desktop["omni"]["top"] == desktop["tts"]["top"]
+    assert desktop["agentAdvanced"]["top"] == desktop["agent"]["top"]
+    assert desktop["agentAdvanced"]["left"] < desktop["agent"]["left"]
+    assert desktop["agentAdvanced"]["top"] > desktop["omni"]["top"]
+    assert desktop["agentSmall"]["top"] == desktop["game"]["top"]
+    assert desktop["agentSmall"]["left"] < desktop["game"]["left"]
+    # Image generation is the odd card out and sits alone on the last row.
+    assert desktop["image"]["top"] > desktop["game"]["top"]
+    # The retired vision slot has no card any more (stored settings are kept); the
+    # minigame recognition slot lives inside the minigame card.
+    assert desktop["cardCount"] == 11
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -439,12 +451,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const content = document.getElementById('conversation-model-content');
         const card = content.closest('.model-config-container').getBoundingClientRect();
-        const partner = document.getElementById('vision-model-content')
+        const partner = document.getElementById('memory-model-content')
             .closest('.model-config-container').getBoundingClientRect();
         const contentRect = content.getBoundingClientRect();
         const header = content.previousElementSibling;
-        const partnerHeader = document.getElementById('vision-model-content').previousElementSibling;
-        const summaryHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const partnerHeader = document.getElementById('memory-model-content').previousElementSibling;
+        const unpairedHeader = document.getElementById('recognition-model-content').previousElementSibling;
         const headerStyle = getComputedStyle(header);
         return {
             cardWidth: Math.round(card.width),
@@ -461,7 +473,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             headerTransform: headerStyle.transform,
             headerBackground: headerStyle.backgroundImage,
             partnerOpacity: getComputedStyle(partnerHeader).opacity,
-            summaryOpacity: getComputedStyle(summaryHeader).opacity,
+            unpairedOpacity: getComputedStyle(unpairedHeader).opacity,
             contentBorderTopWidth: getComputedStyle(content).borderTopWidth,
             contentBorderTopColor: getComputedStyle(content).borderTopColor,
         };
@@ -478,19 +490,19 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert expanded["headerTransform"] != "none"
     assert "linear-gradient" in expanded["headerBackground"]
     assert float(expanded["partnerOpacity"]) < 1
-    assert expanded["summaryOpacity"] == "1"
+    assert expanded["unpairedOpacity"] == "1"
     assert expanded["contentBorderTopWidth"] == "3px"
     assert expanded["contentBorderTopColor"] == "rgb(64, 197, 241)"
 
     mock_page.evaluate("""() => {
         toggleModelConfig('conversation');
-        toggleModelConfig('vision');
+        toggleModelConfig('memory');
     }""")
     mock_page.wait_for_timeout(650)
 
     right_expanded = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
-        const content = document.getElementById('vision-model-content').getBoundingClientRect();
+        const content = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
             gridWidth: Math.round(grid.width),
@@ -506,7 +518,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     mock_page.wait_for_timeout(350)
     paired_expansion = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content').getBoundingClientRect();
-        const right = document.getElementById('vision-model-content').getBoundingClientRect();
+        const right = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             leftWidth: Math.round(left.width),
             leftRight: Math.round(left.right),
@@ -516,14 +528,14 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     }""")
 
     assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
-    assert abs(paired_expansion["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["memory"]["width"]) <= 1
     assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(80)
     collapsing_pair = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('memory-model-content');
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
         return {
@@ -538,13 +550,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert collapsing_pair["leftHeight"] > 0
     assert collapsing_pair["isCollapsing"] is True
     assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
-    assert abs(collapsing_pair["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(collapsing_pair["rightWidth"] - desktop["memory"]["width"]) <= 1
 
     mock_page.wait_for_timeout(600)
     settled_pair = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('memory-model-content');
         const rightRect = right.getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
@@ -622,7 +634,7 @@ def test_key_book_shortcut_centers_and_selects_provider_input(
     mock_page: Page, running_server: str
 ):
     """The shortcut should center, focus, and select the matching provider key field."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -689,7 +701,7 @@ def test_realtime_key_book_shortcut_stays_in_api_key_row(
 ):
     """Realtime fields keep their localized label and aligned key-book shortcut."""
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -733,7 +745,7 @@ def test_key_book_shortcut_targets_active_mimo_token_plan_key(
     mock_page: Page, running_server: str
 ):
     """Follow-assist shortcuts must target the Token Plan key while that mode is active."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
 
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
@@ -804,7 +816,7 @@ def test_key_book_shortcut_targets_active_mimo_token_plan_key(
 @pytest.mark.frontend
 def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, running_server: str):
     """Ordinary HTTP TTS configuration must not become a placeholder string when GPT-SoVITS is disabled."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
 
@@ -865,7 +877,7 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
 @pytest.mark.frontend
 def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_server: str):
     """Selecting free auxiliary API should disable the auxiliary API key input."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
 
@@ -893,7 +905,7 @@ def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_serv
 @pytest.mark.frontend
 def test_custom_api_close_preserves_assist_provider(mock_page: Page, running_server: str):
     """Toggling custom API on/off must not rewrite the user's chosen (non-free) assist provider."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
 
@@ -943,7 +955,7 @@ def test_free_assist_with_paid_core_is_preserved(mock_page: Page, running_server
     """assist=free with a paid core is a valid combination: neither the recommendation
     logic nor the custom API toggle may move it away; the free option must stay enabled
     and the assist key input must be locked with the free-version text."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
 
@@ -995,7 +1007,7 @@ def test_free_assist_with_paid_core_is_preserved(mock_page: Page, running_server
 def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, running_server: str):
     """Saving core=qwen + assist=free: the paid core still requires a key (assist=free
     must not waive the check), and coreApiKey persists the real key, not free-access."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
@@ -1003,9 +1015,13 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     # Establish a clean baseline: free-service configuration plus cleared qwen auxiliary key, isolating residual session-server state.
     baseline = mock_page.evaluate("""
         async () => {
+            const cfg = await (await fetch('/api/config/page_config', { cache: 'no-store' })).json();
             const r = await fetch('/api/config/core_api', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': cfg.autostart_csrf_token || '',
+                },
                 body: JSON.stringify({
                     coreApiKey: 'free-access', coreApi: 'free',
                     assistApi: 'free', assistApiKeyQwen: '', enableCustomApi: false,
@@ -1066,7 +1082,7 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
 @pytest.mark.frontend
 def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server: str):
     """MiMo Token Plan is a MiMo-only mode and must not overwrite the normal MiMo key."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1122,7 +1138,7 @@ def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server:
 def test_mimo_token_plan_toggle_wraps_below_assist_provider(mock_page: Page, running_server: str):
     """The Assist API provider dropdown should keep the Core API width when MiMo controls appear."""
     mock_page.set_viewport_size({"width": 1280, "height": 900})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1161,7 +1177,7 @@ def test_mimo_token_plan_toggle_wraps_below_assist_provider(mock_page: Page, run
 def test_mimo_token_plan_keeps_settings_scroll_container_stable(mock_page: Page, running_server: str):
     """Expanding Token Plan at the bottom should not leave the page at the old scroll limit."""
     mock_page.set_viewport_size({"width": 1816, "height": 1376})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1214,7 +1230,7 @@ def test_mimo_token_plan_keeps_settings_scroll_container_stable(mock_page: Page,
 def test_mimo_token_plan_does_not_force_scroll_when_not_scrollable(mock_page: Page, running_server: str):
     """When the settings fit without scrolling, enabling Token Plan must not yank the user to the bottom."""
     mock_page.set_viewport_size({"width": 1816, "height": 1376})
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1260,7 +1276,7 @@ def test_mimo_token_plan_does_not_force_scroll_when_not_scrollable(mock_page: Pa
 @pytest.mark.frontend
 def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page, running_server: str):
     """Token Plan connectivity should try regional MiMo endpoints until one succeeds."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1354,7 +1370,7 @@ def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page,
 @pytest.mark.frontend
 def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, running_server: str):
     """Leaving MiMo must hide Token Plan controls and use the selected assist provider normally."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
@@ -1387,7 +1403,7 @@ def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, run
 @pytest.mark.frontend
 def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, running_server: str):
     """Explicit MiMo model providers should keep normal MiMo even when assist follows Token Plan."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
@@ -1434,16 +1450,17 @@ def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, runni
 
 
 @pytest.mark.frontend
-def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
-    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+@pytest.mark.parametrize("provider_key", ["mimo", "deepseek"])
+def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str, provider_key):
+    """Saving an explicit hosted TTS choice must preserve its runtime routing."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#ttsModelProvider option[value='{provider_key}']", state="attached", timeout=10000)
 
     payload = mock_page.evaluate("""
-        async () => {
+        async (providerKey) => {
             document.getElementById('enableCustomApi').checked = true;
             toggleCustomApi();
 
@@ -1452,7 +1469,7 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             assist.dispatchEvent(new Event('change', { bubbles: true }));
 
             const provider = document.getElementById('ttsModelProvider');
-            provider.value = 'mimo';
+            provider.value = providerKey;
             provider.dispatchEvent(new Event('change', { bubbles: true }));
 
             window.__capturedSavePayload = null;
@@ -1468,16 +1485,332 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             await save_button_down({ preventDefault() {} });
             return window.__capturedSavePayload;
         }
-    """)
+    """, provider_key)
 
     assert payload["assistApi"] == "qwen"
-    assert payload["ttsModelProvider"] == "mimo"
-    assert payload["ttsProvider"] == "mimo"
+    assert payload["ttsModelProvider"] == provider_key
+    assert payload["ttsProvider"] == provider_key
+    if provider_key == "deepseek":
+        assert "ttsModelApiKey" not in payload
+        assert "ttsModelId" not in payload
+        assert "ttsModelUrl" not in payload
+        expect(mock_page.locator("#ttsModelUrl")).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+
+
+@pytest.mark.frontend
+def test_qwen_token_plan_tts_key_comes_from_key_book(mock_page: Page, running_server: str):
+    """The Token Plan TTS slot mirrors its Key Book entry, so saving never clears the key."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('ttsModelApiKey'), 'sk-openai-custom');
+            document.getElementById('ttsModelUrl').value = 'https://my-custom.example/v1';
+
+            syncKeyToBook('qwen_token_plan', 'sk-sp-old-key');
+            provider.value = 'qwen_token_plan';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            // A Key Book edit after selecting the provider still reaches the probe and the save.
+            syncKeyToBook('qwen_token_plan', 'sk-sp-book-key');
+            const probe = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'tts' });
+            const keyInput = document.getElementById('ttsModelApiKey');
+            const defaultUrl = document.getElementById('ttsModelUrl').value;
+            // A re-render that is not a provider switch (the locale-change handler calls
+            // onCustomModelProviderChange without userInitiated) keeps an edited URL.
+            document.getElementById('ttsModelUrl').value = 'https://token-plan.maas.qianwenaiapi.com';
+            document.getElementById('ttsModelId').value = 'qwen-audio-3.0-tts-plus-edited';
+            document.getElementById('ttsVoiceId').value = 'longanlufeng';
+            onCustomModelProviderChange('tts');
+            const urlAfterRerender = document.getElementById('ttsModelUrl').value;
+            const modelAfterRerender = document.getElementById('ttsModelId').value;
+            const voiceAfterRerender = document.getElementById('ttsVoiceId').value;
+            document.getElementById('ttsModelUrl').value = defaultUrl;
+            document.getElementById('ttsModelId').value = 'qwen-audio-3.0-tts-plus';
+            document.getElementById('ttsVoiceId').value = 'longanlingxin';
+            const selected = {
+                urlAfterRerender,
+                modelAfterRerender,
+                voiceAfterRerender,
+                probe: { key: probe.key, url: probe.url, subType: probe.subType },
+                key: getRealKey(keyInput),
+                readonly: keyInput.hasAttribute('readonly'),
+                url: document.getElementById('ttsModelUrl').value,
+                model: document.getElementById('ttsModelId').value,
+                voice: document.getElementById('ttsVoiceId').value,
+            };
+
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            const payload = window.__captured;
+
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return {
+                selected, payload,
+                keyAfterLeaving: getRealKey(document.getElementById('ttsModelApiKey')),
+                urlAfterLeaving: document.getElementById('ttsModelUrl').value,
+            };
+        }
+    """)
+
+    # The re-render refreshed the read-only copy from the Key Book.
+    assert result["selected"]["key"] == "sk-sp-book-key"
+    assert result["selected"]["readonly"] is True
+    assert result["selected"]["urlAfterRerender"] == "https://token-plan.maas.qianwenaiapi.com"
+    assert result["selected"]["modelAfterRerender"] == "qwen-audio-3.0-tts-plus-edited"
+    assert result["selected"]["voiceAfterRerender"] == "longanlufeng"
+    # Another provider's URL is not kept for the Token Plan key.
+    assert result["selected"]["url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    assert result["selected"]["probe"] == {
+        "key": "sk-sp-book-key",
+        "url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+        "subType": "qwen_token_plan",
+    }
+    assert result["selected"]["model"] == "qwen-audio-3.0-tts-plus"
+    assert result["selected"]["voice"] == "longanlingxin"
+    payload = result["payload"]
+    assert payload["ttsModelProvider"] == "qwen_token_plan"
+    assert payload["assistApiKeyQwenTokenPlan"] == "sk-sp-book-key"
+    # The backend mirrors the Key Book entry into the slot (see update_core_config).
+    assert "ttsModelApiKey" not in payload
+    # The Token Plan key must not stay in the slot once another provider is chosen.
+    assert result["keyAfterLeaving"] not in ("sk-sp-book-key", "sk-sp-old-key")
+    # Back on custom: the user's own address comes back, not the Token Plan default.
+    assert result["urlAfterLeaving"] == "https://my-custom.example/v1"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("saved_url, replaced", [
+    ("https://token-plan.cn-beijing.maas.aliyuncs.com", True),   # the default, as autofilled before saving
+    ("https://token-plan.maas.qianwenaiapi.com", False),        # a host the user chose
+])
+def test_saved_token_plan_url_after_reopen_follows_autofill_rules(
+    mock_page: Page, running_server: str, saved_url, replaced,
+):
+    """Reopening the page loads the saved URL; a saved default still counts as autofilled."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            ttsModelProvider="qwen_token_plan",
+            ttsModelUrl=saved_url,
+            ttsModelId="qwen-audio-3.0-tts-plus",
+            ttsVoiceId="longanlingxin",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    url = mock_page.locator("#ttsModelUrl")
+    expect(provider).to_have_value("qwen_token_plan")
+    expect(url).to_have_value(saved_url)
+    provider.select_option("vllm_omni", force=True, timeout=5000)
+    if replaced:
+        vllm_default = mock_page.evaluate("getTtsProviderMeta('vllm_omni').default_url")
+        assert vllm_default and "token-plan" not in vllm_default
+        expect(url).to_have_value(vllm_default)
+    else:
+        expect(url).to_have_value(saved_url)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("edit_url", [False, True])
+def test_tts_url_autofilled_by_token_plan_is_replaced_on_switch(mock_page: Page, running_server: str, edit_url):
+    """An endpoint another provider filled in is replaced on switch; a user edit is kept."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (editUrl) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const url = document.getElementById('ttsModelUrl');
+            provider.value = 'qwen_token_plan';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const tokenPlanUrl = url.value;
+            if (editUrl) url.value = 'http://127.0.0.1:8091/v1';
+            provider.value = 'vllm_omni';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return { tokenPlanUrl, vllmUrl: url.value, vllmDefault: getTtsProviderMeta('vllm_omni').default_url };
+        }
+    """, edit_url)
+
+    assert result["tokenPlanUrl"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    if edit_url:
+        assert result["vllmUrl"] == "http://127.0.0.1:8091/v1"
+    else:
+        assert "token-plan" not in result["vllmUrl"]
+        assert result["vllmUrl"] == result["vllmDefault"]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("previous_provider", ["qwen_token_plan", "vllm_omni"])
+def test_editable_tts_defaults_are_cleared_when_switching_to_custom(
+    mock_page: Page, running_server: str, previous_provider,
+):
+    """Another provider's default URL / model / voice are not carried over to a custom service."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (previousProvider) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const fields = ['ttsModelUrl', 'ttsModelId', 'ttsVoiceId'].map(id => document.getElementById(id));
+            provider.value = previousProvider;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const filled = fields.map(f => f.value);
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return { filled, custom: fields.map(f => f.value) };
+        }
+    """, previous_provider)
+
+    if previous_provider == "qwen_token_plan":
+        assert result["filled"] == [
+            "https://token-plan.cn-beijing.maas.aliyuncs.com", "qwen-audio-3.0-tts-plus", "longanlingxin",
+        ]
+    assert result["filled"][0] and result["filled"][1]
+    assert result["custom"] == ["", "", ""]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("intermediate_provider", ["qwen_token_plan", "vllm_omni"])
+def test_custom_tts_voice_survives_round_trip_through_another_provider(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
+    """custom -> another provider -> custom restores the custom voice with URL / model."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='qwen_token_plan']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async (intermediate) => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+            const provider = document.getElementById('ttsModelProvider');
+            const fields = ['ttsModelUrl', 'ttsModelId', 'ttsVoiceId'].map(id => document.getElementById(id));
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            fields[0].value = 'https://tts.example.com/v1';
+            fields[1].value = 'my-model';
+            fields[2].value = 'my-voice';
+            provider.value = intermediate;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            return fields.map(f => f.value);
+        }
+    """, intermediate_provider)
+
+    assert result == ["https://tts.example.com/v1", "my-model", "my-voice"]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
+def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    custom_url = "https://custom.example.com/v1/audio/speech"
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            ttsModelProvider="deepseek",
+            ttsProvider="deepseek",
+            ttsModelUrl=custom_url,
+            ttsModelId="custom-voice-model",
+            ttsModelApiKey="__NEKO_SECRET_MASKED__",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    url = mock_page.locator("#ttsModelUrl")
+    model = mock_page.locator("#ttsModelId")
+    expect(provider).to_have_value("deepseek")
+    expect(url).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(url).to_have_value(custom_url)
+    expect(model).to_have_value("custom-voice-model")
+    assert mock_page.evaluate("getRealKey(document.getElementById('ttsModelApiKey'))") == "__NEKO_SECRET_MASKED__"
+
+    draft_url = "https://draft.example.com/v1/audio/speech"
+    url.evaluate("(input, value) => { input.value = value; }", draft_url)
+    model.evaluate("(input) => { input.value = 'draft-model'; }")
+    mock_page.evaluate("setMaskedInput(document.getElementById('ttsModelApiKey'), 'draft-key')")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    if intermediate_provider:
+        provider.select_option(intermediate_provider, force=True, timeout=5000)
+    provider.select_option("custom", force=True, timeout=5000)
+
+    payload = mock_page.evaluate("""async () => {
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["ttsModelProvider"] == "custom"
+    assert payload["ttsModelUrl"] == draft_url
+    assert payload["ttsModelId"] == "draft-model"
+    assert payload["ttsModelApiKey"] == "draft-key"
+
+
+@pytest.mark.frontend
+def test_deepseek_tts_voice_placeholder_follows_provider_and_locale(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    voice = mock_page.locator("#ttsVoiceId")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "如：stella / tide")
+    voice.evaluate("(input) => { input.value = 'tide'; }")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(voice).to_have_attribute("placeholder", "e.g., stella / tide")
+    expect(provider).to_have_value("deepseek")
+    expect(voice).to_have_value("tide")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "e.g., Chinese Female, alloy")
+    expect(voice).to_have_value("tide")
 
 
 @pytest.mark.frontend
 def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, running_server: str):
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
@@ -1519,8 +1852,51 @@ def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, 
 
 
 @pytest.mark.frontend
+def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    hint = mock_page.locator("#tts-voice-fallback-hint")
+
+    def type_voice(value):
+        # The settings section may be collapsed; fire the same input event a user edit does.
+        mock_page.evaluate(
+            """(value) => {
+                const input = document.getElementById('ttsVoiceId');
+                input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }""",
+            value,
+        )
+
+    type_voice("")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "block")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。")
+
+    # Switching language rebuilds the provider dropdowns asynchronously (the option
+    # text itself is retranslated at once, so it is no signal). Wait until the old
+    # option node is replaced so the rebuild cannot race with the edits below.
+    old_custom_option = mock_page.locator("#ttsModelProvider option[value='custom']").element_handle()
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(hint).to_contain_text("Voice Model's built-in voice")
+    mock_page.wait_for_function("(el) => !el.isConnected", arg=old_custom_option, timeout=10000)
+
+    type_voice("af_heart")
+    expect(hint).to_have_css("display", "none")
+    type_voice("")
+    expect(hint).to_have_css("display", "block")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "none")
+
+
+@pytest.mark.frontend
 def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, running_server: str):
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
@@ -1532,18 +1908,22 @@ def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, 
 
 @pytest.mark.frontend
 def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, running_server: str):
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
     expect(mock_page.locator("label[data-i18n='api.keyBook.doubao_tts']")).not_to_have_text("api.keyBook.doubao_tts")
     assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
     expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
+    expect(mock_page.locator("#coreApiSelect option[value='free']")).to_be_attached()
 
     payload = mock_page.evaluate("""
         async () => {
             setMaskedInput(document.getElementById('keyBookInput_vllm_omni'), '');
             setMaskedInput(document.getElementById('keyBookInput_doubao_tts'), 'doubao-speech-key');
+            // The free core provider needs no key, so saving does not depend on
+            // an earlier test having saved one to the shared server.
+            document.getElementById('coreApiSelect').value = 'free';
 
             window.__capturedSavePayload = null;
             window.saveApiKey = async (params) => {
@@ -1560,6 +1940,7 @@ def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, runnin
         }
     """)
 
+    assert payload is not None, "save_button_down returned before calling saveApiKey"
     assert payload["assistApiKeyDoubaoTts"] == "doubao-speech-key"
 
 
@@ -1575,7 +1956,7 @@ def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, 
       GPTSOVITS_ENABLED from ttsModelProvider), ttsModelUrl is the GSV URL,
       ttsVoiceId is the GSV voice, and no __gptsovits_disabled__| placeholder is written.
     """
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     # Registry-only providers must appear in the TTS dropdown.
@@ -1643,7 +2024,7 @@ def test_load_gptsovits_enabled_by_dropdown_with_remote_url(mock_page: Page, run
     The negative case (provider switched away while a stale URL lingers) must NOT
     re-enable GSV.
     """
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
@@ -1688,7 +2069,7 @@ def test_load_gptsovits_legacy_follow_default_and_sentinel(mock_page: Page, runn
        dropdown explicitly selects gptsovits — the explicit provider wins, and the
        URL/voice are recovered from the sentinel for migration.
     """
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
@@ -1729,7 +2110,7 @@ def test_load_gptsovits_legacy_follow_default_and_sentinel(mock_page: Page, runn
 @pytest.mark.frontend
 def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, running_server: str):
     """Switching from another TTS provider to vLLM should not keep stale model IDs."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
@@ -1758,7 +2139,7 @@ def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, runn
 @pytest.mark.frontend
 def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, running_server: str):
     """Provider-derived readonly URLs must not be carried into vLLM TTS."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
@@ -1788,7 +2169,7 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
     ("model_type", "follow_provider"),
     [
         ("gameMain", "follow_conversation"),
-        ("gameSummary", "follow_summary"),
+        ("gameSummary", "follow_memory"),
     ],
 )
 def test_switching_game_model_away_from_follow_clears_model_readonly(
@@ -1798,7 +2179,7 @@ def test_switching_game_model_away_from_follow_clears_model_readonly(
     follow_provider: str,
 ):
     """Game model IDs must be editable again after leaving follow-conversation/summary modes."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='{follow_provider}']", state="attached", timeout=10000)
@@ -1837,7 +2218,7 @@ def test_switching_game_model_away_from_follow_clears_model_readonly(
 @pytest.mark.frontend
 def test_switching_tts_provider_away_from_vllm_clears_fallback_voice(mock_page: Page, running_server: str):
     """The vLLM fallback voice is provider-specific and must not leak into follow_* TTS."""
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
@@ -1881,7 +2262,7 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
     Picking one was silently ignored downstream while its auto-filled URL and
     key polluted that slot's credentials.
     """
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
@@ -1896,7 +2277,7 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
     """)
 
     # Text-only LLM providers have no TTS workers and must not appear in the TTS dropdown.
-    for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
+    for pk in ('kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
         assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
 
     # The realtime omni dropdown offers no named providers. This slot becomes the process-wide
@@ -1909,6 +2290,7 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
         assert pk not in options['omni'], f"实时全模态下拉不该暴露具名服务商 {pk}"
 
     # Negative assertion: retain genuinely capable choices, preventing removal of everything from passing the checks above.
+    assert 'deepseek' in options['tts'], "DeepSeek 被误过滤"
     assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
     assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
     assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
@@ -1931,7 +2313,7 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     NOT to 'custom', which would promote an LLM chat endpoint into a real
     self-hosted TTS endpoint and start actually calling it.
     """
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
 
     def _seed(route):
         response = route.fetch()
@@ -1939,9 +2321,9 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
         data['enableCustomApi'] = True
         # Legacy state: TTS / omni each select a provider with no backend implementation,
         # automatically filling that provider's LLM endpoint and credentials too.
-        data['ttsModelProvider'] = 'deepseek'
-        data['ttsModelUrl'] = 'https://api.deepseek.com/v1'
-        data['ttsModelApiKey'] = 'sk-stale-deepseek'
+        data['ttsModelProvider'] = 'kimi'
+        data['ttsModelUrl'] = 'https://api.moonshot.cn/v1'
+        data['ttsModelApiKey'] = 'sk-stale-kimi'
         data['omniModelProvider'] = 'claude'
         data['omniModelUrl'] = 'https://api.anthropic.com/v1'
         data['omniModelApiKey'] = 'sk-stale-claude'
@@ -1977,10 +2359,10 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     )
     # Never fall back to 'custom', which would legitimize an LLM endpoint as a configured TTS/realtime endpoint.
     assert state['ttsProvider'] != 'custom' and state['omniProvider'] != 'custom'
-    assert 'deepseek' not in (state['ttsUrl'] or ''), (
+    assert 'moonshot' not in (state['ttsUrl'] or ''), (
         f"残留的 LLM 端点应被跟随方的值覆盖，实际 ttsUrl={state['ttsUrl']!r}"
     )
-    assert 'sk-stale-deepseek' not in (state['ttsKey'] or ''), (
+    assert 'sk-stale-kimi' not in (state['ttsKey'] or ''), (
         f"残留凭证应被覆盖，实际 ttsKey={state['ttsKey']!r}"
     )
     assert 'anthropic' not in (state['omniUrl'] or ''), (
@@ -2137,6 +2519,153 @@ def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: 
     mock_page.locator('#conversationModelId ~ button').click()
     menu = mock_page.locator('#conversationModelId-model-menu')
     expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
-    mock_page.evaluate("""() => document.getElementById('visionModelId')
+    mock_page.evaluate("""() => document.getElementById('recognitionModelId')
         .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
     expect(menu).to_be_hidden()
+
+
+@pytest.mark.frontend
+def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page: Page, running_server: str):
+    """The vision card is gone; a stored vision config survives saves until the user clears custom models."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.locator("#vision-model-content").count() == 0
+    assert mock_page.locator("#visionModelProvider").count() == 0
+
+    capture = """async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload
+            || { __status: document.getElementById('status')?.textContent || '' };
+    }"""
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert not any(key.startswith("visionModel") for key in payload)
+
+    # A clear whose save failed is dropped when the saved settings reload.
+    mock_page.evaluate("confirmClearCustomApi()")
+    mock_page.evaluate("loadCurrentApiKey()")
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert not any(key.startswith("visionModel") for key in payload)
+
+    mock_page.evaluate("confirmClearCustomApi()")
+    # Without custom models the page asks for the provider key before saving.
+    mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert payload["visionModelProvider"] == "follow_assist"
+    assert payload["visionModelUrl"] == ""
+    assert payload["visionModelId"] == ""
+    assert payload["visionModelApiKey"] == ""
+
+
+@pytest.mark.frontend
+def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    title = mock_page.locator('#conversation-model-content').locator('xpath=..').locator('[data-i18n="api.conversationModelConfig"]')
+    expect(title).to_have_text("聊天模型")
+    expect(mock_page.locator('[data-i18n="api.conversationModelVisionHint"]')).to_contain_text("需要能看图")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("provider, shown", [("custom", True), ("follow_assist", False)])
+def test_legacy_vision_destination_is_visible_and_can_be_stopped(mock_page: Page, running_server: str, provider, shown):
+    """Images still going to a separately configured vision model are shown, with a way to stop it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider=provider,
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    notice = mock_page.locator("#legacyVisionNotice")
+    mock_page.evaluate("document.getElementById('custom-api-options').style.display = 'block'; toggleModelConfig('conversation')")
+    expect(mock_page.locator("#conversationModelUrl")).to_be_visible()
+    # Real visibility, not just the hidden attribute (.field-row sets display:flex).
+    if not shown:
+        expect(notice).not_to_be_visible()
+        return
+    expect(notice).to_be_visible()
+    # Turning custom models off hides it; turning them on again shows it.
+    mock_page.evaluate("document.getElementById('enableCustomApi').checked = false; toggleCustomApi(true)")
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+    }""")
+    expect(notice).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("127.0.0.1:11434")
+
+    mock_page.locator("#legacyVisionStopBtn").click()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("保存后")
+    payload = mock_page.evaluate("""async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["visionModelId"] == "" and payload["visionModelUrl"] == ""
+    assert payload["enableCustomApi"] is True
+
+
+
+@pytest.mark.frontend
+def test_legacy_vision_notice_appears_when_custom_models_are_turned_on(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=False,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    expect(mock_page.locator("#legacyVisionNotice")).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")

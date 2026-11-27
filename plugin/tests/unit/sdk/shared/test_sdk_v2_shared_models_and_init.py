@@ -30,6 +30,18 @@ def test_error_code_values() -> None:
 
 def test_sdk_version_constant() -> None:
     assert constants.SDK_VERSION == "0.1.0"
+    from plugin._types.version import SDK_VERSION as host_version
+
+    assert host_version == constants.SDK_VERSION
+
+
+def test_read_api_version_uses_existing_compatibility_ranges() -> None:
+    from unittest.mock import Mock
+    from plugin.core.registry import _check_sdk_compatibility
+
+    logger = Mock()
+    assert _check_sdk_compatibility("legacy", {"supported": ">=0.1.0,<0.2.0"}, logger)[0]
+    assert _check_sdk_compatibility("pinned", {"supported": "==0.1.0"}, logger)[0]
 
 
 def test_shared_package_submodules_exist() -> None:

@@ -22,7 +22,7 @@ import json
 import mimetypes
 import os
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from utils.deployment import has_forwarding_metadata
 
 from plugin.core.state import state
+from plugin.core.ui_manifest import sanitize_json_value as _sanitize_json_value
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
@@ -655,7 +656,31 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
-    return JSONResponse(context)
+    try:
+        return JSONResponse(context)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Hosted UI context payload was not JSON-compliant for plugin '{}' ({}:{}): {}",
+            plugin_id,
+            kind,
+            id,
+            str(exc),
+        )
+        sanitized = json.loads(
+            json.dumps(_sanitize_json_value(context), default=str, ensure_ascii=False, allow_nan=False)
+        )
+        if not isinstance(sanitized, dict):
+            sanitized = {"state": {}, "warnings": []}
+        warnings = sanitized.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append({
+            "path": f"plugin.ui.{kind}.{id}.context",
+            "code": "ui_context_failed",
+            "message": f"Sanitized non-JSON-compliant UI context payload: {exc}",
+        })
+        sanitized["warnings"] = warnings
+        return JSONResponse(sanitized)
 
 
 @mutation_router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")

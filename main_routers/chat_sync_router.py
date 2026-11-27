@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Annotated, Literal
 
@@ -9,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
 from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+from services.chat_sync.writer import WriterQuarantined
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
 
@@ -59,7 +61,10 @@ class ProfileImportRequest(BaseModel):
 
 async def _runtime():
     """Resolve the configured runtime root only after local authorization."""
-    return await get_desktop_chat_sync_runtime(get_config_manager())
+    try:
+        return await get_desktop_chat_sync_runtime(get_config_manager())
+    except WriterQuarantined as exc:
+        raise _error(exc) from None
 
 
 Runtime = Annotated[object, Depends(_runtime)]
@@ -87,7 +92,8 @@ def _error(exc: ValueError) -> HTTPException:
     """Expose fixed adapter errors without bearer, network body or account PII."""
     code = str(exc)
     status = 401 if code == "chat_sync_login_required" else 409
-    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later"}:
+    if code in {"chat_sync_unavailable", "chat_sync_network_unavailable", "chat_sync_internal_error",
+                "chat_sync_service_rejected", "chat_sync_retry_later"}:
         status = 503
     return HTTPException(status, code, headers={"Cache-Control": "no-store"})
 
@@ -100,10 +106,13 @@ async def status(runtime: Runtime):
     choices = state.pop("syncChoices", {})
     pending_choices = state.pop("syncPendingChoices", {})
     setup_errors = state.pop("syncSetupErrors", {})
+    setup_diagnostics = state.pop("syncSetupDiagnostics", {})
     characters = await _characters()
     for character in characters:
         if character["characterSyncId"] in setup_errors:
             character["syncSetupError"] = setup_errors[character["characterSyncId"]]
+        if character["characterSyncId"] in setup_diagnostics:
+            character["syncSetupDiagnostic"] = setup_diagnostics[character["characterSyncId"]]
         binding = bindings.get(character["characterSyncId"])
         paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
         # Pending On is the saved user choice even before online owner checks
@@ -118,7 +127,10 @@ async def status(runtime: Runtime):
             **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch", "localOnlyOriginals")},
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
+            "channelStatus": binding.get("channelStatus"),
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
+            # Fixed local codes: capacity, archive subject or inbox waiting states.
+            "localMemoryDiagnostics": binding.get("localMemoryDiagnostics", []),
             # Profile revision hints contain no raw settings or credential data.
             "profile": binding.get("profile"),
         }
@@ -127,7 +139,7 @@ async def status(runtime: Runtime):
 
 @router.post("/wake")
 async def wake(runtime: Runtime, body: None = Body(default=None)):
-    """Wake all opted-in roles without exposing OAuth or awaiting remote I/O."""
+    """Wake the selected opted-in role without exposing OAuth or awaiting remote I/O."""
     try:
         await runtime.request_catchup()
     except ValueError as exc:
@@ -161,8 +173,51 @@ async def save_sync_choice(character_uid: str, body: CharacterSyncChoice, runtim
 async def history(character_uid: str, runtime: Runtime):
     """Return canonical originals and separate local-only replies for passive display."""
     await _character(character_uid)
-    return {"characterSyncId": character_uid, "originals": await runtime.history(character_uid),
+    originals = await runtime.history(character_uid)
+    return {"characterSyncId": character_uid, "originals": originals,
             "localReplies": await runtime.local_replies(character_uid)}
+
+
+@router.get("/characters/{character_uid}/model-sync")
+async def model_sync_status(character_uid: str, runtime: Runtime):
+    await _character(character_uid)
+    try:
+        return await runtime.models.status(character_uid)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "chat_sync_character_not_found":
+            raise HTTPException(404, code, headers={"Cache-Control": "no-store"}) from None
+        if not code.startswith("chat_sync_"):
+            exc = ValueError("chat_sync_unavailable")
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
+
+
+@router.post("/characters/{character_uid}/model-sync/{token}")
+async def model_sync_loaded(character_uid: str, token: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"loaded"} or type(body["loaded"]) is not bool or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        return {"applied": await runtime.models.finish(character_uid, token, body["loaded"])}
+    except (ValueError, OSError):
+        raise HTTPException(409, "chat_sync_binding_changed") from None
+
+
+@router.post("/characters/{character_uid}/model-sync-action")
+async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"action"} or type(body["action"]) is not str or body["action"] not in {"cloud", "local", "retry"}:
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        await runtime.models.resolve(character_uid, body["action"])
+    except ValueError as exc:
+        raise _error(exc) from None
+    except OSError:
+        raise HTTPException(409, "chat_sync_binding_changed", headers={"Cache-Control": "no-store"}) from None
+    runtime.wake_scheduler()
+    return {"accepted": True}
 
 
 @router.post("/characters/{character_uid}/profile/local")

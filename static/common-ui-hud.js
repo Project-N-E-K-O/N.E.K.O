@@ -47,6 +47,72 @@ const STANDALONE_HUD_POSITION = Object.freeze({
 });
 const AGENT_TASK_HUD_COLLAPSED_KEY = 'agent-task-hud-collapsed-v2';
 const AGENT_TASK_HUD_VISIBLE_KEY = 'neko-agent-taskhud-visible';
+let _agentHudCsrfToken = '';
+
+async function _getAgentHudMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                if (typeof headers['X-CSRF-Token'] === 'string' && headers['X-CSRF-Token']) {
+                    _agentHudCsrfToken = headers['X-CSRF-Token'];
+                }
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _agentHudCsrfToken = '';
+    if (_agentHudCsrfToken) {
+        return { 'X-CSRF-Token': _agentHudCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _agentHudCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
+async function _agentHudMutationFetch(url, options) {
+    async function send(forceRefresh) {
+        const csrfHeaders = await _getAgentHudMutationHeaders(forceRefresh);
+        return fetch(url, Object.assign({}, options, {
+            headers: Object.assign({}, (options && options.headers) || {}, csrfHeaders),
+        }));
+    }
+    const response = await send(false);
+    if (response.status !== 403 || typeof response.clone !== 'function') return response;
+    try {
+        const payload = await response.clone().json();
+        if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+    } catch (_) {
+        return response;
+    }
+    return send(true);
+}
+
+// 桌面版的省算力模式（N.E.K.O.-PC，Windows/macOS）正把桌宠窗口裁到模型附近：这时不显示任务悬浮窗
+// （owner 2026-11-26 定；离模型远的悬浮窗本来也会被裁掉）。裁剪期间壳才挂
+// __nekoNiriPetPhysicalCrop；__nekoLive2DPeekHostStage 只在 Windows/macOS 的壳里有，用来和 Linux
+// 上常开的物理裁剪分开。没有 isActive 就当没在裁剪（和 avatar-popup-common.js 同一口径）。
+function isPetPowerSaveCropActive() {
+    try {
+        const crop = window.__nekoNiriPetPhysicalCrop;
+        if (!crop || !window.__nekoLive2DPeekHostStage) return false;
+        return typeof crop.isActive === 'function' && crop.isActive() === true;
+    } catch (_) {
+        return false;
+    }
+}
+window.AgentHUD.isPetPowerSaveCropActive = isPetPowerSaveCropActive;
 
 function isAgentTaskHudVisiblePreferenceEnabled() {
     try {
@@ -62,6 +128,102 @@ function setAgentTaskHudVisiblePreferenceEnabled(enabled) {
     } catch (_) {}
 }
 
+// 悬浮窗显不显示由 agent 进程记着（喵能力界面「使魔运行时 → 内置能力」里改，app/agent_task_hud.py），
+// 跟着状态快照的 task_hud_visible 过来；本地存储只是它的镜像，让同步读偏好的老代码照旧工作。
+// options.ifUnset：后端还没存过值时才写（补交本页以前的设置用），不会盖掉用户在这期间做的选择。
+window.AgentHUD.saveTaskHudPreference = function (visible, options) {
+    try {
+        const command = { command: 'set_task_hud_visible', value: !!visible };
+        if (options && options.ifUnset === true) command.if_unset = true;
+        const url = '/api/agent/command';
+        const body = JSON.stringify(command);
+        const security = window.nekoLocalMutationSecurity;
+        const cachedToken = (
+            security && typeof security.peekCachedToken === 'function'
+                ? security.peekCachedToken()
+                : ''
+        ) || _agentHudCsrfToken || '';
+        // Sync fast path when token is already cached OR when nekoLocalMutationSecurity is absent
+        // (preserving synchronous fetch dispatch + zero extra page_config calls in unit harnesses,
+        // while still refreshing & retrying once if the backend returns 403 csrf_validation_failed).
+        if (cachedToken || !security || typeof security.getMutationHeaders !== 'function') {
+            const headers = cachedToken
+                ? { 'Content-Type': 'application/json', 'X-CSRF-Token': cachedToken }
+                : { 'Content-Type': 'application/json' };
+            return fetch(url, { method: 'POST', headers: headers, body: body })
+                .then(async function (r) {
+                    if (r && r.status === 403 && typeof r.clone === 'function') {
+                        let shouldRetryCsrf = false;
+                        try {
+                            const errPayload = await r.clone().json();
+                            shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                        } catch (_) { /* keep original 403 */ }
+                        if (shouldRetryCsrf) {
+                            const csrfHeaders = await _getAgentHudMutationHeaders(true);
+                            const retryResp = await fetch(url, {
+                                method: 'POST',
+                                headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                                body: body,
+                            });
+                            return !!(retryResp && retryResp.ok);
+                        }
+                    }
+                    return !!(r && r.ok);
+                })
+                .catch(function () { return false; });
+        }
+        return _agentHudMutationFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        }).then(function (r) { return !!(r && r.ok); }).catch(function () { return false; });
+    } catch (_) {
+        return Promise.resolve(false);
+    }
+};
+
+let agentTaskHudPreferenceHandedIn = false;
+// 后端一直存不上（比如配置目录只读）时，不要每份快照都再发一次。
+const AGENT_TASK_HUD_HAND_IN_TRIES = 3;
+let agentTaskHudPreferenceHandInTries = 0;
+// 本页最后照着做的值。本地存储是同源页面共用的，另一页先写了同一个值，本页的复选框和悬浮窗也还得自己改。
+let agentTaskHudPreferenceApplied = null;
+
+// 返回 true 表示本页照着新值改了。
+window.AgentHUD.syncTaskHudPreference = function (value) {
+    if (typeof value !== 'boolean') {
+        // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
+        // 没交上（请求失败）就等下一份快照再交，最多交 AGENT_TASK_HUD_HAND_IN_TRIES 次。
+        if (value === null && !agentTaskHudPreferenceHandedIn
+            && agentTaskHudPreferenceHandInTries < AGENT_TASK_HUD_HAND_IN_TRIES
+            && !isAgentTaskHudVisiblePreferenceEnabled()) {
+            agentTaskHudPreferenceHandedIn = true;
+            agentTaskHudPreferenceHandInTries += 1;
+            window.AgentHUD.saveTaskHudPreference(false, { ifUnset: true }).then(function (ok) {
+                if (!ok) agentTaskHudPreferenceHandedIn = false;
+            });
+        }
+        return false;
+    }
+    // 复选框每次都对一遍：小面板里点了却没改动后端时，它可能和后端的值不一样。
+    ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function (prefix) {
+        const checkbox = document.getElementById(`${prefix}-agent-taskhud`);
+        if (checkbox && checkbox.checked !== value) {
+            checkbox.checked = value;
+            if (typeof checkbox._updateStyle === 'function') checkbox._updateStyle();
+        }
+    });
+    if (agentTaskHudPreferenceApplied === value && isAgentTaskHudVisiblePreferenceEnabled() === value) return false;
+    agentTaskHudPreferenceApplied = value;
+    if (isAgentTaskHudVisiblePreferenceEnabled() !== value) setAgentTaskHudVisiblePreferenceEnabled(value);
+    if (typeof window.checkAndToggleTaskHUD === 'function') {
+        window.checkAndToggleTaskHUD();
+    } else if (!value && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+        window.AgentHUD.hideAgentTaskHUD();
+    }
+    return true;
+};
+
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
     if (window.location && window.location.origin) {
@@ -73,6 +235,45 @@ function appendPluginDashboardOpenerOrigin(url) {
 function getPluginDashboardRedirectUrl() {
     return appendPluginDashboardOpenerOrigin(PLUGIN_DASHBOARD_REDIRECT_URL);
 }
+
+var PLUGIN_DASHBOARD_WINDOW_NAME = 'neko_plugin_dashboard';
+
+function buildPluginDashboardWindowFeatures() {
+    const width = Math.min(1280, Math.round(screen.width * 0.8));
+    const height = Math.min(900, Math.round(screen.height * 0.8));
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+// 锤子按钮：打开喵能力界面（插件服务的 /ui/，和小面板里「管理面板」是同一个窗口）。
+// 窗口已经开着时只把它叫到前面：不重新载入、不改大小，用户可能正在里面看别的页。
+window.AgentHUD.openPowerWindow = function () {
+    const targetUrl = new URL(getPluginDashboardRedirectUrl(), document.baseURI || window.location.href).toString();
+    const features = buildPluginDashboardWindowFeatures();
+    const existingWindow = window._openedWindows && window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME];
+    let openedWindow = null;
+    if (typeof window.openOrFocusWindow === 'function') {
+        openedWindow = window.openOrFocusWindow(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features, {
+            navigateOnReuse: false,
+            preserveGeometryOnReuse: true
+        });
+    } else if (existingWindow && !existingWindow.closed) {
+        openedWindow = existingWindow;
+    } else {
+        openedWindow = window.open(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features);
+    }
+    if (openedWindow) {
+        if (!window._openedWindows) {
+            window._openedWindows = {};
+        }
+        window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME] = openedWindow;
+        try {
+            openedWindow.focus();
+        } catch (_) {}
+    }
+    return openedWindow;
+};
 
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
@@ -399,14 +600,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
             controlStyle: 'slider'
-        },
-        {
-            id: 'agent-openclaw',
-            label: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
-            labelKey: 'settings.toggles.openclawConnect',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
-            controlStyle: 'slider'
         }
     ];
 
@@ -421,15 +614,38 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 if (typeof taskHudCheckbox._updateStyle === 'function') {
                     taskHudCheckbox._updateStyle();
                 }
-                taskHudCheckbox.addEventListener('change', (event) => {
-                    setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
-                    if (typeof window.checkAndToggleTaskHUD === 'function') {
-                        window.checkAndToggleTaskHUD(event);
-                    } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {
-                        this.hideAgentTaskHUD();
-                    }
+                // 本页不先改：只交给后端。存上以后后端推来的状态快照会把每个页面（包括这个复选框）
+                // 改过来（syncTaskHudPreference）。本地存储和悬浮窗只跟着快照变，请求的回复不碰它们，
+                // 所以连点几下、回复早到晚到都改不乱。
+                taskHudCheckbox.addEventListener('change', () => {
+                    window.AgentHUD.saveTaskHudPreference(taskHudCheckbox.checked).then((saved) => {
+                        if (saved) return;
+                        // 没存上：复选框退回本页现在生效的值。
+                        const inEffect = isAgentTaskHudVisiblePreferenceEnabled();
+                        if (taskHudCheckbox.checked === inEffect) return;
+                        taskHudCheckbox.checked = inEffect;
+                        if (typeof taskHudCheckbox._updateStyle === 'function') {
+                            taskHudCheckbox._updateStyle();
+                        }
+                    });
                 });
             }
+            // 桌面版的省算力模式把桌宠窗口裁到模型附近时不显示悬浮窗（isPetPowerSaveCropActive）：开关下面说一句。
+            // 平时藏着，裁剪期间由 agent_ui_v2.js 打开（面板每次打开都会 render，裁剪状态变了也刷新）。
+            const cropNote = document.createElement('div');
+            cropNote.id = `${avatarPrefix}-agent-taskhud-crop-note`;
+            cropNote.hidden = true;
+            cropNote.setAttribute('data-i18n', 'settings.toggles.taskHudHiddenByPowerSave');
+            cropNote.textContent = window.t
+                ? window.t('settings.toggles.taskHudHiddenByPowerSave')
+                : '省算力模式下不显示悬浮窗';
+            Object.assign(cropNote.style, {
+                fontSize: '11px',
+                lineHeight: '1.4',
+                color: 'var(--neko-popup-text-sub, #888)',
+                padding: '0 12px 6px'
+            });
+            popup.appendChild(cropNote);
         }
 
         if (toggle.separatorAfter) {
@@ -439,8 +655,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             popup.appendChild(separator);
         }
 
-        // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
-        if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
+        // 侧边快捷入口（用户插件管理面板）
+        if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
             document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
                 if (element && typeof element.remove === 'function') {
                     element.remove();
@@ -461,25 +677,15 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             sidePanel._popupElement = popup;
 
             const configBtn = document.createElement('div');
-            const actionConfig = toggle.id === 'agent-user-plugin'
-                ? {
-                    actionId: 'management-panel',
-                    labelKey: 'settings.toggles.pluginManagementPanel',
-                    labelFallback: '管理面板',
-                    icon: '⚙',
-                    url: getPluginDashboardRedirectUrl,
-                    windowName: 'neko_plugin_dashboard',
-                    forceReloadOnReuse: true
-                }
-                : {
-                    actionId: 'openclaw-guide',
-                    labelKey: 'settings.toggles.openclawGuide',
-                    labelFallback: 'OpenClaw 接入教程',
-                    icon: '📘',
-                    url: '/api/agent/openclaw/guide',
-                    windowName: 'neko_openclaw_guide',
-                    forceReloadOnReuse: true
-                };
+            const actionConfig = {
+                actionId: 'management-panel',
+                labelKey: 'settings.toggles.pluginManagementPanel',
+                labelFallback: '管理面板',
+                icon: '⚙',
+                url: getPluginDashboardRedirectUrl,
+                windowName: 'neko_plugin_dashboard',
+                forceReloadOnReuse: true
+            };
             const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
             if (existingActionButton && typeof existingActionButton.remove === 'function') {
                 existingActionButton.remove();
@@ -535,11 +741,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 e.stopPropagation();
                 if (isOpening) return;
                 isOpening = true;
-                const width = Math.min(1280, Math.round(screen.width * 0.8));
-                const height = Math.min(900, Math.round(screen.height * 0.8));
-                const left = Math.max(0, Math.floor((screen.width - width) / 2));
-                const top = Math.max(0, Math.floor((screen.height - height) / 2));
-                const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+                const features = buildPluginDashboardWindowFeatures();
                 const rawUrl = typeof actionConfig.url === 'function'
                     ? actionConfig.url()
                     : actionConfig.url;
@@ -761,7 +963,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            const r = await fetch('/api/agent/admin/control', {
+            const r = await _agentHudMutationFetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
@@ -929,7 +1131,7 @@ window.AgentHUD.showAgentTaskHUD = function (options = {}) {
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
     const taskHiddenByPreference = (!ignoreVisibilityPreference && !isAgentTaskHudVisiblePreferenceEnabled());
     const hasPluginContent = !!(window.NekoPluginViews && window.NekoPluginViews.hasContent());
-    if (isAgentHudSuppressedByGoodbye() || (taskHiddenByPreference && !hasPluginContent)) {
+    if (isAgentHudSuppressedByGoodbye() || isPetPowerSaveCropActive() || (taskHiddenByPreference && !hasPluginContent)) {
         this.hideAgentTaskHUD();
         return;
     }
@@ -1024,6 +1226,31 @@ window.AgentHUD.hideAgentTaskHUD = function () {
     }, 300);
 };
 
+// 省算力裁剪开始就藏起悬浮窗；结束了按平时的规则重新判断要不要显示（任务、开关、插件内容）。
+// 壳每次应用裁剪状态（进入、更新、退出）都派发这个事件，这里只在「裁不裁」变了时动。
+window.AgentHUD._petPowerSaveCropWasActive = isPetPowerSaveCropActive();
+window.AgentHUD.onPetPowerSaveCropStateApplied = function () {
+    const active = isPetPowerSaveCropActive();
+    if (active === this._petPowerSaveCropWasActive) return;
+    this._petPowerSaveCropWasActive = active;
+    if (active) {
+        this.hideAgentTaskHUD();
+        return;
+    }
+    if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
+    // 开关已关、还有任务在办或在等回话时，checkAndToggleTaskHUD 什么都不做（它当悬浮窗本来就开着），
+    // 可悬浮窗刚被裁剪藏起：这里自己叫回来。「显示悬浮窗」开关和告别模式由 showAgentTaskHUD 把关。
+    const taskMap = window._agentTaskMap;
+    const underWay = !!(taskMap && typeof taskMap.values === 'function') && Array.from(taskMap.values()).some(task =>
+        task && (task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user'));
+    const hasPluginContent = !!(window.NekoPluginViews && typeof window.NekoPluginViews.hasContent === 'function'
+        && window.NekoPluginViews.hasContent());
+    if (underWay || hasPluginContent) this.showAgentTaskHUD();
+};
+window.addEventListener('neko:niri-pet-physical-crop-state-applied', () => {
+    window.AgentHUD.onPetPowerSaveCropStateApplied();
+});
+
 // 更新任务 HUD 内容
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
@@ -1065,7 +1292,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
     let changed = false;
     map.forEach((t, id) => {
         if (!t || (ids && !ids.has(id))) return;
-        if (t.status !== 'running' && t.status !== 'queued') return;
+        if (t.status !== 'running' && t.status !== 'queued' && t.status !== 'waiting_user') return;
         map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
         changed = true;
         // Schedule the same 10s map removal as the websocket event path —
@@ -1086,7 +1313,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
                 success: true,
                 tasks: remaining,
                 total_count: remaining.length,
-                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                running_count: remaining.filter(t2 => t2.status === 'running' || t2.status === 'waiting_user').length,
                 queued_count: remaining.filter(t2 => t2.status === 'queued').length,
                 completed_count: remaining.filter(t2 => t2.status === 'completed').length,
                 failed_count: remaining.filter(t2 => t2.status === 'failed').length,
@@ -1100,7 +1327,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
         success: true,
         tasks: tasks,
         total_count: tasks.length,
-        running_count: tasks.filter(t => t.status === 'running').length,
+        running_count: tasks.filter(t => t.status === 'running' || t.status === 'waiting_user').length,
         queued_count: tasks.filter(t => t.status === 'queued').length,
         completed_count: tasks.filter(t => t.status === 'completed').length,
         failed_count: tasks.filter(t => t.status === 'failed').length,
@@ -1152,15 +1379,20 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         if (!this._taskFirstSeen[t.id]) this._taskFirstSeen[t.id] = now;
         this._taskStatusById[t.id] = t.status;
         // Record when a task first transitions to terminal status
-        const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+        const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'blocked';
         if (isTerminal && !this._taskTerminalAt[t.id]) {
             this._taskTerminalAt[t.id] = now;
+        } else if (!isTerminal && this._taskTerminalAt[t.id]) {
+            // blocked 的委托可以接着办；回到在办时清掉旧的结束时间，
+            // 否则它再次结束时会被当成早就过了展示期。
+            delete this._taskTerminalAt[t.id];
         }
     });
 
-    // Show running/queued tasks + terminal tasks still within linger window
+    // Show running/queued tasks + terminal tasks still within linger window.
+    // waiting_user (waiting for the user's reply) is still under way.
     const activeTasks = (tasksData.tasks || []).filter(t => {
-        if (t.status === 'running' || t.status === 'queued') return true;
+        if (t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user') return true;
         const termAt = this._taskTerminalAt[t.id];
         if (termAt && (now - termAt) < MIN_DISPLAY_MS) return true;
         return false;
@@ -1168,7 +1400,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
 
     // Schedule a deferred re-render to clean up lingering cards after they expire
     const lingeringTasks = activeTasks.filter(t =>
-        t.status !== 'running' && t.status !== 'queued'
+        t.status !== 'running' && t.status !== 'queued' && t.status !== 'waiting_user'
     );
     if (lingeringTasks.length > 0) {
         // Reset timer so newly arrived terminal tasks get a full linger window
@@ -1182,7 +1414,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
                     queued_count: 0
                 };
                 snapshot.tasks.forEach(t => {
-                    if (t.status === 'running') snapshot.running_count++;
+                    if (t.status === 'running' || t.status === 'waiting_user') snapshot.running_count++;
                     if (t.status === 'queued') snapshot.queued_count++;
                 });
                 window.AgentHUD.updateAgentTaskHUD(snapshot);
@@ -1211,7 +1443,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     }
 
     if (cancelBtn) {
-        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued');
+        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user');
         cancelBtn.style.display = hasCancelable ? 'flex' : 'none';
     }
 
@@ -1228,11 +1460,10 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         }
     }
 
-    // 排序：前台任务（computer_use / mcp）优先，插件任务沉底
+    // 排序：前台任务（使魔在办的 task_agent / computer_use）优先，插件任务沉底
     const _taskSortPriority = (t) => {
-        if (t.type === 'computer_use' || t.type === 'browser_use') return 0;
-        if (t.type === 'mcp') return 1;
-        // user_plugin / plugin_direct → 沉底
+        if (t.type === 'task_agent' || t.type === 'computer_use' || t.type === 'browser_use') return 0;
+        // user_plugin / plugin_direct / task（刚登记、还没决定谁来办）→ 沉底
         return 2;
     };
     activeTasks.sort((a, b) => _taskSortPriority(a) - _taskSortPriority(b));
@@ -1255,34 +1486,270 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     });
 
     // Build the desired card order, reusing/updating existing cards
-    const fragment = document.createDocumentFragment();
+    const desired = [];
     activeTasks.forEach(task => {
         const existing = existingById.get(task.id);
-        if (existing) {
-            const node = this._updateTaskCard(existing, task);
-            fragment.appendChild(node || existing);
-        } else {
-            const card = this._createTaskCard(task);
-            fragment.appendChild(card);
-        }
+        desired.push(existing ? (this._updateTaskCard(existing, task) || existing) : this._createTaskCard(task));
+        // 它派出去的使魔在等你回话：挂在卡片下方，跟着卡片走。
+        const below = this._syncSubAsks(task);
+        if (below) desired.push(below);
+    });
+    // 卡片不在了的那一块也拿掉；它下面上一次展开的是哪只、各只上一次问的是哪条，也不用再记着了。
+    if (this._subAskBlocks) this._subAskBlocks.forEach((block, taskId) => {
+        if (desired.indexOf(block) !== -1) return;
+        block.remove();
+        this._subAskBlocks.delete(taskId);
+    });
+    [this._subAskOpen, this._subAskedBy].forEach(kept => {
+        if (kept) Object.keys(kept).forEach(taskId => { if (!activeIds.has(taskId)) delete kept[taskId]; });
     });
 
-    // Re-append empty state first (it should stay at top), then task cards
-    if (emptyState && emptyState.parentNode === taskList) {
-        taskList.insertBefore(fragment, emptyState.nextSibling);
-    } else {
-        taskList.appendChild(fragment);
-    }
+    // 只挪位置不对的卡片：已经站在该站的位置上的不动。把卡片挪走再插回会让卡片里正在打字的输入框
+    // 丢掉焦点（输入法也会被打断），哪怕只是别的任务新来了一张卡。空状态留在最前面。
+    let next = emptyState && emptyState.parentNode === taskList ? emptyState.nextSibling : taskList.firstChild;
+    desired.forEach(card => {
+        if (card === next) {
+            next = next.nextSibling;
+        } else {
+            taskList.insertBefore(card, next);
+        }
+    });
     if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
+};
+
+// 等用户回话的任务：卡片里直接显示它问的话，带按钮和小输入框（static/app/app-nekopower-ask.js）。
+// 同一个问题不重画（输入框里打到一半的字不能丢）；换了问题才换，按钮先停一小会儿，免得点到新问题上。
+window.AgentHUD._syncTaskAsk = function (card, task) {
+    if (!card) return;
+    const asks = window.NekoPowerAsk;
+    const question = task.status === 'waiting_user' && task.question && typeof task.question === 'object' && asks ? task.question : null;
+    const shown = card.querySelector('.task-ask');
+    this._syncTaskAskNotice(card, task.id);
+    if (!question) {
+        if (shown) shown.remove();
+        return;
+    }
+    const questionId = String(question.id || '');
+    if (shown && shown.dataset.questionId === questionId) return;
+    if (shown) shown.remove();
+    // 这件任务上一次问的是哪条：中间画过一帧「运行中」、卡片上已经没有问话了，换成下一条时照样先停一下。
+    if (!this._askedByTask) this._askedByTask = {};
+    const last = this._askedByTask[task.id];
+    this._askedByTask[task.id] = questionId;
+    card.appendChild(asks.render({
+        taskId: task.id,
+        question: question,
+        // 插件直接办的事没有使魔能收「补一句」。
+        noNote: task.type === 'user_plugin',
+        settle: Boolean(shown) || (last !== undefined && last !== questionId),
+        onNoteLost: (said) => this._noteLost(task.id, said)
+    }));
+};
+
+// 「补的那句没送到」：写在这件任务的卡片上，留一会儿就撤；这件任务下一次更新时卡片照着画。
+window.AgentHUD._noteLost = function (taskId, said) {
+    if (!this._askNotices) this._askNotices = {};
+    this._askNotices[taskId] = said;
+    setTimeout(() => {
+        if (this._askNotices[taskId] !== said) return;
+        delete this._askNotices[taskId];
+        const here = document.querySelector('.task-card[data-task-id="' + String(taskId).replace(/"/g, '') + '"] .task-ask-notice');
+        if (here) here.remove();
+    }, 15000);
+    // 只画这句提示，不碰卡片上现在挂着的问话：这件任务可能已经问了下一条，里面还有打到一半的字。
+    const live = document.querySelector('.task-card[data-task-id="' + String(taskId).replace(/"/g, '') + '"]');
+    if (live) this._syncTaskAskNotice(live, taskId);
+};
+
+// 使魔自己派出去的使魔（子使魔、孙使魔）在等你回话：HUD 不单列它们，它们问的话（`sub_questions`，先问的在前）
+// 用一条连线挂在外层任务卡下方，不画进卡片里。每只一行，写明是谁在问；先问的那只展开作答框，其余收成一行，
+// 点哪行开哪行。作答框就是任务卡里那个（NekoPowerAsk.render），回答打到那只使魔自己的编号上。
+// 收起的只是藏起来：里面打到一半的字还在。
+const AGENT_HUD_SUB_ASK_LINE = '1.5px solid var(--neko-popup-accent, #2a7bc4)';
+window.AgentHUD._syncSubAsks = function (task) {
+    if (!this._subAskBlocks) this._subAskBlocks = new Map();
+    if (!this._subAskOpen) this._subAskOpen = {};
+    if (!this._subAskedBy) this._subAskedBy = {};
+    // 外层任务已经结束（它派出去的那几只正被一并停下）：不再挂出能作答的问话。
+    const underWay = task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
+    const list = (underWay && window.NekoPowerAsk && Array.isArray(task.sub_questions) ? task.sub_questions : []).filter(item =>
+        item && typeof item === 'object' && item.id && item.question && typeof item.question === 'object');
+    let block = this._subAskBlocks.get(task.id);
+    if (!list.length) {
+        if (block) block.remove();
+        this._subAskBlocks.delete(task.id);
+        // 上一次展开的是哪只留着：答完、空了一下、下一只才冒出来时，它照样是顶上来的那只，按钮先停一下。
+        return null;
+    }
+    if (!block) {
+        block = document.createElement('div');
+        block.className = 'task-sub-asks';
+        block.dataset.taskId = task.id;
+        Object.assign(block.style, { display: 'flex', flexDirection: 'column', gap: '6px', margin: '-2px 0 0 20px' });
+        // 在这里按下去，既不拖动 HUD，也不算点了卡片。
+        ['mousedown', 'touchstart', 'pointerdown', 'click'].forEach(name => block.addEventListener(name, event => event.stopPropagation()));
+        this._subAskBlocks.set(task.id, block);
+    }
+    block._task = task;
+    const ids = list.map(item => String(item.id));
+    const before = this._subAskOpen[task.id];
+    // 展开哪只：你点开的那只；它不问了（或者还没点过），就是先问的那只。
+    const open = before && ids.indexOf(before) !== -1 ? before : ids[0];
+    // 展开的那只答完走了、下一只顶了上来：按钮先停一下，免得接着点到新问题上。
+    const switched = Boolean(before) && before !== open;
+    this._subAskOpen[task.id] = open;
+    const rows = new Map();
+    Array.from(block.children).forEach(row => {
+        if (ids.indexOf(row.dataset.subId) === -1) row.remove();
+        else rows.set(row.dataset.subId, row);
+    });
+    // 只挪站错位置的行（跟任务卡一样：挪走再插回，行里正在打字的输入框会丢焦点）。
+    let next = block.firstChild;
+    list.forEach((item, index) => {
+        const id = String(item.id);
+        const row = rows.get(id) || this._createSubAskRow(task.id, id);
+        this._fillSubAskRow(row, task, item, id === open, switched && id === open, index === list.length - 1);
+        if (row === next) next = next.nextSibling;
+        else block.insertBefore(row, next);
+    });
+    return block;
+};
+
+window.AgentHUD._createSubAskRow = function (taskId, subId) {
+    const row = document.createElement('div');
+    row.className = 'task-sub-ask';
+    row.dataset.subId = subId;
+    Object.assign(row.style, {
+        position: 'relative', borderRadius: '6px', padding: '4px 8px 6px', fontSize: '12px',
+        border: '1px solid var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))',
+        background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.6))'
+    });
+    // 连线：从上面（外层卡片，或上一行）下来，拐进这一行的标题；下面还有行时竖线接着往下走。
+    const link = document.createElement('span');
+    link.className = 'task-sub-ask-link';
+    link.setAttribute('aria-hidden', 'true');
+    Object.assign(link.style, {
+        position: 'absolute', left: '-13px', top: '-7px', width: '11px', height: '19px', opacity: '0.6',
+        borderLeft: AGENT_HUD_SUB_ASK_LINE, borderBottom: AGENT_HUD_SUB_ASK_LINE, borderBottomLeftRadius: '5px', pointerEvents: 'none'
+    });
+    const trunk = document.createElement('span');
+    trunk.className = 'task-sub-ask-trunk';
+    trunk.setAttribute('aria-hidden', 'true');
+    // 停在这一行的下沿，下一行的拐角线从那里接着画：两段叠在一起，半透明会叠出深色的一截。
+    Object.assign(trunk.style, { position: 'absolute', left: '-13px', top: '12px', bottom: '-1px', opacity: '0.6', borderLeft: AGENT_HUD_SUB_ASK_LINE, pointerEvents: 'none' });
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'task-sub-ask-head';
+    Object.assign(head.style, {
+        display: 'flex', alignItems: 'center', gap: '6px', width: '100%', minWidth: '0', padding: '0', margin: '0',
+        border: 'none', background: 'transparent', font: 'inherit', color: 'inherit', textAlign: 'left'
+    });
+    const who = document.createElement('span');
+    who.className = 'task-sub-ask-who';
+    Object.assign(who.style, {
+        flex: '1', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        fontSize: '11px', color: 'var(--neko-popup-text-sub, #666)'
+    });
+    const badge = document.createElement('span');
+    badge.className = 'task-sub-ask-badge';
+    Object.assign(badge.style, {
+        flexShrink: '0', fontSize: '10px', padding: '0 6px', borderRadius: '10px',
+        color: 'var(--neko-popup-accent, #2a7bc4)', background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))'
+    });
+    const mark = document.createElement('span');
+    mark.className = 'task-sub-ask-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    Object.assign(mark.style, { flexShrink: '0', width: '10px', fontSize: '10px', color: 'var(--neko-popup-text-sub, #888)' });
+    head.appendChild(who);
+    head.appendChild(badge);
+    head.appendChild(mark);
+    head.addEventListener('click', () => {
+        if (this._subAskOpen[taskId] === subId) return;
+        this._subAskOpen[taskId] = subId;
+        const block = this._subAskBlocks.get(taskId);
+        if (block && block._task) this._syncSubAsks(block._task);
+    });
+    row.appendChild(link);
+    row.appendChild(trunk);
+    row.appendChild(head);
+    return row;
+};
+
+window.AgentHUD._fillSubAskRow = function (row, task, item, open, switched, last) {
+    const question = item.question;
+    const questionId = String(question.id || '');
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    // 谁在问：它在办的事（派它的使魔交代的那句），和派它的使魔怎么叫它。
+    const label = [title, name !== title ? name : ''].filter(Boolean).join(' · ')
+        || (window.t ? window.t('agent.taskHud.typeTaskAgent') : '使魔');
+    const who = row.querySelector('.task-sub-ask-who');
+    if (who.textContent !== label) {
+        who.textContent = label;
+        who.title = label;
+    }
+    const waits = window.t ? window.t('agent.taskHud.statusWaitingUser') : '等你回话';
+    const badge = row.querySelector('.task-sub-ask-badge');
+    if (badge.textContent !== waits) badge.textContent = waits;
+    row.querySelector('.task-sub-ask-mark').textContent = open ? '▾' : '▸';
+    const head = row.querySelector('.task-sub-ask-head');
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    head.style.cursor = open ? 'default' : 'pointer';
+    row.querySelector('.task-sub-ask-trunk').style.display = last ? 'none' : '';
+    row.dataset.open = open ? 'true' : 'false';
+
+    let box = row.querySelector('.task-ask');
+    if (box && box.dataset.questionId !== questionId) {
+        box.remove();
+        box = null;
+    }
+    // 这只上一次问的是哪条：问完接着干、又问了下一条，这一行重新冒出来时照样先停一下。按外层任务记，卡片不在了就清。
+    const askedUnder = this._subAskedBy[task.id] || (this._subAskedBy[task.id] = {});
+    const lastAsked = askedUnder[item.id];
+    askedUnder[item.id] = questionId;
+    if (!box) {
+        if (!open) return;
+        row.appendChild(window.NekoPowerAsk.render({
+            taskId: item.id,
+            question: question,
+            settle: switched || (lastAsked !== undefined && lastAsked !== questionId),
+            // 没送到的那句写在外层任务的卡片上：这一行在它接着干的那一刻就撤掉了。
+            onNoteLost: (said) => this._noteLost(task.id, said)
+        }));
+        return;
+    }
+    const shown = box.style.display !== 'none';
+    box.style.display = open ? '' : 'none';
+    // 收起时就画好了的，里面可能有打到一半的字，不重画：让它自己的按钮停一下（键盘、回车也发不出去）。
+    if (open && !shown && switched) box.settle();
+};
+
+// 「补的那句没送到」写在任务卡上、问话外面：问话在任务接着干的那一刻就撤掉了，可能比这句话还早。
+window.AgentHUD._syncTaskAskNotice = function (card, taskId) {
+    if (!this._askNotices) this._askNotices = {};
+    const noticed = this._askNotices[taskId];
+    let notice = card.querySelector('.task-ask-notice');
+    if (noticed && !notice) {
+        notice = document.createElement('div');
+        notice.className = 'task-ask-notice';
+        notice.setAttribute('role', 'status');
+        Object.assign(notice.style, { marginTop: '4px', fontSize: '11px', lineHeight: '1.4', color: 'var(--neko-popup-error, #dc2626)' });
+        card.appendChild(notice);
+    }
+    if (notice && !noticed) notice.remove();
+    else if (notice && notice.textContent !== noticed) notice.textContent = noticed;
 };
 
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
 window.AgentHUD._updateTaskCard = function (card, task) {
     const isRunning = task.status === 'running';
+    // waiting_user：等用户回话，仍在办；blocked：卡住了，已结束。
+    const isWaitingUser = task.status === 'waiting_user';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
+    const isBlocked = task.status === 'blocked';
     const isCancelled = task.status === 'cancelled';
-    const isTerminal = isCompleted || isFailed || isCancelled;
+    const isTerminal = isCompleted || isFailed || isBlocked || isCancelled;
 
     // Update start_time data attribute
     if (task.start_time) card.dataset.startTime = task.start_time;
@@ -1294,9 +1761,11 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
         cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
         cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
-    } else if (isFailed) {
+    } else if (isFailed || isBlocked) {
         statusColor = 'var(--neko-popup-error, #dc2626)';
-        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        statusText = isBlocked
+            ? (window.t ? window.t('agent.taskHud.statusBlocked') : '卡住了')
+            : (window.t ? window.t('agent.taskHud.statusFailed') : '失败');
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isCancelled) {
@@ -1304,9 +1773,11 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
         cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
-    } else if (isRunning) {
+    } else if (isRunning || isWaitingUser) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
-        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        statusText = isWaitingUser
+            ? (window.t ? window.t('agent.taskHud.statusWaitingUser') : '等你回话')
+            : (window.t ? window.t('agent.taskHud.statusRunning') : '运行中');
         cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
         cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
     } else {
@@ -1317,7 +1788,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     }
 
     // Use semantic state key to avoid comparing CSS var() strings against resolved style values
-    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isFailed ? 'failed' : isRunning ? 'running' : 'queued';
+    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isBlocked ? 'blocked' : isFailed ? 'failed' : isWaitingUser ? 'waiting_user' : isRunning ? 'running' : 'queued';
     if (card.dataset.cardState !== stateKey) {
         card.dataset.cardState = stateKey;
         card.style.background = cardBg;
@@ -1331,7 +1802,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         badge.dataset.statusState = stateKey;
         badge.textContent = statusText;
         badge.style.color = statusColor;
-        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
+        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : (isFailed || isBlocked) ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : (isRunning || isWaitingUser) ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
         badge.style.background = badgeBg;
     }
 
@@ -1350,6 +1821,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     }
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // Handle progress row: add if now running but missing, remove if no longer running
     const progressRow = card.querySelector('.task-progress-row');
@@ -1437,10 +1909,13 @@ window.AgentHUD._createTaskCard = function (task) {
     }
 
     const isRunning = task.status === 'running';
+    // waiting_user：等用户回话，仍在办；blocked：卡住了，已结束。
+    const isWaitingUser = task.status === 'waiting_user';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
+    const isBlocked = task.status === 'blocked';
     const isCancelled = task.status === 'cancelled';
-    const isTerminal = isCompleted || isFailed || isCancelled;
+    const isTerminal = isCompleted || isFailed || isBlocked || isCancelled;
 
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
@@ -1448,9 +1923,11 @@ window.AgentHUD._createTaskCard = function (task) {
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
         cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
         cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
-    } else if (isFailed) {
+    } else if (isFailed || isBlocked) {
         statusColor = 'var(--neko-popup-error, #dc2626)';
-        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        statusText = isBlocked
+            ? (window.t ? window.t('agent.taskHud.statusBlocked') : '卡住了')
+            : (window.t ? window.t('agent.taskHud.statusFailed') : '失败');
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isCancelled) {
@@ -1458,9 +1935,11 @@ window.AgentHUD._createTaskCard = function (task) {
         statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
         cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
-    } else if (isRunning) {
+    } else if (isRunning || isWaitingUser) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
-        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        statusText = isWaitingUser
+            ? (window.t ? window.t('agent.taskHud.statusWaitingUser') : '等你回话')
+            : (window.t ? window.t('agent.taskHud.statusRunning') : '运行中');
         cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
         cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
     } else {
@@ -1496,12 +1975,12 @@ window.AgentHUD._createTaskCard = function (task) {
     let typeIcon;
     if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
         typeIcon = '🧩';
+    } else if (rawTypeName === 'task_agent') {
+        typeIcon = '🐾';
     } else if (rawTypeName === 'computer_use') {
         typeIcon = '🖱️';
     } else if (rawTypeName === 'browser_use') {
         typeIcon = '🌐';
-    } else if (rawTypeName === 'mcp') {
-        typeIcon = '🔌';
     } else {
         typeIcon = '⚙️';
     }
@@ -1511,12 +1990,16 @@ window.AgentHUD._createTaskCard = function (task) {
     if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
         // 优先级：plugin_name > plugin_id > 翻译文本
         typeName = params.plugin_name || params.plugin_id || (window.t ? window.t('agent.taskHud.typeUserPlugin') : '用户插件');
+    } else if (rawTypeName === 'task_agent') {
+        // 后端的 task_agent 在界面上叫「使魔」。
+        typeName = window.t ? window.t('agent.taskHud.typeTaskAgent') : '使魔';
+    } else if (rawTypeName === 'task') {
+        // 刚登记、还没决定谁来办的委托。
+        typeName = window.t ? window.t('agent.taskHud.typeTask') : '委托';
     } else if (rawTypeName === 'computer_use') {
         typeName = window.t ? window.t('agent.taskHud.typeComputerUse') : '电脑控制';
     } else if (rawTypeName === 'browser_use') {
         typeName = window.t ? window.t('agent.taskHud.typeBrowserUse') : '浏览器控制';
-    } else if (rawTypeName === 'mcp') {
-        typeName = window.t ? window.t('agent.taskHud.typeMCP') : 'MCP工具';
     }
 
     const typeLabel = document.createElement('span');
@@ -1547,7 +2030,7 @@ window.AgentHUD._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '1px 8px',
-        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
+        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : (isFailed || isBlocked) ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : (isRunning || isWaitingUser) ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px',
         flexShrink: '0'
     });
@@ -1581,7 +2064,7 @@ window.AgentHUD._createTaskCard = function (task) {
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await _agentHudMutationFetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -1602,7 +2085,7 @@ window.AgentHUD._createTaskCard = function (task) {
                     try {
                         const body = await r.json();
                         if (body && body.success === false
-                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            && ['completed', 'failed', 'cancelled', 'blocked'].indexOf(body.status) !== -1) {
                             realStatus = body.status;
                         }
                     } catch (_) { /* empty or non-JSON body */ }
@@ -1628,6 +2111,7 @@ window.AgentHUD._createTaskCard = function (task) {
     card.appendChild(header);
 
     this._syncTaskDescriptionRow(card, task, isRunning);
+    this._syncTaskAsk(card, task);
 
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {
@@ -2090,7 +2574,7 @@ window.AgentHUD._setupDragging = function (hud) {
 // ===== i18n 就绪 / 语言切换后重译任务 HUD 外壳 =====
 // HUD 外壳文案（标题 / 统计 / 折叠·终止按钮 title / 空态文本）由 createAgentTaskHUD
 // 用 window.t 直接写入且没有 data-i18n 属性，因此 i18n 的 updatePageTexts() 不会重译它们。
-// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoClaw 会话的
+// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoPower 会话的
 // 任务，agenthud 页面拉到 active_tasks 后立即渲染 HUD），这些外壳文案会停留在初始兜底态，
 // 表现为「i18n 文字加载异常」。这里监听 localechange（i18n 初始化完成及语言切换时派发），
 // 补一次外壳重译，并用缓存快照刷新任务卡片状态/类型文案。
@@ -2147,6 +2631,10 @@ window.AgentHUD.refreshHudI18n = function () {
                 }
                 card.remove();
             });
+            // 卡片下面挂着的子使魔问话也一样：作答框只在换题时才重画，不拿掉就会停在旧语言。
+            // 上一次展开的是哪只、各问到哪条留着，重建后照旧展开那只，也不会多停一下。
+            taskList.querySelectorAll('.task-sub-asks').forEach(block => block.remove());
+            if (this._subAskBlocks) this._subAskBlocks.clear();
         }
         try { this.updateAgentTaskHUD(this._latestTasksData); } catch (_) { /* ignore */ }
     }

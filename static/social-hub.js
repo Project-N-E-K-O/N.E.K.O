@@ -162,8 +162,9 @@
     var fallback = el('span', 'neko-social-hub-avatar is-hue');
     fallback.style.setProperty('--neko-avatar-hue', String(hue));
     fallback.setAttribute('role', 'img');
-    fallback.setAttribute('aria-label', displayName || '喵友');
-    fallback.textContent = Array.from(String(displayName || '喵').trim())[0] || '喵';
+    fallback.setAttribute('aria-label', displayName || tr('visit.socialHub.friendFallback', '喵友'));
+    var defaultChar = tr('visit.socialHub.avatarFallbackChar', '喵');
+    fallback.textContent = Array.from(String(displayName || defaultChar).trim())[0] || defaultChar;
     return fallback;
   }
   function button(label, className, handler) {
@@ -239,9 +240,10 @@
     if (['online', 'away', 'offline'].indexOf(presenceStatus) === -1) {
       presenceStatus = item && item.online === true ? 'online' : 'offline';
     }
+    var rawName = String(item && (item.display_name || item.username) || '');
     return {
       id: String(item && item.id || ''),
-      displayName: String(item && (item.display_name || item.username) || '喵友'),
+      get displayName() { return rawName || tr('visit.socialHub.friendFallback', '喵友'); },
       avatarUrl: String(item && item.avatar_url || ''),
       online: item && item.online === true,
       presenceStatus: presenceStatus,
@@ -252,9 +254,10 @@
     if (!item || !item.id) return null;
     var presenceStatus = String(item.presence_status || 'online');
     if (['online', 'away', 'invisible'].indexOf(presenceStatus) === -1) presenceStatus = 'online';
+    var rawName = String(item.display_name || item.username || '');
     return {
       id: String(item.id),
-      displayName: String(item.display_name || item.username || '我'),
+      get displayName() { return rawName || tr('visit.socialHub.selfFallback', '我'); },
       username: String(item.username || ''),
       avatarUrl: String(item.avatar_url || ''),
       presenceStatus: presenceStatus
@@ -264,9 +267,10 @@
     if (!item || !item.id) return null;
     var reason = String(item.reason || 'active_user');
     if (['active_user', 'liked_you', 'recent_follower'].indexOf(reason) === -1) reason = 'active_user';
+    var rawName = String(item.display_name || item.username || '');
     return {
       id: String(item.id),
-      displayName: String(item.display_name || item.username || '喵友'),
+      get displayName() { return rawName || tr('visit.socialHub.friendFallback', '喵友'); },
       username: String(item.username || ''),
       avatarUrl: String(item.avatar_url || ''),
       reason: reason,
@@ -275,13 +279,15 @@
   }
   function normalizeIncoming(item) {
     if (!item || (!item.visit_id && !item.invite_code)) return null;
+    var rawName = String(item.actor_display_name || '');
     return {
       id: String(item.id || ''),
       actorId: String(item.actor_id || ''),
-      displayName: String(item.actor_display_name || '喵友'),
+      get displayName() { return rawName || tr('visit.socialHub.friendFallback', '喵友'); },
       avatarUrl: String(item.actor_avatar_url || ''),
       visitId: String(item.visit_id || ''),
       inviteCode: String(item.invite_code || ''),
+      visitMode: item.visit_mode === 'cat' ? 'cat' : 'model',
       expiresAt: Number(item.expires_at) || 0
     };
   }
@@ -326,6 +332,7 @@
         if (!friendId || !phase || !restoredVisitId || invitationExpired(item)) return;
         state.invitations.set(friendId, {
           visitId: restoredVisitId, phase: phase,
+          visitMode: item && item.visitMode === 'cat' ? 'cat' : 'model',
           ...(typeof item.invitationId === 'string' ? { invitationId: item.invitationId } : {}),
           expiresAt: Number(item.expiresAt) || 0,
           displayName: String(item.displayName || ''),
@@ -482,6 +489,7 @@
       actor_id: incoming.actorId,
       display_name: incoming.displayName,
       visit_id: incoming.visitId,
+      visit_mode: incoming.visitMode,
       expires_at: incoming.expiresAt
     })).then(function (delivered) {
       if (delivered) return;
@@ -855,22 +863,24 @@
       return false;
     }
   }
-  async function inviteFriend(friendId) {
+  async function inviteFriend(friendId, requestedMode) {
     if (!social()) return;
     var friend = state.friends.find(function (item) { return item.id === friendId; });
+    requestedMode = requestedMode === 'cat' ? 'cat' : 'model';
     if (!friend || state.invitations.has(friendId)) return;
     if (activeInvitation(friendId)) return showToast(tr('visit.socialHub.activeInvite', '请先结束当前的邀请或串门，再邀请其他喵友'), true);
     var bridge = host();
     var visit = window.nekoVisitChat;
     var createInvite = bridge && typeof bridge.createDirectInvite === 'function'
-      ? function () { return bridge.createDirectInvite(friend.id); }
+      ? function () { return bridge.createDirectInvite(friend.id, requestedMode); }
       : visit && typeof visit.createDirectInvitation === 'function'
-        ? function () { return visit.createDirectInvitation(friend.id); } : null;
+        ? function () { return visit.createDirectInvitation(friend.id, requestedMode); } : null;
     if (!createInvite) {
       return showToast(tr('visit.socialHub.desktopRequired', '请在桌面版 Neko 中发送定向邀请'), true);
     }
     setInvitation(friendId, {
       visitId: '', phase: 'sending', expiresAt: 0,
+      visitMode: requestedMode,
       displayName: friend.displayName, avatarUrl: friend.avatarUrl
     });
     showToast(tr('visit.socialHub.preparingRoom', '正在为 {{name}} 准备房间…', { name: friend.displayName }), false);
@@ -881,12 +891,17 @@
       if (!visitId) throw new Error(tr('visit.socialHub.roomMissing', '没有拿到定向串门房间'));
       createdVisitId = visitId;
       var expiresAt = Number(invite.expires_at || invite.expiresAt) || 0;
+      var actualMode = invite && (invite.visit_mode || invite.visitMode) || 'model';
+      if ((actualMode !== 'cat' && actualMode !== 'model') || actualMode !== requestedMode) {
+        throw new Error(tr('visit.socialHub.modeMismatch', '串门创建失败，请重试'));
+      }
       var response = await fetch('/api/community/visit-invitations', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target_user_id: friend.id,
           visit_id: visitId,
+          visit_mode: actualMode,
           expires_at: expiresAt || undefined
         })
       });
@@ -894,6 +909,7 @@
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试')));
       setInvitation(friendId, {
         visitId: visitId, phase: 'invite_ready', expiresAt: expiresAt,
+        visitMode: requestedMode,
         displayName: friend.displayName, avatarUrl: friend.avatarUrl
       });
       state.toast = tr('visit.socialHub.invited', '已向 {{name}} 发出串门邀请', { name: friend.displayName });
@@ -906,6 +922,7 @@
           // The room is still waiting; keep the cancel button so it can be closed later.
           setInvitation(friendId, {
             visitId: createdVisitId, phase: 'invite_ready', expiresAt: Number(expiresAt) || 0,
+            visitMode: requestedMode,
             displayName: friend.displayName, avatarUrl: friend.avatarUrl
           });
           state.toast = tr('visit.socialHub.cancelFailed', '邀请暂时无法取消，请稍后重试');
@@ -1086,15 +1103,23 @@
     row.appendChild(copy);
     // 离线好友只展示身份与最近在线信息。已有邀请状态仍可显示状态按钮，
     // 但普通离线行不能从 DOM 中触发新的串门邀请。
-    if (social() && (view || friend.online)) {
+    if (social() && view) {
       var action = button(view ? view.action : (busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩')),
         'neko-social-hub-button' + (!view && !busyElsewhere ? ' primary' : ''), function () {
         if (view && view.canCancel) cancelInvitation(friend.id, invitation);
-        else inviteFriend(friend.id);
       });
       focusKey(action, 'friend-' + friend.id);
       action.disabled = (!!view && !view.canCancel) || busyElsewhere;
       row.appendChild(action);
+    } else if (social() && friend.online) {
+      var inviteAction = button(
+        busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩'),
+        'neko-social-hub-button' + (!busyElsewhere ? ' primary' : ''), function () {
+          inviteFriend(friend.id, 'model');
+        });
+      focusKey(inviteAction, 'friend-' + friend.id);
+      inviteAction.disabled = busyElsewhere;
+      row.appendChild(inviteAction);
     }
     return row;
   }
@@ -1120,7 +1145,7 @@
     if (!Number.isFinite(timestamp)) return '';
     var elapsed = Math.max(0, Date.now() - timestamp);
     var minutes = Math.floor(elapsed / 60000);
-    var locale = document.documentElement.lang || undefined;
+    var locale = (window.i18n && window.i18n.language) || document.documentElement.lang || undefined;
     var formatter;
     try { formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }); } catch (_) {}
     if (minutes < 1) return tr('visit.socialHub.justNow', '刚刚');
@@ -1480,7 +1505,7 @@
     panel = el('section', 'neko-social-hub-panel');
     panel.tabIndex = -1;
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', '喵宇宙串门');
+    panel.setAttribute('aria-label', tr('visit.socialHub.windowTitle', '喵宇宙串门'));
     panel.addEventListener('animationend', positionPresenceMenu);
     if (standalone) (document.getElementById('neko-social-hub-root') || document.body).appendChild(panel);
     else {
@@ -1656,6 +1681,19 @@
       }
     });
   }
+
+  window.addEventListener('localechange', function () {
+    if (panel) {
+      panel.setAttribute('aria-label', tr('visit.socialHub.windowTitle', '喵宇宙串门'));
+    }
+    if (standalone) {
+      document.title = tr('visit.socialHub.windowTitle', '喵宇宙串门');
+    }
+    if (state.open) {
+      render();
+      if (panel) positionPanel();
+    }
+  });
 
   window.nekoSocialHub = {
     open: open, close: close, toggle: toggle, handlePrimaryClick: toggle,

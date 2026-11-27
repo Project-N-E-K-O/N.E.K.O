@@ -29,6 +29,7 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _find_missing_python_requirements,
     _effective_entries,
+    _manifest_entry_ids,
     _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
@@ -42,6 +43,15 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
+from plugin.server.application.plugins.consent_service import denied_plugin_ids
+from plugin.server.application.plugins.permission_push import (
+    permission_push_service,
+    push_permissions,
+)
+from plugin.server.application.plugins.permission_service import (
+    permission_snapshot,
+    reconcile_permission_source,
+)
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -299,7 +309,11 @@ def _read_packaged_isolated_metadata(
     (codex). An artifact written under an older schema is refused by the reader
     and takes the worker path; ``start_plugin`` then rewrites it from that scan
     (``_refresh_scanned_packaged_metadata``), so the cost is one import, not one
-    per start. Schema 3 never shipped in a release, so no in-memory migration.
+    per start, wherever that rewrite is possible (a read-only package or one
+    whose entries the effective configuration overrides keeps scanning).
+    Schema 3 never shipped in a release, so no in-memory migration. Schema 4
+    did, but a v4 file cannot say whether its handlers cover ``__routers__``
+    entries (#3066), so every v4 file takes this one rescan.
 
     Returns ``None`` when there is no usable metadata at all.
     """
@@ -1119,7 +1133,13 @@ class PluginLifecycleService:
 
         if refresh_registry:
             try:
-                refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
+                if operation_scope is not None:
+                    refresh_payload = await plugin_registry_service.refresh_plugin_under_lock(
+                        current_plugin_id,
+                        operation_scope=operation_scope,
+                    )
+                else:
+                    refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
                 refreshed_plugin_id = refresh_payload.get("plugin_id")
                 if isinstance(refreshed_plugin_id, str) and refreshed_plugin_id:
                     if refreshed_plugin_id != current_plugin_id:
@@ -1142,7 +1162,13 @@ class PluginLifecycleService:
 
         # Refresh can discover a project or change its effective plugin ID.
         # Recheck the resolved identity before reading dependencies or spawning.
+        # This runs before the permission reconcile so a rejected start never
+        # writes permission grants.
         await asyncio.to_thread(require_plugin_project_available, current_plugin_id)
+        # Under the operation lock: persist a changed or first-known install
+        # source into the stored permission grants. Never blocks the start.
+        await asyncio.to_thread(reconcile_permission_source, current_plugin_id)
+
         project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
         config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)
@@ -1373,6 +1399,18 @@ class PluginLifecycleService:
                     error_type=type(created_host).__name__,
                 )
             host_obj = created_host
+            # The child starts with its permission snapshot, so ctx.permissions
+            # is filled before plugin code runs.
+            set_initial_permissions = getattr(created_host, "set_initial_permissions", None)
+            if callable(set_initial_permissions):
+                set_initial_permissions(
+                    await asyncio.to_thread(permission_snapshot, current_plugin_id)
+                )
+            # The plugin_entry ids the effective manifest declares: the child
+            # resolves plain methods only for these (see EntryExecutor).
+            set_manifest_entry_ids = getattr(created_host, "set_manifest_entry_ids", None)
+            if callable(set_manifest_entry_ids):
+                set_manifest_entry_ids(_manifest_entry_ids(conf, pdata))
 
             dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
             for dep in dependencies:
@@ -1521,6 +1559,14 @@ class PluginLifecycleService:
 
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
+            # A change written after the launch snapshot was built found no
+            # registered host to update; send the current state once now.
+            # Queued on the push service (which retries) so the start does not
+            # wait on the child's downlink under the operation lock; pushed
+            # inline only when the service is not running (then nothing would
+            # retry a failed push either, which only happens before startup).
+            if not permission_push_service.push_soon(current_plugin_id):
+                await push_permissions(current_plugin_id, host_obj)
 
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
@@ -1620,9 +1666,9 @@ class PluginLifecycleService:
         """Start independent plugins concurrently, then dependents in order.
 
         Each concurrent wave excludes external mutations until its active
-        starts finish, then yields the operation lock to queued callers. Child
-        tasks use the undecorated implementation inside that scope. Serial
-        starts use the public entry point's cancellation-safe per-plugin lock.
+        starts finish, then yields the operation lock to queued callers. Both
+        wave members and serial starts check consent and start within their
+        existing operation lock scope.
         """
         limit = (
             PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
@@ -1630,12 +1676,35 @@ class PluginLifecycleService:
         limit = max(1, limit)
         started: list[str] = []
         failed: list[str] = []
+        skipped_denied: list[str] = []
+
+        async def _skip_denied(plugin_id: str) -> bool:
+            try:
+                denied = await asyncio.to_thread(denied_plugin_ids, (plugin_id,))
+            except Exception as error:
+                logger.warning(
+                    "could not read plugin consent decision; autostart continues: err_type={}",
+                    type(error).__name__,
+                )
+                return False
+            if denied:
+                skipped_denied.append(plugin_id)
+            return bool(denied)
+
+        @serialized_plugin_operation
+        async def _start_serial(plugin_id: str) -> bool:
+            if await _skip_denied(plugin_id):
+                return False
+            await self._start_plugin_under_lock(plugin_id, refresh_registry=refresh_registry)
+            return True
 
         async def _start_one(
             plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
         ) -> None:
             try:
                 if operation_scope is not None:
+                    if await _skip_denied(plugin_id):
+                        return
                     # Drain every active start before releasing the wave lock.
                     # A spawned host must register or finish its cleanup.
                     operation = asyncio.create_task(
@@ -1646,12 +1715,8 @@ class PluginLifecycleService:
                         )
                     )
                     await await_cancellation_safe(operation)
-                else:
-                    # This primitive also cancels an unstarted lock waiter.
-                    # Shielding it again would prevent that cancellation.
-                    await self.start_plugin(
-                        plugin_id, refresh_registry=refresh_registry
-                    )
+                elif not await _start_serial(plugin_id):
+                    return
             except Exception as error:
                 failed.append(plugin_id)
                 logger.error(
@@ -1726,7 +1791,7 @@ class PluginLifecycleService:
             len(failed),
             limit,
         )
-        return {"started": started, "failed": failed}
+        return {"started": started, "failed": failed, **({"skipped_denied": sorted(skipped_denied)} if skipped_denied else {})}
 
     @serialized_plugin_operation
     async def stop_plugin(
@@ -2052,6 +2117,9 @@ class PluginLifecycleService:
                 _hot_reload_failed.add(plugin_id)
             raise
         _hot_reload_failed.discard(plugin_id)
+        from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
+
+        await asyncio.to_thread(schedule_analysis, plugin_id)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 
@@ -2286,6 +2354,7 @@ class PluginLifecycleService:
                 "filesystem_rollback": result.filesystem_rollback,
                 "runtime_restart": result.runtime_restart,
                 "cleanup_pending": result.cleanup_pending,
+                "permission_warning": result.permission_warning,
             },
         )
         response: dict[str, object] = {
@@ -2300,6 +2369,7 @@ class PluginLifecycleService:
             "filesystem_rollback": result.filesystem_rollback,
             "runtime_restart": result.runtime_restart,
             "cleanup_pending": result.cleanup_pending,
+            "permission_warning": result.permission_warning,
             "message": "Plugin deleted successfully",
         }
         return response

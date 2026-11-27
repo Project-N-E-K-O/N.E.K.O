@@ -28,6 +28,8 @@ uv run python -m app.agent_server
 
 Agent、hosted plugin、browser/computer-use は agent/tool が必要です。Split mode は launcher fallback/lifecycle を再現しません。
 
+Split mode で 3 つのプロセスを手動起動する場合は、3 つの端末すべてで同じ `NEKO_INSTANCE_ID`（または `NEKO_AUTOSTART_CSRF_TOKEN`）を export してください。設定しない場合、各プロセスが個別の `AUTOSTART_CSRF_TOKEN` を生成するため、`agent_server` や plugin の `console_proxy` から `main_server` への内部転送リクエストが `403` / `502` で失敗します。
+
 Steam RemoteStorage path は Steam/desktop launcher で確認します。Shutdown は runtime changes を自動 stage しないため、Cloud Save Manager で upload 用 snapshot を準備します。
 
 Main URL の `/api_key` で current Provider と credentials を設定し、connectivity check を実行します。Source mode は Docker API initialization variables を読みません。

@@ -24,5 +24,9 @@
   "devDependencies": {
     "vitepress": "^1.6.3",
     "vue": "^3.5.44"
+  },
+  "//": "overrides.vite: vitepress 1.6.x pins vite ^5, whose dev-server advisories are only fixed in vite >= 6.4.4. Remove this override once vitepress itself depends on a patched vite (e.g. vitepress 2.x).",
+  "overrides": {
+    "vite": "^6.4.6"
   }
 }

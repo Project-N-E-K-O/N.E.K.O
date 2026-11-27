@@ -138,7 +138,7 @@ def test_voice_recognition_copy_keeps_native_and_fail_closed_routes_distinct() -
     assert "window.t('microphone.voiceRecognitionDisabled')" in source
     assert "window.t('microphone.voiceRecognitionDisabledHint')" in source
     assert "window.t('microphone.voiceRecognitionUnavailable')" in source
-    assert "当前核心使用免费API；独立 ASR 相关开关不适用" in source
+    assert "当前语音模型供应商是免费版，独立 ASR 相关开关不适用" in source
     assert "当前核心使用 Omni 原生语音识别" not in source
     assert "语音输入已关闭" not in source
     assert "自动回退到 Omni" not in source
@@ -184,14 +184,14 @@ def test_voice_recognition_popover_keys_match_across_all_locales() -> None:
 
 def test_native_core_hint_describes_the_free_api_in_all_locales() -> None:
     expected = {
-        "en": "This Core uses the free API; independent ASR controls do not apply",
-        "es": "Este Core usa la API gratuita; los controles de ASR independiente no se aplican",
-        "ja": "この Core は無料 API を使用するため、独立 ASR の設定は適用されません",
-        "ko": "이 Core는 무료 API를 사용하므로 독립 ASR 설정이 적용되지 않습니다",
-        "pt": "Este Core usa a API gratuita; os controles de ASR independente não se aplicam",
-        "ru": "Это ядро использует бесплатный API; настройки независимого ASR неприменимы",
-        "zh-CN": "当前核心使用免费API；独立 ASR 相关开关不适用",
-        "zh-TW": "目前核心使用免費 API；獨立 ASR 相關開關不適用",
+        "en": "The Voice Model Provider is the Free version, so the standalone ASR switches don't apply",
+        "es": "El Proveedor de modelo de voz actual es la versión gratuita; los controles de ASR independiente no se aplican",
+        "ja": "現在の音声モデルのプロバイダーは無料版のため、独立 ASR の設定は適用されません",
+        "ko": "현재 음성 모델 제공업체가 무료 버전이므로 독립 ASR 관련 설정이 적용되지 않습니다",
+        "pt": "O Provedor de modelo de voz atual é a versão gratuita; os controles de ASR independente não se aplicam",
+        "ru": "Провайдер голосовой модели — бесплатная версия, поэтому настройки независимого ASR неприменимы",
+        "zh-CN": "当前语音模型供应商是免费版，独立 ASR 相关开关不适用",
+        "zh-TW": "目前語音模型供應商是免費版，獨立 ASR 相關開關不適用",
     }
 
     assert set(expected) == set(LOCALES)

@@ -124,6 +124,12 @@ class PromotionMergeMixin:
         return elapsed_min < EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES
 
     @staticmethod
+    def _promote_blocked_reason(reflection: dict) -> str:
+        """Dead-letter reason: the last attempt's recorded cause, else the model."""
+        cause = reflection.get('last_promote_failure')
+        return cause if isinstance(cause, str) and cause else 'llm_unavailable'
+
+    @staticmethod
     def _exceeds_max_retries(reflection: dict) -> bool:
         return (
             int(reflection.get('promote_attempt_count', 0) or 0)
@@ -162,6 +168,50 @@ class PromotionMergeMixin:
         `promote_attempt_count` / `last_promote_attempt_at` are now on the
         whitelist (see evidence_handlers._EVIDENCE_SNAPSHOT_KEYS).
         """
+        await self._arecord_promote_throttle_locked(
+            name, reflection_id, 'promote_attempt',
+            lambda entry: {
+                'last_promote_attempt_at': now_iso,
+                'promote_attempt_count':
+                    int(entry.get('promote_attempt_count', 0) or 0) + 1,
+                # A new attempt starts without a known cause; the attempt
+                # itself records one if it fails for a non-model reason.
+                'last_promote_failure': None,
+            },
+        )
+
+    async def _arecord_promote_failure(
+        self, name: str, reflection_id: str, cause: str, attempt_at: str,
+    ) -> None:
+        """Remember why the current attempt failed, for the dead-letter reason.
+
+        Only causes other than the model itself are recorded; an attempt
+        that ends without one is reported as ``llm_unavailable`` when the
+        retries run out. ``attempt_at`` is the stamp this attempt recorded:
+        if a later attempt has started since (a model wait outlasting the
+        backoff), the cause belongs to an older attempt and is dropped.
+        """
+        async with self._get_alock(name):
+            await self._arecord_promote_throttle_locked(
+                name, reflection_id, 'promote_failure',
+                lambda entry: (
+                    {'last_promote_failure': cause}
+                    if entry.get('last_promote_attempt_at') == attempt_at
+                    else None
+                ),
+            )
+
+    async def _arecord_promote_throttle_locked(
+        self, name: str, reflection_id: str, source: str, fields_for,
+    ) -> None:
+        """Write throttle fields through EVT_REFLECTION_EVIDENCE_UPDATED.
+
+        Caller MUST hold `self._get_alock(name)`. ``fields_for(entry)``
+        returns the throttle fields to set, or None to write nothing; every
+        key must be whitelisted in
+        ``evidence_handlers._REFLECTION_EVIDENCE_SNAPSHOT_KEYS`` or replay
+        drops it.
+        """
         from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
         if self._event_log is None:
             raise RuntimeError(
@@ -177,7 +227,9 @@ class PromotionMergeMixin:
             )
             return
 
-        new_count = int(entry.get('promote_attempt_count', 0) or 0) + 1
+        fields = fields_for(entry)
+        if not fields:
+            return
         payload = {
             'reflection_id': reflection_id,
             # Full-snapshot evidence values (unchanged by this event,
@@ -189,18 +241,16 @@ class PromotionMergeMixin:
             'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
             'user_fact_reinforce_count':
                 int(entry.get('user_fact_reinforce_count', 0) or 0),
-            # New throttle fields — whitelisted in the handler.
-            'last_promote_attempt_at': now_iso,
-            'promote_attempt_count': new_count,
-            'source': 'promote_attempt',
+            # Throttle fields — whitelisted in the handler.
+            **fields,
+            'source': source,
         }
 
         def _sync_load(_n: str):
             return reflections_full
 
         def _sync_mutate(_view):
-            entry['last_promote_attempt_at'] = now_iso
-            entry['promote_attempt_count'] = new_count
+            entry.update(fields)
 
         def _sync_save(n: str, view):
             assert_cloudsave_writable(
@@ -301,8 +351,8 @@ class PromotionMergeMixin:
                     # field so the semantics of each terminal-state field
                     # stay clean (RFC §3.9.2 / §3.9.7):
                     #   - promote_blocked → `promote_blocked_reason` (the
-                    #     throttle/dead-letter cause; consumed by the dead-
-                    #     letter retry path).
+                    #     throttle/dead-letter cause; audit only, nothing
+                    #     reads it to unblock the entry).
                     #   - denied → `denied_reason` (the rejection category;
                     #     audit only, no recovery path).
                     #   - merged → `absorbed_into` already captures
@@ -470,6 +520,11 @@ class PromotionMergeMixin:
           | 'invalid_target' | 'noop' | 'no_longer_eligible'
 
         Throttling: backoff window before retry, max retries → dead-letter.
+        The dead-letter reason is ``target_changed`` when the last attempt's
+        merge target text was edited concurrently (``amerge_into`` returned
+        ``stale_target``), otherwise ``llm_unavailable``; a deleted or retired
+        target still ends as ``invalid_target`` and is not covered. Nothing
+        reads the reason to unblock an entry.
         LLM failures → skip_retry_pending (NOT promote_fresh — RFC §3.9.4
         explicitly forbids silent fresh-fallback because that breaks
         dedup semantics during outages).
@@ -482,14 +537,9 @@ class PromotionMergeMixin:
         now = datetime.now()
         if self._within_backoff(R, now):
             return 'skip_retry_pending'
-        if self._exceeds_max_retries(R):
-            await self._amark_promote_blocked(
-                lanlan_name, R, 'llm_unavailable',
-            )
-            return 'blocked'
 
-        # Revalidate snapshot + throttle gate + record attempt — ALL
-        # inside the same lock section. CodeRabbit PR #936 round-5
+        # Revalidate snapshot + idempotency + throttle gate + record attempt —
+        # ALL inside the same lock section. CodeRabbit PR #936 round-5
         # Major #3: without this fusion, two concurrent invocations
         # can both pass the pre-lock backoff check, both take the lock
         # serially, and both record attempts — defeating the throttle
@@ -503,7 +553,10 @@ class PromotionMergeMixin:
         # `promote_attempt_count` for an already-merged reflection
         # both wastes a retry slot and emits a misleading evidence
         # event. Re-read the on-disk view, find the same id, and
-        # short-circuit if it's no longer eligible.
+        # short-circuit if it's no longer eligible or already applied.
+        from memory.scopes import subject_from_entry
+        break_for_already_applied = False
+        break_for_blocked = False
         async with self._get_alock(lanlan_name):
             current_list = await self._aload_reflections_full(lanlan_name)
             current = self._find_reflection_in_list(current_list, R['id'])
@@ -522,29 +575,46 @@ class PromotionMergeMixin:
                     f"introspection (itself or its persona line); skip"
                 )
                 return 'no_longer_eligible'
-            if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
+            current_subject = subject_from_entry(current)
+            if (
+                current_subject is not None
+                and self._subject_forget_is_active(lanlan_name, current_subject)
+            ):
+                return 'no_longer_eligible'
+            current_rid = current.get('id')
+            if (
+                current_rid
+                and await self._ascoped_promotion_already_applied(
+                    lanlan_name, current_rid, current_subject,
+                )
+            ):
+                # Persona entry already persisted on an earlier attempt whose
+                # reflection status save failed (even if that was the final
+                # allowed attempt); recover status before checking retry caps.
+                R = current
+                break_for_already_applied = True
+            elif evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
                     f"dropped below threshold under lock; skip"
                 )
                 return 'no_longer_eligible'
-            # Re-check throttle against the freshly-read entry — this
-            # closes the race where another coroutine recorded an
-            # attempt between our pre-lock check and our lock
-            # acquisition.
-            if self._within_backoff(current, now):
+            elif self._within_backoff(current, now):
+                # Re-check throttle against the freshly-read entry — this
+                # closes the race where another coroutine recorded an
+                # attempt between our pre-lock check and our lock
+                # acquisition.
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: another attempt "
                     f"recorded during lock wait; skip_retry_pending"
                 )
                 return 'skip_retry_pending'
-            if self._exceeds_max_retries(current):
+            elif self._exceeds_max_retries(current):
                 # Must release lock before calling _amark_promote_blocked
                 # (it re-acquires the same lock via _arecord_state_change).
                 R = current
                 break_for_blocked = True
             else:
-                break_for_blocked = False
                 # Use the freshly-read entry from here on so downstream
                 # merge math sees the latest evidence values.
                 R = current
@@ -557,9 +627,15 @@ class PromotionMergeMixin:
                     lanlan_name, R['id'], now_iso,
                 )
 
+        if break_for_already_applied:
+            await self._arecord_state_change(
+                lanlan_name, R['id'], 'confirmed', 'promoted',
+            )
+            return 'promote_fresh'
+
         if break_for_blocked:
             await self._amark_promote_blocked(
-                lanlan_name, R, 'llm_unavailable',
+                lanlan_name, R, self._promote_blocked_reason(R),
             )
             return 'blocked'
 
@@ -580,6 +656,7 @@ class PromotionMergeMixin:
             if memory_subject is not None else target_entity
         )
         same_entity_persona: list[tuple[str, dict]] = []
+        prompt_persona_markers: dict[str, tuple[str, int, str]] = {}
         if target_section and isinstance(persona_view, dict):
             section = persona_view.get(target_section)
             if isinstance(section, dict):
@@ -595,6 +672,19 @@ class PromotionMergeMixin:
                         # from the merge prompt. Legacy memory_subject=None matches only
                         # unstamped legacy entries, failing closed in both directions.
                         same_entity_persona.append((target_section, e))
+                        eid = e.get('id')
+                        if eid is not None:
+                            vh = e.get('version_history')
+                            last_ts = (
+                                str(vh[-1].get('replaced_at') or '')
+                                if isinstance(vh, list) and vh and isinstance(vh[-1], dict)
+                                else ''
+                            )
+                            prompt_persona_markers[str(eid)] = (
+                                str(e.get('text') or ''),
+                                len(vh) if isinstance(vh, list) else 0,
+                                last_ts,
+                            )
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
             r for r in all_reflections
@@ -721,19 +811,37 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
-                counts_kwargs = (
-                    {'fact_source_counts': current3['fact_source_counts']}
-                    if isinstance(current3.get('fact_source_counts'), dict)
-                    else {}
+                rid = current3.get('id')
+                already_applied = bool(
+                    rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
                 )
-                result = await self._persona_manager.aadd_fact(
-                    lanlan_name, current3.get('text', ''),
-                    entity=target_entity or 'master',
-                    source='reflection', source_id=current3['id'],
-                    speaker_provenance=current3,
-                    **promote_kwargs,
-                    **counts_kwargs,
-                )
+                if already_applied:
+                    result = self._persona_manager.FACT_ADDED
+                else:
+                    counts_kwargs = (
+                        {'fact_source_counts': current3['fact_source_counts']}
+                        if isinstance(current3.get('fact_source_counts'), dict)
+                        else {}
+                    )
+                    result = await self._persona_manager.aadd_fact(
+                        lanlan_name, current3.get('text', ''),
+                        entity=target_entity or 'master',
+                        source='reflection', source_id=current3['id'],
+                        speaker_provenance=current3,
+                        **promote_kwargs,
+                        **counts_kwargs,
+                    )
+                    if (
+                        result == self._persona_manager.FACT_QUEUED_CORRECTION
+                        and rid
+                        and await self._ascoped_promotion_already_applied(
+                            lanlan_name, rid, promote_subject,
+                        )
+                    ):
+                        result = self._persona_manager.FACT_ADDED
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
                     lanlan_name, R['id'], 'confirmed', 'promoted',
@@ -852,6 +960,9 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
+                expected_marker = prompt_persona_markers.get(
+                    str(target_entry.get('id') or target_entry_id)
+                )
                 merge_outcome = await self._persona_manager.amerge_into(
                     lanlan_name, target_entry_id, merged_text,
                     reflection_evidence={
@@ -865,7 +976,35 @@ class PromotionMergeMixin:
                     source_reflection_id=current3['id'],
                     merged_from_ids=[current3['id']],
                     source_provenance=current3,
+                    expected_target_text=(
+                        expected_marker[0] if expected_marker is not None else None
+                    ),
+                    expected_target_version=(
+                        (expected_marker[1], expected_marker[2])
+                        if expected_marker is not None else None
+                    ),
                 )
+            if merge_outcome == 'stale_target':
+                # Keep the retry timing unchanged; only remember the cause so
+                # that, if this was the last allowed attempt, the dead-letter
+                # reason does not blame the model. The cause is audit only, so
+                # failing to write it must not fail the cycle.
+                try:
+                    await self._arecord_promote_failure(
+                        lanlan_name, R['id'], 'target_changed',
+                        attempt_at=now_iso,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        f"[Promote] {lanlan_name}/{R['id']}: could not record "
+                        f"target_changed cause: {exc}"
+                    )
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} changed during LLM await; discarding "
+                    f"stale merge_into for retry"
+                )
+                return 'skip_retry_pending'
             if merge_outcome == 'not_found':
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: amerge_into reported "

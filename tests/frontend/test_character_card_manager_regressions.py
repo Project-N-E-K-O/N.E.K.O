@@ -2570,3 +2570,223 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
     assert state["avatarTabIndex"] == "0"
     assert state["ariaAfterFirstClick"] == "false"
     assert state["ariaAfterSecondClick"] == "true"
+
+
+@pytest.mark.frontend
+def test_character_card_manager_builtin_name_follows_saved_model_binding(
+    mock_page: Page,
+    running_server: str,
+):
+    # A user-imported model may share a built-in name; the scan keeps the static one under
+    # the plain name and suffixes the user copy, so the saved binding decides.
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        () => {
+            const staticEntry = { name: 'yui-sister', path: '/static/yui-sister/yui-sister.model3.json', source: 'static' };
+            const userEntry = {
+                name: 'yui-sister_documents',
+                path: '/user_live2d/yui-sister/yui-sister.model3.json',
+                source: 'documents'
+            };
+            const card = (assetSource, modelPath) => ({
+                _reserved: { avatar: { asset_source: assetSource, live2d: { model_path: modelPath } } }
+            });
+            const relative = 'yui-sister/yui-sister.model3.json';
+            const check = (models, data) => {
+                window.allModels = models;
+                window.currentCharacterCardModel = 'yui-sister';
+                window.currentCharacterCardModelSource = 'static';
+                return isStaticDefaultLive2DModel('yui-sister', data);
+            };
+            return {
+                localWithUserCopy: check([staticEntry, userEntry], card('local_imported', relative)),
+                localWithoutUserCopy: check([staticEntry], card('local', relative)),
+                builtinWithUserCopy: check([staticEntry, userEntry], card('builtin', relative)),
+                legacyUserPrefix: check([staticEntry, userEntry], card('', '/user_live2d/yui-sister/yui-sister.model3.json')),
+                legacyRelative: check([staticEntry, userEntry], card('', relative)),
+                uploadLookupLocal: (findCardLive2DModelInfo([userEntry], 'yui-sister', card('local_imported', relative)) || {}).name,
+                uploadLookupBuiltin: findCardLive2DModelInfo([userEntry], 'yui-sister', card('builtin', relative)) || null,
+                previewLookupLocal: findCardLive2DModelInfo([staticEntry, userEntry], 'yui-sister', card('local_imported', relative)).path,
+                previewLookupBuiltin: findCardLive2DModelInfo([staticEntry, userEntry], 'yui-sister', card('builtin', relative)).path,
+            };
+        }
+        """
+    )
+
+    assert state == {
+        "localWithUserCopy": False,
+        "localWithoutUserCopy": True,
+        "builtinWithUserCopy": True,
+        "legacyUserPrefix": False,
+        "legacyRelative": True,
+        "uploadLookupLocal": "yui-sister_documents",
+        "uploadLookupBuiltin": None,
+        "previewLookupLocal": "/user_live2d/yui-sister/yui-sister.model3.json",
+        "previewLookupBuiltin": "/static/yui-sister/yui-sister.model3.json",
+    }
+
+
+@pytest.mark.frontend
+def test_character_card_manager_ignores_older_switch_response_after_newer_commit(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            let resolveB;
+            let resolveC;
+            const bResponse = new Promise(resolve => { resolveB = resolve; });
+            const cResponse = new Promise(resolve => { resolveC = resolve; });
+            const originalFetch = window.fetch.bind(window);
+            const broadcasts = [];
+            const NativeBroadcastChannel = window.BroadcastChannel;
+            window.BroadcastChannel = class {
+                constructor(name) { this.name = name; }
+                postMessage(message) { broadcasts.push(message); }
+                close() {}
+            };
+            window.handleCatgirlSwitch = async () => {};
+            window._workshopCurrentCatgirl = 'A';
+            window._workshopCurrentCatgirlRevision = 0;
+
+            window.fetch = async (input, init = {}) => {
+                const raw = typeof input === 'string' ? input : input.url;
+                const url = new URL(raw, window.location.origin);
+                if (url.pathname === '/api/characters/current_catgirl'
+                    && String(init.method || 'GET').toUpperCase() === 'POST') {
+                    const body = JSON.parse(init.body || '{}');
+                    if (body.catgirl_name === 'B') return bResponse;
+                    if (body.catgirl_name === 'C') return cResponse;
+                }
+                return originalFetch(input, init);
+            };
+
+            const first = window.applyCurrentCatgirlSelection('B', { oldCatgirl: 'A' });
+            const second = window.applyCurrentCatgirlSelection('C', { oldCatgirl: 'B' });
+            resolveC(new Response(JSON.stringify({ success: true, switch_revision: 802 }), {
+                status: 200, headers: { 'Content-Type': 'application/json' }
+            }));
+            await second;
+            const afterC = {
+                name: window._workshopCurrentCatgirl,
+                revision: window._workshopCurrentCatgirlRevision
+            };
+
+            resolveB(new Response(JSON.stringify({ success: true, switch_revision: 801 }), {
+                status: 200, headers: { 'Content-Type': 'application/json' }
+            }));
+            await first;
+            const finalState = {
+                name: window._workshopCurrentCatgirl,
+                revision: window._workshopCurrentCatgirlRevision,
+                broadcasts: broadcasts.map(item => ({
+                    new_catgirl: item.new_catgirl,
+                    switch_revision: item.switch_revision
+                }))
+            };
+            window.fetch = originalFetch;
+            window.BroadcastChannel = NativeBroadcastChannel;
+            return { afterC, finalState };
+        }
+        """
+    )
+
+    assert state['afterC'] == {'name': 'C', 'revision': 802}
+    assert state['finalState']['name'] == 'C'
+    assert state['finalState']['revision'] == 802
+    assert state['finalState']['broadcasts'] == [
+        {'new_catgirl': 'C', 'switch_revision': 802},
+    ]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("late_snapshot", ["older", "failed", "preflight"])
+def test_cards_refresh_cannot_erase_newer_switch_receipt(
+    mock_page: Page, running_server: str, late_snapshot: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async lateSnapshot => {
+            const originalFetch = window.fetch.bind(window);
+            const response = data => new Response(JSON.stringify(data), {
+                status: 200, headers: { 'Content-Type': 'application/json' }
+            });
+            let signalGet, releaseSnapshot;
+            const getStarted = new Promise(resolve => { signalGet = resolve; });
+            const oldSnapshot = new Promise(resolve => { releaseSnapshot = resolve; });
+            // The stale preflight case starts with A selectable in the visible UI.
+            window._workshopCurrentCatgirl = lateSnapshot === 'preflight' ? 'D' : 'A';
+            window._workshopCurrentCatgirlRevision = lateSnapshot === 'preflight' ? 799 : 800;
+            window.fetch = async (input, init = {}) => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+                if (url.pathname === '/api/characters') return response({ '猫娘': { A: {}, C: {} } });
+                if (url.pathname.endsWith('/voice_mode_status')) return response({ is_voice_mode: false });
+                if (url.pathname !== '/api/characters/current_catgirl') return originalFetch(input, init);
+                if (String(init.method || 'GET').toUpperCase() === 'POST') {
+                    return response({ success: true, switch_revision: 802 });
+                }
+                signalGet();
+                await oldSnapshot;
+                if (lateSnapshot === 'failed') throw new Error('late refresh unavailable');
+                return response({ current_catgirl: 'A', switch_revision: 800 });
+            };
+            try {
+                const refresh = lateSnapshot === 'preflight' ? workshopSwitchCatgirl('A') : loadCharacterCards();
+                await Promise.race([getStarted, new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('current-character read did not start')), 5000))]);
+                await applyCurrentCatgirlSelection('C', { oldCatgirl: 'A' });
+                const afterSwitch = [window._workshopCurrentCatgirl, window._workshopCurrentCatgirlRevision];
+                releaseSnapshot();
+                await refresh;
+                return { afterSwitch, afterRefresh: [window._workshopCurrentCatgirl, window._workshopCurrentCatgirlRevision] };
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+        """,
+        late_snapshot,
+    )
+    assert state["afterSwitch"] == ["C", 802]
+    assert state["afterRefresh"] == ["C", 802]
+
+@pytest.mark.frontend
+def test_rescue_preflight_keeps_current_switch_revision(
+    mock_page: Page, running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async input => {
+                const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+                if (url.pathname === '/api/characters/current_catgirl') {
+                    return new Response(JSON.stringify({
+                        current_catgirl: '../legacy-name',
+                        switch_revision: 901
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                return originalFetch(input);
+            };
+            try {
+                return await ensureCanModifyCardsOutsideVoiceMode();
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+        """
+    )
+
+    assert state["ok"] is True
+    assert state["currentCatgirl"] == "../legacy-name"
+    assert state["switchRevision"] == 901
+    assert state["skippedVoiceCheckForInvalidName"] is True
+

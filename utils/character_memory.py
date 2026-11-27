@@ -15,10 +15,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import os
 import shutil
+import stat
 import sys
 import threading
+import unicodedata
+import uuid
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -246,6 +252,7 @@ def retire_character_runtime_caches(*character_names: str) -> None:
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
     "recent_{name}.json": "recent.json",
+    ".recent_{name}.json.write-receipts.json": ".recent.json.write-receipts.json",
     "settings_{name}.json": "settings.json",
     "facts_{name}.json": "facts.json",
     "facts_archive_{name}.json": "facts_archive.json",
@@ -377,15 +384,362 @@ def character_memory_exists(config_manager, character_name: str) -> bool:
     return bool(list_character_memory_paths(config_manager, character_name))
 
 
+def _paths_refer_to_same_entry(source_path: Path, target_path: Path) -> bool:
+    """Return True when two paths resolve to the same existing filesystem entry."""
+    try:
+        return os.path.samefile(source_path, target_path)
+    except OSError:
+        return False
+
+
+def _symlink_chain_reaches_path(
+    source_path: Path,
+    target_path: Path,
+    *,
+    max_hops: int = 40,
+) -> bool:
+    """Return True if following symlinks starting from ``source_path`` reaches ``target_path``."""
+    source_path = Path(source_path)
+    target_path = Path(target_path)
+    try:
+        if not source_path.is_symlink():
+            return False
+        src_lstat = os.lstat(source_path)
+    except OSError:
+        return False
+
+    try:
+        tgt_lstat = os.lstat(target_path)
+    except OSError:
+        tgt_lstat = None
+
+    if tgt_lstat is not None and os.path.samestat(src_lstat, tgt_lstat):
+        return False
+
+    try:
+        target_unresolved_norm: str | None = os.path.normcase(
+            os.fspath(target_path.parent.resolve(strict=False) / target_path.name)
+        )
+    except OSError:
+        target_unresolved_norm = None
+
+    current = source_path
+    visited: set[tuple[int, int]] = set()
+    for _ in range(max_hops):
+        try:
+            cur_lstat = os.lstat(current)
+            node_id = (cur_lstat.st_dev, cur_lstat.st_ino)
+            if node_id in visited:
+                break
+            visited.add(node_id)
+            raw_target = os.readlink(current)
+        except OSError:
+            break
+
+        raw_path = Path(raw_target)
+        next_path = raw_path if raw_path.is_absolute() else current.parent / raw_path
+
+        if tgt_lstat is not None:
+            try:
+                if os.path.samestat(os.lstat(next_path), tgt_lstat):
+                    return True
+            except OSError:
+                pass
+
+        if target_unresolved_norm is not None:
+            try:
+                next_unresolved_norm = os.path.normcase(
+                    os.fspath(next_path.parent.resolve(strict=False) / next_path.name)
+                )
+            except OSError:
+                next_unresolved_norm = None
+            if next_unresolved_norm == target_unresolved_norm:
+                return True
+
+        current = next_path
+        try:
+            if not current.is_symlink():
+                break
+        except OSError:
+            break
+
+    return False
+
+
+def _paths_refer_to_same_directory_entry(source_path: Path, target_path: Path) -> bool:
+    """Return True when two paths denote the exact same directory entry."""
+    source_path = Path(source_path)
+    target_path = Path(target_path)
+    if not _paths_refer_to_same_entry(source_path.parent, target_path.parent):
+        return False
+    try:
+        src_lstat = os.lstat(source_path)
+        tgt_lstat = os.lstat(target_path)
+    except OSError:
+        return False
+    if not os.path.samestat(src_lstat, tgt_lstat):
+        return False
+    if source_path.name == target_path.name:
+        return True
+    if stat.S_ISDIR(src_lstat.st_mode):
+        return True
+    try:
+        with os.scandir(source_path.parent) as entries:
+            matching_names: list[str] = []
+            for entry in entries:
+                try:
+                    # On Windows Python 3.11, DirEntry.stat(follow_symlinks=False)
+                    # reads WIN32_FIND_DATA with zero st_dev/st_ino, breaking samestat
+                    # against os.lstat(source_path). Query os.lstat directly.
+                    if os.path.samestat(os.lstat(entry.path), src_lstat):
+                        matching_names.append(entry.name)
+                except OSError:
+                    continue
+    except OSError:
+        return False
+    if len(matching_names) == 1:
+        return True
+    if source_path.name in matching_names and target_path.name in matching_names:
+        return False
+    src_key = _normalize_collision_key(source_path.name)
+    tgt_key = _normalize_collision_key(target_path.name)
+    if src_key != tgt_key:
+        return False
+    return sum(1 for name in matching_names if _normalize_collision_key(name) == src_key) == 1
+
+
+def _iter_registered_catgirl_names(
+    config_manager,
+    *,
+    require_authoritative: bool = False,
+) -> list[str]:
+    """Return configured character names if ``config_manager.load_characters`` is available."""
+    load_characters = getattr(config_manager, "load_characters", None)
+    if not callable(load_characters):
+        return []
+    if require_authoritative:
+        accepts_authoritative = False
+        accepts_path = False
+        accepts_allow_missing_default = False
+        try:
+            params = inspect.signature(load_characters).parameters.values()
+            accepts_authoritative = any(
+                param.name == "require_authoritative"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
+            accepts_path = any(
+                param.name == "character_json_path"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
+            accepts_allow_missing_default = any(
+                param.name == "allow_missing_default"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
+        except (TypeError, ValueError):
+            accepts_authoritative = False
+            accepts_path = False
+            accepts_allow_missing_default = False
+
+        runtime_path: str | None = None
+        get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
+        if callable(get_runtime_path):
+            candidate = get_runtime_path("characters.json")
+            if isinstance(candidate, (str, os.PathLike)):
+                runtime_path = os.fspath(candidate)
+
+        kwargs: dict[str, Any] = {}
+        if accepts_authoritative:
+            kwargs["require_authoritative"] = True
+        else:
+            logger.warning(
+                "[CharacterMemory] %s.load_characters does not accept require_authoritative; "
+                "falling back to plain load_characters()",
+                type(config_manager).__name__,
+            )
+        if accepts_allow_missing_default:
+            kwargs["allow_missing_default"] = False
+        if runtime_path is not None:
+            if accepts_path:
+                kwargs["character_json_path"] = runtime_path
+            else:
+                logger.warning(
+                    "[CharacterMemory] %s.load_characters does not accept character_json_path; "
+                    "cannot pin authoritative read to runtime characters.json",
+                    type(config_manager).__name__,
+                )
+        characters = load_characters(**kwargs)
+        if not isinstance(characters, dict) or not isinstance(characters.get("猫娘"), dict):
+            raise ValueError("character_config_not_authoritative: invalid catgirl registry")
+        catgirls = characters["猫娘"]
+        return [name for name in catgirls.keys() if isinstance(name, str) and name]
+    try:
+        characters = load_characters()
+    except Exception:
+        return []
+    if not isinstance(characters, dict):
+        return []
+    catgirls = characters.get("猫娘")
+    if not isinstance(catgirls, dict):
+        return []
+    return [name for name in catgirls.keys() if isinstance(name, str) and name]
+
+
+def iter_authoritative_catgirl_names(config_manager) -> list[str]:
+    """Return configured character names loaded authoritatively from runtime storage."""
+    return _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+
+
+def _normalize_collision_key(name: str) -> str:
+    return unicodedata.normalize("NFC", str(name or "").strip()).casefold()
+
+
+def _find_shared_memory_source(
+    config_manager,
+    character_name: str,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> tuple[Path, str] | None:
+    """Return ``(shared_path, other_name)`` if ``character_name`` shares source storage."""
+    if config_manager is None:
+        return None
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+    )
+    roots = iter_character_memory_roots(config_manager)
+    source_paths = list_character_memory_paths(config_manager, character_name)
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        for base_dir in roots:
+            source_dir = base_dir / character_name
+            if _paths_refer_to_same_entry(base_dir / other_name, source_dir):
+                return source_dir, other_name
+        if not source_paths:
+            continue
+        other_paths = list_character_memory_paths(config_manager, other_name)
+        for source_path in source_paths:
+            for other_path in other_paths:
+                if _paths_refer_to_same_entry(other_path, source_path):
+                    return source_path, other_name
+    return None
+
+
+def find_character_shared_memory_owner(
+    config_manager,
+    character_name: str,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> str | None:
+    """Return another configured character name sharing source memory storage."""
+    match = _find_shared_memory_source(
+        config_manager,
+        character_name,
+        existing_names=existing_names,
+    )
+    return match[1] if match is not None else None
+
+
+def find_character_name_collision(
+    config_manager,
+    candidate_name: str,
+    *,
+    exclude_names: Iterable[str] = (),
+    existing_names: Iterable[str] | None = None,
+) -> str | None:
+    """Return the first configured character name colliding with ``candidate_name``.
+
+    Detects exact duplicates, case-folded collisions (e.g. ``neko`` vs ``Neko``),
+    Unicode NFC/NFD equivalents, and filesystem ``os.path.samefile`` aliases under
+    active character memory roots.
+    """
+    raw_candidate = str(candidate_name or "")
+    candidate = raw_candidate.strip()
+    if not candidate:
+        return None
+    excluded = {str(name) for name in exclude_names if name}
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager)
+    )
+    candidate_key = _normalize_collision_key(candidate)
+    roots = iter_character_memory_roots(config_manager) if config_manager is not None else []
+    for existing_name in names:
+        if existing_name in excluded:
+            continue
+        if _normalize_collision_key(existing_name) == candidate_key:
+            return existing_name
+        for base_dir in roots:
+            for candidate_part in dict.fromkeys([raw_candidate, candidate]):
+                if _paths_refer_to_same_entry(base_dir / existing_name, base_dir / candidate_part):
+                    return existing_name
+    return None
+
+
+def _two_step_samefile_rename(source_path: Path, target_path: Path) -> bool:
+    """Rename ``source_path`` to ``target_path`` via a sibling temporary path.
+
+    Required on case-insensitive or Unicode-normalizing filesystems (Windows NTFS,
+    macOS APFS) when changing only casing or Unicode normalization form.
+    """
+    parent_dir = source_path.parent
+    temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
+    while os.path.lexists(temp_path):
+        temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
+
+    os.replace(str(source_path), str(temp_path))
+    try:
+        if os.path.lexists(target_path):
+            raise FileExistsError(
+                f"Refusing two-step rename {source_path} -> {target_path}: "
+                f"target entry still exists independently"
+            )
+        os.replace(str(temp_path), str(target_path))
+    except BaseException:
+        try:
+            if os.path.lexists(temp_path) and not os.path.lexists(source_path):
+                os.replace(str(temp_path), str(source_path))
+        except OSError:
+            logger.warning(
+                "[CharacterMemory] failed to roll back intermediate rename %s -> %s",
+                temp_path,
+                source_path,
+                exc_info=True,
+            )
+        raise
+    return True
+
+
+paths_refer_to_same_entry = _paths_refer_to_same_entry
+paths_refer_to_same_directory_entry = _paths_refer_to_same_directory_entry
+symlink_chain_reaches_path = _symlink_chain_reaches_path
+two_step_samefile_rename = _two_step_samefile_rename
+
+
 def _move_path(source_path: Path, target_path: Path) -> bool:
+    if _symlink_chain_reaches_path(source_path, target_path):
+        raise FileExistsError(
+            f"Refusing to move symlink {source_path} onto its own target {target_path}"
+        )
+
     if not source_path.exists():
         return False
 
     if source_path.is_dir():
         return _merge_directories(source_path, target_path)
 
+    if _paths_refer_to_same_directory_entry(source_path, target_path):
+        if source_path.name == target_path.name:
+            return False
+        return _two_step_samefile_rename(source_path, target_path)
+
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists():
+    if target_path.exists() or target_path.is_symlink():
         raise FileExistsError(
             f"Refusing to overwrite existing memory file while moving "
             f"{source_path} -> {target_path}"
@@ -396,8 +750,18 @@ def _move_path(source_path: Path, target_path: Path) -> bool:
 
 
 def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
+    if _symlink_chain_reaches_path(source_dir, target_dir):
+        raise FileExistsError(
+            f"Refusing to move symlink {source_dir} onto its own target {target_dir}"
+        )
+
     if not source_dir.exists():
         return False
+
+    if _paths_refer_to_same_directory_entry(source_dir, target_dir):
+        if source_dir.name == target_dir.name:
+            return False
+        return _two_step_samefile_rename(source_dir, target_dir)
 
     if not target_dir.exists():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -561,6 +925,42 @@ def rename_character_memory_storage(
 ) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
+    if old_name != new_name:
+        registered_names = _iter_registered_catgirl_names(
+            config_manager,
+            require_authoritative=True,
+        )
+        shared_source = _find_shared_memory_source(
+            config_manager,
+            old_name,
+            existing_names=registered_names,
+        )
+        if shared_source is not None:
+            shared_path, co_owner = shared_source
+            raise FileExistsError(
+                f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                f"source path {shared_path} is shared with existing character {co_owner!r}"
+            )
+        colliding_name = find_character_name_collision(
+            config_manager,
+            new_name,
+            exclude_names=(old_name,),
+            existing_names=registered_names,
+        )
+        if colliding_name is not None:
+            raise FileExistsError(
+                f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                f"target path {runtime_target_dir} collides with existing character {colliding_name!r}"
+            )
+        for other_name in registered_names:
+            if other_name == old_name:
+                continue
+            for base_dir in dict.fromkeys([runtime_target_dir.parent, *roots]):
+                if _paths_refer_to_same_entry(base_dir / other_name, runtime_target_dir):
+                    raise FileExistsError(
+                        f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                        f"target path {runtime_target_dir} collides with existing character {other_name!r}"
+                    )
     pending_sources = list_character_recent_paths(config_manager, old_name)
     target_recent_paths = list_character_recent_paths(config_manager, new_name)
     target_recent = runtime_target_dir / "recent.json"
@@ -654,8 +1054,17 @@ def rename_character_memory_storage(
         ) or changed
 
         target_pending = get_recent_pending_unlocked(target_recent)
+        if old_name != new_name:
+            target_pending = [
+                _rewrite_pending_message_character_name(message, old_name, new_name)
+                for message in target_pending
+            ]
+        target_pending_key = os.path.normcase(os.path.abspath(os.fspath(target_recent)))
         for source_recent in pending_sources:
-            if source_recent == target_recent:
+            if (
+                source_recent == target_recent
+                or os.path.normcase(os.path.abspath(os.fspath(source_recent))) == target_pending_key
+            ):
                 continue
             source_pending = get_recent_pending_unlocked(source_recent)
             set_recent_pending_unlocked(source_recent, [])
@@ -864,6 +1273,55 @@ async def asave_characters_with_recent_activation(
         return False
 
 
+def _find_co_owner_for_memory_path(
+    config_manager,
+    character_name: str,
+    entry_path: Path,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> str | None:
+    """Return another configured character name sharing ``entry_path`` on disk."""
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+    )
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        for other_path in list_character_memory_paths(config_manager, other_name):
+            if _paths_refer_to_same_entry(other_path, entry_path):
+                return other_name
+    return None
+
+
+find_co_owner_for_memory_path = _find_co_owner_for_memory_path
+
+
+def _is_recent_registry_key_shared_with_other(
+    config_manager,
+    character_name: str,
+    recent_path: Path,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> bool:
+    """Return True if another configured character maps to the same recent registry key."""
+    recent_key = os.path.normcase(os.path.abspath(os.fspath(recent_path)))
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+    )
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        for other_recent in list_character_recent_paths(config_manager, other_name):
+            other_key = os.path.normcase(os.path.abspath(os.fspath(other_recent)))
+            if other_key == recent_key:
+                return True
+    return False
+
+
 def delete_character_memory_storage(
     config_manager,
     character_name: str,
@@ -871,30 +1329,75 @@ def delete_character_memory_storage(
     capture_pending: bool = False,
     keep_recent_locks: bool = False,
     recent_transaction: dict[str, Any] | None = None,
+    before_remove: Callable[[Path], None] | None = None,
+    on_skip_shared: Callable[[Path, str], None] | None = None,
 ) -> list[Path] | tuple[list[Path], dict[str, Any]]:
+    """Remove unshared character memory entries and clear recent state.
+
+    When provided, ``before_remove(entry_path)`` runs immediately before deleting
+    each unshared path, and ``on_skip_shared(entry_path, co_owner)`` runs when
+    an entry is skipped because another registered character co-owns it.
+    """
     transaction = recent_transaction or begin_character_recent_transaction(
         config_manager, character_name,
     )
     recent_candidates = transaction["recent_paths"]
-    redirect_snapshot, deletion_scope, deletion_snapshot = (
-        fence_recent_deletions_and_clear_redirects(recent_candidates)
-    )
+    redirect_snapshot: dict[str, str] = {}
+    deletion_scope: list[Path] = []
+    deletion_snapshot: set[str] = set()
+    fenced_recent = False
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         retire_character_runtime_caches(character_name)
+        registered_names = _iter_registered_catgirl_names(
+            config_manager,
+            require_authoritative=True,
+        )
+        unshared_recent_candidates = [
+            recent_path
+            for recent_path in recent_candidates
+            if not _is_recent_registry_key_shared_with_other(
+                config_manager,
+                character_name,
+                recent_path,
+                existing_names=registered_names,
+            )
+        ]
+        redirect_snapshot, deletion_scope, deletion_snapshot = (
+            fence_recent_deletions_and_clear_redirects(unshared_recent_candidates)
+        )
+        fenced_recent = True
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
-            for path in recent_candidates
+            for path in unshared_recent_candidates
         }
         removed_paths: list[Path] = []
         for entry_path in list_character_memory_paths(config_manager, character_name):
-            if entry_path.is_dir():
+            co_owner = _find_co_owner_for_memory_path(
+                config_manager,
+                character_name,
+                entry_path,
+                existing_names=registered_names,
+            )
+            if co_owner is not None:
+                if on_skip_shared is not None:
+                    on_skip_shared(entry_path, co_owner)
+                logger.warning(
+                    "[CharacterMemory] skipping deletion of %s for %r because it is shared with character %r",
+                    entry_path,
+                    character_name,
+                    co_owner,
+                )
+                continue
+            if before_remove is not None:
+                before_remove(entry_path)
+            if entry_path.is_dir() and not entry_path.is_symlink():
                 shutil.rmtree(entry_path)
             else:
                 entry_path.unlink()
             removed_paths.append(entry_path)
 
-        for recent_path in recent_candidates:
+        for recent_path in unshared_recent_candidates:
             set_recent_pending_unlocked(recent_path, [])
         transaction.update({
             "pending_snapshot": pending_snapshot,
@@ -908,8 +1411,9 @@ def delete_character_memory_storage(
             return removed_paths, transaction
         return removed_paths
     except BaseException:
-        restore_recent_redirects(redirect_snapshot)
-        restore_recent_deletions(list(deletion_scope), deletion_snapshot)
+        if fenced_recent:
+            restore_recent_redirects(redirect_snapshot)
+            restore_recent_deletions(list(deletion_scope), deletion_snapshot)
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:

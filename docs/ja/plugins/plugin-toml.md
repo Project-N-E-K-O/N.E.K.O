@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-サポート対象の check / release workflow では、この 4 フィールドが **必須** です。従来のソース探索では、不完全な manifest やディレクトリ名と ID が異なるプラグインを読み込める場合がありますが、有効なリリース package であることを意味しません。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。パッケージのビルドと本番環境へのインストールでは、宣言 ID、アーカイブ内のディレクトリ、インストール先、エントリーパッケージを一致させる必要があります。競合時に接尾辞付きのコピーは作成されません。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` のサブクラスを指す必要があり、`PluginRouter` は直接起動できません。
+サポート対象の check / release workflow では、この 4 フィールドが **必須** です。従来のソース探索では、不完全な manifest やディレクトリ名と ID が異なるプラグインを読み込める場合がありますが、有効なリリース package であることを意味しません。`id` は一意でなければなりません。ホストは `^[A-Za-z0-9_-]+$` に一致する任意の `id` を読み込めますが、`neko-plugin init` とリリースチェック（`neko-plugin check -r`）は Market ID を要求します。先頭は英小文字、以降は `a-z`、`0-9`、`_` のみ（`^[a-z][a-z0-9_]*$`）です。`check -r` はさらに最大 100 文字に制限します。公開する予定のプラグインでは、この厳しい形式を使ってください。パッケージのビルドと本番環境へのインストールでは、宣言 ID、アーカイブ内のディレクトリ、インストール先、エントリーパッケージを一致させる必要があります。競合時に接尾辞付きのコピーは作成されません。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` のサブクラスを指す必要があり、`PluginRouter` は直接起動できません。
 
 通常の plugin では `type = "plugin"` は default なので省略できます。Adapter package のみ `type = "adapter"` を使います。削除済みの `extension` type と `[plugin.host]` table は拒否されます。
 
@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
 ```
 
-これらの field は host が plugin をロードした後の Agent routing に使われます。
+host が plugin をロードした後、Agent（にゃんパワー、NekoPower）はこれらの field を使って plugin を選びます。
 
-- `description` — plugin metadata と Agent fine assessment に使う完全な説明です。
-- `short_description` — coarse screening 用の短い説明です。省略時は `description` から生成して cache される場合があります。
-- `keywords` — 正規表現 pattern です。hit は Stage 1 candidate に union されますが、Stage 2 を省略したり実行を保証したりしません。
+- `description` — plugin metadata と精選に使う完全な説明です。
+- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。**書いておいてください。** 省略されていて `description` がこの 150 token を超えるときは、ホストがバックグラウンドで小さいモデルに `description` から書かせますデータディレクトリの `nekopower/plugin_short_descriptions.json` に保存し、成功すればプラグインと説明の版ごとにモデルへのリクエスト 1 回です。150 token を超えた結果は 150 に切り詰めて保存します。リクエストが失敗した場合は保存せず、10 分後に再試行し、そのたびにリクエストが 1 回かかります。同じ版の `description` には 1 日最大 3 回まで（再起動をまたいでも数えます）で、`description` が変われば数え直します。保存されるまでは `description` の先頭部分を代わりに使います。
+- `keywords` — 正規表現 pattern です。一致した plugin は粗選別の候補に入り、精選では「キーワード一致」の印が付きます。精選を省略したり、実行を保証したりはしません。
+
+選択は二段階です。選択対象の全 plugin と、その可視 entry の説明の合計が 3000 token を超えるときは、先に粗選別を行い、三つの集合の和を残します。keywords が一致した plugin、BM25 のテキスト一致の上位 10 件（plugin の ID、名前、説明と、entry の ID・説明が対象）、小型モデルが短い説明から選んだ plugin です。その後、精選が `plugin_id` と runtime `entry_id` を選び、引数を埋めます。3000 token 以下なら粗選別は行わず、選択対象の plugin すべてが精選に渡ります。
+
+選択が走るのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はなくなったため、「ユーザーが何気なく口にしただけで選ばれる」ことに頼っていた plugin は、選ばれる回数が減ります。keywords と BM25 が照合するテキストは、ユーザーの元の発言と、モデルが dispatch した一文を合わせたものです。ユーザーの発言が keywords に一致することは、そのターンをターン後チェックへ通すシグナルの一つでもあります。
 
 listener/integration を Agent dispatch から完全に外すには `passive = true` を設定します。non-passive plugin も Agent-visible runtime entry が 1 つ以上なければ candidate になりません。
 
-Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちらも今回表示した candidate set と照合され、最初の不正値だけ correction retry を 1 回行い、それでも不正なら拒否されます。
+精選が返した `plugin_id` と `entry_id` は、そのとき見せた candidate set と照合されます。不正な場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。精選は、誰にもできない用件、またはそもそも片付ける用件ではないもの（`route="none"`）と答えることもでき、その場合は何も始まりません。entry が呼ばれたときの動作は、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```toml
 version = "1.2.0"
@@ -199,6 +203,49 @@ enabled = true
 
 ---
 
+### `[plugin.database]` — SQLite データベース
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # プラグインのデータディレクトリ内のファイル名（デフォルト: plugin.db）
+```
+
+有効にすると、`self.db` はプラグインのデータディレクトリにある SQLite データベースファイルを使います。SQL には `async with unwrap(await self.db.session()) as session:`（`session()` は `Result` を返します）、キーと値のデータには `self.db.kv` を使います。デフォルトでは無効です。
+
+---
+
+### `[plugin_state]` — インスタンス属性の保存と復元
+
+```toml
+[plugin_state]
+backend = "file"        # 状態の保存先
+persist_mode = "auto"   # 保存するタイミング
+```
+
+ランタイムはプラグインクラスの `__freezable__` リストに挙げたインスタンス属性を保存し、プラグインの次回起動時に復元します。復元に成功すると保存済みの状態は消去されます。`backend` がスイッチです。`"file"` はプラグインのデータディレクトリ内のファイルに保持し、プラグインプロセスの再起動後も残るのはこれだけです。`"memory"` はプラグインプロセスが動いている間だけ保持します。`backend` を書かなければ（このテーブル自体がなければ）何も保存されません（`"off"` や空文字列を書いた場合と同じです）。`file` / `memory` / `off` 以外の値（たとえば `sqlite`）を書くとプラグインは起動に失敗します。判断に使われるのは実効設定、つまりマニフェストにランタイム側のコピー（プラグインのユーザーデータディレクトリにある `config/plugin.toml`。初回利用時に `config.example.toml` から、それがなければマニフェストからコピーされます）と現在のプロファイルをマージした結果です。そのため、ランタイム側のコピーにも `backend` がある場合、マニフェストから消すだけでは保存は止まりません。保存を止めるには、実際に効く層で `backend = "off"` を指定してください。ランタイム側のコピーと現在のプロファイルはマニフェストより優先されます。`persist_mode` はどのエントリー呼び出しの後に保存するかを決めます。`"auto"` ではエントリー呼び出しが正常に戻るたびに保存し（`Err` を返した場合も正常に戻ったとみなします。例外や厳格な出力契約の違反では保存しません。ランタイム経由で配送された呼び出しだけが対象で、プラグイン内部でエントリーメソッドを直接呼ぶ場合（タイマーからなど）は保存されません）、`"manual"` では `@plugin_entry(persist=True)` で宣言したエントリーの呼び出し後だけ保存し、`"off"` ではエントリー呼び出し後に保存しません。エントリーの `persist=True` / `persist=False` は `"auto"` / `"manual"` より優先されます。モードは次の順で決まります。まずクラス属性 `__persist_mode__`（デフォルト `"off"`）、次に `[plugin_state].persist_mode` が `auto` / `manual` / `off` のいずれかならそれで上書きします（それ以外の値はランタイムでは無視されます。`neko-plugin check` は `always` / `disabled` を error とし、`auto` / `off` への変更を提案します）。結果が `"off"` の場合（`persist_mode = "off"` を明示した場合も含む）、旧設定 `[plugin_checkpoint] freeze_mode` が `"auto"` または `"manual"` ならそれで上書きされます。また `persist_mode` に関係なく、プラグインをフリーズするときにも状態が保存されます。
+
+---
+
+### `[plugin.shared]` — 他のプラグインの共有ファイルを読む
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+どのプラグインにも共有ディレクトリ `<ユーザーデータルート>/plugin_shared/<プラグイン id>/` があり、他のプラグインに読ませてよいファイルを置けます。持ち主のプラグインは `self.shared_path(...)` で書き込みます。他のプラグインが公開したファイルを読むには、そのプラグインの id を `reads` に書いたうえで `self.shared_path_of("weather", ...)` を呼びます。宣言がないまま呼ぶと `ValidationError` が発生します。
+
+知っておくべき点が 3 つあります。
+
+- **これは取り決めであり、セキュリティ境界ではありません。** プラグイン同士はサンドボックスで隔離されていないため、あるプラグインが他のプラグインのディレクトリに書き込むことを防ぐ仕組みはありません。宣言は、この依存関係をマニフェスト上で見えるようにするためのものです。他のプラグインのファイルは読み取り専用として扱い、自分の共有ディレクトリに秘密情報を置かないでください。
+- **共有ディレクトリはプラグインのプライベートな状態ではありません。** 公開したプラグインが削除されてもディレクトリは残り、ユーザーが保存場所を変更したときはユーザーデータと一緒に移動します。
+- **リンクを置かないでください。** このディレクトリはユーザーデータと一緒に移動するため、中にシンボリックリンクやジャンクションが 1 つでもあると（仮想環境、git のチェックアウト、`node_modules` によく含まれます）、保存場所の変更が全体として失敗します。公開するのは通常のファイルとディレクトリだけにしてください。
+
+公開する側に宣言は要りません。共有ファイルを公開も参照もしないなら、このセクションは書かなくてかまいません。
+
+---
+
 ### `[plugin.ui]` — カスタム UI
 
 ```toml
@@ -230,6 +277,73 @@ UI が不要なら、このセクションは書かなくてかまいません�
 
 ---
 
+### `[permissions]` — ユーザーに求める権限
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "天気サービスに問い合わせる", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { ja = "普段住んでいる都市の天気を出す", en = "Use your home city for the forecast" } }
+"plugin_sdk.models:invoke" = { reason = "天気を一文のお知らせにする" }
+```
+
+> **現在の状態：** 宣言は今のところ `neko-plugin check` / `check -r` でコードと比較するためだけに使われます。インストール時の `require` 権限の確認と、初回使用時の `ask` 権限の確認は今後のリリースで有効になる予定で、まだ動作していません。
+
+- `require`：これがないとプラグインが動きません。今後、ユーザーはインストール時に同意を求められます。
+- `ask`：今後、プラグインが初めて実際に使うときにユーザーに確認します。
+- どの項目にも `reason` が必要です。ユーザーはこの権限の横でこれを読むので、ユーザー向けに書いてください。文字列 1 つか「言語コード = テキスト」のテーブルにできます。書かなかった言語は、書いた言語のどれかにフォールバックします。
+- `ask` 項目をユーザーが使っていないときにも使う場合は、`background = true` と `background_reason` を書きます。
+- `hosts`（`system.network:connect` のみ）は参考としてユーザーに表示されます。
+
+`require` と `ask` の選び方：
+
+- `require` の権限はバックグラウンドでの使用も含むので、`require` の項目には `background` を書きません。
+- ユーザーの操作によらずに使う `ask` 項目（タイマー、起動時、リスナーやイベントのコールバック、バックグラウンドスレッドなど）には、必ず `background = true` と `background_reason` を書きます。
+- 環境変数から設定を読むこと、プラグインの環境変数を引き継ぐプログラムを起動することは、常に `system.env:read` として `require` に入れます。
+- `system.network:listen` は常に `require` です。
+
+権限 ID：
+
+| ID | 意味 |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | 記憶を読む |
+| `plugin_sdk.main_agent.conversations:read` | 会話を読む |
+| `plugin_sdk.main_agent.messages:push` | N.E.K.O にメッセージ・カード・返信の添付を送る |
+| `plugin_sdk.models:invoke` | AI モデルを呼び出す |
+| `system.network:connect` | ネットワークに接続する |
+| `system.network:listen` | このコンピューターでネットワークポートを開き、他のプログラムから接続できるようにする |
+| `system.fs:read` / `system.fs:write` | プラグイン自身のデータディレクトリ以外のファイルを読む / 書く |
+| `system.process:spawn` | 他のプログラムを起動する |
+| `system.env:read` | 環境変数を読む |
+
+`neko-plugin check` と `check -r` は、宣言とプラグインの Python コードのスキャン結果を比べます：
+
+- コードが明らかに使っているのに宣言されていない権限は error で、`check -r`（つまりマーケットの CI）を通りません。reason 付きで宣言を追加してください。今のところ `[permissions]` テーブル自体がないプラグインには warning を出し、今後のリリースで error になります。
+- スキャンで確定できない使用の可能性（レシーバーを解決できない、import のみ、プラグイン自身のデータかもしれないファイルパス）は warning です。
+- 宣言されているのにスキャンで使用が見つからないものは warning です。動的な使い方なら問題ありません。
+- スキャンで見通せないコード（動的 import、名前を計算する `getattr`、`eval`/`exec`、`ctypes`、スレッド、`vendor/`、Python 以外のファイル）は info として表示されます。「何も見つからない」はプラグインが無害だと証明されたという意味ではありません。
+
+このトップレベルのテーブルは、`[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` の `permissions` リストとは別物です。
+
+#### コンポーネントごとの絞り込み
+
+コンポーネントは、デコレーターに `permissions=[...]` を書くことで、テーブルで宣言した権限の一部だけを使うことを示せます。対象は `@plugin_entry`、`@llm_tool`、エントリフック（`@hook`、`@before_entry`、`@after_entry`、`@around_entry`、`@replace_entry`）、`@on_event`、`@custom_event`、`@timer_interval` と、それぞれの `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` 形式です。`register_llm_tool`、`register_dynamic_entry`、`PluginRouter.add_entry` も同じ引数を受け付けます。
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- 書かないのが既定です。コンポーネントは宣言した権限をすべて引き継ぎます。絞り込みは「この権限をオフにするとどの機能が使えなくなるか」をユーザーに示すためだけに使われ、コンポーネントの動作は制限しません。
+- プラグインがコンポーネントを登録するとき、絞り込みは `[permissions.require]` + `[permissions.ask]` の部分集合でなければなりません。それ以外を書いたコンポーネントは登録されず（エントリは呼び出せず、イベントハンドラーは購読されません）、どのコンポーネントがなぜ登録されなかったかがプラグインのログに出ます。公開前の `neko-plugin check` も同じ問題を報告します。
+- エントリフックの権限は、`target` に一致する各エントリに加わります。宣言されていない権限を書いたフックは、それらのエントリを閉じます。
+  - 注意：`permissions=` を書かないフックは宣言した権限をすべて必要とするため、一致するエントリもすべてを引き継ぎます。そのようなフックが `target="*"` に 1 つでもあると、すべてのエントリの絞り込みが無効になります。エントリを絞り込む場合は、フックにも `permissions=` を書いてください。
+- `PluginRouter` はクラス属性 `permissions = [...]`（または `PluginRouter(permissions=[...])`）で全エントリを絞り込めます。エントリ自身や `add_entry(..., permissions=...)` で指定したものが優先されます。組み込み済みの router で宣言されていない権限を `add_entry` に渡すと `Err(PermissionDeniedError)` が返ります。
+- `@neko_plugin`、`@lifecycle`、`@message` などコンポーネント以外のデコレーターは `permissions=` を受け付けません。
+
+---
+
 ### カスタムセクション — プラグイン固有の設定
 
 ```toml
@@ -246,7 +360,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-必要なだけ自由にカスタムセクションを定義できます。
+必要なだけ自由にカスタムセクションを定義できます。ただし `permissions` は使えません。トップレベルの `[permissions]` テーブルは権限宣言用に予約されています（上記参照）。すでに `[permissions]` を独自の設定に使っているプラグインはセクション名を変更してください。変更しないと `neko-plugin check` が無効な権限宣言としてエラーを報告します。
 
 ---
 
@@ -269,9 +383,11 @@ plugin/plugins/smart_notes/
 
 ```text
 <ユーザーデータルート>/plugins/smart_notes/
-├── config/plugin.toml      ← 実際に使用される設定
+├── config/plugin.toml      ← 設定のランタイム用コピー
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
+
+<ユーザーデータルート>/plugin_shared/smart_notes/   ← self.shared_path()。宣言したプラグインが読む
 ```
 
 必須なのは `plugin.toml` と `[plugin].entry` が指す、インポート可能な Python モジュールです。一般的には `__init__.py` を使いますが、それに限定されません。インストール済みコードは、これらの書き込み可能な状態データとは別に保存されます。

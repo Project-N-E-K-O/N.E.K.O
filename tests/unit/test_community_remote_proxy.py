@@ -223,6 +223,48 @@ def test_visit_invite_response_relays_only_the_boolean_decision(proxy, monkeypat
     ).status_code == 400
 
 
+def test_visit_invitation_relays_the_single_sender_selected_mode(proxy, monkeypatch):
+    target_id = "22222222-2222-4222-8222-222222222222"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret", "local_user_id": "owner"}}
+
+    async def upstream(request):
+        seen.append(request)
+        return httpx.Response(200, json={"notification_id": "33333333-3333-4333-8333-333333333333"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = proxy.post("/api/community/visit-invitations", json={
+        "target_user_id": target_id,
+        "visit_id": "A" * 22,
+        "visit_mode": "cat",
+    })
+    assert response.status_code == 200
+    assert seen[0].url.path == f"/api/users/{target_id}/visit-invite"
+    assert seen[0].read().decode() == '{"visit_id":"AAAAAAAAAAAAAAAAAAAAAA","visit_mode":"cat"}'
+    assert proxy.post("/api/community/visit-invitations", json={
+        "target_user_id": target_id,
+        "visit_id": "A" * 22,
+        "visit_mode": "tiger",
+    }).status_code == 400
+    # Only a missing field defaults to model; explicit falsy or non-string values are refused.
+    for bad_mode in ("", False, 0, None, ["cat"]):
+        assert proxy.post("/api/community/visit-invitations", json={
+            "target_user_id": target_id,
+            "visit_id": "A" * 22,
+            "visit_mode": bad_mode,
+        }).status_code == 400, bad_mode
+    assert len(seen) == 1
+
+
 def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
     owner_id = "11111111-1111-4111-8111-111111111111"
     online_id = "22222222-2222-4222-8222-222222222222"
@@ -663,7 +705,8 @@ def test_invitation_reads_page_all_unread_invitation_ids(proxy, monkeypatch, pat
             return httpx.Response(200, json={
                 "items": [{
                     "id": notification_id,
-                    "payload": {"type": "visit_invite", "visit_id": "A" * 22},
+                    "payload": {"type": "visit_invite", "visit_id": "A" * 22,
+                                "visit_mode": "cat" if offset == 0 else "model"},
                 } for notification_id in ids],
                 "next_cursor": "page-2" if offset == 0 else None,
                 "total_count": len(notification_ids),
@@ -683,6 +726,7 @@ def test_invitation_reads_page_all_unread_invitation_ids(proxy, monkeypatch, pat
     assert body["notifications_ok"] is True
     assert body["incoming_invite_ids"] == notification_ids
     assert body["incoming_invite"]["id"] == notification_ids[0]
+    assert body["incoming_invite"]["visit_mode"] == "cat"
 
 
 def test_visit_invitations_skips_hub_reads_and_keeps_presence_and_invitation_projection(proxy, monkeypatch):

@@ -446,9 +446,9 @@ async def test_prepare_save_preserves_merged_and_promote_blocked(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_persona_entry_handler_sha_mismatch_raises(tmp_path):
-    """S5: persona.entry_updated handler raises on text sha256 mismatch —
-    reconciler must stop and let a human inspect (RFC §3.3.6)."""
+async def test_persona_entry_handler_sha_mismatch_skips_old_event(tmp_path):
+    """S5: an older persona.entry_updated event (hash only, no text) whose
+    hash no longer matches the view is skipped, not raised, so replay goes on."""
     from memory.evidence_handlers import make_persona_entry_handler
 
     _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
@@ -467,5 +467,8 @@ async def test_persona_entry_handler_sha_mismatch_raises(tmp_path):
         "rewrite_text_sha256": "0" * 64,  # definitely not the sha of "current text"
         "reinforcement": 5.0,
     }
-    with pytest.raises(RuntimeError):
-        apply_fn("小天", bad_payload)
+    assert apply_fn("小天", bad_payload) is False
+    with open(persona_path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["master"]["facts"][0]["text"] == "current text"
+    assert "reinforcement" not in on_disk["master"]["facts"][0]

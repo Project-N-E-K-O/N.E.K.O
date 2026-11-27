@@ -400,6 +400,39 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json={
+                "status": "verifying", "candidate": None,
+                "publication_request": {"id": 12, "status": "verifying"},
+            }),
+            0,
+            "[MARKET] status=verifying request=12\n",
+            "Market accepted the notification",
+        ),
+        (
+            httpx.Response(202, json={
+                "status": "pending_review", "candidate": None,
+                "publication_request": {"id": 12, "status": "pending_review"},
+            }),
+            0,
+            "[MARKET] status=pending_review request=12\n",
+            "waiting for a Market reviewer",
+        ),
+        (
+            httpx.Response(202, json={
+                "status": "platform_attention",
+                "publication_request": {"id": 12, "status": "platform_attention"},
+            }),
+            1,
+            "[MARKET] status=platform_attention request=12\n",
+            "[FAIL] Market needs platform operator attention",
+        ),
+        (
+            httpx.Response(202, json=_market_review("superseded")),
+            1,
+            "[MARKET] status=superseded candidate=7\n",
+            "[FAIL] a newer release",
+        ),
+        (
             httpx.Response(202, json=_market_review("rejected")),
             1,
             "[MARKET] status=rejected candidate=7\n",
@@ -423,7 +456,12 @@ def test_publish_market_reports_the_market_status(
     captured = capsys.readouterr()
     assert captured.out.count("[MARKET]") == 1
     assert market_line in captured.out
-    assert message in captured.out + captured.err
+    assert "[MARKET]" not in captured.err
+    if exit_code:
+        assert message in captured.err
+        assert message not in captured.out
+    else:
+        assert message in captured.out
 
 
 @pytest.mark.parametrize(
@@ -894,6 +932,7 @@ def test_publish_defaults_to_github_then_market(
         (200, {"status": "already_published", "version": {}}),
         (200, {"status": "published", "version": {"version": "1.2.0"}}),
         (202, {"status": "pending_review", "version": None, "candidate": None}),
+        (202, {"status": "verifying", "candidate": None}),
         (202, {"status": "published", "version": None, "candidate": {"id": 7}}),
     ],
 )
@@ -1210,7 +1249,27 @@ def test_publish_github_stops_before_tag_when_release_workflow_is_not_standard(
     assert _run_git(remote, "tag", "--list") == ""
     error = capsys.readouterr().err
     assert "standard release workflow is not current" in error
-    assert "setup-repo" in error
+    target = publish_cmd.release_cmd._plugin_dir_argument(plugin_dir, "")
+    assert f"neko-plugin setup-repo {target} --upgrade-github-actions" in error
+
+
+def test_release_workflow_hint_names_the_directory_behind_a_placeholder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(publish_cmd.release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = tmp_path / "%USERPROFILE%"
+    stale = SimpleNamespace(relative_path=Path(".github/workflows/release.yml"), status=None)
+    monkeypatch.setattr(publish_cmd, "migrate_github_actions", lambda *args, **kwargs: [stale])
+
+    with pytest.raises(RuntimeError) as caught:
+        publish_cmd._ensure_standard_release_workflow(plugin_dir, plugin_id="demo")
+    message = str(caught.value)
+    assert 'setup-repo "<plugin directory>" --upgrade-github-actions' in message
+    assert f"(plugin directory: {plugin_dir})" in message
+    assert f"（插件目录：{plugin_dir}）" in message
 
 
 def test_publish_can_resume_when_remote_tag_already_points_to_head(
@@ -1432,6 +1491,18 @@ def test_release_asset_is_ready_only_after_github_marks_it_uploaded() -> None:
 
     asset["state"] = "uploaded"
     assert release_asset_is_downloadable(asset) is True
+
+
+@pytest.mark.parametrize("plugin_id,has_link", [(17, True), (True, False), (-1, False), ("https://example.org", False)])
+def test_publish_market_recovers_from_legacy_latest(plugin_id, has_link, capsys):
+    payload = {"code": "release_version_not_newer", "detail": "Legacy latest",
+               "issues": [None, {"code": "release_latest_unordered", "plugin_id": plugin_id}]}
+    assert publish_cmd._report_market_response(409, payload) == 1
+    captured = capsys.readouterr()
+    if has_link:
+        assert "https://market.project-neko.cn/#/plugin/17?tab=versions&action=publish" in captured.err
+    else:
+        assert "/#/plugin/" not in captured.out + captured.err
 
 
 def test_publish_market_surfaces_stable_market_error(
@@ -1741,6 +1812,110 @@ def test_publish_names_the_upstream_command_when_branch_has_no_upstream(
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
 
     assert "git push -u origin main" in str(exc_info.value)
+
+
+@pytest.mark.skipif(publish_cmd.release_cmd._WINDOWS_SHELL, reason="POSIX shell quoting")
+def test_publish_quotes_the_branch_in_its_push_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Branch names may hold ; $ ( ): pasting the hint must run only git push.
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "-b", "feat;$(x)")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push -u origin 'feat;$(x)' " in str(exc_info.value)
+
+    # Tracking origin/main, the push names both sides as one argument.
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
+    (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "local only")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push origin 'feat;$(x):main' " in str(exc_info.value)
+
+
+def test_publish_push_hints_never_force_a_branch_starting_with_plus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # git reads a leading + as "force": "+feat:main" would overwrite origin/main.
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "-b", "+feat")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push -u origin refs/heads/+feat " in str(exc_info.value)
+
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
+    (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "local only")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push origin refs/heads/+feat:main " in str(exc_info.value)
+
+
+def test_publish_names_the_branch_behind_a_windows_placeholder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(publish_cmd.release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    # No Windows quoting keeps %VAR% literal, so the command shows a placeholder.
+    _run_git(plugin_dir, "checkout", "-b", "feat%PATH%")
+    # Track origin/feat%PATH% without pushing: origin has no such branch yet.
+    _run_git(plugin_dir, "update-ref", "refs/remotes/origin/feat%PATH%", "HEAD")
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/feat%PATH%")
+    (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "local only")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    message = str(exc_info.value)
+    assert 'run git push origin "<branch>" (branch: feat%PATH%) / ' in message
+    assert "（分支：feat%PATH%）" in message
+
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    message = str(exc_info.value)
+    assert 'run git push origin "<branch>:<remote-branch>" (branch: feat%PATH%, remote branch: main) / ' in message
+
+
+def test_publish_names_a_plus_branch_behind_a_placeholder_as_its_refspec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Typed back in from the note, a bare "+a%b" would force-push "a%b".
+    monkeypatch.setattr(publish_cmd.release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "-b", "+a%b")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert 'run git push -u origin "<branch>" (branch: refs/heads/+a%b) / ' in str(exc_info.value)
+
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
+    (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "local only")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert (
+        'run git push origin "<branch>:<remote-branch>" (branch: refs/heads/+a%b, remote branch: main) / '
+        in str(exc_info.value)
+    )
 
 
 def test_publish_reports_a_detached_head(

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 from main_routers.visit_router import host_port
 from main_routers.visit_router.host_port import ManagerHost
+from utils.visit_route_state import VISIT_SOCKET_BOUND_ATTR
 
 
 class _Session:
@@ -35,6 +36,23 @@ class _Session:
 
 def _host(session: _Session) -> ManagerHost:
     return ManagerHost("Host", SimpleNamespace(session=session))
+
+
+def test_cat_admission_only_ignores_goodbye_silence():
+    mgr = SimpleNamespace(
+        _is_voice_session_active_or_starting=lambda: False,
+        is_goodbye_silent=lambda: True,
+        is_hot_swap_imminent=False,
+        _starting_session_count=0,
+    )
+    host = ManagerHost("Host", mgr)
+    assert host.precondition_failure() == "goodbye_silent"
+    assert host.precondition_failure(allow_goodbye_silent=True) is None
+
+    mgr.is_hot_swap_imminent = True
+    assert host.precondition_failure(allow_goodbye_silent=True) == "busy"
+    mgr._is_voice_session_active_or_starting = lambda: True
+    assert host.precondition_failure(allow_goodbye_silent=True) == "voice_session_active"
 
 
 async def test_main_turn_interruption_has_one_deadline_for_both_stages(monkeypatch):
@@ -208,53 +226,92 @@ async def test_family_turn_wait_gives_up_when_no_reply_starts(monkeypatch):
     assert time.monotonic() - started < 0.1           # No start grace window: return immediately when idle
 
 
+# The bounded-write tests below check *which* bound ended a stuck write instead of timing the call:
+# a wall-clock budget fails whenever the CI runner pauses the process for a few seconds (#4098).
+# Generous on purpose: it only stops a broken (unbounded) write from hanging the test.
+_HANG_GUARD_S = 30
+
+
+class _Stuck:
+    """A page write that never completes (page-socket backpressure); counts calls and cancellations."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cancelled = 0
+
+    async def __call__(self, *args, **kwargs):
+        self.calls += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+
+
+class _BoundSocket:
+    """A display socket that passed ``visit_bind``; ``send_json`` is the stuck write."""
+
+    client_state = None
+
+    def __init__(self, send_json: _Stuck) -> None:
+        setattr(self, VISIT_SOCKET_BOUND_ATTR, True)
+        self.send_json = send_json
+
+
+class _AsyncioWithRecordedWaits:
+    """``asyncio`` as host_port sees it, with ``wait_for`` recording the timeout each wait used."""
+
+    def __init__(self) -> None:
+        self.timeouts: list = []
+
+    async def wait_for(self, aw, timeout):
+        self.timeouts.append(timeout)
+        return await asyncio.wait_for(aw, timeout)
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
+def _recorded_frame_waits(monkeypatch) -> _AsyncioWithRecordedWaits:
+    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.05)
+    recorded = _AsyncioWithRecordedWaits()
+    monkeypatch.setattr(host_port, "asyncio", recorded)
+    return recorded
+
+
 async def test_status_writes_are_bounded_like_frames(monkeypatch):
-    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
-    stuck = asyncio.Event()
-
-    async def send_status(message):
-        await stuck.wait()                            # Page-socket backpressure: writes never complete
-        return True
-
-    host = ManagerHost("Host", SimpleNamespace(send_status=send_status))
-    started = time.monotonic()
-    # The outer 3 s only prevents the test itself from hanging
-    assert await asyncio.wait_for(host.send_status("VISIT_E_BUSY"), 3) is False
-    assert time.monotonic() - started < 1.0
-    stuck.set()
+    waits = _recorded_frame_waits(monkeypatch)
+    write = _Stuck()
+    host = ManagerHost("Host", SimpleNamespace(websocket=_BoundSocket(write)))
+    assert await asyncio.wait_for(host.send_status("VISIT_E_BUSY"), _HANG_GUARD_S) is False
+    assert (write.calls, write.cancelled) == (1, 1)   # The frame bound gave up on the write
+    assert waits.timeouts == [0.05]                    # ...and it is the frame bound, not a longer one
 
 
 async def test_mirror_and_chat_block_writes_are_bounded(monkeypatch):
-    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
-    stuck = asyncio.Event()
-
-    async def hang(*args, **kwargs):
-        await stuck.wait()                            # Page-socket backpressure: writes cannot complete
-        return True
-
-    host = ManagerHost("Host", SimpleNamespace(mirror_assistant_output=hang, render_chat_blocks=hang))
-    started = time.monotonic()
-    # The outer 3 s only prevents the test itself from hanging
-    await asyncio.wait_for(host.mirror_assistant_output("我回来啦。", metadata={}, request_id="r"), 3)
-    assert await asyncio.wait_for(host.render_chat_blocks([], request_id="r", source_name="s"), 3) is False
-    assert time.monotonic() - started < 1.0
-    stuck.set()
+    waits = _recorded_frame_waits(monkeypatch)
+    mirror, write = _Stuck(), _Stuck()
+    host = ManagerHost("Host", SimpleNamespace(mirror_assistant_output=mirror, websocket=_BoundSocket(write)))
+    await asyncio.wait_for(host.mirror_assistant_output("我回来啦。", metadata={}, request_id="r"), _HANG_GUARD_S)
+    blocks = [{"type": "chips", "choices": []}]
+    assert await asyncio.wait_for(host.render_chat_blocks(blocks, request_id="r", source_name="s"), _HANG_GUARD_S) is False
+    assert (mirror.calls, mirror.cancelled) == (1, 1)
+    assert (write.calls, write.cancelled) == (1, 1)
+    assert waits.timeouts == [0.05, 0.05]
+    # Nothing to render: no frame is written at all
+    assert await host.render_chat_blocks([], request_id="r", source_name="s") is False
+    assert write.calls == 1
 
 
 async def test_session_start_answers_are_bounded(monkeypatch):
-    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
-    stuck = asyncio.Event()
-
-    async def hang(*args, **kwargs):
-        await stuck.wait()                            # The page does not receive
-
-    host = ManagerHost("Host", SimpleNamespace(send_session_started=hang, send_session_failed=hang))
-    started = time.monotonic()
-    # The outer 3 s only prevents the test itself from hanging
-    await asyncio.wait_for(host.ack_text_session("r1"), 3)
-    await asyncio.wait_for(host.fail_session("audio", "r2"), 3)
-    assert time.monotonic() - started < 1.0
-    stuck.set()
+    waits = _recorded_frame_waits(monkeypatch)
+    started, failed = _Stuck(), _Stuck()               # The page does not receive
+    host = ManagerHost("Host", SimpleNamespace(send_session_started=started, send_session_failed=failed))
+    await asyncio.wait_for(host.ack_text_session("r1"), _HANG_GUARD_S)
+    await asyncio.wait_for(host.fail_session("audio", "r2"), _HANG_GUARD_S)
+    assert (started.calls, started.cancelled) == (1, 1)
+    assert (failed.calls, failed.cancelled) == (1, 1)
+    assert waits.timeouts == [0.05, 0.05]
 
 
 def test_family_spoke_reads_only_real_user_input():

@@ -37,7 +37,7 @@ Personal agents such as OpenClaw showed that people want an AI of their own: one
 ### 🎮 Plays games with you
 
 - **Built-in two-player games**: air basketball, badminton, drawing guess, soccer, and watch-together. A mini-game SDK and a game-vision service let developers add more.
-- **Plays alongside you**: in Overcooked! 2, Slay the Spire 2 and Minecraft she is your player 2 and plays the game with you. In War Thunder, Strinova, World of Warships and KARDS she is your copilot: community plugins read the game's telemetry or screen so she can give live callouts and commentary, and she never cheats. Any auto-play is opt-in. The bundled Minecraft plugin connects to a separately started local Minecraft agent server ([setup](plugin/plugins/game_agent_minecraft/README.md)).
+- **Plays alongside you**: in Overcooked! 2, Slay the Spire 2 and Minecraft she is your player 2 and plays the game with you. In War Thunder, Strinova, World of Warships and KARDS she is your copilot: community plugins read the game's telemetry or screen so she can give live callouts and commentary, and she never cheats. Any auto-play is opt-in. The Minecraft plugin is no longer bundled with the app.
 - **Takes the controls**: when you ask, plugins let her play by herself in Plants vs. Zombies, Titanfall 2, Half-Life & Portal and Subnautica; you can take over at any time.
 - **Knows your game**: companions for Genshin Impact, Honkai: Star Rail, Civilization VI and RimWorld read the game state so she can chat about your run and give advice.
 - **Screen awareness**: she can watch whatever you are playing and chime in.
@@ -139,12 +139,12 @@ Supporting machinery:
   - VMC-protocol pose output to external apps;
   - Steam Workshop sharing for models, voices and character cards.
 - **Agent**:
-  - channels: computer use, browser use, MCP, an OpenClaw-compatible external agent adapter, and user plugins;
+  - she hands tasks to NekoPower: a one-step task calls a plugin directly, and a multi-step task goes to a familiar that can use plugins, MCP tools, computer use and browser use;
   - the companion keeps talking to you while a task runs.
 - **Plugins**:
   - a plugin SDK with a `neko-plugin` CLI and a Vue plugin manager;
   - a plugin market and a knowledge-pack market;
-  - built-in plugins for web search, MCP, music, reminders, WeChat, Minecraft and more.
+  - built-in plugins for web search, MCP, reminders and more.
 - **Cloud**: a free hosted route covers realtime voice, text, vision, agent models and TTS, with no key required.
 
 </details>
@@ -166,7 +166,7 @@ How N.E.K.O. differs from neighboring tools:
 
 | Compared with | They are | N.E.K.O. |
 |---|---|---|
-| **General agents (OpenClaw, Hermes, …)** | Task engines: instruction → work → done | Relationship-first. It can drive such agents as its hands, while staying with you during the task |
+| **General agents (OpenClaw, Hermes, …)** | Task engines: instruction → work → done | Relationship-first. She dispatches and follows up on tasks herself, while staying with you during the task |
 | **Roleplay front ends (SillyTavern, …)** | Text RP clients that you wire to models and keep consistent by hand with lorebooks | Integrated end to end: native voice and vision, an embodied avatar, persistent memory with a sense of time, and the ability to act on your computer |
 
 ## Roadmap

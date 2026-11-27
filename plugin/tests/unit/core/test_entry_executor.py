@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -183,3 +184,115 @@ async def test_expired_before_execution_is_a_deadline_fault():
         },
     )
     assert reply["error"]["code"] == "DEADLINE_EXCEEDED"
+
+
+def _scope_deadline_probe(seen):
+    from plugin.core import rpc as rpc_module
+
+    async def entry():
+        seen.append(rpc_module._scope.get().deadline)
+        return "ok"
+
+    return entry
+
+
+async def test_top_level_entry_budget_becomes_the_scope_deadline():
+    seen = []
+    runtime = executor({"entry": _scope_deadline_probe(seen)})
+    before = time.monotonic()
+    reply = await execute_entry_command(runtime, {"req_id": "1", "entry_id": "entry", "args": {}})
+    after = time.monotonic()
+    assert reply["success"] is True
+    # No deadline in the message: the entry budget (default_timeout=1) sets it.
+    assert before + 1 <= seen[0] <= after + 1
+
+
+@pytest.mark.parametrize(
+    ("supplied_offset", "expect_supplied"),
+    [(0.5, True), (100.0, False)],
+)
+async def test_entry_budget_and_supplied_deadline_take_the_earlier(supplied_offset, expect_supplied):
+    seen = []
+    runtime = executor({"entry": _scope_deadline_probe(seen)})
+    before = time.monotonic()
+    supplied = before + supplied_offset
+    reply = await execute_entry_command(
+        runtime,
+        {"req_id": "1", "entry_id": "entry", "args": {}, "_request_deadline_monotonic": supplied},
+    )
+    after = time.monotonic()
+    assert reply["success"] is True
+    if expect_supplied:
+        assert seen[0] == supplied
+    else:
+        assert before + 1 <= seen[0] <= after + 1
+
+
+async def test_unlimited_entry_leaves_the_scope_deadline_unset():
+    seen = []
+    runtime = executor(
+        {"entry": _scope_deadline_probe(seen)}, {"entry": SimpleNamespace(timeout=0)}
+    )
+    reply = await execute_entry_command(runtime, {"req_id": "1", "entry_id": "entry", "args": {}})
+    assert reply["success"] is True
+    assert seen == [None]
+
+
+async def test_nested_request_is_bounded_by_the_entry_budget():
+    from plugin.core.rpc import RpcPeer
+
+    sent = []
+
+    async def send(request, timeout):
+        sent.append((request, timeout))
+        peer.receive(request["request_id"], result="nested")
+
+    peer = RpcPeer(send)
+    seen = []
+
+    async def entry():
+        from plugin.core import rpc as rpc_module
+
+        seen.append(rpc_module._scope.get().deadline)
+        # Asks for far more time than the entry has left.
+        return await peer.request("call_entry", {}, timeout=30)
+
+    runtime = executor({"entry": entry})
+    reply = await execute_entry_command(
+        runtime, {"req_id": "outer", "entry_id": "entry", "args": {}, "timeout": 0.5}
+    )
+    assert reply == {"req_id": "outer", "success": True, "data": "nested", "error": None}
+    request, budget = sent[0]
+    assert request["_request_deadline_monotonic"] == seen[0]
+    assert request["_rpc_parent_request_id"] == "outer"
+    assert 0 < budget <= 0.5
+    assert request["timeout"] == budget
+
+
+async def test_custom_event_drops_unsupported_host_ctx_for_strict_handlers():
+    seen_ctx: list[object] = []
+
+    async def strict_ping(value: str):
+        return {"value": value}
+
+    async def ctx_ping(value: str, _ctx: object = None):
+        seen_ctx.append(_ctx)
+        return {"value": value, "ctx": _ctx}
+
+    runtime = executor({})
+    runtime._events = {"custom": {"strict_ping": strict_ping, "ctx_ping": ctx_ping}}
+
+    res_strict = await runtime.invoke(
+        "custom",
+        "strict_ping",
+        {"value": "ok", "_ctx": {"channel": "plugin_to_plugin"}},
+    )
+    assert res_strict == {"value": "ok"}
+
+    res_ctx = await runtime.invoke(
+        "custom",
+        "ctx_ping",
+        {"value": "ok", "_ctx": {"channel": "plugin_to_plugin"}},
+    )
+    assert res_ctx == {"value": "ok", "ctx": {"channel": "plugin_to_plugin"}}
+    assert seen_ctx == [{"channel": "plugin_to_plugin"}]

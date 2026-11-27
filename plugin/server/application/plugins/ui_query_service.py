@@ -20,6 +20,7 @@ from plugin.core.ui_manifest import (
     static_surface_url,
 )
 from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
@@ -502,6 +503,44 @@ def _plugin_root_from_meta(plugin_meta: Mapping[str, object]) -> Path | None:
         return Path(config_path_obj).parent.resolve()
     except Exception:
         return None
+
+
+def _hosted_surface_paths(plugin_id: str, plugin_meta: Mapping[str, object]) -> dict[str, str | None]:
+    """Read-only directories the hosted surface host may open for this plugin.
+
+    The plugin-manager host uses these to scope ``open-path`` requests; the
+    panel never supplies them. ``data_dir`` comes from the same SDK helper as
+    the plugin's own ``data_path()``. ``plugin_dir_unresolved`` is the same
+    directory before symlink resolution (e.g. a symlinked dev install, where
+    the plugin's ``__file__`` paths are unresolved); None when identical.
+    Does blocking file-system work: call it off the event loop.
+    """
+    plugin_root = _plugin_root_from_meta(plugin_meta)
+    plugin_root_unresolved: str | None = None
+    config_path_obj = plugin_meta.get("config_path")
+    if plugin_root is not None and isinstance(config_path_obj, str) and config_path_obj:
+        try:
+            unresolved = Path(config_path_obj).parent.absolute()
+            # ``absolute()`` keeps ``..``; the frontend folds it lexically,
+            # which differs from the OS once a symlink precedes it. Skip.
+            if ".." not in unresolved.parts and unresolved != plugin_root:
+                plugin_root_unresolved = str(unresolved)
+        except Exception:
+            plugin_root_unresolved = None
+    data_dir: str | None
+    try:
+        from types import SimpleNamespace
+
+        from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
+
+        data_dir = str(resolve_plugin_data_dir(SimpleNamespace(plugin_id=plugin_id)))
+    except Exception:
+        data_dir = None
+    return {
+        "plugin_dir": str(plugin_root) if plugin_root is not None else None,
+        "plugin_dir_unresolved": plugin_root_unresolved,
+        "data_dir": data_dir,
+    }
 
 
 def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifier: str) -> Path | None:
@@ -1595,6 +1634,7 @@ class PluginUiQueryService:
                     ).model_dump())
 
             plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            surface_paths = await asyncio.to_thread(_hosted_surface_paths, plugin_id, plugin_meta)
             resolved_locale = locale or "en"
             resolved_context = {
                 "plugin_id": plugin_id,
@@ -1607,6 +1647,7 @@ class PluginUiQueryService:
                 "actions": actions,
                 "entries": entries,
                 "config": config_snapshot,
+                "paths": surface_paths,
                 "warnings": warnings,
                 "i18n": {
                     "locale": resolved_locale,
@@ -1764,14 +1805,18 @@ class PluginUiQueryService:
                 hosted_run_id = uuid.uuid4().hex
                 if _card_context is not None:
                     trigger_context = dict(_card_context)
+                    trigger_context["channel"] = "chat_card"
+                else:
+                    trigger_context["channel"] = "ui"
                 trigger_context["run_id"] = hosted_run_id
                 trigger_args["_ctx"] = trigger_context
                 try:
-                    result = await host.trigger(
-                        resolved_action_id,
-                        trigger_args,
-                        timeout=entry_timeout,
-                    )
+                    with delivery_link(CallLink(Origin.of("ui_action", hosted_run_id))):
+                        result = await host.trigger(
+                            resolved_action_id,
+                            trigger_args,
+                            timeout=entry_timeout,
+                        )
                 except asyncio.CancelledError:
                     cancel_run = getattr(host, "cancel_run", None)
                     if callable(cancel_run):

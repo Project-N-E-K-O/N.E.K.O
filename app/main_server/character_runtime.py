@@ -32,7 +32,7 @@ from PIL import Image
 
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_turn_check_ack
 from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
@@ -66,9 +66,10 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 2
 # event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
 # timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
 #
-# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
-# already advertises to plugin authors ("at most 8 images per message, totaling
-# 8 MiB, injected into the model"). One push is one turn's worth, so share the constants with the
+# The 8 images / 8 MiB figures are the contract docs/plugins/push-message.md
+# (and its zh-CN / ja translations) already advertises to plugin authors ("At
+# most 8 images totaling 8 MiB are injected into the model per message"); all
+# three locales are pinned by tests/unit/test_plugin_image_delivery.py. One push is one turn's worth, so share the constants with the
 # per-turn budget in proactive_delivery rather than keeping a second spelling.
 _PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
 _PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
@@ -907,6 +908,37 @@ async def _broadcast_vmc_enabled(enabled: bool) -> None:
 set_vmc_enabled_callback(_broadcast_vmc_enabled)
 
 
+async def _send_nekopower_question(event: dict) -> None:
+    """Tell the page what a NekoPower commission asks the user, or that it stopped waiting.
+
+    To the session of the character it belongs to; to every connected one
+    where that is not known, as a task update is.
+    """
+    question = event.get("question")
+    payload = {
+        "type": "nekopower_question",
+        "task_id": str(event.get("task_id") or ""),
+        "title": str(event.get("title") or ""),
+        "route": event.get("route"),
+        "lanlan_name": event.get("lanlan_name"),
+        "question": question if isinstance(question, dict) else None,
+        # Of one that stopped waiting: which question that was ("" where it is not known).
+        "question_id": str((question.get("id") if isinstance(question, dict) else event.get("question_id")) or ""),
+    }
+    if not payload["task_id"]:
+        return
+    mgr = _get_session_manager(event.get("lanlan_name"))
+    if not mgr:
+        await _broadcast_to_all_connected(payload)
+        return
+    ws = getattr(mgr, "websocket", None)
+    if _is_websocket_connected(ws):
+        try:
+            await ws.send_json(payload)
+        except Exception as e:
+            logger.warning("[EventBus] nekopower_question send failed for lanlan=%s: %s", event.get("lanlan_name"), e)
+
+
 async def _handle_agent_event(event: dict):
     """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
@@ -919,13 +951,13 @@ async def _handle_agent_event(event: dict):
             await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
             return
 
-        if event_type == "analyze_ack":
-            logger.info(
-                "[EventBus] analyze_ack received on main: event_id=%s lanlan=%s",
+        if event_type == "turn_check_ack":
+            logger.debug(
+                "[EventBus] turn_check_ack received on main: event_id=%s lanlan=%s",
                 event.get("event_id"),
                 lanlan,
             )
-            notify_analyze_ack(str(event.get("event_id") or ""))
+            notify_turn_check_ack(str(event.get("event_id") or ""))
             return
 
         if event_type == "voice_bridge_result":
@@ -933,6 +965,18 @@ async def _handle_agent_event(event: dict):
             logger.debug(
                 "[EventBus] ignored voice_bridge_result: event_id=%s", event_id
             )
+            return
+
+        # A task agent began or stopped using the keyboard and mouse or the
+        # browser. The banner that shows it is drawn over the desktop or the
+        # browser window, whichever character's page is open, so every
+        # connected session is told (docs/design/nekopower-rewrite.md, 11.8).
+        if event_type == "builtin_activity":
+            activity = event.get("activity")
+            if isinstance(activity, dict):
+                await _broadcast_to_all_connected(
+                    {"type": "agent_builtin_activity", "activity": activity}
+                )
             return
 
         # Agent status updates may be broadcast (lanlan_name omitted).
@@ -1020,6 +1064,19 @@ async def _handle_agent_event(event: dict):
             else:
                 await _broadcast_to_all_connected(quota_payload)
             return
+
+        # What a NekoPower commission asks the user, for a card with the ways
+        # to answer; or, with no question, that it does not wait for the user
+        # any more (the card is closed). A question comes on the sentence she
+        # is to pass on, which goes on below as it always did.
+        if event_type == "nekopower_question" or (
+            event_type == "proactive_message"
+            and event.get("channel") == "nekopower"
+            and isinstance(event.get("question"), dict)
+        ):
+            await _send_nekopower_question(event)
+            if event_type == "nekopower_question":
+                return
 
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
         mgr = _get_session_manager(lanlan)
@@ -1466,6 +1523,9 @@ async def _handle_agent_event(event: dict):
                         try:
                             await mgr.rotate_speech_id_for_response_done()
                             direct_reply_sid = mgr.current_speech_id
+                            # The reply's turn as it was before the send:
+                            # a user turn begun during it is not this one's.
+                            direct_reply_engaged = getattr(mgr, "last_user_engagement_time", None)
                             delivered = bool(
                                 await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
                                                               expected_speech_id=direct_reply_sid)
@@ -1476,7 +1536,10 @@ async def _handle_agent_event(event: dict):
                             )
                     if delivered and hasattr(mgr, "handle_proactive_complete"):
                         try:
-                            await mgr.handle_proactive_complete()
+                            await mgr.handle_proactive_complete(
+                                expected_speech_id=direct_reply_sid,
+                                expected_user_engagement_time=direct_reply_engaged,
+                            )
                         except Exception as e:
                             logger.warning(
                                 "[EventBus] direct task_result turn_end failed: %s", e
@@ -2184,9 +2247,11 @@ async def switch_current_catgirl_fast():
     voice_id / thread state is completely unchanged. So this **only refreshes
     globals** and does no per-k work at all.
 
-    Wall clock: one aget_character_data (~a few ms) and that's everything.
+    Refresh globals and signal an existing sync host; network work remains outside this call.
     """
     await _refresh_character_globals()
+    from services.chat_sync.runtime import wake_desktop_chat_sync_scheduler
+    wake_desktop_chat_sync_scheduler(_config_manager)
     logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
 
 

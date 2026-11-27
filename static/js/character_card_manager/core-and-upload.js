@@ -8,6 +8,7 @@ let _reservedFieldsReady = null;
 const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
 const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
 const FRONTEND_FORCE_HIDDEN_FIELDS = [
+    'chat_sync_enabled',
     'live2d_item_id',
     'live2d_idle_animation',
     '_reserved',
@@ -558,7 +559,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为内置模型（yui-lolita / yui-origin）
+// 检查当前模型是否为内置模型（yui-lolita / yui-origin / yui-sister）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -591,7 +592,45 @@ function isLegacyDefaultLive2DModel(modelName) {
 
 // 随包发的内置 Live2D 模型（对应后端 BUILTIN_LIVE2D_MODEL_NAMES）：收方一定有，
 // 角色卡导出/创意工坊上传都不该把它们当成用户自己导入的模型去打包。
-const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin'];
+const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin', 'yui-sister'];
+
+function isUserLive2DModelEntryFor(model, modelName) {
+    const path = String((model && model.path) || '').replace(/\\/g, '/');
+    return path.startsWith(`/user_live2d/${modelName}/`) || path.startsWith(`/user_live2d_local/${modelName}/`);
+}
+
+function hasUserImportedLive2DModelFolder(modelName) {
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    return allModels.some(model => isUserLive2DModelEntryFor(model, modelName));
+}
+
+// 按角色保存的绑定在模型列表里找角色实际用的那份：与内置模型同名的用户副本在列表里带后缀，按名字找不到。
+function findCardLive2DModelInfo(models, modelName, rawData) {
+    const list = Array.isArray(models) ? models : [];
+    if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) >= 0 && isBoundToUserImportedLive2DModel(modelName, rawData)) {
+        const userCopy = list.find(model => isUserLive2DModelEntryFor(model, modelName));
+        if (userCopy) {
+            return userCopy;
+        }
+    }
+    return list.find(model => model && model.name === modelName);
+}
+
+// 用户导入的模型可以和内置模型同名（扫描时内置模型排在前面、保留原名，用户那份被加后缀），
+// 所以按名字查到的总是内置那份；以角色保存的模型绑定为准（对应后端 _is_bound_to_builtin_live2d）。
+function isBoundToUserImportedLive2DModel(modelName, rawData) {
+    const avatar = rawData && rawData._reserved && rawData._reserved.avatar;
+    const assetSource = String((avatar && avatar.asset_source) || '').trim().toLowerCase();
+    if (assetSource === 'local' || assetSource === 'local_imported') {
+        return hasUserImportedLive2DModelFolder(modelName);
+    }
+    if (assetSource) {
+        return false;
+    }
+    const live2dBinding = avatar && avatar.live2d;
+    const modelPath = String((live2dBinding && live2dBinding.model_path) || (rawData && rawData.live2d) || '').replace(/\\/g, '/');
+    return modelPath.startsWith('/user_live2d/') || modelPath.startsWith('/user_live2d_local/');
+}
 
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     if (isLegacyDefaultLive2DModel(modelName)) {
@@ -599,6 +638,10 @@ function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     }
 
     if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) < 0) {
+        return false;
+    }
+
+    if (isBoundToUserImportedLive2DModel(modelName, rawData)) {
         return false;
     }
 
@@ -1191,8 +1234,10 @@ function addTag(tagText, type = '', locked = false) {
         return;
     }
 
+    const normalizedTagText = typeof tagText === 'string' ? tagText : String(tagText ?? '');
+
     // 检查标签字数限制
-    if (tagText.length > 30) {
+    if (normalizedTagText.length > 30) {
         showMessage(window.t ? window.t('steam.tagTooLong') : '标签长度不能超过30个字符', 'error');
         return;
     }
@@ -1209,7 +1254,7 @@ function addTag(tagText, type = '', locked = false) {
         tag.textContent.replace('×', '').replace('🔒', '').trim()
     );
 
-    if (existingTagTexts.includes(tagText)) {
+    if (existingTagTexts.includes(normalizedTagText)) {
         // 如果标签已存在，直接返回（不显示错误消息，因为可能是自动添加的）
         if (locked) return;
         showMessage(window.t ? window.t('steam.tagExists') : '该标签已存在', 'error');
@@ -1218,17 +1263,25 @@ function addTag(tagText, type = '', locked = false) {
 
     const tagElement = document.createElement('div');
     tagElement.className = 'tag' + (locked ? ' tag-locked' : '');
+    tagElement.appendChild(document.createTextNode(normalizedTagText));
 
     // 根据locked和type决定是否显示删除按钮
     if (locked) {
         // 锁定的标签不能删除，显示锁定图标
         const lockedTitle = window.t ? window.t('steam.customTemplateTagLocked') : '此标签为自动添加，无法移除';
-        tagElement.innerHTML = `${tagText}<span class="tag-locked-icon" title="${lockedTitle}">🔒</span>`;
+        const lockedIcon = document.createElement('span');
+        lockedIcon.className = 'tag-locked-icon';
+        lockedIcon.title = lockedTitle;
+        lockedIcon.textContent = '🔒';
+        tagElement.appendChild(lockedIcon);
         tagElement.setAttribute('data-locked', 'true');
-    } else if (type === 'character-card') {
-        tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this, 'character-card')">×</span>`;
     } else {
-        tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
+        const removeSpan = document.createElement('span');
+        removeSpan.className = 'tag-remove';
+        removeSpan.textContent = '×';
+        const cardType = type === 'character-card' ? 'character-card' : '';
+        removeSpan.addEventListener('click', () => removeTag(removeSpan, cardType));
+        tagElement.appendChild(removeSpan);
     }
 
     // 锁定的标签插入到最前面
@@ -1491,10 +1544,10 @@ function showMessage(message, type = 'info', duration = 3000) {
 
 // HTML转义函数
 function escapeHtml(text) {
-    if (typeof text !== 'string') {
-        return String(text);
+    if (text === null || text === undefined) {
+        return '';
     }
-    return text
+    return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')

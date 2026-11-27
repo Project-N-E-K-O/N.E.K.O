@@ -596,6 +596,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
         actor_id: 'friend-1',
         actor_display_name: 'Community Test',
         visit_id: 'visit-1',
+        visit_mode: 'cat',
         expires_at: 123,
       },
     },
@@ -607,6 +608,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
     actor_id: 'friend-1',
     display_name: 'Community Test',
     visit_id: 'visit-1',
+    visit_mode: 'cat',
     expires_at: 123,
   }]));
 });
@@ -626,7 +628,7 @@ function loadHubWithFailedSend(cancelResult) {
   const cancelled = [];
   const loaded = loadHub({
     visitChat: {
-      async createDirectInvitation() { return { visit_id: 'visit-1', expires_at: 456 }; },
+      async createDirectInvitation() { return { visit_id: 'visit-1', visit_mode: 'model', expires_at: 456 }; },
       async cancelDirectInvitation(visitId) {
         cancelled.push(visitId);
         if (cancelResult instanceof Error) throw cancelResult;
@@ -678,6 +680,7 @@ for (const [label, cancelResult] of [['returns false', false], ['throws', new Er
     assert.deepEqual(cancelled, ['visit-1']);
     assert.equal(JSON.stringify(hub._state.invitations.get('friend-1')), JSON.stringify({
       visitId: 'visit-1', phase: 'invite_ready', expiresAt: 456,
+      visitMode: 'model',
       displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
     }));
     assert.equal(hub._state.toastError, true);
@@ -689,6 +692,35 @@ test('a failed send clears the invitation once its room is cancelled', async () 
   await hub._inviteFriend('friend-1');
 
   assert.deepEqual(cancelled, ['visit-1']);
+  assert.equal(hub._state.invitations.has('friend-1'), false);
+  assert.equal(hub._state.toastError, true);
+});
+
+test('a cat invitation cancels a room created in a different mode before community publish', async () => {
+  const cancelled = [];
+  const published = [];
+  const { hub } = loadHub({
+    visitChat: {
+      async createDirectInvitation() {
+        return { visit_id: 'visit-1', visit_mode: 'model', expires_at: 456 };
+      },
+      async cancelDirectInvitation(visitId) { cancelled.push(visitId); return true; },
+    },
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/visit-invitations')) published.push(String(url));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.accountId = 'account-1';
+  hub._state.friends = [{
+    id: 'friend-1', displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
+  }];
+
+  await hub._inviteFriend('friend-1', 'cat');
+
+  assert.deepEqual(cancelled, ['visit-1']);
+  assert.deepEqual(published, []);
   assert.equal(hub._state.invitations.has('friend-1'), false);
   assert.equal(hub._state.toastError, true);
 });
@@ -1396,6 +1428,38 @@ test('keyboard focus survives the busy follow render and recommendation refill',
     document.activeElement.getAttribute('data-neko-focus-key'),
     'recommendation-b',
   );
+  dom.window.close();
+});
+
+test('keyboard focus stays on the single visit button when invitation state changes', async () => {
+  const { dom, hub, document } = loadMountedHub({
+    fetch: async () => ({ ok: true, json: async () => ({
+      logged_in: true,
+      account: { id: 'account-1', display_name: 'Current User' },
+      friends: [{ id: 'f1', display_name: 'Friend', presence_status: 'online', online: true }],
+      recommendations: [],
+    }) }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._applyVisitStatus({
+    visitId: 'visit-1', phase: 'invite_ready', active: true, side: 'host', targetUserId: 'f1',
+  });
+  const cancelButton = document.querySelector('[data-neko-focus-key="friend-f1"]');
+  assert.ok(cancelButton, document.body.innerHTML);
+  cancelButton.focus();
+
+  hub._applyVisitStatus({ visitId: 'visit-1', action: 'ended', phase: 'ended' });
+  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1');
+  assert.equal(document.querySelectorAll('[data-neko-focus-key="friend-f1"]').length, 1);
+  assert.equal(document.querySelector('[data-neko-focus-key="friend-f1"]').textContent, '邀请来玩');
+  assert.equal(document.querySelector('.neko-social-hub-mode-actions'), null);
+
+  // The reverse switch keeps the same logical focus key on the status button.
+  document.querySelector('[data-neko-focus-key="friend-f1"]').focus();
+  hub._applyVisitStatus({
+    visitId: 'visit-2', phase: 'invite_ready', active: true, side: 'host', targetUserId: 'f1',
+  });
+  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1');
   dom.window.close();
 });
 

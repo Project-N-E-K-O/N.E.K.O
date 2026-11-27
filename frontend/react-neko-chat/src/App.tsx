@@ -14,7 +14,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
-import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
+import { CompactAskOrRecommendationPrompt, NekoPowerAskWaitingReport } from './CompactNekoPowerAskPrompt';
+import { useNekoPowerAskDrafts } from './NekoPowerAskBlock';
 import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
@@ -23,6 +24,7 @@ import AvatarToolItemManager, {
 } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import AudioMessageComposer, { useAudioMessageComposer } from './AudioMessageComposer';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
@@ -88,6 +90,8 @@ export {
 };
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
+  audioMessageControl?: import('react').ReactNode;
+  audioMessageActive?: boolean;
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
   onComposerScreenshot?: () => void;
@@ -708,6 +712,8 @@ function getMessageBlockPreviewText(message: ChatMessage): string {
         return [block.text];
       case 'link':
         return [block.title || block.description || block.url];
+      case 'audio_message':
+        return [i18n('chat.audioHistoryMessage', 'Voice message')];
       default:
         return [];
     }
@@ -889,21 +895,48 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
+  const audioGuideLocked = useGuideChatButtonLock();
+  const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
+  const send = props.onComposerAudioMessage;
+  const audioComposer = useAudioMessageComposer({
+    target: send ? target : undefined,
+    disabled: !!props.composerDisabled || !!props.composerHidden || audioGuideLocked,
+    send,
+  });
+  // The control stays hidden until the host provides a send path.
+  const audioMessageControl = send && target ? <AudioMessageComposer composer={audioComposer} /> : null;
+  const surfaceProps = { ...props, composerDisabled: !!props.composerDisabled || audioComposer.active,
+    audioMessageControl, audioMessageActive: audioComposer.active,
+  };
+  // The host must know about a draft even while the folded compact surface
+  // has unmounted the control, so it reports activity from the root hook.
+  const onAudioMessageActiveChange = props.onAudioMessageActiveChange;
+  useEffect(() => {
+    onAudioMessageActiveChange?.(audioComposer.active, audioComposer.phase);
+  }, [audioComposer.active, audioComposer.phase, onAudioMessageActiveChange]);
   useReplyTailPresentation(
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
   );
+  // Here, for both surfaces of the chat: what was typed into a question's card is let go of
+  // with the question, whichever of them draws it.
+  useNekoPowerAskDrafts(props.messages || defaultMessages);
   return (
     <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
-        ? <FullChatSurface {...props} />
-        : <CompactChatApp {...props} />}
+        ? <FullChatSurface {...surfaceProps} />
+        : <CompactChatApp {...surfaceProps} />}
+      {/* Here too, whichever surface is drawn: the ball the chat folds into is the host's. */}
+      <NekoPowerAskWaitingReport messages={props.messages || defaultMessages}
+        onChange={props.onNekoPowerAskWaitingChange} />
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
   );
 }
 
 function CompactChatApp({
+  audioMessageControl,
+  audioMessageActive = false,
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
@@ -986,7 +1019,16 @@ function CompactChatApp({
   const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
-    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
+    || (theaterActive && (theaterPresentation.sessionEnded === true
+      || !['awaiting_player', 'performing'].includes(theaterPresentation.phase)));
+  const theaterReplyPending = theaterActive
+    && ['loading', 'evaluating'].includes(theaterPresentation.phase);
+  const theaterFreeInputHint = theaterActive && !compactTextEntryLocked
+    && theaterPresentation.phase === 'awaiting_player'
+    && !theaterPresentation.errorMessage
+    && !(theaterPresentation.suggestedInputs ?? []).length
+    ? i18n('theater.freeInputHint', 'No suggested options this time~')
+    : '';
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -1071,11 +1113,15 @@ function CompactChatApp({
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   useEffect(() => {
     const resetCompactPreview = (event: Event) => {
-      setCompactCaptionState(null);
-      compactSpeechPreviewIdRef.current = '';
-      compactSpeechPreviewTextRef.current = '';
-      compactSpeechPreviewTurnIdRef.current = '';
       const detail = (event as CustomEvent).detail;
+      const streamingTurnIds = detail?.historyRestore === true && detail.conversationReset === false
+        && Array.isArray(detail.streamingTurnIds) ? detail.streamingTurnIds : [];
+      setCompactCaptionState(current => current && !current.isEnded && streamingTurnIds.includes(current.turnId) ? current : null);
+      if (!streamingTurnIds.includes(compactSpeechPreviewTurnIdRef.current)) {
+        compactSpeechPreviewIdRef.current = '';
+        compactSpeechPreviewTextRef.current = '';
+        compactSpeechPreviewTurnIdRef.current = '';
+      }
       // An empty host replacement also starts a fresh conversation. Keep the
       // turn guard during ordinary snapshots, which may contain stale streams.
       if (event.type === 'react-chat-window:messages-cleared'
@@ -1301,7 +1347,7 @@ function CompactChatApp({
   // 避免在一个紧凑输入区里叠放两组选项。
   const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const theaterSuggestedOptions: GalgameOption[] = theaterActive
-    && theaterPresentation.phase === 'awaiting_player'
+    && (theaterPresentation.phase === 'awaiting_player' || theaterPresentation.phase === 'performing')
     && theaterDraft.trim().length === 0
     ? (theaterPresentation.suggestedInputs ?? []).slice(0, 3).map((text, index) => ({
         label: String.fromCharCode(65 + index),
@@ -1878,9 +1924,9 @@ function CompactChatApp({
     : '';
   const compactEmptyStateText = guideChatButtonsLocked
     ? ''
-    : composerHidden
+    : theaterFreeInputHint || (composerHidden
       ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
-      : i18n('chat.emptyState', getChatEmptyStateFallback());
+      : i18n('chat.emptyState', getChatEmptyStateFallback()));
   const compactPreviewText = compactSuppressAssistantFallback
     ? compactRestoreEmptyStateAfterTurnEnd
       ? compactEmptyStateText
@@ -4660,7 +4706,14 @@ function CompactChatApp({
     clearCompactInputToolFanCloseTimer();
   }, [clearCompactInputToolFanCloseTimer]);
 
+  const audioMessageActiveRef = useRef(audioMessageActive);
+  useLayoutEffect(() => {
+    audioMessageActiveRef.current = audioMessageActive;
+  }, [audioMessageActive]);
+
   const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean; ignoreToolFan?: boolean }) => {
+    // A blur can queue this callback before the microphone click starts recording.
+    if (audioMessageActiveRef.current) return;
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
@@ -5397,12 +5450,13 @@ function CompactChatApp({
   // compact 输入框/胶囊左侧毛绒球：点按=折叠为 minimized（毛绒球小窗口），按住拖>6px=拖动整个 surface。
   // 复用与右侧工具轮盘原点对偶的 origin-drag 手势：data-compact-no-drag 让宿主被动 hit-test 不重复起拖，
   // 真正拖拽经 neko:compact-surface-drag-grab 交宿主接管（web: startDrag / Electron: preload 原生窗口拖拽）。
+  const compactMinimizeLabel = i18n('chat.reactWindowMinimize', 'Minimize');
   const compactMinimizeButton = (
     <button
       type="button"
       className="compact-chat-minimize-ball"
-      aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
-      data-neko-tooltip={i18n('chat.reactWindowMinimize', 'Minimize')}
+      aria-label={compactMinimizeLabel}
+      data-neko-tooltip={compactMinimizeLabel}
       data-neko-tooltip-variant="compact-tool"
       data-neko-tooltip-placement="top"
       data-compact-no-drag="true"
@@ -5895,6 +5949,7 @@ function CompactChatApp({
       {galgameStyleOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
+          data-neko-capture-mask="choices"
           aria-hidden={!(compactChoiceLayerOpen && galgameStyleOptionsVisible)}
         >
           <div
@@ -5959,6 +6014,7 @@ function CompactChatApp({
       {choicePromptHasOptions ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
+          data-neko-capture-mask="choices"
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
           data-choice-source={choicePrompt.source}
         >
@@ -6092,7 +6148,8 @@ function CompactChatApp({
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
-      thinking={focusThinking}
+      thinking={theaterActive ? theaterReplyPending : focusThinking}
+      thinkingLabel={theaterActive ? i18n('theater.waitingReply', 'Preparing the next reply…') : undefined}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -6206,7 +6263,7 @@ function CompactChatApp({
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
-        <CompactMusicRecommendationPrompt messages={messages} onAction={onMessageAction} />
+        <CompactAskOrRecommendationPrompt messages={messages} onAction={onMessageAction} />
       ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
@@ -6318,10 +6375,15 @@ function CompactChatApp({
                     data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
                     data-compact-geometry-owner="surface"
                     data-compact-drag-surface="true"
+                    data-audio-message-active={audioMessageActive ? 'true' : undefined}
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                     data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                    onPointerDownCapture={() => {
+                      // A new press on a no-drag control can follow a drag that never generated a click.
+                      compactToolOriginSuppressClickRef.current = false;
+                    }}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}
                     onPointerUp={endCompactToolOriginDrag}
@@ -6333,11 +6395,10 @@ function CompactChatApp({
                       <span className="compact-chat-refraction-violet" />
                       <span className="compact-chat-refraction-blue" />
                     </div>
+                    {/* 点按毛绒球折叠，拖动毛绒球移动紧凑窗。 */}
+                    {compactMinimizeButton}
                     {effectiveCompactChatState === 'input' ? (
                       <>
-                        {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
-                            按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
-                        {compactMinimizeButton}
                         <textarea
                           className="composer-input"
                           ref={compactInputRef}
@@ -6345,7 +6406,7 @@ function CompactChatApp({
                           data-compact-hit-region="true"
                           data-compact-hit-region-id="input:text"
                           data-compact-hit-region-kind="input-text"
-                          placeholder={inputPlaceholder}
+                          placeholder={theaterFreeInputHint || inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
                           value={visibleDraft}
@@ -6523,11 +6584,9 @@ function CompactChatApp({
                             scheduleCompactInputCollapse();
                           }}
                         />
-                        {compactInputToolToggleButton}
                       </>
                     ) : (
                       <>
-                        {compactMinimizeButton}
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
@@ -6556,9 +6615,10 @@ function CompactChatApp({
                               onAction={onMessageAction} />
                           ) : null}
                         </button>
-                        {compactInputToolToggleButton}
                       </>
                     )}
+                    {!composerHidden && !compactCollapsing && audioMessageControl}
+                    {compactInputToolToggleButton}
                   </div>
                   {composerAttachmentPreviewNode}
                   {compactInputToolFanNode}

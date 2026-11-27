@@ -375,8 +375,9 @@
         const currentTier = readTier(tier);
         const wasCat1Active = cat1Active;
         const desiredMode = playgroundActive ? 'gravity' : 'legacy';
-        const shouldRun = catAppearanceActive && currentTier === CAT1_TIER;
-        cat1Active = shouldRun;
+        cat1Active = catAppearanceActive && currentTier === CAT1_TIER;
+        const shouldRun = catAppearanceActive && (cat1Active ||
+            (playgroundActive && ['cat1', 'cat2', 'cat3'].includes(currentTier)));
         if (!shouldRun) {
             stopSession();
             return;

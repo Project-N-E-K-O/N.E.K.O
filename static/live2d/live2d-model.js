@@ -286,8 +286,8 @@ function live2dRetireMotionMetadata(operation, resetParameters = false) {
     if (resetParameters && manager.currentModel === operation.model
         && operation.model.internalModel === operation.internalModel
         && operation.internalModel.coreModel === operation.core) {
-        if (typeof manager._resetActiveMotionParameters === 'function') manager._resetActiveMotionParameters({ preserveExpression: true });
-        if (typeof manager._resetExplicitMotionParameters === 'function') manager._resetExplicitMotionParameters({ preserveExpression: true });
+        if (typeof manager._resetActiveMotionParameters === 'function') manager._resetActiveMotionParameters({ preserveExpression: true, smooth: true });
+        if (typeof manager._resetExplicitMotionParameters === 'function') manager._resetExplicitMotionParameters({ preserveExpression: true, smooth: true });
     }
     if (manager.motionTimer?.operation === operation) manager._clearMotionTimer();
     if (typeof manager._clearActiveMotionParamIds === 'function') manager._clearActiveMotionParamIds();
@@ -514,6 +514,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._lipSyncOwner = null;
     this.mouthValue = 0;
     this._mouthOverrideToken = null;
+    if (typeof this._uninstallMotionResidueFade === 'function') this._uninstallMotionResidueFade();
     this._cachedMouthIndices = null;
     this._cachedMouthIndicesModel = null;
     this._expressionAmplitudeIndexCache = null;
@@ -1108,6 +1109,19 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
 };
 
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
+    const preserving = options.preservePreviousUntilLoaded === true;
+    const roleName = window.lanlan_config?.lanlan_name || '';
+    const switchAttempt = window.appState?._switchAttemptCounter || 0;
+    const requireCurrentRole = model => {
+        if (!preserving || (!window.appState?.isSwitchingCatgirl &&
+                (window.appState?._switchAttemptCounter || 0) === switchAttempt &&
+                (window.lanlan_config?.lanlan_name || '') === roleName)) return;
+        try { model?.destroy({ children: true }); } catch (_) {}
+        const error = new Error('Live2D candidate superseded by a character switch.');
+        error.name = 'LoadSuperseded';
+        throw error;
+    };
+    requireCurrentRole();
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
     const isPNGTuberPageMode = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
@@ -1132,9 +1146,14 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     this._isLoadingModel = true;
     this._invalidateParameterReloadTickets();
     const loadToken = ++this._activeLoadToken;
-    this._modelLoadState = 'preparing';
-    this._isModelReadyForInteraction = false;
-    this._resetDerivedModelMetadata();
+    const previousModel = this.currentModel;
+    const previousReady = this._isModelReadyForInteraction;
+    const previousState = this._modelLoadState;
+    if (!preserving) {
+        this._modelLoadState = 'preparing';
+        this._isModelReadyForInteraction = false;
+        this._resetDerivedModelMetadata();
+    }
 
     // 清除上一次加载遗留的画布揭示定时器
     if (this._canvasRevealTimer) {
@@ -1143,6 +1162,14 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     try {
+        const preparedModel = options.preparedModel || (options.preservePreviousUntilLoaded
+            ? await Live2DModel.from(modelPath, { autoFocus: false }) : null);
+        requireCurrentRole(preparedModel);
+        if (preserving) {
+            this._modelLoadState = 'preparing';
+            this._isModelReadyForInteraction = false;
+            this._resetDerivedModelMetadata();
+        }
         // 移除当前模型
         if (this.currentModel) {
             await this.removeModel({
@@ -1150,7 +1177,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             });
         }
 
-        const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        const model = preparedModel || await Live2DModel.from(modelPath, { autoFocus: false });
+        requireCurrentRole(model);
         if (!this._isLoadTokenActive(loadToken)) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             const cancelError = new Error('Live2D load superseded by a newer model request.');
@@ -1182,6 +1210,19 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             throw error;
         }
         console.error('加载模型失败:', error);
+        if (preserving) {
+            if (this.currentModel && this.currentModel !== previousModel) {
+                try { this.currentModel.destroy({ children: true }); } catch (_) {}
+                this.currentModel = null;
+                this._resetDerivedModelMetadata();
+                this._modelLoadState = 'idle';
+                this._isModelReadyForInteraction = false;
+            } else if (this.currentModel === previousModel) {
+                this._modelLoadState = previousState;
+                this._isModelReadyForInteraction = previousReady;
+            }
+            throw error;
+        }
         
         // 尝试回退到默认模型
         if (modelPath !== '/static/yui-lolita/yui-lolita.model3.json') {
@@ -1211,7 +1252,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     } finally {
         // 无论成功还是失败，都要释放加载锁
         this._isLoadingModel = false;
-        if (this._activeLoadToken === loadToken && this._modelLoadState !== 'ready') {
+        if (!(preserving && this.currentModel === previousModel)
+                && this._activeLoadToken === loadToken && this._modelLoadState !== 'ready') {
             this._modelLoadState = 'idle';
             this._isModelReadyForInteraction = false;
         }
@@ -1805,6 +1847,20 @@ Live2DManager.prototype._forceEyeBlinkOpen = function(coreModel) {
             coreModel.setParameterValueByIndex(param.idx, param.openValue);
         } catch (_) {}
     }
+};
+
+// 保存参数层刻意不应用的保存值：眨眼、嘴部、可见性、运行时呼吸。动作残留复位取目标值时共用。
+Live2DManager.prototype._isRuntimeManagedSavedParameter = function(coreModel, ids, runtimeBreathParamIds) {
+    const list = (ids || []).filter(Boolean).map(String);
+    if (list.length === 0) return true;
+    const mouthParams = window.LIPSYNC_PARAMS
+        || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const breathIds = runtimeBreathParamIds
+        || new Set(typeof this._resolveRuntimeBreathParams === 'function' ? this._resolveRuntimeBreathParams(coreModel) : []);
+    return list.some(id => this._isEyeBlinkParamId(id))
+        || list.some(id => mouthParams.includes(id))
+        || list.some(id => id === 'ParamOpacity' || id === 'ParamVisibility')
+        || list.some(id => breathIds.has(id));
 };
 
 Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
@@ -2969,10 +3025,15 @@ Live2DManager.prototype.installMouthOverride = function() {
     const overrideToken = {};
     this._mouthOverrideToken = overrideToken;
     this._mouthMotionManagerRef = motionManager;
+    // 动作结束后把曲线残留拉回目标值（教程和演出持有模型时不介入）。
+    if (typeof this._installMotionResidueFade === 'function') {
+        try { this._installMotionResidueFade(this.currentModel); } catch (e) {
+            console.warn('[Live2D] 安装动作残留复位失败:', e);
+        }
+    }
     // 振幅写入与保存外观保护是两种职责，不能通过删除公共列表的嘴形来合并。
     const runtimeMouthParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
     const lipSyncParams = window.LIPSYNC_AMPLITUDE_PARAMS || runtimeMouthParams.filter(id => id !== 'ParamMouthForm');
-    const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
     const mouthParamIndices = {};
@@ -3012,11 +3073,7 @@ Live2DManager.prototype.installMouthOverride = function() {
     const isRuntimeBreathParamId = (id) => runtimeBreathParamIds.has(id);
     const isRuntimeManagedSavedParam = (entry) => {
         if (!entry) return true;
-        const ids = [entry.id, entry.resolvedId].filter(Boolean);
-        return ids.some(id => this._isEyeBlinkParamId(id)) ||
-            ids.some(id => runtimeMouthParams.includes(id)) ||
-            ids.some(id => visibilityParams.includes(id)) ||
-            ids.some(isRuntimeBreathParamId);
+        return this._isRuntimeManagedSavedParameter(coreModel, [entry.id, entry.resolvedId], runtimeBreathParamIds);
     };
     const isPersistentSavedParam = (entry, persistentIds) => {
         if (!entry || !persistentIds) return false;
@@ -3103,14 +3160,43 @@ Live2DManager.prototype.installMouthOverride = function() {
             // SDK fades blend from the previous frame. Remove only our own
             // last overlay before evaluation so a saved offset is composed once.
             // Foreign writes and click transitions keep their own input values.
+            const residueWrapperAlive = savedParamEntries.length > 0
+                && typeof this._beginMotionResidueWrapperFrame === 'function'
+                && this._beginMotionResidueWrapperFrame();
             if (!this._clickFadeState && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
-                    if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    entry.residueHeldValue = undefined;
+                    entry.overlayRemoved = false;
+                    entry.residueFrameStartValue = undefined;
+                    if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    if (entry.offset === 0) {
+                        try { entry.residueFrameStartValue = coreModel.getParameterValueByIndex(entry.idx); } catch (_) {}
+                        continue;
+                    }
                     try {
+                        // 动作残留淡出层正在写的值已含保存偏移：照样去掉偏移给 SDK 混合，
+                        // 并记下原值；本帧没有别的写入时原样写回，淡出层不会误判为外部写入。
+                        if (residueWrapperAlive && this._getMotionResidueParameterState(entry.idx) === 'fading') {
+                            const heldValue = coreModel.getParameterValueByIndex(entry.idx);
+                            coreModel.setParameterValueByIndex(entry.idx, heldValue - entry.offset);
+                            entry.residueHeldValue = heldValue;
+                            entry.residueRemovedValue = coreModel.getParameterValueByIndex(entry.idx);
+                            continue;
+                        }
                         const currentValue = coreModel.getParameterValueByIndex(entry.idx);
+                        if (entry.residueFading) {
+                            // 淡出刚结束且停在保存值：按稳态记账，本帧照常去叠加，新动作接手也只叠一次偏移。
+                            entry.residueFading = false;
+                            if (currentValue === Math.fround(entry.value)) {
+                                entry.appliedValue = currentValue;
+                                entry.motionValue = entry.defaultValue;
+                            }
+                        }
                         if (currentValue === entry.appliedValue || currentValue === Math.fround(entry.appliedValue)) {
                             coreModel.setParameterValueByIndex(entry.idx, entry.motionValue);
+                            entry.overlayRemoved = true;
                         }
+                        entry.residueFrameStartValue = coreModel.getParameterValueByIndex(entry.idx);
                     } catch (_) {}
                 }
             }
@@ -3304,7 +3390,35 @@ Live2DManager.prototype.installMouthOverride = function() {
                             const currentVal = coreModel.getParameterValueByIndex(entry.idx);
                             const offset = entry.offset;
 
-                            if (motionWrittenParamIndices.has(entry.idx)) {
+                            const residueState = motionWrittenParamIndices.has(entry.idx)
+                                || typeof this._getMotionResidueParameterState !== 'function'
+                                ? null : this._getMotionResidueParameterState(entry.idx);
+                            if (residueState === 'fading') {
+                                // 动作残留淡出层正把它平滑拉回保存值：恢复它上一帧写的原值，本帧不抢写。
+                                // 去叠加之后若有别的运行时写入（如随机视线），保留新值并让淡出层放手。
+                                if (entry.residueHeldValue !== undefined) {
+                                    if (currentVal === entry.residueRemovedValue) {
+                                        coreModel.setParameterValueByIndex(entry.idx, entry.residueHeldValue);
+                                        entry.residueFading = true;
+                                    } else {
+                                        entry.residueFading = false;
+                                        if (typeof this._releaseMotionResidueParameter === 'function') {
+                                            this._releaseMotionResidueParameter(entry.idx);
+                                        }
+                                    }
+                                    entry.residueHeldValue = undefined;
+                                }
+                                continue;
+                            }
+                            entry.residueHeldValue = undefined;
+                            // 交接帧只在本帧确实去掉了我们的叠加、且之后没有别的写入方（随机视线等）
+                            // 改过它时才重新叠加；否则按普通帧写，避免偏移叠两次或叠到别人的值上。
+                            const handoffComposes = residueState === 'handoff'
+                                && (entry.offset === 0 || entry.overlayRemoved === true)
+                                && entry.residueFrameStartValue !== undefined
+                                && currentVal === entry.residueFrameStartValue;
+                            if (motionWrittenParamIndices.has(entry.idx) || handoffComposes) {
+                                // 动作刚放手的交接帧保持动作末值加偏移，淡出从这里开始，不跳变。
                                 entry.motionValue = currentVal;
                                 coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
                             } else {

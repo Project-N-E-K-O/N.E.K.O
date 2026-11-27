@@ -520,6 +520,8 @@ import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
+import { usePluginConsentNotices } from '@/composables/pluginConsentNotices'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
@@ -545,6 +547,8 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
+import { collectBatchPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -650,6 +654,11 @@ const dangerDialogMessage = computed(() => {
 })
 
 const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus)
+
+// Each time this page is opened, list running plugins that still have
+// unconfirmed capabilities; dismissing the notice decides nothing, so it
+// reappears on the next open.
+usePluginConsentNotices()
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -1253,11 +1262,26 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
+const startGate = usePluginStartGate()
 const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
 async function handleBatchStart() {
+  const ids = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled').map((p) => p.id)
+  let allowed: string[] = []
+  let consentConfirmed = false
+  if (ids.length) {
+    try {
+      const prepared = await startGate.prepareBatchStart(ids)
+      allowed = prepared.allowed
+      consentConfirmed = prepared.confirmed
+    } catch {
+      ElMessage.error(t('pluginConsent.loadFailed'))
+      return
+    }
+  }
   await runBatch({
-    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
+    skipConfirm: consentConfirmed,
+    filter: (p) => allowed.includes(p.id),
     action: (p) => pluginStore.start(p.id, { refresh: false }),
     noItemsKey: 'plugins.batchNoStartable',
     confirmKey: 'plugins.batchStartConfirm',
@@ -1304,24 +1328,28 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
-  const restartWarnings: string[] = []
+  const deleted: Array<{
+    result: Awaited<ReturnType<typeof deletePlugin>>
+    plugin: string
+    pluginId: string
+  }> = []
   for (const p of plugins) {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      if (result.restored_builtin_restart_error) {
-        restartWarnings.push(t('messages.pluginDeletedBuiltinRestartFailed', {
-          plugin: p.name,
-          error: result.restored_builtin_restart_error.message,
-        }))
-      }
+      // Same as the context-menu delete: drop the deleted plugin's cached
+      // permission details, so a restored built-in under this id does not show them.
+      usePluginConsentState().forget(p.id)
+      deleted.push({ result, plugin: p.name, pluginId: p.id })
     } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (restartWarnings.length > 0) ElMessage.warning(restartWarnings.join('; '))
+  // One notice per warning, so sentences are not glued together.
+  const deleteWarnings = collectBatchPluginDeleteWarnings(deleted, t)
+  deleteWarnings.forEach((warning) => ElMessage.warning(warning))
   if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  else if (restartWarnings.length === 0) {
+  else if (deleteWarnings.length === 0) {
     ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
   }
   await refreshAfterPluginChange()

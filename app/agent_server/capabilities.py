@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Connectivity checks plus capability / flags / status snapshot helpers.
+"""Capability / flags / status snapshot helpers.
 
 Split out of the former monolithic ``app/agent_server.py``. Note that
 ``_check_agent_api_gate`` intentionally stays on the package facade
@@ -23,290 +23,261 @@ facade module dict — so both the gate itself and its consumers here resolve
 through the facade at call time.
 """
 
-import json
 import asyncio
-import importlib.util
-from typing import Dict, Any, Optional, Tuple
+import threading
+import time
+from typing import Callable, Dict, Any, Optional, Tuple
 
 from . import _shared
 from ._shared import (
     logger,
-    BrowserUseAdapter,
-    ComputerUseAdapter,
-    ThrottledLogger,
+    _capability_reason_code,
+    _capability_ticket_now,
     _set_capability,
     _bump_state_revision,
 )
-from .registry import _cleanup_task_registry, _now_iso
+from ._shared import _now_iso
 from .results import _emit_main_event
 
+# How long the answer to "is there a browser on this computer" is kept. It is
+# a handful of file checks, asked for from the status paths.
+_BROWSER_SEARCH_TTL_SECONDS = 30.0
+_browser_search: Optional[Tuple[float, bool, str]] = None
+# Generation of the kept answer: bumped when it is forgotten (the browser
+# settings changed). A search that started before that writes nothing back.
+# Searches run in worker threads, so reading and writing the two is locked.
+_browser_search_seq = 0
+_browser_search_lock = threading.Lock()
 
-def _rewire_browser_use_dependents() -> None:
-    """Keep task_executor in sync after BrowserUse lifecycle changes."""
+BROWSER_NOT_FOUND = "AGENT_BROWSER_NOT_FOUND"
+# The search itself failed (the settings could not be read, a check broke):
+# not usable either, but not said as "there is none".
+BROWSER_CHECK_FAILED = "AGENT_BROWSER_CHECK_FAILED"
+
+
+def _browser_dependency_status() -> tuple[bool, str]:
+    """Return whether there is a browser the browser tools can drive, and if not, the reason code.
+
+    No browser comes with the application: the tools use one the user has
+    (``nekopower/builtin/browser/launcher.py``). The answer is found the way
+    the tools themselves pick their browser, so a browser the user named in
+    the browser settings counts although the search would not find it. It is
+    a settings file read and a handful of file checks (blocking: call it in
+    a worker thread), and the answer is kept for a moment.
+    """
+    global _browser_search
+    now = time.monotonic()
+    with _browser_search_lock:
+        kept = _browser_search
+        started_in = _browser_search_seq
+    if kept is not None and now - kept[0] < _BROWSER_SEARCH_TTL_SECONDS:
+        return kept[1], kept[2]
+    from .nekopower_builtins import provider
+
     try:
-        executor = _shared.Modules.task_executor
-        if executor is not None and hasattr(executor, "browser_use"):
-            executor.browser_use = _shared.Modules.browser_use
+        found = provider.browser_installed()
+        reason = "" if found else BROWSER_NOT_FOUND
     except Exception as exc:
-        logger.debug("[Agent] BrowserUse dependent rewire failed: %s", exc)
+        logger.warning("[Agent] Searching for a browser failed: %s", exc)
+        found, reason = False, BROWSER_CHECK_FAILED
+    with _browser_search_lock:
+        # Not kept when the settings changed while it was searched for: the
+        # next one looks afresh. Answered all the same.
+        if started_in == _browser_search_seq:
+            _browser_search = (now, found, reason)
+    return found, reason
 
 
-def _browser_use_dependency_status() -> tuple[bool, str]:
-    """Check BrowserUse installation without importing its heavy module graph."""
-    current = _shared.Modules.browser_use
-    if current is not None:
-        ready = bool(getattr(current, "_ready_import", False))
-        return ready, "" if ready else str(getattr(current, "last_error", "") or "")
+def _forget_browser_search() -> None:
+    """Look for a browser afresh next time; for when the browser settings changed."""
+    global _browser_search, _browser_search_seq
+    with _browser_search_lock:
+        _browser_search_seq += 1
+        _browser_search = None
+
+
+def _agent_model_set_up() -> Tuple[bool, str]:
+    """Return whether the agent model has an address, a model and a key, and if not, the reason code.
+
+    Only what is filled in is looked at: nothing is sent to the model. Whether
+    it answers shows when a task agent first uses it, and a failure then is
+    reported with its reason (``nekopower.host.task_agents``). Reads the
+    configuration: blocking, call it in a worker thread.
+    """
+    # Through the facade at call time: tests patch ``app.agent_server._check_agent_api_gate``.
+    from app import agent_server as _agent_server_facade
+
+    gate = _agent_server_facade._check_agent_api_gate()
+    if gate.get("ready") is True:
+        return True, ""
+    reasons = gate.get("reasons") or []
+    return False, _capability_reason_code(reasons[0] if reasons else "") or "AGENT_ENDPOINT_NOT_CONFIGURED"
+
+
+def _keyboard_mouse_availability() -> Dict[str, Any]:
+    """Return whether the keyboard-and-mouse tools can be used: the agent model is set up and input can be sent.
+
+    Blocking (reads the configuration; the first call imports pyautogui): call it in a worker thread.
+    """
+    from app import agent_server as _agent_server_facade
+    from .nekopower_builtins import provider
+
+    reasons: list[str] = []
+    model_ready, model_reason = _agent_model_set_up()
+    if not model_ready:
+        reasons.append(model_reason)
+    input_ready, input_reason = provider.desktop().available()
+    if not input_ready:
+        reasons.append(input_reason)
     try:
-        installed = importlib.util.find_spec("browser_use") is not None
+        model = _agent_server_facade.get_config_manager().get_model_api_config("agent").get("model", "")
+    except Exception:  # noqa: BLE001 - the name is only shown
+        model = ""
+    return {
+        "enabled": True,
+        "ready": model_ready and input_ready,
+        "reasons": reasons,
+        "provider": "nekopower",
+        "model": model,
+    }
+
+
+def _browser_availability() -> Tuple[bool, str]:
+    """Return whether the browser tools can be used: the agent model is set up and there is a browser to drive.
+
+    Blocking (see ``_agent_model_set_up`` and ``_browser_dependency_status``): call it in a worker thread.
+    """
+    model_ready, model_reason = _agent_model_set_up()
+    if not model_ready:
+        return False, model_reason
+    return _browser_dependency_status()
+
+
+async def _refresh_tool_capabilities() -> None:
+    """Say anew whether the keyboard-and-mouse and the browser tools can be used.
+
+    For when that may have changed: the master switch came on, the
+    configuration was saved. Asks no model anything. The answers are as new
+    as when this started (``_set_capability``'s tickets): one that started
+    earlier and ends later writes nothing over a later one's, whatever wrote it.
+    """
+    started = _capability_ticket_now()
+    try:
+        keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
+    except Exception as exc:  # noqa: BLE001 - not usable then; the browser is still looked at
+        logger.warning("[Agent] Checking the keyboard and mouse failed: %s", exc)
+        keyboard = {"ready": False, "reasons": ["AGENT_INPUT_CHECK_FAILED"]}
+    keyboard_reasons = keyboard.get("reasons") or []
+    _set_capability(
+        "computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "", started=started
+    )
+    try:
+        browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    except Exception as exc:  # noqa: BLE001 - not usable then
+        logger.warning("[Agent] Checking for a browser failed: %s", exc)
+        browser_ready, browser_reason = False, BROWSER_CHECK_FAILED
+    _set_capability("browser_use", browser_ready, browser_reason, started=started)
+
+
+async def _refresh_tool_capabilities_and_tell(lanlan_name: Optional[str] = None) -> None:
+    """``_refresh_tool_capabilities`` in the background, then the status is sent; never raises."""
+    try:
+        await _refresh_tool_capabilities()
+    except Exception as exc:  # noqa: BLE001 - the tools stay as they were
+        logger.warning("[Agent] Working out whether the tools can be used failed: %s", exc)
+        return
+    _bump_state_revision()
+    await _emit_agent_status_update(lanlan_name=lanlan_name)
+
+
+async def _model_images_status() -> Dict[str, Any]:
+    """Return whether the agent model is sent pictures and, if it is not, why and until when.
+
+    The keyboard-and-mouse tool and the screenshot tools are only given to a
+    task agent whose model sees pictures. A model is taken not to when its
+    provider said so (``nekopower/host/model_capabilities.py``); without this
+    the tools would be missing with nothing to show for it.
+    """
+    try:
+        from app import agent_server as _agent_server_facade
+        from nekopower.host import mount
+
+        config = await asyncio.to_thread(_agent_server_facade.get_config_manager().get_model_api_config, "agent")
+        host = mount.peek_host()
+        if host is not None:
+            store = host.model_capabilities
+        else:
+            from nekopower.host.model_capabilities import ModelCapabilityStore
+            from nekopower.host.paths import HostPaths
+
+            store = ModelCapabilityStore(HostPaths().model_capabilities_json)
+        return await store.describe(config.get("base_url"), config.get("model"))
     except Exception as exc:
-        return False, str(exc)
-    return installed, "" if installed else "browser-use package not found"
+        logger.debug("[Agent] What the agent model can see is not known: %s", exc)
+        return {"sees": True}
 
 
-async def _ensure_browser_use_adapter():
-    """Build the heavy BrowserUse adapter only when the feature is requested."""
-    if _shared.Modules.browser_use_init_lock is None:
-        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+async def _set_closed_browser_capability(capability_reason: Optional[str], still_current: Callable[[], bool]) -> None:
+    """Say what the browser tools can do now that the browser is closed.
 
-    async with _shared.Modules.browser_use_init_lock:
-        current = _shared.Modules.browser_use
-        if current is not None:
-            return current
-        try:
-            current = await asyncio.to_thread(BrowserUseAdapter)
-        except Exception as exc:
-            logger.error("[Agent] BrowserUseAdapter on-demand init failed: %s", exc)
-            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
-            return None
-
-        if not getattr(current, "_ready_import", False):
-            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
-            return None
-
-        _shared.Modules.browser_use = current
-        _rewire_browser_use_dependents()
-        logger.info("[Agent] BrowserUseAdapter ready (on-demand init)")
-        return current
-
-
-def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> None:
+    ``still_current`` is asked again after the search for a browser, which
+    runs in a worker thread (it reads the settings and looks at files): the
+    switch may have been set anew meanwhile, and that setting's word stands.
+    """
     if capability_reason is not None:
         _set_capability("browser_use", False, capability_reason)
         return
-    dependency_ready, dependency_error = _browser_use_dependency_status()
-    _set_capability("browser_use", dependency_ready, dependency_error)
+    started = _capability_ticket_now()
+    # As every other place says it: the agent model set up, and a browser to drive.
+    browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    if still_current():
+        _set_capability("browser_use", browser_ready, browser_reason, started=started)
 
 
-async def _close_browser_use_adapter(
+async def _close_browser(
     *,
     capability_reason: Optional[str] = None,
     expected_lifecycle_seq: Optional[int] = None,
     update_capability: bool = True,
+    leave_window: bool = False,
 ) -> None:
-    """Close Chromium/browser-use resources and detach the singleton adapter."""
-    if _shared.Modules.browser_use_dispatch_lock is None:
-        _shared.Modules.browser_use_dispatch_lock = asyncio.Lock()
-    if _shared.Modules.browser_use_init_lock is None:
-        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+    """Close the browser the browser tools started, if they started one.
 
-    # Lock order is dispatch -> init everywhere that needs both. This drains
-    # an active run before releasing the shared BrowserSession/Chromium graph.
-    async with _shared.Modules.browser_use_dispatch_lock:
-        async with _shared.Modules.browser_use_init_lock:
-            current = _shared.Modules.browser_use
-            if current is None:
-                _rewire_browser_use_dependents()
-                if (
-                    update_capability
-                    and (
-                        expected_lifecycle_seq is None
-                        or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
-                    )
-                ):
-                    _set_unloaded_browser_use_capability(capability_reason)
-                return
-            cancelled = False
-            try:
-                await current.close()
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
-            except Exception as exc:
-                logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
-            finally:
-                if not cancelled:
-                    _shared.Modules.browser_use = None
-                    _rewire_browser_use_dependents()
-                    if (
-                        update_capability
-                        and (
-                            expected_lifecycle_seq is None
-                            or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
-                        )
-                    ):
-                        _set_unloaded_browser_use_capability(capability_reason)
+    A browser the user is using (attach mode) is only let go of. The
+    provider waits for a call under way before it closes anything.
 
-def _rewire_computer_use_dependents() -> None:
-    """Keep task_executor in sync after computer_use adapter refresh."""
+    ``leave_window`` is for when the tools stop being used (the user
+    switched them off, or the switch was put off for them because the agent
+    model was not set up when a switch was asked to come on): a browser window they can see is left open and
+    connected to, as it is after a task that ended, and they may go on
+    reading what is in it. It is closed when they close it, when they
+    change the browser settings, or when the application quits. One without
+    a window is closed all the same. Decided once a call that is under way
+    is over.
+    """
+    from .nekopower_builtins import provider
+
+    def still_current() -> bool:
+        return expected_lifecycle_seq is None or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+
+    cancelled = False
     try:
-        if _shared.Modules.task_executor is not None and hasattr(_shared.Modules.task_executor, "computer_use"):
-            _shared.Modules.task_executor.computer_use = _shared.Modules.computer_use
-    except Exception:
-        pass
-
-
-def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
-    """
-    Best-effort refresh for computer-use adapter.
-    Useful when API key/model settings were fixed after agent_server startup.
-    Does NOT block on LLM connectivity — call ``_fire_agent_llm_connectivity_check``
-    afterwards to probe the endpoint asynchronously.
-    """
-    current = _shared.Modules.computer_use
-    if not force and current is not None and getattr(current, "init_ok", False):
-        return True
-    try:
-        refreshed = ComputerUseAdapter()
-        _shared.Modules.computer_use = refreshed
-        _rewire_computer_use_dependents()
-        logger.info("[Agent] ComputerUse adapter rebuilt (connectivity pending)")
-        return True
-    except Exception as e:
-        logger.warning(f"[Agent] ComputerUse adapter refresh failed: {e}")
-        return False
-
-
-_llm_check_lock = asyncio.Lock()
-
-
-async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
-    """Probe the shared Agent-LLM endpoint in a background thread.
-
-    Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
-    so a single connectivity check covers both capabilities.  Updates
-    ``init_ok`` on the CUA adapter and refreshes the capability cache for
-    *both* computer_use and browser_use.
-
-    Uses a lock to prevent concurrent probes from racing.
-
-    ``queue=False`` (default): early-return if another probe is in flight.
-      Right for spammy event-driven callers (UI toggles / flag flips) where a
-      second probe would just duplicate the in-flight one.
-
-    ``queue=True``: wait for the lock and run anyway.  Right when the caller
-      represents a *state change* that must be reflected on capability (e.g.
-      BrowserUse just became available), where early-return would silently
-      drop the refresh.
-    """
-    if not queue and _llm_check_lock.locked():
-        return
-
-    async with _llm_check_lock:
-        adapter = _shared.Modules.computer_use
-        if adapter is None:
-            _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
-            _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
-            _bump_state_revision()
-            await _emit_agent_status_update()
-            return
-
-        def _probe() -> Tuple[bool, str]:
-            return adapter.check_connectivity()
-
-        # If a real CUA/BU task is currently running, the LLM is demonstrably
-        # reachable — the probe lost a race (shared _llm_client + rate limit /
-        # transient timeout) and we must not flip flags off or post a bogus
-        # "猫爪预检失败 / 已自动关闭" toast on top of a working task.
-        def _has_running(kind: str) -> bool:
-            try:
-                for info in _shared.Modules.task_registry.values():
-                    if info.get("type") == kind and info.get("status") in ("queued", "running"):
-                        return True
-            except Exception:
-                pass
-            return False
-
-        try:
-            probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
-            # Tolerate legacy bool returns in case some adapter implementation
-            # hasn't been migrated yet (defense-in-depth: the only real probe
-            # — computer_use.check_connectivity — already returns a tuple).
-            if isinstance(probe_result, tuple):
-                ok, probe_reason = probe_result
-            else:
-                ok = bool(probe_result)
-                probe_reason = "" if ok else "AGENT_LLM_UNREACHABLE"
-            cu_in_flight = _has_running("computer_use")
-            bu_in_flight = _has_running("browser_use")
-
-            if not ok and (cu_in_flight or bu_in_flight):
-                logger.info(
-                    "[Agent] Agent-LLM probe failed but a real task is running "
-                    "(cu=%s bu=%s); treating as transient and skipping demote.",
-                    cu_in_flight, bu_in_flight,
-                )
-                _bump_state_revision()
-                await _emit_agent_status_update()
-                return
-
-            reason = "" if ok else (probe_reason or "AGENT_LLM_UNREACHABLE")
-            _set_capability("computer_use", ok, reason)
-            bu = _shared.Modules.browser_use
-            if not ok:
-                _set_capability("browser_use", False, reason)
-            elif bu is None:
-                dependency_ready, dependency_error = _browser_use_dependency_status()
-                _set_capability(
-                    "browser_use",
-                    dependency_ready,
-                    "" if dependency_ready else dependency_error,
-                )
-            elif not getattr(bu, "_ready_import", False):
-                _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
-            else:
-                _set_capability("browser_use", True, "")
-
-            if ok:
-                logger.info("[Agent] Agent-LLM connectivity check passed")
-            else:
-                logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
-                if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                    _shared.Modules.agent_flags["computer_use_enabled"] = False
-                    _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
-                if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                    _shared.Modules.agent_flags["browser_use_enabled"] = False
-                    _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
-                    await _close_browser_use_adapter(capability_reason=reason)
-
-            _bump_state_revision()
-            await _emit_agent_status_update()
-        except Exception as e:
-            logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
-            if _has_running("computer_use") or _has_running("browser_use"):
-                # Same protection in the outer-exception path.
-                _bump_state_revision()
-                await _emit_agent_status_update()
-                return
-            _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
-            _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
-            if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                _shared.Modules.agent_flags["computer_use_enabled"] = False
-            if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                _shared.Modules.agent_flags["browser_use_enabled"] = False
-                await _close_browser_use_adapter(capability_reason="AGENT_LLM_UNREACHABLE")
-            _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
-            _bump_state_revision()
-            await _emit_agent_status_update()
+        if leave_window:
+            await provider.close_browser(keep_window=True)
+        else:
+            await provider.close_browser()
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    except Exception as exc:
+        logger.warning("[Agent] Closing the browser failed: %s", exc)
+    finally:
+        if not cancelled and update_capability and still_current():
+            await _set_closed_browser_capability(capability_reason, still_current)
 
 
 def _agent_flags_snapshot() -> Dict[str, Any]:
-    flags = dict(_shared.Modules.agent_flags or {})
-    openclaw_capability = (_shared.Modules.capability_cache or {}).get("openclaw") or {}
-    flags["openclaw_ready"] = bool(flags.get("openclaw_enabled")) and bool(
-        openclaw_capability.get("ready")
-    )
-    return flags
+    return dict(_shared.Modules.agent_flags or {})
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -316,26 +287,13 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _agent_server_facade._check_agent_api_gate()
     flags = _agent_flags_snapshot()
     capabilities = dict(_shared.Modules.capability_cache or {})
-    # Periodic cleanup of completed tasks to prevent memory leak
-    # Note: _emit_agent_status_update also calls this and handles timed_out tasks
-    _cleanup_task_registry()
-    # Include active (queued/running) tasks so frontend can restore after page refresh
-    active_tasks = []
-    for tid, info in _shared.Modules.task_registry.items():
-        try:
-            st = info.get("status")
-            if st in ("queued", "running"):
-                active_tasks.append({
-                    "id": tid,
-                    "status": st,
-                    "type": info.get("type"),
-                    "start_time": info.get("start_time"),
-                    "params": info.get("params", {}),
-                    "session_id": info.get("session_id"),
-                    "lanlan_name": info.get("lanlan_name"),
-                })
-        except Exception:
-            continue
+    # The commissions under way, so the frontend can restore its task HUD
+    # after a page refresh. Read from this process's view of the ledger;
+    # nothing is opened or fetched here.
+    from .nekopower_mount import hud
+    from app.agent_task_hud import get_visible as _task_hud_visible
+
+    active_tasks = hud.active()
     note = _shared.Modules.notification
     if _shared.Modules.notification:
         _shared.Modules.notification = None
@@ -347,6 +305,10 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
         "gate": gate,
         "capabilities": capabilities,
         "active_tasks": active_tasks,
+        # Whether the main page shows the task HUD; None when never set here (``app.agent_task_hud``).
+        # Memory only once the agent process has read it at start (``api_runtime``, off the event
+        # loop); only if that read failed does the first snapshot read the file here.
+        "task_hud_visible": _task_hud_visible(),
         "notification": note,
         "updated_at": _now_iso(),
     }
@@ -354,26 +316,6 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
-        # First check for timed-out deferred tasks and send task_update notifications
-        timed_out = _cleanup_task_registry()
-        for task_info in timed_out:
-            try:
-                await _emit_main_event(
-                    "task_update",
-                    task_info.get("lanlan_name"),
-                    task={
-                        "id": task_info.get("id"),
-                        "status": "failed",
-                        "type": task_info.get("type"),
-                        "start_time": task_info.get("start_time"),
-                        "end_time": task_info.get("end_time"),
-                        "error": task_info.get("error"),
-                        "params": task_info.get("params", {}),
-                    },
-                )
-            except Exception as e:
-                logger.warning("[Agent] Failed to emit task_update for timed-out task %s: %s", task_info.get("id"), e)
-
         snapshot = _collect_agent_status_snapshot()
         await _emit_main_event(
             "agent_status_update",

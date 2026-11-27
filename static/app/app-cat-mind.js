@@ -45,6 +45,10 @@
         CAT1_EAT_SNACK: 'cat1_eat_snack',
         CAT1_SMALL_MOVE: 'cat1_small_move',
         CAT1_PLAY_YARN: 'cat1_play_yarn',
+        CAT1_IDLE_RANDOM: 'cat1_idle_random',
+        CAT2_IDLE_RANDOM: 'cat2_idle_random',
+        CAT3_IDLE_RANDOM: 'cat3_idle_random',
+        CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
         CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
         CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback',
         QUIET: 'quiet',
@@ -78,6 +82,7 @@
         RAPID_DRAG: 'rapid_drag',
         CAT_HOVER_REACTION: 'cat_hover_reaction',
         CAT_LOCAL_TEXT_RECEIVED: 'cat_local_text_received',
+        GLOBAL_USER_ACTIVITY: 'global_user_activity',
         THOUGHT_BUBBLE_POP: 'thought_bubble_pop',
         RETURN_CLICK: 'return_click',
         TIER_CHANGED: 'tier_changed',
@@ -104,6 +109,14 @@
         EAT_CANCELLED: 'eat_cancelled',
         PLAY_DONE: 'play_done',
         PLAY_CANCELLED: 'play_cancelled',
+        CAT1_IDLE_RANDOM_DONE: 'cat1_idle_random_done',
+        CAT1_IDLE_RANDOM_CANCELLED: 'cat1_idle_random_cancelled',
+        CAT2_IDLE_RANDOM_DONE: 'cat2_idle_random_done',
+        CAT2_IDLE_RANDOM_CANCELLED: 'cat2_idle_random_cancelled',
+        CAT3_IDLE_RANDOM_DONE: 'cat3_idle_random_done',
+        CAT3_IDLE_RANDOM_CANCELLED: 'cat3_idle_random_cancelled',
+        CAT1_INACTIVE_SAD_DONE: 'cat1_inactive_sad_done',
+        CAT1_INACTIVE_SAD_CANCELLED: 'cat1_inactive_sad_cancelled',
         SLEEP_FEEDBACK_DONE: 'sleep_feedback_done',
         SLEEP_FEEDBACK_FAILED: 'sleep_feedback_failed',
         ACTION_INTERRUPTED_BY_DRAG: 'action_interrupted_by_drag',
@@ -119,6 +132,7 @@
         'stimulation_need',
     ]);
     var RECENT_EVENT_LIMIT = 40;
+    var RECENT_CAT_INTERACTION_LIMIT = 3;
     var SEEN_EVENT_LIMIT = 80;
     var DEBUG_TIMELINE_LIMIT = 600;
     var DEBUG_TIMELINE_DETAIL_FIELDS = Object.freeze([
@@ -155,6 +169,18 @@
     ]);
     var CHAT_MOVED_FAR_DISTANCE_PX = 24;
     var AUTONOMOUS_TICK_INTERVAL_MS = 30 * 1000;
+    var CAT1_IDLE_RANDOM_POLICY = Object.freeze({
+        tickChance: 0.20,
+        cooldownMs: 5 * 60 * 1000,
+    });
+    var IDLE_RANDOM_POLICY_BY_TIER = Object.freeze({
+        cat1: CAT1_IDLE_RANDOM_POLICY,
+        cat2: Object.freeze({ tickChance: 0.20, cooldownMs: 60 * 1000 }),
+        cat3: Object.freeze({ tickChance: 0.20, cooldownMs: 5 * 60 * 1000 }),
+    });
+    var CAT1_INACTIVE_SAD_POLICY = Object.freeze({
+        inactivityMs: 13 * 60 * 1000,
+    });
     // 防止连续 hover 在极短时间内反复唤起决策、造成动作连播。
     var HOVER_DEDUPE_WINDOW_MS = 1500;
     var ACTION_START_BURST_GUARD_MS = 60 * 1000;
@@ -165,7 +191,7 @@
         cat2: Object.freeze({ appetite: 0.0045, sleepiness: 0.0135, energy: -0.008, social_need: 0.01, stimulation_need: 0.0065 }),
         cat3: Object.freeze({ appetite: 0.003, sleepiness: 0.0085, energy: -0.0035, social_need: 0.0055, stimulation_need: 0.003 }),
     });
-    // Every registered action uses the same scoring layers and monotonic
+    // Every five-dimension scored action uses the same scoring layers and monotonic
     // response curves. Positive need surplus rises quickly enough to answer a
     // dense interaction burst, while the cadence curve keeps ordinary idle
     // restrained and the action cooldown changes only relative candidate order.
@@ -371,6 +397,7 @@
             sequence: 0,
             fields: createInitialMindFields(),
             recentEvents: [],
+            recentCatInteractionTimes: [],
             seenEventKeys: [],
             actionIntentEvidence: {},
             accountedPhysicalActivityIds: [],
@@ -396,6 +423,7 @@
                 postActionSettle: null,
                 lastIgnoredActionResult: null,
                 lastProtocolFailure: null,
+                cat1InactiveSadStartedForIdleEpisode: false,
             },
             clock: {
                 timer: 0,
@@ -522,12 +550,15 @@
         });
     }
 
-    function startAutonomousClock(timestamp) {
+    function startAutonomousClock(timestamp, lastInteractionAt) {
         var clock = runtimeState.clock;
         clearAutonomousClock();
         var startedAt = Number.isFinite(Number(timestamp)) ? Number(timestamp) : nowMs();
         clock.lastTickAt = startedAt;
-        clock.lastUserInteractionAt = startedAt;
+        var interactionAnchor = Number(lastInteractionAt);
+        clock.lastUserInteractionAt = Number.isFinite(interactionAnchor) && interactionAnchor > 0
+            ? Math.min(startedAt, interactionAnchor)
+            : startedAt;
         clock.lastActionStartedAt = startedAt;
         clock.dragInterruptionRecoveryActive = false;
         clock.generation = ++autonomousClockGeneration;
@@ -1006,7 +1037,6 @@
         }
         if (status === 'started') {
             if (!runId || pending.runId !== runId) return false;
-            var scoreConfig = getActionScoreConfig(pending.actionId);
             clearActionRequestLeaseTimer();
             runtimeState.scheduler.pendingActionRequest = null;
             runtimeState.scheduler.activeAction = {
@@ -1020,11 +1050,14 @@
             runtimeState.scheduler.actionCooldowns[pending.actionId] = {
                 startedAt: timestamp,
                 requestId: pending.requestId,
-                fullCooldownMs: scoreConfig ? scoreConfig.cooldownMs : 0,
+                fullCooldownMs: getActionCooldownDurationMs(pending.actionId),
             };
             runtimeState.clock.lastActionStartedAt = timestamp;
             runtimeState.clock.lastConfirmedActionStartedAt = timestamp;
             runtimeState.clock.dragInterruptionRecoveryActive = false;
+            if (pending.actionId === ACTION_IDS.CAT1_INACTIVE_SAD) {
+                runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode = true;
+            }
             // Intent is consumed only after the existing runner proves it
             // really started. accepted/rejected/provider dry-run never spend it.
             clearActionIntentEvidence(pending.actionId);
@@ -1135,6 +1168,15 @@
 
     function getActionScoreConfig(actionId) {
         return ACTION_SCORE_CONFIG[actionId] || null;
+    }
+
+    function getActionCooldownDurationMs(actionId) {
+        var scoreConfig = getActionScoreConfig(actionId);
+        if (scoreConfig) return Number(scoreConfig.cooldownMs) || 0;
+        if (actionId === ACTION_IDS.CAT1_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat1.cooldownMs;
+        if (actionId === ACTION_IDS.CAT2_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat2.cooldownMs;
+        if (actionId === ACTION_IDS.CAT3_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat3.cooldownMs;
+        return 0;
     }
 
     function getActionTieBreakIndex(actionId) {
@@ -1257,6 +1299,7 @@
         if (observation.type !== OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED) return;
         var strength = getYarnOfferIntentStrength(observation);
         if (strength) {
+            recordCatInteraction(observation.timestamp);
             addActionIntentEvidence(
                 ACTION_IDS.CAT1_PLAY_YARN,
                 strength,
@@ -1300,13 +1343,13 @@
 
     function getActionCooldown(actionId, timestamp, options) {
         var shouldPrune = !(options && options.prune === false);
-        var config = getActionScoreConfig(actionId);
         var cooldown = runtimeState.scheduler.actionCooldowns[actionId];
-        if (!config || !cooldown) {
+        var configuredCooldownMs = getActionCooldownDurationMs(actionId);
+        if (!configuredCooldownMs || !cooldown) {
             return { active: false, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var startedAt = Number(cooldown.startedAt);
-        var fullCooldownMs = Number(cooldown.fullCooldownMs) || config.cooldownMs;
+        var fullCooldownMs = Number(cooldown.fullCooldownMs) || configuredCooldownMs;
         if (!Number.isFinite(startedAt) || !Number.isFinite(fullCooldownMs) || fullCooldownMs <= 0) {
             if (shouldPrune) delete runtimeState.scheduler.actionCooldowns[actionId];
             return { active: false, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
@@ -1339,10 +1382,12 @@
             return actionId === ACTION_IDS.CAT1_SOCIAL_PING ||
                 actionId === ACTION_IDS.CAT1_EAT_SNACK ||
                 actionId === ACTION_IDS.CAT1_SMALL_MOVE ||
-                actionId === ACTION_IDS.CAT1_PLAY_YARN;
+                actionId === ACTION_IDS.CAT1_PLAY_YARN ||
+                actionId === ACTION_IDS.CAT1_IDLE_RANDOM ||
+                actionId === ACTION_IDS.CAT1_INACTIVE_SAD;
         }
-        if (tier === TIERS.CAT2) return actionId === ACTION_IDS.CAT2_NAP_FEEDBACK;
-        if (tier === TIERS.CAT3) return actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK;
+        if (tier === TIERS.CAT2) return actionId === ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === ACTION_IDS.CAT2_IDLE_RANDOM;
+        if (tier === TIERS.CAT3) return actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK || actionId === ACTION_IDS.CAT3_IDLE_RANDOM;
         return false;
     }
 
@@ -1446,6 +1491,154 @@
             cooldownRecoveryFactor: cooldown.recoveryFactor,
             cooldownCurveFactor: cooldown.curveFactor,
         };
+    }
+
+    function idleRandomActionIdForTier(tier) {
+        if (tier === TIERS.CAT1) return ACTION_IDS.CAT1_IDLE_RANDOM;
+        if (tier === TIERS.CAT2) return ACTION_IDS.CAT2_IDLE_RANDOM;
+        if (tier === TIERS.CAT3) return ACTION_IDS.CAT3_IDLE_RANDOM;
+        return '';
+    }
+
+    function isIdleRandomTick(triggerTypes) {
+        return !!idleRandomActionIdForTier(runtimeState.tier) &&
+            Array.isArray(triggerTypes) &&
+            triggerTypes.indexOf(OBSERVATION_TYPES.CAT_ELAPSED) !== -1 &&
+            !triggerTypes.some(isUserInteractionObservationType);
+    }
+
+    function evaluateIdleRandomCandidate(providers, triggerTypes, timestamp) {
+        var actionId = idleRandomActionIdForTier(runtimeState.tier);
+        var policy = IDLE_RANDOM_POLICY_BY_TIER[runtimeState.tier];
+        var candidate = {
+            actionId: actionId,
+            score: null,
+            baseScore: null,
+            threshold: null,
+            needSurplus: null,
+            needContribution: null,
+            cadenceAdjustment: null,
+            cadenceCurveProgress: null,
+            cadenceCurveFactor: null,
+            intentLevel: null,
+            intentContribution: null,
+            intentCurveFactor: null,
+            intentReason: '',
+            eligibilityScore: null,
+            cooldownApplied: false,
+            cooldownSortRank: 0,
+            cooldownRemainingMs: 0,
+            cooldownRecoveryFactor: 0,
+            cooldownCurveFactor: 0,
+            allowed: false,
+            reason: '',
+            providerDetail: {},
+        };
+        if (!policy || !isIdleRandomTick(triggerTypes)) {
+            candidate.reason = 'not_autonomous_idle_tick';
+            return candidate;
+        }
+        var cooldown = getActionCooldown(actionId, timestamp);
+        candidate.cooldownApplied = cooldown.active;
+        candidate.cooldownRemainingMs = Math.round(cooldown.remainingMs);
+        candidate.cooldownRecoveryFactor = Math.round(cooldown.recoveryFactor * 10000) / 10000;
+        candidate.cooldownCurveFactor = Math.round(cooldown.curveFactor * 10000) / 10000;
+        if (cooldown.active) {
+            candidate.reason = 'hard_cooldown';
+            return candidate;
+        }
+        if (!providers || typeof providers.dryRun !== 'function') {
+            candidate.reason = 'provider_unavailable';
+            return candidate;
+        }
+        var providerDecision = providers.dryRun(actionId, {
+            source: 'cat-mind-selector-read-only',
+        }) || {};
+        candidate.providerDetail = sanitizeDetail(providerDecision.detail);
+        if (providerDecision.allowed !== true) {
+            candidate.reason = typeof providerDecision.reason === 'string'
+                ? providerDecision.reason
+                : 'provider_rejected';
+            return candidate;
+        }
+        if (Math.random() >= policy.tickChance) {
+            candidate.reason = 'chance_miss';
+            return candidate;
+        }
+        candidate.allowed = true;
+        candidate.reason = 'allowed';
+        return candidate;
+    }
+
+    function evaluateCat1InactiveSadCandidate(providers, triggerTypes, timestamp) {
+        var candidate = {
+            actionId: ACTION_IDS.CAT1_INACTIVE_SAD,
+            score: null,
+            baseScore: null,
+            threshold: CAT1_INACTIVE_SAD_POLICY.inactivityMs,
+            needSurplus: null,
+            needContribution: null,
+            cadenceAdjustment: null,
+            cadenceCurveProgress: null,
+            cadenceCurveFactor: null,
+            intentLevel: null,
+            intentContribution: null,
+            intentCurveFactor: null,
+            intentReason: '',
+            eligibilityScore: null,
+            cooldownApplied: false,
+            cooldownSortRank: 0,
+            cooldownRemainingMs: 0,
+            cooldownRecoveryFactor: 0,
+            cooldownCurveFactor: 0,
+            allowed: false,
+            reason: '',
+            providerDetail: {},
+        };
+        if (runtimeState.tier !== TIERS.CAT1) {
+            candidate.reason = 'tier_not_allowed';
+            return candidate;
+        }
+        if (!Array.isArray(triggerTypes) ||
+            triggerTypes.indexOf(OBSERVATION_TYPES.CAT_ELAPSED) === -1 ||
+            triggerTypes.some(isUserInteractionObservationType)) {
+            candidate.reason = 'not_autonomous_idle_tick';
+            return candidate;
+        }
+        if (runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode) {
+            candidate.reason = 'already_started_for_idle_episode';
+            return candidate;
+        }
+        var inactiveElapsedMs = Math.max(
+            0,
+            Number(timestamp) - Number(runtimeState.clock.lastUserInteractionAt || timestamp)
+        );
+        candidate.eligibilityScore = inactiveElapsedMs - CAT1_INACTIVE_SAD_POLICY.inactivityMs;
+        candidate.providerDetail = { inactiveElapsedMs: inactiveElapsedMs };
+        if (inactiveElapsedMs < CAT1_INACTIVE_SAD_POLICY.inactivityMs) {
+            candidate.reason = 'inactivity_threshold_not_reached';
+            return candidate;
+        }
+        if (!providers || typeof providers.dryRun !== 'function') {
+            candidate.reason = 'provider_unavailable';
+            return candidate;
+        }
+        var providerDecision = providers.dryRun(ACTION_IDS.CAT1_INACTIVE_SAD, {
+            source: 'cat-mind-selector-read-only',
+        }) || {};
+        candidate.providerDetail = Object.assign(
+            { inactiveElapsedMs: inactiveElapsedMs },
+            sanitizeDetail(providerDecision.detail)
+        );
+        if (providerDecision.allowed !== true) {
+            candidate.reason = typeof providerDecision.reason === 'string'
+                ? providerDecision.reason
+                : 'provider_rejected';
+            return candidate;
+        }
+        candidate.allowed = true;
+        candidate.reason = 'allowed';
+        return candidate;
     }
 
     function getActionScoreSnapshot(timestamp, cooldownOptions) {
@@ -1664,7 +1857,32 @@
             return;
         }
 
-        var actionIds = [
+        var selectedCandidate = null;
+        var inactiveSadCandidate = evaluateCat1InactiveSadCandidate(
+            providers, triggerTypes, scheduler.lastEvaluatedAt
+        );
+        base.candidates.push(inactiveSadCandidate);
+        if (inactiveSadCandidate.allowed) {
+            selectedCandidate = inactiveSadCandidate;
+            base.outcome = inactiveSadCandidate.actionId;
+            base.reason = 'inactive_sad_candidate';
+        }
+
+        if (!selectedCandidate) {
+            var idleRandomCandidate = evaluateIdleRandomCandidate(
+                providers,
+                triggerTypes,
+                scheduler.lastEvaluatedAt
+            );
+            base.candidates.push(idleRandomCandidate);
+            if (idleRandomCandidate.allowed) {
+                selectedCandidate = idleRandomCandidate;
+                base.outcome = idleRandomCandidate.actionId;
+                base.reason = 'idle_random_candidate';
+            }
+        }
+
+        var actionIds = selectedCandidate ? [] : [
             ACTION_IDS.CAT1_SOCIAL_PING,
             ACTION_IDS.CAT1_EAT_SNACK,
             ACTION_IDS.CAT1_SMALL_MOVE,
@@ -1741,8 +1959,14 @@
             }
             base.candidates.push(candidate);
         });
-        var allowed = base.candidates.filter(function (candidate) { return candidate.allowed; });
-        if (allowed.length) {
+        var allowed = base.candidates.filter(function (candidate) {
+            return candidate.allowed &&
+                candidate.actionId !== ACTION_IDS.CAT1_IDLE_RANDOM &&
+                candidate.actionId !== ACTION_IDS.CAT2_IDLE_RANDOM &&
+                candidate.actionId !== ACTION_IDS.CAT3_IDLE_RANDOM &&
+                candidate.actionId !== ACTION_IDS.CAT1_INACTIVE_SAD;
+        });
+        if (!selectedCandidate && allowed.length) {
             allowed.sort(function (left, right) {
                 if (left.cooldownSortRank !== right.cooldownSortRank) {
                     return left.cooldownSortRank - right.cooldownSortRank;
@@ -1752,14 +1976,15 @@
                 }
                 return getActionTieBreakIndex(left.actionId) - getActionTieBreakIndex(right.actionId);
             });
-            base.outcome = allowed[0].actionId;
+            selectedCandidate = allowed[0];
+            base.outcome = selectedCandidate.actionId;
             base.reason = 'read_only_candidate';
-        } else if (base.candidates.some(function (candidate) { return candidate.reason === 'below_threshold'; })) {
+        } else if (!selectedCandidate && base.candidates.some(function (candidate) { return candidate.reason === 'below_threshold'; })) {
             base.reason = 'below_action_threshold';
         }
         base.triggerTypes = triggerTypes;
-        if (allowed.length) {
-            var request = createActionRequest(base.outcome, allowed[0], triggerTypes, scheduler.lastEvaluatedAt);
+        if (selectedCandidate) {
+            var request = createActionRequest(base.outcome, selectedCandidate, triggerTypes, scheduler.lastEvaluatedAt);
             scheduler.pendingActionRequest = Object.assign({}, request);
             armActionRequestLeaseTimer(scheduler.pendingActionRequest);
             base.reason = 'action_request_dispatched';
@@ -1787,6 +2012,11 @@
 
     function shouldScheduleDecisionForObservation(observation) {
         var type = observation && typeof observation.type === 'string' ? observation.type : '';
+        // Global activity only resets the dedicated inactivity clock. It must
+        // not create an unrelated ordinary CAT1 action opportunity.
+        if (type === OBSERVATION_TYPES.GLOBAL_USER_ACTIVITY) {
+            return false;
+        }
         // Formal native-window facts are consumed directly by dedicated
         // renderer presentations. Keep the high-frequency sensing stream in
         // Cat Mind's observable context, but never turn it into an unrelated
@@ -1953,6 +2183,7 @@
             type === OBSERVATION_TYPES.RAPID_DRAG ||
             type === OBSERVATION_TYPES.CAT_HOVER_REACTION ||
             type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED ||
+            type === OBSERVATION_TYPES.GLOBAL_USER_ACTIVITY ||
             type === OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED ||
             type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP ||
             type === OBSERVATION_TYPES.RETURN_CLICK) {
@@ -1974,6 +2205,14 @@
             type === OBSERVATION_TYPES.EAT_CANCELLED ||
             type === OBSERVATION_TYPES.PLAY_DONE ||
             type === OBSERVATION_TYPES.PLAY_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT1_IDLE_RANDOM_DONE ||
+            type === OBSERVATION_TYPES.CAT1_IDLE_RANDOM_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT2_IDLE_RANDOM_DONE ||
+            type === OBSERVATION_TYPES.CAT2_IDLE_RANDOM_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT3_IDLE_RANDOM_DONE ||
+            type === OBSERVATION_TYPES.CAT3_IDLE_RANDOM_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT1_INACTIVE_SAD_DONE ||
+            type === OBSERVATION_TYPES.CAT1_INACTIVE_SAD_CANCELLED ||
             type === OBSERVATION_TYPES.SLEEP_FEEDBACK_DONE ||
             type === OBSERVATION_TYPES.SLEEP_FEEDBACK_FAILED ||
             type === OBSERVATION_TYPES.ACTION_INTERRUPTED_BY_DRAG ||
@@ -2010,6 +2249,19 @@
             type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED ||
             type === OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED ||
             type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP;
+    }
+
+    function resetsCat1InactiveSad(type) {
+        return type === OBSERVATION_TYPES.GLOBAL_USER_ACTIVITY ||
+            isUserInteractionObservationType(type);
+    }
+
+    function recordCatInteraction(timestamp) {
+        if (timestamp < runtimeState.enteredAt) return;
+        var times = runtimeState.recentCatInteractionTimes;
+        times.push(timestamp);
+        times.sort(function (left, right) { return left - right; });
+        if (times.length > RECENT_CAT_INTERACTION_LIMIT) times.shift();
     }
 
     function getReturnEpisodeAccumulator() {
@@ -2345,12 +2597,11 @@
         }
         if (type === OBSERVATION_TYPES.DRAG_START) {
             beginInteractionGesture(observation);
-        } else if (type === OBSERVATION_TYPES.DRAG_END) {
-            settleInteractionGesture(false, observation);
-            applyPhysicalActivity(observation.detail);
-        } else if (type === OBSERVATION_TYPES.DRAG_CANCELLED) {
-            settleInteractionGesture(true, observation);
-            applyPhysicalActivity(observation.detail);
+        } else if (type === OBSERVATION_TYPES.DRAG_END || type === OBSERVATION_TYPES.DRAG_CANCELLED) {
+            var cancelled = type === OBSERVATION_TYPES.DRAG_CANCELLED;
+            var settled = settleInteractionGesture(cancelled, observation);
+            var moved = applyPhysicalActivity(observation.detail);
+            if (settled && (!cancelled || moved)) recordCatInteraction(observation.timestamp);
         } else if (type === OBSERVATION_TYPES.RAPID_DRAG) {
             applyRapidGestureFeedback(observation);
         } else if (type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
@@ -2359,11 +2610,13 @@
             // legal action without an event-to-runner mapping.
             mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.hover);
         } else if (type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED) {
+            recordCatInteraction(observation.timestamp);
             // Text content is deliberately absent. One accepted local cat-chat
             // request is only bounded social/stimulation evidence; the shared
             // selector and its existing gates still own every action decision.
             mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.localText);
         } else if (type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP) {
+            recordCatInteraction(observation.timestamp);
             // Popping the bubble is a completed moment of contact, so it
             // satisfies social/stimulation need instead of feeding another
             // bubble-producing action loop.
@@ -2424,7 +2677,8 @@
     }
 
     function addRecentEvent(observation) {
-        if (isClockObservationType(observation.type)) return;
+        if (isClockObservationType(observation.type) ||
+            observation.type === OBSERVATION_TYPES.GLOBAL_USER_ACTIVITY) return;
         runtimeState.sequence += 1;
         runtimeState.recentEvents.push(Object.freeze({
             seq: runtimeState.sequence,
@@ -2456,11 +2710,21 @@
         reduceObservation(observation);
         applyActionIntentObservation(observation);
         if (isUserInteractionObservationType(observation.type)) {
-            runtimeState.clock.lastUserInteractionAt = observation.timestamp;
             recordReturnEpisodeInteraction();
+        }
+        if (resetsCat1InactiveSad(observation.type)) {
+            var previousInteractionAt = Number(runtimeState.clock.lastUserInteractionAt) || 0;
+            if (observation.timestamp > previousInteractionAt) {
+                runtimeState.clock.lastUserInteractionAt = observation.timestamp;
+                runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode = false;
+            }
         }
         addRecentEvent(observation);
         if (shouldScheduleDecisionForObservation(observation)) {
+            // Use the same short coalescing window for hover counts and wakeups.
+            if (observation.type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
+                recordCatInteraction(observation.timestamp);
+            }
             scheduleDecision(observation);
         }
         emitStateChange('observation', { observation: observation });
@@ -2499,7 +2763,18 @@
         runtimeState.tier = TIERS.CAT1;
         runtimeState.enteredAt = timestamp;
         runtimeState.updatedAt = timestamp;
-        startAutonomousClock(timestamp);
+        var lastInteractionAt = Number(eventDetail.lastInteractionAt);
+        if ((!Number.isFinite(lastInteractionAt) || lastInteractionAt <= 0) &&
+            runtimeState.entry === 'auto') {
+            try {
+                var autoGoodbyeState = window.nekoAutoGoodbye &&
+                    typeof window.nekoAutoGoodbye.getState === 'function'
+                    ? window.nekoAutoGoodbye.getState()
+                    : null;
+                lastInteractionAt = Number(autoGoodbyeState && autoGoodbyeState.lastInteractionAt);
+            } catch (_) {}
+        }
+        startAutonomousClock(timestamp, lastInteractionAt);
         observe({
             type: OBSERVATION_TYPES.CAT_ENTERED,
             source: isStartupDefaultCat
@@ -2610,6 +2885,21 @@
                 },
             });
         }
+    }
+
+    function observeGlobalUserActivity(detail) {
+        if (!detail || typeof detail !== 'object' || detail.type !== 'user-interaction') {
+            return;
+        }
+        observe({
+            type: OBSERVATION_TYPES.GLOBAL_USER_ACTIVITY,
+            source: detail.source || 'auto-goodbye',
+            tier: runtimeState.tier,
+            timestamp: detail.timestamp,
+            detail: {
+                preserveVisualTierCountdown: detail.preserveVisualTierCountdown === true,
+            },
+        });
     }
 
     function observeReturnBallManualMove(detail) {
@@ -2914,6 +3204,22 @@
                 ? OBSERVATION_TYPES.PLAY_DONE
                 : OBSERVATION_TYPES.PLAY_CANCELLED;
         }
+        if (actionId === ACTION_IDS.CAT1_IDLE_RANDOM) {
+            return result === 'done'
+                ? OBSERVATION_TYPES.CAT1_IDLE_RANDOM_DONE
+                : OBSERVATION_TYPES.CAT1_IDLE_RANDOM_CANCELLED;
+        }
+        if (actionId === ACTION_IDS.CAT2_IDLE_RANDOM) {
+            return result === 'done' ? OBSERVATION_TYPES.CAT2_IDLE_RANDOM_DONE : OBSERVATION_TYPES.CAT2_IDLE_RANDOM_CANCELLED;
+        }
+        if (actionId === ACTION_IDS.CAT3_IDLE_RANDOM) {
+            return result === 'done' ? OBSERVATION_TYPES.CAT3_IDLE_RANDOM_DONE : OBSERVATION_TYPES.CAT3_IDLE_RANDOM_CANCELLED;
+        }
+        if (actionId === ACTION_IDS.CAT1_INACTIVE_SAD) {
+            return result === 'done'
+                ? OBSERVATION_TYPES.CAT1_INACTIVE_SAD_DONE
+                : OBSERVATION_TYPES.CAT1_INACTIVE_SAD_CANCELLED;
+        }
         if (actionId === ACTION_IDS.CAT2_NAP_FEEDBACK ||
             actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK) {
             return result === 'done'
@@ -3004,7 +3310,9 @@
             });
         });
         window.addEventListener('neko:auto-goodbye:state-change', function (event) {
-            observeTierChange(event && event.detail);
+            var detail = event && event.detail;
+            observeTierChange(detail);
+            observeGlobalUserActivity(detail);
         });
         window.addEventListener('neko:return-ball-manual-move', function (event) {
             observeReturnBallManualMove(event && event.detail);
@@ -3046,9 +3354,12 @@
             durationSeconds: currentDurationSeconds(),
             fields: clonePlain(runtimeState.fields),
             recentEventCount: runtimeState.recentEvents.length,
+            recentCatInteractionTimes: runtimeState.recentCatInteractionTimes.slice(),
             pendingActionRequest: clonePlain(runtimeState.scheduler.pendingActionRequest),
             activeAction: clonePlain(runtimeState.scheduler.activeAction),
             actionCooldowns: getActiveActionCooldownSnapshot(timestamp),
+            cat1InactiveSadStartedForIdleEpisode:
+                runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode,
             clock: {
                 lastTickAt: runtimeState.clock.lastTickAt,
                 lastUserInteractionAt: runtimeState.clock.lastUserInteractionAt,
@@ -3083,6 +3394,9 @@
         OBSERVATION_TYPES: OBSERVATION_TYPES,
         TIERS: TIERS,
         ACTION_IDS: ACTION_IDS,
+        CAT1_IDLE_RANDOM_POLICY: CAT1_IDLE_RANDOM_POLICY,
+        IDLE_RANDOM_POLICY_BY_TIER: IDLE_RANDOM_POLICY_BY_TIER,
+        CAT1_INACTIVE_SAD_POLICY: CAT1_INACTIVE_SAD_POLICY,
         isDebugEnabled: isDebugEnabled,
     });
 

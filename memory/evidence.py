@@ -41,6 +41,9 @@ from config import (
     EVIDENCE_PROMOTED_THRESHOLD,
     EVIDENCE_REIN_HALF_LIFE_DAYS,
     EVIDENCE_REINFORCEMENT_CAP,
+    SCOPED_OBSERVED_DAYS_MAX,
+    SCOPED_PROMOTION_MIN_AGE_DAYS,
+    SCOPED_PROMOTION_MIN_OBSERVED_DAYS,
     USER_FACT_REINFORCE_COMBO_BONUS,
     USER_FACT_REINFORCE_COMBO_THRESHOLD,
 )
@@ -57,7 +60,14 @@ __all__ = [
     "count_fact_sources",
     "merge_fact_source_counts",
     "counted_fact_ids",
+    "is_withdrawn_fact",
+    "current_fact_source_counts",
     "awaits_user_signal",
+    "others_fact_days",
+    "merge_observed_days",
+    "observed_days",
+    "has_others_backing",
+    "scoped_promotion_ready",
 ]
 
 # Note: RFC §3.10 funnel analytics (`funnel_counts`) lives in the sibling
@@ -135,7 +145,39 @@ def merge_fact_source_counts(entries, extra_facts=()) -> dict | None:
     return total
 
 
-def awaits_user_signal(entry: dict) -> bool:
+def is_withdrawn_fact(fact: dict) -> bool:
+    """Whether dedup arbitration took the fact back without another fact replacing it.
+
+    The same rows a learned-memory snapshot publishes as ``retracted``.
+    """
+    return (
+        isinstance(fact, dict)
+        and bool(fact.get("arbitration_archived_at"))
+        and not fact.get("superseded_by")
+    )
+
+
+def current_fact_source_counts(entry: dict, facts_by_id) -> dict | None:
+    """``entry``'s source counts by the facts as they stand now.
+
+    A fact withdrawn since the counts were saved no longer counts, and one
+    since recognized as the user's own words counts as the user's. The
+    saved counts are used when any counted fact is not in ``facts_by_id``,
+    or when it is None: a partial recount would claim a mix nobody counted.
+    None when the entry has no counts at all (it predates them).
+    """
+    counts = entry.get("fact_source_counts") if isinstance(entry, dict) else None
+    if not isinstance(counts, dict) or not facts_by_id:
+        return counts if isinstance(counts, dict) else None
+    ids = counted_fact_ids(entry)
+    if not ids or any(fid not in facts_by_id for fid in ids):
+        return counts
+    return count_fact_sources(
+        [facts_by_id[fid] for fid in ids if not is_withdrawn_fact(facts_by_id[fid])]
+    )
+
+
+def awaits_user_signal(entry: dict, facts_by_id=None) -> bool:
     """Whether a reflection rests only on the AI's own words and the user has
     not backed it yet.
 
@@ -146,10 +188,14 @@ def awaits_user_signal(entry: dict) -> bool:
     (``user_fact_reinforce_count``); an "engaged" reply does not count.
     Entries without ``fact_source_counts`` predate the accounting and are
     never held back.
+
+    With ``facts_by_id`` (every fact of the character by id, archived ones
+    included) the sources are counted as the facts stand now
+    (``current_fact_source_counts``); without it, as they were saved.
     """
     if not isinstance(entry, dict):
         return False
-    counts = entry.get("fact_source_counts")
+    counts = current_fact_source_counts(entry, facts_by_id)
     if not isinstance(counts, dict):
         return False
     try:
@@ -162,6 +208,101 @@ def awaits_user_signal(entry: dict) -> bool:
     if user > 0 or ai <= 0:
         return False
     return confirms <= 0 and reinforces <= 0
+
+
+def _record_day(ts) -> str | None:
+    """Local calendar day (``YYYY-MM-DD``) of an ISO timestamp; None if unusable."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed.date().isoformat()
+
+
+def others_fact_days(facts) -> list[str]:
+    """Record days of the facts that are not the character's own words.
+
+    A scoped reflection is "seen" on the day a fact behind it was recorded;
+    the character restating itself is no sighting (``is_ai_disclosure``).
+    Sorted, unique.
+    """
+    days = {
+        day for day in (
+            _record_day(f.get("created_at")) for f in facts or ()
+            if isinstance(f, dict) and not is_ai_disclosure(f)
+        ) if day
+    }
+    return sorted(days)
+
+
+def merge_observed_days(*day_lists) -> list[str]:
+    """Union of observation-day lists, sorted.
+
+    Bounded by ``SCOPED_OBSERVED_DAYS_MAX``: the first day and the latest
+    ones are kept, which is all the promotion gate reads (how many, and the
+    first).
+    """
+    days = sorted({
+        day for days in day_lists for day in days or ()
+        if isinstance(day, str) and day
+    })
+    limit = max(int(SCOPED_OBSERVED_DAYS_MAX), 2)
+    if len(days) > limit:
+        days = days[:1] + days[-(limit - 1):]
+    return days
+
+
+def observed_days(entry: dict) -> list[str]:
+    """The days a scoped reflection was seen in others' words.
+
+    Recorded as ``observed_days`` since the promotion gate exists. Older
+    lines count their creation day once, unless their source counts say
+    they rest only on the character's own words.
+    """
+    if not isinstance(entry, dict):
+        return []
+    days = entry.get("observed_days")
+    if isinstance(days, list):
+        return merge_observed_days(days)
+    if not has_others_backing(entry):
+        return []
+    day = _record_day(entry.get("created_at"))
+    return [day] if day else []
+
+
+def has_others_backing(entry: dict) -> bool:
+    """Whether at least one fact behind ``entry`` is not the character's own
+    words. Entries without ``fact_source_counts`` predate the accounting and
+    count as backed, the same default ``awaits_user_signal`` applies.
+    """
+    if not isinstance(entry, dict):
+        return False
+    counts = entry.get("fact_source_counts")
+    if not isinstance(counts, dict):
+        return True
+    try:
+        return int(counts.get("user", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def scoped_promotion_ready(entry: dict, now: datetime) -> bool:
+    """Whether a scoped reflection was seen often enough, long enough, to be
+    written into its subject's persona: on ``SCOPED_PROMOTION_MIN_OBSERVED_DAYS``
+    distinct days, the first of them ``SCOPED_PROMOTION_MIN_AGE_DAYS`` ago.
+    """
+    days = observed_days(entry)
+    if len(days) < SCOPED_PROMOTION_MIN_OBSERVED_DAYS:
+        return False
+    try:
+        first = datetime.fromisoformat(days[0]).date()
+    except (ValueError, TypeError):
+        return False
+    return (now.date() - first).days >= SCOPED_PROMOTION_MIN_AGE_DAYS
 
 
 # Compact tuple-based tiers avoid an if chain: [(importance_threshold, rein), ...].
@@ -358,8 +499,11 @@ def merged_evidence_state(sources: list[dict]) -> dict:
     them to defaults (CodeRabbit Major #1392). Shared by the persona merge
     (refine and introspection) and the introspection reflection merge.
     """
+    rein_values = [
+        float(src.get("reinforcement", 0) or 0) for src in sources
+    ]
     state = {
-        "reinforcement": 0.0,
+        "reinforcement": max(rein_values) if rein_values else 0.0,
         "disputation": 0.0,
         "user_fact_reinforce_count": 0,
         "sub_zero_days": 0,
@@ -368,9 +512,6 @@ def merged_evidence_state(sources: list[dict]) -> dict:
         "sub_zero_last_increment_date": None,
     }
     for src in sources:
-        state["reinforcement"] = max(
-            state["reinforcement"], float(src.get("reinforcement", 0) or 0),
-        )
         state["disputation"] = max(
             state["disputation"], float(src.get("disputation", 0) or 0),
         )

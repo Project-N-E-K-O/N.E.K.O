@@ -89,48 +89,9 @@ font-weight:650;
 letter-spacing:.04em;
 text-shadow:0 1px 2px rgba(0,112,181,.28)}
 
-.theater-window-controls{
--webkit-app-region:no-drag}
-
+/* Window controls are styled by window_controls.css; only undo the page-wide button min-height it does not reset. */
 .theater-window-controls .neko-window-control-btn{
-width:32px;
-height:32px;
-min-height:32px;
-padding:0;
-border:0;
-border-radius:4px;
-color:rgba(255,255,255,.9);
-background:transparent;
-line-height:1;
-transition:background .2s,transform .1s ease,opacity .2s ease}
-
-.theater-window-controls .neko-window-control-btn:hover{
-background:rgba(255,255,255,.2);
-transform:translateY(-1px)}
-
-.theater-window-controls .neko-window-control-btn:active{
-background:rgba(255,255,255,.3);
-transform:translateY(1px) scale(.95);
-opacity:.9}
-
-.theater-close-icon{
-position:relative;
-display:block;
-width:14px;
-height:14px}
-
-.theater-close-icon::before,.theater-close-icon::after{
-content:"";
-position:absolute;
-top:0;
-left:6px;
-width:2px;
-height:14px;
-border-radius:2px;
-background:currentcolor}
-
-.theater-close-icon::before{transform:rotate(45deg)}
-.theater-close-icon::after{transform:rotate(-45deg)}
+min-height:0}
 
 .theater-mode-badge{
 padding:5px 9px;
@@ -176,7 +137,9 @@ box-shadow:0 6px 14px rgba(23,167,255,.18)}
 height:100vh;
 min-height:0;
 display:grid;
-grid-template-rows:56px minmax(0,1fr);
+/* Explicit column: a long status must not widen the title bar and push the window controls off-screen. */
+grid-template-columns:minmax(0,1fr);
+grid-template-rows:minmax(56px,auto) minmax(0,1fr);
 background:radial-gradient(circle at 8% 12%,rgba(75,212,253,.2),transparent 30%),linear-gradient(145deg,var(--theater-bg),var(--theater-panel-soft))}
 
 .theater-selector-shell [hidden]{
@@ -198,23 +161,62 @@ color:rgba(255,255,255,.94);
 background:rgba(7,82,137,.2);
 font-size:.74rem}
 
-/* 聚焦后在标题栏下完整显示状态，避免连接等待说明被窄屏省略号遮住。 */
-.theater-selector-shell .theater-status:focus{
-position:fixed;
-top:64px;
-left:12px;
-z-index:100;
-width:max-content;
-max-width:min(480px,calc(100vw - 24px));
-padding:10px 12px;
+/* The status is only focusable while its text is truncated (theater_selector.js toggles tabindex/title),
+   so focusing it never moves a chip whose text already fits. When focused (Tab, click or tap) the full
+   text wraps in place inside the title bar, which may grow taller and push the layout down instead of
+   covering the story library; blur collapses it again. */
+.theater-selector-shell .theater-status[tabindex]:focus{
+max-width:none;
 overflow:visible;
 white-space:normal;
+overflow-wrap:anywhere;
+outline:2px solid #075289;
+outline-offset:1px}
+
+.theater-market-connection{
+min-height:0;
+overflow:auto;
+display:grid;
+place-items:center;
+padding:24px}
+
+.theater-market-card{
+width:min(100%,520px);
+padding:32px;
+border:1px solid var(--theater-line);
+border-radius:24px;
+background:var(--theater-panel);
+box-shadow:var(--theater-shadow)}
+
+.theater-market-card h1{
+margin:0 0 16px;
+font-size:1.5rem}
+
+.theater-market-card p{
+margin:0;
+color:var(--theater-muted);
+line-height:1.7;
+overflow-wrap:anywhere}
+
+.theater-market-actions{
+display:flex;
+flex-wrap:wrap;
+gap:12px;
+margin-top:24px}
+
+.theater-market-actions a{
+display:inline-flex;
+align-items:center;
+min-height:40px;
+padding:8px 14px;
+border:1px solid var(--theater-line);
+border-radius:10px;
 color:var(--theater-ink);
 background:var(--theater-panel);
-border-color:var(--theater-accent);
-box-shadow:var(--theater-shadow);
-outline:2px solid var(--theater-accent);
-outline-offset:2px}
+text-decoration:none}
+
+.theater-market-actions a:hover{
+border-color:var(--theater-accent)}
 
 .theater-selector-layout{
 min-height:0;
@@ -238,15 +240,18 @@ display:flex;
 flex-direction:column}
 
 .theater-library-heading{
-display:grid;
-grid-template-columns:repeat(2,minmax(0,1fr));
+display:flex;
+flex-wrap:wrap;
+align-items:center;
+justify-content:space-between;
 gap:12px;
 padding:22px;
 border-bottom:1px solid var(--theater-line)}
 
-.theater-library-heading>div{
-grid-column:1/-1;
-min-width:0}
+.theater-library-actions{
+display:flex;
+flex-wrap:wrap;
+gap:8px}
 
 .theater-library-heading p,.theater-detail-heading p{
 margin:0 0 6px;

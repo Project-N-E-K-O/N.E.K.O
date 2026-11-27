@@ -190,6 +190,9 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane :label="$t('pluginConsent.title')" name="permissions">
+          <PluginPermissions v-if="activeTab === 'permissions'" :key="pluginId" :plugin-id="pluginId" />
+        </el-tab-pane>
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
           <div data-yui-guide-id="plugin-detail-entries">
             <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
@@ -233,6 +236,7 @@ import PluginAutoStartSwitch from '@/components/plugin/PluginAutoStartSwitch.vue
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
+import PluginPermissions from '@/components/plugin/PluginPermissions.vue'
 import PluginModelBindings from '@/components/plugin/PluginModelBindings.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -260,7 +264,12 @@ const router = useRouter()
 const pluginStore = usePluginStore()
 const { locale } = useI18n()
 
-const pluginId = computed(() => route.params.id as string)
+// Sibling routes (logs/:id, adapter/:id/ui) share the `id` param, and this
+// view stays mounted through the leave transition, so only this route's id
+// counts; anywhere else the id is empty and loadDetail() skips loading.
+const pluginId = computed(() =>
+  route.name === 'PluginDetail' && typeof route.params.id === 'string' ? route.params.id : '',
+)
 const activeTab = ref('info')
 const configPageScroll = ref(false)
 const loading = ref(true)
@@ -284,7 +293,7 @@ const surfaceActivationRevisions = ref<Record<string, number>>({})
 // 被压到一屏后，.el-card 默认的 overflow:hidden 会把内容直接裁掉而不是让它滚动。
 const fillTabs = new Set(['panel', 'guide', 'logs'])
 const isFillTab = computed(() => fillTabs.has(activeTab.value))
-const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs', 'permissions'])
 // Focus mode belongs to the panel tab: leaving it (e.g. a surface opening the
 // logs tab) also ends focus, so coming back starts with the normal chrome.
 const focusRequested = ref(false)
@@ -600,8 +609,17 @@ async function retrySurfaces() {
 }
 
 async function loadDetail() {
-  const generation = ++detailGeneration
   const currentPluginId = pluginId.value
+  // Leaving the route empties pluginId while this view is still mounted, and
+  // the sync watch below fires first; an empty id must not reach the API
+  // (it would request /plugins/undefined or another route's id). Keep the loading state so the
+  // leaving page shows no not-found flash, and so a locale change meanwhile
+  // takes the full reload path, which lands back here.
+  if (!currentPluginId) {
+    loading.value = true
+    return
+  }
+  const generation = ++detailGeneration
   const requestLocale = locale.value
   const isCurrent = () => detailMounted && generation === detailGeneration
     && currentPluginId === pluginId.value && requestLocale === locale.value

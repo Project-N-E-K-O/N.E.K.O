@@ -228,14 +228,14 @@ async def test_publication_guard_rejects_new_write_with_non_success_status():
         memory_server.review._publication_held_derived_task_names.discard(name)
 
 
-def _memory_server_request(path: str):
+def _memory_server_request(path: str, method: str = "POST"):
     """Build the minimal ASGI scope the publication guard reads."""
     from starlette.requests import Request
 
     return Request(
         {
             "type": "http",
-            "method": "POST",
+            "method": method,
             "scheme": "http",
             "path": path,
             "raw_path": path.encode(),
@@ -423,6 +423,16 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/cancel_correction/{lanlan_name}", "POST"),
         # It establishes the fence itself and cannot be blocked by its own fence.
         ("/release_character/{lanlan_name}", "POST"),
+        # Memory Browser read-only analytics & diagnostic endpoints: never write character files.
+        ("/internal/memory/browser/overview/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/search/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/star_map/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/related/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/snapshots/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/export/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage_graph/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/deep_conflicts/{lanlan_name}", "POST"),
     }
     probe_name = "围栏探针角色"
     fenced: set[tuple[str, str]] = set()
@@ -439,11 +449,16 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
             (fenced if name == probe_name else unfenced).add((path, method))
 
     assert unfenced == unfenced_by_design
+    assert ("/internal/memory/{lanlan_name}/persona", "GET") in fenced
     assert ("/cache/{lanlan_name}", "POST") in fenced
     assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/retract", "POST") in fenced
+    assert ("/internal/memory/browser/imprint_note/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/star_map/label_clusters/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/create/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/restore/{lanlan_name}", "POST") in fenced
 
 
 @pytest.mark.unit
@@ -563,6 +578,9 @@ def test_every_memory_server_background_spawn_is_drainable():
         # Weekly introspection: registered by character in review.introspection_tasks,
         # drained the same way (test_character_release_cancels_a_running_introspection).
         ("refine_loops.py", "_run_introspection_tick"),
+        # Periodic persona/reflection/scoped refine runs: registered by character in
+        # their respective refine task registries, drained by cancel_character_derived_tasks.
+        ("refine_loops.py", "_run_tracked_refine_character"),
         # Daily pinned-section check: registered by character in
         # review.pinned_review_tasks, drained the same way
         # (test_a_release_cancels_a_check_waiting_on_the_model).
@@ -2010,3 +2028,37 @@ async def test_reused_identity_replaces_stale_in_flight_backup(tmp_path):
     await _cleanup_task(new_task)
     memory_server.compress_backup_tasks.pop(name, None)
     memory_server.review.compress_backup_task_generations.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_private_persona_snapshot_participates_in_character_fence():
+    """Its ensure path can save initialized or synchronized persona data."""
+    from app import memory_server
+    from starlette.responses import JSONResponse
+
+    name = "私有快照围栏角色"
+    runtime = memory_server.runtime
+    held = memory_server.review._publication_held_derived_task_names
+    held.discard(name)
+    observed = []
+
+    async def run(_request):
+        observed.append(runtime._active_character_requests.get(name, 0))
+        return JSONResponse({"status": "ok"})
+
+    try:
+        admitted = await runtime.character_publication_guard(
+            _memory_server_request(f"/internal/memory/{name}/persona", "GET"), run
+        )
+        assert admitted.status_code == 200 and observed == [1]
+        assert runtime._active_character_requests.get(name, 0) == 0
+        held.add(name)
+        blocked = AsyncMock(side_effect=AssertionError("snapshot reached while held"))
+        response = await runtime.character_publication_guard(
+            _memory_server_request(f"/internal/memory/{name}/persona", "GET"), blocked
+        )
+        assert response.status_code == 409
+        blocked.assert_not_awaited()
+    finally:
+        held.discard(name)

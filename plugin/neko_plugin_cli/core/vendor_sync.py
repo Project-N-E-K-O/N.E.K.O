@@ -25,6 +25,9 @@ from plugin.utils.source_paths import (
     VENDOR_SYNC_STAGING_PREFIX,
 )
 
+from ..git_env import git_env
+from .fs_links import is_link
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover
@@ -202,7 +205,7 @@ def sync_vendor(
                 emit(f"[OK] {plugin_dir.name}: no external dependencies to sync")
                 return 0
 
-            if _is_link(vendor_dir) and not vendor_dir.is_dir():
+            if is_link(vendor_dir) and not vendor_dir.is_dir():
                 emit(
                     f"[FAIL] {vendor_dir} is a link that does not lead to a "
                     "directory. Fix or remove it and retry.",
@@ -222,7 +225,7 @@ def sync_vendor(
             # another disk into a real directory, and a mount point (a Docker
             # volume) can not be renamed at all. Install into those in place,
             # as before the swap existed, without its rollback.
-            if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
+            if vendor_dir.is_dir() and (is_link(vendor_dir) or _is_mount_point(vendor_dir)):
                 # Several plugins may link vendor/ to one target: every writer
                 # to it must hold that target's lock, not only its plugin's.
                 target = _vendor_target(vendor_dir)
@@ -381,7 +384,7 @@ def _contains_plugin(target: os.stat_result, vendor_dir: Path, plugin_dir: Path)
     or by resolved path where the filesystem reports no inode numbers. A
     mount point there can not be resolved to what it mounts, so it counts."""
     if not target.st_ino:
-        if not _is_link(vendor_dir):
+        if not is_link(vendor_dir):
             return True
         resolved = os.path.normcase(os.path.realpath(vendor_dir))
         plugin = Path(os.path.realpath(plugin_dir))
@@ -731,7 +734,7 @@ def _pin_link(path: Path):
     with a sharing violation in every other process until the returned
     function closes it. Work through the link is unaffected. For anything
     but a Windows link there is nothing to pin."""
-    if sys.platform != "win32" or not _is_link(path):
+    if sys.platform != "win32" or not is_link(path):
         return lambda: None
     import ctypes.wintypes
 
@@ -759,7 +762,7 @@ def _empty_directory(directory: Path, *, keep: str) -> None:
     for child in directory.iterdir():
         if child.name == keep:
             continue
-        if _is_link(child):
+        if is_link(child):
             # A link to a directory (or a junction) is removed with rmdir on
             # Windows; neither form follows it.
             try:
@@ -809,17 +812,6 @@ def _filter_external(deps: list[str]) -> list[str]:
     return result
 
 
-def _is_link(path: Path) -> bool:
-    """Symlink, or a Windows junction (which is_symlink() misses on 3.11)."""
-    if path.is_symlink():
-        return True
-    try:
-        os.readlink(path)
-    except (OSError, ValueError):
-        return False
-    return True
-
-
 def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
     """A subdirectory of vendor/ that belongs to another tree.
 
@@ -847,7 +839,7 @@ def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
         for name in dirnames:
             path = Path(dirpath, name)
             if sys.platform == "win32":
-                if junctions and not path.is_symlink() and _is_link(path):
+                if junctions and not path.is_symlink() and is_link(path):
                     return path
             elif os.path.ismount(path):
                 return path
@@ -1288,6 +1280,8 @@ def _run_installer(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            # uv / pip run git for git+ requirements.
+            env=git_env(),
         )
     except OSError as exc:
         emit(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)
@@ -1389,7 +1383,7 @@ def _remove_installer_bin(vendor_dir: Path) -> None:
     A bin/ that is itself a mount point is left too: its files are another
     tree's."""
     bin_dir = vendor_dir / "bin"
-    if _is_link(bin_dir):
+    if is_link(bin_dir):
         try:
             bin_dir.unlink()
         except OSError:
@@ -1401,7 +1395,7 @@ def _remove_installer_bin(vendor_dir: Path) -> None:
         print(f"[WARN] Not removing {bin_dir}: it is a mount point.", file=sys.stderr)
         return
     children = list(bin_dir.iterdir())
-    if any(child.is_dir() and not _is_link(child) for child in children):
+    if any(child.is_dir() and not is_link(child) for child in children):
         print(f"[WARN] Not removing {bin_dir}: it contains directories.", file=sys.stderr)
         return
     for child in children:

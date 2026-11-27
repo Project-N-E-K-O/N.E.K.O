@@ -17,66 +17,10 @@ from .numeric_v2_storage_transaction import discard_temporary_file
 
 
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
-_DEFAULT_PACKAGES_INITIALIZED_MARKER = ".defaults_initialized"
-_DEFAULT_PACKAGES_MARKER_SCHEMA = "neko.theater.numeric.v2.default-packages"
 # Real v2.2 packages are tens of KB (each prompt field is capped at 384 tokens);
 # 8 MiB leaves ample headroom while bounding what an import may make us parse.
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 logger = logging.getLogger(__name__)
-
-
-def _read_default_package_ids(marker: Path) -> set[str]:
-    """Read handled builtin story IDs, supporting empty markers created by older versions."""  # noqa: DOCSTRING_CJK
-
-    if not marker.is_file():
-        return set()
-    raw = marker.read_text(encoding="utf-8").strip()
-    if not raw:
-        return set()
-    payload = json.loads(raw)
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != _DEFAULT_PACKAGES_MARKER_SCHEMA
-        or not isinstance(payload.get("story_ids"), list)
-    ):
-        return set()
-    return {
-        story_id
-        for story_id in payload["story_ids"]
-        if isinstance(story_id, str) and _STORY_ID_RE.fullmatch(story_id)
-    }
-
-
-def _write_default_package_ids(marker: Path, story_ids: set[str]) -> None:
-    """Atomically record handled builtin stories so future versions install only newly added ones."""  # noqa: DOCSTRING_CJK
-
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=marker.parent,
-            prefix=".defaults-",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            delete=False,
-        ) as temporary:
-            json.dump(
-                {
-                    "schema": _DEFAULT_PACKAGES_MARKER_SCHEMA,
-                    "story_ids": sorted(story_ids),
-                },
-                temporary,
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, marker)
-        temporary_path = None
-    finally:
-        discard_temporary_file(temporary_path)
 
 
 class NumericV2PackageError(ValueError):
@@ -121,42 +65,6 @@ class NumericV2PackageRegistry:
                 "numeric_v2_upgrade_required"
             )
         return self.compiler.compile_v2_2(payload)
-
-    def ensure_default_packages(self) -> None:
-        """Install repository builtin stories on first Numeric v2 use, never overwriting user stories."""  # noqa: DOCSTRING_CJK
-
-        marker = self.root / _DEFAULT_PACKAGES_INITIALIZED_MARKER
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            bundled_sources = (
-                sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json"))
-                if _DEFAULT_PACKAGE_ROOT.is_dir()
-                else []
-            )
-            # Do not write a completion marker when no builtin package ships; later versions can still install newly added defaults.
-            if not bundled_sources:
-                return
-            handled_story_ids = _read_default_package_ids(marker)
-            for source in bundled_sources:
-                payload = json.loads(source.read_text(encoding="utf-8"))
-                # Builtin packages share the import version gate: skip old packages, never bypass upgrade requirements.
-                try:
-                    compiled = self.compile_for_import(payload)
-                except NumericV2PackageUpgradeRequiredError:
-                    continue
-                if compiled.story_id in handled_story_ids:
-                    continue
-                target = self.package_path(compiled.story_id)
-                if not target.exists():
-                    try:
-                        self.import_package(compiled.story)
-                    except NumericV2PackageExistsError:
-                        # Concurrent first starts may install the same default package; another process having written it counts as success.
-                        pass
-                handled_story_ids.add(compiled.story_id)
-            _write_default_package_ids(marker, handled_story_ids)
-        except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
-            raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
 
     def delete_package(self, story_id: str) -> None:
         """Delete one installed story; the caller cascades Session cleanup in the same business action."""  # noqa: DOCSTRING_CJK

@@ -16,23 +16,32 @@ import dataclasses
 import errno
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import secrets
+import threading
 import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
+from typing import Annotated, Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 if TYPE_CHECKING:
     import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
+from utils.social_base import social_base_url, validate_http_url
 
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed_async,
+)
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
@@ -68,6 +77,9 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_entry_permission_source,
+)
 from plugin.server.application.plugins.installation_transactions import (
     ReplacePluginError,
     ReplacePluginResult,
@@ -123,6 +135,7 @@ _OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
 _OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
 _OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 _OAUTH_REFRESH_LOCK = asyncio.Lock()
+_OAUTH_STATE_FILE_LOCK = threading.RLock()
 _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
@@ -217,6 +230,52 @@ def _main_server_port() -> int:
 def _is_loopback_host(host: str) -> bool:
     normalized = host.strip().strip("[]").lower()
     return normalized in {"localhost", "127.0.0.1", "::1"}
+
+
+def market_uses_environment_proxy(url: str) -> bool:
+    """Route the configured market through environment proxies only when public.
+
+    Loopback HTTP, ``localhost`` and non-global IP literals (a self-hosted LAN
+    or CGNAT/VPN market addressed by IP) stay direct. Host names such as
+    ``nas.local`` are not resolved here; route them with ``NO_PROXY``.
+    Publication and subscription download share this one rule.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").strip("[]").lower().rstrip(".")
+    if parsed.scheme != "https" or not host:
+        return False
+    if _is_loopback_host(host) or host.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    # ``is_global`` also excludes shared CGNAT space (100.64/10, e.g. Tailscale).
+    return address.is_global
+
+
+def market_client_options(url: str) -> dict[str, Any]:
+    """HTTPX options for one market hop: proxies only for public markets.
+
+    ``trust_env=False`` bypasses proxies but would also drop the user's
+    ``SSL_CERT_FILE``/``SSL_CERT_DIR`` trust for a self-hosted HTTPS market,
+    so a direct hop keeps that certificate configuration explicitly.
+    """
+    if market_uses_environment_proxy(url):
+        return {"trust_env": True}
+    try:
+        secure = urlparse(url).scheme == "https"
+    except ValueError:
+        secure = False
+    if not secure:
+        # Plain loopback HTTP has no TLS; never fail it on a CA setting.
+        return {"trust_env": False}
+    import httpx
+
+    return {"trust_env": False, "verify": httpx.create_ssl_context(trust_env=True)}
 
 
 def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
@@ -323,13 +382,20 @@ def _consume_one_time_code(code: str) -> bool:
     return False
 
 
+def _is_task_running(task_id: str, task: Mapping[str, Any]) -> bool:
+    worker = _task_workers.get(task_id)
+    if worker is not None and callable(getattr(worker, "done", None)):
+        return not worker.done()
+    return task.get("completed_at") is None
+
+
 def _cleanup_tasks() -> None:
     now = time.time()
     expired = [
         task_id
         for task_id, task in _tasks.items()
-        if task.get("completed_at") is not None
-        and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+        if not _is_task_running(task_id, task)
+        and now - float(task.get("completed_at") or task.get("created_at") or 0) > _TASK_TTL_SECONDS
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
@@ -338,9 +404,13 @@ def _cleanup_tasks() -> None:
     if len(_tasks) <= _TASK_MAX_ENTRIES:
         return
     overflow = len(_tasks) - _TASK_MAX_ENTRIES
+    terminal = [
+        item for item in _tasks.items()
+        if not _is_task_running(item[0], item[1])
+    ]
     ordered = sorted(
-        _tasks.items(),
-        key=lambda item: float(item[1].get("created_at") or 0),
+        terminal,
+        key=lambda item: (float(item[1].get("completed_at") or item[1].get("created_at") or 0), item[0]),
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
@@ -657,7 +727,9 @@ _CATALOG_RESPONSE_HEADERS = frozenset(
 )
 
 
-async def _proxy_market_catalog(request: Request, upstream_path: str) -> Response:
+async def _proxy_market_catalog(
+    request: Request, upstream_path: str, *, query: tuple[str, ...] | None = None,
+) -> Response:
     """Proxy a fixed public catalog path through the local same-origin API."""
 
     base_url = _normalized_base_url(MARKET_API_URL)
@@ -672,8 +744,11 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
 
     httpx = await ensure_httpx()
     upstream_url = f"{base_url}/api/v1{upstream_path}"
-    if request.url.query:
-        upstream_url = f"{upstream_url}?{request.url.query}"
+    query_string = request.url.query if query is None else urlencode([
+        (name, value) for name, value in request.query_params.multi_items() if name in query
+    ])
+    if query_string:
+        upstream_url = f"{upstream_url}?{query_string}"
 
     started_at = time.monotonic()
     try:
@@ -889,7 +964,33 @@ async def _email_unverified_response(access_token: str) -> JSONResponse | None:
     )
 
 
-async def _proxy_market_submission(
+_FEEDBACK_SESSION_HEADER = "X-Market-Feedback-Session"
+# Set on a successful write whose login switched mid-flight: posted, but not by the current account.
+_FEEDBACK_SESSION_CHANGED_HEADER = "X-Market-Feedback-Session-Changed"
+
+
+def _feedback_session(token: dict[str, Any] | None) -> str:
+    if not token or not token.get("access_token") or not _oauth_subject_is_verified(token):
+        return ""
+    # Older saved logins may predate session_id. Their creation time survives
+    # refresh; without either, fall back to the subject alone. Never key on the
+    # access token: a routine refresh rotates it and would read as an account switch.
+    login = token.get("session_id") or token.get("created_at") or ""
+    identity = json.dumps([login, token["subject"]], separators=(",", ":"))
+    return hmac.new(_BRIDGE_TOKEN.encode(), identity.encode(), "sha256").hexdigest()
+
+
+def _current_feedback_session() -> str:
+    return _feedback_session(_read_json_file(_OAUTH_TOKEN_FILE))
+
+
+def _check_feedback_session(session: str, expected: str | None = None) -> None:
+    current = _current_feedback_session()
+    if not session or session != current or (expected is not None and expected != session):
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+
+
+async def _proxy_market_authenticated(
     request: Request,
     *,
     method: str,
@@ -897,8 +998,10 @@ async def _proxy_market_submission(
     query: tuple[str, ...] = (),
     forward_body: bool = False,
     requires_verified_email: bool = False,
+    api_path: str = "/api/v1/review/submissions",
+    surface: Literal["submission", "feedback"] = "submission",
 ) -> Response:
-    """Proxy one authenticated review-submission call to the Market.
+    """Proxy a fixed, authenticated route using the server-held Market token.
 
     The request carries the server-held access token; the browser only ever
     sends the bridge token, verified here. Only the ``query`` parameters named
@@ -910,8 +1013,11 @@ async def _proxy_market_submission(
     unchanged (status + body) so the UI can localize by its ``code`` and show
     its ``detail``.
     """
+    feedback = surface == "feedback"
+    label = "Market feedback" if feedback else "Market submissions"
+    verb = "is" if feedback else "are"
     _verify_token(
-        request.query_params.get("token"),
+        None if feedback else request.query_params.get("token"),
         authorization=request.headers.get("authorization"),
     )
     _require_local_bridge_token_access(request)
@@ -920,13 +1026,13 @@ async def _proxy_market_submission(
         return JSONResponse(
             status_code=503,
             content={
-                "detail": "Market submissions are not configured",
-                "code": "market_submission_not_configured",
+                "detail": f"{label} {verb} not configured",
+                "code": f"market_{surface}_not_configured",
             },
         )
 
     body = await request.body() if forward_body else None
-    upstream_url = f"{base_url}/api/v1/review/submissions{upstream_path}"
+    upstream_url = f"{base_url}{api_path}{upstream_path}"
     forwarded_query = [
         (name, value) for name, value in request.query_params.multi_items() if name in query
     ]
@@ -935,6 +1041,9 @@ async def _proxy_market_submission(
 
     httpx = await ensure_httpx()
     rejected_token: str | None = None
+    feedback_session = request.headers.get(_FEEDBACK_SESSION_HEADER)
+    if feedback and method != "GET" and not feedback_session:
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
     started_at = time.monotonic()
     for attempt in range(2):
         token_data = await _authenticated_market_token()
@@ -942,6 +1051,10 @@ async def _proxy_market_submission(
             token_data = await _ensure_valid_oauth_token(force_refresh=True, rejected_access_token=rejected_token)
             if not token_data or not token_data.get("access_token"):
                 break
+        if feedback:
+            active_session = _feedback_session(token_data)
+            _check_feedback_session(active_session, feedback_session)
+            feedback_session = active_session
         access_token = token_data["access_token"]
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
         language = request.headers.get("accept-language")
@@ -960,9 +1073,10 @@ async def _proxy_market_submission(
         except httpx.HTTPError as exc:
             elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category={} status=unavailable request_id=unavailable "
                 "elapsed_ms={} origin={}",
+                surface,
                 _market_auth_network_failure_category(exc),
                 elapsed_ms,
                 _market_api_log_origin(),
@@ -970,19 +1084,39 @@ async def _proxy_market_submission(
             return JSONResponse(
                 status_code=502,
                 content={
-                    "detail": "Market submissions are temporarily unavailable",
-                    "code": "market_submission_unavailable",
+                    "detail": f"{label} {verb} temporarily unavailable",
+                    "code": f"market_{surface}_unavailable",
                 },
             )
 
+        sent_after_session_change = False
+        if feedback and feedback_session and _current_feedback_session() != feedback_session:
+            # The login switched while the request was in flight. A read, or a
+            # write the Market refused (below 500), is stale for the new account.
+            # A write the Market already applied must not be reported as failed,
+            # or the UI would invite the user to post it again under the new
+            # account. A 5xx may or may not have been applied: pass it through so
+            # the UI treats it as uncertain rather than as a definite refusal.
+            if method == "GET" or (not upstream.is_success and upstream.status_code < 500):
+                raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+            sent_after_session_change = upstream.is_success
+            logger.info(
+                "[market-{}] write {} after session change status={} request_id={} origin={}",
+                surface,
+                "applied" if sent_after_session_change else "uncertain",
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
         if upstream.status_code == 401:
             # A rejected credential never passes its upstream body through: the
             # first time, refresh once and retry; a second rejection means the
             # saved login is no longer usable and must be re-done.
             logger.info(
-                "[market-submission] request rejected "
+                "[market-{}] request rejected "
                 "category=credential_rejected status=401 request_id={} "
                 "elapsed_ms={} origin={}",
+                surface,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
                 max(0, round((time.monotonic() - started_at) * 1000)),
                 _market_api_log_origin(),
@@ -994,8 +1128,9 @@ async def _proxy_market_submission(
 
         if 300 <= upstream.status_code < 400:
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category=redirect_rejected status={} request_id={} origin={}",
+                surface,
                 upstream.status_code,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
                 _market_api_log_origin(),
@@ -1003,8 +1138,8 @@ async def _proxy_market_submission(
             return JSONResponse(
                 status_code=502,
                 content={
-                    "detail": "Market submissions returned an unsafe redirect",
-                    "code": "market_submission_redirect_rejected",
+                    "detail": f"{label} returned an unsafe redirect",
+                    "code": f"market_{surface}_redirect_rejected",
                 },
             )
 
@@ -1012,8 +1147,9 @@ async def _proxy_market_submission(
             unverified = await _email_unverified_response(access_token)
             if unverified is not None:
                 logger.info(
-                    "[market-submission] request rejected "
+                    "[market-{}] request rejected "
                     "category=email_unverified status=403 request_id={} origin={}",
+                    surface,
                     _safe_market_request_id(upstream.headers.get("x-request-id")),
                     _market_api_log_origin(),
                 )
@@ -1022,8 +1158,9 @@ async def _proxy_market_submission(
         if upstream.status_code >= 400:
             elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category={} status={} request_id={} elapsed_ms={} origin={}",
+                surface,
                 _market_auth_http_failure_category(upstream.status_code),
                 upstream.status_code,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
@@ -1036,6 +1173,14 @@ async def _proxy_market_submission(
             for name, value in upstream.headers.items()
             if name.lower() in _SUBMISSION_RESPONSE_HEADERS
         }
+        if feedback:
+            response_headers["cache-control"] = "no-store"
+            if sent_after_session_change:
+                # The old session is gone; do not hand it back as current.
+                response_headers[_FEEDBACK_SESSION_CHANGED_HEADER] = "1"
+            elif upstream.is_success and feedback_session:
+                response_headers[_FEEDBACK_SESSION_HEADER] = feedback_session
+                response_headers["X-Market-Web-Url"] = MARKET_WEB_URL
         return Response(
             content=upstream.content,
             status_code=upstream.status_code,
@@ -1052,17 +1197,178 @@ async def _proxy_market_submission(
     )
 
 
+@router.get("/feedback")
+async def market_feedback_list(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="GET", api_path="/api/v1/me/plugin-feedback", upstream_path="",
+        query=("kind", "status", "plugin_id", "cursor", "limit"), surface="feedback",
+    )
+
+
+@router.post("/feedback/mark-read")
+async def market_feedback_mark_read(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="POST", api_path="/api/v1/me/plugin-feedback", upstream_path="/mark-read",
+        forward_body=True, surface="feedback",
+    )
+
+
+_MarketThreadId = Annotated[int, PathParam(ge=1, le=2**31 - 1)]
+
+
+async def _proxy_market_conversation(
+    request: Request,
+    path: str,
+    *,
+    query: tuple[str, ...] = (),
+    message: bool = False,
+) -> Response:
+    if request.method == "GET" and not request.headers.get("authorization"):
+        return await _proxy_market_catalog(request, path, query=query)
+    try:
+        return await _proxy_market_authenticated(
+            request,
+            method=request.method,
+            api_path="/api/v1",
+            upstream_path=path,
+            query=query,
+            forward_body=message,
+            requires_verified_email=request.method == "POST",
+            surface="feedback",
+        )
+    except HTTPException as exc:
+        if (
+            request.method == "GET"
+            and not request.headers.get(_FEEDBACK_SESSION_HEADER)
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") in {"market_auth_required", "market_auth_pending"}
+        ):
+            return await _proxy_market_catalog(request, path, query=query)
+        raise
+
+
+@router.get("/conversations/plugins/{plugin_id}/comments")
+async def market_conversation_comments(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/comments", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/comments/messages")
+async def market_conversation_comment(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/comments/messages", message=True)
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues")
+async def market_conversation_issues(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues", query=("before_id", "state", "limit"),
+    )
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}")
+async def market_conversation_issue(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/issues/{issue_id}")
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}/messages")
+async def market_conversation_issue_messages(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/messages", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/issues/{issue_id}/{action}")
+async def market_conversation_issue_action(
+    request: Request,
+    plugin_id: _MarketThreadId,
+    issue_id: _MarketThreadId,
+    action: Literal["messages", "close", "reopen"],
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/{action}", message=action == "messages",
+    )
+
+
+# At most 100 public profiles per query; this is far above their real size.
+_AVATAR_QUERY_MAX_BYTES = 512 * 1024
+_AVATAR_URL_MAX_LENGTH = 2048
+
+
+class MarketFeedbackAvatarQuery(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+@router.post("/feedback/avatars")
+async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvatarQuery) -> JSONResponse:
+    _verify_token(authorization=request.headers.get("authorization"))
+    _require_local_bridge_token_access(request)
+    user_ids = list(dict.fromkeys(map(str, payload.user_ids)))
+    httpx = await ensure_httpx()
+    try:
+        base = validate_http_url(social_base_url(), name="NEKO_SOCIAL_BASE_URL")
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            async with client.stream(
+                "POST", f"{base}/api/v1/public-profiles/query", json={"user_ids": user_ids}
+            ) as upstream:
+                upstream.raise_for_status()
+                declared = upstream.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _AVATAR_QUERY_MAX_BYTES:
+                    raise ValueError("avatar query response too large")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > _AVATAR_QUERY_MAX_BYTES:
+                        raise ValueError("avatar query response too large")
+                    chunks.append(chunk)
+        body = json.loads(b"".join(chunks))
+    except (httpx.HTTPError, ValueError, RecursionError):
+        return JSONResponse({}, status_code=502)
+    profiles = body.get("profiles") if isinstance(body, dict) else None
+    avatars = {}
+    if isinstance(profiles, dict):
+        for user_id in user_ids:
+            profile = profiles.get(user_id)
+            avatar = profile.get("avatar") if isinstance(profile, dict) else None
+            if not isinstance(avatar, dict) or avatar.get("kind") != "image":
+                continue
+            url = avatar.get("url")
+            if (
+                isinstance(url, str)
+                and url.startswith("https://")
+                and len(url) <= _AVATAR_URL_MAX_LENGTH
+            ):
+                avatars[user_id] = url
+    return JSONResponse(avatars, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/submissions/mine")
 async def market_submission_mine(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request, method="GET", upstream_path="/mine", query=_SUBMISSION_MINE_QUERY_PARAMS
+    )
+
+
+@router.get("/publication-requests/{plugin_id}")
+async def market_publication_requests(request: Request, plugin_id: int) -> Response:
+    if plugin_id < 1 or plugin_id >= 2**31:
+        raise HTTPException(422, "Invalid Market plugin ID")
+    return await _proxy_market_authenticated(
+        request, method="GET", api_path="/api/v1/plugins",
+        upstream_path=f"/{plugin_id}/versions/publication-requests",
+        query=("request_id", "limit", "offset"), requires_verified_email=True,
     )
 
 
 @router.post("/submissions/preflight")
 async def market_submission_preflight(request: Request) -> Response:
     # The Market takes an untyped dict here, so the body is forwarded as sent.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/preflight",
@@ -1073,7 +1379,7 @@ async def market_submission_preflight(request: Request) -> Response:
 
 @router.post("/submissions/repository-preview")
 async def market_submission_repository_preview(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/repository-preview",
@@ -1084,7 +1390,7 @@ async def market_submission_repository_preview(request: Request) -> Response:
 
 @router.post("/submissions/drafts")
 async def market_submission_create_draft(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/drafts",
@@ -1095,7 +1401,7 @@ async def market_submission_create_draft(request: Request) -> Response:
 
 @router.put("/submissions/{submission_id}/draft")
 async def market_submission_update_draft(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="PUT",
         upstream_path=f"/{_validated_submission_id(submission_id)}/draft",
@@ -1106,7 +1412,7 @@ async def market_submission_update_draft(request: Request, submission_id: str) -
 
 @router.post("/submissions/{submission_id}/submit")
 async def market_submission_submit(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
@@ -1117,7 +1423,7 @@ async def market_submission_submit(request: Request, submission_id: str) -> Resp
 
 @router.post("/submissions/{submission_id}/revision")
 async def market_submission_create_revision(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/revision",
@@ -1129,7 +1435,7 @@ async def market_submission_create_revision(request: Request, submission_id: str
 @router.get("/submissions/{submission_id}/workspace")
 async def market_submission_workspace(request: Request, submission_id: str) -> Response:
     # A login-only Market route; no query parameter is forwarded.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="GET",
         upstream_path=f"/{_validated_submission_id(submission_id)}/workspace",
@@ -1139,7 +1445,7 @@ async def market_submission_workspace(request: Request, submission_id: str) -> R
 @router.post("/submissions/{submission_id}/withdraw")
 async def market_submission_withdraw(request: Request, submission_id: str) -> Response:
     # The Market withdraw route needs only a login, not a verified email.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/withdraw",
@@ -1241,7 +1547,8 @@ class MarketDownloadPreferences(BaseModel):
 
     @model_validator(mode="after")
     def _validate_preferences(self) -> "MarketDownloadPreferences":
-        validate_preferences(self.mode, self.specified_source_id)
+        # A retired mirror sent by an old page maps to the default one.
+        self.specified_source_id = validate_preferences(self.mode, self.specified_source_id).specified_source_id
         return self
 
 
@@ -2114,9 +2421,8 @@ async def market_oauth_start(
     expires_at = time.time() + _OAUTH_SESSION_TTL_SECONDS
     redirect_uri = _oauth_redirect_uri_for_request(request)
 
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
-    _write_private_json(
-        _OAUTH_PENDING_FILE,
+    await asyncio.to_thread(
+        _start_oauth_session_sync,
         {
             "state": state,
             "code_verifier": code_verifier,
@@ -2232,20 +2538,13 @@ async def market_oauth_callback(
     file URL. A loopback redirect mirrors the pattern used by desktop apps such
     as VS Code and lets the already-running local server receive the code.
     """
-    pending = _read_json_file(_OAUTH_PENDING_FILE)
-    if not pending:
+    outcome = await asyncio.to_thread(_commit_oauth_callback_sync, code, state)
+    if outcome == "not_started":
         raise HTTPException(status_code=400, detail="OAuth 登录尚未开始")
-    if time.time() > float(pending.get("expires_at") or 0):
-        _unlink_if_exists(_OAUTH_PENDING_FILE)
+    if outcome == "expired":
         raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
-    expected_state = str(pending.get("state") or "")
-    if not expected_state or not secrets.compare_digest(state, expected_state):
+    if outcome == "state_mismatch":
         raise HTTPException(status_code=400, detail="OAuth state 校验失败")
-
-    _write_private_json(
-        _OAUTH_CALLBACK_FILE,
-        {"code": code, "state": state, "timestamp": time.time()},
-    )
     locale = _preferred_oauth_callback_locale(
         request.headers.get("accept-language", "")
     )
@@ -2333,30 +2632,34 @@ async def market_oauth_status(
                 logger.info(
                     "Refreshed Auth access token was rejected while resolving subject"
                 )
-                if _unlink_oauth_token_if_matches(token_snapshot):
+                if await asyncio.to_thread(_unlink_oauth_token_if_matches, token_snapshot):
                     _clear_account_summary_cache()
                 return MarketOAuthStatusResponse(
                     authenticated=False,
                     market_web_url=MARKET_WEB_URL,
                 )
         subject = _extract_auth_subject(auth_user)
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _oauth_status_after_cas_conflict(token_snapshot)
+        if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
+            return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
         if subject:
             token_data["subject"] = subject
             token_data["subject_pending"] = False
             token_data["auth_state"] = "ready"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             token_snapshot = dict(token_data)
         else:
             token_data["subject"] = None
             token_data["subject_pending"] = True
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return _oauth_status_after_cas_conflict(token_snapshot)
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
+                return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
             return MarketOAuthStatusResponse(
                 authenticated=False,
                 auth_state="pending",
@@ -2402,8 +2705,10 @@ async def market_oauth_status(
         token_data["market_user_verified_at"] = time.time()
     token_data["auth_state"] = "ready"
     token_data["updated_at"] = time.time()
-    if not _write_oauth_token_if_matches(token_snapshot, token_data):
-        return _oauth_status_after_cas_conflict(token_snapshot)
+    if not await asyncio.to_thread(
+        _write_oauth_token_if_matches, token_snapshot, token_data
+    ):
+        return await asyncio.to_thread(_oauth_status_after_cas_conflict, token_snapshot)
 
     return MarketOAuthStatusResponse(
         authenticated=True,
@@ -2444,8 +2749,10 @@ async def market_oauth_account_summary(
         return MarketOAuthAccountSummaryResponse.model_validate(cached)
 
     async with _ACCOUNT_SUMMARY_LOCK:
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
+        if not await asyncio.to_thread(_oauth_token_snapshot_matches, token_snapshot):
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         cached = _fresh_account_summary(cache_key)
         if cached is not None:
             return MarketOAuthAccountSummaryResponse.model_validate(cached)
@@ -2476,15 +2783,21 @@ async def market_oauth_account_summary(
                 )
             except _OAuthAccessTokenRejected:
                 logger.info("Refreshed Auth access token was rejected by userinfo")
-                if _unlink_oauth_token_if_matches(token_snapshot):
+                if await asyncio.to_thread(_unlink_oauth_token_if_matches, token_snapshot):
                     _clear_account_summary_cache()
                 return _unauthenticated_account_summary()
 
             cache_key = _account_summary_cache_key(token_data)
-        if not _oauth_token_snapshot_matches(token_snapshot):
-            return _account_summary_for_invalidated_snapshot(token_snapshot)
         summary = _build_account_summary(token_data, auth_user, market_user)
-        _store_account_summary(cache_key, summary)
+        if not await asyncio.to_thread(
+            _store_account_summary_if_snapshot_matches_sync,
+            token_snapshot,
+            cache_key,
+            summary,
+        ):
+            return await asyncio.to_thread(
+                _account_summary_for_invalidated_snapshot, token_snapshot
+            )
         return summary
 
 
@@ -2499,31 +2812,28 @@ async def market_oauth_complete(
     """Consume browser-callback authorization codes and exchange for Auth tokens."""
     _verify_token(token, authorization=authorization)
 
-    pending = _read_json_file(_OAUTH_PENDING_FILE)
-    if not pending:
+    input_status, pending, callback = await asyncio.to_thread(
+        _read_oauth_complete_inputs_sync
+    )
+    if input_status == "not_started":
         return MarketOAuthCompleteResponse(
             completed=False,
             authenticated=False,
             message="OAuth 登录尚未开始",
         )
-    if time.time() > float(pending.get("expires_at") or 0):
-        _unlink_if_exists(_OAUTH_PENDING_FILE)
-        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    if input_status == "expired":
         raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
-
-    callback = _read_json_file(_OAUTH_CALLBACK_FILE)
-    if not callback:
+    if input_status == "waiting":
         return MarketOAuthCompleteResponse(
             completed=False,
             authenticated=False,
             message="等待浏览器授权回调",
         )
-
-    state = str(callback.get("state") or "")
-    if not state or not secrets.compare_digest(state, str(pending.get("state") or "")):
-        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    if input_status == "state_mismatch":
         raise HTTPException(status_code=400, detail="OAuth state 校验失败")
 
+    assert pending is not None and callback is not None
+    state = str(callback.get("state") or "")
     code = str(callback.get("code") or "")
     code_verifier = str(pending.get("code_verifier") or "")
     if not code or not code_verifier:
@@ -2536,9 +2846,12 @@ async def market_oauth_complete(
     try:
         auth_user = await _fetch_auth_userinfo(access_token)
     except _OAuthAccessTokenRejected as exc:
-        await _require_active_oauth_session(state, token_payload)
-        _clear_oauth_session()
+        rejected_active = await asyncio.to_thread(
+            _reject_active_oauth_session_sync, state
+        )
         await _revoke_oauth_token_best_effort(token_payload)
+        if not rejected_active:
+            raise HTTPException(status_code=409, detail="oauth_session_cancelled") from exc
         raise HTTPException(status_code=401, detail="auth_token_rejected") from exc
     subject = _extract_auth_subject(auth_user)
 
@@ -2579,10 +2892,12 @@ async def market_oauth_complete(
     if market_state == "ready":
         stored["market_api_url_last_verified"] = _normalized_base_url(MARKET_API_URL)
         stored["market_user_verified_at"] = now
-    await _require_active_oauth_session(state, token_payload)
-    _write_private_json(_OAUTH_TOKEN_FILE, stored)
-    _clear_account_summary_cache()
-    _clear_oauth_session()
+    committed = await asyncio.to_thread(
+        _commit_completed_oauth_session_sync, state, stored
+    )
+    if not committed:
+        await _revoke_oauth_token_best_effort(token_payload)
+        raise HTTPException(status_code=409, detail="oauth_session_cancelled")
 
     return MarketOAuthCompleteResponse(
         completed=True,
@@ -2609,11 +2924,7 @@ async def market_oauth_logout(
 ):
     """Clear local Auth OAuth tokens; revoke failures must not prevent local logout."""
     _verify_token(token, authorization=authorization)
-    token_data = _read_json_file(_OAUTH_TOKEN_FILE)
-    _clear_account_summary_cache()
-    _unlink_if_exists(_OAUTH_TOKEN_FILE)
-    _unlink_if_exists(_OAUTH_PENDING_FILE)
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    token_data = await asyncio.to_thread(_logout_oauth_sync)
     if token_data:
         await _revoke_oauth_token_best_effort(token_data)
     return MarketOAuthLogoutResponse(message="已退出 Auth 登录")
@@ -2812,8 +3123,9 @@ def _auth_issuer() -> str:
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if isinstance(payload.get("user"), dict):
+        payload = {**payload, "user": scrub_non_finite_numbers(payload["user"])}
+    atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     try:
         path.chmod(0o600)
     except OSError as exc:
@@ -2834,32 +3146,33 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
     """CAS guard for async OAuth work that may finish after logout/re-login."""
 
-    current = _read_json_file(_OAUTH_TOKEN_FILE)
-    if not current:
-        return False
-    expected_token = snapshot.get("access_token")
-    current_token = current.get("access_token")
-    if not (
-        isinstance(expected_token, str)
-        and isinstance(current_token, str)
-        and secrets.compare_digest(expected_token, current_token)
-    ):
-        return False
-    expected_session = snapshot.get("session_id")
-    if isinstance(expected_session, str) and expected_session:
-        current_session = current.get("session_id")
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if not current:
+            return False
+        expected_token = snapshot.get("access_token")
+        current_token = current.get("access_token")
         if not (
-            isinstance(current_session, str)
-            and secrets.compare_digest(expected_session, current_session)
+            isinstance(expected_token, str)
+            and isinstance(current_token, str)
+            and secrets.compare_digest(expected_token, current_token)
         ):
             return False
-    expected_revision = _oauth_state_revision(snapshot)
-    current_revision = _oauth_state_revision(current)
-    return (
-        current.get("refresh_generation") == snapshot.get("refresh_generation")
-        and expected_revision is not None
-        and current_revision == expected_revision
-    )
+        expected_session = snapshot.get("session_id")
+        if isinstance(expected_session, str) and expected_session:
+            current_session = current.get("session_id")
+            if not (
+                isinstance(current_session, str)
+                and secrets.compare_digest(expected_session, current_session)
+            ):
+                return False
+        expected_revision = _oauth_state_revision(snapshot)
+        current_revision = _oauth_state_revision(current)
+        return (
+            current.get("refresh_generation") == snapshot.get("refresh_generation")
+            and expected_revision is not None
+            and current_revision == expected_revision
+        )
 
 
 def _current_oauth_token_for_same_session_snapshot(
@@ -2872,16 +3185,17 @@ def _current_oauth_token_for_same_session_snapshot(
     identity has not been replaced.
     """
 
-    current = _read_json_file(_OAUTH_TOKEN_FILE)
-    if (
-        not current
-        or not _oauth_token_provenance_matches(current)
-        or current.get("access_token") != snapshot.get("access_token")
-        or current.get("session_id") != snapshot.get("session_id")
-        or current.get("refresh_generation") != snapshot.get("refresh_generation")
-    ):
-        return None
-    return current
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if (
+            not current
+            or not _oauth_token_provenance_matches(current)
+            or current.get("access_token") != snapshot.get("access_token")
+            or current.get("session_id") != snapshot.get("session_id")
+            or current.get("refresh_generation") != snapshot.get("refresh_generation")
+        ):
+            return None
+        return current
 
 
 def _current_oauth_token_for_invalidated_snapshot(
@@ -2937,21 +3251,151 @@ def _write_oauth_token_if_matches(
     snapshot: dict[str, Any],
     payload: dict[str, Any],
 ) -> bool:
-    if not _oauth_token_snapshot_matches(snapshot):
-        return False
-    revision = _oauth_state_revision(snapshot)
-    if revision is None:
-        return False
-    payload["state_revision"] = revision + 1
-    _write_private_json(_OAUTH_TOKEN_FILE, payload)
-    return True
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        revision = _oauth_state_revision(snapshot)
+        if revision is None:
+            return False
+        payload["state_revision"] = revision + 1
+        _write_private_json(_OAUTH_TOKEN_FILE, payload)
+        return True
+
+
+def _commit_refreshed_oauth_token_sync(
+    current: dict[str, Any],
+    refreshed: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Commit refreshed credentials atomically under ``_OAUTH_STATE_FILE_LOCK``."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if _write_oauth_token_if_matches(current, refreshed):
+            return refreshed
+        latest = _current_oauth_token_for_same_session_snapshot(current)
+        if latest is None:
+            return None
+        merged = dict(latest)
+        for key in (
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "scope",
+            "expires_at",
+            "auth_url",
+            "issuer",
+            "client_id",
+            "refresh_generation",
+            "updated_at",
+            "refreshed_at",
+        ):
+            if key in refreshed:
+                merged[key] = refreshed[key]
+        merged.pop("market_user_verified_at", None)
+        if _write_oauth_token_if_matches(latest, merged):
+            return merged
+        return None
 
 
 def _unlink_oauth_token_if_matches(snapshot: dict[str, Any]) -> bool:
-    if not _oauth_token_snapshot_matches(snapshot):
-        return False
-    _unlink_if_exists(_OAUTH_TOKEN_FILE)
-    return True
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        return True
+
+
+def _unlink_oauth_token_if_unchanged(expected_token: dict[str, Any]) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        current = _read_json_file(_OAUTH_TOKEN_FILE)
+        if current != expected_token:
+            return False
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        return True
+
+
+def _start_oauth_session_sync(pending_payload: dict[str, Any]) -> None:
+    with _OAUTH_STATE_FILE_LOCK:
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        _write_private_json(_OAUTH_PENDING_FILE, pending_payload)
+
+
+def _commit_oauth_callback_sync(code: str, state: str) -> str:
+    with _OAUTH_STATE_FILE_LOCK:
+        pending = _read_json_file(_OAUTH_PENDING_FILE)
+        if not pending:
+            return "not_started"
+        if time.time() > float(pending.get("expires_at") or 0):
+            _unlink_if_exists(_OAUTH_PENDING_FILE)
+            return "expired"
+        expected_state = str(pending.get("state") or "")
+        if not expected_state or not secrets.compare_digest(state, expected_state):
+            return "state_mismatch"
+        _write_private_json(
+            _OAUTH_CALLBACK_FILE,
+            {"code": code, "state": state, "timestamp": time.time()},
+        )
+        return "ok"
+
+
+def _read_oauth_complete_inputs_sync() -> (
+    tuple[str, dict[str, Any] | None, dict[str, Any] | None]
+):
+    with _OAUTH_STATE_FILE_LOCK:
+        pending = _read_json_file(_OAUTH_PENDING_FILE)
+        if not pending:
+            return "not_started", None, None
+        if time.time() > float(pending.get("expires_at") or 0):
+            _clear_oauth_session()
+            return "expired", None, None
+        callback = _read_json_file(_OAUTH_CALLBACK_FILE)
+        if not callback:
+            return "waiting", pending, None
+        state = str(callback.get("state") or "")
+        if not state or not secrets.compare_digest(state, str(pending.get("state") or "")):
+            _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+            return "state_mismatch", pending, callback
+        return "ok", pending, callback
+
+
+def _is_active_oauth_session_unlocked(expected_state: str) -> bool:
+    current = _read_json_file(_OAUTH_PENDING_FILE)
+    current_state = str(current.get("state") or "") if current else ""
+    return (
+        bool(current_state)
+        and secrets.compare_digest(current_state, expected_state)
+        and time.time() <= float(current.get("expires_at") or 0)
+    )
+
+
+def _reject_active_oauth_session_sync(expected_state: str) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _is_active_oauth_session_unlocked(expected_state):
+            return False
+        _clear_oauth_session()
+        return True
+
+
+def _commit_completed_oauth_session_sync(
+    expected_state: str,
+    stored: dict[str, Any],
+) -> bool:
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _is_active_oauth_session_unlocked(expected_state):
+            return False
+        _write_private_json(_OAUTH_TOKEN_FILE, stored)
+        _clear_account_summary_cache()
+        _clear_oauth_session()
+        return True
+
+
+def _logout_oauth_sync() -> dict[str, Any] | None:
+    with _OAUTH_STATE_FILE_LOCK:
+        token_data = _read_json_file(_OAUTH_TOKEN_FILE)
+        _clear_account_summary_cache()
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        return token_data
 
 
 def _market_token_expires_soon(token_data: dict[str, Any]) -> bool:
@@ -3071,7 +3515,7 @@ async def _ensure_valid_oauth_token(
         return None
     if not _oauth_token_provenance_matches(token_data):
         logger.info("Skip saved Auth token: auth_url/client_id provenance mismatch")
-        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        await asyncio.to_thread(_unlink_oauth_token_if_unchanged, token_data)
         return None
     if (
         rejected_access_token is not None
@@ -3082,7 +3526,7 @@ async def _ensure_valid_oauth_token(
         return token_data
     if not token_data.get("refresh_token"):
         logger.info("Saved Auth token is expired and has no refresh token")
-        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        await asyncio.to_thread(_unlink_oauth_token_if_matches, token_data)
         return None
 
     async with _OAUTH_REFRESH_LOCK:
@@ -3099,7 +3543,7 @@ async def _ensure_valid_oauth_token(
         if not force_refresh and not _market_token_expires_soon(current):
             return current
         if not current.get("refresh_token"):
-            _unlink_oauth_token_if_matches(current)
+            await asyncio.to_thread(_unlink_oauth_token_if_matches, current)
             return None
 
         try:
@@ -3107,7 +3551,7 @@ async def _ensure_valid_oauth_token(
         except HTTPException as exc:
             logger.info("Auth token refresh failed: {}", exc.detail)
             if exc.status_code == 401:
-                _unlink_oauth_token_if_matches(current)
+                await asyncio.to_thread(_unlink_oauth_token_if_matches, current)
                 return None
             if force_refresh:
                 raise
@@ -3115,31 +3559,34 @@ async def _ensure_valid_oauth_token(
                 return current
             return None
 
-        if not _write_oauth_token_if_matches(current, refreshed):
-            latest = _current_oauth_token_for_same_session_snapshot(current)
-            if latest is not None:
-                merged = dict(latest)
-                for key in (
-                    "access_token",
-                    "refresh_token",
-                    "token_type",
-                    "scope",
-                    "expires_at",
-                    "auth_url",
-                    "issuer",
-                    "client_id",
-                    "refresh_generation",
-                    "updated_at",
-                    "refreshed_at",
-                ):
-                    if key in refreshed:
-                        merged[key] = refreshed[key]
-                merged.pop("market_user_verified_at", None)
-                if _write_oauth_token_if_matches(latest, merged):
-                    return merged
-            await _revoke_oauth_token_best_effort(refreshed)
+        commit_task = asyncio.create_task(
+            asyncio.to_thread(_commit_refreshed_oauth_token_sync, current, refreshed)
+        )
+        cancelled = False
+        while True:
+            try:
+                committed = await asyncio.shield(commit_task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if commit_task.cancelled():
+                    raise
+        if committed is None:
+            revoke_task = asyncio.create_task(_revoke_oauth_token_best_effort(refreshed))
+            while True:
+                try:
+                    await asyncio.shield(revoke_task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if revoke_task.cancelled():
+                        raise
+            if cancelled:
+                raise asyncio.CancelledError
             return None
-        return refreshed
+        if cancelled:
+            raise asyncio.CancelledError
+        return committed
 
 
 def _unlink_if_exists(path: Path) -> None:
@@ -3152,8 +3599,9 @@ def _unlink_if_exists(path: Path) -> None:
 
 
 def _clear_oauth_session() -> None:
-    _unlink_if_exists(_OAUTH_PENDING_FILE)
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    with _OAUTH_STATE_FILE_LOCK:
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
 
 
 async def _require_active_oauth_session(
@@ -3162,14 +3610,11 @@ async def _require_active_oauth_session(
 ) -> None:
     """Reject a completion whose browser session was logged out or replaced."""
 
-    current = _read_json_file(_OAUTH_PENDING_FILE)
-    current_state = str(current.get("state") or "") if current else ""
-    active = (
-        bool(current_state)
-        and secrets.compare_digest(current_state, expected_state)
-        and time.time() <= float(current.get("expires_at") or 0)
-    )
-    if active:
+    def _is_active_sync() -> bool:
+        with _OAUTH_STATE_FILE_LOCK:
+            return _is_active_oauth_session_unlocked(expected_state)
+
+    if await asyncio.to_thread(_is_active_sync):
         return
     await _revoke_oauth_token_best_effort(token_payload)
     raise HTTPException(status_code=409, detail="oauth_session_cancelled")
@@ -3246,7 +3691,16 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
                 },
             )
             res.raise_for_status()
-            payload = res.json()
+            try:
+                payload = res.json()
+            except (TypeError, ValueError) as exc:
+                # A 2xx HTML/empty gateway reply is an invalid Auth response,
+                # never a raw JSON exception or a diagnostic containing its body.
+                _log_auth_oauth_failure(
+                    "refresh", category="invalid_response", status=res.status_code,
+                    request_id=res.headers.get("x-request-id"), started_at=started_at,
+                )
+                raise HTTPException(status_code=502, detail="Auth refresh token 响应无效") from exc
     except httpx.HTTPStatusError as exc:
         _log_auth_oauth_failure(
             "refresh",
@@ -3368,14 +3822,15 @@ def _account_summary_for_invalidated_snapshot(
     )
 
 
-def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, int]:
+def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, str, int]:
     return (
         str(token_data.get("subject") or ""),
+        str(token_data.get("session_id") or ""),
         int(token_data.get("refresh_generation") or 0),
     )
 
 
-def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
+def _fresh_account_summary(cache_key: tuple[str, str, int]) -> dict[str, Any] | None:
     cached = _ACCOUNT_SUMMARY_CACHE
     if not cached or cached.get("key") != cache_key:
         return None
@@ -3386,7 +3841,7 @@ def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
 
 
 def _store_account_summary(
-    cache_key: tuple[str, int],
+    cache_key: tuple[str, str, int],
     summary: MarketOAuthAccountSummaryResponse,
 ) -> None:
     global _ACCOUNT_SUMMARY_CACHE
@@ -3395,6 +3850,20 @@ def _store_account_summary(
         "expires_at": time.time() + _ACCOUNT_SUMMARY_TTL_SECONDS,
         "payload": summary.model_dump(mode="json"),
     }
+
+
+def _store_account_summary_if_snapshot_matches_sync(
+    snapshot: dict[str, Any],
+    cache_key: tuple[str, str, int],
+    summary: MarketOAuthAccountSummaryResponse,
+) -> bool:
+    """Persist account summary cache only while ``snapshot`` is still current."""
+
+    with _OAUTH_STATE_FILE_LOCK:
+        if not _oauth_token_snapshot_matches(snapshot):
+            return False
+        _store_account_summary(cache_key, summary)
+        return True
 
 
 def _clear_account_summary_cache() -> None:
@@ -3667,11 +4136,13 @@ def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
 
 def _client_download_params(
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
 ) -> dict[str, str]:
-    params = {"source": "client"}
+    params = {"source": "client", "operation": operation, "event_id": event_id}
     if version and version.strip():
         params["version"] = version.strip()[:50]
     if channel and channel.strip():
@@ -3685,22 +4156,26 @@ def _client_download_params(
 async def _post_market_download_count(
     market_id: str,
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
 ) -> None:
-    base_url = _normalized_base_url(MARKET_API_URL)
-    if not base_url:
-        return
-    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
     started_at = time.monotonic()
     try:
+        base_url = _normalized_base_url(MARKET_API_URL)
+        if not base_url:
+            return
+        url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
         # Phase timeouts do not bound a response that keeps trickling in.
         async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
             async with _market_catalog_client() as client:
                 response = await client.post(
                     url,
                     params=_client_download_params(
+                        operation=operation,
+                        event_id=event_id,
                         version=version,
                         channel=channel,
                         package_sha256=package_sha256,
@@ -3726,34 +4201,61 @@ async def _post_market_download_count(
 
 def _record_market_download_best_effort(
     payload: MarketInstallRequest,
+    task_id: str,
 ) -> None:
-    """Count a finished first install without a Market login.
+    """Report a successful plugin-center download without a Market login.
 
-    Only ``mode="install"`` counts. Upgrades, reinstalls and replacing a
-    built-in copy keep a plugin the user already had, so they do not add to
-    the public download count. The HTTP call runs in the background so a slow
-    or failed Market does not delay the local install result.
+    An override installs the Market package over a bundled copy and counts
+    as an install.
+
+    Send the HTTP request in the background so the local operation completes
+    independently of Market's response.
     """
 
-    if payload.mode != "install":
-        return
     market_id = _market_numeric_plugin_id(payload.plugin_id)
     if market_id is None:
         return
-    task = asyncio.create_task(
-        _post_market_download_count(
-            market_id,
-            version=payload.version,
-            channel=payload.channel,
-            package_sha256=payload.package_sha256,
-        ),
-        name="market-download-count",
+    operation = "install" if payload.mode == "override_builtin" else payload.mode
+    # Repeated reports for the same task must reuse the same event ID.
+    event_id = str(uuid5(NAMESPACE_URL, f"market-download:{task_id}"))
+    request = _post_market_download_count(
+        market_id,
+        operation=operation,
+        event_id=event_id,
+        version=payload.version,
+        channel=payload.channel,
+        package_sha256=payload.package_sha256,
     )
+    try:
+        task = asyncio.create_task(request, name="market-download-count")
+    except Exception as exc:
+        request.close()
+        logger.warning(
+            "[market-download-count] scheduling failed plugin_id={} error={} errno={}",
+            market_id,
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+        return
     _download_count_tasks.add(task)
     task.add_done_callback(_download_count_tasks.discard)
 
 
 async def _report_market_install_best_effort(
+    payload: MarketInstallRequest,
+    task: dict[str, Any],
+) -> None:
+    try:
+        await _report_market_install(payload, task)
+    except Exception as exc:
+        logger.warning(
+            "[market-install-report] unexpected failure error={} errno={}",
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+
+
+async def _report_market_install(
     payload: MarketInstallRequest,
     task: dict[str, Any],
 ) -> None:
@@ -3950,9 +4452,6 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
-        _record_market_download_best_effort(payload)
-        await _report_market_install_best_effort(payload, task)
-        _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:
         _finalize_task_cancelled(task, exc, started_at, log_ctx)
     except _TaskError as exc:
@@ -3969,6 +4468,10 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             started_at,
             log_ctx,
         )
+    else:
+        _finalize_task_success(task, started_at, log_ctx)
+        _record_market_download_best_effort(payload, task_id)
+        await _report_market_install_best_effort(payload, task)
 
 
 # ─── Task error / finalisers ─────────────────────────────────────────
@@ -4307,7 +4810,7 @@ async def _replace_market_plugin_transaction(
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
     manual_snapshot_sha256: str = "",
-    rollback_install_source: Callable[[], Awaitable[None]] | None = None,
+    rollback_install_source: Callable[[], Awaitable[bool]] | None = None,
 ) -> ReplacePluginResult:
     """Revalidate and replace under the shared plugin filesystem lock."""
     reload_install_source = getattr(manager, "load", None)
@@ -4364,20 +4867,35 @@ async def _replace_market_plugin_transaction(
 
     else:
         validate_manual_backup = None
+    # Before anything changes: a grant record without a source yet is bound
+    # to the source of the entry validated above (not looked up again), so
+    # the Market source recorded for the new package is a source change
+    # rather than a first binding. A failed save, or an incomplete entry with
+    # a source-less grant, stops the replacement here, unchanged.
     try:
-        return await replace_plugin(
-            layout=layout,
-            install_new=install_new,
-            additional_targets=additional_targets,
-            preserve_targets=preserve_targets,
-            validate_backup=validate_manual_backup,
-            validate_channel_specific=validate_channel_specific,
-            on_rollback_start=on_rollback_start,
+        await asyncio.to_thread(
+            bind_entry_permission_source, active_entry.plugin_id, active_entry
         )
-    except ReplacePluginError:
-        if rollback_install_source is not None:
-            await rollback_install_source()
-        raise
+    except ServerDomainError as exc:
+        raise _TaskError(
+            code=exc.code.lower(),
+            message=exc.message,
+            http_status=exc.status_code,
+        ) from exc
+    result = await replace_plugin(
+        layout=layout,
+        install_new=install_new,
+        additional_targets=additional_targets,
+        preserve_targets=preserve_targets,
+        validate_backup=validate_manual_backup,
+        validate_channel_specific=validate_channel_specific,
+        on_rollback_start=on_rollback_start,
+        # On rollback the previous entry goes back before the old plugin
+        # restarts, so it starts under its own source.
+        restore_source_before_restart=rollback_install_source,
+    )
+    await notify_install_committed_async(result.install_result)
+    return result
 
 
 def _find_active_user_entry(manager: Any, plugin_ref: str) -> LockEntry | None:
@@ -4581,13 +5099,14 @@ async def _do_upgrade(
                 on_conflict="fail",
                 install_source_override=market_override,
                 _preserve_autostart_plugin_id=installed_plugin_id,
+                _analyze_after_commit=False,
             )
 
-        async def rollback_install_source() -> None:
+        async def rollback_install_source() -> bool:
             nonlocal source_restored
             restore_source = getattr(mgr, "restore_entry_for_rollback", None)
             if not source_write_attempted or not callable(restore_source):
-                return
+                return source_restored
             try:
                 await asyncio.to_thread(restore_source, entry)
             except Exception as restore_exc:
@@ -4597,6 +5116,7 @@ async def _do_upgrade(
                     installed_plugin_id,
                     restore_exc,
                 )
+            return source_restored
 
         async def validate_channel_specific() -> None:
             if continues_builtin_override:
@@ -4683,6 +5203,13 @@ async def _do_upgrade(
                     else f"升级失败且回滚未完整完成: {cause_message}"
                 ),
             ) from exc
+        except Exception:
+            # Anything else is raised before the transaction changes a file
+            # (plan changed, grants could not be bound, replacement
+            # pre-checks), or by the post-commit notification, which runs no
+            # rollback either: there is no rollback to report.
+            task["rollback"] = None
+            raise
 
         result = _with_market_operation_status(
             replacement.install_result,

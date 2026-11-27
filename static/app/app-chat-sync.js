@@ -2,12 +2,15 @@
 (function () {
     'use strict';
     var activeUid = null;
+    var modelFlight = null;
     var dialog = null;
     var settingsCharacterName = null;
     var statusNode = null;
     var operationRunning = false;
     var writerRecoveryRequired = false;
     var foregroundWakeRunning = false;
+    var settingsEpoch = 0, statusFlight = null, settingsTimer = null;
+    var modelActionRunning = false, recoveryNotice = '', actionError = '';
 
     function text(key, values) {
         // All visible labels use the same eight-locale namespace.
@@ -22,10 +25,26 @@
             chat_sync_login_required: 'loginRequired',
             chat_sync_session_changed: 'errorSessionChanged',
             chat_sync_session_unavailable: 'errorSessionUnavailable',
-            chat_sync_unavailable: 'errorNetwork',
+            chat_sync_unavailable: 'errorUnavailable',
+            chat_sync_network_unavailable: 'errorNetwork',
+            chat_sync_internal_error: 'errorInternal',
+            invalid_chat_sync_response: 'errorInternal',
             chat_sync_pull_timeout: 'errorNetwork',
+            long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
+            long_term_memory_evidence_capacity_exceeded: 'errorLongTermEvidenceCapacity',
+            long_term_memory_incoming_pending: 'errorLongTermPending',
+            long_term_archive_subject_unavailable: 'errorArchiveSubject',
+            recent_write_receipt_conflict: 'errorRecentWriteUnconfirmed',
+            invalid_recent_write_receipt: 'errorRecentWriteUnconfirmed',
+            recent_memory_file_unreadable: 'errorRecentFileUnreadable',
             chat_sync_retry_later: 'errorRetryLater',
+            long_term_memory_conflict_unresolved: 'errorRetryLater',
+            long_term_memory_upload_refused: 'errorRetryLater',
+            long_term_memory_upload_unsupported: 'errorRetryLater',
+            chat_sync_closing: 'errorUnavailable',
             chat_sync_service_rejected: 'errorServiceRejected',
+            cloud_model_upload_unavailable: 'errorServiceRejected',
+            cloud_model_download_unavailable: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',
             chat_sync_not_enabled: 'profileNeedsBinding',
             chat_sync_character_not_found: 'errorBindingChanged',
@@ -40,6 +59,10 @@
         return text('errorDetail', { message: text(messages[code]), code: code });
     }
 
+    // Local diagnostics that report something done, not something wrong: shown as they
+    // are, without the error wording and code.
+    var notices = { long_term_memory_evidence_trimmed: 'noticeLongTermEvidenceTrimmed' };
+
     function characterName() {
         // Resolve the current local profile, then use its persisted UID from the API.
         return settingsCharacterName || window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
@@ -47,15 +70,20 @@
 
     async function api(path, method, body) {
         // Only the local backend handles OAuth; the browser never receives its bearer.
-        var response = await fetch('/api/chat-sync' + path, {
+        var response;
+        try { response = await fetch('/api/chat-sync' + path, {
             method: method || 'GET', cache: 'no-store',
             headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
             body: body === undefined ? undefined : JSON.stringify(body)
-        });
+        }); } catch (_) { throw new Error('chat_sync_network_unavailable'); }
         var result;
         try { result = await response.json(); }
-        catch (_) { throw new Error('chat_sync_unavailable'); }
-        if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_unavailable');
+        catch (error) {
+            // A fresh body may fail in transit after fetch has received its headers.
+            var interrupted = error && (error.name === 'TypeError' || error.name === 'AbortError');
+            throw new Error(interrupted ? 'chat_sync_network_unavailable' : 'chat_sync_internal_error');
+        }
+        if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_internal_error');
         return result;
     }
 
@@ -65,17 +93,92 @@
         recover.setAttribute('aria-busy', String(operationRunning));
     }
 
-    async function refreshStatus() {
-        var name = characterName();
+    function currentSettings(name, epoch) {
+        return dialog && dialog.open && settingsEpoch === epoch && characterName() === name;
+    }
+
+    function refreshStatus(afterWrite) {
+        var name = characterName(), epoch = settingsEpoch;
+        if (statusFlight && statusFlight.epoch === epoch && statusFlight.name === name) {
+            if (!afterWrite) return statusFlight.promise;
+            // A read admitted before a write cannot acknowledge that write's result.
+            return statusFlight.promise.catch(function () {}).then(function () {
+                if (!currentSettings(name, epoch)) return false;
+                return refreshStatus();
+            });
+        }
+        var flight = {epoch: epoch, name: name};
+        flight.promise = readStatus(name, epoch).finally(function () {
+            if (statusFlight === flight) statusFlight = null;
+        });
+        statusFlight = flight;
+        return flight.promise;
+    }
+
+    async function readStatus(name, epoch) {
         var state = await api('/status');
-        if (characterName() !== name) return false;
+        if (!currentSettings(name, epoch)) return false;
         var role = state.characters.find(function (item) { return item.displayName === name; });
+        if (activeUid !== (role ? role.characterSyncId : null)) actionError = '';
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
-        var error = role && (role.syncSetupError || (binding && binding.lastSyncError));
-        statusNode.textContent = error ? describeError(error)
-            : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
+        if (writerRecoveryRequired) recoveryNotice = '';
+        var modelPanel = dialog.querySelector('[data-sync-model]'), modelStatus = {}, modelReadError = null;
+        if (modelPanel && activeUid && binding && binding.enabled) {
+            modelStatus = await api('/characters/' + activeUid + '/model-sync').catch(function (error) {
+                modelReadError = error; return {};
+            });
+            if (!currentSettings(name, epoch)) return false;
+        }
+        var diagnostics = binding && binding.localMemoryDiagnostics || [];
+        var isNotice = function (code) { return Object.prototype.hasOwnProperty.call(notices, code); };
+        var channels = binding && binding.channelStatus;
+        var lines = [], channelErrors = new Set(), assignedDiagnostics = new Set();
+        if (channels) {
+            [['pull', 'channelRecent'], ['long_term', 'channelLongTerm'], ['profile', 'channelProfile'], ['model', 'channelModel']]
+                .forEach(function (entry) {
+                    var channel = channels[entry[0]] || {}, localErrors = [];
+                    var incomingPending = entry[0] === 'long_term' && diagnostics.includes('long_term_memory_incoming_pending');
+                    diagnostics.filter(function (code) {
+                        return !isNotice(code) && (entry[0] === 'pull' ? code.startsWith('recent_')
+                            : entry[0] === 'long_term' && code.startsWith('long_term_'));
+                    }).forEach(function (code) {
+                        if (code !== 'long_term_memory_incoming_pending') localErrors.push(code);
+                        assignedDiagnostics.add(code);
+                    });
+                    if (channel.lastError) { localErrors.unshift(channel.lastError); channelErrors.add(channel.lastError); }
+                    if (entry[0] === 'profile' && binding.profile && binding.profile.conflict) localErrors.push('character_profile_conflict');
+                    if (entry[0] === 'model' && modelReadError) localErrors.push(modelReadError.message);
+                    var needsModelChoice = entry[0] === 'model' && (modelStatus.conflict || modelStatus.failed);
+                    var pendingWork = (entry[0] === 'pull' && (binding.pendingOriginals || binding.pendingDeletions))
+                        || incomingPending
+                        || (entry[0] === 'model' && (modelStatus.candidate || modelStatus.pending))
+                        || (entry[0] === 'profile' && binding.profile &&
+                            (binding.profile.dirty || binding.profile.pending || binding.profile.apply_pending));
+                    var label = writerRecoveryRequired ? 'channelPaused'
+                        : !binding.enabled ? (role.syncEnabled || role.syncPending ? 'channelWaiting' : 'channelDisabled')
+                        : localErrors.length || needsModelChoice ? 'channelError' : pendingWork ? 'channelWaiting'
+                        : channel.status === 'success' && channel.lastSuccessAt != null ? 'channelSuccess' : 'channelWaiting';
+                    lines.push(text('channelStatus', {channel: text(entry[1]), status: text(label)}));
+                    if (label === 'channelError') {
+                        Array.from(new Set(localErrors)).forEach(function (code) { lines.push(describeError(code)); });
+                    }
+                    if (incomingPending && label === 'channelWaiting') lines.push(describeError('long_term_memory_incoming_pending'));
+                });
+        }
+        var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic,
+            binding && !channelErrors.has(binding.lastSyncError) && binding.lastSyncError,
+            !channels && modelReadError && modelReadError.message]
+            .concat(diagnostics.filter(function (code) { return !isNotice(code) && !assignedDiagnostics.has(code); })).filter(Boolean);
+        if (errors.length) lines.push(Array.from(new Set(errors)).map(describeError).join('\n'));
+        if (recoveryNotice) lines.push(recoveryNotice);
+        else if (writerRecoveryRequired || !errors.length) lines.push(text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired'));
+        if (actionError) lines.push(actionError);
+        statusNode.textContent = lines.join('\n');
+        Array.from(new Set(diagnostics.filter(isNotice))).forEach(function (code) {
+            statusNode.textContent += '\n' + text(notices[code]);
+        });
         if (binding) {
             if (binding.pendingOriginals || binding.pendingDeletions) {
                 statusNode.textContent += '\n' + text('pending', {
@@ -84,30 +187,97 @@
             }
         }
         updateControls();
+        if (modelPanel) {
+            // Preserve focus and listeners when a background read finds the same choices.
+            var signature = JSON.stringify([epoch, activeUid, !!(binding && binding.enabled), !!modelStatus.conflict, !!modelStatus.failed]);
+            if (modelPanel._syncStatus === signature) return true;
+            modelPanel._syncStatus = signature;
+            modelPanel.replaceChildren();
+            if (activeUid && binding && binding.enabled) {
+                var modelUid = activeUid;
+                function modelButton(key, action) {
+                    var button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'chat-sync-button' + (action === 'local' ? ' chat-sync-secondary' : '');
+                    button.textContent = window.t('cloudModel.' + key);
+                    button.addEventListener('click', async function () {
+                        if (!currentSettings(name, epoch) || activeUid !== modelUid || modelActionRunning) return;
+                        modelActionRunning = true;
+                        actionError = '';
+                        button.disabled = true;
+                        try {
+                            await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action });
+                            if (currentSettings(name, epoch) && activeUid === modelUid) {
+                                await refreshStatus(true).catch(function (error) {
+                                    if (currentSettings(name, epoch) && activeUid === modelUid) statusNode.textContent = describeError(error);
+                                });
+                            }
+                        }
+                        catch (error) {
+                            if (currentSettings(name, epoch) && activeUid === modelUid) {
+                                actionError = describeError(error);
+                                statusNode.textContent = actionError;
+                            }
+                        }
+                        finally { button.disabled = false; modelActionRunning = false; }
+                    });
+                    modelPanel.appendChild(button);
+                }
+                if (modelStatus.conflict) {
+                    var description = document.createElement('p'); description.textContent = window.t('cloudModel.conflict'); modelPanel.appendChild(description);
+                    modelButton('useCloud', 'cloud'); modelButton('keepLocal', 'local');
+                } else if (modelStatus.failed) {
+                    var failure = document.createElement('p'); failure.textContent = window.t('cloudModel.failed'); modelPanel.appendChild(failure);
+                    modelButton('retry', 'retry');
+                }
+            }
+        }
         return true;
+    }
+
+    function stopSettingsRefresh() {
+        if (settingsTimer !== null) window.clearInterval(settingsTimer);
+        settingsTimer = null;
+    }
+
+    function refreshOpenSettings() {
+        if (!dialog || !dialog.open || document.visibilityState === 'hidden' || operationRunning || modelActionRunning) return;
+        var name = characterName(), epoch = settingsEpoch;
+        return refreshStatus().catch(function (error) {
+            if (currentSettings(name, epoch)) statusNode.textContent = [actionError, describeError(error)].filter(Boolean).join('\n');
+        });
+    }
+
+    function startSettingsRefresh() {
+        if (settingsTimer === null && dialog && dialog.open) settingsTimer = window.setInterval(refreshOpenSettings, 5000);
     }
 
     async function recoverSync() {
         if (operationRunning || !dialog.open || !writerRecoveryRequired || !activeUid) return;
-        var requestedName = characterName(), requestedUid = activeUid;
+        var requestedName = characterName(), requestedUid = activeUid, epoch = settingsEpoch;
         operationRunning = true;
+        actionError = ''; recoveryNotice = '';
         updateControls();
         try {
-            if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
+            if (!await refreshStatus() || !currentSettings(requestedName, epoch)
                     || activeUid !== requestedUid || !writerRecoveryRequired) return;
             statusNode.textContent = text('working');
             var path = '/characters/' + requestedUid;
             var recovered = await api(path + '/recovery/preview', 'POST');
-            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
-            await refreshStatus();
-            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
+            if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
+            var statusReadError = null;
+            await refreshStatus(true).catch(function (error) { statusReadError = error; });
+            if (!currentSettings(requestedName, epoch) || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
             // Earlier local deletions that never reached the cloud stay local only.
             var kept = recovered.deletions.count;
             if (kept) statusNode.textContent += '\n' + text('recoveryCloudCopiesKept', { count: kept });
+            recoveryNotice = statusNode.textContent;
+            if (statusReadError) statusNode.textContent += '\n' + describeError(statusReadError);
         } catch (error) {
-            if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
-                statusNode.textContent = describeError(error);
+            if (currentSettings(requestedName, epoch) && activeUid === requestedUid) {
+                actionError = describeError(error);
+                statusNode.textContent = actionError;
             }
         } finally {
             operationRunning = false;
@@ -171,30 +341,159 @@
         statusNode.className = 'chat-sync-status';
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
-        dialog.addEventListener('close', function () { settingsCharacterName = null; });
+        var modelPanel = document.createElement('div');
+        modelPanel.className = 'chat-sync-model';
+        modelPanel.dataset.syncModel = '';
+        dialog.appendChild(modelPanel);
+        dialog.addEventListener('close', function () {
+            settingsCharacterName = null; settingsEpoch++; stopSettingsRefresh();
+        });
         document.body.appendChild(dialog);
     }
 
     window.nekoChatSync = {
         openSettings: async function (name) {
+            var epoch = ++settingsEpoch;
+            recoveryNotice = '';
+            actionError = '';
             settingsCharacterName = name || null;
             if (!dialog) buildDialog();
             dialog.showModal();
             statusNode.textContent = text('working');
             dialog.querySelector('[data-sync-action="recover"]').disabled = true;
-            try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
+            startSettingsRefresh();
+            try { await refreshStatus(); } catch (error) {
+                if (dialog.open && settingsEpoch === epoch) statusNode.textContent = describeError(error);
+            }
         },
-        describeError: describeError
+        describeError: describeError,
+        notifyMediaChanged: refreshReadyModel,
+        requestMemoryRefresh: requestMemoryRefresh
     };
+
+    async function applyReadyModel(uid, name) {
+        if (modelFlight || window.appState?.isSwitchingCatgirl || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
+        var switchAttempt = window.appState?._switchAttemptCounter || 0;
+        function isCurrentRole() {
+            return characterName() === name && !window.appState?.isSwitchingCatgirl &&
+                (window.appState?._switchAttemptCounter || 0) === switchAttempt;
+        }
+        modelFlight = true;
+        var candidate;
+        var failed = false;
+        var loaded = false;
+        try {
+            var value;
+            try { value = await api('/characters/' + uid + '/model-sync'); }
+            catch (_) { return; }
+            candidate = value && value.candidate;
+            if (!candidate || !isCurrentRole() || candidate.name !== name) return;
+            await window.handleModelReload(name, { temporaryConfig: {
+                model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
+            }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
+            if (!isCurrentRole()) return;
+            var manager = window.live2dManager;
+            loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
+                && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
+            var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
+            if (!receipt.applied && isCurrentRole()) {
+                failed = true;
+                await window.handleModelReload(name, { suppressToast: true });
+            }
+        } catch (_) {
+            failed = true;
+            if (isCurrentRole()) {
+                if (!loaded) await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
+                if (isCurrentRole()) await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
+            }
+        } finally {
+            modelFlight = null;
+            if (failed && isCurrentRole() && typeof window.showStatusToast === 'function') {
+                window.showStatusToast(window.t ? window.t('app.modelSwitchFailed') : 'Model switch failed', 3000);
+            }
+        }
+    }
+
+    async function refreshReadyModel() {
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        var name = characterName();
+        var state = await api('/status');
+        var role = state.characters.find(function (item) { return item.displayName === name; });
+        if (role && characterName() === name) await applyReadyModel(role.characterSyncId, name);
+    }
+
+    var pendingMemoryName = null;
+    var memoryRefreshFlight = false;
+
+    function liveCharacterName() {
+        return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
+    }
+
+    function liveChatBusy(host) {
+        var state = window.appState || {};
+        var completed = new Set([state.assistantTurnCompletedId, state.assistantTurnSettledId]);
+        return !!state.assistantTurnAwaitingBubble || !!window._isProcessingRealisticQueue
+            || !!state.isPlaying || !!(window.NekoSpeechPlaybackState && window.NekoSpeechPlaybackState.active)
+            || !!(state.assistantTurnId && !completed.has(state.assistantTurnId))
+            || !!(state.isRecording && state.userRecentSpeechTime && Date.now() - state.userRecentSpeechTime < 700)
+            || (state.pendingTextTurnSubmitAt && Date.now() - state.pendingTextTurnSubmitAt < 15000)
+            || ((host && host.getState().messages) || []).some(function (message) {
+                return message.status === 'sending' || (message.status === 'streaming' && !completed.has(message.turnId));
+            });
+    }
+
+    function requestMemoryRefresh(name) {
+        if (typeof name !== 'string' || name !== liveCharacterName()) return;
+        pendingMemoryName = name;
+        flushMemoryRefresh();
+    }
+
+    function flushMemoryRefresh() {
+        var state = window.appState || {};
+        // Sync must not restart an open voice session or cancel microphone startup.
+        if (state.isRecording || state.voiceChatActive || state.voiceStartPending || window.isMicStarting) return;
+        if (!pendingMemoryName || memoryRefreshFlight || liveChatBusy(window.reactChatWindowHost)) return;
+        var name = pendingMemoryName;
+        if (name !== liveCharacterName()) { pendingMemoryName = null; return; }
+        if (!window.appInterpage || typeof window.appInterpage.handleMemoryEdited !== 'function') return;
+        pendingMemoryName = null;
+        memoryRefreshFlight = true;
+        Promise.resolve(window.appInterpage.handleMemoryEdited(name, { silent: true })).catch(function () {
+            if (liveCharacterName() === name && !pendingMemoryName) pendingMemoryName = name;
+        }).finally(function () { memoryRefreshFlight = false; });
+    }
+
+    window.addEventListener('voice-input-socket-open', flushMemoryRefresh);
+    window.addEventListener('neko-assistant-turn-end', flushMemoryRefresh);
+    window.addEventListener('neko-realistic-queue-idle', flushMemoryRefresh);
+    window.addEventListener('neko-speech-playback-state', flushMemoryRefresh);
+    window.addEventListener('voice-input-lifecycle-changed', flushMemoryRefresh);
 
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground
         // wake does not perform manual sync or bypass durable retry fences.
         if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('react-chat-window-root')) return;
         foregroundWakeRunning = true;
-        try { await api('/wake', 'POST'); } catch (_) { /* Local chat stays usable. */ }
+        try { await api('/wake', 'POST'); await refreshReadyModel(); } catch (_) { /* Local chat stays usable. */ }
         finally { foregroundWakeRunning = false; }
     }
-    document.addEventListener('visibilitychange', foregroundCatchup);
-    window.addEventListener('pageshow', foregroundCatchup);
+    document.addEventListener('neko:chat-sync-history-changed', function () {
+        flushMemoryRefresh();
+        refreshOpenSettings();
+        return refreshReadyModel().catch(function () { /* A later foreground wake retries. */ });
+    });
+    document.addEventListener('DOMContentLoaded', function () {
+        flushMemoryRefresh();
+        window.setInterval(flushMemoryRefresh, 30000);
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        refreshReadyModel().catch(function () {});
+        window.setInterval(function () {
+            if (document.visibilityState !== 'hidden') refreshReadyModel().catch(function () {});
+        }, 30000);
+    });
+    document.addEventListener('visibilitychange', function () { refreshOpenSettings(); return foregroundCatchup(); });
+    window.addEventListener('pageshow', function () {
+        startSettingsRefresh(); refreshOpenSettings(); return foregroundCatchup();
+    });
+    window.addEventListener('pagehide', function () { settingsEpoch++; stopSettingsRefresh(); });
 })();

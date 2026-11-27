@@ -20,7 +20,7 @@ BUTTON_PARTS = (
 
 
 def _install_toolbar(
-    page: Page, *, width=1420, height=786, x=1029, scale=1, pet=False,
+    page: Page, *, width=1420, height=786, x=1029, scale=1, pet=False, open_voice=True,
 ) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.set_viewport_size({"width": width, "height": height})
@@ -83,6 +83,8 @@ def _install_toolbar(
             window.__placements++;return position(...args);
         };
     }""", {"x": x, "scale": scale})
+    if not open_voice:
+        return
     page.locator(".live2d-trigger-btn").click()
     page.locator('[data-neko-mic-main-action="screen"]').wait_for(state="visible")
     page.wait_for_function("""() => {
@@ -412,18 +414,19 @@ def test_compact_screen_header_with_long_translation_keeps_close_reachable(page:
 
 
 @pytest.mark.frontend
-def test_adaptive_option_keeps_niri_virtual_coordinate_ownership(page: Page):
+@pytest.mark.parametrize("source,expected_left", [("niri:test", 1252), ("power-save:test", 728)])
+def test_adaptive_option_uses_crop_source_for_placement(page: Page, source, expected_left):
     page.set_viewport_size({"width": 400, "height": 400})
     page.set_content('''
         <div id="live2d-popup-mic" data-opens-left="true"
           style="position:fixed;left:20px;top:20px;width:220px;height:300px"></div>
         <div id="panel" style="position:fixed;width:280px;height:120px"></div>
     ''')
-    page.evaluate("""()=>{
+    page.evaluate("""source=>{
         window.__nekoNiriPetPhysicalCrop={isActive:()=>true,
-            getState:()=>({virtualBounds:{width:1920,height:1080}}),
+            getState:()=>({source,virtualBounds:{width:1920,height:1080}}),
             toVirtualRect:r=>({...r,x:r.x+1000,y:r.y+100})};
-    }""")
+    }""", source)
     page.add_script_tag(path=str(ROOT / "static/avatar/avatar-popup-common.js"))
     result = page.evaluate("""()=>{
         const popup=document.getElementById('live2d-popup-mic'),panel=document.getElementById('panel');
@@ -432,7 +435,7 @@ def test_adaptive_option_keeps_niri_virtual_coordinate_ownership(page: Page):
         return {left:parseFloat(panel.style.left),top:parseFloat(panel.style.top),
             crop:panel.dataset.niriPhysicalCropPositioned,down:panel.dataset.goDown};
     }""")
-    assert result == {"left": 1252, "top": 120, "crop": "true", "down": "false"}
+    assert result == {"left": expected_left, "top": 120, "crop": "true", "down": "false"}
 
 
 @pytest.mark.frontend
@@ -608,3 +611,118 @@ def test_adaptive_exit_motion_tracks_placement(page: Page):
         return getAvatarSidePanelExitMotion(panel);
     })""")
     assert result == ['translateY(6px)', 'translateY(-6px)', 'none', 'translateX(6px)']
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight', 'mouse'])
+def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page: Page, key):
+    _install_toolbar(page, open_voice=False)
+    page.evaluate("""() => {
+        const manager = live2dManager;
+        const parent = manager._createSettingsMenuButton({id:'character', label:'Character'});
+        parent.id = 'keyboard-character-anchor';
+        parent.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        const before = document.createElement('button');
+        before.id = 'before-character'; before.textContent = 'Before';
+        document.body.append(before, parent);
+        const panel = manager._createCharacterSettingsSidePanel();
+        panel._anchorElement = parent;
+        manager._attachSidePanelHover(parent, panel);
+        window.__keyboardPanel = panel;
+        window.__keyboardOpened = [];
+        window.openOrFocusWindow = (url, name) => { window.__keyboardOpened.push({url,name}); };
+    }""")
+    parent = page.locator('#keyboard-character-anchor')
+    if key == 'mouse':
+        parent.hover()
+        page.locator('#live2d-sidepanel-emote-maker').click()
+        assert page.evaluate('window.__keyboardOpened') == [{'url':'/emote_maker', 'name':'neko_emote_maker'}]
+        return
+    page.locator('#before-character').focus()
+    page.keyboard.press('Tab')
+    assert parent.evaluate('node => node === document.activeElement')
+    parent.press(key)
+    page.wait_for_function("document.activeElement?.id === 'live2d-sidepanel-general'")
+    # Focus must keep the panel open after the hover-collapse interval.
+    parent.hover()
+    page.mouse.move(1350, 740)
+    page.wait_for_timeout(500)
+    assert page.evaluate("getComputedStyle(window.__keyboardPanel).display") == 'flex'
+    page.keyboard.press('Tab')
+    assert page.evaluate('document.activeElement.id') == 'live2d-sidepanel-emote-maker'
+    page.keyboard.press('Enter')
+    assert page.evaluate('window.__keyboardOpened') == [{'url':'/emote_maker', 'name':'neko_emote_maker'}]
+    page.keyboard.press('Escape')
+    assert page.evaluate('document.activeElement.id') == 'keyboard-character-anchor'
+    page.wait_for_function("getComputedStyle(window.__keyboardPanel).display === 'none'")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('toggle_id', ['proactive-chat', 'proactive-vision', 'visit-enabled'])
+@pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight'])
+def test_side_panel_switch_keeps_its_activation_keys(page: Page, toggle_id, key):
+    _install_toolbar(page, open_voice=False)
+    before = page.evaluate("""id => {
+        Object.assign(window, {proactiveChatEnabled:false, proactiveVisionEnabled:false, visitEnabled:false});
+        window.__settingSaves = 0;
+        window.saveNEKOSettings = () => { window.__settingSaves += 1; };
+        window.acquireProactiveVisionAfterUserEnable = () => {};
+        const manager = live2dManager;
+        const toggle = manager._createSettingsToggleItem({id, label:id, inverted:id==='proactive-vision'});
+        toggle.id = 'review-side-switch';
+        toggle.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        document.body.append(toggle);
+        const panel = manager._createSidePanelContainer();
+        panel._anchorElement = toggle;
+        const button = document.createElement('button');
+        button.id = 'review-switch-detail'; button.textContent = 'Detail';
+        panel.append(button); document.body.append(panel);
+        manager._attachSidePanelHover(toggle, panel);
+        window.__reviewSwitchPanel = panel;
+        return toggle.querySelector('input').checked;
+    }""", toggle_id)
+    switch = page.locator('#review-side-switch')
+    switch.focus()
+    switch.press(key)
+    after = page.evaluate("""() => ({
+        checked:document.querySelector('#review-side-switch input').checked,
+        saves:window.__settingSaves, focused:document.activeElement.id,
+        panel:getComputedStyle(window.__reviewSwitchPanel).display,
+    })""")
+    if key == 'ArrowRight':
+        assert after['checked'] == before and after['saves'] == 0, after
+        assert after['focused'] == 'review-switch-detail' and after['panel'] == 'flex', after
+        page.keyboard.press('Escape')
+        assert page.evaluate('document.activeElement.id') == 'review-side-switch'
+    else:
+        assert after['checked'] != before and after['saves'] == 1, after
+        assert after['focused'] == 'review-side-switch' and after['panel'] == 'none', after
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('clicked', ['anchor', 'panel'])
+def test_mouse_focus_does_not_keep_a_side_panel_open_after_pointer_leaves(page: Page, clicked):
+    _install_toolbar(page, open_voice=False)
+    page.evaluate("""target => {
+        const manager = live2dManager;
+        window.saveNEKOSettings = () => {};
+        const anchor = target === 'anchor'
+            ? manager._createSettingsToggleItem({id:'visit-enabled',label:'Visit'})
+            : manager._createMenuItem({id:'review-hover',label:'Settings'});
+        anchor.id = 'review-hover-anchor';
+        anchor.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        document.body.append(anchor);
+        const panel = manager._createSidePanelContainer();
+        panel._anchorElement = anchor;
+        const control = manager._createSettingsToggleItem({id:'merge-messages',label:'Merge'});
+        control.id = 'review-hover-control'; panel.append(control);
+        document.body.append(panel);
+        manager._attachSidePanelHover(anchor, panel);
+        window.__reviewHoverPanel = panel;
+    }""", clicked)
+    page.locator('#review-hover-anchor').hover()
+    page.wait_for_function("getComputedStyle(window.__reviewHoverPanel).opacity === '1'")
+    control = page.locator('#review-hover-anchor' if clicked == 'anchor' else '#review-hover-control')
+    control.click()
+    assert control.evaluate('node => node === document.activeElement')
+    page.mouse.move(1350, 740)
+    page.wait_for_function("getComputedStyle(window.__reviewHoverPanel).display === 'none'", timeout=5000)

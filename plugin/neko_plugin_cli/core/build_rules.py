@@ -35,6 +35,11 @@ _DEFAULT_EXCLUDE_DIR_NAMES = {
     ".ruff_cache",
     ".venv",
     ".git",
+    # Agent authoring kit: development context, never runtime payload. The
+    # .claude entry is usually a symlink to .agents/skills and must not be
+    # dereferenced into a package either.
+    ".agents",
+    ".claude",
 }
 _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
     "dist",
@@ -42,6 +47,13 @@ _DEFAULT_ROOT_EXCLUDE_DIR_NAMES = {
 }
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
+    # Scaffolded agent guides belong to the plugin repository, not the package.
+    "AGENTS.md",
+    "CLAUDE.md",
+    # Non-directory forms (dangling or file symlinks) of the agent kit dirs
+    # bypass the directory set; copy2 would follow them.
+    ".agents",
+    ".claude",
 }
 _DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",

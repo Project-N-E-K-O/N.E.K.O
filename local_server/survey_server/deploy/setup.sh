@@ -19,6 +19,16 @@ INSTALL_DIR="/opt/neko-survey"
 SERVICE_NAME="neko-survey"
 PORT=8100
 
+# 串行化并发部署，避免多个 setup.sh 实例同时切换 venv 或互删正在构建/使用中的环境
+LOCK_FILE="/run/${SERVICE_NAME}-setup.lock"
+if [ "${NEKO_SETUP_LOCKED:-}" != "1" ]; then
+    if ! command -v flock &> /dev/null; then
+        echo "❌ flock not found (install util-linux) — cannot serialize concurrent deployments."
+        exit 1
+    fi
+    exec sudo flock -x "$LOCK_FILE" env NEKO_SETUP_LOCKED=1 bash "$SCRIPT_DIR/$(basename "$0")" "$@"
+fi
+
 # 自动检测 nobody 的组名（Debian 用 nogroup，CentOS/RHEL 用 nobody）
 if getent group nogroup &>/dev/null; then
     RUN_GROUP="nogroup"
@@ -41,6 +51,11 @@ fi
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "✓ Python $PYTHON_VERSION"
 
+if [ "$SOURCE_DIR" -ef "$INSTALL_DIR" ]; then
+    echo "❌ SOURCE_DIR 与 INSTALL_DIR 相同（$INSTALL_DIR），请在安装目录以外的源码目录运行 setup.sh"
+    exit 1
+fi
+
 # 检查配套文件是否存在
 for f in server.py models.py security.py storage.py requirements.txt; do
     if [ ! -f "$SOURCE_DIR/$f" ]; then
@@ -50,21 +65,62 @@ for f in server.py models.py security.py storage.py requirements.txt; do
     fi
 done
 
-# 创建目录
+# 创建目录并提前在独立的 root 所有暂存目录构建全新虚拟环境，安装成功后再切换，
+# 既不以 root 运行旧 nobody 目录中的 pip，也不会在安装失败时破坏线上服务
 echo "→ Installing to $INSTALL_DIR ..."
-sudo mkdir -p "$INSTALL_DIR/data"
+if [ -L "$INSTALL_DIR/venvs" ]; then
+    sudo rm -f "$INSTALL_DIR/venvs"
+fi
+sudo mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/venvs"
+sudo chown root:root "$INSTALL_DIR" "$INSTALL_DIR/venvs"
+sudo chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"
 
-# 复制文件（从脚本所在目录的父目录）
-sudo cp "$SOURCE_DIR/server.py" "$SOURCE_DIR/models.py" "$SOURCE_DIR/security.py" \
-        "$SOURCE_DIR/storage.py" "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
+STAGING_VENV="$INSTALL_DIR/venvs/venv-$(date +%Y%m%d%H%M%S)-$$"
+TMP_LINK=""
+OLD_LEGACY_VENV=""
+cleanup_staging_venv() {
+    if [ -n "${TMP_LINK:-}" ] && [ -L "$TMP_LINK" ]; then
+        sudo rm -f "$TMP_LINK" || true
+    fi
+    if [ -n "${OLD_LEGACY_VENV:-}" ] && [ -e "$OLD_LEGACY_VENV" ] && [ ! -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
+        sudo mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv" || echo "⚠ 旧 venv 恢复失败：$OLD_LEGACY_VENV"
+    fi
+    if [ -n "${STAGING_VENV:-}" ] && [ -d "$STAGING_VENV" ]; then
+        local live_target staging_real
+        live_target="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || true)"
+        staging_real="$(readlink -f "$STAGING_VENV" 2>/dev/null || printf '%s' "$STAGING_VENV")"
+        if [ "$staging_real" != "$live_target" ]; then
+            sudo rm -rf "$STAGING_VENV" || true
+        fi
+    fi
+}
+trap cleanup_staging_venv EXIT
 
-# 创建虚拟环境并安装依赖
-echo "→ Creating virtualenv ..."
-sudo python3 -m venv "$INSTALL_DIR/venv"
-echo "→ Upgrading pip ..."
-sudo "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -i https://pypi.org/simple/
+echo "→ Creating virtualenv in $STAGING_VENV ..."
+sudo python3 -m venv "$STAGING_VENV"
 echo "→ Installing dependencies ..."
-sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -i https://pypi.org/simple/
+sudo "$STAGING_VENV/bin/pip" install --no-cache-dir --require-hashes --only-binary :all: -r "$SOURCE_DIR/requirements.txt" -i https://pypi.org/simple/
+sudo chown -R root:root "$STAGING_VENV"
+sudo chmod -R a+rX,go-w "$STAGING_VENV"
+
+# 仅在新依赖全部就绪后再安全替换脚本、清单并原子切换 venv 指向
+for f in server.py models.py security.py storage.py requirements.txt; do
+    sudo rm -f "$INSTALL_DIR/$f"
+    sudo install -o root -g root -m 644 "$SOURCE_DIR/$f" "$INSTALL_DIR/$f"
+done
+
+if [ -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
+    OLD_LEGACY_VENV="$INSTALL_DIR/venv.legacy.$$"
+    sudo mv "$INSTALL_DIR/venv" "$OLD_LEGACY_VENV"
+fi
+TMP_LINK="$INSTALL_DIR/venv.link.$$"
+sudo ln -sfn "$STAGING_VENV" "$TMP_LINK"
+sudo mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"
+ACTIVE_VENV="$STAGING_VENV"
+TMP_LINK=""
+STAGING_VENV=""
+OLD_LEGACY_VENV=""
+sudo chown -h root:root "$INSTALL_DIR/venv"
 
 PYTHON_BIN="$INSTALL_DIR/venv/bin/python3"
 
@@ -114,21 +170,48 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# 设置目录权限（venv 需要 nobody 可读，data 需要可写）
-sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/venv" "$INSTALL_DIR/data"
+# 设置目录权限（venv 保持 root 所有且只读，仅 data 需要 nobody 可写）
+sudo chown -R root:root "$ACTIVE_VENV"
+sudo chmod -R a+rX,go-w "$ACTIVE_VENV"
+sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/data"
 
-# 启动
+# 启动/重启（确保更新代码和 env 后加载新进程与新 ADMIN_TOKEN）
 sudo systemctl daemon-reload
-sudo systemctl enable --now $SERVICE_NAME
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
 
 echo ""
-sleep 1
 
 # 验证
-if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+HEALTH_OK=0
+for _ in $(seq 1 10); do
+    if sudo systemctl is-active --quiet "$SERVICE_NAME" && curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        HEALTH_OK=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$HEALTH_OK" -eq 1 ]; then
+    # 健康检查通过后再清理旧版本环境，避免启动失败时丢失可回滚环境
+    if [ -n "${INSTALL_DIR:-}" ] && [ -n "${ACTIVE_VENV:-}" ]; then
+        for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
+            [ -e "$legacy_venv" ] || continue
+            sudo rm -rf "$legacy_venv"
+        done
+        ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
+        LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
+        for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
+            [ -e "$old_venv" ] || continue
+            old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
+            if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
+                sudo rm -rf "$old_venv"
+            fi
+        done
+    fi
     echo "✅ Server is running on port $PORT"
 else
-    echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME"
+    echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME (previous environments retained for rollback)"
 fi
 
 echo ""

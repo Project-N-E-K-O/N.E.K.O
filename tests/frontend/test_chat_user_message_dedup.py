@@ -1,9 +1,125 @@
 import pytest
+from pathlib import Path
 from playwright.sync_api import Page, expect
 
 
 @pytest.mark.frontend
-def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str):
+def test_sync_memory_refresh_keeps_an_open_voice_session_running(mock_page: Page):
+    root = Path(__file__).resolve().parents[2]
+    mock_page.goto('about:blank')
+    mock_page.evaluate("""() => {
+        window.lanlan_config={lanlan_name:'Neko'};
+        window.syncProbe={stopped:0,cleared:0,sent:[]};
+        window.appState={isRecording:true,voiceChatActive:true,isTextSessionActive:true,
+            userRecentSpeechTime:Date.now()-800,
+            socket:{readyState:WebSocket.OPEN,send:raw=>window.syncProbe.sent.push(JSON.parse(raw))}};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.stopMicCapture=()=>{window.syncProbe.stopped++;window.appState.isRecording=false;};
+        window.clearAudioQueue=async()=>{window.syncProbe.cleared++;};
+        window.t=key=>key;
+    }""")
+    mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
+    mock_page.evaluate('() => { window.appInterpage.handleMemoryEdited=window.__appInterpageParts.handleMemoryEdited; }')
+    mock_page.add_script_tag(path=str(root / 'static/app/app-chat-sync.js'))
+    mock_page.evaluate("window.nekoChatSync.requestMemoryRefresh('Neko')")
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 0, 'sent': []}
+    assert mock_page.evaluate('window.appState.isRecording') is True
+    mock_page.evaluate("""() => {
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {detail:{state:'off'}}));
+    }""")
+    mock_page.wait_for_function('window.syncProbe.sent.length === 1 && window.syncProbe.cleared === 1')
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 1, 'sent': [{'action': 'end_session'}]}
+    assert mock_page.evaluate('window.appState.isTextSessionActive') is False
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('failure', ['configuration', 'receipt'])
+@pytest.mark.parametrize('restoration', ['rejected', 'network', 'model'])
+def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_page: Page, failure, restoration):
+    root = Path(__file__).resolve().parents[2]
+    mock_page.goto('about:blank')
+    mock_page.set_content('<div id="live2d-container"></div><div id="vrm-container"></div>'
+                          '<div id="mmd-container"></div><div id="status-toast" style="display:none"></div>'
+                          '<span id="status"></span>')
+    mock_page.evaluate("""({failure,restoration}) => {
+        window.candidateFailure=failure;
+        window.lanlan_config={lanlan_name:'Neko',model_type:'live2d'};
+        window.appState={dom:{}};
+        window.appConst={};
+        window.Live2DManager=function(){};
+        window.t=key=>key==='app.modelSwitchFailed'?'Model switch failed':key;
+        window.syncProbe={receipts:[],configReads:0,restorations:0,loads:[],removed:[]};
+        window.Live2DModel={from:async path=>{
+            window.syncProbe.loads.push(path);
+            if(path==='/user_live2d/saved/model.model3.json')throw new Error('saved model unavailable');
+            return{path,destroy(){}};
+        }};
+        window.invalidateModelManagerOverlapBounds=()=>{};
+        window.restoreLive2DIdleAnimationOnMainPage=()=>{};
+        window.fetch=async(path,options)=>{
+            if(path.startsWith('/api/config/page_config')){
+                window.syncProbe.configReads++;
+                if(restoration==='network')throw new Error('private restoration details');
+                if(restoration==='model')return{json:async()=>({success:true,model_type:'live2d',
+                    model_path:'/user_live2d/saved/model.model3.json'})};
+                return{json:async()=>({success:false,error:'private config details'})};
+            }
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[
+                {displayName:'Neko',characterSyncId:'a'.repeat(32)}]})};
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>({candidate:
+                {name:'Neko',path:'/user_live2d/candidate/model.model3.json',token:'candidate-token'}})};
+            window.syncProbe.receipts.push(JSON.parse(options.body));
+            return{ok:true,json:async()=>({applied:false})};
+        };
+    }""", {'failure': failure, 'restoration': restoration})
+    mock_page.add_script_tag(path=str(root / 'static/live2d/live2d-model.js'))
+    mock_page.add_script_tag(path=str(root / 'static/app/app-ui/bootstrap-goodbye-and-toasts.js'))
+    mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
+    mock_page.evaluate("""() => {
+        const I=window.__appInterpageParts;
+        I.isMainUIHiddenByModelManager=()=>false;
+        I.cleanupPNGTuberOverlayUI=()=>{};
+        window.live2dManager=Object.assign(new window.Live2DManager(),{
+            pixi_app:{view:{style:{}}},currentModel:{path:'/original'},
+            _activeLoadToken:0,_modelLoadState:'ready',_isModelReadyForInteraction:true,
+            _invalidateParameterReloadTickets(){},_resetDerivedModelMetadata(){},
+            _isLoadTokenActive(token){return token===this._activeLoadToken;},
+            loadUserPreferences:async()=>[],
+            async removeModel(){window.syncProbe.removed.push(this.currentModel.path);this.currentModel=null;},
+            async _configureLoadedModel(model,path){
+                this._lastLoadedModelPath=path;this._modelLoadState='ready';this._isModelReadyForInteraction=true;
+            },
+        });
+        window.handleModelReload=async(name,options)=>{
+            if(options.temporaryConfig&&window.candidateFailure==='configuration')throw new Error('private configuration details');
+            if(!options.temporaryConfig)window.syncProbe.restorations++;
+            return I.handleModelReload(name,options);
+        };
+    }""")
+    mock_page.add_script_tag(path=str(root / 'static/app/app-chat-sync.js'))
+    mock_page.evaluate('window.nekoChatSync.notifyMediaChanged()')
+    expect(mock_page.locator('#status-toast')).to_be_visible()
+    expect(mock_page.locator('#status')).to_have_text('Model switch failed')
+    probe = mock_page.evaluate('window.syncProbe')
+    assert probe['receipts'] == [{'loaded': failure == 'receipt'}]
+    assert probe['configReads'] == 1 and probe['restorations'] == 1
+    candidate = '/user_live2d/candidate/model.model3.json'
+    fallback = '/static/yui-lolita/yui-lolita.model3.json'
+    assert probe['loads'] == ([candidate] if failure == 'receipt' else []) + (
+        ['/user_live2d/saved/model.model3.json', fallback] if restoration == 'model' else [])
+    if restoration == 'model':
+        assert mock_page.evaluate('window.live2dManager._lastLoadedModelPath') == fallback
+        assert mock_page.evaluate('window.live2dManager.getCurrentModel().path') == fallback
+        assert probe['removed'] == (['/original', candidate] if failure == 'receipt' else ['/original'])
+    assert mock_page.evaluate('window._modelReloadInFlight') is False
+    assert mock_page.evaluate('window._lastModelReloadResult') is (restoration == 'model')
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('entrypoint', ['/', '/chat'])
+def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str, entrypoint):
     sync_reads = []
     role_name = ''
 
@@ -12,14 +128,24 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
         if path != '/wake':
             sync_reads.append(path)
         route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': 'c' * 32,
-            'binding': {'cursor': 1}}], 'originals': [{
+            'binding': {'enabled': True, 'cursor': 1}}], 'originals': [{
             'messageId': 'a' * 32, 'role': 'user', 'text': 'archived original must stay out',
             'originalTime': '1791540000123',
         }]})
 
     mock_page.route('**/api/chat-sync/**', sync_api)
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.add_init_script("""(() => {
+        const schedule = window.setInterval.bind(window);
+        window.syncRefreshPolls = [];
+        window.setInterval = (callback, delay, ...args) => {
+            if (delay === 30000 && callback.name === 'flushMemoryRefresh') {
+                window.syncRefreshPolls.push(callback);
+            }
+            return schedule(callback, delay, ...args);
+        };
+    })();""")
+    mock_page.goto(f'{running_server}{entrypoint}', wait_until='domcontentloaded')
     mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
     # The shared fixture has no model assets; release its unrelated model-manager gate.
     mock_page.evaluate("""() => {
@@ -33,40 +159,68 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
     mock_page.evaluate("""() => {
         const host = window.reactChatWindowHost;
         host.setChatSurfaceMode('compact');
+        // An open choice layer disables the clear-screen button used below.
+        host.setGalgameModeEnabled(false);
         host.setMessages([
-            {id:'session-user',role:'user',author:'User',time:'10:00',blocks:[{type:'text',text:'current question'}]},
-            {id:'session-reply-1',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'first reply bubble'}]},
-            {id:'session-reply-2',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'second reply bubble'}]},
+            {id:'session-user',role:'user',author:'User',time:'10:00',createdAt:3000,sortKey:0,blocks:[{type:'text',text:'current question'}]},
+            {id:'session-reply-1',role:'assistant',author:'Neko',time:'10:01',createdAt:1000,sortKey:1,blocks:[{type:'text',text:'first reply bubble'}]},
+            {id:'session-reply-2',role:'assistant',author:'Neko',time:'10:01',createdAt:2000,sortKey:2,blocks:[{type:'text',text:'second reply bubble'}]},
         ]);
         host.setCompactHistoryOpen(true);
+        // The host fills in author and avatar once the character profile loads; compare what sync could change.
+        window.syncComparableMessages = () => host.getState().messages.map(
+            ({id, role, createdAt, sortKey, blocks}) => ({id, role, createdAt, sortKey, blocks}));
+        window.dispatchSyncDisplayTriggers = () => {
+            document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+            document.dispatchEvent(new Event('visibilitychange'));
+            window.dispatchEvent(new Event('pageshow'));
+            window.dispatchEvent(new Event('voice-input-socket-open'));
+            window.dispatchEvent(new Event('neko-assistant-turn-end'));
+            window.dispatchEvent(new Event('neko-realistic-queue-idle'));
+            window.dispatchEvent(new Event('neko-speech-playback-state'));
+            window.dispatchEvent(new Event('voice-input-lifecycle-changed'));
+            window.syncRefreshPolls.forEach(callback => callback());
+        };
     }""")
     history = mock_page.locator('.compact-export-history-anchor[data-compact-export-history-open="true"]')
     rows = history.locator('.compact-export-history-message')
     expect(rows).to_have_count(3)
     expected_ids = ['session-user', 'session-reply-1', 'session-reply-2']
     assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
-    mock_page.evaluate("""() => {
-        window.dispatchEvent(new Event('voice-input-socket-open'));
-        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {detail:{turnId:'previous-turn'}}));
-        document.dispatchEvent(new Event('visibilitychange'));
-    }""")
-    # Cover the retired five-second original-history poll as well as the immediate hooks.
-    mock_page.wait_for_timeout(5200)
+    before = mock_page.evaluate('() => window.syncComparableMessages()')
+    assert mock_page.evaluate('() => window.syncRefreshPolls.length') == 1
+    mock_page.evaluate('() => window.dispatchSyncDisplayTriggers()')
+    mock_page.wait_for_timeout(500)
     expect(rows).to_have_count(3)
     expect(history).to_contain_text('current question')
     expect(history).to_contain_text('first reply bubble')
     expect(history).to_contain_text('second reply bubble')
     expect(history).not_to_contain_text('archived original must stay out')
     assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
-    # Character-profile observations still use /status; no chat-original read is allowed.
-    assert all(path == '/status' for path in sync_reads)
+    assert mock_page.evaluate('() => window.syncComparableMessages()') == before
+    # A visual clear keeps the host messages, so sync events must not bring the rows back.
+    mock_page.locator('.chat-clear-screen-button').click()
+    expect(rows).to_have_count(0)
+    mock_page.evaluate('() => window.dispatchSyncDisplayTriggers()')
+    mock_page.wait_for_timeout(500)
+    expect(rows).to_have_count(0)
+    assert mock_page.evaluate('() => window.syncComparableMessages()') == before
+    mock_page.evaluate("""() => {
+        window.reactChatWindowHost.clearMessages();
+        window.dispatchSyncDisplayTriggers();
+    }""")
+    mock_page.wait_for_timeout(500)
+    expect(rows).to_have_count(0)
+    assert mock_page.evaluate('() => window.reactChatWindowHost.getState().messages') == []
+    # Account/model status reads remain valid; synchronized text must never be fetched for display.
+    assert not any(path.endswith(('/history', '/recent-display')) for path in sync_reads)
 
 
 def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
     mock_page.add_init_script(
         "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
     )
-    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost"
         " && window.appButtons"
@@ -74,7 +228,11 @@ def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
         " && window.appState"
         " && typeof window.sendTextPayload === 'function'"
     )
-    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.reactChatWindowHost.setChatSurfaceMode('full');
+        window.reactChatWindowHost.openWindow();
+    }""")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost.isMounted && window.reactChatWindowHost.isMounted()"
         " && !!document.querySelector('.composer-input')"
@@ -89,6 +247,7 @@ def _open_app_buttons_page(mock_page: Page, running_server: str) -> None:
     mock_page.wait_for_function(
         "() => window.appButtons"
         " && typeof window.appButtons.normalizeImageBlobForPendingList === 'function'"
+        " && typeof window.sendTextPayload === 'function'"
     )
 
 
@@ -107,6 +266,7 @@ def _install_chat_send_harness(
             window.lanlan_config.master_name = 'Alice';
 
             window.showStatusToast = () => {};
+            window.isNekoHomeTutorialInteractionLocked = () => false;
             window.hideVoicePreparingToast = () => {};
             window.resetProactiveChatBackoff = () => {};
             window.hasAnyChatModeEnabled = () => false;
@@ -771,6 +931,32 @@ def test_high_entropy_image_uses_quality_ladder_before_resolution_downsampling(
             dimensions.append(size)
     assert dimensions[0] == (1921, 1921)
     assert dimensions[1] == (1920, 1920)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('caption', ['', 'with caption'])
+def test_image_submissions_keep_the_request_identity_for_each_image(mock_page: Page, running_server: str, caption):
+    _open_app_buttons_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+    result = mock_page.evaluate(
+        """async (caption) => {
+            window.isNekoHomeTutorialInteractionLocked = () => false;
+            window.appState.isTextSessionActive = true;
+            const canvas = document.createElement('canvas');
+            canvas.width = 8; canvas.height = 8;
+            const image = canvas.toDataURL('image/jpeg');
+            const sent = await window.sendTextPayload(caption, {
+                source: 'react-chat-window', requestId: 'image-submission',
+                extraImageDataUrls: [image, image], ignoreComposerAttachments: true
+            });
+            return {sent, images: window.__chatTest.sentPayloads.filter(
+                (item) => item.action === 'stream_data' && item.input_type === 'avatar_drop_image'
+            ).map((item) => ({requestId: item.request_id}))};
+        }""", caption)
+    assert result == {'sent': True, 'images': [
+        {'requestId': 'image-submission'},
+        {'requestId': 'image-submission'},
+    ]}
 
 
 @pytest.mark.frontend

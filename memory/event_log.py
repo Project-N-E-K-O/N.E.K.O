@@ -99,7 +99,12 @@ EVT_CORRECTION_RESOLVED = "correction.resolved"
 EVT_REFLECTION_EVIDENCE_UPDATED = "reflection.evidence_updated"
 EVT_PERSONA_EVIDENCE_UPDATED = "persona.evidence_updated"
 EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
+# Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
+# Memory Browser snapshot restore: the whole set of managed files was replaced.
+# Once it is in effect, a replay tail (a full replay included) starts at the
+# newest one, because every event before it describes files it overwrote.
+EVT_MEMORY_SNAPSHOT_RESTORED = "memory.snapshot_restored"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_FACT_ADDED, EVT_FACT_ABSORBED, EVT_FACT_ARCHIVED,
@@ -108,8 +113,8 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_PERSONA_FACT_ADDED, EVT_PERSONA_FACT_MENTIONED, EVT_PERSONA_SUPPRESSED,
     EVT_CORRECTION_QUEUED, EVT_CORRECTION_RESOLVED,
     EVT_REFLECTION_EVIDENCE_UPDATED, EVT_PERSONA_EVIDENCE_UPDATED,
-    EVT_PERSONA_ENTRY_UPDATED,
-    EVT_LONG_TERM_MEMORY_REPLACED,
+    EVT_PERSONA_ENTRY_UPDATED, EVT_LONG_TERM_MEMORY_REPLACED,
+    EVT_MEMORY_SNAPSHOT_RESTORED,
 })
 
 
@@ -123,13 +128,16 @@ EVIDENCE_SOURCE_USER_ENGAGE = "user_engage"        # check_feedback engaged (cha
 EVIDENCE_SOURCE_USER_KEYWORD_REBUT = "user_keyword_rebut"  # negative-keyword hook
 EVIDENCE_SOURCE_MIGRATION_SEED = "migration_seed"  # §5 one-shot migration
 EVIDENCE_SOURCE_PROMOTE_MERGE = "promote_merge"    # persona.entry_updated
+# A scoped reflection seen again in others' words (synthesis judged a batch
+# covered by it); config.SCOPED_REOBSERVED_REINFORCEMENT. Not a user signal.
+EVIDENCE_SOURCE_SCOPED_REOBSERVED = "scoped_reobserved"
 
 ALL_EVIDENCE_SOURCES: frozenset[str] = frozenset({
     EVIDENCE_SOURCE_USER_FACT, EVIDENCE_SOURCE_USER_CONFIRM,
     EVIDENCE_SOURCE_USER_REBUT, EVIDENCE_SOURCE_USER_IGNORE,
     EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_KEYWORD_REBUT, EVIDENCE_SOURCE_MIGRATION_SEED,
-    EVIDENCE_SOURCE_PROMOTE_MERGE,
+    EVIDENCE_SOURCE_PROMOTE_MERGE, EVIDENCE_SOURCE_SCOPED_REOBSERVED,
 })
 
 
@@ -151,6 +159,12 @@ _COMPACT_TRIGGER_AGE_DAYS = 30
 # pinned archive copies only".
 _RETAIN_APPLIED_DAYS = 7
 _RETAIN_APPLIED_MAX_BYTES = 256 * 1024
+
+# Snapshot-restore records kept in front of the anchor: the newest ones not
+# cancelled, plus the newest completed one. More than one, because the
+# newest may never have taken effect and a replay then starts at an earlier
+# one.
+_KEEP_RESTORE_RECORDS = 3
 
 # os.replace "target is busy" on Windows (ACCESS_DENIED / SHARING_VIOLATION).
 _BUSY_WINERRORS = frozenset({5, 32})
@@ -176,6 +190,9 @@ class CompactionResult(NamedTuple):
     pending_tail: int = 0
     pinned: int = 0
     pinned_event_ids: tuple[str, ...] = ()
+    # Snapshot-restore records kept in front of the anchor (at most
+    # _KEEP_RESTORE_RECORDS); not archive copies, so not counted in ``pinned``.
+    kept_restore: int = 0
 
 
 class _CompactionPlan(NamedTuple):
@@ -571,21 +588,26 @@ class EventLog:
         "not found" means the sentinel and the journal disagree for some
         other reason (hand edits, a restore that brought back only one of
         the two files); every record in the body is then treated as unapplied.
+
+        The tail is returned whole. The Reconciler cuts it, a full replay
+        included, at the newest ``memory.snapshot_restored`` record once
+        that restore is known to be in effect (register_tail_cut): it
+        replaced every managed file, so the records in front of it describe
+        a state that no longer exists.
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
-        if after_event_id is None:
-            return records
-        for i, rec in enumerate(records):
-            if rec.get('event_id') == after_event_id:
-                return records[i + 1:]
-        # The sentinel names an event that is not in the body. Compaction
-        # always keeps that line, so this is not its doing.
-        # Safe default: replay everything currently in the body.
-        logger.info(
-            f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
-            f"回退到全量 replay（{len(records)} 条）"
-        )
+        if after_event_id is not None:
+            for i, rec in enumerate(records):
+                if rec.get('event_id') == after_event_id:
+                    return records[i + 1:]
+            # The sentinel names an event that is not in the body. Compaction
+            # always keeps that line, so this is not its doing.
+            # Safe default: replay everything currently in the body.
+            logger.info(
+                f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
+                f"回退到全量 replay（{len(records)} 条）"
+            )
         return records
 
     def read_sentinel(self, name: str) -> str | None:
@@ -775,9 +797,18 @@ class EventLog:
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
+        restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         """Drop already-applied history in front of the sentinel.
+
+        ``restore_cancelled(record)`` says a snapshot-restore record belongs to
+        a restore that failed and was rolled back; such records are passed
+        over when choosing which restore records to keep.
+        ``restore_completed(record)`` says its swap completed; the newest
+        such record is always kept, even when newer ones that never took
+        effect fill the quota.
 
         Invariants, whatever the outcome:
           - the sentinel's line and every line after it (corrupt and blank
@@ -795,8 +826,10 @@ class EventLog:
         age or size, because the journal may hold the only copy of an
         archived entry -- or when it falls inside the retention window
         (_RETAIN_APPLIED_DAYS, capped at _RETAIN_APPLIED_MAX_BYTES, oldest
-        evicted first). ``memory.long_term_replaced`` is never retained.
-        Everything else in front of the anchor goes, including lines replay
+        evicted first). ``memory.long_term_replaced`` is never retained; the
+        newest _KEEP_RESTORE_RECORDS ``memory.snapshot_restored`` records in
+        front of the anchor that ``restore_cancelled`` does not reject always
+        are (counted in ``kept_restore``), older ones never. Everything else in front of the anchor goes, including lines replay
         would skip anyway.
 
         Skips without touching the body when the journal is not due
@@ -847,7 +880,9 @@ class EventLog:
             return CompactionResult('not_due')
 
         with self._get_lock(name):
-            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+            warm = self._plan_compaction_locked(
+                name, path, needs_journal_copy, now, restore_cancelled, restore_completed,
+            )
         if isinstance(warm, CompactionResult):
             return warm
 
@@ -867,7 +902,9 @@ class EventLog:
                     moved = self._moved_since_warm(path, warm, sources_unchanged)
                     if moved is not None:
                         return CompactionResult(moved, **warm.stats)
-                    plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+                    plan = self._plan_compaction_locked(
+                        name, path, needs_journal_copy, now, restore_cancelled, restore_completed,
+                    )
                     if isinstance(plan, CompactionResult):
                         return plan
                     return self._commit_compaction_locked(name, char_dir, path, plan)
@@ -980,6 +1017,8 @@ class EventLog:
         path: str,
         needs_journal_copy: Callable[[dict], bool] | None,
         now: datetime,
+        restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
     ) -> CompactionResult | _CompactionPlan:
         """First phase: scan and self-check. Caller holds the character lock only."""
         skip, sentinel = self._admit_compaction_unlocked(name)
@@ -998,6 +1037,8 @@ class EventLog:
         tail: list[str] = []
         old_tail_ids: list = []
         pinned: list[tuple[int, str, str]] = []
+        restores: list[tuple[int, str, str]] = []
+        latest_completed: tuple[int, str, str] | None = None
         window: deque[tuple[int, str, int]] = deque()
         window_bytes = 0
         total_lines = 0
@@ -1030,6 +1071,16 @@ class EventLog:
                     # Reference events are no-ops once their inbox is
                     # consumed; old head-style ones are whole snapshots.
                     continue
+                if rec.get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
+                    # The newest restores that were not cancelled: a replay
+                    # starts at the newest one in effect (Reconciler tail
+                    # cut), so they must outlive the lines they hide. A
+                    # cancelled one never replaced anything.
+                    if restore_cancelled is None or not restore_cancelled(rec):
+                        restores.append((lineno, raw, str(rec.get('event_id'))))
+                        if restore_completed is not None and restore_completed(rec):
+                            latest_completed = (lineno, raw, str(rec.get('event_id')))
+                    continue
                 if needs_journal_copy is not None and needs_journal_copy(rec):
                     pinned.append((lineno, raw, str(rec.get('event_id'))))
                     continue
@@ -1045,10 +1096,13 @@ class EventLog:
 
         if not anchor_found:
             return CompactionResult('sentinel_not_found')
-
+        kept_restores = restores[-_KEEP_RESTORE_RECORDS:]
+        if latest_completed is not None and latest_completed not in kept_restores:
+            kept_restores = [latest_completed, *kept_restores]
         kept_before = sorted(
             [(lineno, raw) for lineno, raw, _ in pinned]
             + [(lineno, raw) for lineno, raw, _ in window]
+            + [(lineno, raw) for lineno, raw, _ in kept_restores]
         )
         kept_lines = [raw for _, raw in kept_before] + tail
         dropped_lines = total_lines - len(kept_lines)
@@ -1057,6 +1111,7 @@ class EventLog:
             'pending_tail': len(old_tail_ids),
             'pinned': len(pinned),
             'pinned_event_ids': tuple(event_id for _, _, event_id in pinned),
+            'kept_restore': len(kept_restores),
         }
         if dropped_lines <= 0:
             return CompactionResult('nothing_to_drop', **stats)
@@ -1176,12 +1231,16 @@ class EventLog:
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
+        restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         return await asyncio.to_thread(
             self.compact_applied_history, name,
             needs_journal_copy=needs_journal_copy,
-            sources_unchanged=sources_unchanged, now=now,
+            sources_unchanged=sources_unchanged,
+            restore_cancelled=restore_cancelled,
+            restore_completed=restore_completed, now=now,
         )
 
     async def arecord_and_save(
@@ -1222,6 +1281,9 @@ class Reconciler:
     def __init__(self, event_log: EventLog):
         self._event_log = event_log
         self._handlers: dict[str, ApplyHandler] = {}
+        # event_type -> (name, payload) -> bool: whether that event is in
+        # effect, so unapplied events in front of it in a tail are obsolete.
+        self._tail_cuts: dict[str, Callable[[str, dict], bool]] = {}
 
     def register(self, event_type: str, handler: ApplyHandler) -> None:
         if event_type not in ALL_EVENT_TYPES:
@@ -1229,6 +1291,66 @@ class Reconciler:
                 f"[Reconciler] 注册未登记事件类型 {event_type!r}（handler 仍生效，但请检查 typo）"
             )
         self._handlers[event_type] = handler
+
+    def register_tail_cut(self, event_type: str, in_effect: Callable[[str, dict], bool]) -> None:
+        """Let a tail start at the newest ``event_type`` record that is in effect.
+
+        ``in_effect(name, payload)`` is synchronous and read-only; it runs on
+        a worker thread. A record it says False for is passed over and the
+        earlier ones are tried; the tail stays whole only when none of them
+        is in effect, so unapplied events in front of a record that never
+        took effect are still replayed.
+        """
+        self._tail_cuts[event_type] = in_effect
+
+    async def _cut_tail(self, name: str, tail: list[dict]) -> list[dict]:
+        """Start the tail at the newest cut record that is in effect.
+
+        One that is not (cancelled, or never started and cannot finish) is
+        passed over, so an earlier one that is still counts.
+        """
+        for k in range(len(tail) - 1, 0, -1):
+            in_effect = self._tail_cuts.get(tail[k].get('type'))
+            if in_effect is None:
+                continue
+            payload = tail[k].get('payload') or {}
+            if await asyncio.to_thread(in_effect, name, payload):
+                logger.info(
+                    f"[Reconciler] {name}: 尾巴从已生效的 {tail[k].get('type')} 开始，"
+                    f"跳过其前 {k} 条未应用事件"
+                )
+                return tail[k:]
+        return tail
+
+    async def arun_pending_ahead(self, name: str, event_type: str) -> bool:
+        """Run the handler of the newest unapplied ``event_type`` record in effect now.
+
+        For startup steps that rewrite views before areconcile runs: they
+        would otherwise change files a pending event still needs to find in
+        the state it left them. Records the type's tail-cut check says are
+        not in effect (a cancelled restore, say) are passed over for the
+        next older one, as the tail cut does. Runs under the character lock
+        and leaves the sentinel alone, so areconcile replays the record
+        again in order (handlers are idempotent). Returns what the handler
+        returned; False when there is no such record or no handler.
+        """
+        handler = self._handlers.get(event_type)
+        if handler is None:
+            return False
+        in_effect = self._tail_cuts.get(event_type)
+        sentinel = await self._event_log.aread_sentinel(name)
+        tail = await self._event_log.aread_since(name, sentinel)
+        for record in reversed(tail):
+            if record.get('type') != event_type:
+                continue
+            payload = record.get('payload') or {}
+            if in_effect is not None and not await asyncio.to_thread(in_effect, name, payload):
+                continue
+            return await self._event_log.aapply_and_advance(
+                name, record.get('event_id'), lambda: handler(name, payload),
+                expected_sentinel=sentinel, advance=False,
+            )
+        return False
 
     async def areconcile(self, name: str) -> int:
         """P2.a.1 scaffold: dispatch tail events to registered handlers,
@@ -1327,7 +1449,7 @@ class Reconciler:
         journal. Every early return leaves unapplied events on disk.
         """
         last_applied = await self._event_log.aread_sentinel(name)
-        tail = await self._event_log.aread_since(name, last_applied)
+        tail = await self._cut_tail(name, await self._event_log.aread_since(name, last_applied))
         applied_count = 0
         # CAS every event, and do it **before** running its handler: expected is where this replay believes the on-disk
         # sentinel should be — initially the last_applied read at startup,
@@ -1349,7 +1471,9 @@ class Reconciler:
             if i >= len(tail):
                 if not sentinel_frozen:
                     return applied_count, True
-                extra = await self._event_log.aread_since(name, expected_sentinel)
+                extra = await self._cut_tail(
+                    name, await self._event_log.aread_since(name, expected_sentinel),
+                )
                 if not extra:
                     return applied_count, True
                 if rescans_left <= 0:
@@ -1426,7 +1550,9 @@ class Reconciler:
                     f"推进，手上的尾巴已陈旧；改为从本轮已应用位置重扫到日志末尾并"
                     f"按日志顺序重放，此后不再推进哨兵: {e}"
                 )
-                tail = await self._event_log.aread_since(name, expected_sentinel)
+                tail = await self._cut_tail(
+                    name, await self._event_log.aread_since(name, expected_sentinel),
+                )
                 i = 0
             except SentinelAdvanceError as e:
                 # Handler succeeded but sentinel write failed. Attribute this separately from handler failure: on disk,

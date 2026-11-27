@@ -6,15 +6,20 @@ services:
     ports:
       - "8099:8099"
     volumes:
-      - ./data:/app/data
+      # Use a Docker-managed named volume so Docker initializes /app/data from
+      # the image's appuser-owned directory instead of mounting a root-owned ./data
+      # host directory that blocks non-root appuser writes and exposes telemetry.db.
+      # Upgrading from an existing ./data bind mount? Migrate telemetry.db* into
+      # telemetry-data first (see README.md upgrade steps) before running compose up.
+      - telemetry-data:/app/data
     environment:
       # 存储中的业务时间戳固定为 +08:00，容器时区同样固定为 Asia/Shanghai。
       - TZ=Asia/Shanghai
-      # ★ Must override: admin auth token (used for dashboard / export / queries).
-      # Set TELEMETRY_ADMIN_TOKEN in your .env file (or shell environment) before
-      # running docker-compose; otherwise the container falls back to a clearly
-      # invalid placeholder and the admin API must not be considered secure.
-      - TELEMETRY_ADMIN_TOKEN=${TELEMETRY_ADMIN_TOKEN:-please-change-me}
+      # Optional: admin auth token (used for export / queries / rebuild / denylist).
+      # Disabled by default when unset/empty (admin endpoints return 503).
+      # Set a strong random TELEMETRY_ADMIN_TOKEN in your .env file (or shell
+      # environment) before starting if you need the admin API.
+      - TELEMETRY_ADMIN_TOKEN=${TELEMETRY_ADMIN_TOKEN:-}
       # 可选：启用 /docs Swagger 页面
       # - TELEMETRY_ENABLE_DOCS=1
     restart: unless-stopped
@@ -23,3 +28,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  telemetry-data:

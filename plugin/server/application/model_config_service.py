@@ -1,6 +1,7 @@
 """Model-slot CRUD and manifest-owned plugin bindings; no model calls."""
 from __future__ import annotations
 
+import hashlib
 import tomllib
 from collections.abc import Callable
 from uuid import uuid4
@@ -14,14 +15,33 @@ from plugin.server.domain.model_config import (
     SECRET_MASK,
     ModelSlot,
     PluginModelsConfig,
+    has_retired_defaults,
     secret_preview,
 )
 from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
 from plugin.server.infrastructure.model_config_store import ModelConfigStore
 from utils.http.url import same_endpoint
+from plugin.logging_config import get_logger
+
+logger = get_logger("server.model_config")
 
 Requirements = dict[PluginModelUsageId, PluginModelRequirementSchema]
 _requirements_adapter = TypeAdapter(Requirements)
+
+# Default slot every user gets without manual setup: the main app's familiar
+# (agent) model, which plugins and task agents share; new plugins bind to it
+# out of the box. It declares what that tier is configured for: tool calling
+# and image input. Deterministic IDs keep seeding idempotent across processes;
+# the persisted seed_version keeps a deleted default deleted.
+HOST_SLOT_SEED_VERSION = 1
+SHARED_HOST_API = "agent"
+HOST_SLOT_SEEDS = (
+    ("agent", "Familiar model", ("text", "streaming", "tool_calling", "image_input")),
+)
+
+
+def host_slot_seed_id(host_api: str) -> str:
+    return "slot_" + hashlib.md5(f"neko-host-follow:{host_api}".encode()).hexdigest()
 
 
 def load_model_requirements(plugin_id: str) -> Requirements:
@@ -48,6 +68,17 @@ def _validate_slot(payload: dict) -> ModelSlot:
         raise ServerDomainError(
             "MODEL_SLOT_INVALID", "Invalid model slot fields", 422, {"fields": fields}
         ) from exc
+
+
+def _report_retired_defaults(payload: object) -> None:
+    # An older plugin manager may still send a default temperature. It is
+    # accepted and dropped (see RETIRED_DEFAULT_FIELDS) rather than rejected.
+    # A payload of the wrong shape is left to validation (422).
+    if isinstance(payload, dict) and has_retired_defaults(payload.get("defaults")):
+        logger.warning(
+            "Ignored a default temperature in a model slot save request; plugin model "
+            "requests carry no temperature and the provider default applies"
+        )
 
 
 class ModelConfigService:
@@ -81,11 +112,67 @@ class ModelConfigService:
                 if target == slot_id
             ],
         )
+        if slot.source == "host_follow":
+            from plugin.server.infrastructure.host_model_slots import host_slot_status
+
+            result["host_status"] = host_slot_status(slot)
         return result
+
+    @staticmethod
+    def _seed_default_slots(config: PluginModelsConfig) -> None:
+        """Create the default host-follow slots once, inside a write transaction."""
+        if config.seed_version >= HOST_SLOT_SEED_VERSION:
+            return
+        for host_api, name, capabilities in HOST_SLOT_SEEDS:
+            slot_id = host_slot_seed_id(host_api)
+            if slot_id in config.slots:
+                continue
+            if any(slot.source == "host_follow" and slot.host_api == host_api for slot in config.slots.values()):
+                # The user already keeps a slot for this host API; a seeded
+                # duplicate would only clutter the panel.
+                continue
+            config.slots[slot_id] = ModelSlot(
+                name=name, source="host_follow", host_api=host_api,
+                capabilities=list(capabilities),
+            )
+        config.seed_version = HOST_SLOT_SEED_VERSION
 
     def list_slots(self) -> dict:
         config = self.store.read()
+        if config.seed_version < HOST_SLOT_SEED_VERSION:
+            # First panel open (or an older document): seed under the store's
+            # write lock so concurrent readers cannot create duplicate slots.
+            try:
+                config = self.store.update(self._seed_change)
+            except Exception as exc:
+                # Seeding is best-effort, like ensure_default_slots: a storage
+                # window that cannot be written (maintenance, full disk,
+                # read-only directory, locked file) must not hide slots that
+                # remain readable. Serve the document already read and retry
+                # on the next open.
+                logger.warning(
+                    "Default model slot seeding skipped: error={}, code={}",
+                    type(exc).__name__, getattr(exc, "code", None),
+                )
         return {"schema_version": config.schema_version, "slots": [self._view(config, key) for key in config.slots]}
+
+    def _seed_change(self, config: PluginModelsConfig) -> PluginModelsConfig:
+        self._seed_default_slots(config)
+        return config
+
+    def ensure_default_slots(self) -> dict:
+        """Best-effort startup seeding so the panel shows defaults on first open.
+
+        Never raises: a read-only storage window (maintenance) or an unreadable
+        document must not block server startup; list_slots retries lazily.
+        """
+        try:
+            if self.store.read().seed_version >= HOST_SLOT_SEED_VERSION:
+                return {"seeded": False}
+            self.store.update(self._seed_change)
+            return {"seeded": True}
+        except Exception:
+            return {"seeded": False}
 
     def get_slot(self, slot_id: str) -> dict:
         config = self.store.read()
@@ -101,7 +188,10 @@ class ModelConfigService:
             config.slots[slot_id] = slot
             return self._view(config, slot_id)
 
-        return self.store.update(change)
+        result = self.store.update(change)
+        # Only once the save succeeded: a rejected save reports nothing.
+        _report_retired_defaults(payload)
+        return result
 
     @staticmethod
     def _validate_fallback(config: PluginModelsConfig, slot_id: str, slot: ModelSlot) -> None:
@@ -123,8 +213,18 @@ class ModelConfigService:
             if isinstance(updates.get("defaults"), dict):
                 # PATCH semantics also apply to nested defaults; explicit null still clears a field.
                 updates["defaults"] = {**old.defaults.model_dump(), **updates["defaults"]}
-            slot = _validate_slot({**old.model_dump(), **updates})
-            if old.api_key and "api_key" not in updates and (
+            merged = {**old.model_dump(), **updates}
+            if merged.get("source") == "host_follow":
+                # Endpoint, model and credentials belong to the main app, never to this document.
+                for field in ("base_url", "model", "api_key"):
+                    merged[field] = ""
+                merged["protocol"] = "openai_chat"
+            elif old.source == "host_follow":
+                # Switching to manual must not inherit the host's resolved protocol.
+                merged["protocol"] = updates.get("protocol", "openai_chat")
+                merged["host_api"] = None
+            slot = _validate_slot(merged)
+            if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):
                 raise ServerDomainError(
@@ -150,7 +250,10 @@ class ModelConfigService:
                             self._check_capabilities(slot, requirement)
             return self._view(config, slot_id)
 
-        return self.store.update(change)
+        result = self.store.update(change)
+        # Only once the save succeeded: a rejected save reports nothing.
+        _report_retired_defaults(payload)
+        return result
 
     def delete_slot(self, slot_id: str) -> dict:
         def change(config):
@@ -237,4 +340,64 @@ class ModelConfigService:
             elif current < expected_version:
                 raise ServerDomainError("MODEL_BINDING_CONFLICT", "Refresh the binding before trying again", 409)
             return {"version": current, "slot_id": config.bindings.get(plugin_id, {}).get(usage_id)}
+        return self.store.update(change)
+
+    def ensure_host_follow_binding(self, plugin_id: str, *, requirements: Requirements | None = None) -> dict:
+        """Bind still-unbound declared usages to a shared host-follow slot.
+
+        Called after a committed install so a fresh plugin works against the
+        main app's familiar model without manual setup. Existing bindings are never
+        touched; usages the shared slot cannot serve stay unbound for the user.
+        ``requirements`` lets the caller read the manifest under the plugin
+        operation lock and write the binding after releasing it.
+        """
+        if requirements is None:
+            requirements = self.requirements_loader(plugin_id)
+        if not requirements:
+            return {"bound": [], "slot_id": None}
+
+        def change(config):
+            # An install can be the first model-config write ever; seed the
+            # default slots here too so the shared familiar slot has a stable ID.
+            self._seed_default_slots(config)
+            slot_id = next(
+                (key for key, slot in config.slots.items()
+                 if slot.source == "host_follow" and slot.host_api == SHARED_HOST_API),
+                None,
+            )
+            created_slot = slot_id is None
+            if slot_id is None:
+                if config.seed_version >= HOST_SLOT_SEED_VERSION:
+                    # Seeding already ran and no shared familiar slot remains: the user
+                    # deleted the default. Respect that; leave usages unbound.
+                    return {"bound": [], "slot_id": None}
+                slot_id = "slot_" + uuid4().hex
+                config.slots[slot_id] = ModelSlot(
+                    name=HOST_SLOT_SEEDS[0][1], source="host_follow", host_api=SHARED_HOST_API,
+                    capabilities=list(HOST_SLOT_SEEDS[0][2]),
+                )
+            slot = config.slots[slot_id]
+            bindings = config.bindings.setdefault(plugin_id, {})
+            versions = config.binding_versions.setdefault(plugin_id, {})
+            bound = []
+            for usage_id, requirement in requirements.items():
+                # A recorded version means the user bound or unbound this usage
+                # before; an explicit unbind must survive updates/reinstalls.
+                if usage_id in bindings or versions.get(usage_id, 0) > 0:
+                    continue
+                if not set(requirement.capabilities).issubset(slot.capabilities):
+                    continue
+                bindings[usage_id] = slot_id
+                versions[usage_id] = versions.get(usage_id, 0) + 1
+                bound.append(usage_id)
+            if not bindings:
+                config.bindings.pop(plugin_id, None)
+            if not versions:
+                config.binding_versions.pop(plugin_id, None)
+            if created_slot and not bound:
+                # Defensive only: seeding normally provides the shared familiar slot.
+                del config.slots[slot_id]
+                slot_id = None
+            return {"bound": bound, "slot_id": slot_id}
+
         return self.store.update(change)

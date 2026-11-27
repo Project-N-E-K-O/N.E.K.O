@@ -4,11 +4,14 @@ Plugin runtime-state module
 Manage global runtime state for the plugin system.
 """
 import asyncio
+import importlib
 import itertools
 import math
+import sys
 import threading
 import time
 import uuid
+import weakref
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
@@ -17,6 +20,7 @@ from plugin.logging_config import get_logger
 from plugin.settings import (
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
+    MESSAGE_PLANE_STORE_MAXLEN,
     MESSAGE_QUEUE_MAX,
     resolve_message_plane_rpc_endpoint,
 )
@@ -36,6 +40,16 @@ from contextlib import contextmanager
 from plugin.core.message_plane_transport import format_rpc_error
 
 MAX_DELETED_BUS_IDS = 20000
+MAX_PUBLISHED_BUS_IDS = max(
+    MAX_DELETED_BUS_IDS,
+    MESSAGE_PLANE_STORE_MAXLEN,
+    EVENT_QUEUE_MAX,
+    LIFECYCLE_QUEUE_MAX,
+)
+MAX_CONVERSATION_SUBSCRIPTIONS = 4096
+MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS = 128
+_PENDING_DELETE_RETRY_BACKOFF_SECONDS = 1.0
+_PENDING_DELETE_FLUSH_BATCH_SIZE = 500
 
 # Default lock timeout in seconds.
 DEFAULT_LOCK_TIMEOUT = 10.0
@@ -239,7 +253,7 @@ class GlobalState:
         self._plugin_downlink_senders: Dict[str, Any] = {}
         self._plugin_downlink_senders_lock = threading.Lock()
 
-        self._bus_store_lock = threading.Lock()
+        self._bus_store_lock = threading.RLock()
         self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
         self._event_store: Deque[Dict[str, Any]] = deque(maxlen=EVENT_QUEUE_MAX)
         self._lifecycle_store: Deque[Dict[str, Any]] = deque(maxlen=LIFECYCLE_QUEUE_MAX)
@@ -249,9 +263,29 @@ class GlobalState:
         self._deleted_message_ids_order: Deque[str] = deque()
         self._deleted_event_ids_order: Deque[str] = deque()
         self._deleted_lifecycle_ids_order: Deque[str] = deque()
+        self._pending_event_deletes: Dict[str, Dict[str, Any]] = {}
+        self._pending_lifecycle_deletes: Dict[str, Dict[str, Any]] = {}
+        self._unpublished_event_counts: Dict[str, int] = {}
+        self._unpublished_lifecycle_counts: Dict[str, int] = {}
+        self._published_event_ids: Dict[str, None] = {}
+        self._published_lifecycle_ids: Dict[str, None] = {}
+        self._dropped_pending_delete_counts: Dict[str, int] = {
+            "events": 0,
+            "lifecycle": 0,
+        }
+        self._pending_delete_retry_after: Dict[str, float] = {
+            "events": 0.0,
+            "lifecycle": 0.0,
+        }
+        self._plane_bridge_hook_lock = threading.Lock()
+        self._plane_bridge_flush_hook_registered: bool = False
+        pb_mod = sys.modules.get("plugin.server.messaging.plane_bridge")
+        if pb_mod is not None:
+            self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=pb_mod)
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
+            "conversations": 0,
             "messages": 0,
             "events": 0,
             "lifecycle": 0,
@@ -263,6 +297,7 @@ class GlobalState:
 
         self._bus_subscriptions_lock = threading.Lock()
         self._bus_subscriptions: Dict[str, Dict[str, Dict[str, Any]]] = {
+            "conversations": {},
             "messages": {},
             "events": {},
             "lifecycle": {},
@@ -691,12 +726,20 @@ class GlobalState:
             return
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.pop(pid, None)
+        # The process can no longer own observation registrations. Do not keep
+        # stale v2 subscriptions through freeze/reload or dispatch them to a new
+        # process later started with the same plugin id.
+        with self._bus_subscriptions_lock:
+            subscriptions = self._bus_subscriptions.get("conversations", {})
+            for sid, info in list(subscriptions.items()):
+                if info.get("from_plugin") == pid:
+                    subscriptions.pop(sid, None)
 
 
     def append_message_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return
-        mid = record.get("message_id")
+        mid = self._extract_message_id(record)
         with self._bus_store_lock:
             if isinstance(mid, str) and mid in self._deleted_message_ids:
                 return
@@ -737,7 +780,7 @@ class GlobalState:
         kept: List[Dict[str, Any]] = []
         with self._bus_store_lock:
             for rec in candidates:
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 if isinstance(mid, str) and mid in self._deleted_message_ids:
                     continue
                 self._message_store.append(rec)
@@ -749,7 +792,7 @@ class GlobalState:
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 payload: Dict[str, Any] = {"rev": rev}
                 if isinstance(mid, str) and mid:
                     payload["message_id"] = mid
@@ -784,7 +827,7 @@ class GlobalState:
                 if not kept_fast:
                     return 0
                 for rec in kept_fast:
-                    mid = rec.get("message_id")
+                    mid = self._extract_message_id(rec)
                     if isinstance(mid, str) and mid:
                         last_mid_fast = mid
                     try:
@@ -834,7 +877,7 @@ class GlobalState:
         last_source: Optional[str] = None
         with self._bus_store_lock:
             for rec in candidates:
-                mid = rec.get("message_id")
+                mid = self._extract_message_id(rec)
                 if isinstance(mid, str) and mid in self._deleted_message_ids:
                     continue
                 kept.append(rec)
@@ -877,20 +920,105 @@ class GlobalState:
             pass
         return int(len(kept))
 
+    @staticmethod
+    def _extract_bus_record_id(record: Any, id_field: str) -> Optional[str]:
+        if not isinstance(record, dict):
+            return None
+        rid = record.get(id_field) or record.get("trace_id")
+        if isinstance(rid, str) and rid:
+            return rid
+        return None
+
+    def _bus_publish_tracking_for_store(
+        self, store: str
+    ) -> tuple[Dict[str, int], Dict[str, None]]:
+        if store == "events":
+            return self._unpublished_event_counts, self._published_event_ids
+        return self._unpublished_lifecycle_counts, self._published_lifecycle_ids
+
+    def _mark_bus_id_published_locked(
+        self, published_ids: Dict[str, None], record_id: str
+    ) -> None:
+        # Refresh LRU recency so repeated IDs stay tracked across deque evictions.
+        published_ids.pop(record_id, None)
+        published_ids[record_id] = None
+        limit = max(1, int(MAX_PUBLISHED_BUS_IDS))
+        while len(published_ids) > limit:
+            oldest = next(iter(published_ids))
+            published_ids.pop(oldest, None)
+
+    def _reset_published_bus_ids_locked(
+        self, store: str, items: List[Dict[str, Any]], id_field: str
+    ) -> None:
+        unpublished_counts, published_ids = self._bus_publish_tracking_for_store(store)
+        unpublished_counts.clear()
+        published_ids.clear()
+        for rec in items:
+            rid = self._extract_bus_record_id(rec, id_field)
+            if rid is not None:
+                self._mark_bus_id_published_locked(published_ids, rid)
+
+    def _append_local_bus_record_locked(
+        self,
+        store_dq: Deque[Dict[str, Any]],
+        unpublished_counts: Dict[str, int],
+        record: Dict[str, Any],
+        id_field: str,
+    ) -> None:
+        maxlen = store_dq.maxlen
+        if maxlen is not None and maxlen > 0 and len(store_dq) >= maxlen:
+            old_id = self._extract_bus_record_id(store_dq[0], id_field)
+            if old_id is not None:
+                remaining = unpublished_counts.get(old_id, 0) - 1
+                if remaining > 0:
+                    unpublished_counts[old_id] = remaining
+                else:
+                    unpublished_counts.pop(old_id, None)
+        store_dq.append(record)
+
+    def _record_bus_publish_outcome_locked(
+        self,
+        store: str,
+        record_id: Any,
+        published: bool,
+        *,
+        retained: bool = True,
+    ) -> None:
+        if not isinstance(record_id, str) or not record_id:
+            return
+        unpublished_counts, published_ids = self._bus_publish_tracking_for_store(store)
+        if published:
+            self._mark_bus_id_published_locked(published_ids, record_id)
+            unpublished_counts.pop(record_id, None)
+        elif retained and record_id not in published_ids:
+            unpublished_counts[record_id] = unpublished_counts.get(record_id, 0) + 1
+
     def append_event_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return
-        eid = record.get("event_id") or record.get("trace_id")
+        eid = self._extract_bus_record_id(record, "event_id")
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
-            if isinstance(eid, str) and eid in self._deleted_event_ids:
+            if eid is not None and eid in self._deleted_event_ids:
                 return
-            self._event_store.append(record)
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
-
-            publish_record(store="events", record=dict(record), topic="all")
-        except Exception:
-            pass
+            self._append_local_bus_record_locked(
+                self._event_store, self._unpublished_event_counts, record, "event_id"
+            )
+            self._flush_pending_message_plane_deletes_locked(
+                "events", plane_bridge=plane_bridge, reserve_slots=1
+            )
+            published = False
+            if plane_bridge is not None:
+                try:
+                    published = (
+                        plane_bridge.publish_record(store="events", record=dict(record), topic="all")
+                        is not False
+                    )
+                except Exception:
+                    published = False
+            maxlen = self._event_store.maxlen
+            retained = maxlen is None or maxlen > 0
+            self._record_bus_publish_outcome_locked("events", eid, published, retained=retained)
         try:
             rev = self._bump_bus_rev("events")
             self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
@@ -907,23 +1035,46 @@ class GlobalState:
             candidates.append(rec)
 
         kept: List[Dict[str, Any]] = []
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             for rec in candidates:
-                eid = rec.get("event_id") or rec.get("trace_id")
-                if isinstance(eid, str) and eid in self._deleted_event_ids:
+                eid = self._extract_bus_record_id(rec, "event_id")
+                if eid is not None and eid in self._deleted_event_ids:
                     continue
-                self._event_store.append(rec)
+                self._append_local_bus_record_locked(
+                    self._event_store, self._unpublished_event_counts, rec, "event_id"
+                )
                 kept.append(rec)
-        if not kept:
-            return 0
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
-
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="events", record=dict(rec), topic="all")
-        except Exception:
-            pass
+            if not kept:
+                return 0
+            self._flush_pending_message_plane_deletes_locked(
+                "events", plane_bridge=plane_bridge, reserve_slots=1
+            )
+            maxlen = self._event_store.maxlen
+            if maxlen is None:
+                retained_start = 0
+            elif maxlen <= 0:
+                retained_start = len(kept)
+            else:
+                retained_start = max(0, len(kept) - maxlen)
+            for idx, rec in enumerate(kept):
+                if not isinstance(rec, dict):
+                    continue
+                eid = self._extract_bus_record_id(rec, "event_id")
+                published = False
+                if plane_bridge is not None:
+                    try:
+                        published = (
+                            plane_bridge.publish_record(
+                                store="events", record=dict(rec), topic="all"
+                            )
+                            is not False
+                        )
+                    except Exception:
+                        published = False
+                self._record_bus_publish_outcome_locked(
+                    "events", eid, published, retained=idx >= retained_start
+                )
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("events")
@@ -935,17 +1086,31 @@ class GlobalState:
     def append_lifecycle_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return
-        lid = record.get("lifecycle_id") or record.get("trace_id")
+        lid = self._extract_bus_record_id(record, "lifecycle_id")
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
-            if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+            if lid is not None and lid in self._deleted_lifecycle_ids:
                 return
-            self._lifecycle_store.append(record)
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
-
-            publish_record(store="lifecycle", record=dict(record), topic="all")
-        except Exception:
-            pass
+            self._append_local_bus_record_locked(
+                self._lifecycle_store, self._unpublished_lifecycle_counts, record, "lifecycle_id"
+            )
+            self._flush_pending_message_plane_deletes_locked(
+                "lifecycle", plane_bridge=plane_bridge, reserve_slots=1
+            )
+            published = False
+            if plane_bridge is not None:
+                try:
+                    published = (
+                        plane_bridge.publish_record(
+                            store="lifecycle", record=dict(record), topic="all"
+                        )
+                        is not False
+                    )
+                except Exception:
+                    published = False
+            maxlen = self._lifecycle_store.maxlen
+            retained = maxlen is None or maxlen > 0
+            self._record_bus_publish_outcome_locked("lifecycle", lid, published, retained=retained)
         try:
             rev = self._bump_bus_rev("lifecycle")
             self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record), "rev": rev})
@@ -962,23 +1127,46 @@ class GlobalState:
             candidates.append(rec)
 
         kept: List[Dict[str, Any]] = []
+        plane_bridge = self._resolve_plane_bridge()
         with self._bus_store_lock:
             for rec in candidates:
-                lid = rec.get("lifecycle_id") or rec.get("trace_id")
-                if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+                lid = self._extract_bus_record_id(rec, "lifecycle_id")
+                if lid is not None and lid in self._deleted_lifecycle_ids:
                     continue
-                self._lifecycle_store.append(rec)
+                self._append_local_bus_record_locked(
+                    self._lifecycle_store, self._unpublished_lifecycle_counts, rec, "lifecycle_id"
+                )
                 kept.append(rec)
-        if not kept:
-            return 0
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
-
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="lifecycle", record=dict(rec), topic="all")
-        except Exception:
-            pass
+            if not kept:
+                return 0
+            self._flush_pending_message_plane_deletes_locked(
+                "lifecycle", plane_bridge=plane_bridge, reserve_slots=1
+            )
+            maxlen = self._lifecycle_store.maxlen
+            if maxlen is None:
+                retained_start = 0
+            elif maxlen <= 0:
+                retained_start = len(kept)
+            else:
+                retained_start = max(0, len(kept) - maxlen)
+            for idx, rec in enumerate(kept):
+                if not isinstance(rec, dict):
+                    continue
+                lid = self._extract_bus_record_id(rec, "lifecycle_id")
+                published = False
+                if plane_bridge is not None:
+                    try:
+                        published = (
+                            plane_bridge.publish_record(
+                                store="lifecycle", record=dict(rec), topic="all"
+                            )
+                            is not False
+                        )
+                    except Exception:
+                        published = False
+                self._record_bus_publish_outcome_locked(
+                    "lifecycle", lid, published, retained=idx >= retained_start
+                )
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("lifecycle")
@@ -1010,6 +1198,11 @@ class GlobalState:
                 object.__setattr__(self, "_messages_cache_last_sync_ts", 0.0)
             except Exception:
                 self._messages_cache_last_sync_ts = 0.0  # type: ignore[attr-defined]
+        if not hasattr(self, "_messages_cache_limit"):
+            try:
+                object.__setattr__(self, "_messages_cache_limit", 0)
+            except Exception:
+                self._messages_cache_limit = 0  # type: ignore[attr-defined]
         if not hasattr(self, "_messages_cache_sync_lock"):
             lock = threading.Lock()
             try:
@@ -1095,6 +1288,110 @@ class GlobalState:
             except Exception:
                 pass
 
+    @staticmethod
+    def _extract_message_id(rec: Any) -> Optional[str]:
+        if not isinstance(rec, dict):
+            return None
+        mid = rec.get("message_id")
+        if isinstance(mid, str) and mid:
+            return mid
+        payload = rec.get("payload")
+        if isinstance(payload, dict):
+            pmid = payload.get("message_id")
+            if isinstance(pmid, str) and pmid:
+                return pmid
+        index = rec.get("index")
+        if isinstance(index, dict):
+            imid = index.get("id")
+            if isinstance(imid, str) and imid:
+                return imid
+        return None
+
+    def snapshot_messages_from_message_plane(
+        self,
+        *,
+        limit: int,
+        timeout: float,
+        ttl_seconds: float = 0.5,
+        force: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Refresh control-plane messages cache if needed and return a consistent snapshot."""
+        self._ensure_messages_cache_state()
+        requested_limit = max(0, int(limit))
+        now_ts = time.time()
+        with self._bus_store_lock:
+            try:
+                last_ts = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
+            except Exception:
+                last_ts = 0.0
+            try:
+                cached_limit = int(getattr(self, "_messages_cache_limit", 0) or 0)
+            except Exception:
+                cached_limit = 0
+            if (
+                not force
+                and ttl_seconds is not None
+                and ttl_seconds > 0
+                and last_ts > 0.0
+                and cached_limit >= requested_limit
+                and (now_ts - last_ts) < float(ttl_seconds)
+            ):
+                return list(self._message_store)
+
+        lock = getattr(self, "_messages_cache_sync_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                object.__setattr__(self, "_messages_cache_sync_lock", lock)
+            except Exception:
+                self._messages_cache_sync_lock = lock  # type: ignore[attr-defined]
+
+        with lock:
+            # Double-check under lock.
+            now_ts2 = time.time()
+            with self._bus_store_lock:
+                try:
+                    last_ts2 = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
+                except Exception:
+                    last_ts2 = 0.0
+                try:
+                    cached_limit2 = int(getattr(self, "_messages_cache_limit", 0) or 0)
+                except Exception:
+                    cached_limit2 = 0
+                if (
+                    not force
+                    and ttl_seconds is not None
+                    and ttl_seconds > 0
+                    and last_ts2 > 0.0
+                    and cached_limit2 >= requested_limit
+                    and (now_ts2 - last_ts2) < float(ttl_seconds)
+                ):
+                    return list(self._message_store)
+
+            items = self._message_plane_rpc_get_recent_messages(limit=requested_limit, timeout=float(timeout))
+            with self._bus_store_lock:
+                try:
+                    self._message_store.clear()
+                except Exception:
+                    self._message_store = deque(maxlen=self._message_store.maxlen)
+                for rec in items:
+                    if not isinstance(rec, dict):
+                        continue
+                    mid = self._extract_message_id(rec)
+                    if isinstance(mid, str) and mid in self._deleted_message_ids:
+                        continue
+                    self._message_store.append(rec)
+                # Update cached limit before timestamp so lock-free readers never see a fresh ts with a stale limit.
+                try:
+                    object.__setattr__(self, "_messages_cache_limit", requested_limit)
+                except Exception:
+                    self._messages_cache_limit = requested_limit  # type: ignore[attr-defined]
+                try:
+                    object.__setattr__(self, "_messages_cache_last_sync_ts", float(time.time()))
+                except Exception:
+                    self._messages_cache_last_sync_ts = float(time.time())  # type: ignore[attr-defined]
+                return list(self._message_store)
+
     def refresh_messages_cache_from_message_plane(
         self,
         *,
@@ -1107,53 +1404,13 @@ class GlobalState:
 
         This is intentionally low-frequency: guarded by TTL + mutex to prevent UI request storms.
         """
-        self._ensure_messages_cache_state()
-        try:
-            last_ts = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
-        except Exception:
-            last_ts = 0.0
-
-        now_ts = time.time()
-        if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts - last_ts) < float(ttl_seconds):
-            try:
-                return int(self.message_store_len())
-            except Exception:
-                return 0
-
-        lock = getattr(self, "_messages_cache_sync_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            try:
-                object.__setattr__(self, "_messages_cache_sync_lock", lock)
-            except Exception:
-                self._messages_cache_sync_lock = lock  # type: ignore[attr-defined]
-
-        with lock:
-            # Double-check under lock.
-            try:
-                last_ts2 = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
-            except Exception:
-                last_ts2 = 0.0
-            now_ts2 = time.time()
-            if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts2 - last_ts2) < float(ttl_seconds):
-                try:
-                    return int(self.message_store_len())
-                except Exception:
-                    return 0
-
-            items = self._message_plane_rpc_get_recent_messages(limit=int(limit), timeout=float(timeout))
-            with self._bus_store_lock:
-                try:
-                    self._message_store.clear()
-                except Exception:
-                    self._message_store = deque(maxlen=self._message_store.maxlen)
-                for rec in items:
-                    self._message_store.append(rec)
-            try:
-                object.__setattr__(self, "_messages_cache_last_sync_ts", float(time.time()))
-            except Exception:
-                self._messages_cache_last_sync_ts = float(time.time())  # type: ignore[attr-defined]
-            return int(len(items))
+        snap = self.snapshot_messages_from_message_plane(
+            limit=limit,
+            timeout=timeout,
+            ttl_seconds=ttl_seconds,
+            force=force,
+        )
+        return int(len(snap))
 
     def message_store_len(self) -> int:
         with self._bus_store_lock:
@@ -1217,9 +1474,11 @@ class GlobalState:
     def sync_message_plane_messages(self) -> int:
         # Reverse sync: messages are authoritative in message_plane; control_plane keeps a cache.
         try:
+            with self._bus_store_lock:
+                cached_limit = int(getattr(self, "_messages_cache_limit", 0) or 0)
             return int(
                 self.refresh_messages_cache_from_message_plane(
-                    limit=500,
+                    limit=max(500, cached_limit),
                     timeout=1.0,
                     ttl_seconds=0.0,
                     force=True,
@@ -1232,9 +1491,19 @@ class GlobalState:
         try:
             from plugin.server.messaging.plane_bridge import publish_snapshot
 
-            items = self.list_event_records()
-            publish_snapshot(store="events", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
-            return int(len(items))
+            with self._bus_store_lock:
+                items = list(self._event_store)
+                result = publish_snapshot(
+                    store="events",
+                    records=[dict(x) for x in items if isinstance(x, dict)],
+                    topic="all",
+                    mode="replace",
+                )
+                if result is not False:
+                    self._pending_event_deletes.clear()
+                    self._reset_published_bus_ids_locked("events", items, "event_id")
+                    self._pending_delete_retry_after["events"] = 0.0
+                return int(len(items))
         except Exception:
             return 0
 
@@ -1242,11 +1511,222 @@ class GlobalState:
         try:
             from plugin.server.messaging.plane_bridge import publish_snapshot
 
-            items = self.list_lifecycle_records()
-            publish_snapshot(store="lifecycle", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
-            return int(len(items))
+            with self._bus_store_lock:
+                items = list(self._lifecycle_store)
+                result = publish_snapshot(
+                    store="lifecycle",
+                    records=[dict(x) for x in items if isinstance(x, dict)],
+                    topic="all",
+                    mode="replace",
+                )
+                if result is not False:
+                    self._pending_lifecycle_deletes.clear()
+                    self._reset_published_bus_ids_locked("lifecycle", items, "lifecycle_id")
+                    self._pending_delete_retry_after["lifecycle"] = 0.0
+                return int(len(items))
         except Exception:
             return 0
+
+    def _resolve_plane_bridge(self) -> Any | None:
+        # Resolve outside _bus_store_lock so package import locks never contend with bus mutations.
+        # Always go through importlib.import_module so a partially initialized module in sys.modules
+        # waits on Python's module lock until attributes like publish_record exist.
+        try:
+            return importlib.import_module("plugin.server.messaging.plane_bridge")
+        except Exception:
+            return None
+
+    def _ensure_plane_bridge_flush_hook_registered(
+        self, *, plane_bridge_mod: Any | None = None
+    ) -> bool:
+        if self._plane_bridge_flush_hook_registered:
+            return True
+        if plane_bridge_mod is None:
+            plane_bridge_mod = self._resolve_plane_bridge()
+        if plane_bridge_mod is None:
+            return False
+        with self._plane_bridge_hook_lock:
+            if self._plane_bridge_flush_hook_registered:
+                return True
+            try:
+                self_ref = weakref.ref(self)
+
+                def _hook() -> None:
+                    gs = self_ref()
+                    if gs is not None:
+                        gs.flush_pending_message_plane_deletes()
+
+                plane_bridge_mod.register_pending_flush_hook(_hook)
+                weakref.finalize(self, plane_bridge_mod.unregister_pending_flush_hook, _hook)
+                self._plane_bridge_flush_hook_registered = True
+                return True
+            except Exception:
+                return False
+
+    def flush_pending_message_plane_deletes(self) -> None:
+        if not self._pending_event_deletes and not self._pending_lifecycle_deletes:
+            return
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
+        with self._bus_store_lock:
+            if self._pending_event_deletes:
+                self._flush_pending_message_plane_deletes_locked(
+                    "events", force=True, plane_bridge=plane_bridge
+                )
+            if self._pending_lifecycle_deletes:
+                self._flush_pending_message_plane_deletes_locked(
+                    "lifecycle", force=True, plane_bridge=plane_bridge
+                )
+
+    def _pending_deletes_for_store(self, store: str) -> Optional[Dict[str, Dict[str, Any]]]:
+        if store == "events":
+            return self._pending_event_deletes
+        if store == "lifecycle":
+            return self._pending_lifecycle_deletes
+        return None
+
+    def _flush_pending_message_plane_deletes_locked(
+        self,
+        store: str,
+        *,
+        force: bool = False,
+        plane_bridge: Any | None = None,
+        reserve_slots: int = 0,
+    ) -> str:
+        pending = self._pending_deletes_for_store(store)
+        if not pending:
+            return "noop"
+        if plane_bridge is None:
+            plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
+        if plane_bridge is None:
+            return "deferred"
+        try:
+            is_enabled_fn = getattr(plane_bridge, "is_bridge_enabled", None)
+            if callable(is_enabled_fn) and not is_enabled_fn():
+                pending.clear()
+                self._pending_delete_retry_after[store] = 0.0
+                return "noop"
+            can_enqueue_fn = getattr(plane_bridge, "can_enqueue_snapshot", None)
+            reserve = max(0, int(reserve_slots))
+
+            def _has_room() -> bool:
+                if not callable(can_enqueue_fn):
+                    return True
+                if (
+                    reserve > 0
+                    and getattr(can_enqueue_fn, "_supports_reserve_slots", False) is True
+                ):
+                    return bool(can_enqueue_fn(reserve_slots=reserve))
+                return bool(can_enqueue_fn())
+
+            if not _has_room():
+                return "deferred"
+            if not force and time.monotonic() < self._pending_delete_retry_after.get(store, 0.0):
+                return "deferred"
+
+            publish_snapshot = plane_bridge.publish_snapshot
+            pass_reserve_to_publish = (
+                reserve > 0
+                and getattr(publish_snapshot, "_supports_reserve_slots", False) is True
+            )
+            batch_limit = max(1, int(_PENDING_DELETE_FLUSH_BATCH_SIZE))
+            while pending:
+                if not _has_room():
+                    return "deferred"
+                batch_keys = list(itertools.islice(pending.keys(), batch_limit))
+                snap_kwargs: Dict[str, Any] = {
+                    "store": store,
+                    "records": [dict(pending[k]) for k in batch_keys],
+                    "topic": "all",
+                    "mode": "delete",
+                }
+                if pass_reserve_to_publish:
+                    snap_kwargs["reserve_slots"] = reserve
+                result = publish_snapshot(**snap_kwargs)
+                if result is False:
+                    if reserve > 0 and not _has_room():
+                        return "deferred"
+                    self._pending_delete_retry_after[store] = (
+                        time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
+                    )
+                    return "deferred"
+                for k in batch_keys:
+                    pending.pop(k, None)
+            self._pending_delete_retry_after[store] = 0.0
+            return "flushed_delete"
+        except Exception:
+            self._pending_delete_retry_after[store] = (
+                time.monotonic() + _PENDING_DELETE_RETRY_BACKOFF_SECONDS
+            )
+            return "deferred"
+
+    def _delete_message_plane_record(
+        self,
+        store: str,
+        record: Dict[str, Any],
+        *,
+        record_id: str | None = None,
+        plane_bridge: Any | None = None,
+    ) -> bool:
+        with self._bus_store_lock:
+            if plane_bridge is None:
+                plane_bridge = sys.modules.get("plugin.server.messaging.plane_bridge")
+            if plane_bridge is not None:
+                try:
+                    is_enabled_fn = getattr(plane_bridge, "is_bridge_enabled", None)
+                    if callable(is_enabled_fn) and not is_enabled_fn():
+                        return False
+                except Exception:
+                    pass
+            pending = self._pending_deletes_for_store(store)
+            if pending is None:
+                if plane_bridge is None:
+                    return False
+                try:
+                    return plane_bridge.publish_snapshot(
+                        store=store,
+                        records=[dict(record)],
+                        topic="all",
+                        mode="delete",
+                    ) is not False
+                except Exception:
+                    return False
+            key = record_id
+            if not isinstance(key, str) or not key:
+                for field in ("event_id", "lifecycle_id", "trace_id", "message_id", "id"):
+                    val = record.get(field)
+                    if isinstance(val, str) and val:
+                        key = val
+                        break
+            if isinstance(key, str) and key:
+                if key not in pending:
+                    if len(pending) >= MAX_DELETED_BUS_IDS:
+                        self._flush_pending_message_plane_deletes_locked(
+                            store, force=True, plane_bridge=plane_bridge
+                        )
+                    evicted = 0
+                    while len(pending) >= MAX_DELETED_BUS_IDS:
+                        oldest = next(iter(pending))
+                        pending.pop(oldest, None)
+                        evicted += 1
+                    if evicted:
+                        total_dropped = self._dropped_pending_delete_counts.get(store, 0) + evicted
+                        self._dropped_pending_delete_counts[store] = total_dropped
+                        logger.warning(
+                            "Pending message-plane deletes for store '{}' exceeded MAX_DELETED_BUS_IDS ({}); "
+                            "evicted {} oldest pending delete(s) FIFO (total_dropped={}) instead of issuing full replace",
+                            store,
+                            MAX_DELETED_BUS_IDS,
+                            evicted,
+                            total_dropped,
+                        )
+                pending[key] = dict(record)
+            return (
+                self._flush_pending_message_plane_deletes_locked(
+                    store, plane_bridge=plane_bridge
+                )
+                == "flushed_delete"
+            )
 
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
@@ -1262,7 +1742,7 @@ class GlobalState:
             # Rebuild deque excluding deleted records.
             new_store = deque(maxlen=self._message_store.maxlen)
             for rec in self._message_store:
-                if isinstance(rec, dict) and rec.get("message_id") == message_id:
+                if self._extract_message_id(rec) == message_id:
                     removed = True
                 else:
                     new_store.append(rec)
@@ -1284,14 +1764,25 @@ class GlobalState:
             raise ValueError("sub_id is required")
         payload = dict(info) if isinstance(info, dict) else {}
         with self._bus_subscriptions_lock:
+            if b == "conversations" and sid not in self._bus_subscriptions[b]:
+                subscriptions = self._bus_subscriptions[b]
+                owner = payload.get("from_plugin")
+                if len(subscriptions) >= MAX_CONVERSATION_SUBSCRIPTIONS or sum(
+                    item.get("from_plugin") == owner for item in subscriptions.values()
+                ) >= MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS:
+                    raise OverflowError("Conversation subscription capacity exhausted")
             self._bus_subscriptions[b][sid] = payload
 
-    def remove_bus_subscription(self, bus: str, sub_id: str) -> bool:
+    def remove_bus_subscription(self, bus: str, sub_id: str, *, from_plugin: str | None = None) -> bool:
         b = str(bus).strip()
         sid = str(sub_id).strip()
         if b not in self._bus_subscriptions or not sid:
             return False
         with self._bus_subscriptions_lock:
+            if from_plugin is not None:
+                info = self._bus_subscriptions[b].get(sid)
+                if info is None or info.get("from_plugin") != from_plugin:
+                    return False
             return self._bus_subscriptions[b].pop(sid, None) is not None
 
     def get_bus_subscriptions(self, bus: str) -> Dict[str, Dict[str, Any]]:
@@ -1304,7 +1795,9 @@ class GlobalState:
     def delete_event(self, event_id: str) -> bool:
         if not isinstance(event_id, str) or not event_id:
             return False
-        removed = False
+        removed_count = 0
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
             if event_id not in self._deleted_event_ids:
                 self._deleted_event_ids.add(event_id)
@@ -1314,12 +1807,31 @@ class GlobalState:
                     self._deleted_event_ids.discard(old)
             new_store = deque(maxlen=self._event_store.maxlen)
             for rec in self._event_store:
-                rid = rec.get("event_id") or rec.get("trace_id") if isinstance(rec, dict) else None
+                rid = self._extract_bus_record_id(rec, "event_id")
                 if rid == event_id:
-                    removed = True
+                    removed_count += 1
                 else:
                     new_store.append(rec)
             self._event_store = new_store
+            removed = removed_count > 0
+            unpublished_count = self._unpublished_event_counts.pop(event_id, 0)
+            was_confirmed_unpublished = (
+                removed
+                and unpublished_count >= removed_count
+                and event_id not in self._published_event_ids
+            )
+            if removed and not was_confirmed_unpublished:
+                self._published_event_ids.pop(event_id, None)
+                self._delete_message_plane_record(
+                    "events",
+                    {"event_id": event_id, "trace_id": event_id},
+                    record_id=event_id,
+                    plane_bridge=plane_bridge,
+                )
+            elif self._pending_event_deletes:
+                self._flush_pending_message_plane_deletes_locked(
+                    "events", plane_bridge=plane_bridge
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("events")
@@ -1331,7 +1843,9 @@ class GlobalState:
     def delete_lifecycle(self, lifecycle_id: str) -> bool:
         if not isinstance(lifecycle_id, str) or not lifecycle_id:
             return False
-        removed = False
+        removed_count = 0
+        plane_bridge = self._resolve_plane_bridge()
+        self._ensure_plane_bridge_flush_hook_registered(plane_bridge_mod=plane_bridge)
         with self._bus_store_lock:
             if lifecycle_id not in self._deleted_lifecycle_ids:
                 self._deleted_lifecycle_ids.add(lifecycle_id)
@@ -1341,12 +1855,31 @@ class GlobalState:
                     self._deleted_lifecycle_ids.discard(old)
             new_store = deque(maxlen=self._lifecycle_store.maxlen)
             for rec in self._lifecycle_store:
-                rid = rec.get("lifecycle_id") or rec.get("trace_id") if isinstance(rec, dict) else None
+                rid = self._extract_bus_record_id(rec, "lifecycle_id")
                 if rid == lifecycle_id:
-                    removed = True
+                    removed_count += 1
                 else:
                     new_store.append(rec)
             self._lifecycle_store = new_store
+            removed = removed_count > 0
+            unpublished_count = self._unpublished_lifecycle_counts.pop(lifecycle_id, 0)
+            was_confirmed_unpublished = (
+                removed
+                and unpublished_count >= removed_count
+                and lifecycle_id not in self._published_lifecycle_ids
+            )
+            if removed and not was_confirmed_unpublished:
+                self._published_lifecycle_ids.pop(lifecycle_id, None)
+                self._delete_message_plane_record(
+                    "lifecycle",
+                    {"lifecycle_id": lifecycle_id, "trace_id": lifecycle_id},
+                    record_id=lifecycle_id,
+                    plane_bridge=plane_bridge,
+                )
+            elif self._pending_lifecycle_deletes:
+                self._flush_pending_message_plane_deletes_locked(
+                    "lifecycle", plane_bridge=plane_bridge
+                )
         if removed:
             try:
                 rev = self._bump_bus_rev("lifecycle")

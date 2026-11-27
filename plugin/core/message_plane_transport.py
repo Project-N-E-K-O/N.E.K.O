@@ -64,7 +64,9 @@ class MessagePlaneRpcClient:
                     ctx = zmq.Context.instance()
                 
                 sock = ctx.socket(zmq.DEALER)
-                ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
+                # Executor threads may connect in the same millisecond. A
+                # ROUTER must see a distinct identity for each DEALER socket.
+                ident = f"mp:{self._plugin_id}:{uuid.uuid4().hex}".encode("utf-8")
                 try:
                     sock.setsockopt(zmq.IDENTITY, ident)
                 except Exception:
@@ -219,9 +221,9 @@ class MessagePlaneRpcClient:
         except Exception:
             return None
         
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             
@@ -373,11 +375,11 @@ class MessagePlaneRpcClient:
         
         # Collect responses
         responses: List[Optional[Dict[str, Any]]] = cast(List[Optional[Dict[str, Any]]], [None] * len(requests))
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         received = set()
         
         while len(received) < len(req_ids):
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             

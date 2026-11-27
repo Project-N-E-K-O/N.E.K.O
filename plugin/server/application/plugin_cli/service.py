@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import secrets
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.logging_config import get_logger
@@ -64,6 +66,11 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_current_permission_source,
+    bind_entry_permission_source,
+    forget_plugin_grants,
+)
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -90,6 +97,10 @@ _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Maximum upload size (500 MiB)
 _UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
+
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed_async,
+)
 
 logger = get_logger("server.application.plugin_cli")
 plugin_registry_service = PluginRegistryService()
@@ -346,6 +357,7 @@ class PluginCliService:
         confirmation_token: str | None = None,
         _allow_external_profiles_root: bool = False,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         install_source_manager = get_install_source_manager()
         reload_install_source = getattr(install_source_manager, "load", None)
@@ -549,11 +561,14 @@ class PluginCliService:
                     "could not record as awaiting approval: "
                     + ", ".join(sorted(unrecorded))
                 )
-            return await self._record_requested_install_source(
+            result = await self._record_requested_install_source(
                 install_result=result,
                 package=package,
                 source=install_source,
             )
+            if _analyze_after_commit:
+                await notify_install_committed_async(result)
+            return result
 
         if action == "override_builtin":
             raise ServerDomainError(
@@ -621,6 +636,40 @@ class PluginCliService:
                 status_code=409,
                 details=asdict(plan),
             )
+
+        # Before anything changes, on the paths that record a new source (a
+        # requested install source, a manual takeover): a grant record without
+        # a source yet is bound to the plugin's current source, so the new
+        # package's source is a source change rather than a first binding. The
+        # source comes from the target directory's lock entry, loaded above,
+        # rather than from another registry lookup; only without an entry is
+        # it looked up. A failed save stops the replacement here, unchanged. A
+        # replacement that records no source keeps the current one, so it
+        # needs no binding.
+        current_entry: LockEntry | None = None
+        # The directory's exact lock row (also a soft-deleted one, or one
+        # naming another plugin id), put back if the replacement records a
+        # source and then rolls back; ``previous_lock_row_known`` tells "no
+        # row" apart from "could not be read".
+        previous_lock_row: LockEntry | None = None
+        previous_lock_row_known = False
+        if install_source is not None:
+            previous_lock_row, previous_lock_row_known = await asyncio.to_thread(
+                _lock_row_for_directory, install_source_manager, target_dir
+            )
+        if install_source is not None or plan.reason == "manual_takeover":
+            current_entry = await asyncio.to_thread(
+                _lock_entry_for_plugin,
+                install_source_manager,
+                target_dir,
+                plan.plugin_id,
+            )
+            if current_entry is not None:
+                await asyncio.to_thread(
+                    bind_entry_permission_source, plan.plugin_id, current_entry
+                )
+            else:
+                await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
 
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:
@@ -726,9 +775,16 @@ class PluginCliService:
                 )
 
         source_write_attempted = False
+        requested_source_attempted = False
+        grants_dropped = False
+        requested_source_written = False
+        requested_source_warning: str | None = None
+        source_restored = True
 
         async def install_new() -> dict[str, object]:
-            nonlocal source_write_attempted
+            nonlocal source_write_attempted, requested_source_attempted
+            nonlocal requested_source_written, requested_source_warning
+            nonlocal grants_dropped
             install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
@@ -745,7 +801,96 @@ class PluginCliService:
                     install_result=install_result,
                     package_path=package_path,
                 )
+            elif install_source is not None:
+                # Recorded here, before the replacement restarts the plugin,
+                # so the new code starts under its own source and never
+                # under the previous package's grants.
+                requested_source_attempted = True
+                warning = await self._requested_install_source_warning(
+                    install_result=install_result,
+                    package=package,
+                )
+                requested_source_written = warning is None
+                if warning is not None:
+                    # The source still reads as the previous package's, so
+                    # its grants would carry over: drop them before the
+                    # restart; the plugin is asked again. Only the replaced
+                    # plugin's grants: the package is not validated yet, and
+                    # a rollback restores only this plugin's snapshot.
+                    grants_dropped = True
+                    if not await asyncio.to_thread(
+                        forget_plugin_grants, (plan.plugin_id,)
+                    ):
+                        # The new code must not start with them: fail this
+                        # stage so the replacement rolls back.
+                        logger.error(
+                            "replacement stopped: previous grants could not be dropped plugin_id={}",
+                            plan.plugin_id,
+                        )
+                        raise RuntimeError(
+                            "permission grants of the previous package could not be cleared"
+                        )
+                requested_source_warning = warning
             return install_result
+
+        async def restore_source_before_restart() -> bool:
+            # Runs on rollback once the previous code is back, before the
+            # previous plugin restarts, so it starts under its own source.
+            # Restoring an entry that was not changed is a no-op, so any
+            # attempted write is undone. Returns whether the source is back.
+            nonlocal source_restored
+            if manual_entry is not None and source_write_attempted:
+                try:
+                    assert manual_manager is not None
+                    await asyncio.to_thread(
+                        manual_manager.restore_entry_for_rollback,
+                        manual_entry,
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "manual takeover source rollback failed plugin_id={} err_type={}",
+                        plan.plugin_id,
+                        type(restore_exc).__name__,
+                    )
+            if not requested_source_attempted:
+                return source_restored
+            if install_source_manager is None:
+                # Without a manager nothing was recorded.
+                return source_restored
+            try:
+                if previous_lock_row is not None:
+                    await asyncio.to_thread(
+                        install_source_manager.restore_entry_for_rollback,
+                        previous_lock_row,
+                    )
+                elif previous_lock_row_known:
+                    # The directory had no row (manifest-less state): the
+                    # recorded one is soft-deleted, which reads as no row.
+                    await asyncio.to_thread(
+                        functools.partial(
+                            install_source_manager.mark_removed,
+                            directory_path=target_dir,
+                            reason="replace_rollback",
+                        )
+                    )
+                elif requested_source_written:
+                    # The previous row could not be read, so a recorded
+                    # source cannot be undone.
+                    source_restored = False
+            except Exception as restore_exc:
+                source_restored = False
+                logger.error(
+                    "requested install source rollback failed plugin_id={} err_type={}",
+                    plan.plugin_id,
+                    type(restore_exc).__name__,
+                )
+            if not source_restored:
+                logger.error(
+                    "requested install source not restored after rollback plugin_id={}",
+                    plan.plugin_id,
+                )
+            return source_restored
 
         try:
             result = await replacement_transaction.replace_plugin(
@@ -753,6 +898,8 @@ class PluginCliService:
                 install_new=install_new,
                 preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
+                install_changed_permissions=lambda: grants_dropped,
+                restore_source_before_restart=restore_source_before_restart,
                 validate_backup=(
                     validate_manual_takeover_backup
                     if manual_manager is not None
@@ -787,21 +934,6 @@ class PluginCliService:
                     "auto-start preference for plugin_id={}",
                     plan.plugin_id,
                 )
-            source_restored = True
-            if manual_entry is not None and source_write_attempted:
-                try:
-                    assert manual_manager is not None
-                    await asyncio.to_thread(
-                        manual_manager.restore_entry_for_rollback,
-                        manual_entry,
-                    )
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "manual takeover source rollback failed plugin_id={} err_type={}",
-                        plan.plugin_id,
-                        type(restore_exc).__name__,
-                    )
             details = _replacement_error_details(exc)
             if not source_restored:
                 details["rollback_status"] = "incomplete"
@@ -823,13 +955,11 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is not None:
-            return response
-        return await self._record_requested_install_source(
-            install_result=response,
-            package=package,
-            source=install_source,
-        )
+        if requested_source_warning is not None:
+            response = {**response, "install_source_warning": requested_source_warning}
+        if _analyze_after_commit:
+            await notify_install_committed_async(response)
+        return response
 
     @serialized_plugin_operation
     async def install_builtin_override(
@@ -837,6 +967,7 @@ class PluginCliService:
         *,
         package: str,
         market_override: dict[str, Any],
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Install one verified Market package as the effective user source."""
 
@@ -1065,6 +1196,8 @@ class PluginCliService:
                 "install_source_warning": "; ".join(lock_warnings) if lock_warnings else None,
             }
         )
+        if _analyze_after_commit:
+            await notify_install_committed_async(staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
@@ -1167,7 +1300,22 @@ class PluginCliService:
     ) -> dict[str, object]:
         if source is None:
             return install_result
+        warning = await self._requested_install_source_warning(
+            install_result=install_result,
+            package=package,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
+    async def _requested_install_source_warning(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+    ) -> str | None:
+        """Record ``package`` as the imported source; ``None`` on success,
+        otherwise the ``install_source_warning`` text. Never raises."""
         try:
             package_path = self._resolve_package_path(package)
             package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
@@ -1177,19 +1325,13 @@ class PluginCliService:
                 type(exc).__name__,
                 str(exc),
             )
-            return {
-                **install_result,
-                "install_source_warning": f"install_source_prepare_failed: {exc}",
-            }
-        warning = await self._record_install_source_best_effort(
+            return f"install_source_prepare_failed: {exc}"
+        return await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,
             package_sha256=package_sha256,
             override=None,
         )
-        if warning is None:
-            return install_result
-        return {**install_result, "install_source_warning": warning}
 
     async def _record_manual_takeover_source(
         self,
@@ -1259,6 +1401,7 @@ class PluginCliService:
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
 
@@ -1351,6 +1494,7 @@ class PluginCliService:
                     on_conflict=on_conflict,
                     use_staging=True,
                     _allow_external_profiles_root=_allow_external_profiles_root,
+                    _analyze_after_commit=False,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 warning = await self._record_install_source_best_effort(
@@ -1365,6 +1509,8 @@ class PluginCliService:
                 }
                 if warning is not None:
                     payload["install_source_warning"] = warning
+                if _analyze_after_commit:
+                    await notify_install_committed_async(payload)
                 return payload
             except Exception:
                 self._cleanup_after_failure(
@@ -1418,6 +1564,7 @@ class PluginCliService:
                 unpack_result = await self.install_builtin_override(
                     package=saved_path,
                     market_override=install_source_override,
+                    _analyze_after_commit=False,
                 )
                 # The source-switch transaction has committed and owns its
                 # rollback. Do not let the outer upload cleanup delete the
@@ -1434,12 +1581,15 @@ class PluginCliService:
                     "previous_version": unpack_result.get("previous_version"),
                 }
                 warning = unpack_result.get("install_source_warning")
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=[str(warning)] if warning else [],
                 )
+                if _analyze_after_commit:
+                    await notify_install_committed_async(result)
+                return result
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
                 forced_directory_name,
@@ -1485,6 +1635,7 @@ class PluginCliService:
                     ),
                     _allow_external_profiles_root=_allow_external_profiles_root,
                     _preserve_autostart_plugin_id=_preserve_autostart_plugin_id,
+                    _analyze_after_commit=False,
                 )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
@@ -1516,12 +1667,15 @@ class PluginCliService:
                     )
                     if refresh_warning is not None:
                         warnings.append(refresh_warning)
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=warnings,
                 )
+                if _analyze_after_commit:
+                    await notify_install_committed_async(result)
+                return result
 
             # Step 4b — plugin identity consistency check.
             # When Market tells us "this is plugin X" by passing
@@ -1654,12 +1808,15 @@ class PluginCliService:
                     }
                 )
 
-            return self._compose_install_result(
+            result = self._compose_install_result(
                 saved=saved,
                 unpack_result=unpack_result,
                 install_dict=install_dict,
                 warnings=warnings,
             )
+            if _analyze_after_commit:
+                await notify_install_committed_async(result)
+            return result
 
         except InstallSourceError:
             # Lock write failed — fs cleanup still runs, but propagate the
@@ -2141,7 +2298,17 @@ class PluginCliService:
                 projects, failures = [], []
             conflicts = [item.source_dir for item in projects if item.plugin_id in incoming_ids]
             # Registered directories reserve their ID even while their source is invalid.
-            conflicts.extend(item.source_dir for item in failures if item.source_dir.name in incoming_ids)
+            # Their manifest is unreadable, so the directory name is all we have: match it
+            # with the loader's rule instead of an exact string compare, or a broken
+            # `foo-bar/` project would stop reserving `foo_bar` (#3724).
+            conflicts.extend(
+                item.source_dir
+                for item in failures
+                if any(
+                    plugin_package_matches_directory(incoming_id, item.source_dir.name)
+                    for incoming_id in incoming_ids
+                )
+            )
             if conflicts:
                 plan = replace(plan, action="blocked", confirmation_token="", reason="project_source_conflict")
                 result = asdict(plan)
@@ -2743,6 +2910,45 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _lock_row_for_directory(
+    manager: InstallSourceManager | None, target_dir: Path
+) -> tuple[LockEntry | None, bool]:
+    """The lock row of ``target_dir`` (soft-deleted rows included) and
+    whether it could be read; ``(None, False)`` without a usable, trusted
+    lock."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None, False
+    finder = getattr(manager, "entry_for_directory", None)
+    if not callable(finder):
+        return None, False
+    try:
+        return finder(target_dir, include_removed=True), True
+    except (InstallSourceError, ValueError):
+        return None, False
+
+
+def _lock_entry_for_plugin(
+    manager: InstallSourceManager | None, target_dir: Path, plugin_id: str
+) -> LockEntry | None:
+    """The install-source lock entry of ``target_dir`` when it belongs to
+    ``plugin_id``; ``None`` when there is none, it cannot be read, or the
+    lock is degraded (not trusted, as in ``current_source``). An entry with
+    an empty plugin id only means the metadata was unreadable when it was
+    written."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None
+    finder = getattr(manager, "entry_for_directory", None)
+    if not callable(finder):
+        return None
+    try:
+        entry = finder(target_dir)
+    except (InstallSourceError, ValueError):
+        return None
+    if entry is None or getattr(entry, "plugin_id", None) not in ("", plugin_id):
+        return None
+    return entry
 
 
 def _plugin_directory_exists(plugins_root: Path, plugin_id: str) -> bool:

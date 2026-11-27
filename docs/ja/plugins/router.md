@@ -6,10 +6,10 @@
 
 ## Router が必要になる場面
 
-- プラグインに 5 個以上のエントリーポイントがある
+- プラグインにおよそ 5 個以上のエントリーポイントがある
 - エントリーが複数の機能領域に分かれている。例: "weather"、"routes"、"food"
 - 複数人で同じプラグインを開発し、それぞれが別モジュールを担当している
-- コードが 300 行を超え、ファイルを分割したい
+- メインモジュールが数百行を超え、ファイルを分割したい
 
 エントリーが 1〜3 個だけなら、メインファイルにそのまま書けば十分です。Router は不要です。
 
@@ -95,13 +95,15 @@ from .routers import CountdownRouter, WeatherRouter
 
 @neko_plugin
 class LifeKitPlugin(NekoPluginBase):
+    # すべての router クラスをここに列挙する：ホストはここから router のエントリーをスキャンする
+    __routers__ = [CountdownRouter, WeatherRouter]
 
     def __init__(self, ctx):
         super().__init__(ctx)
 
         # Router の登録。必ず __init__ で行う
-        self.include_router(CountdownRouter())
-        self.include_router(WeatherRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 
     @lifecycle(id="startup")
     async def on_startup(self):
@@ -109,7 +111,9 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` は、router 内のすべてのエントリーポイントを現在のプラグインに登録します。
+`self.include_router()` は router をバインドし、そのエントリーポイントを現在のプラグインに登録して実行できるようにします。クラス属性 `__routers__` も必要です。ホストはプラグインをインスタンス化せずにプラグインクラスからエントリーのメタデータを読み取り、`__routers__` に列挙された router（クラス、またはインスタンスの場合は `collect_entries()` の結果）だけをスキャンします。`include_router()` に渡しただけの router も実行はできますが、そのエントリーはこの静的スキャンに含まれません（`include_router()` はホストに通知しません）。`plugin.toml` の `[[plugin.entries]]` で宣言しない限り Plugin Manager と Agent のエントリー一覧に表示されず（その宣言には書いたフィールドしか含まれません）、Hosted UI のアクションからも見つからない場合があり、reply-tail の購読（`ctx.reply_tail.subscribe`）の対象にもできず（コールバックは `ENTRY_NOT_REGISTERED` を返します）、ホスト経由の呼び出しはホストのデフォルトのタイムアウトが上限になります（デコレーターの `timeout` の方が短ければ、プラグインプロセスはそれを適用します）。`__routers__` に列挙した router のエントリーにも、`plugin.toml` の `[[plugin.entries]]` による設定上書きはメインクラスのエントリーと同じように適用されます。
+
+古い `neko-plugin build` でビルドされたプラグインパッケージ（パッケージメタデータの schema 4 以前）では、router のエントリーにホスト側のハンドラーが欠けている場合があります。ホストはこれを見分けられないため、そうしたパッケージはすべて初回起動時にエントリーを一度だけ再スキャンし、パッケージメタデータを書き直します。その後は通常どおり起動し、ユーザー側の操作は不要です。メタデータを書き直せない場合（たとえばパッケージのディレクトリが読み取り専用の場合）は、起動のたびに再スキャンされます。現在の `neko-plugin build` で再ビルドすれば、この再スキャンは発生しません。
 
 ---
 
@@ -160,7 +164,7 @@ class MyRouter(PluginRouter):
 
 Router は別プロセスではありません。メインプラグインと同じプロセスで動き、すべてのリソースを共有します。
 
-Router は manifest loading entry でもありません。`[plugin].entry` は所有する `NekoPluginBase` class を指す必要があり、`PluginRouter` subclass を指定すると host に拒否されます。`include_router()` は bind と entry collection を行いますが、Router class にある `on_mount` / `on_unmount` method はこの base-class path から自動では呼ばれません。
+Router は manifest loading entry でもありません。`[plugin].entry` は所有する `NekoPluginBase` class を指す必要があり、`PluginRouter` subclass を指定すると host に拒否されます。`include_router()` は bind と entry collection を行います。Router class の `on_mount` / `on_unmount` はホストから呼ばれません。オーバーライドせず、初期化や後片付けもそこに書かないでください。
 
 ---
 
@@ -196,7 +200,7 @@ class WeatherRouter(PluginRouter):
 
 ---
 
-## prefix 付き Router
+## prefix 付き Router {#prefixed-routers}
 
 ID の衝突を避けるため、router 内のすべてのエントリー ID に prefix を付けたい場合があります。
 
@@ -205,6 +209,12 @@ self.include_router(CountdownRouter(), prefix="time_")
 ```
 
 この場合、`countdown` エントリーの実際の ID は `time_countdown` になります。
+
+::: warning `prefix` と `__routers__` を併用しない
+router クラスを `__routers__` に列挙すると（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を認識しません。ホストが登録する ID（`countdown`）と実行時の ID（`time_countdown`）が一致しなくなり、ホストのエントリー一覧に表示される ID は呼び出せず、実際に呼び出せる ID は一覧にないため、ホストはそのタイムアウトも `[[plugin.entries]]` の設定上書きも見つけられません。`__routers__` に列挙する router クラスでは `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。
+
+これは router クラスの場合です。`__routers__` に router インスタンスを列挙すると、スキャンはその `collect_entries()` を使い、インスタンスに設定済みの prefix（例：`set_prefix("time_")`）を含めます。その場合は同じインスタンスを `self.include_router(router)` に渡してください。上の `router_cls()` のループはクラスにしか使えません。
+:::
 
 多くの場合、prefix は不要です。router 間でエントリー ID が重複しないようにすれば十分です。
 
@@ -268,10 +278,12 @@ from .routers.math import MathRouter
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
+    __routers__ = [GreetRouter, MathRouter]
+
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.include_router(GreetRouter())
-        self.include_router(MathRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 ```
 
 このプラグインはパネルに `hello`、`add`、`divide` の 3 つのエントリーを表示します。

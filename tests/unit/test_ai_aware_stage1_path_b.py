@@ -109,7 +109,7 @@ def test_fact_extractors_ignore_numeric_theater_messages():
     ]
 
     assert _extract_user_messages_from_rows(rows) == ['现实里我喜欢喝咖啡。']
-    assert _extract_role_tagged_messages_from_rows(rows) == [{
+    assert [{**row, 'data': {'content': row['data']['content']}} for row in _extract_role_tagged_messages_from_rows(rows)] == [{
         'type': 'human',
         'data': {'content': '现实里我喜欢喝咖啡。'},
     }]

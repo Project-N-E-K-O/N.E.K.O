@@ -19,8 +19,7 @@
   overflow: auto;
 }
 .authoring-page code,
-.authoring-dialog code,
-.authoring-help-drawer code {
+.authoring-dialog code {
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
@@ -309,29 +308,16 @@
   white-space: pre-wrap;
 }
 
-/* Create dialog and help drawer */
-.authoring-dialog h2,
-.authoring-help-article h2 {
+/* Create dialog */
+.authoring-dialog h2 {
   margin: 0;
   line-height: 1.4;
   font-weight: 600;
 }
-.authoring-dialog p,
-.authoring-help-drawer p {
+.authoring-dialog p {
   margin: 6px 0 0;
   font-size: 13px;
   line-height: 1.7;
-}
-.authoring-feature-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  background: var(--el-color-primary-light-9);
-  border-radius: var(--radius-panel);
-  color: var(--el-color-primary);
 }
 .authoring-panel-title {
   display: flex;
@@ -343,8 +329,7 @@
 .authoring-panel-title > .el-icon {
   color: var(--el-color-primary);
 }
-.authoring-dialog pre,
-.authoring-help-drawer pre {
+.authoring-dialog pre {
   margin: 14px 0 0;
   max-width: 100%;
   overflow: auto;
@@ -499,29 +484,6 @@
 }
 .authoring-error-text {
   color: var(--el-color-danger);
-}
-.authoring-help-drawer {
-  color: var(--el-text-color-primary);
-}
-.authoring-help-drawer .el-drawer__header {
-  margin-bottom: 14px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--surface-border);
-  color: var(--el-text-color-primary);
-}
-.authoring-help-drawer .el-drawer__body > p {
-  font-size: 13px;
-}
-.authoring-help-article {
-  padding-top: 12px;
-}
-.authoring-help-article h2 {
-  margin: 18px 0 12px;
-  font-size: 20px;
-}
-.authoring-help-article p {
-  font-size: 13px;
-  line-height: 1.9;
 }
 @container authoring (max-width: 520px) {
   .authoring-header__actions {

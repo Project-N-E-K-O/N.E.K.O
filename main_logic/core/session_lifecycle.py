@@ -387,8 +387,9 @@ class SessionOwnershipMixin:
         # (wrapped async it would return a coroutine, and the frontend turn
         # end it sends would be dropped). It and ``on_idle`` close or settle
         # the host's current turn, which a reply on a retired or not yet
-        # installed client never owns.
-        for name in ('get_host_turn_id', 'on_response_displaced', 'on_idle'):
+        # installed client never owns. ``on_response_start`` stays sync so the
+        # client can call it with no await inside its reply-begin section.
+        for name in ('get_host_turn_id', 'on_response_displaced', 'on_idle', 'on_response_start'):
             callback = getattr(session, name, None)
             if not callable(callback) or getattr(callback, '_session_owner', None) is session:
                 continue
@@ -661,7 +662,7 @@ class SessionOwnershipMixin:
                     record.handoff_error = exc
                     logger.exception("Session memory settlement failed during retirement")
             elif record.was_active and not callable(after_memory_settlement) and not record.memory_boundary_sent:
-                self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
+                self.sync_message_queue.put(self._session_end_message())
                 record.memory_boundary_sent = True
             if not by_server and record.was_active and record.session is not None and not record.departure_notified:
                 try:

@@ -621,7 +621,7 @@ def _md_model_config_block(session: Any) -> list[str]:
         if not isinstance(cfg, dict):
             continue
         lines.append(f"### {group}")
-        for k in ("provider", "model", "base_url", "temperature", "max_tokens", "timeout"):
+        for k in ("provider", "model", "base_url", "max_tokens", "timeout"):
             if k in cfg and cfg[k] not in (None, ""):
                 lines.append(f"- `{k}`: `{cfg[k]}`")
         # api_key is always redacted; list it separately so it is not mistaken for an empty value.

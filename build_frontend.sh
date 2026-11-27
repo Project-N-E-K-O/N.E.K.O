@@ -46,6 +46,7 @@ unpack_live2d_model() {
 
 unpack_live2d_model yui-origin
 unpack_live2d_model yui-lolita
+unpack_live2d_model yui-sister
 
 # --- 2. Plugin Manager (Vue) ---
 PM_DIR="$SCRIPT_DIR/frontend/plugin-manager"

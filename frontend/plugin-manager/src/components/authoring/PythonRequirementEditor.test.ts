@@ -4,9 +4,8 @@ import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import Editor from './PythonRequirementEditor.vue'
-import { pythonPackageMessages } from '@/i18n/python-packages'
+import en from '@/i18n/python-packages/en-US'
 
-const en = pythonPackageMessages['en-US']
 const submitted = vi.fn()
 let app: ReturnType<typeof createApp> | undefined
 async function flush() {

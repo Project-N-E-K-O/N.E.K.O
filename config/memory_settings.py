@@ -38,6 +38,25 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed, measured from created_at.
 WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted, measured from confirmed_at.
 
+# Scoped (group / member / cross-group person) reflections into scoped persona.
+# They get no feedback, so only being seen again lets one in: on at least this
+# many distinct days, by the record dates of the facts behind it that are not
+# the character's own words, and at least this many days after the first of
+# them. Strong memory only: with it off nothing cleans up after a promotion
+# (correction queue, scoped refine, introspection), so none happens.
+SCOPED_PROMOTION_MIN_OBSERVED_DAYS = 4
+SCOPED_PROMOTION_MIN_AGE_DAYS = 30
+# Reinforcement a scoped reflection gains each time others' words are seen to
+# restate it again (synthesis judges a batch covered by it, or scoped refine
+# merges it with another such line); the decay clock restarts too. Equal to the
+# highest synthesis head start (importance 10, memory.evidence), so a line just
+# seen again ranks above every fresh one and keeps its place in the per-subject
+# render budget. Capped by EVIDENCE_REINFORCEMENT_CAP like every reinforcement.
+SCOPED_REOBSERVED_REINFORCEMENT = 0.8
+# How many observation days a scoped reflection keeps (the first one and the
+# latest ones); the promotion gate needs the count and the first day only.
+SCOPED_OBSERVED_DAYS_MAX = 64
+
 # §3.5.3 Archival (sub_zero_days counts + shard-size cap).
 EVIDENCE_ARCHIVE_DAYS = 14           # Archive after this many accumulated sub_zero days.
 ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
@@ -196,7 +215,7 @@ checks, but degrades such a decision instead of applying it (remove is
 dropped, replace / renew become add), so an older view never undoes a
 newer change."""
 
-PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
+PINNED_FACT_RESOLVE_MODEL_TIER = "memory"
 """Model tier of the add / replace / renew / remove decision, the same tier and
 thinking mode as persona correction resolution. The same call may also retire
 entries that are over (fulfilled, no longer valid, or past their date)."""
@@ -206,7 +225,7 @@ PINNED_FACT_REVIEW_INTERVAL_HOURS = 24
 character, and only when the section is not empty and no model has looked at
 the whole section (an admission resolve or an earlier check) within it."""
 
-PINNED_FACT_REVIEW_MODEL_TIER = "summary"
+PINNED_FACT_REVIEW_MODEL_TIER = "memory"
 """Model tier of the idle-time check, called without thinking: it only answers
 retire or keep per entry, quoting the conversation as evidence."""
 
@@ -547,7 +566,7 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # Resident-byte cap for decoded recall vectors (memory.hybrid_recall._VEC_CACHE).
 # Each cosine query decodes every candidate's base64-fp16 embedding into
 # fp32: measured ~49ms for 5000 entries (base64+fp16→fp32 ~32ms, per-entry isfinite
-# ~7ms, sha256 ~4ms), all on memory_server's event loop. Pool rows themselves
+# ~7ms, sha256 ~4ms), now done in worker threads (#4029). Pool rows themselves
 # are already cached by file identity in _POOL_CACHE; stable corpora decode identical vectors
 # every time, wasting work. Hits require unchanged (model_id, text object, both row stamps,
 # original embedding string); any mismatch falls back to full decoding and validation,
@@ -569,21 +588,36 @@ HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 # residency, and actual growth is vector + bookkeeping (~2.4KB measured at 512d versus conservative
 # ~3.9KB). Do not read this cap as actual expected memory consumption.
 #
-# 32MB aims to restore typical actual growth to 20MB: conservative 512d accounting holds
-# ~8300 entries, which add 8300 × 2.4KB ≈ 19MB with shared strings, matching
-# the count cap's intended 20MB. Sizing capacity for worst-case usage needlessly halves
-# typical hit rate, so accounting is conservative but capacity targets typical usage. Vector pools contain active facts +
-# reflections only (archive embeddings are projected out before pooling), normally far below this gate;
-# it protects extreme multi-character × large-corpus residency, like the file-count gate above.
-HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 32 * 1024 * 1024
+# Sizing: accounting is conservative but capacity targets typical usage — sizing for the
+# worst case would needlessly halve the typical hit rate. Vector pools contain active facts +
+# reflections + persona only (archive embeddings are projected out before pooling), normally
+# far below this gate; it protects extreme multi-character × large-corpus residency, like the
+# file-count gate above.
+#
+# 64MB (raised from 32MB, whose target was ~20MB of typical growth at 512d). The cache is an
+# OrderedDict filled one row at a time as recalls touch rows, never preallocated, so the cap
+# costs nothing until a corpus actually grows into it (a 2026-11 desktop corpus of six
+# characters, 482 vector-pool rows in all, uses ~3.6MB). It does stay resident once filled.
+# Measured at the current default 256d model (local-text-retrieval-v1-256d), where this
+# accounting comes to ~2.3KB per row: at 100x that corpus the largest character's pool is
+# ~17.6k rows ≈ 38.5MB, so 32MB kept ~3k of them permanently cold (cosine 44ms per recall)
+# and 64MB holds them all (27ms). A 512d model accounts ~3.9KB per row (see above), so the
+# same pool would need ~68MB and again only partly fit. Two such characters alternating
+# exceed the cap either way; that is the archive-sharding question again (#2716).
+HYBRID_RECALL_VEC_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 # Resident byte limit for the BM25 token cache (memory.hybrid_recall._TOKEN_CACHE).
 # Passive injection runs BM25 over the entire recall pool on every text turn; previously each call retokenized
 # from scratch (CJK 2/3-gram sliding windows account for about three quarters of BM25 time for 5000 entries). Cache by stop names +
 # original text, storing a single \x00-joined string (about 10 times less memory than token tuples;
 # roughly 3MB for 5000 entries), then split on a hit. Accounting remains conservative: include the original text
-# itself, even though pool rows usually retain it. 32MB holds about 50,000 short memories.
-HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 32 * 1024 * 1024
+# itself, even though pool rows usually retain it.
+#
+# 64MB (raised from 32MB), filled on demand like the vector cache above (never
+# preallocated, resident once filled). Measured: 32MB held ~33k memories of 20-60 CJK
+# chars, so a 38k-row keyword pool (archive included, 100x a 2026-11 desktop corpus)
+# already re-tokenized the overflow on every recall; 64MB holds ~66k.
+HYBRID_RECALL_TOKEN_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget
@@ -1068,7 +1102,7 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
 
 # ---- Memory: weekly introspection ----
 # Reads the persona + reflection block exactly as /new_dialog injects it and
-# lets the correction-tier model (thinking on) suppress / rewrite / merge the
+# lets the summary-tier model (thinking on) suppress / rewrite / merge the
 # entries that are contradictory, redundant, hollow or stale. Gated on
 # powerful_memory like refine; runs only while the system is idle.
 
@@ -1109,6 +1143,75 @@ already bounded (persona and reflection pools of 2000 tokens each plus count
 caps on character-card and do-not-mention lines); this only bites when a
 very large character card outgrows that sum."""
 
+# ---- Memory: weekly behavior review (memory/behavior_notes.py) ----
+# After a character's weekly introspection, one summary-tier call looks for what
+# keeps recurring in her replies, against her card and the user's own words, and
+# leaves a few short notes ("less of X; try Y") at the end of the next /new_dialog.
+# Evidence is counted by code from the lines the model cites, never taken from its word.
+
+MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS = 30 * 24 * 3600
+"""How far back the conversation sample reaches. Older feedback no longer counts,
+which is also why a note cannot be renewed forever on one old complaint."""
+
+MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT = 4000
+"""Newest rows read from time_indexed.db per review, whatever the window holds."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS = 3
+"""Fewer sittings than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_REPLIES = 15
+"""Fewer replies than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_SAMPLE_MAX_TOKENS = 8000
+"""Token budget for the numbered conversation sample. Lines are chosen until it
+is spent and never cut afterwards, so every number in the prompt is a whole line."""
+
+MEMORY_BEHAVIOR_REVIEW_LINE_MAX_TOKENS = 120
+"""Each sample line is clipped to this, so one wall of text cannot take the sample."""
+
+MEMORY_BEHAVIOR_REVIEW_CARD_MAX_TOKENS = 1200
+"""Token budget for the character card, the only baseline the review compares to."""
+
+MEMORY_BEHAVIOR_REVIEW_SIGNALS_MAX_TOKENS = 300
+"""Token budget for impressions the user confirmed or denied (reference only)."""
+
+MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN = 6
+"""Recently retired notes shown read-only, so a note does not flip back and forth."""
+
+MEMORY_BEHAVIOR_NOTE_RETIRED_KEEP_SECONDS = 30 * 24 * 3600
+"""How long a retired note stays on file for the read-only list above."""
+
+MEMORY_BEHAVIOR_NOTE_TTL_SECONDS = 21 * 24 * 3600
+"""A note lasts three weekly cycles from its last renewal, then lapses by itself."""
+
+MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND = {"style": 3, "drift": 2}
+"""Live notes per kind, kept ones included; an add past this is rejected."""
+
+MEMORY_BEHAVIOR_NOTE_AVOID_MAX_TOKENS = 60
+"""Longer "avoid" text is rejected, not cut: a clipped note can change its meaning."""
+
+MEMORY_BEHAVIOR_NOTE_DIRECTION_MAX_TOKENS = 60
+"""Longer "direction" text is rejected, not cut, for the same reason."""
+
+MEMORY_BEHAVIOR_NOTE_CORRECTED_MIN_SESSIONS = 2
+"""Sittings in the sample since a note's last renewal before it may be retired as
+corrected. Fewer than this cannot show that the pattern has really stopped."""
+
+MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS = 400
+"""Token budget for the whole injected block; whole notes drop until it fits."""
+
+MEMORY_BEHAVIOR_NOTE_EVIDENCE_GATES = {
+    "complaint": {"user": (3, 2, 2), "reply": (3, 2, 1)},
+    "request": {"user": (1, 1, 1), "reply": (3, 3, 1)},
+    "drift": {"user": (0, 0, 0), "reply": (4, 3, 2)},
+}
+"""Least cited evidence per note basis, as (messages, sittings, calendar days).
+- complaint: the user grumbled about a pattern more than once; a passing remark
+  never qualifies.
+- request: the user stated one standing request. Once is enough, so the replies
+  must show the pattern more widely instead.
+- drift: replies only, checked against the card, so it asks for the most replies."""
+
 # ---- Memory: scoped subject eviction (group memory series 5/7, track one) ----
 # Scoped group/member entries receive no evidence signals (facts persist with
 # signal_processed=True, reflections directly confirmed, surfacing legacy-only),
@@ -1141,7 +1244,7 @@ inside the 1h _periodic_archive_sweep_loop."""
 # Scoped entries cannot enter the base MemoryRefineEngine's two cron jobs (entity whitelist
 # permits only master/neko/relationship), so semantic duplicates/conflicts coexist forever;
 # the 2000-token trim decides what enters prompts. This is the lightweight scoped counterpart:
-#   Base = correction tier + thinking + three clusters/turn + periodic full scans;
+#   Base = summary tier + thinking + three clusters/turn + periodic full scans;
 #   Scoped = summary tier + no thinking + one cluster per turn across all characters +
 #            triggers only when one subject reaches the entry-count threshold.
 # Bucket key must be (kind, subject_id, scope): all groups share entity='group_chat',
@@ -1235,11 +1338,11 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # Reference the latest N abso
 REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # Within N days as well.
 
 # Gate 3: LLM tier selection (candidates in RFC §6.5 Gate 3 table).
-# "summary" = qwen-plus class; "correction" = qwen-max class; "emotion" = qwen-flash class.
-EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 fact extraction.
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 signal mapping decisions.
-EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # Secondary keyword classification (latency-sensitive).
-EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote merge decisions.
+# "memory" = large model (memory upkeep); "recognition" = small, latency-sensitive model.
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "memory"       # Stage-1 fact extraction.
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "memory"      # Stage-2 signal mapping decisions.
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "recognition"     # Secondary keyword classification (latency-sensitive).
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "memory"     # Promote merge decisions (thinking on).
 
 
 # memory-enhancements P2: vector hybrid retrieval (memory/embeddings.py).
@@ -1262,3 +1365,35 @@ VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + l
 # event after startup. The warmup task waits up to this many seconds
 # after startup OR until first /process call, whichever comes first.
 VECTORS_WARMUP_DELAY_SECONDS = 30
+
+# ---- Memory: Imprint warm note (manual UI trigger, summary tier) ----
+IMPRINT_NOTE_INPUT_MAX_TOKENS = 2400
+"""手动生成「印记暖心总结/评语/寄语」时，拼装输入上下文的总 token 上限。"""
+IMPRINT_NOTE_MAX_TOKENS = 600
+"""「印记暖心总结/评语/寄语」LLM 输出的 max_completion_tokens 上限。"""
+IMPRINT_NOTE_TIMEOUT_SECONDS = 45
+"""「印记暖心总结/评语/寄语」LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Star Map cluster theme labeling (ArchiveSweep weekly cache + manual UI) ----
+STAR_MAP_MIN_EMBEDDED_ENTRIES = 15
+"""记忆星图从冷启动进度态切换到星云图的最少已嵌入条目数。"""
+STAR_MAP_LABEL_REFRESH_DAYS = 7
+"""ArchiveSweep 后台低频刷新星云主题缓存的最小天数间隔。"""
+STAR_MAP_LABEL_INPUT_MAX_TOKENS = 2000
+"""星云主题批量命名 LLM 输入上下文总 token 上限。"""
+STAR_MAP_LABEL_MAX_TOKENS = 400
+"""星云主题批量命名 LLM 输出的 max_completion_tokens 上限。"""
+STAR_MAP_LABEL_TIMEOUT_SECONDS = 45
+"""星云主题批量命名 LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Browser Phase 3 (Snapshots & Manual Deep Conflict Check) ----
+MEMORY_BROWSER_SNAPSHOT_MAX_KEEP = 10
+"""每个角色在记忆浏览器中最多保留的手动轻快照数量（滚动淘汰最旧）。"""
+MEMORY_BROWSER_AUTO_SNAPSHOT_MAX_KEEP = 3
+"""每个角色最多保留的自动快照（合并前/恢复前）数量，与手动快照分开滚动淘汰。"""
+DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS = 2800
+"""开发者模式手动深度矛盾裁决 LLM 输入总 token 上限。"""
+DEEP_CONFLICT_CHECK_MAX_TOKENS = 900
+"""开发者模式手动深度矛盾裁决 LLM 输出 max_completion_tokens 上限。"""
+DEEP_CONFLICT_CHECK_TIMEOUT_SECONDS = 60
+"""开发者模式手动深度矛盾裁决 LLM 单次请求超时（秒）。"""

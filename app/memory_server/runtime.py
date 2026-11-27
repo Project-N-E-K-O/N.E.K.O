@@ -45,7 +45,7 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from memory.cursors import CursorStore
-from memory.event_log import EventLog, Reconciler
+from memory.event_log import EventLog, Reconciler, EVT_LONG_TERM_MEMORY_REPLACED
 from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
 from memory.outbox import Outbox
 from config import (
@@ -91,6 +91,11 @@ _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     # Only PUT writes; GET reads sidecars and bypasses fencing.
     # Callers already treat 409 as retryable (cloud-save maintenance fences also return it).
     ("/prompt-locale/", frozenset({"PUT"})),
+    # Memory Browser character-scoped writers (cache files & safety snapshots).
+    ("/internal/memory/browser/imprint_note/", frozenset({"POST"})),
+    ("/internal/memory/browser/star_map/label_clusters/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/create/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/restore/", frozenset({"POST"})),
 )
 # Group-memory writes use /internal/memory/{lanlan_name}/<op>, ultimately writing the character's
 # FactStore / TimeIndexedMemory. Missing fences neither reject nor drain these requests during deletion,
@@ -108,6 +113,10 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
+    # The memory browser's "recompute now" rewrites habitual_phrases.json.
+    "habitual_phrases/recompute",
+    # Restoring what the one-time duplicate cleanup folded away rewrites facts.json.
+    "legacy_dedup/restore",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -120,6 +129,11 @@ _active_character_request_events: dict[str, asyncio.Event] = {}
 # Tightest is unsubscribe: _release_workshop_character_handles per_call_timeout=2.5s
 # (rename/delete use release_memory_server_character(), 5s).
 _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
+# Shutdown waits for the queued final stats save only until this long after it
+# began, below the launcher's 12 s Memory budget (graceful_shutdown_timeout and
+# the merged coordinator alike). Past it the wait stops; the save is not
+# cancelled and goes on in the save worker.
+_SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS = 10.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
@@ -139,13 +153,18 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
             break
     if (
         raw_name is None
-        and method == "POST"
+        and method in {"POST", "GET"}
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
-        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
+        if len(segments) >= 2 and (
+            (method == "POST" and operation in _CHARACTER_SCOPED_WRITE_OPS)
+            # The private snapshot uses the normal ensure path, which may
+            # initialize, migrate or synchronize and save persona data.
+            or (method == "GET" and operation == "persona")
+        ):
             raw_name = segments[0]
     if not raw_name:
         return None
@@ -302,7 +321,12 @@ async def storage_limited_mode_guard(request: Request, call_next):
 
 # Global inbound-body guard (issue #1586): mirror main_server; memory_server endpoints
 # (chat cache / reflections, etc.) use small JSON, so apply the same consistent guard.
-app.add_middleware(InboundBodySizeLimitMiddleware)
+# Raw package ZIPs have a larger bounded transport contract; other memory
+# endpoints retain the global 16 MiB request guard.
+from utils.http.knowledge_proxy import PACK_BODY_MAX_BYTES
+app.add_middleware(InboundBodySizeLimitMiddleware, json_path_limits={
+    "/internal/knowledge/packs/import": PACK_BODY_MAX_BYTES,
+})
 from utils.instance_access import InstanceAccessMiddleware
 app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
@@ -549,6 +573,11 @@ async def reload_memory_components(
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
             from .long_term_sync import register_replay
             register_replay(new_reconciler, new_persona, new_facts)
+            from memory.analytics.snapshots import register_snapshot_restore_replay
+            register_snapshot_restore_replay(
+                new_reconciler, persona_manager=new_persona, fact_store=new_facts,
+                reflection_engine=new_reflection,
+            )
             # P2 step 2: rebind the existing fact_dedup_resolver to the
             # NEW FactStore in place rather than constructing a new
             # resolver. Going via rebind_fact_store preserves the
@@ -1107,7 +1136,15 @@ async def _bootstrap_embedding_worker() -> None:
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
-    from . import evidence_loops, outbox_infra, refine_loops, routes, signal_extraction
+    from . import (
+        evidence_loops,
+        habitual_phrase_loop,
+        outbox_infra,
+        received_extraction,
+        refine_loops,
+        routes,
+        signal_extraction,
+    )
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -1168,6 +1205,11 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
         from .long_term_sync import register_replay
         register_replay(reconciler, persona_manager, fact_store)
+        from memory.analytics.snapshots import register_snapshot_restore_replay
+        register_snapshot_restore_replay(
+            reconciler, persona_manager=persona_manager, fact_store=fact_store,
+            reflection_engine=reflection_engine,
+        )
 
         try:
             from utils.token_tracker import TokenTracker, install_hooks
@@ -1207,11 +1249,39 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if catgirl_names:
+                # A Memory Browser restore interrupted by a crash is finished
+                # before the persona check below can rewrite persona.json
+                # (card sync, cold-copy drop); its replay handler would then
+                # see a third version and leave memories from two points in
+                # time. The full reconcile further down replays it again as a
+                # no-op and advances the sentinel.
+                from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED
+
+                async def _finish_pending_restore(n: str) -> bool:
+                    try:
+                        if await reconciler.arun_pending_ahead(n, EVT_MEMORY_SNAPSHOT_RESTORED):
+                            logger.info(f"[Memory] {n}: 已补完上次被打断的快照恢复")
+                        return True
+                    except Exception as e:
+                        logger.warning(
+                            f"[Memory] {n}: 补完被打断的快照恢复失败，本次启动不做 persona 检查，"
+                            f"留待下次启动续做: {e}"
+                        )
+                        return False
+
+                finished = await asyncio.gather(
+                    *(_finish_pending_restore(n) for n in catgirl_names),
+                )
+                # Best effort: a character whose restore could not be finished
+                # skips this check, so it does not rewrite persona.json now.
+                # Later steps (reconcile, migrations, card sync on first use)
+                # may still write it before the next start retries.
+                checked = [n for n, ok in zip(catgirl_names, finished) if ok]
                 results = await asyncio.gather(
-                    *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                    *(persona_manager.aensure_persona(n) for n in checked),
                     return_exceptions=True,
                 )
-                for name, result in zip(catgirl_names, results):
+                for name, result in zip(checked, results):
                     if isinstance(result, Exception):
                         logger.warning(
                             f"[Memory] Persona 迁移检查失败: {name}: {result}",
@@ -1304,9 +1374,17 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
+            _spawn_background_task(received_extraction._periodic_received_extraction_loop())
+            from memory import organizer
+            from . import long_term_sync
+            # Organizer-only engine work asks this before it runs.
+            organizer.set_gate(long_term_sync.organizes)
+            _spawn_background_task(long_term_sync._periodic_organizer_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())
+            # Habitual-phrase avoid list: local mining only, idle-gated, about daily per character.
+            _spawn_background_task(habitual_phrase_loop._periodic_habitual_phrase_loop())
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
@@ -1347,12 +1425,53 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         return True
 
 
+def _log_startup_identity(stage: str = "startup") -> None:
+    """One info line identifying this build and where it reads memory from.
+
+    Logged at ``startup`` (before the storage gate, so limited mode has it
+    too) and again at ``continue`` when a limited-mode boot is released and
+    the runtime actually initializes, so the release moment is visible in
+    the log. ``_config_manager`` is a process-wide singleton, so both lines
+    carry the same paths.
+
+    The install dir (``sys.executable``'s folder) tells apart launches that
+    share the same version and data root, e.g. a Steam install versus a
+    standalone launcher. Paths only, no conversation content, so logger is ok.
+    Never raises: a diagnostics line must not block startup.
+    """
+    try:
+        import os
+        import sys
+
+        from config import APP_VERSION
+
+        # Same detection as launcher_core.bootstrap.IS_FROZEN (PyInstaller
+        # sets sys.frozen, Nuitka injects __compiled__).
+        frozen = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+        install_dir = (
+            os.path.dirname(os.path.abspath(sys.executable)) if sys.executable else "unknown"
+        )
+        logger.info(
+            "[Memory] N.E.K.O %s stage=%s frozen=%s install_dir=%s data_root=%s memory_dir=%s",
+            APP_VERSION,
+            stage,
+            frozen,
+            install_dir,
+            getattr(_config_manager, "app_docs_dir", None),
+            getattr(_config_manager, "memory_dir", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] startup identity log failed (stage=%s): %s", stage, exc)
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """Initialization at application startup"""
     # Same floor as the main server: Python's default (cpu + 4) leaves low-end machines
     # with a handful of workers shared by every to_thread read and lock wait.
     configure_default_executor(asyncio.get_running_loop(), logger=logger)
+    # Logged before the storage gate so limited-mode boots carry it too.
+    _log_startup_identity()
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(
@@ -1384,6 +1503,10 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
         _memory_storage_blocked_after_init = False
+        if initialized:
+            # Log the identity again when the limited-mode release actually
+            # initializes the runtime, to mark the release moment in the log.
+            _log_startup_identity(stage="continue")
         return {
             "ok": True,
             "initialized": bool(initialized),
@@ -1436,18 +1559,22 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
+    save_wait_deadline = asyncio.get_running_loop().time() + _SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS
+    # Queue the final save before the first cleanup wait: it runs on the save
+    # worker while cleanup goes on, so a cleanup that stalls (a long-term memory
+    # file commit close() has to wait for, SQLite, embedding), is cancelled or
+    # is killed by the launcher cannot keep it from being queued.
+    token_save = None
+    try:
+        from utils.token_tracker import TokenTracker
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+    except Exception:
+        pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     from .long_term_sync import close as close_long_term_sync
     await close_long_term_sync()
     if _recent_sync_wake_task is not None:
         _recent_sync_wake_task.cancel()
         await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        # Best-effort final flush — the shutdown path must never fail on
-        # tracker IO, and the periodic save loop already persisted recent data.
-        pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.
@@ -1499,6 +1626,23 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
+    # Waited for only now, so persistence cannot delay worker stop or
+    # embedding/SQLite cleanup; it was queued before them (see above). The wait
+    # is bounded (a stuck fsync, or a periodic report queued ahead of it) and
+    # shielded: neither its deadline nor a cancellation cancels the save.
+    # ``timeout_at`` rather than ``wait_for``: on 3.11 ``wait_for`` can turn a
+    # caller's cancellation that races the result into a normal return. Done
+    # is read off the thread's own future, which the event loop learns of only
+    # a turn later.
+    if token_save is not None and not token_save.done():
+        try:
+            async with asyncio.timeout_at(save_wait_deadline):
+                await asyncio.shield(asyncio.wrap_future(token_save))
+        except TimeoutError:
+            if not token_save.done():
+                logger.warning("[Memory] 最终统计保存未在关闭期限内完成，不再等待（保存线程继续执行）")
+        except Exception:
+            pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     logger.info("Memory server已关闭")
 
 

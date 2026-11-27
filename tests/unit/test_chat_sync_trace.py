@@ -42,7 +42,7 @@ def recent_runtime(tmp_path, monkeypatch):
 
     class RecentService(SyntheticService):
         async def request(self, request):
-            if request.url.path.endswith("/recent-memory"):
+            if request.url.path.endswith(("/recent-memory", "/recent-memory/view")):
                 self.requests.append(request)
                 value = await remote.request(request.method, request.url.path, request.content or None)
                 return httpx.Response(200, json=value)

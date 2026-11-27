@@ -158,6 +158,11 @@ test(`real SDK natural completion restores motion-only parameters with Idle=${id
         }
         assert.ok(events.includes('finish:2'), 'real SDK emits completion before its priority is reset');
         assert.equal(events.includes('start:Idle:1'), idle, 'real SDK idle admission follows registered resources');
+        // 真实帧序里每次 motion 更新之后都会发 afterMotionUpdate；残留（含保存值偏移）在那里平滑拉回。
+        for (let i = 1; i <= 12; i++) {
+            f.runtime.context.clock += 40;
+            f.model.internalModel.events.emit('afterMotionUpdate');
+        }
         assert.equal(f.value('ParamAngleX'), saved === null ? baseline : saved, 'natural retirement and the saved layer recover the accepted parameter');
         assert.equal(f.manager._activeActionMotionOperation, null);
         assert.equal(f.manager.motionTimer, null);
@@ -281,9 +286,37 @@ test('model removal cancels a pending real native load before destroying its man
     } finally { gate.resolve(); f.release(); }
 });
 
-test('normal native retirement restores the recorded baseline and preserves saved-parameter recovery', async () => {
+test('normal native retirement fades the motion residue back to the saved value', async () => {
     const f = await fixture();
     try {
+        f.apply({ ParamAngleX: 3 });
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({ Meta: { Duration: 2 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }) });
+        assert.equal(await f.manager.playMotion(f.group), true);
+        const timer = f.manager.motionTimer;
+        f.core.setParameterValueById('ParamAngleX', 9);
+        f.native.stopAllMotions();
+        assert.equal(f.value('ParamAngleX'), 9, 'retirement hands the residue to the fade instead of jumping');
+        f.runtime.context.clock += 150;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        f.runtime.context.clock += 75;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        assert.ok(f.value('ParamAngleX') < 9 && f.value('ParamAngleX') > 3, 'the fade passes through intermediate values');
+        f.runtime.context.clock += 400;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        assert.equal(f.value('ParamAngleX'), 3);
+        assert.equal(f.manager._activeMotionParamIds, null);
+        assert.equal(f.manager._activeActionMotionOperation, null);
+        assert.equal(timer.id.cancelled, true);
+        f.native.update(f.core, 0);
+        f.core.update();
+        assert.equal(f.value('ParamAngleX'), 3, 'the saved-parameter layer still restores its accepted value');
+    } finally { f.release(); }
+});
+
+test('tutorial-owned native retirement keeps the recorded-baseline reset unchanged', async () => {
+    const f = await fixture();
+    try {
+        f.runtime.context.isInTutorial = true;
         f.apply({ ParamAngleX: 3 });
         f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({ Meta: { Duration: 2 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }) });
         assert.equal(await f.manager.playMotion(f.group), true);

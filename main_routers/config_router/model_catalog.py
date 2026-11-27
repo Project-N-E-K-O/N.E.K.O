@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from utils.http.url import same_endpoint
 from utils.config_manager import _as_bool
+from utils.decision_client.openrouter_catalog import is_openrouter_url
 
 
 _MODEL_LIST_TIMEOUT_SECONDS = 15.0
@@ -130,7 +131,7 @@ def _resolve_provider_target(req: ModelListRequest, core_cfg: dict, api_config: 
             # entry; the resolver never borrows the previous core provider's key.
             api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
             if not api_key:
-                return _failure("core_key_required", "核心服务商已改变，请重新填写 API Key")
+                return _failure("core_key_required", "语音模型供应商已改变，请重新填写 API Key")
     else:
         api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
 
@@ -151,12 +152,16 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
 
     submitted_key = req.api_key if isinstance(req.api_key, str) else ""
     if is_core_config_secret_placeholder(submitted_key):
-        model_type = (req.model_type or "").strip()
+        from utils.config_manager.tier_renames import canonical_model_type, migrate_renamed_tier_fields
+        model_type = canonical_model_type((req.model_type or "").strip())
+        # A file still under the old tier names (emotion / summary) holds the key there.
+        saved = dict(core_cfg)
+        migrate_renamed_tier_fields(saved)
         stored_url = ""
         stored_key = ""
         if model_type in CORE_CONFIG_MODEL_TYPES:
-            stored_url = str(core_cfg.get(f"{model_type}ModelUrl") or "").strip()
-            stored_key = str(core_cfg.get(f"{model_type}ModelApiKey") or "").strip()
+            stored_url = str(saved.get(f"{model_type}ModelUrl") or "").strip()
+            stored_key = str(saved.get(f"{model_type}ModelApiKey") or "").strip()
         # Saved keys belong only to their saved endpoints: reusing one after editing the URL would send credentials elsewhere.
         if not (stored_url and stored_key and same_endpoint(url, stored_url)):
             return _failure("key_required", "已保存的 Key 只能用于保存时的地址，请重新填写 API Key")
@@ -212,7 +217,10 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     from utils.llm_client import ChatAnthropic, ChatOpenAI
 
     try:
-        if provider_type == "anthropic":
+        if provider_type == "chatgpt":
+            from utils.llm_client.chatgpt_client import acreate_chatgpt_client
+            client = await acreate_chatgpt_client(base_url=url, timeout=_MODEL_LIST_TIMEOUT_SECONDS)
+        elif provider_type == "anthropic":
             client = ChatAnthropic(
                 base_url=url,
                 api_key=api_key or None,
@@ -237,6 +245,54 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     if not models:
         return _failure("empty", "上游没有返回任何模型")
     return {"success": True, "models": models, "resolved_url": url}
+
+
+async def _fetch_openrouter_decision_entries() -> list[dict[str, str]]:
+    """OpenRouter's decision models, or ``[]`` when the list cannot be fetched."""
+    from utils.decision_client.openrouter_catalog import fetch_openrouter_decision_models
+
+    try:
+        # httpx timeouts bound each step, not the whole request; keep the total in budget.
+        return await asyncio.wait_for(fetch_openrouter_decision_models(), timeout=_MODEL_LIST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.info("[ModelList] OpenRouter 决策模型列表拉取失败: %s", type(exc).__name__)
+        return []
+
+
+def _with_openrouter_decision_models(
+    result: dict[str, Any], fallback_url: str, decision_entries: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Add OpenRouter's decision models (absent from its default list) ahead of the rest.
+
+    When the decision list could not be fetched (*decision_entries* is empty),
+    the chat list is kept and only the IDs the built-in catalog already knows
+    are tagged.
+    """
+    if not result.get("success") and not decision_entries:
+        return result
+    merged = _normalize_model_entries(
+        [*decision_entries, *(result.get("models") or [])], strip_gemini_prefix=False
+    )
+    resolved_url = result.get("resolved_url") or fallback_url
+    return _tag_decision_models({"success": True, "models": merged, "resolved_url": resolved_url}, resolved_url)
+
+
+def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:
+    """Mark models that use a native decision API on *url* with ``decision: true`` and list them first.
+
+    Uses the same protocol rule as the runtime decision slot, so a tagged model
+    is one the slot would call natively.
+    """
+    from utils.decision_client.schema import infer_decision_protocol, is_native_decision_protocol
+
+    if not result.get("success"):
+        return result
+    models = [dict(entry) for entry in result.get("models") or []]
+    for entry in models:
+        if is_native_decision_protocol(infer_decision_protocol(entry["id"], url)):
+            entry["decision"] = True
+    models.sort(key=lambda entry: (not entry.get("decision"), entry["id"].lower()))
+    return {**result, "models": models}
 
 
 @router.post("/list_models")
@@ -264,15 +320,29 @@ async def list_models(req: ModelListRequest) -> dict:
     if "urls" not in target:
         return target
 
-    result = await race_candidate_requests(
-        target["urls"],
-        lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
-        timeout=_MODEL_LIST_TIMEOUT_SECONDS,
-        prefer_configured_order=True,
-        timeout_result=_failure("timeout", "拉取模型列表超时"),
-    )
-    if (req.provider_key or "").strip():
-        result.pop("check_url", None)
+    # The decision slot on OpenRouter also needs the decision models, which are not
+    # in its default list. Fetch them alongside, so both share one time budget that
+    # stays below the page's request timeout.
+    decision_task = None
+    if (req.model_type or "").strip() == "decision" and is_openrouter_url(target["urls"][0]):
+        decision_task = asyncio.create_task(_fetch_openrouter_decision_entries())
+    try:
+        result = await race_candidate_requests(
+            target["urls"],
+            lambda url: _fetch_models(url, target["api_key"], target["provider_type"]),
+            timeout=_MODEL_LIST_TIMEOUT_SECONDS,
+            prefer_configured_order=True,
+            timeout_result=_failure("timeout", "拉取模型列表超时"),
+        )
+        if (req.provider_key or "").strip():
+            result.pop("check_url", None)
+        if decision_task is not None:
+            result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
+        elif (req.model_type or "").strip() == "decision":
+            result = _tag_decision_models(result, result.get("resolved_url") or target["urls"][0])
+    finally:
+        if decision_task is not None and not decision_task.done():
+            decision_task.cancel()
     if result.get("success"):
         logger.info(
             "[ModelList] %s 拉取到 %d 个模型",

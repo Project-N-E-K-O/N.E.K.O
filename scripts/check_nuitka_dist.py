@@ -74,8 +74,14 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs", "livekit-client.umd.js"),
     ("static/libs/licenses", "TRTC.LICENSE"),
     ("static/libs/licenses", "LIVEKIT.LICENSE"),
+    ("static/libs", "fflate.umd.js"),
+    ("static/libs/licenses", "FFLATE-LICENSE.txt"),
+    ("static/libs/spine", "spine-webgl-4.3.13.min.js"),
+    ("static/libs/spine", "SPINE-RUNTIMES-LICENSE-4.3.13.txt"),
+    ("static/js", "emote_template_zip_worker.js"),
+    ("static/js", "emote_template_client_store.js"),
     # Built-in Live2D models: source archives are assets/<name>.tar.gz, and build_frontend extracts them to static/<name>/.
-    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin is bundled too.
+    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin and yui-sister are bundled too.
     # Checking only model3.json does not catch a partial extraction — moc3 and textures are required for loading, so assert all of them.
     ("static/yui-lolita", "yui-lolita.model3.json"),
     ("static/yui-lolita", "yui-lolita.moc3"),
@@ -83,6 +89,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/yui-origin", "yui-origin.model3.json"),
     ("static/yui-origin", "yui-origin.moc3"),
     ("static/yui-origin/yui-origin.4096", "texture_00.png"),
+    ("static/yui-sister", "yui-sister.model3.json"),
+    ("static/yui-sister", "yui-sister.moc3"),
+    ("static/yui-sister/yui-sister.4096", "texture_00.png"),
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
@@ -91,8 +100,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/react/neko-chat", "neko-chat-window.iife.js"),
     ("static/react/neko-chat", "neko-chat-window.css"),
     ("templates", None),
+    ("templates", "emote_template_license.html"),
     ("assets", None),
-    ("data/browser_use_prompts", None),
+    # Built-in theater stories are JSON data; including the services package only bundles Python modules.
     # Offline model assets: prepare_*.py scripts download these before Nuitka; weights are not checked in, and frozen builds have no runtime download path;
     # if omitted, local endpoint detection, speaker recognition, and vector memory silently degrade. CI also checks every file ("Verify bundled
     # offline assets"); this check catches silent drift such as a missing directory or weights. For embeddings, assert the actual file:
@@ -114,8 +124,11 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     ("static/plugin-ui-sdk", "display.js"),
-    # In-app OpenClaw guide and images, served by agent_router through /api/agent/openclaw/guide/*; data-only directory.
-    ("docs/zh-CN/guide", None),
+    # Skill staged by prepare_nuitka_plugins.py prepare plus the guide
+    # templates; without them the frozen workbench cannot scaffold the agent kit.
+    ("plugin/neko_plugin_cli/agent_kit", "SKILL.md"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "AGENTS.md.tmpl"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "CLAUDE.md.tmpl"),
 )
 
 # Every subdirectory in the bundled plugins directory must contain plugin.toml; catches cases where the entire ``plugin/plugins``

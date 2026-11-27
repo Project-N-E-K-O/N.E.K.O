@@ -34,7 +34,7 @@ class _DailyHarness(FactStore):
     async def aload_facts(self, lanlan_name):
         return self.store
 
-    async def aload_facts_full(self, lanlan_name):
+    async def aload_facts_full(self, lanlan_name, *, include_cold_stubs=False):
         # Mirror real load_facts_full: active + archive, including archived-day provenance.
         return self.store + self.archive
 
@@ -874,7 +874,7 @@ class _SidecarFileHarness(FactStore):
     async def aload_facts(self, name):
         return []
 
-    async def aload_facts_full(self, name):
+    async def aload_facts_full(self, name, *, include_cold_stubs=False):
         return []
 
 

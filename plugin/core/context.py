@@ -8,9 +8,11 @@ import base64
 import contextlib
 import contextvars
 import copy
+import math
 import queue
 import threading
 import time
+from collections import deque
 
 try:
     import tomllib
@@ -18,7 +20,7 @@ except ImportError:
     import tomli as tomllib
 import functools
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +58,7 @@ if TYPE_CHECKING:
 
     # ⚠ Never import loguru. The actual type of the logger field is plugin.logging_config.PluginLoggerAdapter.
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
+    from plugin.sdk.shared.core.call_chain_view import CallChainView
     from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
 
 
@@ -63,6 +66,15 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
 _CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lanlan", default=None)
+
+
+def _attach_parent_request_id(payload: Dict[str, Any]) -> None:
+    """Let the host attribute this push to the invocation that made it."""
+    from plugin.core.rpc import current_request_id
+
+    parent = current_request_id()
+    if parent is not None:
+        payload["_rpc_parent_request_id"] = parent
 
 
 def _is_submission_backpressure(error: BaseException) -> bool:
@@ -217,6 +229,12 @@ class _BusHub:
         return ConversationClient(self._ctx)
 
     @functools.cached_property
+    def conversations_v2(self):
+        from plugin.core.bus.conversations import ConversationV2Client
+
+        return ConversationV2Client(self._ctx)
+
+    @functools.cached_property
     def frames(self) -> "FrameClient":
         from plugin.core.bus.frames import FrameClient
 
@@ -246,6 +264,97 @@ _HOST_ENVELOPE_HEADROOM_BYTES = (
 )
 
 
+class _CrossLoopLockWaiter:
+    __slots__ = ("loop", "future", "state")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, future: asyncio.Future[None]) -> None:
+        self.loop = loop
+        self.future = future
+        self.state = "waiting"  # "waiting" | "handed" | "aborted"
+
+
+class _CrossLoopAsyncLock:
+    """FIFO async mutex safe to share across threads and separate event loops."""
+
+    def __init__(self) -> None:
+        self._mu = threading.Lock()
+        self._locked = False
+        self._waiters: deque[_CrossLoopLockWaiter] = deque()
+
+    @staticmethod
+    def _wake_waiter(waiter: _CrossLoopLockWaiter) -> None:
+        if not waiter.future.done():
+            waiter.future.set_result(None)
+
+    async def acquire(self, *, deadline: float) -> None:
+        loop = asyncio.get_running_loop()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError("Timed out waiting for config write lock")
+        with self._mu:
+            if not self._locked:
+                self._locked = True
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError("Timed out waiting for config write lock")
+            waiter = _CrossLoopLockWaiter(loop=loop, future=loop.create_future())
+            self._waiters.append(waiter)
+        try:
+            async with asyncio.timeout(remaining):
+                await waiter.future
+        except BaseException:
+            need_release = False
+            with self._mu:
+                if waiter.state == "waiting":
+                    waiter.state = "aborted"
+                    try:
+                        self._waiters.remove(waiter)
+                    except ValueError:
+                        pass
+                elif waiter.state == "handed":
+                    # Ownership was already transferred to this waiter; pass it on.
+                    waiter.state = "aborted"
+                    need_release = True
+            if need_release:
+                self.release()
+            raise
+
+    def release(self) -> None:
+        while True:
+            with self._mu:
+                if not self._locked:
+                    raise RuntimeError("Lock is not acquired")
+                waiter: _CrossLoopLockWaiter | None = None
+                while self._waiters:
+                    candidate = self._waiters.popleft()
+                    if candidate.state == "waiting":
+                        candidate.state = "handed"
+                        waiter = candidate
+                        break
+                if waiter is None:
+                    self._locked = False
+                    return
+            try:
+                waiter.loop.call_soon_threadsafe(self._wake_waiter, waiter)
+                return
+            except RuntimeError:
+                # Waiter loop closed before handoff callback could be scheduled.
+                with self._mu:
+                    if waiter.state == "handed":
+                        waiter.state = "aborted"
+                    else:
+                        return
+
+    @contextlib.asynccontextmanager
+    async def hold(self, *, deadline: float) -> AsyncIterator[None]:
+        await self.acquire(deadline=deadline)
+        try:
+            yield
+        finally:
+            self.release()
+
+
 @dataclass
 class PluginContext:
     """Plugin runtime context"""
@@ -258,6 +367,7 @@ class PluginContext:
     _plugin_comm_queue: Optional[Any] = None  # Inter-plugin communication queue (provided by the main process)
     _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
     _rpc_closed: bool = field(default=False, init=False, repr=False)
+    _conversation_watchers: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _runtime_lock: Any = field(
         default_factory=threading.Lock,
         init=False,
@@ -277,7 +387,19 @@ class PluginContext:
     _restored_from_freeze: bool = False  # Whether restored from frozen state
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
+    _effective_config_gen: int = 0
+    _effective_config_publish_seq: int = 0
+    _last_notified_config_seq: int = 0
+    _profile_refresh_epoch: int = 0
+    _config_state_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
+    _config_notify_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
+    _config_write_lock: _CrossLoopAsyncLock = field(
+        default_factory=_CrossLoopAsyncLock,
+        init=False,
+        repr=False,
+    )
     _current_lanlan: Optional[str] = None
+    _permissions: Optional[Any] = field(default=None, init=False, repr=False)
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -302,6 +424,18 @@ class PluginContext:
             images = PluginImages(self)
             self._images = images
         return images
+
+    @property
+    def permissions(self) -> Any:
+        """This plugin's permission states as the host last sent them (``get`` / ``on_change``)."""
+        with self._runtime_lock:
+            permissions = self._permissions
+            if permissions is None:
+                from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+                permissions = PluginPermissions(self.logger)
+                self._permissions = permissions
+            return permissions
 
     @property
     def models(self) -> Any:
@@ -395,15 +529,42 @@ class PluginContext:
 
     def close(self) -> None:
         """Close this context and terminate all its outstanding requests."""
+        from plugin.core.bus.rev import _watcher_pop
+
         self._model_gateway_closed = True
         with self._runtime_lock:
             self._rpc_closed = True
             peer = self._rpc_peer
+            watchers = tuple(self._conversation_watchers.items())
+            self._conversation_watchers.clear()
+        for sid, watcher in watchers:
+            _watcher_pop(sid)
+            try:
+                watcher._on_host_closed()
+            except Exception:
+                pass
         if peer is not None:
             peer.close()
         models = getattr(self, "_models", None)
         if models is not None:
             models.close()
+
+    def _register_conversation_watcher(self, sub_id: str, watcher: object) -> None:
+        from plugin.core.bus.rev import _watcher_set
+
+        with self._runtime_lock:
+            if self._rpc_closed:
+                raise RuntimeError("Plugin context is closed")
+            _watcher_set(sub_id, watcher)
+            self._conversation_watchers[sub_id] = watcher
+
+    def _unregister_conversation_watcher(self, sub_id: str) -> None:
+        from plugin.core.bus.rev import _watcher_pop
+
+        with self._runtime_lock:
+            if sub_id in self._conversation_watchers:
+                self._conversation_watchers.pop(sub_id)
+                _watcher_pop(sub_id)
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
@@ -412,33 +573,775 @@ class PluginContext:
             pass
 
     def _refresh_instance_runtime_config(self, effective_config: Dict[str, Any]) -> None:
+        """Invoke the plugin instance's ``refresh_runtime_config`` callback.
+
+        Runs synchronously under ``_config_notify_lock``; plugin callbacks must
+        remain fast, non-blocking, and limited to in-memory state updates.
+        """
         instance = getattr(self, "_instance", None)
         refresh = getattr(instance, "refresh_runtime_config", None)
         if not callable(refresh):
             return
-        try:
-            refresh(effective_config)
-        except Exception as exc:
+        with self._get_config_notify_lock():
             try:
-                self.logger.warning(
-                    "[PluginContext] Failed to refresh runtime config: plugin_id={}, err_type={}, err={}",
-                    self.plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-            except Exception:
-                pass
+                refresh(effective_config)
+            except Exception as exc:
+                try:
+                    self.logger.warning(
+                        "[PluginContext] Failed to refresh runtime config: plugin_id={}, err_type={}, err={}",
+                        self.plugin_id,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                except Exception:
+                    pass
+            else:
+                if isinstance(effective_config, dict):
+                    with self._get_config_state_lock():
+                        self._last_runtime_config_snapshot = copy.deepcopy(effective_config)
 
-    def _set_effective_config_cache(self, config_obj: object) -> Dict[str, Any] | None:
-        if not isinstance(config_obj, dict):
-            self._effective_config = None
-            self._effective_config_uncertain = False
+    def _get_config_notify_lock(self) -> Any:
+        lock = getattr(self, "_config_notify_lock", None)
+        if lock is not None and callable(getattr(lock, "acquire", None)):
+            return lock
+        guard = getattr(self, "_runtime_lock", None)
+        if guard is not None and callable(getattr(guard, "acquire", None)):
+            with guard:
+                lock = getattr(self, "_config_notify_lock", None)
+                if lock is None or not callable(getattr(lock, "acquire", None)):
+                    lock = threading.RLock()
+                    self._config_notify_lock = lock
+                return lock
+        lock = threading.RLock()
+        self._config_notify_lock = lock
+        return lock
+
+    def _get_config_state_lock(self) -> Any:
+        lock = getattr(self, "_config_state_lock", None)
+        if lock is not None and callable(getattr(lock, "acquire", None)):
+            return lock
+        guard = getattr(self, "_runtime_lock", None)
+        if guard is not None and callable(getattr(guard, "acquire", None)):
+            with guard:
+                lock = getattr(self, "_config_state_lock", None)
+                if lock is None or not callable(getattr(lock, "acquire", None)):
+                    lock = threading.RLock()
+                    self._config_state_lock = lock
+                return lock
+        lock = threading.RLock()
+        self._config_state_lock = lock
+        return lock
+
+    def _current_effective_config_gen(self) -> int:
+        with self._get_config_state_lock():
+            try:
+                return int(getattr(self, "_effective_config_gen", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def _bump_effective_config_gen(self) -> int:
+        with self._get_config_state_lock():
+            next_gen = self._current_effective_config_gen() + 1
+            self._effective_config_gen = next_gen
+            self._last_installed_read_id = 0
+            self._effective_config_publish_seq = (
+                int(getattr(self, "_effective_config_publish_seq", 0) or 0) + 1
+            )
+            return next_gen
+
+    def _allocate_owner_token_locked(self) -> int:
+        token = int(getattr(self, "_next_effective_config_owner_token", 0) or 0) + 1
+        self._next_effective_config_owner_token = token
+        self._effective_config_owner_token = token
+        self._non_persisted_host_lineage = None
+        return token
+
+    def _resolve_pending_host_change_root_locked(self, token: int) -> int | None:
+        pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+        if not isinstance(pending_tokens, dict) or not pending_tokens:
             return None
-        config_copy = copy.deepcopy(config_obj)
+        root_map = getattr(self, "_owner_token_host_change_root", None)
+        root = root_map.get(token, token) if isinstance(root_map, dict) else token
+        if pending_tokens.get(root, 0) > 0:
+            return root
+        return None
+
+    def _bind_pending_host_guard_locked(
+        self,
+        *,
+        new_token: int,
+        source_token: int | None,
+    ) -> None:
+        if source_token is None:
+            return
+        root = self._resolve_pending_host_change_root_locked(source_token)
+        if root is not None and root != new_token:
+            root_map = getattr(self, "_owner_token_host_change_root", None)
+            if not isinstance(root_map, dict):
+                root_map = {}
+                self._owner_token_host_change_root = root_map
+            root_map[new_token] = root
+
+    @classmethod
+    def _apply_config_patches(
+        cls,
+        base: Mapping[str, Any],
+        patches: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        rebased = copy.deepcopy(dict(base))
+        for patch in patches:
+            rebased = cls._merge_config_copy(rebased, patch)
+        return rebased
+
+    def _get_non_persisted_lineage_locked(
+        self,
+        owner_token: int,
+    ) -> tuple[int, list[Dict[str, Any]]] | None:
+        lineage = getattr(self, "_non_persisted_host_lineage", None)
+        if (
+            isinstance(lineage, tuple)
+            and len(lineage) == 3
+            and lineage[0] == owner_token
+            and isinstance(lineage[1], int)
+            and isinstance(lineage[2], list)
+        ):
+            return lineage[1], copy.deepcopy(lineage[2])
+        return None
+
+    def _set_non_persisted_lineage_locked(
+        self,
+        *,
+        owner_token: int,
+        source_token: int | None,
+        patches: list[Dict[str, Any]] | None,
+    ) -> None:
+        if source_token is not None and patches:
+            root = self._resolve_pending_host_change_root_locked(source_token)
+            if root is not None:
+                self._non_persisted_host_lineage = (
+                    owner_token,
+                    root,
+                    copy.deepcopy(patches),
+                )
+
+    def _record_effective_config_locked(
+        self,
+        config_copy: Dict[str, Any] | None,
+        *,
+        uncertain: bool,
+        owner_token: int | None = None,
+        inherit_host_guard_from_token: int | None = None,
+        non_persisted_patches: list[Dict[str, Any]] | None = None,
+    ) -> int:
         self._effective_config = config_copy
-        self._effective_config_uncertain = False
-        self._refresh_instance_runtime_config(config_copy)
+        self._effective_config_uncertain = uncertain
+        self._effective_config_fallback_notify = None
+        self._in_flight_write_baseline = None
+        self._settled_overtaken_host_rollback = None
+        self._effective_config_publish_seq = (
+            int(getattr(self, "_effective_config_publish_seq", 0) or 0) + 1
+        )
+        if owner_token is None:
+            self._rejected_host_rollback = None
+            new_token = self._allocate_owner_token_locked()
+        else:
+            self._effective_config_owner_token = owner_token
+            self._non_persisted_host_lineage = None
+            new_token = owner_token
+        self._bind_pending_host_guard_locked(
+            new_token=new_token,
+            source_token=inherit_host_guard_from_token,
+        )
+        self._set_non_persisted_lineage_locked(
+            owner_token=new_token,
+            source_token=inherit_host_guard_from_token,
+            patches=non_persisted_patches,
+        )
+        return new_token
+
+    def _flush_instance_runtime_config(self) -> None:
+        """Deliver the latest published effective config snapshot to the plugin instance.
+
+        Serializes ``refresh_runtime_config`` calls synchronously under
+        ``_config_notify_lock`` so callbacks observe snapshots in publication
+        order. Callbacks must remain fast and non-blocking (in-memory updates only).
+        """
+        with self._get_config_notify_lock():
+            while True:
+                with self._get_config_state_lock():
+                    seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                    last_seq = int(getattr(self, "_last_notified_config_seq", 0) or 0)
+                    if seq <= last_seq:
+                        return
+                    pending_fallback = getattr(self, "_effective_config_fallback_notify", None)
+                    self._effective_config_fallback_notify = None
+                    if isinstance(self._effective_config, dict):
+                        snapshot: Dict[str, Any] | None = copy.deepcopy(self._effective_config)
+                    elif isinstance(pending_fallback, tuple) and pending_fallback[0] == seq:
+                        snapshot = copy.deepcopy(pending_fallback[1])
+                    else:
+                        snapshot = None
+                    self._last_notified_config_seq = seq
+                if snapshot is not None:
+                    self._refresh_instance_runtime_config(snapshot)
+
+    def _begin_config_read(self) -> tuple[int, int]:
+        with self._get_config_state_lock():
+            read_id = int(getattr(self, "_next_config_read_id", 0) or 0) + 1
+            self._next_config_read_id = read_id
+            return self._current_effective_config_gen(), read_id
+
+    def _get_config_write_lock(self) -> _CrossLoopAsyncLock:
+        lock = getattr(self, "_config_write_lock", None)
+        if isinstance(lock, _CrossLoopAsyncLock):
+            return lock
+        with self._get_config_state_lock():
+            lock = getattr(self, "_config_write_lock", None)
+            if not isinstance(lock, _CrossLoopAsyncLock):
+                lock = _CrossLoopAsyncLock()
+                self._config_write_lock = lock
+            return lock
+
+    @staticmethod
+    def _normalize_config_timeout(timeout: float, *, cap: float | None = None) -> float:
+        if isinstance(timeout, bool):
+            raise TypeError("timeout must be a real number, not bool")
+        value = float(timeout)
+        if not math.isfinite(value):
+            raise ValueError("timeout must be finite")
+        if cap is not None:
+            value = min(value, cap)
+        return value
+
+    def _mark_profile_write_uncertain(self) -> None:
+        # Note: RPC_CANCEL is fire-and-forget on the client, so a subsequent
+        # get_own_config() may still observe the previous on-disk profile and
+        # clear _effective_config_uncertain before a late server commit lands.
+        # Keeping reads able to re-anchor the cache avoids pinning uncertain=True
+        # indefinitely when cancellation succeeded; any late commit is reconciled
+        # by a subsequent config update or explicit reload.
+        with self._get_config_state_lock():
+            self._bump_effective_config_gen()
+            self._effective_config_uncertain = True
+            current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+            if (
+                int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) <= 0
+                and self._resolve_pending_host_change_root_locked(current_owner) is None
+            ):
+                self._rejected_host_rollback = None
+                self._allocate_owner_token_locked()
+
+    def _invalidate_effective_config_for_profile_refresh(self) -> tuple[int, int]:
+        with self._get_config_state_lock():
+            refresh_gen = self._bump_effective_config_gen()
+            refresh_epoch = int(getattr(self, "_profile_refresh_epoch", 0) or 0) + 1
+            self._profile_refresh_epoch = refresh_epoch
+            self._record_effective_config_locked(None, uncertain=False)
+            return refresh_gen, refresh_epoch
+
+    def _install_effective_config_value(
+        self,
+        config_obj: object,
+        *,
+        uncertain: bool = False,
+    ) -> Dict[str, Any] | None:
+        config_copy: Dict[str, Any] | None = None
+        with self._get_config_state_lock():
+            if not isinstance(config_obj, dict):
+                self._record_effective_config_locked(None, uncertain=uncertain)
+                return None
+            config_copy = copy.deepcopy(config_obj)
+            self._record_effective_config_locked(config_copy, uncertain=uncertain)
+        self._flush_instance_runtime_config()
         return config_copy
+
+    def _set_effective_config_cache(
+        self,
+        config_obj: object,
+        *,
+        uncertain: bool = False,
+        fallback_notify_config: object = None,
+    ) -> Dict[str, Any] | None:
+        config_copy: Dict[str, Any] | None = None
+        should_flush = False
+        with self._get_config_state_lock():
+            self._bump_effective_config_gen()
+            if isinstance(config_obj, dict):
+                config_copy = copy.deepcopy(config_obj)
+                self._record_effective_config_locked(config_copy, uncertain=uncertain)
+                should_flush = True
+            else:
+                self._record_effective_config_locked(None, uncertain=uncertain)
+                if isinstance(fallback_notify_config, dict):
+                    seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                    self._effective_config_fallback_notify = (
+                        seq,
+                        copy.deepcopy(fallback_notify_config),
+                    )
+                    should_flush = True
+        if should_flush:
+            self._flush_instance_runtime_config()
+        return config_copy
+
+    async def _wait_for_in_flight_config_write(self, *, deadline: float) -> bool:
+        write_lock = self._get_config_write_lock()
+        try:
+            await write_lock.acquire(deadline=deadline)
+        except TimeoutError:
+            return False
+        write_lock.release()
+        return True
+
+    def _update_overtaken_host_rollbacks_locked(
+        self,
+        *,
+        write_gen: int,
+        status: str,
+        committed_config: Dict[str, Any] | None = None,
+    ) -> None:
+        overtaken_map = getattr(self, "_overtaken_host_rollbacks", None)
+        if not isinstance(overtaken_map, dict):
+            return
+        for entry in overtaken_map.values():
+            if isinstance(entry, dict) and entry.get("write_gen") == write_gen:
+                entry["status"] = status
+                if isinstance(committed_config, dict):
+                    entry["committed_config"] = copy.deepcopy(committed_config)
+
+    def _settle_rejected_overtaken_write_locked(self, *, write_gen: int) -> None:
+        self._update_overtaken_host_rollbacks_locked(
+            write_gen=write_gen,
+            status="rejected",
+        )
+        settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
+        if (
+            isinstance(settled_rb, tuple)
+            and len(settled_rb) == 3
+            and settled_rb[0] == write_gen
+            and settled_rb[1] == self._current_effective_config_gen()
+        ):
+            self._settled_overtaken_host_rollback = None
+            self._effective_config_uncertain = bool(settled_rb[2])
+
+    def _replace_effective_config_cache_for_host(
+        self,
+        new_config: Mapping[str, Any],
+        *,
+        register_pending_change: bool = False,
+    ) -> tuple[bool, bool, Dict[str, Any], Dict[str, Any], int, Dict[str, Any]]:
+        with self._get_config_state_lock():
+            current_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            current_publish_seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+            had_cached = isinstance(self._effective_config, dict)
+            had_uncertain = current_uncertain
+            old_config = copy.deepcopy(self._effective_config) if had_cached else {}
+            overtaken_write_baseline: Dict[str, Any] | None = None
+            if bool(getattr(self, "_config_write_in_progress", False)):
+                baseline = getattr(self, "_in_flight_write_baseline", None)
+                settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
+                if (
+                    isinstance(baseline, tuple)
+                    and len(baseline) == 5
+                    and baseline[0] == current_publish_seq
+                ):
+                    overtaken_write_baseline = {
+                        "write_gen": int(baseline[1]),
+                        "status": "pending",
+                        "baseline_had_cached": bool(baseline[2]),
+                        "baseline_config": baseline[3],
+                        "baseline_uncertain": bool(baseline[4] or current_uncertain),
+                        "committed_config": None,
+                    }
+                elif (
+                    isinstance(settled_rb, tuple)
+                    and len(settled_rb) == 3
+                    and settled_rb[1] == self._current_effective_config_gen()
+                ):
+                    overtaken_write_baseline = {
+                        "write_gen": int(settled_rb[0]),
+                        "status": "pending",
+                        "baseline_had_cached": had_cached,
+                        "baseline_config": (
+                            copy.deepcopy(self._effective_config) if had_cached else None
+                        ),
+                        "baseline_uncertain": bool(settled_rb[2]),
+                        "committed_config": None,
+                    }
+            last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
+            rollback_runtime_snapshot = (
+                copy.deepcopy(old_config)
+                if had_cached
+                else (copy.deepcopy(last_runtime) if isinstance(last_runtime, dict) else {})
+            )
+            applied = copy.deepcopy(dict(new_config))
+            self._bump_effective_config_gen()
+            applied_owner_token = self._record_effective_config_locked(applied, uncertain=False)
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+                if overtaken_write_baseline is not None:
+                    overtaken_map = getattr(self, "_overtaken_host_rollbacks", None)
+                    if not isinstance(overtaken_map, dict):
+                        overtaken_map = {}
+                        self._overtaken_host_rollbacks = overtaken_map
+                    overtaken_map[applied_owner_token] = overtaken_write_baseline
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
+        return (
+            had_cached,
+            had_uncertain,
+            old_config,
+            applied,
+            applied_owner_token,
+            rollback_runtime_snapshot,
+        )
+
+    def _merge_effective_config_cache_for_host(
+        self,
+        new_config: Mapping[str, Any],
+        *,
+        merge_fn: Any,
+        register_pending_change: bool = False,
+    ) -> tuple[str, bool, bool, Dict[str, Any], Dict[str, Any] | None, int, int, Dict[str, Any] | None]:
+        with self._get_config_state_lock():
+            if bool(getattr(self, "_config_write_in_progress", False)):
+                return (
+                    "wait_write",
+                    False,
+                    False,
+                    {},
+                    None,
+                    0,
+                    self._current_effective_config_gen(),
+                    None,
+                )
+            had_cached = isinstance(self._effective_config, dict)
+            had_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            last_runtime = getattr(self, "_last_runtime_config_snapshot", None)
+            if not had_cached or had_uncertain:
+                return (
+                    "needs_hydrate",
+                    False,
+                    had_uncertain,
+                    {},
+                    None,
+                    0,
+                    self._current_effective_config_gen(),
+                    copy.deepcopy(last_runtime) if isinstance(last_runtime, dict) else None,
+                )
+            old_config = copy.deepcopy(self._effective_config)
+            merged = copy.deepcopy(old_config)
+            merge_fn(merged, new_config)
+            self._bump_effective_config_gen()
+            applied_owner_token = self._record_effective_config_locked(
+                merged,
+                uncertain=had_uncertain,
+            )
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
+        return (
+            "merged",
+            True,
+            had_uncertain,
+            old_config,
+            merged,
+            applied_owner_token,
+            0,
+            copy.deepcopy(old_config),
+        )
+
+    def _apply_hydrated_merge_for_host(
+        self,
+        *,
+        base_config: Mapping[str, Any] | None,
+        new_config: Mapping[str, Any],
+        merge_fn: Any,
+        expected_gen: int,
+        fallback_uncertain: bool,
+        pre_runtime_snapshot: Dict[str, Any] | None,
+        register_pending_change: bool = False,
+    ) -> tuple[str, bool, bool, Dict[str, Any], Dict[str, Any] | None, int, int, Dict[str, Any] | None]:
+        with self._get_config_state_lock():
+            if bool(getattr(self, "_config_write_in_progress", False)):
+                return (
+                    "wait_write",
+                    False,
+                    fallback_uncertain,
+                    {},
+                    None,
+                    0,
+                    self._current_effective_config_gen(),
+                    pre_runtime_snapshot,
+                )
+            current_gen = self._current_effective_config_gen()
+            gen_changed = current_gen != expected_gen
+            current_uncertain = bool(getattr(self, "_effective_config_uncertain", False))
+            if isinstance(self._effective_config, dict) and not current_uncertain:
+                old_config = copy.deepcopy(self._effective_config)
+                merged = copy.deepcopy(old_config)
+                merge_fn(merged, new_config)
+                had_cached_for_rollback = True
+                had_uncertain_for_rollback = False
+                applied_uncertain = False
+                rollback_runtime_snapshot: Dict[str, Any] = copy.deepcopy(old_config)
+            else:
+                if gen_changed:
+                    return (
+                        "retry_hydrate",
+                        False,
+                        current_uncertain,
+                        {},
+                        None,
+                        0,
+                        current_gen,
+                        pre_runtime_snapshot,
+                    )
+                if not isinstance(base_config, Mapping):
+                    return (
+                        "hydrate_failed",
+                        False,
+                        current_uncertain,
+                        {},
+                        None,
+                        0,
+                        current_gen,
+                        pre_runtime_snapshot,
+                    )
+                old_config = copy.deepcopy(dict(base_config))
+                merged = copy.deepcopy(old_config)
+                merge_fn(merged, new_config)
+                had_cached_for_rollback = False
+                had_uncertain_for_rollback = fallback_uncertain
+                applied_uncertain = False
+                rollback_runtime_snapshot = (
+                    copy.deepcopy(old_config)
+                    if old_config
+                    else (
+                        copy.deepcopy(pre_runtime_snapshot)
+                        if isinstance(pre_runtime_snapshot, dict)
+                        else {}
+                    )
+                )
+            self._bump_effective_config_gen()
+            applied_owner_token = self._record_effective_config_locked(
+                merged,
+                uncertain=applied_uncertain,
+            )
+            if register_pending_change:
+                self._begin_host_config_change_locked(applied_owner_token)
+        try:
+            self._flush_instance_runtime_config()
+        except BaseException:
+            if register_pending_change:
+                self._end_host_config_change(applied_owner_token)
+            raise
+        return (
+            "merged",
+            had_cached_for_rollback,
+            had_uncertain_for_rollback,
+            old_config,
+            merged,
+            applied_owner_token,
+            0,
+            rollback_runtime_snapshot,
+        )
+
+    def _rollback_effective_config_cache_for_host(
+        self,
+        *,
+        expected_owner_token: int,
+        had_cached: bool,
+        old_config: object,
+        uncertain: bool,
+        fallback_notify_config: object = None,
+    ) -> bool:
+        should_flush = False
+        with self._get_config_state_lock():
+            overtaken_map = getattr(self, "_overtaken_host_rollbacks", None)
+            overtaken_entry = (
+                overtaken_map.pop(expected_owner_token, None)
+                if isinstance(overtaken_map, dict)
+                else None
+            )
+            target_had_cached = had_cached
+            target_old_config = old_config
+            target_uncertain = uncertain
+            target_fallback_notify = fallback_notify_config
+            pending_overtaken_write_gen: int | None = None
+            settled_overtaken_uncertain = False
+            if isinstance(overtaken_entry, dict):
+                overtaken_status = overtaken_entry.get("status")
+                committed_cfg = overtaken_entry.get("committed_config")
+                if overtaken_status == "committed" and isinstance(committed_cfg, dict):
+                    target_had_cached = True
+                    target_old_config = committed_cfg
+                    target_uncertain = True
+                    target_fallback_notify = committed_cfg
+                else:
+                    target_had_cached = bool(overtaken_entry.get("baseline_had_cached", False))
+                    target_old_config = overtaken_entry.get("baseline_config")
+                    baseline_uncertain = bool(overtaken_entry.get("baseline_uncertain", False))
+                    if overtaken_status == "pending":
+                        target_uncertain = True
+                        pending_overtaken_write_gen = int(overtaken_entry["write_gen"])
+                        settled_overtaken_uncertain = bool(
+                            baseline_uncertain
+                            or getattr(self, "_effective_config_uncertain", False)
+                        )
+                    elif overtaken_status == "uncertain":
+                        target_uncertain = True
+                    else:
+                        target_uncertain = baseline_uncertain
+                    if target_had_cached and isinstance(target_old_config, dict):
+                        target_fallback_notify = target_old_config
+            current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+            rebased_patches: list[Dict[str, Any]] | None = None
+            if current_owner != expected_owner_token:
+                lineage = self._get_non_persisted_lineage_locked(current_owner)
+                if lineage is not None and lineage[0] == expected_owner_token:
+                    rebased_patches = lineage[1]
+                else:
+                    if (
+                        bool(getattr(self, "_config_write_in_progress", False))
+                        and getattr(self, "_in_flight_write_base_owner_token", None)
+                        == expected_owner_token
+                    ):
+                        self._rejected_host_rollback = (
+                            expected_owner_token,
+                            target_had_cached,
+                            copy.deepcopy(target_old_config)
+                            if isinstance(target_old_config, dict)
+                            else None,
+                            target_uncertain,
+                            (
+                                copy.deepcopy(target_fallback_notify)
+                                if isinstance(target_fallback_notify, dict)
+                                else None
+                            ),
+                        )
+                    return False
+            effective_uncertain = target_uncertain or bool(
+                getattr(self, "_effective_config_uncertain", False)
+            )
+            self._rejected_host_rollback = None
+            self._bump_effective_config_gen()
+            if target_had_cached and isinstance(target_old_config, dict):
+                restored_config = (
+                    self._apply_config_patches(target_old_config, rebased_patches)
+                    if rebased_patches
+                    else copy.deepcopy(target_old_config)
+                )
+                self._record_effective_config_locked(
+                    restored_config,
+                    uncertain=effective_uncertain,
+                )
+                should_flush = True
+            else:
+                self._record_effective_config_locked(None, uncertain=effective_uncertain)
+                if isinstance(target_fallback_notify, dict):
+                    seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                    self._effective_config_fallback_notify = (
+                        seq,
+                        copy.deepcopy(target_fallback_notify),
+                    )
+                    should_flush = True
+            if pending_overtaken_write_gen is not None and not rebased_patches:
+                self._settled_overtaken_host_rollback = (
+                    pending_overtaken_write_gen,
+                    self._current_effective_config_gen(),
+                    settled_overtaken_uncertain,
+                )
+        if should_flush:
+            self._flush_instance_runtime_config()
+        return True
+
+    def _begin_host_config_change_locked(self, owner_token: int | None = None) -> None:
+        self._host_config_change_pending = (
+            int(getattr(self, "_host_config_change_pending", 0) or 0) + 1
+        )
+        if owner_token is None:
+            self._host_config_change_unscoped_pending = (
+                int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) + 1
+            )
+        else:
+            pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+            if not isinstance(pending_tokens, dict):
+                pending_tokens = {}
+                self._pending_host_config_owner_tokens = pending_tokens
+            pending_tokens[owner_token] = int(pending_tokens.get(owner_token, 0) or 0) + 1
+
+    def _begin_host_config_change(self, owner_token: int | None = None) -> None:
+        with self._get_config_state_lock():
+            self._begin_host_config_change_locked(owner_token)
+
+    def _end_host_config_change(self, owner_token: int | None = None) -> None:
+        with self._get_config_state_lock():
+            current = int(getattr(self, "_host_config_change_pending", 0) or 0)
+            self._host_config_change_pending = max(0, current - 1)
+            if owner_token is None:
+                unscoped = int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0)
+                self._host_config_change_unscoped_pending = max(0, unscoped - 1)
+            else:
+                pending_tokens = getattr(self, "_pending_host_config_owner_tokens", None)
+                if isinstance(pending_tokens, dict):
+                    remaining = int(pending_tokens.get(owner_token, 0) or 0) - 1
+                    if remaining > 0:
+                        pending_tokens[owner_token] = remaining
+                    else:
+                        pending_tokens.pop(owner_token, None)
+                        root_map = getattr(self, "_owner_token_host_change_root", None)
+                        if isinstance(root_map, dict) and root_map:
+                            stale_tokens = [
+                                tok for tok, root in root_map.items() if root == owner_token
+                            ]
+                            for tok in stale_tokens:
+                                root_map.pop(tok, None)
+                        lineage = getattr(self, "_non_persisted_host_lineage", None)
+                        if (
+                            isinstance(lineage, tuple)
+                            and len(lineage) == 3
+                            and lineage[1] == owner_token
+                        ):
+                            self._non_persisted_host_lineage = None
+                        overtaken_map = getattr(self, "_overtaken_host_rollbacks", None)
+                        if isinstance(overtaken_map, dict):
+                            overtaken_map.pop(owner_token, None)
+
+    def _cache_effective_config_from_read(
+        self,
+        config_obj: object,
+        *,
+        gen_before: int,
+        read_id: int,
+    ) -> bool:
+        if not isinstance(config_obj, dict):
+            return False
+        with self._get_config_state_lock():
+            if self._current_effective_config_gen() != gen_before:
+                return False
+            if bool(getattr(self, "_config_write_in_progress", False)):
+                return False
+            if int(getattr(self, "_host_config_change_unscoped_pending", 0) or 0) > 0:
+                return False
+            current_owner = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+            if self._resolve_pending_host_change_root_locked(current_owner) is not None:
+                return False
+            if read_id <= int(getattr(self, "_last_installed_read_id", 0) or 0):
+                return False
+            self._last_installed_read_id = read_id
+            config_copy = copy.deepcopy(config_obj)
+            self._record_effective_config_locked(config_copy, uncertain=False)
+        self._flush_instance_runtime_config()
+        return True
 
     @staticmethod
     def _merge_config_copy(base: object, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -463,19 +1366,20 @@ class PluginContext:
                     }
                     continue
                 current = merged.get(key)
-                if isinstance(current, Mapping):
-                    current_mapping = {
+                current_mapping = (
+                    {
                         nested_key: nested_value
                         for nested_key, nested_value in current.items()
                         if isinstance(nested_key, str)
                     }
-                    merged[key] = (
-                        PluginContext._merge_config_copy(current_mapping, value_mapping)
-                        if value_mapping
-                        else {}
-                    )
-                else:
-                    merged[key] = copy.deepcopy(value_mapping)
+                    if isinstance(current, Mapping)
+                    else {}
+                )
+                merged[key] = (
+                    PluginContext._merge_config_copy(current_mapping, value_mapping)
+                    if value_mapping
+                    else {}
+                )
             else:
                 merged[key] = copy.deepcopy(value)
         return merged
@@ -557,6 +1461,13 @@ class PluginContext:
     def current_lanlan(self) -> Optional[str]:
         """Recipient of this invocation, never the last caller on another task."""
         return _CURRENT_LANLAN.get()
+
+    @property
+    def call_chain(self) -> "CallChainView":
+        """Read-only view of how this invocation was reached; never None (see CallChainView)."""
+        from plugin.sdk.shared.core.call_chain_view import current_call_chain
+
+        return current_call_chain(self.plugin_id)
 
     @property
     def handler_ctx(self) -> Optional[str]:
@@ -1403,6 +2314,9 @@ class PluginContext:
                 oversized = _reject_if_payload_too_large(authenticated_payload)
                 if oversized is not None:
                     return oversized
+                # After the size check, so the local verdict is unchanged; the
+                # host removes it before the record is stored or published.
+                _attach_parent_request_id(authenticated_payload)
                 fast_put = getattr(
                     self.message_queue,
                     "put_fast_nowait",
@@ -1640,21 +2554,29 @@ class PluginContext:
 
             service = ConfigQueryService()
             if payload_type == "config":
-                cached = getattr(self, "_effective_config", None)
-                uncertain = getattr(self, "_effective_config_uncertain", False)
-                if isinstance(cached, dict) and not uncertain:
+                cached_copy: Optional[Dict[str, Any]] = None
+                with self._get_config_state_lock():
+                    cached = getattr(self, "_effective_config", None)
+                    uncertain = getattr(self, "_effective_config_uncertain", False)
+                    if isinstance(cached, dict) and not uncertain:
+                        cached_copy = copy.deepcopy(cached)
+                if cached_copy is not None:
                     return {
                         "plugin_id": self.plugin_id,
-                        "config": copy.deepcopy(cached),
+                        "config": cached_copy,
                         "config_path": str(self.config_path),
                     }
+                gen_before, read_id = self._begin_config_read()
                 payload = await asyncio.wait_for(
                     service.get_plugin_config(plugin_id=self.plugin_id),
                     timeout=timeout,
                 )
                 config_obj = payload.get("config")
-                if isinstance(config_obj, dict):
-                    self._set_effective_config_cache(config_obj)
+                self._cache_effective_config_from_read(
+                    config_obj,
+                    gen_before=gen_before,
+                    read_id=read_id,
+                )
                 return payload
             if payload_type == "base":
                 return await asyncio.wait_for(
@@ -1684,6 +2606,8 @@ class PluginContext:
                     ),
                     timeout=timeout,
                 )
+        except TimeoutError:
+            raise
         except Exception as exc:
             try:
                 self.logger.debug(
@@ -1698,25 +2622,49 @@ class PluginContext:
         return None
 
     async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        local_payload = await self._get_local_config_payload(payload_type="config", timeout=timeout)
+        request_timeout = self._normalize_config_timeout(timeout)
+        request_deadline = time.monotonic() + request_timeout
+        if request_timeout <= 0.0:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s")
+        try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="config",
+                timeout=request_timeout,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
         if isinstance(local_payload, dict):
             return local_payload
+        remaining_timeout = request_deadline - time.monotonic()
+        if remaining_timeout <= 0.0:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s")
+        gen_before, read_id = self._begin_config_read()
         try:
-            return await self._send_request_and_wait_async(
+            payload = await self._send_request_and_wait_async(
                 method_name="get_own_config",
                 request_type="PLUGIN_CONFIG_GET",
-                request_data={"plugin_id": self.plugin_id},
-                timeout=timeout,
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "_request_deadline_monotonic": request_deadline,
+                },
+                timeout=remaining_timeout,
                 wrap_result=True,
             )
+            config_obj = payload.get("config") if isinstance(payload, dict) else None
+            self._cache_effective_config_from_read(
+                config_obj,
+                gen_before=gen_before,
+                read_id=read_id,
+            )
+            return payload
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
     async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        local_payload = await self._get_local_config_payload(payload_type="base", timeout=timeout)
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(payload_type="base", timeout=timeout)
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_base_config",
                 request_type="PLUGIN_CONFIG_BASE_GET",
@@ -1728,10 +2676,10 @@ class PluginContext:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
 
     async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
-        local_payload = await self._get_local_config_payload(payload_type="profiles", timeout=timeout)
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(payload_type="profiles", timeout=timeout)
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_profiles_state",
                 request_type="PLUGIN_CONFIG_PROFILES_GET",
@@ -1745,14 +2693,14 @@ class PluginContext:
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
-        local_payload = await self._get_local_config_payload(
-            payload_type="profile",
-            profile_name=profile_name,
-            timeout=timeout,
-        )
-        if isinstance(local_payload, dict):
-            return local_payload
         try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="profile",
+                profile_name=profile_name,
+                timeout=timeout,
+            )
+            if isinstance(local_payload, dict):
+                return local_payload
             return await self._send_request_and_wait_async(
                 method_name="get_own_profile_config",
                 request_type="PLUGIN_CONFIG_PROFILE_GET",
@@ -1783,18 +2731,23 @@ class PluginContext:
         if isinstance(profile_name, str) and profile_name.strip():
             request_data["profile_name"] = profile_name.strip()
 
-        local_payload = await self._get_local_config_payload(
-            payload_type="effective",
-            profile_name=profile_name,
-            timeout=timeout,
-        )
-        if isinstance(local_payload, dict):
-            effective_obj = local_payload.get("config")
-            if isinstance(effective_obj, dict) and profile_name is None:
-                self._set_effective_config_cache(effective_obj)
-            return local_payload
-
+        gen_before, read_id = self._begin_config_read()
         try:
+            local_payload = await self._get_local_config_payload(
+                payload_type="effective",
+                profile_name=profile_name,
+                timeout=timeout,
+            )
+            if isinstance(local_payload, dict):
+                effective_obj = local_payload.get("config")
+                if profile_name is None:
+                    self._cache_effective_config_from_read(
+                        effective_obj,
+                        gen_before=gen_before,
+                        read_id=read_id,
+                    )
+                return local_payload
+
             return await self._send_request_and_wait_async(
                 method_name="get_own_effective_config",
                 request_type="PLUGIN_CONFIG_EFFECTIVE_GET",
@@ -1859,108 +2812,811 @@ class PluginContext:
             return self.query_memory_async(lanlan_name=lanlan_name, query=query, timeout=timeout)
         return self.query_memory_sync(lanlan_name=lanlan_name, query=query, timeout=timeout)
 
+    def _build_queued_update_timeout_payload(self) -> Dict[str, Any]:
+        with self._get_config_state_lock():
+            current_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        return {
+            "success": False,
+            "plugin_id": self.plugin_id,
+            "config": current_config if isinstance(current_config, dict) else {},
+            "requires_reload": False,
+            "persisted": False,
+            "message": "Config persistence timed out waiting for an in-flight config write; update was not applied",
+        }
+
+    def _commit_optimistic_write_result_if_current(
+        self,
+        *,
+        write_gen: int,
+        config_obj: Dict[str, Any],
+        uncertain: bool,
+    ) -> None:
+        should_flush = False
+        with self._get_config_state_lock():
+            if self._current_effective_config_gen() == write_gen:
+                self._bump_effective_config_gen()
+                installed_copy = copy.deepcopy(config_obj)
+                self._record_effective_config_locked(installed_copy, uncertain=uncertain)
+                should_flush = True
+            else:
+                self._update_overtaken_host_rollbacks_locked(
+                    write_gen=write_gen,
+                    status="committed",
+                    committed_config=config_obj,
+                )
+                settled_rb = getattr(self, "_settled_overtaken_host_rollback", None)
+                if (
+                    isinstance(settled_rb, tuple)
+                    and len(settled_rb) == 3
+                    and settled_rb[0] == write_gen
+                    and settled_rb[1] == self._current_effective_config_gen()
+                ):
+                    self._bump_effective_config_gen()
+                    installed_copy = copy.deepcopy(config_obj)
+                    self._record_effective_config_locked(installed_copy, uncertain=True)
+                    should_flush = True
+                else:
+                    self._bump_effective_config_gen()
+                    self._effective_config_uncertain = True
+        if should_flush:
+            self._flush_instance_runtime_config()
+
+    def _mark_optimistic_write_uncertain(
+        self,
+        *,
+        write_gen: int,
+        old_owner_token: int,
+        has_known_baseline: bool,
+        base_host_owner_token: int | None = None,
+        non_persisted_patches: list[Dict[str, Any]] | None = None,
+    ) -> tuple[bool, Dict[str, Any] | None]:
+        should_flush = False
+        rebased_applied = False
+        rebased_config: Dict[str, Any] | None = None
+        with self._get_config_state_lock():
+            owns_current_draft = (
+                has_known_baseline and self._current_effective_config_gen() == write_gen
+            )
+            self._bump_effective_config_gen()
+            self._effective_config_uncertain = True
+            self._settled_overtaken_host_rollback = None
+            if not owns_current_draft:
+                self._update_overtaken_host_rollbacks_locked(
+                    write_gen=write_gen,
+                    status="uncertain",
+                )
+            if owns_current_draft:
+                self._in_flight_write_baseline = None
+                rb_match_token = (
+                    base_host_owner_token
+                    if base_host_owner_token is not None
+                    else old_owner_token
+                )
+                pending_host_rb = getattr(self, "_rejected_host_rollback", None)
+                if (
+                    non_persisted_patches is not None
+                    and isinstance(pending_host_rb, tuple)
+                    and pending_host_rb[0] == rb_match_token
+                ):
+                    self._rejected_host_rollback = None
+                    rebased_applied = True
+                    _, rb_had_cached, rb_old_config, _rb_uncertain, rb_fallback_notify = (
+                        pending_host_rb
+                    )
+                    if rb_had_cached and isinstance(rb_old_config, dict):
+                        rebased_config = self._apply_config_patches(
+                            rb_old_config,
+                            non_persisted_patches,
+                        )
+                        self._record_effective_config_locked(
+                            copy.deepcopy(rebased_config),
+                            uncertain=True,
+                        )
+                        should_flush = True
+                    else:
+                        self._record_effective_config_locked(None, uncertain=True)
+                        if isinstance(rb_fallback_notify, dict):
+                            seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                            self._effective_config_fallback_notify = (
+                                seq,
+                                copy.deepcopy(rb_fallback_notify),
+                            )
+                            should_flush = True
+                else:
+                    self._rejected_host_rollback = None
+                    new_token = self._allocate_owner_token_locked()
+                    self._bind_pending_host_guard_locked(
+                        new_token=new_token,
+                        source_token=old_owner_token,
+                    )
+                    self._set_non_persisted_lineage_locked(
+                        owner_token=new_token,
+                        source_token=old_owner_token,
+                        patches=non_persisted_patches,
+                    )
+        if should_flush:
+            self._flush_instance_runtime_config()
+        return rebased_applied, rebased_config
+
+    def _rollback_optimistic_write_if_current(
+        self,
+        *,
+        write_gen: int,
+        old_effective_config: Any,
+        old_effective_config_uncertain: bool,
+        old_owner_token: int | None = None,
+        base_host_owner_token: int | None = None,
+        base_non_persisted_patches: list[Dict[str, Any]] | None = None,
+    ) -> None:
+        should_flush = False
+        with self._get_config_state_lock():
+            if self._current_effective_config_gen() != write_gen:
+                self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
+                return
+            rb_match_token = (
+                base_host_owner_token if base_host_owner_token is not None else old_owner_token
+            )
+            pending_host_rb = getattr(self, "_rejected_host_rollback", None)
+            if (
+                rb_match_token is not None
+                and isinstance(pending_host_rb, tuple)
+                and pending_host_rb[0] == rb_match_token
+            ):
+                self._rejected_host_rollback = None
+                _, rb_had_cached, rb_old_config, rb_uncertain, rb_fallback_notify = pending_host_rb
+                effective_uncertain = rb_uncertain or old_effective_config_uncertain
+                self._bump_effective_config_gen()
+                if rb_had_cached and isinstance(rb_old_config, dict):
+                    restored = (
+                        self._apply_config_patches(rb_old_config, base_non_persisted_patches)
+                        if base_non_persisted_patches
+                        else copy.deepcopy(rb_old_config)
+                    )
+                    self._record_effective_config_locked(
+                        restored,
+                        uncertain=effective_uncertain,
+                    )
+                    should_flush = True
+                else:
+                    self._record_effective_config_locked(None, uncertain=effective_uncertain)
+                    if isinstance(rb_fallback_notify, dict):
+                        seq = int(getattr(self, "_effective_config_publish_seq", 0) or 0)
+                        self._effective_config_fallback_notify = (
+                            seq,
+                            copy.deepcopy(rb_fallback_notify),
+                        )
+                        should_flush = True
+            else:
+                self._bump_effective_config_gen()
+                if isinstance(old_effective_config, dict):
+                    restored_copy = copy.deepcopy(old_effective_config)
+                    self._record_effective_config_locked(
+                        restored_copy,
+                        uncertain=old_effective_config_uncertain,
+                        owner_token=old_owner_token,
+                        inherit_host_guard_from_token=old_owner_token,
+                        non_persisted_patches=base_non_persisted_patches,
+                    )
+                    should_flush = True
+                else:
+                    self._record_effective_config_locked(
+                        None,
+                        uncertain=old_effective_config_uncertain,
+                        owner_token=old_owner_token,
+                    )
+        if should_flush:
+            self._flush_instance_runtime_config()
+
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
-        old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
-        old_effective_config_uncertain = getattr(
-            self,
-            "_effective_config_uncertain",
-            False,
-        )
-        optimistic_config = self._merge_config_copy(old_effective_config, updates)
-        self._set_effective_config_cache(optimistic_config)
+        updates_copy = copy.deepcopy(updates)
         # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
-        request_timeout = min(float(timeout), 4.5)
+        request_timeout = self._normalize_config_timeout(timeout, cap=4.5)
         request_deadline = time.monotonic() + request_timeout
+        write_lock = self._get_config_write_lock()
         try:
-            payload = await self._send_request_and_wait_async(
-                method_name="update_own_config",
-                request_type="PLUGIN_CONFIG_UPDATE",
-                request_data={
-                    "plugin_id": self.plugin_id,
-                    "updates": updates,
-                    "_request_deadline_monotonic": request_deadline,
-                },
-                timeout=request_timeout,
-                wrap_result=True,
-            )
-            config_obj = payload.get("config") if isinstance(payload, dict) else None
-            if isinstance(config_obj, dict):
-                if payload.get("persisted") is False:
-                    self._set_effective_config_cache(optimistic_config)
-                    payload = dict(payload)
-                    payload["config"] = copy.deepcopy(optimistic_config)
-                else:
-                    self._set_effective_config_cache(config_obj)
-            return payload
+            await write_lock.acquire(deadline=request_deadline)
         except TimeoutError:
-            self._effective_config_uncertain = True
-            return {
-                "success": False,
-                "plugin_id": self.plugin_id,
-                "config": copy.deepcopy(optimistic_config),
-                "requires_reload": False,
-                "persisted": None,
-                "message": "Config persistence response timed out; final persistence status is unknown",
-            }
-        except asyncio.CancelledError:
-            # The request may already have crossed the atomic commit point.
-            # Keep the optimistic view instead of restoring a known-stale one.
-            self._effective_config_uncertain = True
-            raise
-        except Exception:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
-            else:
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
-            self._effective_config_uncertain = old_effective_config_uncertain
-            raise
+            return self._build_queued_update_timeout_payload()
+        try:
+            remaining_timeout = request_deadline - time.monotonic()
+            if remaining_timeout <= 0.0:
+                return self._build_queued_update_timeout_payload()
+            with self._get_config_state_lock():
+                needs_baseline_hydration = not isinstance(
+                    getattr(self, "_effective_config", None),
+                    dict,
+                )
+            if needs_baseline_hydration:
+                try:
+                    await self._get_local_config_payload(
+                        payload_type="config",
+                        timeout=min(remaining_timeout, 0.5),
+                    )
+                except TimeoutError:
+                    pass
+                remaining_timeout = request_deadline - time.monotonic()
+                if remaining_timeout <= 0.0:
+                    return self._build_queued_update_timeout_payload()
+            should_flush_optimistic = False
+            with self._get_config_state_lock():
+                old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+                old_effective_config_uncertain = bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                )
+                old_owner_token = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+                old_lineage = self._get_non_persisted_lineage_locked(old_owner_token)
+                in_flight_root_token, in_flight_base_patches = (
+                    old_lineage if old_lineage is not None else (old_owner_token, [])
+                )
+                cumulative_patches = [*in_flight_base_patches, copy.deepcopy(updates_copy)]
+                has_known_baseline = isinstance(old_effective_config, dict)
+                optimistic_config = self._merge_config_copy(old_effective_config, updates_copy)
+                write_gen = self._bump_effective_config_gen()
+                self._in_flight_write_base_owner_token = in_flight_root_token
+                if has_known_baseline:
+                    optimistic_to_install = copy.deepcopy(optimistic_config)
+                    self._record_effective_config_locked(optimistic_to_install, uncertain=False)
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        write_gen,
+                        True,
+                        old_effective_config,
+                        old_effective_config_uncertain,
+                    )
+                    should_flush_optimistic = True
+                else:
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        write_gen,
+                        False,
+                        None,
+                        old_effective_config_uncertain,
+                    )
+                    self._settled_overtaken_host_rollback = None
+                    self._rejected_host_rollback = None
+                    self._allocate_owner_token_locked()
+                self._config_write_in_progress = True
+            if should_flush_optimistic:
+                self._flush_instance_runtime_config()
+            try:
+                payload = await self._send_request_and_wait_async(
+                    method_name="update_own_config",
+                    request_type="PLUGIN_CONFIG_UPDATE",
+                    request_data={
+                        "plugin_id": self.plugin_id,
+                        "updates": copy.deepcopy(updates_copy),
+                        "_request_deadline_monotonic": request_deadline,
+                    },
+                    timeout=remaining_timeout,
+                    wrap_result=True,
+                )
+                config_obj = payload.get("config") if isinstance(payload, dict) else None
+                if isinstance(config_obj, dict):
+                    if payload.get("persisted") is False:
+                        if has_known_baseline:
+                            should_flush_in_memory = False
+                            superseded_by_host_rollback = False
+                            applied_config = copy.deepcopy(optimistic_config)
+                            current_effective: Dict[str, Any] = {}
+                            with self._get_config_state_lock():
+                                if self._current_effective_config_gen() == write_gen:
+                                    pending_host_rb = getattr(self, "_rejected_host_rollback", None)
+                                    if (
+                                        isinstance(pending_host_rb, tuple)
+                                        and pending_host_rb[0] == in_flight_root_token
+                                    ):
+                                        self._rejected_host_rollback = None
+                                        (
+                                            _,
+                                            rb_had_cached,
+                                            rb_old_config,
+                                            rb_uncertain,
+                                            rb_fallback_notify,
+                                        ) = pending_host_rb
+                                        effective_uncertain = (
+                                            rb_uncertain or old_effective_config_uncertain
+                                        )
+                                        self._bump_effective_config_gen()
+                                        if rb_had_cached and isinstance(rb_old_config, dict):
+                                            applied_config = self._apply_config_patches(
+                                                rb_old_config,
+                                                cumulative_patches,
+                                            )
+                                            self._record_effective_config_locked(
+                                                copy.deepcopy(applied_config),
+                                                uncertain=effective_uncertain,
+                                            )
+                                            should_flush_in_memory = True
+                                        else:
+                                            superseded_by_host_rollback = True
+                                            self._record_effective_config_locked(
+                                                None,
+                                                uncertain=effective_uncertain,
+                                            )
+                                            if isinstance(rb_fallback_notify, dict):
+                                                seq = int(
+                                                    getattr(
+                                                        self,
+                                                        "_effective_config_publish_seq",
+                                                        0,
+                                                    )
+                                                    or 0
+                                                )
+                                                self._effective_config_fallback_notify = (
+                                                    seq,
+                                                    copy.deepcopy(rb_fallback_notify),
+                                                )
+                                                should_flush_in_memory = True
+                                    else:
+                                        self._bump_effective_config_gen()
+                                        installed_copy = copy.deepcopy(optimistic_config)
+                                        self._record_effective_config_locked(
+                                            installed_copy,
+                                            uncertain=old_effective_config_uncertain,
+                                            inherit_host_guard_from_token=old_owner_token,
+                                            non_persisted_patches=cumulative_patches,
+                                        )
+                                        should_flush_in_memory = True
+                                else:
+                                    self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
+                                    if isinstance(self._effective_config, dict):
+                                        current_effective = copy.deepcopy(self._effective_config)
+                            if should_flush_in_memory:
+                                self._flush_instance_runtime_config()
+                            if superseded_by_host_rollback:
+                                payload = dict(payload)
+                                payload["success"] = False
+                                payload["persisted"] = False
+                                payload["applied_in_memory"] = False
+                                payload["config"] = {}
+                                payload["message"] = (
+                                    "Config persistence timed out and the baseline config was rolled back; "
+                                    "update was not applied in plugin memory"
+                                )
+                            elif self._current_effective_config_gen() != write_gen and not should_flush_in_memory:
+                                payload = dict(payload)
+                                payload["success"] = False
+                                payload["persisted"] = False
+                                payload["applied_in_memory"] = False
+                                payload["config"] = current_effective
+                                payload["message"] = (
+                                    "Config persistence timed out and a newer config snapshot superseded the draft; "
+                                    "update was not applied in plugin memory"
+                                )
+                            else:
+                                payload = dict(payload)
+                                payload["config"] = copy.deepcopy(applied_config)
+                        else:
+                            with self._get_config_state_lock():
+                                if self._current_effective_config_gen() == write_gen:
+                                    self._bump_effective_config_gen()
+                                    self._record_effective_config_locked(
+                                        None,
+                                        uncertain=old_effective_config_uncertain,
+                                    )
+                                else:
+                                    self._settle_rejected_overtaken_write_locked(write_gen=write_gen)
+                            payload = dict(payload)
+                            payload["success"] = False
+                            payload["persisted"] = False
+                            payload["applied_in_memory"] = False
+                            payload["config"] = {}
+                            payload["message"] = (
+                                "Config persistence timed out and no baseline config was available; "
+                                "update was not applied in plugin memory"
+                            )
+                    else:
+                        self._commit_optimistic_write_result_if_current(
+                            write_gen=write_gen,
+                            config_obj=config_obj,
+                            uncertain=False,
+                        )
+                return payload
+            except TimeoutError:
+                rebased_applied, rebased_config = self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                    base_host_owner_token=in_flight_root_token,
+                    non_persisted_patches=cumulative_patches,
+                )
+                return {
+                    "success": False,
+                    "plugin_id": self.plugin_id,
+                    "config": (
+                        (copy.deepcopy(rebased_config) if isinstance(rebased_config, dict) else {})
+                        if rebased_applied
+                        else (copy.deepcopy(optimistic_config) if has_known_baseline else {})
+                    ),
+                    "requires_reload": False,
+                    "persisted": None,
+                    "message": "Config persistence response timed out; final persistence status is unknown",
+                }
+            except asyncio.CancelledError:
+                # The request may already have crossed the atomic commit point.
+                # Keep the optimistic view instead of restoring a known-stale one.
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                    base_host_owner_token=in_flight_root_token,
+                    non_persisted_patches=cumulative_patches,
+                )
+                raise
+            except Exception:
+                self._rollback_optimistic_write_if_current(
+                    write_gen=write_gen,
+                    old_effective_config=old_effective_config,
+                    old_effective_config_uncertain=old_effective_config_uncertain,
+                    old_owner_token=old_owner_token,
+                    base_host_owner_token=in_flight_root_token,
+                    base_non_persisted_patches=in_flight_base_patches,
+                )
+                raise
+            finally:
+                with self._get_config_state_lock():
+                    self._config_write_in_progress = False
+                    self._in_flight_write_base_owner_token = None
+                    self._in_flight_write_baseline = None
+                    self._settled_overtaken_host_rollback = None
+                    self._rejected_host_rollback = None
+        finally:
+            write_lock.release()
 
     async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
-        old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
-        old_effective_config_uncertain = getattr(
-            self,
-            "_effective_config_uncertain",
-            False,
-        )
-        optimistic_config = copy.deepcopy(config)
-        self._set_effective_config_cache(optimistic_config)
-        request_timeout = float(timeout)
+        config_copy = copy.deepcopy(config)
+        request_timeout = self._normalize_config_timeout(timeout)
         request_deadline = time.monotonic() + request_timeout
+        write_lock = self._get_config_write_lock()
         try:
-            payload = await self._send_request_and_wait_async(
-                method_name="replace_own_config",
-                request_type="PLUGIN_CONFIG_REPLACE",
-                request_data={
-                    "plugin_id": self.plugin_id,
-                    "config": config,
-                    "_request_deadline_monotonic": request_deadline,
-                },
-                timeout=request_timeout,
-                wrap_result=True,
-            )
-            config_obj = payload.get("config") if isinstance(payload, dict) else None
-            if isinstance(config_obj, dict):
-                self._set_effective_config_cache(config_obj)
-            return payload
-        except TimeoutError:
-            # No response does not prove that the atomic replace lost its
-            # deadline race.  Keep the requested view; the next successful
-            # config read will replace it with the persisted effective config.
-            self._effective_config_uncertain = True
-            raise
-        except asyncio.CancelledError:
-            self._effective_config_uncertain = True
-            raise
-        except Exception:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
+            await write_lock.acquire(deadline=request_deadline)
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin config replace timed out after {timeout}s") from e
+        try:
+            remaining_timeout = request_deadline - time.monotonic()
+            if remaining_timeout <= 0.0:
+                raise TimeoutError(f"Plugin config replace timed out after {timeout}s")
+            should_flush_optimistic = False
+            with self._get_config_state_lock():
+                old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+                old_effective_config_uncertain = bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                )
+                old_owner_token = int(getattr(self, "_effective_config_owner_token", 0) or 0)
+                old_lineage = self._get_non_persisted_lineage_locked(old_owner_token)
+                in_flight_root_token, in_flight_base_patches = (
+                    old_lineage if old_lineage is not None else (old_owner_token, [])
+                )
+                has_known_baseline = isinstance(old_effective_config, dict)
+                optimistic_config = copy.deepcopy(config_copy)
+                write_gen = self._bump_effective_config_gen()
+                self._in_flight_write_base_owner_token = in_flight_root_token
+                if has_known_baseline:
+                    optimistic_to_install = copy.deepcopy(optimistic_config)
+                    self._record_effective_config_locked(optimistic_to_install, uncertain=False)
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        write_gen,
+                        True,
+                        old_effective_config,
+                        old_effective_config_uncertain,
+                    )
+                    should_flush_optimistic = True
+                else:
+                    self._in_flight_write_baseline = (
+                        int(getattr(self, "_effective_config_publish_seq", 0) or 0),
+                        write_gen,
+                        False,
+                        None,
+                        old_effective_config_uncertain,
+                    )
+                    self._settled_overtaken_host_rollback = None
+                    self._rejected_host_rollback = None
+                    self._allocate_owner_token_locked()
+                self._config_write_in_progress = True
+            if should_flush_optimistic:
+                self._flush_instance_runtime_config()
+            try:
+                payload = await self._send_request_and_wait_async(
+                    method_name="replace_own_config",
+                    request_type="PLUGIN_CONFIG_REPLACE",
+                    request_data={
+                        "plugin_id": self.plugin_id,
+                        "config": copy.deepcopy(config_copy),
+                        "_request_deadline_monotonic": request_deadline,
+                    },
+                    timeout=remaining_timeout,
+                    wrap_result=True,
+                )
+                config_obj = payload.get("config") if isinstance(payload, dict) else None
+                if isinstance(config_obj, dict):
+                    self._commit_optimistic_write_result_if_current(
+                        write_gen=write_gen,
+                        config_obj=config_obj,
+                        uncertain=False,
+                    )
+                return payload
+            except TimeoutError:
+                # No response does not prove that the atomic replace lost its
+                # deadline race.  Keep the requested view; the next successful
+                # config read will replace it with the persisted effective config.
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
+                raise
+            except asyncio.CancelledError:
+                self._mark_optimistic_write_uncertain(
+                    write_gen=write_gen,
+                    old_owner_token=old_owner_token,
+                    has_known_baseline=has_known_baseline,
+                )
+                raise
+            except Exception:
+                self._rollback_optimistic_write_if_current(
+                    write_gen=write_gen,
+                    old_effective_config=old_effective_config,
+                    old_effective_config_uncertain=old_effective_config_uncertain,
+                    old_owner_token=old_owner_token,
+                    base_host_owner_token=in_flight_root_token,
+                    base_non_persisted_patches=in_flight_base_patches,
+                )
+                raise
+            finally:
+                with self._get_config_state_lock():
+                    self._config_write_in_progress = False
+                    self._in_flight_write_base_owner_token = None
+                    self._in_flight_write_baseline = None
+                    self._settled_overtaken_host_rollback = None
+                    self._rejected_host_rollback = None
+        finally:
+            write_lock.release()
+
+    async def _refresh_effective_config_after_profile_change(
+        self,
+        *,
+        timeout: float,
+        refresh_gen: int | None = None,
+        refresh_epoch: int | None = None,
+    ) -> None:
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        if refresh_gen is None or refresh_epoch is None:
+            refresh_gen, refresh_epoch = self._invalidate_effective_config_for_profile_refresh()
+        while True:
+            with self._get_config_state_lock():
+                if int(getattr(self, "_profile_refresh_epoch", 0) or 0) != refresh_epoch:
+                    return
+                if isinstance(self._effective_config, dict):
+                    return
+                write_in_progress = bool(getattr(self, "_config_write_in_progress", False))
+                if not write_in_progress and bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                ):
+                    return
+                attempt_gen = self._current_effective_config_gen()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            if write_in_progress:
+                write_lock = self._get_config_write_lock()
+                try:
+                    await write_lock.acquire(deadline=deadline)
+                except TimeoutError:
+                    return
+                write_lock.release()
+                continue
+            try:
+                await self.get_own_config(timeout=remaining)
+            except Exception:
+                with self._get_config_state_lock():
+                    if (
+                        self._current_effective_config_gen() == attempt_gen
+                        and self._effective_config is None
+                        and not bool(getattr(self, "_config_write_in_progress", False))
+                    ):
+                        self._record_effective_config_locked(None, uncertain=False)
+                        return
+                    if int(getattr(self, "_profile_refresh_epoch", 0) or 0) != refresh_epoch:
+                        return
+                    if isinstance(self._effective_config, dict):
+                        return
+                    if not bool(getattr(self, "_config_write_in_progress", False)) and bool(
+                        getattr(self, "_effective_config_uncertain", False)
+                    ):
+                        return
+                continue
+            with self._get_config_state_lock():
+                if int(getattr(self, "_profile_refresh_epoch", 0) or 0) != refresh_epoch:
+                    return
+                if isinstance(self._effective_config, dict):
+                    return
+                if not bool(getattr(self, "_config_write_in_progress", False)) and bool(
+                    getattr(self, "_effective_config_uncertain", False)
+                ):
+                    return
+                if (
+                    self._current_effective_config_gen() == attempt_gen
+                    and not bool(getattr(self, "_config_write_in_progress", False))
+                ):
+                    return
+
+    async def upsert_own_profile_config(
+        self,
+        profile_name: str,
+        config: Dict[str, Any],
+        *,
+        make_active: bool = False,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dict")
+        normalized_name = profile_name.strip()
+        request_timeout = self._normalize_config_timeout(timeout)
+        request_deadline = time.monotonic() + request_timeout
+        write_lock = self._get_config_write_lock()
+        try:
+            await write_lock.acquire(deadline=request_deadline)
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin profile config upsert timed out after {timeout}s") from e
+        refresh_info: tuple[int, int] | None = None
+        try:
+            remaining_timeout = request_deadline - time.monotonic()
+            if remaining_timeout <= 0.0:
+                raise TimeoutError(f"Plugin profile config upsert timed out after {timeout}s")
+            try:
+                payload = await self._send_request_and_wait_async(
+                    method_name="upsert_own_profile_config",
+                    request_type="PLUGIN_CONFIG_PROFILE_UPSERT",
+                    request_data={
+                        "plugin_id": self.plugin_id,
+                        "profile_name": normalized_name,
+                        "config": config,
+                        "make_active": bool(make_active),
+                        "_request_deadline_monotonic": request_deadline,
+                    },
+                    timeout=remaining_timeout,
+                    wrap_result=True,
+                )
+            except TimeoutError as e:
+                self._mark_profile_write_uncertain()
+                raise TimeoutError(f"Plugin profile config upsert timed out after {timeout}s") from e
+            except asyncio.CancelledError:
+                self._mark_profile_write_uncertain()
+                raise
+            if isinstance(payload, dict) and isinstance(payload.get("affected_active"), bool):
+                affected_active = payload["affected_active"]
+            elif isinstance(payload, dict) and isinstance(payload.get("active_profile"), str):
+                affected_active = bool(make_active) or payload["active_profile"] == normalized_name
             else:
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
-            self._effective_config_uncertain = old_effective_config_uncertain
-            raise
+                affected_active = bool(make_active)
+            if affected_active:
+                refresh_info = self._invalidate_effective_config_for_profile_refresh()
+        finally:
+            write_lock.release()
+        if refresh_info is not None:
+            refresh_gen, refresh_epoch = refresh_info
+            refresh_timeout = request_deadline - time.monotonic()
+            if refresh_timeout > 0.0:
+                await self._refresh_effective_config_after_profile_change(
+                    timeout=refresh_timeout,
+                    refresh_gen=refresh_gen,
+                    refresh_epoch=refresh_epoch,
+                )
+        return payload
+
+    async def delete_own_profile_config(
+        self,
+        profile_name: str,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        normalized_name = profile_name.strip()
+        request_timeout = self._normalize_config_timeout(timeout)
+        request_deadline = time.monotonic() + request_timeout
+        write_lock = self._get_config_write_lock()
+        try:
+            await write_lock.acquire(deadline=request_deadline)
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin profile config delete timed out after {timeout}s") from e
+        refresh_info: tuple[int, int] | None = None
+        try:
+            remaining_timeout = request_deadline - time.monotonic()
+            if remaining_timeout <= 0.0:
+                raise TimeoutError(f"Plugin profile config delete timed out after {timeout}s")
+            try:
+                payload = await self._send_request_and_wait_async(
+                    method_name="delete_own_profile_config",
+                    request_type="PLUGIN_CONFIG_PROFILE_DELETE",
+                    request_data={
+                        "plugin_id": self.plugin_id,
+                        "profile_name": normalized_name,
+                        "_request_deadline_monotonic": request_deadline,
+                    },
+                    timeout=remaining_timeout,
+                    wrap_result=True,
+                )
+            except TimeoutError as e:
+                self._mark_profile_write_uncertain()
+                raise TimeoutError(f"Plugin profile config delete timed out after {timeout}s") from e
+            except asyncio.CancelledError:
+                self._mark_profile_write_uncertain()
+                raise
+            affected_active = (
+                payload.get("affected_active")
+                if isinstance(payload, dict) and isinstance(payload.get("affected_active"), bool)
+                else False
+            )
+            if affected_active:
+                refresh_info = self._invalidate_effective_config_for_profile_refresh()
+        finally:
+            write_lock.release()
+        if refresh_info is not None:
+            refresh_gen, refresh_epoch = refresh_info
+            refresh_timeout = request_deadline - time.monotonic()
+            if refresh_timeout > 0.0:
+                await self._refresh_effective_config_after_profile_change(
+                    timeout=refresh_timeout,
+                    refresh_gen=refresh_gen,
+                    refresh_epoch=refresh_epoch,
+                )
+        return payload
+
+    async def set_own_active_profile(
+        self,
+        profile_name: str,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        normalized_name = profile_name.strip()
+        request_timeout = self._normalize_config_timeout(timeout)
+        request_deadline = time.monotonic() + request_timeout
+        write_lock = self._get_config_write_lock()
+        try:
+            await write_lock.acquire(deadline=request_deadline)
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin active profile update timed out after {timeout}s") from e
+        refresh_info: tuple[int, int] | None = None
+        try:
+            remaining_timeout = request_deadline - time.monotonic()
+            if remaining_timeout <= 0.0:
+                raise TimeoutError(f"Plugin active profile update timed out after {timeout}s")
+            try:
+                payload = await self._send_request_and_wait_async(
+                    method_name="set_own_active_profile",
+                    request_type="PLUGIN_CONFIG_PROFILE_ACTIVATE",
+                    request_data={
+                        "plugin_id": self.plugin_id,
+                        "profile_name": normalized_name,
+                        "_request_deadline_monotonic": request_deadline,
+                    },
+                    timeout=remaining_timeout,
+                    wrap_result=True,
+                )
+            except TimeoutError as e:
+                self._mark_profile_write_uncertain()
+                raise TimeoutError(f"Plugin active profile update timed out after {timeout}s") from e
+            except asyncio.CancelledError:
+                self._mark_profile_write_uncertain()
+                raise
+            refresh_info = self._invalidate_effective_config_for_profile_refresh()
+        finally:
+            write_lock.release()
+        if refresh_info is not None:
+            refresh_gen, refresh_epoch = refresh_info
+            refresh_timeout = request_deadline - time.monotonic()
+            if refresh_timeout > 0.0:
+                await self._refresh_effective_config_after_profile_change(
+                    timeout=refresh_timeout,
+                    refresh_gen=refresh_gen,
+                    refresh_epoch=refresh_epoch,
+                )
+        return payload

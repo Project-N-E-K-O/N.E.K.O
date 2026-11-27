@@ -849,7 +849,9 @@ async function _companionRunGenerate(state) {
         // 不静默地往 form 写字段并 autoSave，关闭即取消。
         if (state.closed) return;
         typing.remove();
-        const fields = resp.fields || {};
+        const fields = Object.fromEntries(
+            Object.entries(resp.fields || {}).filter(([key]) => !_cardAssistIsReservedKey(key))
+        );
         const fieldKeys = Object.keys(fields);
         if (!fieldKeys.length) {
             _companionAppendAssistant(state,
@@ -1504,7 +1506,7 @@ function _companionAppendError(state, err) {
     let msg = (err && err.message) || String(err || '');
     if (err && err.code === 'assist_api_not_configured') {
         msg = _cardAssistT('character.aiAssistApiMissing',
-            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
+            '通用模型供应商尚未配置。请在「API Key 设置」里完成配置后再试。');
     }
     const bubble = document.createElement('div');
     bubble.className = 'card-companion-bubble-system card-companion-error';

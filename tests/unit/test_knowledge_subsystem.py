@@ -315,8 +315,27 @@ async def test_cancelled_queued_job_leaves_nothing_behind(tmp_path):
         assert service.list_jobs()[0]["state"] == "cancelled"
         assert load_registry(tmp_path).packs == {}
         assert not any((tmp_path / ".staging").iterdir())
-        assert service.discard_job(result["job_id"]) is True
+        assert await service.discard_job(result["job_id"]) is True
         assert service.list_jobs() == []
+    finally:
+        await service.stop()
+
+
+async def test_cancel_succeeds_when_its_record_write_fails(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # hold the writer so the job stays queued
+            result = await service.import_pack(_raw(_pack()))
+
+            async def refuse(_job):
+                raise OSError("synthetic record write failure")
+
+            persist = service._persist_job
+            monkeypatch.setattr(service, "_persist_job", refuse)
+            assert await service.cancel_job(result["job_id"]) is True
+            monkeypatch.setattr(service, "_persist_job", persist)
+        assert (await _wait_for_last_job(service))[0] == "cancelled"
+        assert load_registry(tmp_path).packs == {}
     finally:
         await service.stop()
 
@@ -886,10 +905,12 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
             request.cancel()
             (outcome,) = await asyncio.gather(request, return_exceptions=True)
             assert isinstance(outcome, asyncio.CancelledError)
-            for _ in range(100):
-                if service.list_jobs():
-                    break
-                await asyncio.sleep(0.01)
+            # A visible job precedes its first durable flush. Await the real
+            # admission owner rather than racing Windows filesystem latency.
+            owners = tuple(service._detached)
+            assert owners
+            _done, pending = await asyncio.wait(owners, timeout=5)
+            assert not pending
             # The staged file is owned by a job, and the reservation is gone.
             # The runner may already have picked the job up ("building"), but
             # it cannot commit while this test holds the write lock.
@@ -905,24 +926,34 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
 
 
 async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp_path):
+    import threading
+
     service = await _started(tmp_path, FakeEmbedder())
+    entered, release = threading.Event(), threading.Event()
     try:
+        # An unavailable/empty snapshot is deliberately retryable. Exercise
+        # generation catch-up against actual stored vectors instead.
+        service._tasks[1].cancel()
+        await asyncio.gather(service._tasks[1], return_exceptions=True)
+        await _import(service, _pack())
+        await service._index_round()
         loads = []
         real_load = service._store.load_vectors
 
         def slow_load(model_id):
-            import time
-
             loads.append(model_id)
-            time.sleep(0.1)
+            if len(loads) == 1:
+                entered.set()
+                assert release.wait(5)
             return real_load(model_id)
 
         service._store.load_vectors = slow_load
         service._vector_generation += 1
         service._schedule_vector_refresh()
-        await asyncio.sleep(0.02)
+        assert await asyncio.to_thread(entered.wait, 2)
         service._vector_generation += 1  # changes while the first rebuild runs
         service._schedule_vector_refresh()  # skipped: one is in flight
+        release.set()
         for _ in range(100):
             if service._vectors_built_for == (service._vector_generation, "fake-16"):
                 break
@@ -930,6 +961,7 @@ async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp
         assert service._vectors_built_for == (service._vector_generation, "fake-16")
         assert len(loads) >= 2
     finally:
+        release.set()
         await service.stop()
 
 
@@ -1925,15 +1957,25 @@ async def test_no_unchanged_answer_when_a_removal_starts_during_the_file_check(t
         await service.stop()
 
 
-async def test_undeleted_old_pack_files_count_toward_byte_capacity(tmp_path, monkeypatch):
+async def test_unregistered_pack_files_are_kept_but_do_not_count_toward_byte_capacity(tmp_path, monkeypatch):
     service = await _started(tmp_path)
     try:
         one = _raw(_pack("pack-one"))
         monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
-        # An old version whose deletion failed is still on disk.
-        (tmp_path / "packs" / "pack-old.0000000000000000.json").write_bytes(b"x" * len(one))
+        # An old revision whose move failed, and an interrupted atomic write,
+        # are retained across restarts without consuming the active budget.
+        leftovers = [tmp_path / "packs" / "pack-old.0000000000000000.json", tmp_path / "packs" / "pack-old.json.tmp"]
+        for path in leftovers:
+            path.write_bytes(b"x" * len(one))
+        await service.stop()
+        service = await _started(tmp_path)
         result = await service.import_pack(one)
-        assert result == {"ok": False, "reason": "capacity_bytes"}
+        assert result["ok"] is True
+        assert (await _wait_for_last_job(service))[0] == "active"
+        assert all(path.read_bytes() == b"x" * len(one) for path in leftovers)
+        # Registered current revisions still count.
+        second = await service.import_pack(_raw(_pack("pack-two")))
+        assert second == {"ok": False, "reason": "capacity_bytes"}
     finally:
         await service.stop()
 
@@ -2322,14 +2364,17 @@ async def test_sampling_skips_entries_the_snapshot_disables(tmp_path):
         await service.stop()
 
 
-async def test_leftover_write_temporaries_count_toward_byte_capacity(tmp_path, monkeypatch):
+async def test_leftover_write_temporaries_do_not_count_toward_byte_capacity(tmp_path, monkeypatch):
+    # Interrupted atomic writes are swept by later writes to the same
+    # directory; until then they are not current revisions.
     service = await _started(tmp_path)
     try:
         one = _raw(_pack("pack-one"))
         monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
         (tmp_path / "packs" / ".neko-deadbeef.tmp").write_bytes(b"x" * len(one))
         result = await service.import_pack(one)
-        assert result == {"ok": False, "reason": "capacity_bytes"}
+        assert result["ok"] is True
+        assert (await _wait_for_last_job(service))[0] == "active"
     finally:
         await service.stop()
 
@@ -3204,3 +3249,105 @@ async def test_sampling_skips_a_pack_replaced_after_the_version_check(tmp_path, 
         assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
     finally:
         await service.stop()
+
+
+async def test_reconcile_persists_updated_counts_after_chunking_change(tmp_path, monkeypatch):
+    """F0137: startup reconcile updates PackRecord counts on disk so subsequent startups do not rebuild."""
+    from dataclasses import replace as dc_replace
+
+    from knowledge.registry import save_registry
+
+    long_content = " ".join(f"segment-{i}" for i in range(400))
+    pack = _pack(
+        "chunk-pack",
+        entries=[
+            {
+                "title": "Long Entry",
+                "terms": {"alias": ["long"]},
+                "tags": ["domain:test"],
+                "summary": "Long summary",
+                "content": long_content,
+            }
+        ],
+    )
+    service = await _started(tmp_path)
+    try:
+        await _import(service, pack)
+    finally:
+        await service.stop()
+
+    # Simulate stale counts in registry.json (as when chunking parameters change).
+    stale_reg = load_registry(tmp_path)
+    orig_record = stale_reg.packs["chunk-pack"]
+    stale_reg = stale_reg.with_pack(
+        dc_replace(orig_record, entries=orig_record.entries + 1, chunks=orig_record.chunks + 1)
+    )
+    save_registry(tmp_path, stale_reg)
+
+    rebuilds: list[str] = []
+    real_replace = service_module.KnowledgeStore.replace_pack
+
+    def spy_replace(self_store, p, **kwargs):
+        rebuilds.append(p.pack_id)
+        return real_replace(self_store, p, **kwargs)
+
+    monkeypatch.setattr(service_module.KnowledgeStore, "replace_pack", spy_replace)
+
+    # First restart: reconciles once and persists healed counts.
+    service2 = await _started(tmp_path)
+    try:
+        assert rebuilds == ["chunk-pack"]
+        assert service2._registry.packs["chunk-pack"].entries == orig_record.entries
+        assert service2._registry.packs["chunk-pack"].chunks == orig_record.chunks
+    finally:
+        await service2.stop()
+
+    persisted = load_registry(tmp_path)
+    assert persisted.packs["chunk-pack"].entries == orig_record.entries
+    assert persisted.packs["chunk-pack"].chunks == orig_record.chunks
+    assert persisted.packs["chunk-pack"].updated_at == orig_record.updated_at
+
+    # Second restart: zero rebuilds.
+    rebuilds.clear()
+    service3 = await _started(tmp_path)
+    try:
+        assert rebuilds == []
+    finally:
+        await service3.stop()
+
+
+async def test_reconcile_registry_save_failure_warns_without_wiping_db(tmp_path, monkeypatch):
+    """F0137: OSError while persisting reconciled registry must not trigger DB wipe retry."""
+    from dataclasses import replace as dc_replace
+
+    from knowledge.registry import save_registry
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("warn-pack"))
+    finally:
+        await service.stop()
+
+    stale_reg = load_registry(tmp_path)
+    orig = stale_reg.packs["warn-pack"]
+    save_registry(tmp_path, stale_reg.with_pack(dc_replace(orig, chunks=orig.chunks + 2)))
+
+    def fail_save(_root, _reg):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service_module, "save_registry", fail_save)
+    remove_calls: list[str] = []
+    monkeypatch.setattr(
+        service_module.KnowledgeStore,
+        "remove_files",
+        lambda self_store: remove_calls.append("removed"),
+    )
+
+    service2 = await _started(tmp_path)
+    try:
+        assert remove_calls == []
+        status = await service2.status()
+        assert status["state"] == "ready"
+        assert service2._registry.packs["warn-pack"].chunks == orig.chunks
+    finally:
+        await service2.stop()

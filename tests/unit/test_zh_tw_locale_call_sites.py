@@ -1,5 +1,5 @@
 """Traditional Chinese must survive the trip from the global locale to the
-prompt table (issue #2500, step 2 — scattered call sites + plugins).
+prompt table (issue #2500, step 2 — scattered call sites).
 
 Every test here sets the process locale to Traditional Chinese with the real
 ``language_context`` and then asserts on the *rendered* prompt, not on a
@@ -19,11 +19,9 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-from config.prompts.prompts_sys import SESSION_INIT_PROMPT
 from utils.language_utils import language_context
 
 
@@ -135,127 +133,3 @@ def test_activity_guess_traditional_locale_selects_traditional_template():
     assert simplified == ACTIVITY_GUESS_PROMPTS["zh"]
     assert traditional != simplified
     assert traditional != ACTIVITY_GUESS_PROMPTS["en"]
-
-
-# ---------------------------------------------------------------------------
-# plugin/plugins/game_agent_minecraft — user_lang() + PROMPTS tables
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("ui_locale", "expected"),
-    [("zh-TW", "zh-TW"), ("zh-CN", "zh"), ("zh", "zh"), ("ja", "ja"), ("en", "en")],
-)
-def test_minecraft_user_lang_resolves_to_table_key(ui_locale, expected):
-    """``user_lang`` must land on a key of this module's own tables.
-
-    Traditional keeps its own key; Simplified collapses to ``zh`` rather
-    than leaking ``zh-CN`` — which is not a key here, so the
-    ``in SUPPORTED_LANGS`` guard would have bounced every Simplified user
-    to English.
-    """
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    with language_context(ui_locale):
-        assert prompts.user_lang() == expected
-    assert expected in prompts.SUPPORTED_LANGS
-
-
-def test_minecraft_prompts_render_traditional_not_simplified_or_english():
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    with language_context("zh-TW"):
-        cue = prompts.t("TASK_NOT_CONNECTED", lang=prompts.user_lang())
-    assert cue == prompts.PROMPTS["TASK_NOT_CONNECTED"]["zh-TW"]
-    assert cue != prompts.PROMPTS["TASK_NOT_CONNECTED"]["zh"]
-    assert cue != prompts.PROMPTS["TASK_NOT_CONNECTED"]["en"]
-
-
-def test_minecraft_t_degrades_chinese_variants_to_simplified_not_english():
-    """A future table that forgets ``zh-TW`` must fall back to Simplified.
-
-    English mid-conversation is a language switch; Simplified is merely the
-    wrong script. Same rule as ``prompts_sys._loc``.
-    """
-    from plugin.plugins.game_agent_minecraft import prompts
-
-    incomplete = {"zh": "简体", "en": "English"}
-    original = prompts.PROMPTS.get("__TEST_ONLY__")
-    prompts.PROMPTS["__TEST_ONLY__"] = incomplete
-    try:
-        assert prompts.t("__TEST_ONLY__", lang="zh-TW") == "简体"
-        assert prompts.t("__TEST_ONLY__", lang="ko") == "English"
-    finally:
-        if original is None:
-            prompts.PROMPTS.pop("__TEST_ONLY__", None)
-        else:  # pragma: no cover - defensive
-            prompts.PROMPTS["__TEST_ONLY__"] = original
-
-
-# ---------------------------------------------------------------------------
-# Chat-platform plugins — SESSION_INIT_PROMPT lookups
-# ---------------------------------------------------------------------------
-
-
-def _assert_traditional_session_init(text: str, her_name: str) -> None:
-    assert SESSION_INIT_PROMPT["zh-TW"].format(name=her_name) in text
-    assert SESSION_INIT_PROMPT["zh"].format(name=her_name) not in text
-    assert SESSION_INIT_PROMPT["en"].format(name=her_name) not in text
-
-
-def _assert_simplified_session_init(text: str, her_name: str) -> None:
-    assert SESSION_INIT_PROMPT["zh"].format(name=her_name) in text
-    assert SESSION_INIT_PROMPT["zh-TW"].format(name=her_name) not in text
-    assert SESSION_INIT_PROMPT["en"].format(name=her_name) not in text
-
-
-@pytest.mark.parametrize(
-    ("ui_locale", "check"),
-    [("zh-TW", _assert_traditional_session_init),
-     ("zh-CN", _assert_simplified_session_init)],
-)
-def test_wechat_reply_system_prompt_locale(monkeypatch, ui_locale, check):
-    import utils.config_manager as config_manager_mod
-    import utils.llm_client as llm_client_mod
-    from plugin.plugins.wechat_integration import WechatIntegrationPlugin
-
-    monkeypatch.setattr(
-        config_manager_mod,
-        "get_config_manager",
-        lambda: SimpleNamespace(
-            get_character_data=lambda: (
-                "小明", "喵喵", None, {"喵喵": {}}, None,
-                {"喵喵": "角色设定"}, None, None, None,
-            ),
-            get_model_api_config=lambda kind: {
-                "base_url": "http://localhost", "model": "m", "api_key": "k",
-            },
-        ),
-    )
-
-    captured: dict = {}
-
-    class _StubLLM:
-        async def ainvoke(self, messages):
-            captured["system"] = messages[0]["content"]
-            return SimpleNamespace(content="好的")
-
-    async def _create(**kwargs):
-        return _StubLLM()
-
-    monkeypatch.setattr(llm_client_mod, "create_chat_llm_async", _create)
-
-    facade = object.__new__(WechatIntegrationPlugin)
-    facade.logger = MagicMock()
-    facade._wechat_sessions = {}
-    facade._cleanup_wechat_sessions = lambda now: None
-
-    async def _fetch_memory(_her_name):
-        return ""
-
-    facade._fetch_memory_context = _fetch_memory
-
-    with language_context(ui_locale):
-        asyncio.run(facade._generate_wechat_reply("wxid_1", "在吗"))
-
-    check(captured["system"], "喵喵")

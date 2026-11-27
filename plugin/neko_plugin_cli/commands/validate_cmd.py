@@ -8,26 +8,142 @@ import math
 import os
 import re
 import stat
+from collections.abc import Collection
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from pydantic import TypeAdapter, ValidationError
+
+from plugin._types.entry_metadata import (
+    ENTRY_CONTRACT_BOOL_FIELDS,
+    ENTRY_CONTRACT_FIELDS,
+    ENTRY_CONTRACT_MAPPING_FIELDS,
+)
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
     format_removed_plugin_host,
 )
+from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
+from plugin.core.capability_analysis import (
+    analyze_capabilities,
+    read_capability_sources,
+    compare_declarations,
+    summarize_permissions,
+)
+from plugin.core.entry_points import plugin_package_matches_directory
+from plugin.core.permission_declarations import (
+    PermissionDeclarations,
+    PermissionIssue,
+    declared_permission_ids,
+    narrowing_issues,
+    parse_permission_declarations,
+)
+from plugin.core.ui_manifest import PERMISSIONS as UI_PERMISSIONS
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
     LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
     LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
     format_push_message_v1_static_diagnostic,
 )
+from plugin.sdk.shared.models.exceptions import InvalidArgumentError
+from plugin.sdk.shared.storage.database import PluginDatabase
+from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
-from ..core.build_rules import reraise_walk_error
+from ..core.build_rules import BuildRuleSet, load_build_rules, reraise_walk_error, should_skip_path
+from ..core.fs_links import is_link
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
+from . import _permission_messages as permission_messages
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
+_PLUGIN_ENTRIES_MAX = 1024
+_PLUGIN_ENTRY_FIELDS_MAX = 64
+_PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
+# Fields the registry coerces with bool(), so "false" would read as True.
+_PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
+# Locales for new check messages: English first as the main line, the rest below it.
+_MESSAGE_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+_STORE_BACKEND_IGNORED = {
+    "en": "[plugin.store].backend is not read by the runtime and has no effect",
+    "zh-CN": "[plugin.store].backend 不会被运行时读取，写了没有效果",
+    "zh-TW": "[plugin.store].backend 不會被執行環境讀取，寫了沒有效果",
+    "ja": "[plugin.store].backend はランタイムで読み取られないため、効果はありません",
+    "ko": "[plugin.store].backend는 런타임에서 읽지 않으므로 효과가 없습니다",
+    "ru": "[plugin.store].backend не читается средой выполнения и ни на что не влияет",
+    "es": "[plugin.store].backend no lo lee el entorno de ejecución y no tiene ningún efecto",
+    "pt": "[plugin.store].backend não é lido pelo ambiente de execução e não tem efeito",
+}
+
+
+_DATABASE_NAME_INVALID = {
+    "en": "[plugin.database].name must be a plain file name that also works on Windows: "
+    "no folders, drive letters, \"..\", characters <>:\"/\\|?*, a trailing dot or space, or reserved names such as CON or NUL",
+    "zh-CN": "[plugin.database].name 必须是在 Windows 上也能用的单纯文件名：不能带目录、盘符、\"..\"、"
+    "字符 <>:\"/\\|?*，不能以点或空格结尾，也不能用 CON、NUL 这类保留名",
+    "zh-TW": "[plugin.database].name 必須是在 Windows 上也能用的單純檔案名稱：不能帶目錄、磁碟代號、\"..\"、"
+    "字元 <>:\"/\\|?*，不能以點或空格結尾，也不能用 CON、NUL 這類保留名稱",
+    "ja": "[plugin.database].name は Windows でも使える単純なファイル名にしてください。フォルダー、ドライブ文字、"
+    "\"..\"、文字 <>:\"/\\|?*、末尾のドットや空白、CON や NUL などの予約名は使えません",
+    "ko": "[plugin.database].name은 Windows에서도 쓸 수 있는 파일 이름만 써야 합니다. 폴더, 드라이브 문자, "
+    "\"..\", 문자 <>:\"/\\|?*, 끝의 마침표나 공백, CON·NUL 같은 예약 이름은 쓸 수 없습니다",
+    "ru": "[plugin.database].name должно быть простым именем файла, допустимым и в Windows: без папок, букв дисков, "
+    "\"..\", символов <>:\"/\\|?*, точки или пробела в конце и зарезервированных имён вроде CON или NUL",
+    "es": "[plugin.database].name debe ser un nombre de archivo simple que también sirva en Windows: sin carpetas, "
+    "letras de unidad, \"..\", caracteres <>:\"/\\|?*, punto o espacio final ni nombres reservados como CON o NUL",
+    "pt": "[plugin.database].name deve ser um nome de arquivo simples que também funcione no Windows: sem pastas, "
+    "letras de unidade, \"..\", caracteres <>:\"/\\|?*, ponto ou espaço no final nem nomes reservados como CON ou NUL",
+}
+# Windows refuses these in any file name, and these device names with any extension.
+_WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*') | {chr(code) for code in range(32)}
+_WINDOWS_RESERVED_FILENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{device}{digit}" for device in ("COM", "LPT") for digit in "123456789\u00b9\u00b2\u00b3"}
+)
+# Hint added under the persist_mode error for the old spellings; {new} / {old} are filled in.
+_PERSIST_MODE_MIGRATION_HINT = {
+    "en": 'use "{new}" instead of "{old}"',
+    "zh-CN": '请把 "{old}" 改成 "{new}"',
+    "zh-TW": '請把 "{old}" 改成 "{new}"',
+    "ja": '"{old}" の代わりに "{new}" を使ってください',
+    "ko": '"{old}" 대신 "{new}"를 사용하세요',
+    "ru": 'используйте "{new}" вместо "{old}"',
+    "es": 'usa "{new}" en lugar de "{old}"',
+    "pt": 'use "{new}" em vez de "{old}"',
+}
+
+
+# [plugin.models.*] entries the server's model schema rejects; {label} is the
+# plugin.toml path and {detail} the schema's own (English) reason.
+_MODELS_REJECTED = {
+    "en": "{label} is rejected by the plugin model schema: {detail}",
+    "zh-CN": "{label} 不符合插件模型声明的格式，服务端会拒绝：{detail}",
+    "zh-TW": "{label} 不符合外掛模型宣告的格式，伺服器端會拒絕：{detail}",
+    "ja": "{label} はプラグインのモデル宣言の形式に合わず、サーバーに拒否されます：{detail}",
+    "ko": "{label}은(는) 플러그인 모델 선언 형식에 맞지 않아 서버에서 거부됩니다: {detail}",
+    "ru": "{label} не соответствует схеме объявления моделей плагина и будет отклонено сервером: {detail}",
+    "es": "{label} no cumple el esquema de declaración de modelos del plugin y el servidor lo rechazará: {detail}",
+    "pt": "{label} não segue o esquema de declaração de modelos do plugin e será rejeitado pelo servidor: {detail}",
+}
+_PLUGIN_MODELS_ADAPTER = TypeAdapter(dict[PluginModelUsageId, PluginModelRequirementSchema])
+
+
+def _format_multilingual(texts: dict[str, str], *, head: str | None = None) -> str:
+    """One message in all locales.
+
+    Without ``head`` the English text is the main line and the other locales follow
+    on indented lines. With ``head`` (an existing English message) that is the main
+    line and every locale, English included, follows it.
+    """
+    lines = [texts["en"] if head is None else head]
+    lines.extend(
+        f"      {locale}: {texts[locale]}" for locale in _MESSAGE_LOCALES if head is not None or locale != "en"
+    )
+    return "\n".join(lines)
+
+
+# Old persist_mode spellings check used to accept; the host never applied them.
+_PLUGIN_STATE_PERSIST_MODE_MIGRATIONS = {"always": "auto", "disabled": "off"}
 
 
 def validate_plugin_dir(
@@ -35,7 +151,10 @@ def validate_plugin_dir(
     *,
     strict: bool = False,
     require_matching_directory_name: bool = False,
+    ignored_paths: Collection[str] = (),
 ) -> list[tuple[str, str]]:
+    """``ignored_paths``: plugin-relative paths git ignores (see
+    repo_state.ignored_untracked_paths); the link scan skips them."""
     issues: list[tuple[str, str]] = []
     config_example_path = plugin_dir / "config.example.toml"
     config_example: dict[str, object] | None = None
@@ -68,7 +187,9 @@ def validate_plugin_dir(
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
-    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+    if require_matching_directory_name and not plugin_package_matches_directory(
+        source.plugin_id, plugin_dir.name
+    ):
         issues.append(
             (
                 "warning",
@@ -117,8 +238,19 @@ def validate_plugin_dir(
     _check_optional_file(plugin_dir / ".github" / "workflows" / "verify.yml", ".github/workflows/verify.yml", issues, strict=strict)
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
-    _check_python_decorators(plugin_dir, issues)
-    _check_symlink_tree(plugin_dir, issues)
+    declarations, _declaration_issues = parse_permission_declarations(source.plugin_toml)
+    _check_python_decorators(
+        plugin_dir,
+        issues,
+        declared=declared_permission_ids(source.plugin_toml),
+    )
+    _check_permission_usage(plugin_dir, declarations, issues, pyproject=source.pyproject_toml)
+    _check_symlink_tree(
+        plugin_dir,
+        issues,
+        ignored_paths=ignored_paths,
+        build_rules=_build_rules_or_defaults(source.pyproject_toml) if ignored_paths else None,
+    )
 
     return issues
 
@@ -160,6 +292,7 @@ def _check_plugin_toml_schema(
         "passive",
         "version",
         "entry",
+        "entries",
         "author",
         "i18n",
         "sdk",
@@ -169,9 +302,12 @@ def _check_plugin_toml_schema(
         "install",
         "safety",
         "config_profiles",
+        "database",
+        "models",
         "dependency",
         "dependencies",
         "previous_ids",
+        "shared",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -196,14 +332,19 @@ def _check_plugin_toml_schema(
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
+    _check_database_table(plugin_table.get("database"), issues)
+    _check_models_table(plugin_table.get("models"), issues)
+    _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
+    _check_entries(plugin_table.get("entries"), issues)
     _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
     _check_runtime_table(config.get("plugin_runtime"), issues)
     _check_plugin_state_table(config.get("plugin_state"), issues)
+    _check_permissions_table(config, issues)
 
     adapter_table = config.get("adapter")
     if adapter_table is not None:
@@ -400,10 +541,89 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", "[plugin.store] must be a table"))
         return
     _warn_unknown_keys(value, {"enabled", "backend"}, "[plugin.store]", issues)
-    _check_optional_bool(value, "enabled", "[plugin.store].enabled", issues)
-    backend = value.get("backend")
-    if backend is not None:
-        _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+    # The SDK applies bool() (resolve_store_enabled), so enabled = "false" would turn the store on.
+    _check_entry_bool(value.get("enabled"), "[plugin.store].enabled", issues, reader="the SDK")
+    if "backend" in value:
+        # Still a known key so existing plugin.toml files keep passing, but the SDK
+        # only reads [plugin.store].enabled (resolve_store_enabled); backend is never read.
+        issues.append(("warning", _format_multilingual(_STORE_BACKEND_IGNORED)))
+
+
+def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.database]``: the keys the SDK reads to open the plugin database."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.database] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "name"}, "[plugin.database]", issues)
+    # The SDK applies bool() (resolve_db_config), so enabled = "false" would turn the database on.
+    _check_entry_bool(value.get("enabled"), "[plugin.database].enabled", issues, reader="the SDK")
+    name = value.get("name")
+    if name is None:
+        return
+    if not isinstance(name, str):
+        # The SDK would str() it, but a non-string file name in TOML is almost always a typo.
+        issues.append(("error", "[plugin.database].name must be a string"))
+        return
+    try:
+        PluginDatabase._normalize_db_name(name)
+        # The SDK checks with the host's own Path; a name like "C:notes.db" or "notes?.db"
+        # passes on Linux/macOS but cannot be created on Windows, so check that too.
+        valid = not name or (
+            PureWindowsPath(name).name == name
+            and not _WINDOWS_FORBIDDEN_FILENAME_CHARS.intersection(name)
+            and name.split(".", 1)[0].strip().upper() not in _WINDOWS_RESERVED_FILENAMES
+            # Windows drops a trailing dot or space, so the file would not match the name.
+            and name[-1] not in ". "
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        issues.append(("error", _format_multilingual(_DATABASE_NAME_INVALID)))
+
+
+def _models_error_label(loc: tuple[object, ...]) -> str:
+    if not loc:
+        return "[plugin.models]"
+    usage_id = str(loc[0])
+    # Quote keys TOML would not accept bare, so "a.b" does not read as a nested table.
+    key = usage_id if re.fullmatch(r"[A-Za-z0-9_-]+", usage_id) else json.dumps(usage_id, ensure_ascii=False)
+    label = f"[plugin.models.{key}]"
+    if loc[1:] == ("[key]",):
+        return f"{label} (usage id)"
+    for part in loc[1:]:
+        label += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return label
+
+
+def _check_models_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.models.*]`` with the same schema the server reads model requirements with."""
+    if value is None:
+        return
+    try:
+        _PLUGIN_MODELS_ADAPTER.validate_python(value)
+    except ValidationError as exc:
+        for error in exc.errors(include_url=False, include_input=False):
+            label = _models_error_label(tuple(error.get("loc", ())))
+            detail = str(error.get("msg", ""))
+            texts = {locale: text.format(label=label, detail=detail) for locale, text in _MODELS_REJECTED.items()}
+            issues.append(("error", _format_multilingual(texts)))
+
+
+def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.shared]``: the plugins whose shared files this one reads."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.shared] must be a table"))
+        return
+    _warn_unknown_keys(value, {"reads"}, "[plugin.shared]", issues)
+    reads = value.get("reads")
+    if isinstance(reads, str):
+        # One id may be written without the brackets; the plugin is run with it read so.
+        reads = [reads]
+    _check_string_list(reads, "[plugin.shared].reads", issues, required=False)
 
 
 def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
@@ -633,6 +853,193 @@ def _check_dependency_tables(value: object, issues: list[tuple[str, str]]) -> No
             _check_string_list(conflicts, f"{label}.conflicts", issues, required=False)
 
 
+def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    # Bound iteration, unknown-key sorting and diagnostic size before scanning.
+    if isinstance(value, (list, dict)):
+        if len(value) > _PLUGIN_ENTRIES_MAX:
+            issues.append((
+                "error",
+                f"[plugin].entries exceeds {_PLUGIN_ENTRIES_MAX} entries / "
+                f"[plugin].entries 超过 {_PLUGIN_ENTRIES_MAX} 个条目 / "
+                f"[plugin].entries が {_PLUGIN_ENTRIES_MAX} 件を超えています",
+            ))
+            return
+        if isinstance(value, dict) and any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in value):
+            issues.append((
+                "error",
+                f"[plugin].entries keys must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                f"[plugin].entries 键名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                f"[plugin].entries のキーは {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+            ))
+            return
+        for item in value.values() if isinstance(value, dict) else value:
+            if not isinstance(item, dict):
+                continue
+            if len(item) > _PLUGIN_ENTRY_FIELDS_MAX:
+                issues.append((
+                    "error",
+                    f"[plugin].entries tables must not exceed {_PLUGIN_ENTRY_FIELDS_MAX} fields / "
+                    f"[plugin].entries 表不能超过 {_PLUGIN_ENTRY_FIELDS_MAX} 个字段 / "
+                    f"[plugin].entries のテーブルは {_PLUGIN_ENTRY_FIELDS_MAX} フィールド以内にしてください",
+                ))
+                return
+            if any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in item):
+                issues.append((
+                    "error",
+                    f"[plugin].entries field names must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                    f"[plugin].entries 字段名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                    f"[plugin].entries のフィールド名は {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+                ))
+                return
+    # id plus the display fields registry copies, union the shared contract tuple.
+    allowed = {"id", "name", "description", "input_schema"} | set(ENTRY_CONTRACT_FIELDS)
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            label = f"[plugin].entries[{index}]"
+            # The registry also takes a bare string item as the entry id.
+            if isinstance(item, str):
+                if not item.strip():
+                    issues.append((
+                        "warning",
+                        f"{label} is a blank entry id / "
+                        f"{label} 是空的入口 id / {label} のエントリ id が空です",
+                    ))
+                continue
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table or entry id string / "
+                    f"{label} 必须是表或入口 id 字符串 / "
+                    f"{label} はテーブルまたはエントリ id 文字列である必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues)
+            # The registry skips a list item whose id is missing or blank.
+            # Truthiness avoids recursively stringifying a structured TOML value.
+            entry_id = item.get("id")
+            if not entry_id or (isinstance(entry_id, str) and not entry_id.strip()):
+                issues.append((
+                    "warning",
+                    f"{label}.id is missing or blank / "
+                    f"{label}.id 缺失或为空 / {label}.id が未指定または空です",
+                ))
+        return
+    if isinstance(value, dict):
+        # The registry iterates a keyed table by key, so the declared fields
+        # never reach the entry. Flag it until the runtime normalizes it.
+        if value:
+            issues.append((
+                "warning",
+                "[plugin].entries as a keyed table is not applied at runtime; "
+                "its declared fields are ignored. Use [[plugin.entries]] with id = \"...\" instead / "
+                "[plugin].entries 的键控表形式在运行时不会生效，其声明字段会被忽略，"
+                "请改用 [[plugin.entries]] 并填写 id / "
+                "[plugin].entries のキー付きテーブル形式は実行時に反映されず、宣言したフィールドは無視されます。"
+                "[[plugin.entries]] と id を使用してください",
+            ))
+        for entry_id, item in value.items():
+            label = f"[plugin].entries.{entry_id}"
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table / {label} 必须是表 / {label} はテーブルである必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues, applied=False)
+        return
+    issues.append((
+        "error",
+        "[plugin].entries must be a table or array of tables / "
+        "[plugin].entries 必须是表或表数组 / "
+        "[plugin].entries はテーブルまたはテーブルの配列である必要があります",
+    ))
+
+
+def _check_entry_field_types(
+    item: dict[str, object],
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    applied: bool = True,
+) -> None:
+    for key in _PLUGIN_ENTRY_BOOL_FIELDS:
+        _check_entry_bool(item.get(key), f"{label}.{key}", issues)
+    _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+    for key in ENTRY_CONTRACT_MAPPING_FIELDS:
+        if key in item and not isinstance(item[key], dict):
+            # Warning, not error: these fields were never checked before.
+            if applied:
+                # The registry coerces a non-table to an empty mapping, silently.
+                message = (
+                    f"{label}.{key} must be a table; the registry replaces any other value with an empty table / "
+                    f"{label}.{key} 必须是表，其他值会被注册表替换为空表 / "
+                    f"{label}.{key} はテーブルである必要があります。それ以外の値は空のテーブルに置き換えられます"
+                )
+            else:
+                message = (
+                    f"{label}.{key} must be a table / {label}.{key} 必须是表 / "
+                    f"{label}.{key} はテーブルである必要があります"
+                )
+            issues.append(("warning", message))
+    # A keyed table is not applied at all (warned separately): no publish hint.
+    for key in ("output_schema", "strict_output", "permissions") if applied else ():
+        if key in item:
+            # The registry drops it: the output check and the narrowing check
+            # run from the decorator.
+            issues.append((
+                "warning",
+                f"{label}.{key} is ignored; declare it on @plugin_entry instead / "
+                f"{label}.{key} 会被忽略，请在 @plugin_entry 上声明 / "
+                f"{label}.{key} は無視されます。@plugin_entry で宣言してください",
+            ))
+
+
+def _check_entry_bool(
+    value: object,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    reader: str = "the registry",
+) -> None:
+    # Unlike _check_optional_bool, no string spelling is safe here: the reader
+    # applies bool(), so "false", "no", "0" and "off" all read as True.
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        issues.append((
+            "error",
+            f"{label} must be true/false, not a string; {reader} reads any non-empty string as true",
+        ))
+        return
+    issues.append(("error", f"{label} must be a boolean"))
+
+
+def _check_entry_timeout(value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    # Mirrors resolve_entry_timeout(): it accepts anything float() reads, treats
+    # <= 0 as "no per-entry timeout", and silently falls back on anything else.
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        issues.append(("error", f"{label} must be a number"))
+        return
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        issues.append(("error", f"{label} must be a number"))
+        return
+    if not math.isfinite(number):
+        issues.append(("error", f"{label} must be finite"))
+        return
+    if isinstance(value, str):
+        issues.append(("warning", f"{label} uses string number '{value}'; prefer a number"))
+    if number < 0:
+        issues.append(("warning", f"{label} is negative, which disables the entry timeout; use 0 for that"))
+
+
 def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
     if value is None:
         return
@@ -696,9 +1103,10 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
     if permissions is not None:
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
         if isinstance(permissions, list):
-            allowed = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+            # Same set and stripping the runtime uses, so check cannot drift from it.
+            # Blank entries already got the non-empty error from _check_string_list.
             for index, permission in enumerate(permissions):
-                if isinstance(permission, str) and permission not in allowed:
+                if isinstance(permission, str) and permission.strip() and permission.strip() not in UI_PERMISSIONS:
                     issues.append(("warning", f"{label}.permissions[{index}] is not a recognized permission: {permission}"))
     _check_optional_bool(value, "available", f"{label}.available", issues)
 
@@ -736,10 +1144,24 @@ def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> N
     _warn_unknown_keys(value, {"backend", "persist_mode"}, "[plugin_state]", issues)
     backend = value.get("backend")
     if backend is not None:
-        _check_enum(backend, "[plugin_state].backend", {"file", "sqlite", "memory"}, issues)
+        # Ask the SDK itself: it treats "" as "off" and ignores case.
+        try:
+            accepted = isinstance(backend, str) and bool(PluginStatePersistence.normalize_backend(backend))
+        except InvalidArgumentError:
+            accepted = False
+        if not accepted:
+            _check_enum(backend, "[plugin_state].backend", set(PluginStatePersistence.VALID_BACKENDS), issues)
     persist_mode = value.get("persist_mode")
-    if persist_mode is not None:
-        _check_enum(persist_mode, "[plugin_state].persist_mode", {"auto", "always", "manual", "disabled"}, issues)
+    if persist_mode is not None and persist_mode not in PluginStatePersistence.VALID_PERSIST_MODES:
+        message = (
+            "[plugin_state].persist_mode must be one of: "
+            f"{', '.join(sorted(PluginStatePersistence.VALID_PERSIST_MODES))}"
+        )
+        replacement = _PLUGIN_STATE_PERSIST_MODE_MIGRATIONS.get(persist_mode) if isinstance(persist_mode, str) else None
+        if replacement is not None:
+            hint = {locale: text.format(new=replacement, old=persist_mode) for locale, text in _PERSIST_MODE_MIGRATION_HINT.items()}
+            message = _format_multilingual(hint, head=message)
+        issues.append(("error", message))
 
 
 def _check_entry_target(
@@ -816,7 +1238,333 @@ def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     return sorted(iter_plugin_python_files(plugin_dir))
 
 
-def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+def _permission_issue(issue: PermissionIssue) -> tuple[str, str]:
+    return issue.severity, _format_multilingual(permission_messages.texts(issue.code, dict(issue.params)))
+
+
+def _check_permissions_table(config: dict[str, object], issues: list[tuple[str, str]]) -> None:
+    """Top-level [permissions.require] / [permissions.ask] declarations.
+
+    Not to be confused with the UI entry ``permissions`` list under
+    [[plugin.ui.panel]] / [[plugin.ui.guide]], which is checked elsewhere.
+    """
+    _declarations, found = parse_permission_declarations(config)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+
+# Component decorators that take ``permissions=`` to narrow the plugin's
+# declared permissions: the SDK names, their hook aliases and the
+# ``plugin.entry`` / ``plugin.event`` / ``plugin.hook`` / ``plugin.timer`` /
+# ``plugin.custom_event`` proxies (matched by the last attribute).
+_PERMISSION_NARROWING_DECORATORS = frozenset(
+    {
+        "plugin_entry", "llm_tool", "hook", "on_event", "custom_event", "timer_interval",
+        "before_entry", "after_entry", "around_entry", "replace_entry",
+        "entry", "event", "timer",
+    }
+)
+
+
+def _check_permission_narrowing(
+    decorator: ast.expr,
+    label: str,
+    declared: frozenset[str] | None,
+    issues: list[tuple[str, str]],
+    *,
+    narrows: bool = True,
+) -> None:
+    """``narrows``: the decorator is a component that may narrow. Any other
+    SDK decorator does not take ``permissions=`` (the plugin fails to load).
+
+    The verdict matches registration in the plugin process: both run
+    ``narrowing_issues`` against the same declared ids.
+    """
+    if not isinstance(decorator, ast.Call):
+        return
+    for item in decorator.keywords:
+        if item.arg != "permissions":
+            continue
+        if not narrows:
+            issues.append(
+                _permission_issue(PermissionIssue("error", "narrowing_unsupported_decorator", {"label": label}))
+            )
+            return
+        if declared is None:
+            return
+        try:
+            value = ast.literal_eval(item.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            issues.append(_permission_issue(PermissionIssue("info", "narrowing_unconfirmed", {"label": label})))
+            return
+        if value is None:
+            # permissions=None is the default spelled out: inherits everything.
+            return
+        issues.extend(_permission_issue(issue) for issue in narrowing_issues(value, declared, label))
+
+
+def _check_permission_usage(
+    plugin_dir: Path,
+    declarations: PermissionDeclarations,
+    issues: list[tuple[str, str]],
+    *,
+    pyproject: dict[str, object] | None = None,
+) -> None:
+    """Compare plugin.toml declarations with what the code scan finds.
+
+    Only files the package build would include are compared: development
+    scripts left out of the package (build/, dist/, [tool.neko.build]
+    excludes) never run in the plugin.
+    """
+    rules = _build_rules_or_defaults(pyproject)
+    # "exclude" matches a path, not its subtree, so directories are judged
+    # without it (as in _check_symlink_tree); files still use every rule.
+    tree_rules = rules.model_copy(update={"exclude": []})
+
+    def include(relative: Path, is_dir: bool) -> bool:
+        return not should_skip_path(relative, is_dir=is_dir, rules=tree_rules if is_dir else rules)
+
+    # Filter before reading so excluded files do not use up the scan budget.
+    sources = read_capability_sources(
+        plugin_dir, include=include
+    )
+    # context_loss is developer-only: requested here, never in the host's report.
+    report = analyze_capabilities(
+        plugin_dir, declarations=declarations, sources=sources, include_context_loss=True
+    )
+    found = compare_declarations(report)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+    by_type: dict[str, list[dict]] = {}
+    omitted: dict[str, int] = {}
+    for spot in [
+        *(report.get("blind_spots") or []),
+        *(report.get("context_loss") or []),
+        *(report.get("not_analyzed") or []),
+    ]:
+        if spot.get("omitted"):
+            # Not listed one by one (see _skipped_parts); counted as "+n".
+            omitted[spot["type"]] = omitted.get(spot["type"], 0) + spot["omitted"]
+            continue
+        by_type.setdefault(spot["type"], []).append(spot)
+    for kind in omitted:
+        by_type.setdefault(kind, [])
+    for kind, spots in by_type.items():
+        shown = [
+            f"{spot['file']}:{spot['line']}" if spot.get("line") else (spot.get("file") or plugin_dir.name)
+            for spot in spots[:3]
+        ]
+        more = len(spots) - len(shown) + omitted.get(kind, 0)
+        if more:
+            shown.append(f"+{more}")
+        reasons = sorted({spot["reason"] for spot in spots if spot.get("reason")})
+        suffix = f"; {', '.join(reasons)}" if reasons else ""
+        texts = permission_messages.texts(
+            "blind_spot_context_loss" if kind == "context_loss" else "blind_spot",
+            {"location": ", ".join(shown)},
+            type=lambda locale, kind=kind: permission_messages.blind_spot_label(kind, locale) + suffix,
+        )
+        issues.append(("info", _format_multilingual(texts)))
+
+    summary = summarize_permissions(report)
+    if summary["rows"]:
+
+        def rows(locale: str) -> str:
+            parts = []
+            for row in summary["rows"]:
+                label = permission_messages.source_label(row["source"], locale)
+                if row["source"] == "unconfirmed":
+                    parts.append(f"[{label}] {permission_messages.blind_spot_label(row['type'], locale)}")
+                elif row["source"] == "declared":
+                    parts.append(f"[{label}] {row['permission']} ({row['level']})")
+                else:
+                    parts.append(f"[{label}] {row['permission']} ({row['file']}:{row['line']})")
+            return "; ".join(parts)
+
+        issues.append(("info", _format_multilingual(permission_messages.texts("summary", rows=rows))))
+
+    undeclared = any(issue.code.startswith("used_undeclared") for issue in found)
+    if summary["note"] == "no_extra_usage" and not undeclared and report.get("permissions"):
+        issues.append(("info", _format_multilingual(permission_messages.texts("scan_no_extra_usage"))))
+    elif summary["note"] == "blind_spots" and summary["blind_spot_types"]:
+        types = summary["blind_spot_types"]
+        issues.append(
+            (
+                "info",
+                _format_multilingual(
+                    permission_messages.texts(
+                        "scan_blind_spots",
+                        types=lambda locale: ", ".join(
+                            permission_messages.blind_spot_label(kind, locale) for kind in types
+                        ),
+                    )
+                ),
+            )
+        )
+
+
+def _is_sdk_module(module: str) -> bool:
+    return module == "plugin.sdk" or module.startswith("plugin.sdk.")
+
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _scope_nodes(body):
+    """Nodes evaluated in one scope; nested function / class bodies excluded."""
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            # The body never runs; only the test and the else branch do.
+            stack.append(node.test)
+            stack.extend(node.orelse)
+        elif isinstance(node, _SCOPE_NODES):
+            # Decorators, defaults and bases are evaluated in this scope.
+            if not isinstance(node, ast.Lambda):
+                stack.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                stack.extend(node.bases)
+            else:
+                stack.extend(node.args.defaults)
+        else:
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str | None]]:
+    """Bindings in one scope in source order: (position, name, SDK symbol or None).
+
+    Parameters come first; imports from the SDK map to their qualified symbol,
+    every other binding (definitions, assignments, loop / with / except
+    targets, other imports) maps to None.
+    """
+    bindings: list[tuple[tuple[int, int], str, str | None]] = [((0, -1), name, None) for name in parameters]
+
+    def bind(node, name, value=None):
+        bindings.append(((node.lineno, node.col_offset), name, value))
+
+    def bind_targets(node, target):
+        # Only real targets bind; x[k] = v and x.attr = v do not rebind x.
+        if isinstance(target, ast.Name):
+            bind(node, target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                bind_targets(node, item)
+        elif isinstance(target, ast.Starred):
+            bind_targets(node, target.value)
+
+    for node in _scope_nodes(body):
+        if isinstance(node, ast.ImportFrom):
+            for item in node.names:
+                qualified = f"{node.module}.{item.name}" if node.module and not node.level else ""
+                bind(node, item.asname or item.name, qualified if _is_sdk_module(qualified) else None)
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.asname:
+                    bind(node, item.asname, item.name if _is_sdk_module(item.name) else None)
+                else:
+                    # import plugin.x binds the top-level plugin package whatever
+                    # x is; the attribute path decides whether it is the SDK.
+                    root = item.name.split(".")[0]
+                    bind(node, root, "plugin" if root == "plugin" else None)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind(node, node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                bind_targets(node, target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            bind_targets(node, node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind_targets(node, item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node, node.name)
+    bindings.sort(key=lambda item: item[0])
+    return bindings
+
+
+def _parameter_names(node) -> list[str]:
+    if isinstance(node, ast.ClassDef):
+        return []
+    args = node.args
+    names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    names += [arg.arg for arg in (args.vararg, args.kwarg) if arg is not None]
+    return names
+
+
+def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
+    """id(decorator) -> SDK symbol name, resolving each name where the decorator
+    is evaluated: bindings earlier in the same scope, then enclosing function
+    scopes and the module (their final bindings); class bodies are not visible
+    to nested functions."""
+    found: dict[int, str] = {}
+
+    def final(bindings) -> dict[str, str | None]:
+        return {name: value for _position, name, value in bindings}
+
+    def visit(body, chain, is_class, parameters=(), later_chain=None):
+        # chain: what this scope's own code sees while it runs. later_chain:
+        # for a class body, what its methods see when they run later.
+        local = _scope_bindings(body, parameters)
+        for node in _scope_nodes(body):
+            if not isinstance(node, _SCOPE_NODES) or isinstance(node, ast.Lambda):
+                continue
+            for decorator in node.decorator_list:
+                position = (decorator.lineno, decorator.col_offset)
+                names: dict[str, str | None] = {}
+                for scope in reversed(chain):
+                    names.update(scope)
+                names.update({name: value for at, name, value in local if at < position})
+                name = _sdk_decorator_name(decorator, {key: value for key, value in names.items() if value})
+                if name:
+                    found[id(decorator)] = name
+            # Class bodies are not visible to the functions inside them.
+            outer = later_chain if is_class else [final(local), *chain]
+            if isinstance(node, ast.ClassDef):
+                # A class body runs at definition time: it sees what is bound
+                # before the class statement, not later imports.
+                position = (node.lineno, node.col_offset)
+                # A class nested in a class body runs during that body.
+                snapshot = chain if is_class else [
+                    {name: value for at, name, value in local if at < position},
+                    *chain,
+                ]
+                visit(node.body, snapshot, True, (), later_chain=outer)
+            else:
+                visit(node.body, outer, False, _parameter_names(node))
+
+    visit(tree.body, [], False)
+    return found
+
+
+def _sdk_decorator_name(decorator: ast.expr, sdk_names: dict[str, str]) -> str | None:
+    """The SDK symbol name a decorator refers to, following import aliases."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    parts: list[str] = []
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    if not isinstance(target, ast.Name) or target.id not in sdk_names:
+        return None
+    qualified = ".".join([sdk_names[target.id], *reversed(parts)])
+    if not _is_sdk_module(qualified):
+        return None
+    return qualified.rsplit(".", 1)[-1]
+
+
+def _check_python_decorators(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    declared: frozenset[str] | None = None,
+) -> None:
     seen_ids: dict[str, str] = {}
     for path in _plugin_python_files(plugin_dir):
         relative = path.relative_to(plugin_dir)
@@ -824,15 +1572,37 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
         if tree is None:
             continue
         _check_deprecated_push_message_calls(tree, relative, issues)
+        sdk_decorators = _sdk_decorators(tree)
         for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                # Class decorators (@neko_plugin) take no permissions= either.
+                for decorator in node.decorator_list:
+                    sdk_name = sdk_decorators.get(id(decorator))
+                    if sdk_name is not None:
+                        _check_permission_narrowing(
+                            decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues, narrows=False
+                        )
+                continue
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
+                sdk_name = sdk_decorators.get(id(decorator))
+                if sdk_name is not None:
+                    _check_permission_narrowing(
+                        decorator,
+                        f"@{sdk_name} in {relative}:{node.lineno}",
+                        declared,
+                        issues,
+                        narrows=sdk_name in _PERMISSION_NARROWING_DECORATORS,
+                    )
                 if name == "plugin_entry":
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name
                     _check_identifier(entry_id, f"@plugin_entry id in {relative}:{node.lineno}", issues)
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
+                    # An entry may return a non-object (a list, a string), so no type='object' hint here.
+                    _check_schema_keyword(decorator, "output_schema", f"{relative}:{node.lineno}", issues, expect_object=False)
+                    _check_output_schema_literal(decorator, f"{relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"input_schema", "params"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"llm_result_fields", "llm_result_model", "fields"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     previous = seen_ids.get(entry_id)
@@ -1000,14 +1770,21 @@ def _check_identifier(value: str, label: str, issues: list[tuple[str, str]]) -> 
         issues.append(("warning", f"{label} should contain only A-Z, a-z, 0-9, _, -"))
 
 
-def _check_schema_keyword(decorator: ast.expr, keyword: str, label: str, issues: list[tuple[str, str]]) -> None:
+def _check_schema_keyword(
+    decorator: ast.expr,
+    keyword: str,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    expect_object: bool = True,
+) -> None:
     value = _decorator_keyword_literal(decorator, keyword)
     if value is None:
         return
     if not isinstance(value, dict):
         issues.append(("error", f"{keyword} in {label} must be a dict literal when statically declared"))
         return
-    if value.get("type") != "object":
+    if expect_object and value.get("type") != "object":
         issues.append(("warning", f"{keyword} in {label} should declare type='object'"))
     properties = value.get("properties")
     if properties is not None and not isinstance(properties, dict):
@@ -1015,6 +1792,17 @@ def _check_schema_keyword(decorator: ast.expr, keyword: str, label: str, issues:
     required = value.get("required")
     if required is not None and not isinstance(required, list):
         issues.append(("error", f"{keyword}.required in {label} must be a list"))
+
+
+def _check_output_schema_literal(decorator: ast.expr, label: str, issues: list[tuple[str, str]]) -> None:
+    """An explicit output_schema, like input_schema, is published but not checked at runtime."""
+    if not isinstance(_decorator_keyword_literal(decorator, "output_schema"), dict):
+        return  # not a dict literal: reported by the shape check, or not static
+    issues.append((
+        "warning",
+        f"output_schema in {label} is published only; the runtime does not validate returns against it "
+        f"(annotate the return with a Pydantic model for a runtime check)",
+    ))
 
 
 def _check_mutually_exclusive(decorator: ast.expr, names: set[str], label: str, issues: list[tuple[str, str]]) -> None:
@@ -1114,24 +1902,444 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
             issues.append(("warning", f".gitignore should include {pattern}"))
 
 
-def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+# Start of the error for links in the plugin source (other commands match it).
+SYMLINK_ERROR = "plugin source must not contain symbolic links"
+
+
+def _build_rules_or_defaults(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
+    try:
+        return load_build_rules(pyproject_toml)
+    except (TypeError, ValueError):
+        # An invalid [tool.neko.build] fails the build elsewhere; count with
+        # the built-in excludes alone.
+        return BuildRuleSet()
+
+
+def _check_symlink_tree(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    ignored_paths: Collection[str] = (),
+    build_rules: BuildRuleSet | None = None,
+) -> None:
     # Market CI rejects any symlink in the mounted source; report the same
     # rule locally so the upload is not the first place it surfaces. CI scans
     # the checkout before dependency sync, so vendor/ (which pip may populate
-    # with link wrappers) and .git/ are out of scope here too.
+    # with link wrappers) and .git/ are out of scope here too, and so is
+    # anything git ignores (e.g. node_modules/): a checkout never holds it.
+    # Those links are still counted into one warning when a local
+    # ``neko-plugin build`` would package them (it ignores .gitignore and
+    # copies a link's target); links the build excludes anyway (.venv/ and
+    # the like, ``build_rules``) are not. Symlinks and Windows junctions
+    # follow the same rule.
+    ignored = {plugin_dir / path.rstrip("/") for path in ignored_paths}
+    rules = build_rules or BuildRuleSet()
+    # Without "exclude" (which matches a path, not its subtree), a skipped
+    # directory means the build skips everything below it as well.
+    tree_rules = rules.model_copy(update={"exclude": []})
+    links: list[Path] = []
+    ignored_links: list[Path] = []
     try:
-        links = []
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
             base = Path(root)
             if base == plugin_dir:
                 directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
                 files = [name for name in files if name not in {"vendor", ".git"}]
-            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
+            base_ignored = base in ignored
+            if base_ignored:
+                # Everything below an ignored directory is ignored too.
+                ignored.update(base / name for name in directories)
+            # Ignored directories the build skips whole hold nothing to report.
+            directories[:] = [
+                name
+                for name in directories
+                if not (
+                    (base_ignored or base / name in ignored)
+                    and should_skip_path((base / name).relative_to(plugin_dir), is_dir=True, rules=tree_rules)
+                )
+            ]
+            # is_link also catches a Windows junction, which is_symlink()
+            # misses on Python 3.11 (and which os.walk would descend into).
+            # Junctions are always directories, so files need only is_symlink().
+            linked = {name for name in directories if is_link(base / name)}
+            linked.update(name for name in files if (base / name).is_symlink())
+            for name in (*directories, *files):
+                if name in linked:
+                    path = base / name
+                    if not (base_ignored or path in ignored):
+                        links.append(path)
+                    else:
+                        try:
+                            # Follows the link, as the build's walk does.
+                            link_is_dir = path.is_dir()
+                        except OSError:
+                            # e.g. a target in a directory we cannot enter:
+                            # count it as a file link, and keep scanning.
+                            link_is_dir = False
+                        # A directory link is judged as a subtree, like the
+                        # pruning above.
+                        link_rules = tree_rules if link_is_dir else rules
+                        if not should_skip_path(path.relative_to(plugin_dir), is_dir=link_is_dir, rules=link_rules):
+                            ignored_links.append(path)
+            directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
+        # Still report the links found before the failure.
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
-        return
-    if not links:
-        return
-    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
-    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
-    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
+    if ignored_links:
+        issues.append(
+            (
+                "warning",
+                f"{len(ignored_links)} symbolic link(s) in gitignored paths "
+                f"({_shown_paths(plugin_dir, ignored_links)}): Market CI will not see them, "
+                "but a local neko-plugin build may copy their targets",
+            )
+        )
+    if links:
+        issues.append(
+            ("error", f"{SYMLINK_ERROR}: {_shown_paths(plugin_dir, links)}")
+        )
+
+
+def _shown_paths(plugin_dir: Path, paths: list[Path]) -> str:
+    # Sorted: os.walk order depends on the filesystem.
+    paths = sorted(paths)
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in paths[:5])
+    suffix = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
+    return f"{shown}{suffix}"
+
+
+# --- Advisory checks -------------------------------------------------------
+#
+# ``neko-plugin check`` (without --release) reports these as "advisory"
+# issues: they print but never change the exit code, and lint, precheck,
+# ``check --release`` and the Market workflows do not run them. Each matcher
+# covers only the plain spelling plugin code actually uses; aliases and
+# dynamically built calls are deliberately out of scope.
+#
+# Output layout: one language-neutral line per hit (rule code, file:line,
+# AGENTS.md constraint number), then one explanation per rule that has hits,
+# written in all eight N.E.K.O locales.
+
+_ADVISORY_REFERENCE = ".agents/skills/neko-plugin/references/execution-boundary.md"
+_ADVISORY_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+# rule code -> (AGENTS.md hard constraint number, explanation per locale)
+_ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
+    "host-import": (
+        2,
+        {
+            "en": "Host internals bypass consent disclosure and can change without notice. "
+            "Import from plugin.sdk.plugin (adapters: plugin.sdk.adapter).",
+            "zh-CN": "宿主内部模块绕过了面向用户的授权说明，而且随时可能变动。"
+            "请改从 plugin.sdk.plugin 导入（适配器用 plugin.sdk.adapter）。",
+            "zh-TW": "宿主內部模組會繞過對使用者的授權說明，而且隨時可能變動。"
+            "請改從 plugin.sdk.plugin 匯入（轉接器請用 plugin.sdk.adapter）。",
+            "ja": "ホストの内部モジュールは利用者への同意説明を経由せず、予告なく変わることがあります。"
+            "plugin.sdk.plugin（アダプターは plugin.sdk.adapter）からインポートしてください。",
+            "ko": "호스트 내부 모듈은 사용자 동의 고지를 우회하며 예고 없이 바뀔 수 있습니다. "
+            "plugin.sdk.plugin(어댑터는 plugin.sdk.adapter)에서 가져오세요.",
+            "ru": "Внутренние модули хоста обходят уведомление о согласии и могут меняться без предупреждения. "
+            "Импортируйте из plugin.sdk.plugin (для адаптеров — plugin.sdk.adapter).",
+            "es": "Los módulos internos del host eluden el aviso de consentimiento y pueden cambiar sin previo aviso. "
+            "Importa desde plugin.sdk.plugin (adaptadores: plugin.sdk.adapter).",
+            "pt": "Os módulos internos do host contornam o aviso de consentimento e podem mudar sem aviso prévio. "
+            "Importe de plugin.sdk.plugin (adaptadores: plugin.sdk.adapter).",
+        },
+    ),
+    "print": (
+        4,
+        {
+            "en": "print() output never reaches the plugin log. Use self.logger instead.",
+            "zh-CN": "print() 的输出不会进入插件日志。请改用 self.logger。",
+            "zh-TW": "print() 的輸出不會寫進外掛程式的記錄檔。請改用 self.logger。",
+            "ja": "print() の出力はプラグインのログに残りません。代わりに self.logger を使ってください。",
+            "ko": "print() 출력은 플러그인 로그에 남지 않습니다. 대신 self.logger를 사용하세요.",
+            "ru": "Вывод print() не попадает в журнал плагина. Используйте self.logger.",
+            "es": "La salida de print() no llega al registro del plugin. Usa self.logger en su lugar.",
+            "pt": "A saída de print() não chega ao log do plugin. Use self.logger.",
+        },
+    ),
+    "async-blocking": (
+        7,
+        {
+            "en": "A blocking call inside async def stalls every entry of the plugin, because they share one "
+            "event loop. Use an async library or await asyncio.to_thread(...).",
+            "zh-CN": "在 async def 里做阻塞调用会卡住插件的所有入口，因为它们共用一个事件循环。"
+            "请改用异步库，或 await asyncio.to_thread(...)。",
+            "zh-TW": "在 async def 裡進行阻塞呼叫，會卡住外掛程式的所有進入點，因為它們共用同一個事件迴圈。"
+            "請改用非同步函式庫，或 await asyncio.to_thread(...)。",
+            "ja": "async def 内のブロッキング呼び出しは、同じイベントループを共有するプラグインの全エントリを止めてしまいます。"
+            "非同期ライブラリか await asyncio.to_thread(...) を使ってください。",
+            "ko": "async def 안의 블로킹 호출은 이벤트 루프를 함께 쓰는 플러그인의 모든 엔트리를 멈춥니다. "
+            "비동기 라이브러리나 await asyncio.to_thread(...)를 사용하세요.",
+            "ru": "Блокирующий вызов внутри async def останавливает все точки входа плагина: у них общий цикл событий. "
+            "Используйте асинхронную библиотеку или await asyncio.to_thread(...).",
+            "es": "Una llamada bloqueante dentro de async def detiene todos los puntos de entrada del plugin, porque comparten "
+            "un mismo bucle de eventos. Usa una biblioteca asíncrona o await asyncio.to_thread(...).",
+            "pt": "Uma chamada bloqueante dentro de async def trava todos os pontos de entrada do plugin, pois eles compartilham "
+            "o mesmo loop de eventos. Use uma biblioteca assíncrona ou await asyncio.to_thread(...).",
+        },
+    ),
+    "eval-exec": (
+        10,
+        {
+            "en": "eval() and exec() run arbitrary code. Parse the input instead (for example json.loads or "
+            "ast.literal_eval), or dispatch through an explicit table of functions.",
+            "zh-CN": "eval() 和 exec() 会执行任意代码。请改为解析输入（例如 json.loads 或 ast.literal_eval），"
+            "或用显式的函数映射表来分派。",
+            "zh-TW": "eval() 與 exec() 會執行任意程式碼。請改為解析輸入（例如 json.loads 或 ast.literal_eval），"
+            "或透過明確的函式對照表來分派。",
+            "ja": "eval() と exec() は任意のコードを実行します。入力は json.loads や ast.literal_eval などで解析するか、"
+            "明示的な関数テーブルで振り分けてください。",
+            "ko": "eval()과 exec()는 임의의 코드를 실행합니다. 입력을 파싱하거나(json.loads, ast.literal_eval 등) "
+            "명시적인 함수 테이블로 분기하세요.",
+            "ru": "eval() и exec() выполняют произвольный код. Разбирайте входные данные (например, json.loads или "
+            "ast.literal_eval) или выбирайте функцию по явной таблице.",
+            "es": "eval() y exec() ejecutan código arbitrario. Analiza la entrada (por ejemplo, con json.loads o "
+            "ast.literal_eval) o despacha mediante una tabla explícita de funciones.",
+            "pt": "eval() e exec() executam código arbitrário. Interprete a entrada (por exemplo, com json.loads ou "
+            "ast.literal_eval) ou despache por meio de uma tabela explícita de funções.",
+        },
+    ),
+    "pickle": (
+        10,
+        {
+            "en": "Unpickling can run code embedded in the data. Store the data as JSON instead.",
+            "zh-CN": "pickle 反序列化可能执行数据里夹带的代码。请改用 JSON 保存数据。",
+            "zh-TW": "pickle 反序列化可能執行資料中夾帶的程式碼。請改用 JSON 儲存資料。",
+            "ja": "pickle のデシリアライズは、データに埋め込まれたコードを実行することがあります。"
+            "データは JSON で保存してください。",
+            "ko": "pickle 역직렬화는 데이터에 숨은 코드를 실행할 수 있습니다. "
+            "데이터는 JSON으로 저장하세요.",
+            "ru": "При десериализации pickle может выполниться код, встроенный в данные. "
+            "Храните данные в JSON.",
+            "es": "Deserializar con pickle puede ejecutar código incrustado en los datos. "
+            "Guarda los datos en JSON.",
+            "pt": "Desserializar com pickle pode executar código embutido nos dados. "
+            "Guarde os dados em JSON.",
+        },
+    ),
+    "shell-true": (
+        10,
+        {
+            "en": "shell=True hands the whole command line to a shell, so outside text in it can inject commands. "
+            "Pass the arguments as a list and drop shell=True.",
+            "zh-CN": "shell=True 会把整条命令行交给 shell 执行，混在其中的外部文本可能注入命令。"
+            "请把参数写成列表传入，并去掉 shell=True。",
+            "zh-TW": "shell=True 會把整行指令交給 shell 執行，混在其中的外部文字可能被用來注入指令。"
+            "請將參數以串列傳入，並拿掉 shell=True。",
+            "ja": "shell=True ではコマンドライン全体がシェルに渡されるため、紛れ込んだ外部の文字列でコマンドを注入されるおそれがあります。"
+            "引数はリストで渡し、shell=True は外してください。",
+            "ko": "shell=True는 명령줄 전체를 셸에 넘기므로, 섞여 들어간 외부 문자열로 명령이 주입될 수 있습니다. "
+            "인수를 리스트로 넘기고 shell=True는 빼세요.",
+            "ru": "При shell=True вся командная строка уходит в оболочку, и попавший в неё внешний текст может "
+            "внедрить команды. Передавайте аргументы списком и уберите shell=True.",
+            "es": "Con shell=True toda la línea de comandos pasa por un shell, así que cualquier texto externo que "
+            "contenga puede inyectar comandos. Pasa los argumentos como lista y quita shell=True.",
+            "pt": "Com shell=True a linha de comando inteira passa por um shell, e qualquer texto externo nela pode "
+            "injetar comandos. Passe os argumentos como lista e remova shell=True.",
+        },
+    ),
+    "verify-false": (
+        10,
+        {
+            "en": "verify=False turns off TLS certificate checks, so the connection can be intercepted. "
+            'Remove it; for a private CA, pass verify="path/to/ca.pem".',
+            "zh-CN": "verify=False 会关闭 TLS 证书校验，连接可能被中间人截获。"
+            '请去掉它；需要信任私有 CA 时，传入该 CA 证书的路径，例如 verify="path/to/ca.pem"。',
+            "zh-TW": "verify=False 會關閉 TLS 憑證驗證，連線可能遭到中間人攔截。"
+            '請移除它；需要信任私有 CA 時，請傳入該 CA 憑證的路徑，例如 verify="path/to/ca.pem"。',
+            "ja": "verify=False は TLS 証明書の検証を無効にするため、通信を傍受されるおそれがあります。"
+            '削除してください。独自の CA を使う場合は、その CA 証明書のパスを verify="path/to/ca.pem" のように渡してください。',
+            "ko": "verify=False는 TLS 인증서 검증을 꺼 버려서 제3자가 연결을 가로챌 수 있습니다. "
+            '제거하세요. 사설 CA를 신뢰해야 한다면 verify="path/to/ca.pem"처럼 CA 인증서 경로를 넘기세요.',
+            "ru": "verify=False отключает проверку TLS-сертификатов, и соединение могут перехватить. "
+            'Уберите его; для собственного центра сертификации передайте verify="path/to/ca.pem".',
+            "es": "verify=False desactiva la verificación de certificados TLS, así que la conexión puede ser "
+            'interceptada. Quítalo; para una CA privada, pasa verify="path/to/ca.pem".',
+            "pt": "verify=False desativa a verificação de certificados TLS, e a conexão pode ser interceptada. "
+            'Remova-o; para uma CA privada, passe verify="path/to/ca.pem".',
+        },
+    ),
+}
+
+_ADVISORY_SKIPPED_TOP_DIRS = frozenset({"tests"})
+# Top-level host packages a plugin process can import because the N.E.K.O
+# root is on sys.path. ``plugin.*`` is handled separately.
+_HOST_INTERNAL_ROOTS = frozenset(
+    {
+        "app",
+        "config",
+        "knowledge",
+        "launcher_core",
+        "main_logic",
+        "main_routers",
+        "memory",
+        "nekopower",
+        "services",
+        "steamworks",
+        "utils",
+    }
+)
+# Public SDK facades (see plugin/sdk/__init__.py); ``plugin.plugins.*`` is
+# plugin code, not the host.
+_PUBLIC_PLUGIN_MODULE_PREFIXES = ("plugin.sdk.plugin", "plugin.sdk.adapter", "plugin.plugins")
+_PICKLE_LOAD_FUNCS = frozenset({"load", "loads", "Unpickler"})
+_REQUESTS_BLOCKING_FUNCS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+_SUBPROCESS_BLOCKING_FUNCS = frozenset({"run", "call", "check_call", "check_output"})
+_THREAD_OFFLOAD_FUNCS = frozenset({"to_thread", "run_in_executor"})
+_NESTED_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def collect_advisory_issues(plugin_dir: Path) -> list[tuple[str, str]]:
+    """Non-blocking hints for AGENTS.md hard constraints 2, 4, 7 and 10.
+
+    Files that do not parse are skipped: validate_plugin_dir already reports
+    them as errors.
+    """
+    hits: dict[str, list[str]] = {code: [] for code in _ADVISORY_RULES}
+    for path in _plugin_python_files(plugin_dir):
+        relative = path.relative_to(plugin_dir)
+        if relative.parts[0] in _ADVISORY_SKIPPED_TOP_DIRS:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        for code, lineno, detail in sorted(_advisory_findings(tree), key=lambda item: item[1]):
+            hits[code].append(f"{relative}:{lineno}" + (f" {detail}" if detail else ""))
+
+    issues: list[tuple[str, str]] = []
+    for code, locations in hits.items():
+        if not locations:
+            continue
+        constraint = _ADVISORY_RULES[code][0]
+        issues.extend(("advisory", f"{code}: {location} -> AGENTS.md #{constraint}") for location in locations)
+        issues.append(("advisory", _advisory_explanation(code)))
+    return issues
+
+
+def _advisory_explanation(code: str) -> str:
+    """One block per rule: reference first, then one line per locale."""
+    constraint, texts = _ADVISORY_RULES[code]
+    lines = [f"{code}: AGENTS.md #{constraint}, {_ADVISORY_REFERENCE}"]
+    lines.extend(f"      {locale}: {texts[locale]}" for locale in _ADVISORY_LOCALES)
+    return "\n".join(lines)
+
+
+def _advisory_findings(tree: ast.Module) -> list[tuple[str, int, str]]:
+    """(rule code, line, language-neutral detail) for each hit."""
+    findings: list[tuple[str, int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for code, detail in _advisory_call_rules(node):
+                findings.append((code, node.lineno, detail))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for module in _host_internal_imports(node):
+                findings.append(("host-import", node.lineno, module))
+        elif isinstance(node, ast.AsyncFunctionDef):
+            for call in _calls_in_own_scope(node):
+                blocking = _blocking_call_name(call)
+                if blocking:
+                    findings.append(("async-blocking", call.lineno, f"{node.name}(): {blocking}()"))
+    return findings
+
+
+def _advisory_call_rules(node: ast.Call) -> list[tuple[str, str]]:
+    """Every (rule code, detail) one call matches."""
+    rules: list[tuple[str, str]] = []
+    func = node.func
+    if isinstance(func, ast.Name):
+        if func.id == "print":
+            rules.append(("print", ""))
+        elif func.id in {"eval", "exec"}:
+            rules.append(("eval-exec", f"{func.id}()"))
+    elif (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "pickle"
+        and func.attr in _PICKLE_LOAD_FUNCS
+    ):
+        rules.append(("pickle", f"pickle.{func.attr}"))
+    for keyword in node.keywords:
+        if not isinstance(keyword.value, ast.Constant):
+            continue
+        if keyword.arg == "shell" and keyword.value.value is True:
+            rules.append(("shell-true", ""))
+        elif keyword.arg == "verify" and keyword.value.value is False:
+            rules.append(("verify-false", ""))
+    return rules
+
+
+def _host_internal_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
+    """Every host-internal module one import statement names."""
+    if isinstance(node, ast.ImportFrom):
+        if node.level or not node.module:
+            return []
+        # ``from plugin import core`` / ``from plugin.sdk import shared`` name
+        # the internal module in the imported names. Everything ``plugin``
+        # exports besides ``sdk`` and ``plugins`` is host runtime; under
+        # ``plugin.sdk`` only ``shared`` is internal (SDK_VERSION etc. are public).
+        if node.module == "plugin":
+            return [
+                # ``*`` is not a module path; show the statement itself.
+                "from plugin import *" if alias.name == "*" else f"plugin.{alias.name}"
+                for alias in node.names
+                if alias.name not in {"sdk", "plugins"}
+            ]
+        if node.module == "plugin.sdk":
+            return [f"plugin.sdk.{alias.name}" for alias in node.names if alias.name == "shared"]
+        modules = [node.module]
+    else:
+        modules = [alias.name for alias in node.names]
+    return [module for module in modules if _is_host_internal_module(module)]
+
+
+def _is_host_internal_module(module: str) -> bool:
+    root = module.split(".", 1)[0]
+    if root in _HOST_INTERNAL_ROOTS:
+        return True
+    if root != "plugin" or module in {"plugin", "plugin.sdk"}:
+        return False
+    return not any(
+        module == prefix or module.startswith(prefix + ".")
+        for prefix in _PUBLIC_PLUGIN_MODULE_PREFIXES
+    )
+
+
+def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
+    """Calls that run on the event loop: nested defs, lambdas and classes are
+    skipped (``asyncio.to_thread(lambda: ...)`` is the recommended fix)."""
+    calls: list[ast.Call] = []
+    pending: list[ast.AST] = [*function.body]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _NESTED_SCOPE_NODES):
+            continue
+        if isinstance(node, ast.Call):
+            calls.append(node)
+            if _is_thread_offload(node):
+                # A generator handed to a worker thread is consumed there:
+                # only its first iterable runs here, on creation.
+                for child in ast.iter_child_nodes(node):
+                    pending.append(child.generators[0].iter if isinstance(child, ast.GeneratorExp) else child)
+                continue
+        pending.extend(ast.iter_child_nodes(node))
+    return calls
+
+
+def _is_thread_offload(call: ast.Call) -> bool:
+    return isinstance(call.func, ast.Attribute) and call.func.attr in _THREAD_OFFLOAD_FUNCS
+
+
+def _blocking_call_name(call: ast.Call) -> str:
+    func = call.func
+    if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        return ""
+    owner, name = func.value.id, func.attr
+    if (
+        (owner == "time" and name == "sleep")
+        or (owner == "requests" and name in _REQUESTS_BLOCKING_FUNCS)
+        or (owner == "subprocess" and name in _SUBPROCESS_BLOCKING_FUNCS)
+    ):
+        return f"{owner}.{name}"
+    return ""

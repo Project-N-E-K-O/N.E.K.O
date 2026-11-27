@@ -191,7 +191,7 @@ def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
         "motionManager.stopAllMotions();\n"
         "        stopped = true;\n"
         "        if (typeof this._resetActiveMotionParameters === 'function') {\n"
-        "            this._resetActiveMotionParameters({ preserveExpression: true });"
+        "            this._resetActiveMotionParameters({ preserveExpression: true, smooth: true });"
     ) in stop_action
     assert "triggerLog.motions.push({" in click_effect
     assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in click_effect
@@ -225,3 +225,12 @@ def test_live2d_touch_set_only_restores_the_expression_it_started():
     assert "this.expressionTimer" not in touch_set_animation
     assert "const shouldReplaceTouchSetExpression = touchSetOwnsCurrentExpression" in set_emotion
     assert "!shouldReplaceTouchSetExpression" in set_emotion
+
+
+def test_touchset_motion_path_only_treats_http_urls_as_absolute():
+    source = _live2d_source()
+
+    # A model-relative file such as "http-assets/x.motion3.json" must still be joined
+    # with the model root; only real http(s) URLs skip the join.
+    assert "if (!/^https?:\\/\\//i.test(motionPath) && !motionPath.startsWith('/')) {" in source
+    assert "motionPath.startsWith('http')" not in source

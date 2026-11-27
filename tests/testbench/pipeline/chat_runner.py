@@ -143,11 +143,10 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
     ``ChatApiKeyMissing`` for backwards compat with the frontend — the
     toast text is the same regardless of which group fails.
 
-    ``temperature`` / ``max_tokens`` / ``timeout`` are returned as-is:
-    ``None`` is a legitimate value that callers must translate to "don't
-    send this parameter" when talking to the model (some endpoints like
-    o1 / gpt-5-thinking / Claude extended-thinking reject a temperature
-    kwarg entirely).
+    ``max_tokens`` / ``timeout`` are returned as-is: ``None`` is a
+    legitimate value that callers must translate to "don't send this
+    parameter" when talking to the model. There is no temperature setting:
+    the testbench sets none (scripts/check_no_temperature.py).
 
     Used by:
     * :meth:`OfflineChatBackend.stream_send` for the active ``chat`` turn.
@@ -549,7 +548,6 @@ class OfflineChatBackend:
                 "model": cfg.model,
                 "base_url": cfg.base_url,
                 "provider": cfg.provider,
-                "temperature": cfg.temperature,
                 "max_tokens": cfg.max_tokens,
                 "timeout": cfg.timeout,
                 # wire_messages is essential to exact reproduction; persist unchanged.
@@ -643,7 +641,6 @@ class OfflineChatBackend:
                 model=cfg.model,
                 base_url=cfg.base_url,
                 api_key=cfg.api_key,
-                temperature=cfg.temperature,
                 max_tokens=cfg.max_tokens,
                 timeout=cfg.timeout or 60.0,
                 max_retries=1,

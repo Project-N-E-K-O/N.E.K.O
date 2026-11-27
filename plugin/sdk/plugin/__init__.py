@@ -19,6 +19,9 @@ from . import settings as _settings
 from . import ui as ui
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, tr
+from plugin.sdk.shared.models.exceptions import PermissionDeniedError, SystemPermissionDeniedError
+from plugin.sdk.shared.permissions.state import PermissionState
+from plugin.sdk.shared.permissions.testing import FakePermissions
 
 # --- Base ---
 NEKO_PLUGIN_META_ATTR = _base.NEKO_PLUGIN_META_ATTR
@@ -46,6 +49,8 @@ quick_action = _decorators.quick_action
 # --- LLM tool ---
 llm_tool = _llm_tool.llm_tool
 LlmToolMeta = _llm_tool.LlmToolMeta
+LlmToolRegisterResult = _llm_tool.LlmToolRegisterResult
+LlmToolUnregisterResult = _llm_tool.LlmToolUnregisterResult
 
 # --- Activity ---
 OsActivitySnapshot = _activity.OsActivitySnapshot
@@ -102,6 +107,8 @@ __all__ = [
     # LLM tool
     "llm_tool",
     "LlmToolMeta",
+    "LlmToolRegisterResult",
+    "LlmToolUnregisterResult",
     # Activity
     "OsActivitySnapshot",
     "get_os_activity_snapshot",
@@ -123,6 +130,11 @@ __all__ = [
     # Errors
     "SdkError",
     "TransportError",
+    "PermissionDeniedError",
+    "SystemPermissionDeniedError",
+    # Permissions
+    "PermissionState",
+    "FakePermissions",
     # Logging
     "get_plugin_logger",
     # Settings
@@ -133,3 +145,32 @@ __all__ = [
 from plugin.sdk.shared.core.cards import ChatCard, CardSubmissionError, PluginView
 
 __all__ += ["ChatCard", "CardSubmissionError", "PluginView"]
+
+_MEMORY_TYPES = (
+    "MemoryTarget", "MemorySubject", "MemoryHit", "MemorySearchResult",
+    "MemoryPersona", "MemoryPersonaSection", "MemoryPersonaEntry", "MemoryError",
+)
+_CONVERSATION_TYPES = (
+    "ConversationMessage", "ReplyOrigin", "ConversationChange", "InputSubmission",
+    "InputSubmittedEvent", "ReplyDetail", "ReplyEvent", "PlaybackDetail",
+    "InteractionInput", "InteractionDetail",
+)
+__all__ += ["MemoryClient", *_MEMORY_TYPES, *_CONVERSATION_TYPES]
+
+
+def __getattr__(name: str):
+    if name == "MemoryClient":
+        module = _import_module("plugin.sdk.shared.memory.client")
+    elif name in _MEMORY_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.memory")
+    elif name in _CONVERSATION_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.conversations")
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

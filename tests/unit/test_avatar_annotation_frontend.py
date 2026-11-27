@@ -253,7 +253,10 @@ def _build_script(tail: str) -> str:
     return (
         _BUILD_TMPL
         .replace("__DETECT__", _fn(src, "detectScreenshotCaptureType"))
-        .replace("__BUILD__", _fn(src, "buildStreamDataMessage"))
+        .replace(
+            "__BUILD__",
+            _fn(src, "resolveStreamFrameCaptureType") + "\n" + _fn(src, "buildStreamDataMessage"),
+        )
         .replace("__TAIL__", tail)
     )
 
@@ -322,6 +325,7 @@ _NATIVE_OK_THEN_SWITCH = (
 _HELPER_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let selected = __SOURCE_ID__;
@@ -368,7 +372,11 @@ def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> 
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -409,6 +417,7 @@ def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: s
 const mode = '__MODE__';
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let current = true;
@@ -487,7 +496,11 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -875,10 +888,17 @@ const stopLiveVisionStreamIfBlocked = async () => false;
 const canSendLiveVisionStreamFrame = () => true;
 const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
 const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
+const beginScreenFrameMaskSession = () => null;
+const buildMaskedStreamDataMessage = async (dataUrl, inputType, sourceId) =>
+  buildStreamDataMessage(dataUrl, inputType, sourceId);
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const stopScreenSharing = async () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const isScreenShareRunningOrStarting = () => true;
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 function stopScreening() {
   nativeCaptureGeneration += 1;
   activeNativeCaptureSourceId = null;
@@ -949,6 +969,8 @@ def _run_active_media_stream_reconciliation(
     sources: list[dict[str, str]],
     *,
     play_pending: bool = False,
+    restart_starts: bool = True,
+    cancelled_during_restart: bool = False,
 ) -> dict:
     screen_src = _screen_src()
     script = """
@@ -1005,10 +1027,16 @@ const isNativeFrameProvider = () => false;
 const stopLiveVisionStreamIfBlocked = async () => false;
 const captureCanvasFrame = () => ({ dataUrl: 'data:image/jpeg;base64,OLD' });
 const buildStreamDataMessage = (dataUrl) => ({ dataUrl });
+const beginScreenFrameMaskSession = () => null;
+const buildMaskedStreamDataMessage = async (dataUrl) => buildStreamDataMessage(dataUrl);
 const scheduleScreenCaptureIdleCheck = () => {};
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const isScreenShareRunningOrStarting = () => true;
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 const stopButton = () => ({ disabled: false });
 const screenButton = () => ({ classList: { contains: () => true } });
 const cancelPendingScreenSharingStart = () => false;
@@ -1036,10 +1064,21 @@ __RECONCILE__
   await Promise.resolve();
   await Promise.resolve();
   if (senderTick) await senderTick();
+  await new Promise((resolve) => setImmediate(resolve));
   results.selected = S.selectedScreenSourceId;
   console.log(JSON.stringify(results));
 })();
 """
+    if cancelled_during_restart:
+        # The user stops while the restart waits: the stop path sends its own notice.
+        script = script.replace(
+            "const startScreenSharing = async () => { results.restarted = true; };",
+            "const startScreenSharing = async () => { results.restarted = true; notifyScreenShareStopped(); };",
+        )
+    script = script.replace(
+        "const isScreenShareRunningOrStarting = () => true;",
+        "const isScreenShareRunningOrStarting = () => %s;" % ("true" if restart_starts else "false"),
+    )
     script = (
         script
         .replace("__START_STREAM__", _fn(screen_src, "startScreenVideoStreaming"))
@@ -1097,6 +1136,29 @@ def test_title_remap_stops_active_media_stream_before_it_sends_the_old_source():
     assert out["selected"] == "window:new"
     assert out["stopped"] is True
     assert out["sent"] == []
+    # A remap restarts the share on the new source: no stop notice.
+    assert out.get("shareStopNotices") is None
+
+
+@pytest.mark.unit
+def test_title_remap_whose_restart_ends_without_a_share_notifies_backend():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        restart_starts=False,
+    )
+    assert out["restarted"] is True
+    assert out.get("shareStopNotices") == 1
+
+
+@pytest.mark.unit
+def test_title_remap_restart_cancelled_by_the_user_sends_one_notice():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        restart_starts=False,
+        cancelled_during_restart=True,
+    )
+    assert out["restarted"] is True
+    assert out.get("shareStopNotices") == 1
 
 
 @pytest.mark.unit
@@ -1134,6 +1196,8 @@ def test_rejected_remembered_window_stops_active_media_stream(
     assert out["selected"] is None, expected_status
     assert out["stopped"] is True, expected_status
     assert out["sent"] == [], expected_status
+    # The share ends here, so the backend is told (screen_share_stopped).
+    assert out.get("shareStopNotices") == 1, expected_status
 
 
 @pytest.mark.unit
@@ -1189,6 +1253,7 @@ recaptureWithoutNeko({
 _PROACTIVE_REMEMBERED_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = { calls: [] };
 const S = {
@@ -1243,7 +1308,11 @@ def _proactive_remembered_script(
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -1338,8 +1407,15 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
+let proactiveVisionFrameRetryAfterInFlight = false;
 let visionEnabled = true;
 const isProactiveVisionEnabledNow = () => visionEnabled;
+// The speech gate and consent follow the same flag here; the switch rules
+// themselves are covered by tests/frontend/proactive_speech_vision_gate.test.cjs.
+const canProactiveVisionRunDuringSpeech = () => visionEnabled;
+const isVisionConsentHeldNow = () => visionEnabled;
+let proactiveVisionRevocationSeq = 0;
+let _speechVisionOffSeq = 0;
 let tutorialSuppressed = false;
 const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
 const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
@@ -1383,7 +1459,15 @@ def _frame_script(
         .replace("__AFTER_CAPTURE__", after_capture)
         .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
-        .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
+        .replace(
+            "__BUILD__",
+            _fn(screen_src, "resolveStreamFrameCaptureType")
+            + "\n" + _fn(screen_src, "buildStreamDataMessage")
+            + "\n" + _fn(screen_src, "buildMaskedStreamDataMessage")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId"),
+        )
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
     )
 
@@ -1446,6 +1530,8 @@ def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window()
 const results = { backendCalls: 0, streamCalls: 0 };
 const isHomeTutorialFeatureSuppressed = () => false;
 const releaseProactiveVisionStream = () => {};
+const isVisionConsentHeldNow = () => true;
+const holdsProactiveVisionStream = () => true;
 const window = {
   prepareRememberedWindowCapture: async () => ({
     required: true,

@@ -11,6 +11,36 @@ Third-party components retain their respective copyrights and licenses.
 For the bundled three-mmd components and their embedded babylon-mmd portions,
 see static/libs/THIRD_PARTY_NOTICES.md and static/libs/licenses/.
 
+nekopower/runtime/loop/ is ported from the tau_agent package of huggingface/tau
+(https://github.com/huggingface/tau, commit 0d256d5), Copyright (c) 2026
+Alejandro AO, MIT License; see nekopower/runtime/loop/LICENSE.
+
+config/prompts/prompts_nekopower.py and config/prompts/prompts_nekopower_tools.py
+contain model-facing text taken from DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, commit fcc0ad46), Copyright
+(c) 2026 DeepSeek, MIT License; the license text is reproduced in both files.
+
+nekopower/runtime/tools/seek.py reimplements the matching algorithm of
+codex-rs/apply-patch/src/seek_sequence.rs from OpenAI Codex
+(https://github.com/openai/codex, commit 87b7bdb), Copyright 2025 OpenAI,
+Apache License 2.0.
+
+config/prompts/prompts_nekopower_builtin.py (the browser tool definitions) and
+nekopower/builtin/browser/ (snapshot.py, keys.py, tools.py) follow Chrome
+DevTools MCP (https://github.com/ChromeDevTools/chrome-devtools-mcp, commit
+ec6fd2cf), Copyright 2025 Google LLC, Apache License 2.0: the split into
+tools, the parameter names and description wording, the text format of a page
+snapshot and the way element uids are given. nekopower/builtin/browser/snapshot.py
+also reimplements the accessibility-tree filtering of Puppeteer
+(https://github.com/puppeteer/puppeteer,
+packages/puppeteer-core/src/cdp/Accessibility.ts), Copyright 2018 Google Inc.,
+Apache License 2.0. Both are ports to Python; no file of either is included.
+
+deps/pyncm_async-1.8.1-py3-none-any.whl and
+deps/pyncm_async-1.8.2-py3-none-any.whl vendor pyncm-async
+(https://github.com/greats3an/pyncm), Copyright greats3an, Apache License 2.0;
+see deps/README.md and deps/SHA256SUMS.
+
 ------------------------------------------------------------
 
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。

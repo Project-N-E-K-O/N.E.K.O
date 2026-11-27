@@ -21,6 +21,10 @@ from utils.host_origin_guard import HostOriginGuardMiddleware
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
+from plugin.server.messaging.llm_tool_registry import (
+    release_tool_host_instance,
+    start_tool_host_instance,
+)
 from plugin.server.routes import (
     config_router,
     documents_router,
@@ -43,6 +47,7 @@ from plugin.server.routes import (
     runs_router,
     websocket_router,
 )
+from plugin.server.application.plugins import capability_analysis_service
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
 from plugin.server.routes.plugin_projects import router as plugin_projects_router
@@ -135,6 +140,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # An incorrect default in this direction merely leaves standalone-server plugins stopped, visibly and harmlessly.
     manage_lifecycle = bool(getattr(app.state, "manage_plugin_lifecycle", False))
 
+    tool_host_id = await start_tool_host_instance()
+    capability_analysis_service.analysis_service.start()
+
     if _can_register_faulthandler_signal():
         try:
             faulthandler.register(signal.SIGUSR1, all_threads=True)
@@ -199,7 +207,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             set_global_manager,
         )
         _install_source_mgr = build_install_source_manager()
-        await StartupReconciler(_install_source_mgr).run()
+        # With an owned lifecycle the layout migration already ran, so the
+        # removed entries are final; otherwise the lifecycle's own replay
+        # after its migration prunes. A migration that failed or was blocked
+        # leaves its legacy sources where they were; the only directories it
+        # deletes are dot-prefixed staging ones, which the lock never tracks,
+        # so it cannot leave a tombstone behind here.
+        await StartupReconciler(
+            _install_source_mgr, prune_uninstalled_grants=manage_lifecycle
+        ).run()
         set_global_manager(_install_source_mgr)
     except Exception as exc:
         logger.error(
@@ -210,6 +226,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             set_global_manager(None)
         except Exception:
             pass  # already in degraded mode
+
+    # Default host-follow slots exist before the first panel open. Best-effort:
+    # ensure_default_slots never raises; list_slots seeds lazily as a fallback.
+    try:
+        from plugin.server.application.model_config_service import ModelConfigService
+
+        await asyncio.to_thread(ModelConfigService().ensure_default_slots)
+    except Exception as exc:
+        logger.warning("default model slot seeding failed at startup: err_type={}", type(exc).__name__)
 
     # Write bridge token file for Market frontend / URI handler
     try:
@@ -227,6 +252,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await shutdown_tasks()
         from plugin.core.model_gateway_access import model_gateway_access
 
+        await capability_analysis_service.analysis_service.close()
         model_gateway_access.revoke_all()
         from plugin.server.routes.model_gateway import close_model_executor
 
@@ -234,6 +260,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         from plugin.server.infrastructure.package_download import aclose_package_http_client
 
         await aclose_package_http_client()
+        from plugin.server.routes.console_proxy import close_console_proxy
+
+        await close_console_proxy()
         stop_event.set()
         heartbeat_task.cancel()
         try:
@@ -250,6 +279,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 await lifecycle_shutdown()
             finally:
+                await release_tool_host_instance(tool_host_id)
                 # The knowledge bridge uses the shared loopback client; a
                 # standalone plugin server owns its process, so it closes it.
                 # Embedded in another server, that server does.
@@ -263,6 +293,8 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                         type(exc).__name__,
                         str(exc),
                     )
+        else:
+            await release_tool_host_instance(tool_host_id)
 
 
 def build_plugin_server_app(
@@ -341,6 +373,24 @@ def build_plugin_server_app(
     app.include_router(health_router)
     app.include_router(documents_router)
     app.include_router(plugins_router)
+    from plugin.server.routes.plugin_consent import (
+        router as plugin_consent_router,
+    )
+
+    app.include_router(plugin_consent_router)
+    from plugin.server.routes.plugin_permissions import (
+        router as plugin_permissions_router,
+    )
+
+    app.include_router(plugin_permissions_router)
+    from plugin.server.routes.plugin_permission_switch import (
+        router as plugin_permission_switch_router,
+    )
+
+    app.include_router(plugin_permission_switch_router)
+    from plugin.server.routes.plugin_audit import router as plugin_audit_router
+
+    app.include_router(plugin_audit_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)
@@ -352,6 +402,9 @@ def build_plugin_server_app(
     app.include_router(media_router)
     app.include_router(frontend_router)
     app.include_router(security_router)
+    from plugin.server.routes.console_proxy import router as console_proxy_router
+
+    app.include_router(console_proxy_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
     # Built-in plugin routes are optional. In AppImage/Nuitka builds,
@@ -368,8 +421,12 @@ def build_plugin_server_app(
     # Before the bridge: its /market/knowledge/{path} catch-all would
     # otherwise answer the subscription routes with 404.
     app.include_router(knowledge_market_router)
+    from plugin.server.routes.knowledge_publish import router as knowledge_publish_router
+    app.include_router(knowledge_publish_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
+    from plugin.server.routes.theater_market import router as theater_market_router
+    app.include_router(theater_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

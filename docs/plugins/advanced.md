@@ -76,6 +76,20 @@ See `plugin/plugins/mcp_adapter/` for a complete adapter implementation that bri
 - Custom serializer (`MCPResponseSerializer`)
 - Custom transport (`MCPTransportAdapter`)
 
+### Adapter SDK exports
+
+Import from `plugin.sdk.adapter`:
+
+| Category | Exports |
+|------|------|
+| **Base** | `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` |
+| **Plugin base** | `NekoAdapterPlugin` |
+| **Gateway** | `AdapterGatewayCore`, `DefaultPolicyEngine`, `DefaultRouteEngine`, `DefaultRequestNormalizer`, `DefaultResponseSerializer`, `CallablePluginInvoker` |
+| **Data models** | `ExternalRequest`, `GatewayRequest`, `GatewayResponse`, `GatewayAction`, `GatewayError`, `RouteDecision`, `RouteMode` |
+| **Protocols** | `TransportAdapter`, `RequestNormalizer`, `PolicyEngine`, `RouteEngine`, `PluginInvoker`, `ResponseSerializer` |
+| **Decorators** | `on_adapter_startup`, `on_adapter_shutdown`, `on_adapter_event`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message` |
+| **Types** | `Protocol`, `RouteTarget`, `AdapterMessage`, `AdapterResponse`, `RouteRule` |
+
 ## Async Programming
 
 Runtime entry points must use `async def`. Synchronous helpers remain supported,
@@ -88,6 +102,8 @@ async def async_task(self, url: str, **_):
         async with session.get(url) as response:
             return Ok({"data": await response.json()})
 ```
+
+Create async clients such as `aiohttp.ClientSession` inside the call that uses them, as above: `startup`, entry calls, and `shutdown` run on different event loops. `aiohttp` is a third-party package; declare it in your plugin's `pyproject.toml` `[project].dependencies` and run `neko-plugin sync <plugin>`.
 
 ---
 

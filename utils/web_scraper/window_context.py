@@ -107,16 +107,16 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         from utils.config_manager import ConfigManager
         config_manager = ConfigManager()
         
-        # Use summary-model configuration.
-        summary_config = await config_manager.aget_model_api_config('summary')
+        # Short keyword extraction on a user-facing path: use the small (emotion) tier.
+        model_config = await config_manager.aget_model_api_config('recognition')
         
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(
-            summary_config['model'], summary_config['base_url'],
-            summary_config['api_key'],
+            model_config['model'], model_config['base_url'],
+            model_config['api_key'],
             timeout=10.0, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; short keyword output but covers a thinking model's reasoning too
-            provider_type=summary_config.get('provider_type'),
+            provider_type=model_config.get('provider_type'),
         )
         
         # Clean/redact window titles for log display.

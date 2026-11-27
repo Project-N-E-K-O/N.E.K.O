@@ -12,7 +12,7 @@ Commands assume an Ubuntu-family host and have not been verified on every cloud 
 
 Install as described in [Docker Deployment](./docker); the Compose file is `docker/docker-compose.yml`. On small hosts:
 
-- **Use the full image**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It ships Chromium, so first start does not download a browser inside the container, at the cost of about 1 GB more disk.
+- **Use the full image if you want browser control**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It includes Chromium, at the cost of about 1 GB more disk. The standard image has no browser and the application downloads none, so browser control there reports that no usable browser was found. Chromium's sandbox needs user namespaces, so it only starts when the container is brought up together with `docker/compose.browser.yaml`: also set `COMPOSE_FILE=docker-compose.yml:compose.browser.yaml` in `docker/.env` (append `compose.browser.yaml` if `COMPOSE_FILE` is already set). See `docker/README_Docker.md`.
 - **Pin a version**: `latest` and `latest-full` are rolling tags. Pin a verified tag or digest with `NEKO_IMAGE`, and confirm it includes instance authorization (#3289) and HTTP pairing (#3299).
 - **Own domain**: set these in `docker/.env`; the official Compose file passes them to the container:
 
@@ -24,7 +24,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 Pairing over `http://<server-ip>:48911` is allowed by default and the page warns that it is unencrypted; the pairing key and session cookie travel in clear text, so do not enter credentials this way on untrusted networks. Set `NEKO_REQUIRE_HTTPS=1` to require HTTPS/WSS.
 
-On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files.
+On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files. By default (`AUTO_REGENERATE_CERT=0`), if only one file is present or certificate/key validation fails (including passphrase-protected private keys in non-interactive container startup), the entrypoint leaves your files untouched and exits with an error rather than deleting or overwriting them; set `AUTO_REGENERATE_CERT=1` only if you want invalid/partial files archived as `*.invalid-<timestamp>` and replaced with a self-signed pair.
 
 Before the first start, run the host preflight once from the repository root (also after migrating data, or when Docker created either directory as root):
 
@@ -53,6 +53,8 @@ Persist the file set in `docker/.env` so every `docker compose` command without 
 ```dotenv
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
+
+`COMPOSE_FILE` is the whole list of files and a new value replaces the old one, so keep every override file already in it. If you added `compose.browser.yaml` for the full image in section 1, write `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml` here; otherwise the next recreate drops the browser's seccomp profile and Chromium no longer starts.
 
 `!override` requires Docker Compose **2.24.4 or newer**. Check the final port bindings with `docker compose config` before each recreate. Set both `NEKO_INSTANCE_PUBLIC_ORIGIN` and `NEKO_TRUSTED_ORIGINS` to the public origin browsers actually use (for example `https://your-domain.example`). The gateway must keep Host and a correct `X-Forwarded-For` chain, proxy WebSockets, and either close public HTTP or redirect it to HTTPS. See [Community remote access](/design/security/community-remote-access).
 

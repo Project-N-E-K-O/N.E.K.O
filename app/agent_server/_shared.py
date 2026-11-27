@@ -16,10 +16,12 @@
 """Shared runtime state for the ``app.agent_server`` package.
 
 Owns the service logger (``setup_logging`` runs here before any other
-project import so import-time failures are persisted), the guarded brain
-adapter imports, the ``Modules`` singleton state bag, cross-module numeric
-constants, and the state primitives (``_bump_state_revision`` /
-``_set_capability`` / background-task bookkeeping).
+project import so import-time failures are persisted), the ``Modules``
+singleton state bag, cross-module numeric constants, and the state primitives
+(``_bump_state_revision`` / ``_set_capability`` / background-task bookkeeping).
+
+Tasks are not kept here. Every task is a commission in the NekoPower host's
+ledger (``nekopower/host``); ``nekopower_mount`` connects this process to it.
 
 Split out of the former monolithic ``app/agent_server.py``. ``Modules`` is
 mutable shared state with this module as its single owner: sibling modules
@@ -29,6 +31,7 @@ must do ``from . import _shared`` and access attributes as
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, ClassVar
 
 from fastapi import FastAPI
@@ -39,30 +42,9 @@ from utils.logger_config import setup_logging, ThrottledLogger
 logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from main_logic.agent_event_bus import AgentServerEventBridge
-try:
-    from brain.computer_use import ComputerUseAdapter
-    from brain.browser_use_adapter import BrowserUseAdapter
-    from brain.openclaw_adapter import OpenClawAdapter
-    from brain.deduper import TaskDeduper
-    from brain.task_executor import DirectTaskExecutor
-    from utils.result_parser import (  # noqa: F401  (re-exported via the package facade)
-        parse_computer_use_result,
-        parse_browser_use_result,
-        parse_plugin_result,
-        _phrase as _rp_phrase,
-        _get_lang as _rp_lang,
-    )
-except Exception as e:
-    logger.exception(f"[Agent] Module import failed during startup: {e}")
-    raise
 
 
 class Modules:
-    computer_use: ComputerUseAdapter | None = None
-    browser_use: BrowserUseAdapter | None = None
-    openclaw: OpenClawAdapter | None = None
-    deduper: TaskDeduper | None = None
-    task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
     user_plugin_http_task: Any = None  # threading.Thread (imported after class def)
@@ -73,41 +55,23 @@ class Modules:
     # background tasks, so an older readiness check must not overwrite a newer
     # toggle (or restart the lifecycle after the master switch was turned off).
     user_plugin_lifecycle_seq: int = 0
-    # Task tracking
-    task_registry: Dict[str, Dict[str, Any]] = {}
-    executor_reset_needed: bool = False
+    # The master switch. The name is the one the persisted intent file and the
+    # status snapshot use; nothing is "analyzed" any more.
     analyzer_enabled: bool = False
     analyzer_profile: Dict[str, Any] = {}
-    # Computer-use exclusivity and scheduling
-    computer_use_queue: Optional[asyncio.Queue] = None
-    computer_use_running: bool = False
-    active_computer_use_task_id: Optional[str] = None
-    active_computer_use_async_task: Optional[asyncio.Task] = None
-    # Browser-use task tracking
-    active_browser_use_task_id: Optional[str] = None
-    active_browser_use_bg_task: Optional[asyncio.Task] = None
-    # Browser-use exclusivity: the adapter is a singleton whose cancel flag
-    # and browser session are shared state, so dispatches must not overlap
-    # (mirrors computer-use exclusivity, implemented as a lock instead of a
-    # scheduler loop). Lazily created on the running event loop.
-    browser_use_dispatch_lock: Optional[asyncio.Lock] = None
-    # BrowserUse imports a sizeable dependency graph and may own a Chromium
-    # subprocess.  Keep construction/teardown serialized so on-demand callers
-    # cannot create duplicate adapters or race a disable/shutdown close.
-    browser_use_init_lock: Optional[asyncio.Lock] = None
-    # Monotonic intent generation. A background close may finish after a quick
-    # re-enable, but must not overwrite the newer ready capability state.
+    # Monotonic intent generation of the browser switch. A background close
+    # may finish after a quick re-enable, but must not overwrite the newer
+    # ready capability state.
     browser_use_lifecycle_seq: int = 0
-    # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
-    # while a bounded background probe waits for the external health endpoint.
-    openclaw_enable_task: Optional[asyncio.Task] = None
-    openclaw_enable_seq: int = 0
+    # Generation of the keyboard-and-mouse switch: bumped by every request
+    # that sets it. A request that waited for the check of the keyboard and
+    # mouse writes its answer only while it is still the latest one.
+    computer_use_switch_seq: int = 0
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {
         "computer_use_enabled": False,
         "browser_use_enabled": False,
         "user_plugin_enabled": False,
-        "openclaw_enabled": False,
     }
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
@@ -115,32 +79,26 @@ class Modules:
     throttled_logger: "ThrottledLogger" = None  # Lazy initialization.
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
-    # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
-    analyze_lock: Optional[asyncio.Lock] = None
-    # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
-    last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
-    # Proactive-analyze throttle state (opt-in feature, see AGENT_PROACTIVE_ANALYZE_*).
-    # Per-lanlan count of proactive analyses run this session (reset on greeting_check)
-    # and the last proactive assistant-turn fingerprint already consumed (dedupe).
-    proactive_analyze_count: ClassVar[Dict[str, int]] = {}
-    last_proactive_assistant_fingerprint: ClassVar[Dict[str, str]] = {}
+    # "Not ready" with no reason until worked out: for the keyboard-and-mouse
+    # and the browser tools when the master switch comes on
+    # (``capabilities._refresh_tool_capabilities``), for the plugins at start.
+    # Nothing here asks the agent model anything.
     capability_cache: Dict[str, Dict[str, Any]] = {
-        "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "openclaw": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "computer_use": {"ready": False, "reason": ""},
+        "browser_use": {"ready": False, "reason": ""},
+        "user_plugin": {"ready": False, "reason": ""},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
-    # Cancellable background task handles by logical task_id
-    task_async_handles: ClassVar[Dict[str, asyncio.Task]] = {}
 
 
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # Cache for 30 seconds.
-TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # Retain completed tasks for 5 minutes.
-DEFERRED_TASK_TIMEOUT: float = 3600.0  # Deferred tasks time out after 1 hour.
-OPENCLAW_ENABLE_CHECK_ATTEMPTS: int = 24
-OPENCLAW_ENABLE_CHECK_INTERVAL: float = 1.0
+
+
+def _now_iso() -> str:
+    # datetime.utcnow() is deprecated since Python 3.12; the tz-aware form
+    # yields the exact same string ("+00:00" swapped back to the legacy "Z").
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _get_throttled_logger() -> ThrottledLogger:
@@ -156,51 +114,134 @@ def _bump_state_revision() -> int:
     return Modules.state_revision
 
 
-def _set_capability(name: str, ready: bool, reason: str = "") -> None:
-    def _normalize_precheck_reason(raw_reason: str) -> str:
-        text = str(raw_reason or "").strip()
-        if not text:
-            return ""
-        if text.startswith("AGENT_"):
-            return text
-        if name == "openclaw":
-            # Late import: channels.openclaw imports _shared at module load,
-            # while this branch only runs at call time — the function-local
-            # import breaks the would-be cycle without changing behavior.
-            from .channels.openclaw import _openclaw_reason_code
-            return _openclaw_reason_code(text)
+def _put_switch_off(key: str) -> None:
+    """Put a capability switch off, and drop what was kept for task agents if it was the last one on.
 
-        lower = text.lower()
-        # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
-        if "未检查" in text or "not checked" in lower or "pending" in lower:
-            return "AGENT_PRECHECK_PENDING"
-        if "模型未配置" in text or "model not configured" in lower:
-            return "AGENT_MODEL_NOT_CONFIGURED"
-        if "api url 未配置" in lower or "url not configured" in lower:
-            return "AGENT_URL_NOT_CONFIGURED"
-        if "api key 未配置" in lower or "key not configured" in lower:
-            return "AGENT_KEY_NOT_CONFIGURED"
-        if "endpoint not configured" in lower or "api 未配置" in lower:
-            return "AGENT_ENDPOINT_NOT_CONFIGURED"
-        if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_PYAUTOGUI_NOT_INSTALLED"
-        if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_BROWSER_USE_NOT_INSTALLED"
-        if "not initialized" in lower or "初始化失败" in text:
-            return "AGENT_NOT_INITIALIZED"
-        if "未发现可用插件" in text or "no plugins" in lower:
-            return "AGENT_NO_PLUGINS_FOUND"
-        if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
-            return "AGENT_PLUGIN_SERVER_ERROR"
-        if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
-            return "AGENT_LLM_UNREACHABLE"
-        return "AGENT_LLM_UNREACHABLE"
+    In one go, with nothing awaited in between: NekoPower is off the
+    moment its last capability switch is (``nekopower_on``), and
+    what was kept of the main dialogue goes then. Not after
+    whatever the caller waits for next (a browser that is being
+    closed, a plugin host that is being stopped): the switch may
+    be on again by then, or the caller cancelled. Every place
+    that puts one of them off does it by this.
+    """
+    Modules.agent_flags[key] = False
+    try:
+        # Resolved when called: that module imports this one.
+        from .api_runtime import forget_turns_if_nekopower_is_off
 
+        forget_turns_if_nekopower_is_off()
+    except Exception:
+        # Seen: with this failed, what was said before the switch went
+        # off is handed to a task agent once NekoPower is on again.
+        # (Whether NekoPower is off now could not be looked at, that is:
+        # the dropping itself says so by itself when it fails.)
+        logger.warning(
+            "[NekoPower] looking whether NekoPower is off now failed as a switch went off;"
+            " the messages kept for task agents are not dropped",
+            exc_info=True,
+        )
+
+
+def _capability_reason_code(raw_reason: str) -> str:
+    """Return the stable i18n code (``agent.precheck.*``) for why a capability is not ready.
+
+    Codes are passed through; the free-text reasons of the configuration
+    check (``ConfigManager.is_agent_api_ready``) and of the plugin host are
+    mapped onto codes.
+    """
+    text = str(raw_reason or "").strip()
+    if not text:
+        return ""
+    if text.startswith("AGENT_"):
+        return text
+
+    lower = text.lower()
+    if "模型未配置" in text or "model not configured" in lower:
+        return "AGENT_MODEL_NOT_CONFIGURED"
+    if "api url 未配置" in lower or "url not configured" in lower:
+        return "AGENT_URL_NOT_CONFIGURED"
+    if "api key 未配置" in lower or "key not configured" in lower:
+        return "AGENT_KEY_NOT_CONFIGURED"
+    if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
+        return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+    if "no" in lower and "browser" in lower and "found" in lower:
+        return "AGENT_BROWSER_NOT_FOUND"
+    if "未发现可用插件" in text or "no plugins" in lower:
+        return "AGENT_NO_PLUGINS_FOUND"
+    if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
+        return "AGENT_PLUGIN_SERVER_ERROR"
+    if "agent api check failed" in lower:
+        # ``_check_agent_api_gate`` could not read the configuration.
+        return "AGENT_CONFIG_CHECK_FAILED"
+    # Anything else came from the configuration check failing as such
+    # (``_check_agent_api_gate``): the model counts as not set up.
+    return "AGENT_ENDPOINT_NOT_CONFIGURED"
+
+
+# Tickets: what is written of a capability after a check that waited (for
+# the configuration, the desktop, the browser search) is as new as when that
+# check started, not as when it ended. Each such check takes a ticket when it
+# starts (``_capability_ticket_now``) and writes with it; an answer from a
+# check that started before the one last written is dropped. Writes that do
+# not wait take a ticket as they write.
+_capability_ticket = 0
+_capability_ticket_written: Dict[str, int] = {}
+# The last answer a check gave, provisional stand-ins aside: what a request
+# whose own answer turned out older goes by (``_capability_latest_answer``).
+_capability_last_answer: Dict[str, Dict[str, Any]] = {}
+
+# The reasons that say the agent model is not set up. A configuration that
+# changes does not put a switch off (only a switch asked to come on without
+# one is refused): with these the tools are only said to be unusable.
+MODEL_SETUP_REASONS = frozenset({
+    "AGENT_ENDPOINT_NOT_CONFIGURED",
+    "AGENT_MODEL_NOT_CONFIGURED",
+    "AGENT_URL_NOT_CONFIGURED",
+    "AGENT_KEY_NOT_CONFIGURED",
+    "AGENT_CONFIG_CHECK_FAILED",
+})
+
+
+def _capability_ticket_now() -> int:
+    """Return a ticket for a check of a capability that starts now."""
+    global _capability_ticket
+    _capability_ticket += 1
+    return _capability_ticket
+
+
+def _set_capability(
+    name: str, ready: bool, reason: str = "", *, started: Optional[int] = None, provisional: bool = False
+) -> bool:
+    """Write whether a capability can be used, and why not; False when the answer is older than the one written.
+
+    ``started``: the ticket of the check the answer comes from, taken when
+    that check started. Without it the write counts as of now.
+    ``provisional``: a stand-in until a check answers ("not checked yet"):
+    written, but any check's answer replaces it, however early that check
+    started; it holds back no answer.
+    """
+    if not provisional:
+        ticket = started if started is not None else _capability_ticket_now()
+        if ticket < _capability_ticket_written.get(name, 0):
+            return False
+        _capability_ticket_written[name] = ticket
     prev = Modules.capability_cache.get(name, {})
-    normalized_reason = _normalize_precheck_reason(reason)
+    normalized_reason = _capability_reason_code(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
+    if not provisional:
+        _capability_last_answer[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
+    return True
+
+
+def _capability_latest_answer(name: str) -> Dict[str, Any]:
+    """Return the answer the newest check gave of a capability, not a provisional stand-in written since.
+
+    For a request whose own answer was refused as older: it goes by this.
+    """
+    return dict(_capability_last_answer.get(name) or Modules.capability_cache.get(name) or {})
 
 
 def _track_background_task(task: asyncio.Task) -> asyncio.Task:

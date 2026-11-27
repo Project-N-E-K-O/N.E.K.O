@@ -9,10 +9,9 @@ import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import Explorer from './PythonPackageExplorer.vue'
-import { pythonPackageMessages } from '@/i18n/python-packages'
+import en from '@/i18n/python-packages/en-US'
 import type { PythonDependencyGraph } from '@/api/projectPythonPackages'
 
-const en = pythonPackageMessages['en-US']
 function graph(): PythonDependencyGraph {
   return pythonDependencyGraph(
     ['alpha', 'beta'],

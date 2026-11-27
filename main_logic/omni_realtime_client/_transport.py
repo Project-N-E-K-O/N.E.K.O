@@ -34,16 +34,17 @@ from ._shared import (
     asyncio,
     base64,
     calculate_text_similarity,
-    canonical_realtime_dialect,
     get_stepfun_tts_default_voice,
     json,
     logger,
     np,
     parse_arguments_json,
+    resolve_realtime_dialect,
     time,
     uuid,
     websockets,
 )
+from main_logic.agent_event_bus import conversation_reply_observation, schedule_conversation_fact_observed_best_effort
 from main_logic.provider_failure_signals import (
     CODES_REQUIRING_MSG_DETAIL,
     classify_provider_failure_text,
@@ -660,7 +661,8 @@ class _TransportMixin:
             self._has_server_vad = False
         self._modalities = ["text", "audio"] if native_audio else ["text"]
 
-        if 'glm' in self._model_lower:
+        dialect = self._resolved_realtime_dialect()
+        if dialect == "glm":
             # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
             # Best-effort — provider may reject; if so we degrade to local-suppression-only.
             glm_session = {
@@ -684,7 +686,7 @@ class _TransportMixin:
             if self.has_tools() and 'audio' in self._modalities:
                 glm_session["tools"] = self._tools_for_openai_realtime()
             await self.update_session(glm_session)
-        elif "qwen" in self._model_lower:
+        elif dialect == "qwen":
             qwen_session: Dict[str, Any] = {
                 "instructions": instructions,
                 "modalities": self._modalities ,
@@ -714,7 +716,7 @@ class _TransportMixin:
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
             await self.update_session(qwen_session)
-        elif "gpt" in self._model_lower:
+        elif dialect == "gpt":
             gpt_session = {
                 "type": "realtime",
                 "model": self.model,
@@ -745,7 +747,7 @@ class _TransportMixin:
                 gpt_session["tools"] = self._tools_for_openai_realtime()
                 gpt_session["tool_choice"] = "auto"
             await self.update_session(gpt_session)
-        elif "step" in self._model_lower:
+        elif dialect == "step":
             default_voice = get_stepfun_tts_default_voice('step')
             step_session = {
                 "instructions": instructions,
@@ -762,7 +764,7 @@ class _TransportMixin:
                 step_tools.extend(self._tools_for_step())
             step_session["tools"] = step_tools
             await self.update_session(step_session)
-        elif "free" in self._model_lower:
+        elif dialect == "free":
             # NOTE: lanlan.tech (China free) backs onto StepFun and
             # supports the StepFun custom-function protocol — the
             # server-side tool stripping the user mentioned will be
@@ -804,7 +806,7 @@ class _TransportMixin:
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools
             await self.update_session(free_session)
-        elif "grok" in self._model_lower:
+        elif dialect == "grok":
             # xAI Grok Voice: flat OpenAI Realtime 1.0 schema.
             # Built-in voices from GET /v1/tts/voices: eve/ara/leo/rex/sal, default eve.
             # Tools use OpenAI-compatible functions through response.function_call_arguments.done.
@@ -1049,15 +1051,54 @@ class _TransportMixin:
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
                 if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+                    # An item shrink drops the oldest parts before it gives
+                    # up; keep the part list to undo that if it fails.
+                    _item = event.get("item")
+                    parts_before_shrink = (
+                        list(_item["content"])
+                        if isinstance(_item, dict)
+                        and isinstance(_item.get("content"), list)
+                        else None
+                    )
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
+                    if payload is None and pre_send is not None:
+                        # The hook may now remove what did not fit (it runs
+                        # after the worker-thread yield); give up only if the
+                        # rest is still too large. Put back what the failed
+                        # shrink removed first, so the hook decides on it.
+                        if parts_before_shrink is not None:
+                            _item["content"] = parts_before_shrink
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:
+                            payload = rechecked
+                            # The shrink already warned it dropped the item.
+                            logger.info(
+                                "oversized %s: shrink failed; sending after "
+                                "the pre-send hook (%d bytes)",
+                                event.get("type", ""),
+                                len(rechecked),
+                            )
                     if payload is None:
                         if raise_on_oversize:
                             raise RealtimeImagePayloadTooLargeError(
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return False
+                    if pre_send is not None:
+                        # The recompression above yields to a worker thread,
+                        # so the caller's conditions may have changed again
+                        # (e.g. screen consent revoked). Re-run the hook; the
+                        # item shrink edits ``event`` in place, so serializing
+                        # it again keeps the smaller images. Only reserialize
+                        # when the hook actually changed something.
+                        shrunk_snapshot = json.dumps(event)
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if rechecked != shrunk_snapshot:
+                            payload = rechecked
                 # Two distinct presend checks both run: send_guard verifies current connection
                 # ownership; raw-vision fencing verifies the frame still fits current routing
                 # mode. Semaphore waits and oversized-image recompression yield, allowing either
@@ -1138,11 +1179,20 @@ class _TransportMixin:
 
                 raise
 
+    def _resolved_realtime_dialect(self) -> str:
+        cached = getattr(self, "_realtime_dialect", None)
+        if cached is not None:
+            return cached
+        return resolve_realtime_dialect(
+            getattr(self, "_api_type", ""),
+            getattr(self, "model", None) or getattr(self, "_model_lower", ""),
+            base_url=getattr(self, "base_url", None),
+            livestream_mode=bool(getattr(self, "_livestream_mode", False)),
+        )
+
     def _is_glm_realtime(self) -> bool:
         """True when this socket speaks the GLM Realtime session dialect."""
-        if canonical_realtime_dialect(getattr(self, "_api_type", "")) == "glm":
-            return True
-        return "glm" in str(getattr(self, "_model_lower", "") or "")
+        return self._resolved_realtime_dialect() == "glm"
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -1264,11 +1314,7 @@ class _TransportMixin:
         # Observe ownership on every frame, not only on frames the local onset
         # gate accepts: server VAD may commit an utterance the gate never heard.
         self._note_input_route_identity_frame(ingress_route_identity)
-        raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
-        raw_loud = False
-        if len(raw_samples) > 0:
-            local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
-            raw_loud = local_rms > self._client_vad_threshold
+        raw_loud = self.note_pcm16_ingress_activity(audio_chunk)
         if raw_loud:
             # Publish user engagement before waiting on the shared admission
             # boundary. A proactive callback holding that lock must see speech
@@ -1276,7 +1322,6 @@ class _TransportMixin:
             # all VAD state transitions and provider writes remain serialized
             # below.
             self._last_local_loud_time = audio_timeline_at
-            self._user_recent_activity_time = time.time()
             handoff_input_sequence = self._note_voice_handoff_input_open()
 
         # Detect input sample rate based on chunk size
@@ -1405,12 +1450,13 @@ class _TransportMixin:
         *,
         update_turn_state: bool = True,
     ) -> str:
-        """Use VISION_MODEL to analyze an image and return its description.
+        """Describe an image with the chat model (legacy vision config as fallback).
 
         Callback-owned images pass ``update_turn_state=False`` because their
         description is delivered in the callback's exact arbiter ticket. They
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
+        discard_epoch = getattr(self, "_visual_context_discard_epoch", 0)
         try:
             # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -1419,6 +1465,15 @@ class _TransportMixin:
                 image_b64=image_b64,
                 max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
+
+            if (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            ):
+                # The frame was discarded (consent revoked) while it was being
+                # analyzed; its description must not come back.
+                logger.info("Image analysis result dropped: visual context was discarded")
+                return ""
 
             if description:
                 if update_turn_state:
@@ -1429,7 +1484,7 @@ class _TransportMixin:
                 logger.info("✅ Image analysis complete.")
                 return description
             else:
-                logger.warning("VISION_MODEL not configured or analysis failed")
+                logger.warning("Image description unavailable (chat model not configured or analysis failed)")
                 if update_turn_state:
                     self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_recognized_this_turn = False
@@ -1439,7 +1494,13 @@ class _TransportMixin:
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            if update_turn_state:
+            # The frame may have been discarded meanwhile; state may then
+            # already belong to a newer frame, so leave it alone.
+            discarded_meanwhile = (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            )
+            if update_turn_state and not discarded_meanwhile:
                 self._image_recognized_this_turn = False
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
@@ -1460,6 +1521,37 @@ class _TransportMixin:
         finally:
             if update_turn_state:
                 self._image_being_analyzed = False
+
+    def discard_live_share_frames(self) -> None:
+        """Forget the cached live frame after the frontend's share has stopped.
+
+        Live share frames carry no ``request_id``; a cached screenshot the user
+        attached to a voice turn (it has one) is left alone. Frames that
+        reached the server before the stop but finish validating after it are
+        dropped by Core before they get here. On providers without native
+        vision the frame's description goes too, and an analysis still running
+        for it cannot write its result back.
+        """
+
+        if getattr(self, "_latest_image_request_id", None) is not None:
+            return
+        # Same fence as a consent revocation (discard_cached_visual_context):
+        # an analysis still running for this frame cannot write back. No
+        # captured-at floor here: later frames, e.g. a user screenshot
+        # already in flight, must still be accepted.
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not getattr(self, "_supports_native_image", True):
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._image_recognized_this_turn = False
 
     def block_raw_visual_delivery(self) -> None:
         """Fail closed for raw frames without changing the microphone route."""
@@ -1504,6 +1596,34 @@ class _TransportMixin:
         ):
             self._raw_visual_delivery_blocked = False
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the cached frame so no later proactive turn can deliver it.
+
+        Called when the user revokes screen consent. The generation bump
+        fences any in-flight ``prompt_ephemeral`` snapshot: a late visual
+        rejection can no longer re-arm the discarded frame.
+        """
+
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        # Frames still validating when consent was revoked carry an earlier
+        # ingress time; this floor makes stage_multimodal_frame and
+        # stream_image drop them.
+        self._visual_context_discard_at = time.monotonic()
+        self._latest_image_captured_at = self._visual_context_discard_at
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not self._supports_native_image:
+            # A completed Step annotation describes the discarded frame.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+
     def stage_multimodal_frame(
         self,
         image_b64: str,
@@ -1541,10 +1661,12 @@ class _TransportMixin:
         frame_captured_at = (
             float(captured_at) if has_ingress_order else time.monotonic()
         )
-        if has_ingress_order and frame_captured_at <= getattr(
-            self,
-            "_latest_image_captured_at",
-            0.0,
+        # Compare against the last discard too: a visual-route switch resets
+        # the cache ordering time, which must not readmit frames captured
+        # before a consent revocation.
+        if has_ingress_order and frame_captured_at <= max(
+            getattr(self, "_latest_image_captured_at", 0.0),
+            getattr(self, "_visual_context_discard_at", 0.0),
         ):
             return ImageStageResult(
                 accepted=False,
@@ -1798,6 +1920,19 @@ class _TransportMixin:
                     mode=delivery_mode.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason="raw_visual_delivery_blocked",
+                )
+            if (
+                cache_latest
+                and isinstance(captured_at, (int, float))
+                and float(captured_at)
+                <= getattr(self, "_visual_context_discard_at", 0.0)
+            ):
+                # Captured before the last consent revocation, delivered late.
+                return ImageStageResult(
+                    accepted=False,
+                    mode=delivery_mode.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="stale_frame",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if proactive_cue_image:
@@ -2057,17 +2192,18 @@ class _TransportMixin:
                 )
 
             if self._audio_in_buffer or bypass_rate_limit:
-                if "qwen" in self._model_lower:
+                dialect = self._resolved_realtime_dialect()
+                if dialect == "qwen":
                     append_event = {
                         "type": "input_image_buffer.append" ,
                         "image": image_b64
                     }
-                elif "glm" in self._model_lower:
+                elif dialect == "glm":
                     append_event = {
                         "type": "input_audio_buffer.append_video_frame",
                         "video_frame": image_b64
                     }
-                elif "gpt" in self._model_lower:
+                elif dialect == "gpt":
                     append_event = {
                         "type": "conversation.item.create",
                         "item": {
@@ -2426,6 +2562,49 @@ class _TransportMixin:
         self._is_first_transcript_chunk = False
         return pending
 
+    async def _observed_text_callback(self, callback, *args):
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if observation and observation.get("closed"):
+            if observation.get("allow_text_continuations") and observation.get("close_reason") == "completed":
+                # Gemini already classified this as the same turn. Reuse its
+                # transcript only during the callback; Core projects shown text.
+                observation["_text_snapshot"] = self._gemini_current_transcript
+            else:
+                observation = None
+        token = conversation_reply_observation.set(observation)
+        try:
+            return await callback(*args)
+        finally:
+            if observation is not None:
+                observation.pop("_text_snapshot", None)
+            conversation_reply_observation.reset(token)
+
+    def _close_realtime_conversation_observation(self, status: str) -> None:
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if not observation or observation.get("closed") or not observation.get("started"):
+            return
+        observation["closed"] = True
+        if status in ("completed", "success", "succeeded"):
+            reason = "completed"
+        elif status in ("cancelled", "canceled"):
+            reason = "interrupted"
+        elif status in ("failed", "error"):
+            reason = "failed"
+        else:
+            reason = "unknown"
+        observation["close_reason"] = reason
+        schedule_conversation_fact_observed_best_effort(
+            self.lanlan_name,
+            fact="reply.closed",
+            payload={
+                "reply_id": observation["reply_id"], "input_id": None,
+                "turn_id": observation.get("turn_id"),
+                "character": self.lanlan_name, "text": None,
+                "origin": observation["origin"], "audio_expected": None,
+                "text_state": "closed", "close_reason": reason, "occurred_at": time.time(),
+            },
+        )
+
     async def _emit_pending_output_transcript(
         self, pending: tuple[str, bool] | None
     ) -> None:
@@ -2434,7 +2613,7 @@ class _TransportMixin:
         if pending is None or not self.on_output_transcript:
             return
         text, is_first = pending
-        await self.on_output_transcript(text, is_first)
+        await self._observed_text_callback(self.on_output_transcript, text, is_first)
 
     def _clear_turn_response_state(self) -> None:
         """Drop the flags that say "a response is in progress".
@@ -2456,6 +2635,8 @@ class _TransportMixin:
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
+        # Supersession ends the observation, but does not prove cancellation.
+        self._close_realtime_conversation_observation("unknown")
         self._cancelled_voice_successor_sid = None
         self._cancelled_voice_successor_has_input = False
         self._cancelled_voice_response_id = None
@@ -2467,6 +2648,16 @@ class _TransportMixin:
         self._current_response_source = (
             arbiter.response_source_for(response_id) if arbiter is not None else None
         )
+        source = self._current_response_source
+        origin = None
+        if source == "proactive":
+            origin = {"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None}
+        elif source in ("external_asr", "external_asr_multimodal"):
+            origin = {"kind": "user_interaction", "is_proactive": False, "plugin_id": None, "task_id": None}
+        self._realtime_conversation_observation = ({
+            "reply_id": uuid.uuid4().hex, "origin": origin,
+            "started": False, "closed": False, "lifecycle": "realtime",
+        } if response_id else None)
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
@@ -2877,6 +3068,7 @@ class _TransportMixin:
             return
         if not self._is_responding and self._current_response_id is None:
             return
+        self._close_realtime_conversation_observation("unknown")
         # The epoch this response began in, not the one the callback happens to
         # find. Between them a barge-in can have advanced _turn_epoch at
         # speech_stopped — which does not clear _current_response_id, so the id
@@ -3556,6 +3748,7 @@ class _TransportMixin:
                         )
                     if await retire_if_replaced():
                         return
+                    self._close_realtime_conversation_observation(response_status)
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished(
                         connection_still_ours=receive_owner_is_current,
@@ -3735,7 +3928,7 @@ class _TransportMixin:
                             or _audio_already_spoken
                         )
                     ):
-                        await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                         if await retire_if_replaced():
                             return
                         self._is_first_transcript_chunk = False
@@ -3744,9 +3937,9 @@ class _TransportMixin:
                 if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
-                            if "glm" not in self._model_lower:
+                            if self._resolved_realtime_dialect() != "glm":
                                 self._ai_recent_activity_time = time.time()
-                                await self.on_text_delta(event["delta"], self._is_first_text_chunk)
+                                await self._observed_text_callback(self.on_text_delta, event["delta"], self._is_first_text_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_text_chunk = False
@@ -3785,7 +3978,7 @@ class _TransportMixin:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
                             if transcript:
-                                await self.on_output_transcript(transcript, True)
+                                await self._observed_text_callback(self.on_output_transcript, transcript, True)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False
@@ -3799,12 +3992,12 @@ class _TransportMixin:
                             else:
                                 if self._output_transcript_buffer:
                                     # logger.info(f"{self._output_transcript_buffer} is_first_chunk: True")
-                                    await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                                    await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                                     if await retire_if_replaced():
                                         return
                                     self._is_first_transcript_chunk = False
                                     self._output_transcript_buffer = ""
-                                await self.on_output_transcript(delta, self._is_first_transcript_chunk)
+                                await self._observed_text_callback(self.on_output_transcript, delta, self._is_first_transcript_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False

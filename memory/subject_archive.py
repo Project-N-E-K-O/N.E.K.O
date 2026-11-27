@@ -224,7 +224,8 @@ async def asweep_scoped_subject_archive(
     if dry_run is None:
         dry_run = SCOPED_SUBJECT_ARCHIVE_DRY_RUN
 
-    facts_full = await fact_store.aload_facts_full(name)
+    # Cold rows as stubs: their timestamps and subject markers still count.
+    facts_full = await fact_store.aload_facts_full(name, include_cold_stubs=True)
     reflections_full = await reflection_engine._aload_reflections_full(name)
     persona = await persona_manager.aensure_persona(name)
     persona_entries = list(_iter_persona_entries(persona))
@@ -313,32 +314,31 @@ async def asweep_scoped_subject_archive(
 
         archived_counts = {'facts': 0, 'reflections': 0, 'persona_entries': 0,
                            'last_write': last_dt.isoformat()}
-        if fact_targets:
-            try:
-                moved = await fact_store.aarchive_subject_facts(
-                    name, subject, now_iso, stale_cutoff,
-                )
-            except Exception as e:
-                # Treat real disk/permission failures like reactivation aborts: skip remaining stores to prevent
-                # divergence where facts remain active but reflection/persona have moved into shards.
-                logger.warning(
-                    f"[SubjectArchive] {name}: subject "
-                    f"[{_domain_marker(subject)}] facts 归档失败，跳过本轮"
-                    f"其余存储的归档: {e}"
-                )
-                moved = None
-            if moved is None:
-                # Locked fact-store checks detected new writes since assessment, reactivating the subject.
-                # All three stores must follow the same decision or none; skip this subject's
-                # reflection/persona archival and let the next sweep reassess using the new
-                # last_write value.
-                logger.info(
-                    f"[SubjectArchive] {name}: subject "
-                    f"[{_domain_marker(subject)}] 判定窗口内复活，跳过本轮"
-                    f"其余存储的归档"
-                )
-                continue
-            archived_counts['facts'] = moved
+        try:
+            moved = await fact_store.aarchive_subject_facts(
+                name, subject, now_iso, stale_cutoff,
+            )
+        except Exception as e:
+            # Treat real disk/permission failures like reactivation aborts: skip remaining stores to prevent
+            # divergence where facts remain active but reflection/persona have moved into shards.
+            logger.warning(
+                f"[SubjectArchive] {name}: subject "
+                f"[{_domain_marker(subject)}] facts 归档失败，跳过本轮"
+                f"其余存储的归档: {e}"
+            )
+            moved = None
+        if moved is None:
+            # Locked fact-store checks detected new writes since assessment, reactivating the subject.
+            # All three stores must follow the same decision or none; skip this subject's
+            # reflection/persona archival and let the next sweep reassess using the new
+            # last_write value.
+            logger.info(
+                f"[SubjectArchive] {name}: subject "
+                f"[{_domain_marker(subject)}] 判定窗口内复活，跳过本轮"
+                f"其余存储的归档"
+            )
+            continue
+        archived_counts['facts'] = moved
         for r in refl_targets:
             try:
                 if await reflection_engine.aarchive_reflection(name, r['id']):

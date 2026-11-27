@@ -76,6 +76,20 @@ class MyProtocolAdapter(NekoAdapterPlugin):
 - 自定义序列化器（`MCPResponseSerializer`）
 - 自定义传输层（`MCPTransportAdapter`）
 
+### Adapter SDK 导出
+
+从 `plugin.sdk.adapter` 导入：
+
+| 类别 | 导出 |
+|------|------|
+| **基类** | `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` |
+| **插件基类** | `NekoAdapterPlugin` |
+| **网关** | `AdapterGatewayCore`, `DefaultPolicyEngine`, `DefaultRouteEngine`, `DefaultRequestNormalizer`, `DefaultResponseSerializer`, `CallablePluginInvoker` |
+| **数据模型** | `ExternalRequest`, `GatewayRequest`, `GatewayResponse`, `GatewayAction`, `GatewayError`, `RouteDecision`, `RouteMode` |
+| **协议** | `TransportAdapter`, `RequestNormalizer`, `PolicyEngine`, `RouteEngine`, `PluginInvoker`, `ResponseSerializer` |
+| **装饰器** | `on_adapter_startup`, `on_adapter_shutdown`, `on_adapter_event`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message` |
+| **类型** | `Protocol`, `RouteTarget`, `AdapterMessage`, `AdapterResponse`, `RouteRule` |
+
 ## 异步编程
 
 运行时入口必须使用 `async def`。同步辅助函数仍可使用，但应通过异步入口暴露：
@@ -87,6 +101,8 @@ async def async_task(self, url: str, **_):
         async with session.get(url) as response:
             return Ok({"data": await response.json()})
 ```
+
+像上面这样，在使用异步 client（如 `aiohttp.ClientSession`）的那次调用里创建它：`startup`、入口调用和 `shutdown` 运行在不同的事件循环里。`aiohttp` 是第三方包，请在插件的 `pyproject.toml` 的 `[project].dependencies` 中声明，并运行 `neko-plugin sync <plugin>`。
 
 ---
 

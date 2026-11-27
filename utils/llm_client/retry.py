@@ -14,6 +14,7 @@
 """Lazy OpenAI and Anthropic retry exception registries."""
 
 from __future__ import annotations
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,25 +35,56 @@ def openai_retry_error_types() -> tuple[type[BaseException], ...]:
 
 def chat_retry_error_types() -> tuple[type[BaseException], ...]:
     """Return the union of OpenAI + Anthropic transient error classes for shared retry loops."""
-    return (*openai_retry_error_types(), *anthropic_retry_error_types())
+    return chat_retry_error_types_snapshot()[0]
+
+
+def chat_retry_error_types_snapshot() -> tuple[tuple[type[BaseException], ...], bool]:
+    """``chat_retry_error_types()`` plus whether that answer is final.
+
+    It is final once every Anthropic class has been found, so a caller that
+    keeps its own cache must cache only then. Both come from one read of the
+    SDK module: asking twice could pair a list built while the SDK was half
+    imported with a "complete" from a moment later.
+    """
+    anthropic_types, complete = _anthropic_retry_error_types_snapshot()
+    return (*openai_retry_error_types(), *anthropic_types), complete
+
+_ANTHROPIC_RETRY_EXCEPTION_NAMES = (
+    "APIConnectionError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "InternalServerError",
+    "RateLimitError",
+)
+
 
 def anthropic_retry_error_types() -> tuple[type[BaseException], ...]:
-    """Return Anthropic SDK error classes that should follow the chat retry path."""
+    """Return Anthropic SDK error classes that should follow the chat retry path.
+
+    Never imports the SDK. Callers evaluate this in ``except`` clauses, on the
+    event loop, for every exception leaving an LLM call (a cancelled stream
+    included), while the SDK is only loaded when an Anthropic client is built.
+    Until then no Anthropic error can be in flight, so the answer is ``()``.
+    Only a complete set is cached, so a client built later is still covered.
+    """
+    return _anthropic_retry_error_types_snapshot()[0]
+
+
+def _anthropic_retry_error_types_snapshot() -> tuple[tuple[type[BaseException], ...], bool]:
+    """The Anthropic classes found so far, and whether all of them were."""
     global _ANTHROPIC_RETRY_EXCEPTION_TYPES
-    if _ANTHROPIC_RETRY_EXCEPTION_TYPES is None:
-        try:
-            import anthropic as _anthropic
-        except Exception:  # pragma: no cover - anthropic may be absent in minimal installs
-            _anthropic = None
-        _ANTHROPIC_RETRY_EXCEPTION_TYPES = tuple(
-            exc_type
-            for exc_type in (
-                getattr(_anthropic, "APIConnectionError", None),
-                getattr(_anthropic, "APITimeoutError", None),
-                getattr(_anthropic, "AuthenticationError", None),
-                getattr(_anthropic, "InternalServerError", None),
-                getattr(_anthropic, "RateLimitError", None),
-            )
-            if isinstance(exc_type, type)
+    if _ANTHROPIC_RETRY_EXCEPTION_TYPES is not None:
+        return _ANTHROPIC_RETRY_EXCEPTION_TYPES, True
+    module = sys.modules.get("anthropic")
+    found = tuple(
+        exc_type
+        for exc_type in (
+            getattr(module, name, None) for name in _ANTHROPIC_RETRY_EXCEPTION_NAMES
         )
-    return _ANTHROPIC_RETRY_EXCEPTION_TYPES
+        if isinstance(exc_type, type)
+    )
+    # A module still being imported on another thread can be missing classes.
+    complete = len(found) == len(_ANTHROPIC_RETRY_EXCEPTION_NAMES)
+    if complete:
+        _ANTHROPIC_RETRY_EXCEPTION_TYPES = found
+    return found, complete

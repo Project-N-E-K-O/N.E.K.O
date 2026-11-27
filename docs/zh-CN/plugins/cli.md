@@ -81,7 +81,7 @@ version = "0.1.0"
 n.e.k.o_plugin_hello_world
 ```
 
-命名规则是 `n.e.k.o_plugin_<插件 ID>`。创建仓库时不要让 GitHub 自动添加 README、`.gitignore` 或 License，因为插件目录中已经有需要提交的文件。
+推荐的命名规则是 `n.e.k.o_plugin_<插件 ID>`；名称不一致时，`neko-plugin check -r --market-release` 只给出警告。创建仓库时不要让 GitHub 自动添加 README、`.gitignore` 或 License，因为插件目录中已经有需要提交的文件。
 
 然后进入插件目录，提交并推送源码：
 
@@ -219,7 +219,7 @@ cd ../../..
 uv run neko-plugin publish hello_world
 ```
 
-Market 会把新发布的 stable 版本设为最新版本。它按照版本在 Market 中的发布时间切换 latest，不会比较版本号大小，所以不要在发布新版本后再补发一个较旧的版本。
+匿名发布须使用 PEP 440 版本，且高于当前 stable 版本。如果当前版本使用历史非标准标签，请通过 CLI 打印的 Market 链接，以作者身份提交一次 Release。已被取代的回执会以非零状态退出。 收到 `platform_attention` 也会以失败退出，需要 Market 平台人员处理。
 
 ## 8. 发布 beta 或填写更新说明
 
@@ -337,4 +337,4 @@ check
 
 这篇教程假定插件目录本身包含 `.git/`，并且有标准 `verify.yml` 和 `release.yml`。使用当前快速开始中的 `neko-plugin init` 创建的插件已经满足这些条件。
 
-如果现有插件只由外层 N.E.K.O 仓库跟踪，插件目录自身没有 `.git/`，当前 `publish` 会停止；CLI 目前没有把这种目录自动转换成可发布插件仓库的命令。不要用复制目录、安装包导入或符号链接伪装成发布流程。
+如果现有插件只由外层 N.E.K.O 仓库跟踪，插件目录自身没有 `.git/`，当前 `publish` 会停止。可以用 `neko-plugin setup-repo <plugin> --git --github-actions` 转换这个目录（加 `--remote <url>` 设置 `origin`），它会为插件建立自己的 Git 仓库和标准工作流。已有的 `.github/workflows/release.yml` 会原样保留；如果之后 `publish` 提示发布工作流不是当前版本，先用 `neko-plugin setup-repo <plugin> --upgrade-github-actions --dry-run` 预览，再去掉 `--dry-run` 执行升级；`neko-plugin create-repo <plugin>` 可以用 `gh` 创建 GitHub 仓库。不要用复制目录、安装包导入或符号链接伪装成发布流程。

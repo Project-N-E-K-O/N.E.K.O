@@ -72,7 +72,8 @@ class SQLChatMessageHistory:
         )
         metadata.create_all(self._engine)
 
-    def _serialize(self, message: Any) -> str:
+    @staticmethod
+    def serialize_message(message: Any) -> str:
         if isinstance(message, BaseMessage):
             data = {"content": message.content}
             persisted_kwargs = _persisted_additional_kwargs(message)
@@ -85,6 +86,9 @@ class SQLChatMessageHistory:
         if isinstance(message, dict):
             return _json.dumps(message, ensure_ascii=False)
         return _json.dumps({"type": "system", "data": {"content": str(message)}}, ensure_ascii=False)
+
+    def _serialize(self, message: Any) -> str:
+        return self.serialize_message(message)
 
     def add_message(self, message: Any) -> None:
         from sqlalchemy import insert

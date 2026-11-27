@@ -64,6 +64,7 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    let storageLocationModalOpener = null;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -2332,6 +2333,20 @@
             // everything around it is disabled.
             if (control) control.disabled = repetitionInsightsBusy || !ready;
         });
+        notifyHabitualPhrasePanel(false);
+    }
+
+    // The habitual-phrase section (memory_habitual_phrases.js) follows the same
+    // target and the same storage / import locks as the analyzer around it.
+    // `reload` asks it to refetch even when neither changed: the panel opened.
+    function notifyHabitualPhrasePanel(reload) {
+        document.dispatchEvent(new CustomEvent('neko:habitual-phrases-target', {
+            detail: {
+                name: repetitionInsightsTarget(),
+                ready: !memoryStorageLimited && !window._memoryImportInProgress,
+                reload: !!reload
+            }
+        }));
     }
 
     function setRepetitionInsightsBusy(busy) {
@@ -3124,7 +3139,10 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
-        if (name === 'insights') syncRepetitionInsightsControls();
+        if (name === 'insights') {
+            syncRepetitionInsightsControls();
+            notifyHabitualPhrasePanel(true);
+        }
         if (name === 'visit') openVisitMemoryPanel();
         panel.focus({ preventScroll: true });
     }
@@ -3177,16 +3195,17 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            if (!activeMemoryAuxiliaryPanel) return;
-            const storageModal = document.getElementById('storage-location-modal');
-            if (storageModal && !storageModal.hidden) return;
-            if (event.key === 'Escape') {
+            if (event.key !== 'Tab' && event.key !== 'Escape') return;
+            const storageDialog = document.querySelector('#storage-location-overlay:not([hidden])')
+                || document.querySelector('#storage-location-modal:not([hidden])');
+            if (!storageDialog && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageDialog) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageDialog || getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -3643,7 +3662,7 @@
         renderStorageRestartButton();
     }
 
-    function openStorageLocationManager() {
+    function openStorageLocationManager(opener) {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
         const blockingReason = String(state.blockingReason || '').trim();
@@ -3654,7 +3673,7 @@
         }
 
         const modal = document.getElementById('storage-location-modal');
-        if (!modal) return;
+        if (!modal || !modal.hidden) return;
         setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
 
         const input = document.getElementById('storage-target-root-input');
@@ -3666,11 +3685,13 @@
         setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
+        storageLocationModalOpener = opener;
         modal.hidden = false;
         document.body.classList.add('storage-location-memory-modal-open');
+        (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
-    function closeStorageLocationManager() {
+    function closeStorageLocationManager(restoreFocus = true) {
         const modal = document.getElementById('storage-location-modal');
         if (modal) {
             modal.hidden = true;
@@ -3680,6 +3701,35 @@
         if (input) {
             input.disabled = false;
         }
+        if (restoreFocus) restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        storageLocationModalOpener = null;
+    }
+
+    function openStorageLocationFromHash() {
+        if (window.location.hash !== '#change-storage-location') return;
+        if (pendingMemorySelection || pendingMemoryClose) return;
+        if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
+        if (activeMemoryAuxiliaryPanel !== 'settings') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        openStorageLocationManager(document.getElementById('storage-location-manage-btn'));
+    }
+
+    function initStorageLocationControls() {
+        document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
+        const manageButton = document.getElementById('storage-location-manage-btn');
+        manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', () => closeStorageLocationManager());
+        const modal = document.getElementById('storage-location-modal');
+        modal?.addEventListener('click', function (event) {
+            if (event.target === modal) closeStorageLocationManager();
+        });
+        document.getElementById('storage-location-pick-btn')?.addEventListener('click', pickStorageTargetDirectory);
+        document.getElementById('storage-target-root-input')?.addEventListener('input', function () {
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        });
+        document.getElementById('storage-location-restart-btn')?.addEventListener('click', preflightAndRestartWithStorageLocation);
     }
 
     async function pickStorageTargetDirectory() {
@@ -3951,7 +4001,6 @@
                 }
             } catch (_) {}
         }
-        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -3994,6 +4043,11 @@
                 && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
             ) {
                 window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+                const overlay = document.querySelector('#storage-location-overlay:not([hidden])');
+                if (overlay) {
+                    closeStorageLocationManager(false);
+                    overlay.querySelector('.storage-location-close')?.focus({ preventScroll: true });
+                }
             }
         } catch (e) {
             console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
@@ -4029,6 +4083,11 @@
                 '当前存储位置还未就绪。请先完成存储位置选择、恢复或等待迁移完成，然后再查看记忆。'
             );
             editDiv.appendChild(placeholder);
+            window.__nekoMemoryLimitedMode = true;
+            if (window.nekoMemoryImprint && typeof window.nekoMemoryImprint.setActiveTab === 'function') {
+                window.nekoMemoryImprint.setActiveTab('recent');
+            }
+            window.dispatchEvent(new CustomEvent('neko:memory-limited-state'));
         }
 
         const saveRow = document.getElementById('save-row');
@@ -4125,6 +4184,22 @@
             metadata = data && typeof data === 'object' ? data.metadata : null;
         }
         return !!metadata && typeof metadata === 'object' && metadata.source === THEATER_MEMORY_SOURCE;
+    }
+
+    function formatRecentMemoryTime(item) {
+        let metadata = item.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = item.data && typeof item.data === 'object' ? item.data.metadata : null;
+        }
+        const raw = metadata && metadata.recent_memory_time;
+        if (typeof raw !== 'string' || !/^[0-9]{1,16}$/.test(raw)) return '';
+        const millis = Number(raw);
+        if (!Number.isSafeInteger(millis)) return '';
+        const date = new Date(millis);
+        if (!Number.isFinite(date.getTime())) return '';
+        const pad = value => String(value).padStart(2, '0');
+        const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+        return `[${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${weekday} ${pad(date.getHours())}:${pad(date.getMinutes())}]`;
     }
 
     function setMemoryRowDeleteButtonsEnabled(enabled) {
@@ -4702,6 +4777,7 @@
             Array.from(document.getElementById('memory-file-list').children).forEach(function (item) {
                 setRoleSelected(item, item === listItem);
             });
+            window.dispatchEvent(new CustomEvent('neko:memory-refresh-overview'));
             return;
         }
         await selectMemoryFile(
@@ -4928,6 +5004,7 @@
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
                 syncRepetitionInsightsControls();
+                openStorageLocationFromHash();
             }
         }
     }
@@ -5121,7 +5198,7 @@
                 conversationPosition += 1;
                 // 提取时间戳和正文，健壮处理
                 const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
-                const timeStr = m ? m[1] : '';
+                const timeStr = m ? m[1] : msg.displayTime || '';
                 const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
 
                 const contentWrapper = document.createElement('div');
@@ -5137,6 +5214,18 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = content;
+                bubble.tabIndex = 0;
+                bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
+                bubble.addEventListener('dblclick', function () {
+                    beginBubbleInlineEdit(bubble, msg, 'ai');
+                });
+                bubble.addEventListener('keydown', function (ev) {
+                    if (ev.target !== bubble) return;
+                    if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
+                        ev.preventDefault();
+                        beginBubbleInlineEdit(bubble, msg, 'ai');
+                    }
+                });
                 contentWrapper.appendChild(bubble);
 
                 if (timeStr) {
@@ -5165,6 +5254,18 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = msg.text;
+                bubble.tabIndex = 0;
+                bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
+                bubble.addEventListener('dblclick', function () {
+                    beginBubbleInlineEdit(bubble, msg, 'human');
+                });
+                bubble.addEventListener('keydown', function (ev) {
+                    if (ev.target !== bubble) return;
+                    if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
+                        ev.preventDefault();
+                        beginBubbleInlineEdit(bubble, msg, 'human');
+                    }
+                });
                 contentWrapper.appendChild(bubble);
 
                 const deleteWrapper = document.createElement('div');
@@ -5195,6 +5296,62 @@
         } else {
             chatData[idx].text = value;
         }
+    }
+
+    function beginBubbleInlineEdit(bubbleEl, msgRef, role) {
+        if (!bubbleEl || bubbleEl.classList.contains('is-inline-editing')) return;
+        const rowEl = bubbleEl.closest('.chat-item');
+        if (rowEl && rowEl.classList.contains('is-leaving')) return;
+        const currentIdx = chatData.indexOf(msgRef);
+        if (currentIdx < 0) return;
+        const msg = chatData[currentIdx];
+        if (!msg) return;
+        const originalText = role === 'ai'
+            ? (function () {
+                const m = String(msg.text || '').match(/^(\[[^\]]+\])([\s\S]*)$/);
+                return (m && m[2]) ? m[2].trim() : String(msg.text || '');
+            })()
+            : String(msg.text || '');
+
+        bubbleEl.classList.add('is-inline-editing');
+        bubbleEl.textContent = '';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'chat-bubble-inline-input';
+        textarea.value = originalText;
+        bubbleEl.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+
+        let committed = false;
+        function finish(commit) {
+            if (committed) return;
+            committed = true;
+            const nextVal = textarea.value.trim();
+            bubbleEl.classList.remove('is-inline-editing');
+            const liveIdx = chatData.indexOf(msgRef);
+            if (commit && nextVal && nextVal !== originalText && liveIdx >= 0) {
+                if (role === 'ai') {
+                    updateAIContent(liveIdx, ' ' + nextVal);
+                } else {
+                    chatData[liveIdx].text = nextVal;
+                }
+                setMemoryDirty(true);
+                bubbleEl.textContent = nextVal;
+            } else {
+                bubbleEl.textContent = originalText;
+            }
+        }
+
+        textarea.addEventListener('blur', function () { finish(true); });
+        textarea.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') {
+                ev.preventDefault();
+                finish(false);
+            } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+                ev.preventDefault();
+                finish(true);
+            }
+        });
     }
     // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
     // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
@@ -5448,6 +5605,22 @@
         selectMemoryFile(filename, li, catName, options);
     }
 
+    function cancelMemoryUnsavedSwitch() {
+        if (memoryUnsavedSwitchBusy) return;
+        closeMemoryUnsavedSwitchDialog(true);
+        openStorageLocationFromHash();
+    }
+
+    function finishMemoryUnsavedSwitch(selection, closeRequested, suppressUnsavedPrompt) {
+        closeMemoryUnsavedSwitchDialog(false);
+        if (closeRequested) {
+            performCloseMemoryBrowser(suppressUnsavedPrompt);
+            return;
+        }
+        selectMemoryFile(selection.filename, findMemoryRoleListItem(selection.filename), selection.catName);
+        openStorageLocationFromHash();
+    }
+
     function initMemoryUnsavedSwitchDialog() {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const cancel = document.getElementById('memory-unsaved-switch-cancel');
@@ -5455,23 +5628,10 @@
         const save = document.getElementById('memory-unsaved-switch-save');
         if (!dialog || !cancel || !discard || !save) return;
 
-        cancel.addEventListener('click', function () {
-            if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
-        });
+        cancel.addEventListener('click', cancelMemoryUnsavedSwitch);
         discard.addEventListener('click', function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
-            const selection = pendingMemorySelection;
-            const closeRequested = pendingMemoryClose;
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(true);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(pendingMemorySelection, pendingMemoryClose, true);
         });
         save.addEventListener('click', async function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
@@ -5491,23 +5651,14 @@
                 save.focus();
                 return;
             }
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(false);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(selection, closeRequested, false);
         });
         document.addEventListener('keydown', function (event) {
             if (dialog.hidden) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
+                cancelMemoryUnsavedSwitch();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -5569,6 +5720,9 @@
         }
         setMemoryCurrentRoleName(currentCatName);
         setMemoryRolePanelOpen(false, false);
+        window.dispatchEvent(new CustomEvent('neko:memory-character-selected', {
+            detail: { catName: currentCatName, filename: filename },
+        }));
         const editDiv = document.getElementById('memory-chat-edit');
 
         // 清空并使用 textContent 设置加载中状态
@@ -5626,6 +5780,9 @@
                     // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
                     chatItem.source_index = index;
                     chatItem.theater = isTheaterMemoryItem(item);
+                    if (chatItem.role === 'ai' && !chatItem.theater) {
+                        chatItem.displayTime = formatRecentMemoryTime(item);
+                    }
                     return chatItem;
                 }).filter(Boolean);
                 renderChatEdit();
@@ -5714,7 +5871,11 @@
             && memoryEditRevision === saveContentRevision
         );
         const savedRows = chatData.slice();
-        const saveChat = chatData.map(msg => ({ ...msg }));
+        const saveChat = chatData.map(msg => {
+            const saved = { ...msg };
+            delete saved.displayTime;
+            return saved;
+        });
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -5795,9 +5956,23 @@
                 }
                 return true;
             } else {
-                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const code = data && typeof data.code === 'string' ? data.code : '';
+                let errorMsg;
+                if (code === 'RECENT_FILE_CONFLICT') {
+                    errorMsg = translate(
+                        'memory.recentFileConflict',
+                        data.error || '近期记忆已在其他任务中更新，请重新加载并合并后再保存'
+                    );
+                } else if (code === 'RECENT_FILE_THEATER_READONLY') {
+                    errorMsg = translate(
+                        'memory.recentFileTheaterReadonly',
+                        data.error || '小剧场记忆不能在记忆浏览器中编辑，请重新加载后再保存'
+                    );
+                } else {
+                    errorMsg = data.error || translate('common.unknownError', '未知错误');
+                }
                 if (stillTargetsSavedSelection()) {
-                    showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                    showSaveStatus(translate('memory.saveFailed', '保存失败：{{error}}', { error: errorMsg }), false);
                 }
                 return false;
             }
@@ -6022,12 +6197,15 @@
         initRepetitionInsights();
         initVisitMemoryPanel();
         initMemoryAuxiliaryPanels();
+        initStorageLocationControls();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
             chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
             window.addEventListener('resize', syncMemoryChatScrollMask);
         }
         const storagePanelState = await initStorageLocationPanel();
+        window.addEventListener('hashchange', openStorageLocationFromHash);
+        openStorageLocationFromHash();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
@@ -6151,53 +6329,6 @@
             externalImport.addEventListener('click', importExternalMemory);
         }
         updateExternalImportButton();
-
-        const openStorageBtn = document.getElementById('storage-location-open-btn');
-        if (openStorageBtn) {
-            openStorageBtn.addEventListener('click', function () {
-                openCurrentStorageRoot();
-            });
-        }
-        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
-        if (manageStorageBtn) {
-            manageStorageBtn.addEventListener('click', function () {
-                openStorageLocationManager();
-            });
-        }
-        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
-        if (closeStorageModalBtn) {
-            closeStorageModalBtn.addEventListener('click', function () {
-                closeStorageLocationManager();
-            });
-        }
-        const storageModal = document.getElementById('storage-location-modal');
-        if (storageModal) {
-            storageModal.addEventListener('click', function (event) {
-                if (event.target === storageModal) {
-                    closeStorageLocationManager();
-                }
-            });
-        }
-        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
-        if (pickStorageBtn) {
-            pickStorageBtn.addEventListener('click', function () {
-                pickStorageTargetDirectory();
-            });
-        }
-        const storageTargetInput = document.getElementById('storage-target-root-input');
-        if (storageTargetInput) {
-            storageTargetInput.addEventListener('input', function () {
-                storagePreflightState = null;
-                setStoragePreflightResult('', '');
-                renderStorageRestartButton();
-            });
-        }
-        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
-        if (restartStorageBtn) {
-            restartStorageBtn.addEventListener('click', function () {
-                preflightAndRestartWithStorageLocation();
-            });
-        }
 
         // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');

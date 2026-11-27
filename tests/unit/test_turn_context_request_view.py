@@ -213,7 +213,9 @@ def test_the_resident_block_follows_its_message_when_old_images_are_evicted():
     client._evict_old_images(keep_turns=1)
 
     replaced = client._conversation_history[1]
-    assert replaced is not oldest and replaced.content == "第一张图"
+    assert replaced is not oldest
+    assert "第一张图" in str(replaced.content)
+    assert "Historical image attachment record: 1" in str(replaced.content)
     assert client.resident_turn_context_ids() == ["pack/芙宁娜"]
     view = client._dialog_messages_for_provider(client._conversation_history)
     assert view[view.index(replaced) + 1].content == _KNOWLEDGE

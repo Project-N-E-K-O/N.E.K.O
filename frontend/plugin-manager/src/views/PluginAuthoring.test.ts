@@ -1,12 +1,20 @@
 // @vitest-environment happy-dom
 import { pythonPackagesSnapshot, pythonRequirement } from '@/test/fixtures/pythonPackages'
-import { pythonPackageMessages } from '@/i18n/python-packages'
+import pythonPackagesEnUs from '@/i18n/python-packages/en-US'
+import pythonPackagesZhCn from '@/i18n/python-packages/zh-CN'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import PluginAuthoring from './PluginAuthoring.vue'
-import { authoringMessages } from '@/i18n/authoring'
+import authoringEnUs from '@/i18n/authoring/en-US'
+import authoringZhCn from '@/i18n/authoring/zh-CN'
+import authoringZhTw from '@/i18n/authoring/zh-TW'
+import authoringJa from '@/i18n/authoring/ja'
+import authoringKo from '@/i18n/authoring/ko'
+import authoringRu from '@/i18n/authoring/ru'
+import authoringEs from '@/i18n/authoring/es'
+import authoringPt from '@/i18n/authoring/pt'
 import type {
   AuthoringProject,
   CreatedPluginProject,
@@ -15,6 +23,9 @@ import type {
   Toolchain,
 } from '@/api/pluginProjects'
 import { RELEASE_WORKFLOW_PATH } from '@/api/pluginProjects'
+
+const pythonPackageMessages = { 'en-US': pythonPackagesEnUs, 'zh-CN': pythonPackagesZhCn }
+const authoringMessages = { 'en-US': authoringEnUs, 'zh-CN': authoringZhCn, 'zh-TW': authoringZhTw, ja: authoringJa, ko: authoringKo, ru: authoringRu, es: authoringEs, pt: authoringPt }
 
 const api = vi.hoisted(() => ({
   listPluginProjects: vi.fn(),
@@ -82,12 +93,14 @@ vi.mock('vue-router', () => ({
 // publish steps; only its Market login and network calls are replaced.
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
+  listMarketPublicationReceipts: vi.fn().mockResolvedValue([]),
   listMarketZones: vi.fn(),
   authenticated: false,
 }))
 vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketSubmissions: market.listMarketSubmissions,
+  listMarketPublicationReceipts: market.listMarketPublicationReceipts,
   listMarketZones: market.listMarketZones,
 }))
 vi.mock('@/composables/useMarketAuth', async () => {
@@ -197,6 +210,7 @@ const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   release_url: '',
   market_status: null,
   market_candidate_id: null,
+  market_request_id: null,
   log: [],
   started_at: null,
   updated_at: 1,
@@ -252,42 +266,44 @@ async function flush() {
   }
 }
 
-let switchLocale: (language: 'en-US' | 'zh-CN') => void
+let switchLocale: (language: keyof typeof authoringMessages) => void
 
 async function mount() {
   const container = document.createElement('div')
   document.body.append(container)
   const app = createApp(PluginAuthoring)
   app.use(ElementPlus)
-  const i18n = createI18n({
-      legacy: false,
-      locale: 'en-US',
-      messages: {
-        'en-US': {
-          authoring: en,
-          pythonPackages: pythonPackageMessages['en-US'],
-          plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
-          common: {
-            cancel: 'Cancel',
-            close: 'Close',
-            noData: 'No data',
-            loading: 'Loading',
-            edit: 'Edit',
-            save: 'Save',
-            refresh: 'Refresh',
-            confirm: 'Confirm',
-          },
-          status: { running: 'Running', stopped: 'Stopped' },
-        },
-        'zh-CN': {
-          authoring: authoringMessages['zh-CN'],
-          pythonPackages: pythonPackageMessages['zh-CN'],
-          plugins: { typePlugin: '插件', typeAdapter: '适配器' },
-          common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
-          status: { running: '运行中', stopped: '已停止' },
-        },
+  const messages = {
+    'en-US': {
+      pythonPackages: pythonPackageMessages['en-US'],
+      plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
+      common: {
+        cancel: 'Cancel',
+        close: 'Close',
+        noData: 'No data',
+        loading: 'Loading',
+        edit: 'Edit',
+        save: 'Save',
+        refresh: 'Refresh',
+        confirm: 'Confirm',
       },
-    })
+      status: { running: 'Running', stopped: 'Stopped' },
+    },
+    'zh-CN': {
+      pythonPackages: pythonPackageMessages['zh-CN'],
+      plugins: { typePlugin: '插件', typeAdapter: '适配器' },
+      common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
+      status: { running: '运行中', stopped: '已停止' },
+    },
+  }
+  const i18n = createI18n({
+    legacy: false,
+    locale: 'en-US',
+    messages: Object.fromEntries(Object.entries(authoringMessages).map(([language, authoring]) => [
+      language,
+      { ...messages[language === 'zh-CN' ? 'zh-CN' : 'en-US'], authoring },
+    ])),
+  })
   switchLocale = (language) => { i18n.global.locale.value = language }
   app.use(i18n)
   app.mount(container)
@@ -300,7 +316,7 @@ async function mount() {
 }
 
 function buttons(text: string) {
-  return [...document.querySelectorAll('button')].filter(
+  return [...document.querySelectorAll<HTMLElement>('button, a.el-button')].filter(
     (element) => element.textContent?.trim() === text
   )
 }
@@ -355,6 +371,7 @@ async function settle() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  market.listMarketPublicationReceipts.mockResolvedValue([])
   api.route.query = {}
   vi.stubGlobal(
     'MutationObserver',
@@ -628,6 +645,180 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
   })
 
+  it('shows the Market receipt of the current Release and ignores the others', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      // Another Release, and a tag that only differs in case: neither is this one.
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+      { id: 2, release_url: 'https://github.com/owner/hello_world/releases/tag/V0.2.0', status: 'rejected' },
+      // The owner's case does not matter on GitHub.
+      { id: 3, release_url: 'https://github.com/Owner/Hello_World/releases/tag/v0.2.0', status: 'verifying' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    // The task's request id is only passed for the task of this Release.
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, 55)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionVerifying)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('picks the task receipt by its request id before matching the Release URL', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 54, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'rejected' },
+      // An old receipt names the Release by its numeric ID; its request id still identifies it.
+      { id: 55, release_url: 'https://github.com/owner/hello_world/releases/123456', status: 'platform_attention' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.publishTaskFailed)
+    expect(marketVersion.textContent).toContain(en.marketVersionPlatformAttention)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('shows a superseded Market receipt as a failed publication step', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 59, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'superseded' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(page('market').textContent).toContain(en.marketVersionSuperseded)
+    expect(page('market').textContent).toContain(en.publishTaskFailed)
+  })
+
+  it.each([
+    ['verifying', en.marketVersionVerifying],
+    ['pending_review', en.marketVersionAwaitingReview],
+    ['unavailable', en.marketVersionSuperseded],
+    ['no replacement', en.marketVersionSuperseded],
+  ])('shows the Release status after a superseded task: %s', async (status, expected) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success', ready: true } } })
+    )
+    const release = 'https://github.com/owner/hello_world/releases/tag/v0.2.0'
+    api.getPluginProjectPublishTask.mockResolvedValue(publishTask({
+      mode: 'market_notify', status: 'failed', release_url: release, market_request_id: 55, market_status: 'superseded',
+    }))
+    const pinned = { id: 55, channel: 'stable', release_url: release, status: 'superseded' }
+    const others = [
+      { ...pinned, id: 70, release_url: release.replace('owner/', 'other/'), status: 'rejected' },
+      { ...pinned, id: 69, release_url: release.replace('v0.2.0', 'v0.3.0'), status: 'rejected' },
+      { ...pinned, id: 66, channel: 'beta', status: 'rejected' },
+      { ...pinned, id: 52, status: 'rejected' },
+    ]
+    market.listMarketPublicationReceipts.mockImplementation(async (_pluginId: number, requestId?: number, offset = 0) => {
+      if (requestId === pinned.id) return [pinned]
+      if (status === 'unavailable') throw new Error('Market unavailable')
+      if (status === 'no replacement') return others
+      // The replacement is older than a full page of receipts for a different tag.
+      if (offset === 0) return Array.from({ length: 20 }, (_, i) => ({ ...others[1], id: 100 - i }))
+      const replacement = status === 'verifying'
+        ? { ...pinned, id: 61, status }
+        : { ...pinned, id: 61, release_url: release.replace('tag/v0.2.0', '123456'), target_version: 'v0.2.0', status }
+      return [...others, { ...pinned, id: 58 }, replacement, pinned]
+    })
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const versionStep = page('market')
+    expect(versionStep.textContent).toContain(expected)
+    expect(versionStep.querySelector('.authoring-publish-task .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 0)
+    if (status === 'verifying' || status === 'pending_review') {
+      expect(versionStep.textContent).not.toContain(en.marketVersionSuperseded)
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishStatusWaiting)
+      expect(versionStep.classList.contains('authoring-publish-step--current')).toBe(false)
+      expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 20)
+    } else {
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    }
+  })
+
+  it('takes the newest receipt when the Release was sent again under the same tag', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 60, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'rejected' },
+      { id: 61, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'verifying' },
+      { id: 59, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'superseded' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, undefined)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionVerifying)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('reads no request id from a task of another Release, nor a receipt of another tag', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0',
+        market_request_id: 44,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, undefined)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+    expect(marketVersion.textContent).toContain('Release v0.2.0 is ready; notify the Market to list it.')
+  })
+
   it('starts the full publish after the second confirmation, with its task in the Release step', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
@@ -773,6 +964,7 @@ describe('authoring workbench backed by the server project list', () => {
       readyToolchain({
         uv: { installed: false, version: null },
         gh: { installed: true, version: '2.101.0', authenticated: false, login: null },
+        source_checkout: false,
       })
     )
     const container = await mount()
@@ -780,6 +972,10 @@ describe('authoring workbench backed by the server project list', () => {
     const tools = page('toolchain')
     expect(tools.style.display).not.toBe('none')
     expect(tools.querySelector('h3')!.textContent).toContain('0. Prepare tools')
+    expect([...tools.querySelectorAll('[data-tool]')].map((item) => item.getAttribute('data-tool'))).toEqual([
+      'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
+    ])
+    expect(tools.textContent).not.toContain('git clone')
     const uv = tools.querySelector('[data-tool="uv"]')!
     expect(uv.textContent).toContain(en.toolMissing)
     expect(uv.textContent).toContain(en.toolRequired)
@@ -1293,6 +1489,31 @@ describe('authoring workbench backed by the server project list', () => {
     expect(document.body.textContent).toContain(en.buildPackageDone)
   })
 
+  it.each([
+    ['E:/Projects/hello-world'],
+    ['E:\\Projects\\hello-world'],
+  ])('builds a kebab-case project folder (source_dir=%s)', async (sourceDir) => {
+    // A cloned repository keeps its kebab-case folder while the plugin ID stays
+    // snake_case; the CLI resolves projects by folder name, not by ID.
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([{ ...listed, source_dir: sourceDir }])
+    api.buildPluginCli.mockResolvedValue({
+      built: [{ package_path: 'D:/packages/hello-world.neko-plugin' }],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+
+    await mount()
+    await click(en.buildPackage)
+
+    expect(api.buildPluginCli).toHaveBeenCalledWith({
+      mode: 'single',
+      plugin_ref: { root_id: 'project', directory_name: 'hello-world' },
+    }, { timeout: 300_000 })
+  })
+
   it('reports a failed build and downloads nothing', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
@@ -1488,15 +1709,95 @@ it('explains an unavailable existing-project picker without offering a manual pa
   expect(document.querySelectorAll('.el-message-box__input').length).toBe(0)
 })
 
-it('documents the explicit external project path for each follow-up CLI command', async () => {
+it.each([
+  ['zh-CN', 'https://project-neko.online/zh-CN/plugins/'],
+  ['zh-TW', 'https://project-neko.online/zh-CN/plugins/'],
+  ['en-US', 'https://project-neko.online/plugins/'],
+  ['ja', 'https://project-neko.online/ja/plugins/'],
+  ['ko', 'https://project-neko.online/plugins/'],
+  ['ru', 'https://project-neko.online/plugins/'],
+  ['es', 'https://project-neko.online/plugins/'],
+  ['pt', 'https://project-neko.online/plugins/'],
+] as const)('keeps native tutorial navigation for the active %s locale', async (language, url) => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
   await mount()
+  switchLocale(language)
+  await flush()
+  const link = buttons(authoringMessages[language].help)[0] as HTMLAnchorElement
+  expect(link.tagName).toBe('A')
+  expect(link.href).toBe(url)
+  expect(link.target).toBe('_blank')
+  expect(link.rel).toBe('noopener noreferrer')
+  const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(open).not.toHaveBeenCalled()
+  expect(document.querySelector('.el-drawer')).toBeNull()
+})
+
+it('uses the newly applied locale when the tutorial is opened again', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  await mount()
+  expect((buttons(en.help)[0] as HTMLAnchorElement).href).toBe('https://project-neko.online/plugins/')
   await click(en.help)
-  const commands = [...document.querySelectorAll('.authoring-help-drawer pre')].map((el) => el.textContent).join('\n')
-  for (const command of ['check', 'check-release', 'build', 'publish']) {
-    const expected = command === 'check-release'
-      ? 'check "<parent-directory>/<plugin_id>" --release'
-      : `${command} "<parent-directory>/<plugin_id>"`
-    expect(commands).toContain(expected)
+  switchLocale('ja')
+  await flush()
+  expect((buttons(authoringMessages.ja.help)[0] as HTMLAnchorElement).href).toBe(
+    'https://project-neko.online/ja/plugins/'
+  )
+  await click(authoringMessages.ja.help)
+  expect(open).not.toHaveBeenCalled()
+})
+
+it('preserves native middle-click navigation for the tutorial in browsers', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  await mount()
+  const link = buttons(en.help)[0] as HTMLAnchorElement
+  const event = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(link.href).toBe('https://project-neko.online/plugins/')
+  expect(open).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['click', 0],
+  ['auxclick', 1],
+] as const)('routes tutorial %s to the system browser in Electron', async (type, button) => {
+  const openExternal = vi.fn()
+  Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+  const open = vi.spyOn(window, 'open')
+  try {
+    await mount()
+    switchLocale('zh-CN')
+    await flush()
+    const link = buttons(authoringMessages['zh-CN'].help)[0]!
+    const event = new MouseEvent(type, { button, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://project-neko.online/zh-CN/plugins/')
+    expect(open).not.toHaveBeenCalled()
+    expect(document.querySelector('.el-drawer')).toBeNull()
+  } finally {
+    Reflect.deleteProperty(window, 'electronShell')
+  }
+})
+
+it('leaves the tutorial context menu available in Electron', async () => {
+  const openExternal = vi.fn()
+  Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+  const open = vi.spyOn(window, 'open')
+  try {
+    await mount()
+    const link = buttons(en.help)[0] as HTMLAnchorElement
+    const event = new MouseEvent('auxclick', { button: 2, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    expect(link.href).toBe('https://project-neko.online/plugins/')
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  } finally {
+    Reflect.deleteProperty(window, 'electronShell')
   }
 })
 

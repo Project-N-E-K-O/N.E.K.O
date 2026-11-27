@@ -54,9 +54,8 @@ from config import (
 )
 try:
     from memory.embeddings import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 except ImportError:
@@ -66,13 +65,13 @@ except ImportError:
     # docstring already calls out the "embedding unavailable → no-op"
     # contract.
     from memory.embeddings_fallback import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
         _warn_once,
     )
     _warn_once(__name__)
+from memory._embeddings.ranking import cosine_clusters, run_clusters_off_loop
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -194,7 +193,7 @@ class MemoryRefineEngine:
         round-3 on PR #1412): exceptions used to be treated as "transient,
         don't count", to avoid blaming specific entries for one-off network/IO
         hiccups. But when the "transient" issue is actually **persistent** —
-        the correction model snapshot is offline and keeps timing out,
+        the summary model snapshot is offline and keeps timing out,
         cloudsave stuck in maintenance, a read-only FS — that uncounted path
         becomes an infinite retry storm, slamming the same poison cluster into
         the LLM every 30min forever. A budget of
@@ -218,7 +217,8 @@ class MemoryRefineEngine:
         # Build all clusters across entities.
         all_clusters: list[tuple[str, list[dict]]] = []
         for entity, entries in candidates_by_entity.items():
-            for cluster in self._compute_clusters(entries):
+            # Off the event loop; see ``run_clusters_off_loop``.
+            for cluster in await run_clusters_off_loop(self._compute_clusters, entries):
                 all_clusters.append((entity, cluster))
 
         if not all_clusters:
@@ -314,11 +314,11 @@ class MemoryRefineEngine:
         valid: list[dict] = []
         vecs: list = []
         for e in entries:
-            text = e.get('text', '')
-            if not is_cached_embedding_valid(e, text, model_id):
-                continue
-            v = decode_embedding(e.get('embedding'))
-            if v is None or v.size == 0:
+            # One decode per entry: the validity check already decodes to
+            # verify the dimension, so take its vector instead of decoding
+            # the same string a second time.
+            v = decode_valid_cached_embedding(e, e.get('text', ''), model_id)
+            if v is None:
                 continue
             if target_dim is None:
                 target_dim = int(v.size)
@@ -330,64 +330,16 @@ class MemoryRefineEngine:
         if len(valid) < 2:
             return []
 
-        matrix = np.stack(vecs)
         # Vectors are L2-normalized by the embedding service, so dot
-        # product == cosine. Skip self-similarity by zeroing the diagonal.
-        sim_matrix = matrix @ matrix.T
-        np.fill_diagonal(sim_matrix, -1.0)
-
-        threshold = MEMORY_REFINE_COSINE_THRESHOLD
-        topk = MEMORY_REFINE_TOPK_PER_ENTRY
-        n = len(valid)
-
-        # Per-entry top-K neighbor edges above threshold.
-        adj: list[list[int]] = [[] for _ in range(n)]
-        for i in range(n):
-            row = sim_matrix[i]
-            # gather candidates above threshold
-            cand = [(int(j), float(row[j])) for j in range(n) if float(row[j]) >= threshold]
-            cand.sort(key=lambda x: -x[1])
-            adj[i] = [j for j, _ in cand[:topk]]
-
-        # Union-find for connected components.
-        parent = list(range(n))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for i in range(n):
-            for j in adj[i]:
-                union(i, j)
-
-        groups: dict[int, list[int]] = {}
-        for i in range(n):
-            groups.setdefault(find(i), []).append(i)
-
-        clusters: list[list[dict]] = []
-        for indices in groups.values():
-            if len(indices) < 2:
-                continue
-            if len(indices) > MEMORY_REFINE_CLUSTER_SIZE_MAX:
-                # Truncate by per-member max cosine within the cluster.
-                # Members with the weakest internal pull drop first.
-                strengths = []
-                for i in indices:
-                    others = [j for j in indices if j != i]
-                    max_sim = max((float(sim_matrix[i][j]) for j in others), default=-1.0)
-                    strengths.append((i, max_sim))
-                strengths.sort(key=lambda x: -x[1])
-                indices = [s[0] for s in strengths[:MEMORY_REFINE_CLUSTER_SIZE_MAX]]
-            clusters.append([valid[i] for i in indices])
-
-        return clusters
+        # product == cosine. Per-row top-K edges above threshold, then
+        # connected components; see ``cosine_clusters`` for the exact rules.
+        groups = cosine_clusters(
+            np.stack(vecs),
+            threshold=MEMORY_REFINE_COSINE_THRESHOLD,
+            topk=MEMORY_REFINE_TOPK_PER_ENTRY,
+            size_max=MEMORY_REFINE_CLUSTER_SIZE_MAX,
+        )
+        return [[valid[i] for i in indices] for indices in groups]
 
     # ── cluster_hash + skip ─────────────────────────────────────────
 
@@ -464,11 +416,11 @@ class MemoryRefineEngine:
         )
 
         # Refinement resembles persona correction: irreversible split/merge/modify/discard operations
-        # directly persist persona/reflection changes, warranting the correction tier,
-        # thinking, and a long timeout. Match PersonaManager.resolve_corrections
+        # directly persist persona/reflection changes, warranting thinking
+        # and a long timeout. Match PersonaManager.resolve_corrections
         # call configuration.
         set_call_type("memory_refine")
-        api_config = await self._cm.aget_model_api_config('correction')
+        api_config = await self._cm.aget_model_api_config('memory')
         # Enable thinking explicitly, as for correction; see memory.thinking_llm for budgets and fallback.
         resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
             api_config, prompt,

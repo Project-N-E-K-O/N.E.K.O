@@ -44,10 +44,12 @@ For exe-packaged applications, supporting:
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 import os
+import stat
 import sys
 import logging
+import threading
 from collections.abc import Mapping
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler as _StdlibRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -56,6 +58,7 @@ from config import APP_NAME
 from utils.logging_layout import (
     NEKO_STORAGE_SELECTED_ROOT_ENV, documents_directory,
     get_selected_storage_root as _get_selected_storage_root_from_env,
+    is_symlink_or_reparse_point as _is_symlink_or_reparse_point,
     log_directory_candidates, log_filename,
 )
 
@@ -84,6 +87,196 @@ def mark_project_handler(handler):
     """Identify project-created sinks for explicit plugin child rebinding."""
     handler._neko_owned = True
     handler._neko_pid = os.getpid()
+
+
+def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Path) -> Path:
+    """Validate that allowed_root is a real directory and target is a safe non-symlink path inside it."""
+    root = Path(allowed_root)
+    if _is_symlink_or_reparse_point(root):
+        raise OSError(f"Refusing symlink/reparse allowed log root: {root}")
+    st_root = os.lstat(os.fspath(root))
+    if not stat.S_ISDIR(st_root.st_mode):
+        raise OSError(f"Allowed log root is not a directory: {root}")
+    target = Path(path)
+    if _is_symlink_or_reparse_point(target):
+        raise OSError(f"Refusing symlink/reparse log target: {target}")
+    root_real = os.path.normcase(os.path.realpath(str(root)))
+    parent_real = os.path.normcase(os.path.realpath(str(target.parent)))
+    if os.path.commonpath([root_real, parent_real]) != root_real:
+        raise ValueError(f"Log directory escapes allowed root: {target.parent}")
+    target_real = os.path.normcase(os.path.realpath(str(target)))
+    if os.path.commonpath([root_real, target_real]) != root_real or target_real == root_real:
+        raise ValueError(f"Log target escapes allowed root: {target}")
+    return target
+
+
+def _assert_existing_regular_log_file(path: str | os.PathLike[str]) -> None:
+    """Allow absent log slots and regular files; reject special files such as FIFOs or directories."""
+    try:
+        st = os.lstat(os.fspath(path))
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(f"Refusing non-regular log rotation target: {path}")
+
+
+def _open_log_file_nofollow(
+    path: str | os.PathLike[str],
+    mode: str,
+    encoding: str | None,
+    errors: str | None,
+    allowed_root: Path,
+):
+    """Open a regular log file within allowed_root without following symlinks or reparse points."""
+    target = _assert_safe_log_file_target(path, allowed_root)
+    base_mode = mode.replace("b", "").replace("t", "")
+    if base_mode == "a":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    elif base_mode == "a+":
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+    elif base_mode == "w":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    elif base_mode == "w+":
+        flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+    else:
+        raise ValueError(f"Unsupported log file mode: {mode!r}")
+
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+
+    def _opener(file_path: str, _default_flags: int) -> int:
+        fd = os.open(file_path, flags, 0o666)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Refusing non-regular log target: {target}")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        return fd
+
+    return open(os.fspath(target), mode, encoding=encoding, errors=errors, opener=_opener)
+
+
+class _SafeRotatingFileHandler(_StdlibRotatingFileHandler):
+    """RotatingFileHandler that rejects symlinks/reparse points and root escapes on open."""
+
+    def __init__(
+        self,
+        filename,
+        allowed_root: Path | None = None,
+        mode: str = "a",
+        maxBytes: int = 0,
+        backupCount: int = 0,
+        encoding: str | None = None,
+        delay: bool = False,
+        errors: str | None = None,
+    ):
+        """Initialize the handler after validating the initial target path and allowed root."""
+        root = Path(allowed_root) if allowed_root is not None else Path(filename).parent
+        self._bind_allowed_root(root)
+        _assert_safe_log_file_target(filename, self._allowed_root)
+        super().__init__(
+            filename,
+            mode=mode,
+            maxBytes=maxBytes,
+            backupCount=backupCount,
+            encoding=encoding,
+            delay=delay,
+            errors=errors,
+        )
+
+    def _bind_allowed_root(self, allowed_root: Path) -> None:
+        """Bind and fail-closed verify allowed_root directory before opening or rotating logs."""
+        root = Path(os.path.abspath(os.fspath(allowed_root)))
+        if _is_symlink_or_reparse_point(root):
+            raise OSError(f"Refusing symlink/reparse allowed log root: {root}")
+        st = os.lstat(os.fspath(root))
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Allowed log root is not a directory: {root}")
+        self._allowed_root = root
+        self._allowed_root_real = os.path.normcase(os.path.realpath(os.fspath(root)))
+        self._allowed_root_identity = (
+            (int(st.st_dev), int(st.st_ino)) if getattr(st, "st_ino", 0) else None
+        )
+
+    def _assert_allowed_root_unchanged(self) -> None:
+        """Ensure allowed_root remains a real directory at the same canonical path."""
+        if _is_symlink_or_reparse_point(self._allowed_root):
+            raise OSError(f"Refusing symlink/reparse allowed log root: {self._allowed_root}")
+        st = os.lstat(os.fspath(self._allowed_root))
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Allowed log root is not a directory: {self._allowed_root}")
+        current_real = os.path.normcase(os.path.realpath(os.fspath(self._allowed_root)))
+        if current_real != self._allowed_root_real:
+            raise OSError(f"Allowed log root resolved path changed: {self._allowed_root}")
+        current_identity = (
+            (int(st.st_dev), int(st.st_ino)) if getattr(st, "st_ino", 0) else None
+        )
+        if current_identity != self._allowed_root_identity:
+            self._allowed_root_identity = current_identity
+
+    def _open(self):
+        """Open the active log file without following symlinks."""
+        self._assert_allowed_root_unchanged()
+        return _open_log_file_nofollow(
+            self.baseFilename,
+            self.mode,
+            self.encoding,
+            self.errors,
+            self._allowed_root,
+        )
+
+    def doRollover(self):
+        """Validate root identity and rotation targets before performing rollover."""
+        self._assert_allowed_root_unchanged()
+        _assert_safe_log_file_target(self.baseFilename, self._allowed_root)
+        _assert_existing_regular_log_file(self.baseFilename)
+        for idx in range(1, self.backupCount + 1):
+            rotated = self.rotation_filename(f"{self.baseFilename}.{idx}")
+            _assert_safe_log_file_target(rotated, self._allowed_root)
+            _assert_existing_regular_log_file(rotated)
+        return super().doRollover()
+
+
+# Keep module-level RotatingFileHandler exported for tests that monkeypatch it
+# (e.g. plugin/tests/integration/test_logging_compatibility.py).
+RotatingFileHandler = _SafeRotatingFileHandler
+
+
+def _create_rotating_file_handler(
+    filename,
+    *,
+    allowed_root: Path,
+    maxBytes: int,
+    backupCount: int,
+    encoding: str,
+    delay: bool,
+):
+    """Instantiate a rotating file handler via RotatingFileHandler with safe containment checks."""
+    _assert_safe_log_file_target(filename, allowed_root)
+    if RotatingFileHandler is _SafeRotatingFileHandler:
+        return RotatingFileHandler(
+            filename,
+            allowed_root=allowed_root,
+            maxBytes=maxBytes,
+            backupCount=backupCount,
+            encoding=encoding,
+            delay=delay,
+        )
+    handler = RotatingFileHandler(
+        filename,
+        maxBytes=maxBytes,
+        backupCount=backupCount,
+        encoding=encoding,
+        delay=delay,
+    )
+    if isinstance(handler, _SafeRotatingFileHandler):
+        handler._bind_allowed_root(allowed_root)
+    return handler
 
 
 def format_log_message(message, args):
@@ -193,8 +386,12 @@ class RobustLoggerConfig:
                 subdirectory, keeping them apart from host-process logs like
                 PluginServer / Main / Memory / Agent.
         """
+        from utils.logging_layout import _validate_log_name_component
+
         self.app_name = app_name if app_name is not None else APP_NAME
+        _validate_log_name_component(self.app_name, label="app_name")
         self.service_name = service_name  # Service name distinguishes filenames.
+        _validate_log_name_component(self.service_name, label="service_name")
         self.log_level = log_level or self.DEFAULT_LOG_LEVEL
         self.max_bytes = max_bytes or self.DEFAULT_MAX_BYTES
         self.backup_count = backup_count or self.DEFAULT_BACKUP_COUNT
@@ -204,19 +401,40 @@ class RobustLoggerConfig:
         # Get the base log directory, then route to the log_subdir subdirectory.
         self.log_dir = self._get_log_directory()
         self._log_root = self.log_dir
-        if log_subdir:
-            safe = str(log_subdir).strip().strip("/\\")
+        root_is_link = _is_symlink_or_reparse_point(self._log_root)
+        if log_subdir is not None:
+            raw_subdir = str(log_subdir)
+            if "\x00" in raw_subdir:
+                raise ValueError("log_subdir must not contain NUL bytes")
+            safe = raw_subdir.strip().strip("/\\")
             if safe:
-                self.log_dir = self.log_dir / safe
+                if os.path.splitdrive(safe)[0] or ":" in safe:
+                    raise ValueError(f"log_subdir must not contain a drive prefix: {log_subdir!r}")
+                parts = safe.replace("\\", "/").split("/")
+                if any(part in ("", ".", "..") for part in parts):
+                    raise ValueError(f"log_subdir must not contain traversal segments: {log_subdir!r}")
+                candidate_dir = self.log_dir.joinpath(*parts)
+                if not root_is_link:
+                    prefix = self._log_root
+                    for part in parts:
+                        prefix = prefix / part
+                        if _is_symlink_or_reparse_point(prefix):
+                            raise ValueError(f"log_subdir must not traverse symlinks: {log_subdir!r}")
+                    log_root_real = os.path.normcase(os.path.realpath(str(self._log_root)))
+                    candidate_real = os.path.normcase(os.path.realpath(str(candidate_dir)))
+                    if os.path.commonpath([log_root_real, candidate_real]) != log_root_real or candidate_real == log_root_real:
+                        raise ValueError(f"log_subdir escapes log root: {log_subdir!r}")
+                self.log_dir = candidate_dir
 
         # Log filename includes service_name when present; otherwise use only app_name.
         self.log_file = self.log_dir / log_filename(self.service_name, app_name=self.app_name)
         
-        # Ensure the log directory exists.
-        self._ensure_log_directory()
-        
-        # Clean up old logs.
-        self._cleanup_old_logs()
+        if not root_is_link:
+            # Ensure the log directory exists.
+            self._ensure_log_directory()
+            
+            # Clean up old logs.
+            self._cleanup_old_logs()
     
     def _get_log_directory(self):
         """Probe the shared candidates in the historical fallback order."""
@@ -237,6 +455,21 @@ class RobustLoggerConfig:
     def _get_documents_directory(self):
         return documents_directory()
 
+    @staticmethod
+    def _create_directory_incrementally(directory: Path) -> None:
+        """Create missing ancestor directories incrementally, stopping at self-parent roots."""
+        dirs_to_create = []
+        current = directory
+        while current and not current.exists():
+            dirs_to_create.append(current)
+            parent = current.parent
+            if parent == current:
+                raise FileNotFoundError(f"Root directory does not exist: {current}")
+            current = parent
+        for dir_path in reversed(dirs_to_create):
+            if not dir_path.exists():
+                dir_path.mkdir(exist_ok=True)
+
     def _test_directory_writable(self, directory):
         """
         Test whether a directory is writable
@@ -248,21 +481,18 @@ class RobustLoggerConfig:
             bool: whether it is writable
         """
         try:
-            # Create directories incrementally to avoid possible packaged-app problems with parents=True.
-            # Collect all parent directories needing creation.
-            dirs_to_create = []
-            current = directory
-            while current and not current.exists():
-                dirs_to_create.append(current)
-                current = current.parent
+            if _is_symlink_or_reparse_point(directory):
+                return False
+            RobustLoggerConfig._create_directory_incrementally(directory)
+            if _is_symlink_or_reparse_point(directory):
+                return False
             
-            # Create directories from the top down.
-            for dir_path in reversed(dirs_to_create):
-                if not dir_path.exists():
-                    dir_path.mkdir(exist_ok=True)
-            
-            # Try creating a test file.
-            test_file = directory / ".write_test"
+            # Try creating a test file. The name is per process and thread: plugin
+            # processes start concurrently against one log directory, and with a
+            # shared name one probe's unlink races another's write. The loser
+            # read the directory as unwritable and fell back to the next
+            # candidate (Documents/N.E.K.O/logs), even with a selected root set.
+            test_file = directory / f".write_test.{os.getpid()}.{threading.get_ident()}"
             test_file.write_text("test", encoding="utf-8")
             test_file.unlink()
             return True
@@ -272,17 +502,10 @@ class RobustLoggerConfig:
     def _ensure_log_directory(self):
         """Ensure the log directory exists"""
         try:
-            # Create directories incrementally to avoid possible packaged-app problems with parents=True.
-            dirs_to_create = []
-            current = self.log_dir
-            while current and not current.exists():
-                dirs_to_create.append(current)
-                current = current.parent
-            
-            # Create directories from the top down.
-            for dir_path in reversed(dirs_to_create):
-                if not dir_path.exists():
-                    dir_path.mkdir(exist_ok=True)
+            log_root = getattr(self, "_log_root", None)
+            if (log_root is not None and _is_symlink_or_reparse_point(log_root)) or _is_symlink_or_reparse_point(self.log_dir):
+                return
+            RobustLoggerConfig._create_directory_incrementally(self.log_dir)
         except Exception as e:
             print(f"Error: Failed to create log directory: {e}", file=sys.stderr)
             raise
@@ -294,6 +517,9 @@ class RobustLoggerConfig:
         directory (``<repo>/logs/``), so daily-rolled ``*_debug_YYYYMMDD.log`` files
         don't pile up forever.
         """
+        log_root = getattr(self, "_log_root", None)
+        if log_root is not None and _is_symlink_or_reparse_point(log_root):
+            return
         cutoff_date = datetime.now() - timedelta(days=self.retention_days)
         dirs_to_scan = [self.log_dir]
         if not getattr(sys, "frozen", False):
@@ -306,6 +532,8 @@ class RobustLoggerConfig:
 
         for scan_dir in dirs_to_scan:
             try:
+                if _is_symlink_or_reparse_point(scan_dir):
+                    continue
                 for log_file in scan_dir.glob(f"{self.app_name}_*.log*"):
                     try:
                         file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
@@ -383,14 +611,17 @@ class RobustLoggerConfig:
         
         # 2. Rotating file handler.
         try:
-            # Use RotatingFileHandler for size-based rotation.
+            # Use _SafeRotatingFileHandler for size-based rotation without following symlinks.
             # Probe now, but open the live stream on first emit. A previous
             # writer may rotate the file while replacements are being built.
             if delay:
-                with self.log_file.open("a", encoding="utf-8"):
+                with _open_log_file_nofollow(
+                    self.log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
+                ):
                     pass
-            file_handler = RotatingFileHandler(
+            file_handler = _create_rotating_file_handler(
                 self.log_file,
+                allowed_root=self._log_root,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
                 encoding='utf-8',
@@ -414,8 +645,9 @@ class RobustLoggerConfig:
                 dev_debug_dir = _get_development_log_directory()
                 dev_debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_filename = log_filename(self.service_name, app_name=self.app_name, kind="debug")
-                debug_handler = RotatingFileHandler(
+                debug_handler = _create_rotating_file_handler(
                     dev_debug_dir / debug_filename,
+                    allowed_root=dev_debug_dir,
                     maxBytes=self.max_bytes,
                     backupCount=self.backup_count,
                     encoding='utf-8',
@@ -434,10 +666,13 @@ class RobustLoggerConfig:
             error_filename = log_filename(self.service_name, app_name=self.app_name, kind="error")
             error_log_file = self.log_dir / error_filename
             if delay:
-                with error_log_file.open("a", encoding="utf-8"):
+                with _open_log_file_nofollow(
+                    error_log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
+                ):
                     pass
-            error_handler = RotatingFileHandler(
+            error_handler = _create_rotating_file_handler(
                 error_log_file,
+                allowed_root=self._log_root,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
                 encoding='utf-8',
@@ -512,7 +747,7 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         log_subdir=log_subdir,
     )
     # Use namespaced logger names (e.g. N.E.K.O.Agent)
-    # to avoid collisions with third-party loggers (browser_use internally has an "Agent" logger).
+    # to avoid collisions with third-party loggers (a library may well have an "Agent" logger of its own).
     base_logger = config.setup_logger()
     
     # Attach handlers to the APP_NAME parent logger so cross-service shared modules (utils, config, etc.)

@@ -26,6 +26,20 @@
         <div class="plugin-statuses">
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <PluginAutoStartBadge v-if="plugin.autoStart === true" />
+          <el-tag
+            v-if="needsPermissionReview(plugin.consent)"
+            size="small"
+            type="info"
+            data-testid="plugin-permission-review"
+          >{{ t('pluginConsent.pending') }}</el-tag>
+          <el-tag
+            v-if="isPartlyUnconfirmed(plugin.consent)"
+            size="small"
+            type="info"
+            effect="plain"
+            :title="t('pluginConsent.findings.partialTagHint')"
+            data-testid="plugin-blind-spots"
+          >{{ t('pluginConsent.findings.partialTag') }}</el-tag>
         </div>
       </header>
 
@@ -82,6 +96,7 @@ import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
+import { isPartlyUnconfirmed, needsPermissionReview } from '@/utils/pluginCapabilities'
 import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {

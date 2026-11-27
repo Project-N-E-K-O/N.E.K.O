@@ -329,3 +329,66 @@ async def test_purging_accepted_reservation_releases_idle_wait() -> None:
     dispatcher.invalidate_all()
     await asyncio.wait_for(waiter, 1)
     assert dispatcher.pending_turn_tokens() == frozenset()
+
+
+async def test_when_idle_preserves_multiple_callbacks_in_fifo_order() -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    called: list[str] = []
+
+    async def dispatch(_event: TranscriptEnvelope) -> None:
+        started.set()
+        await release.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    accepted = _envelope(1)
+    assert dispatcher.try_reserve(accepted.final_key)
+    dispatcher.submit(accepted)
+    await asyncio.wait_for(started.wait(), 1.0)
+
+    dispatcher.when_idle(lambda: called.append("first"))
+    dispatcher.when_idle(lambda: called.append("second"))
+    assert called == []
+
+    release.set()
+    await asyncio.wait_for(dispatcher.wait_idle(), 1.0)
+    assert called == ["first", "second"]
+
+
+async def test_invalidate_all_flushes_and_clears_when_idle_callbacks() -> None:
+    started = asyncio.Event()
+    called: list[str] = []
+
+    async def dispatch(_event: TranscriptEnvelope) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    first = _envelope(1)
+    assert dispatcher.try_reserve(first.final_key)
+    dispatcher.submit(first)
+    await asyncio.wait_for(started.wait(), 1.0)
+
+    def first_cb() -> None:
+        called.append("first")
+        dispatcher.when_idle(lambda: called.append("reregistered"))
+
+    dispatcher.when_idle(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    dispatcher.when_idle(first_cb)
+    dispatcher.invalidate_all()
+
+    assert called == ["first", "reregistered"]
+
+    # Subsequent busy->idle cycle must not replay old callbacks.
+    called.clear()
+    second_done = asyncio.Event()
+
+    async def dispatch_second(_event: TranscriptEnvelope) -> None:
+        second_done.set()
+
+    dispatcher._dispatch = dispatch_second
+    second = _envelope(2)
+    assert dispatcher.try_reserve(second.final_key)
+    dispatcher.submit(second)
+    await asyncio.wait_for(second_done.wait(), 1.0)
+    await asyncio.wait_for(dispatcher.wait_idle(), 1.0)
+    assert called == []

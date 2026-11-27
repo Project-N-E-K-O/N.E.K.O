@@ -66,6 +66,28 @@ def _get_config_file_path() -> Path:
     return _get_app_root() / "config" / "api_providers.json"
 
 
+# Provider fields before the tier rename (emotion -> recognition, summary -> memory).
+_LEGACY_PROFILE_FIELDS = (('summary_model', 'memory_model'), ('emotion_model', 'recognition_model'))
+
+
+def _rename_legacy_profile_fields(config: Any) -> None:
+    """Read an older provider file's tier fields under the new names, once, at load.
+
+    Every consumer (the profile converter, the connectivity probe, the settings page)
+    reads the raw profiles, so this is the one place they are normalized.
+    """
+    providers = config.get('assist_api_providers') if isinstance(config, dict) else None
+    if not isinstance(providers, dict):
+        return
+    for profile in providers.values():
+        if not isinstance(profile, dict):
+            continue
+        for old_key, new_key in _LEGACY_PROFILE_FIELDS:
+            if old_key in profile:
+                value = profile.pop(old_key)
+                profile.setdefault(new_key, value)
+
+
 def _load_json_config() -> Dict[str, Any]:
     """
     Load the JSON config file
@@ -85,6 +107,7 @@ def _load_json_config() -> Dict[str, Any]:
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
+        _rename_legacy_profile_fields(config)
         logger.info(f"成功加载配置文件: {config_path}")
         return config
     except json.JSONDecodeError as e:
@@ -141,20 +164,23 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'token_plan_openrouter_url': 'MIMO_TOKEN_PLAN_OPENROUTER_URL',
         'token_plan_openrouter_urls': 'MIMO_TOKEN_PLAN_OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
-        'summary_model': 'SUMMARY_MODEL',
-        'correction_model': 'CORRECTION_MODEL',
-        'emotion_model': 'EMOTION_MODEL',
+        'memory_model': 'MEMORY_MODEL',
+        'recognition_model': 'RECOGNITION_MODEL',
+        'decision_model': 'DECISION_MODEL',
+        'decision_protocol': 'DECISION_PROTOCOL',
+        'decision_url': 'DECISION_URL',
+        'decision_url_template': 'DECISION_URL_TEMPLATE',
         'vision_model': 'VISION_MODEL',
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
         'provider_type': 'PROVIDER_TYPE',
     }
-    
+
     for json_key, python_key in field_mapping.items():
         if json_key in json_profile:
             result[python_key] = json_profile[json_key]
-    
+
     return result
 
 
@@ -308,6 +334,8 @@ def get_assist_api_providers_for_frontend(force_reload: bool = False) -> list:
     
     result = []
     for key, profile in assist_providers.items():
+        if profile.get('model_slot_only'):
+            continue
         result.append({
             'key': profile.get('key', key),
             'name': profile.get('name', key),

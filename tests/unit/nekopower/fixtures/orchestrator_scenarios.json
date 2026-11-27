@@ -1,0 +1,262 @@
+{
+  "_about": [
+    "Scenarios for the NekoPower orchestrator: where a newly dispatched sentence goes.",
+    "worlds: what is there already. Projects (name, what they are for, whether the directory is a git repository, the session id of the leader or null), and task agents (members of a project when 'project' is set, else loose ones). 'idle_hours' is how long ago the agent's last commission ended; 'done' are its latest commissions, newest first, each with how it was filed when it came ('new', 'recurrence' or 'follow_up').",
+    "cases: one sentence each ('dispatch' is what she handed over, 'user' the user's own words). 'truth' names the matter it belongs to ('agent:<id>', 'project:<name>' or null) and how it relates to it. 'expect' is where it goes with the default settings; 'expect_family_at_2', where given, is where it would go if two occurrences already made a family.",
+    "Actions: continue (an agent that is there goes on with it), summon_in_project (a new agent in a project), summon_stray (a new loose agent), to_leader (the leader of a project, derived when the project is in a git repository and has none; what plainly goes on with a member's own work goes to that member instead: continue, with the member as 'agent'), form_family (loose agents that did the same thing before become a project; 'agent' is the member that takes this one, null for a new one)."
+  ],
+  "worlds": {
+    "home": {
+      "projects": [
+        {"name": "旅行手账", "description": "整理去年和今年的旅行照片和游记，做成一本电子手账", "git": false, "leader": null}
+      ],
+      "agents": [
+        {"id": "a1", "project": "旅行手账", "kind": "line", "preset": "general", "title": "手账猫", "duty": "旅行照片整理和游记排版", "summary": "整理了京都和成都两趟的照片，游记写到第三篇", "status": "closed", "idle_hours": 30,
+         "done": [
+           {"title": "把成都的照片按天分好文件夹", "result": "按 5 天分成 5 个文件夹，重复的 42 张挪到了待删", "hours_ago": 30, "filed": "follow_up"},
+           {"title": "写京都第二天的游记", "result": "写了 800 字，放在 游记/京都-day2.md", "hours_ago": 80, "filed": "follow_up"}
+         ]},
+        {"id": "s1", "project": null, "kind": "single", "preset": "general", "title": "周报助手", "duty": "根据工作记录写周报", "summary": "写过第 45、46 周的周报，格式是三段：本周完成、问题、下周计划", "status": "closed", "idle_hours": 100,
+         "done": [
+           {"title": "写第46周的周报", "result": "周报写好放在 文档/周报/2026-W46.md", "hours_ago": 100, "filed": "recurrence"},
+           {"title": "根据这周的工作记录写周报", "result": "周报写好放在 文档/周报/2026-W45.md", "hours_ago": 268, "filed": "new"}
+         ]},
+        {"id": "s2", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "把下载文件夹里的文件分类整理", "summary": "按类型把下载文件夹分成了文档、图片、安装包、压缩包四类", "status": "closed", "idle_hours": 50,
+         "done": [
+           {"title": "整理一下下载文件夹", "result": "移动了 213 个文件，分成 4 类；超过半年的安装包列了清单，没删", "hours_ago": 50, "filed": "new"}
+         ]},
+        {"id": "s3", "project": null, "kind": "single", "preset": "general", "title": "PPT 小帮手", "duty": "做周一部门例会的汇报 PPT", "summary": "做了 12 页的汇报 PPT，用的蓝色模板", "status": "idle", "idle_hours": 5,
+         "done": [
+           {"title": "做周一例会要用的汇报PPT", "result": "PPT 放在 桌面/例会汇报.pptx，共 12 页", "hours_ago": 5, "filed": "new"}
+         ]},
+        {"id": "s4", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "查显卡价格", "summary": "比了三家店 RTX 5070 的价格", "status": "closed", "idle_hours": 400,
+         "done": [
+           {"title": "查一下 RTX 5070 现在哪家便宜", "result": "京东 4299 最便宜，拼多多有 4199 的但不是自营", "hours_ago": 400, "filed": "new"}
+         ]},
+        {"id": "s5", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "给猫咪挑猫粮", "summary": "比较了三款无谷猫粮，推荐了渴望六种鱼", "status": "closed", "idle_hours": 70,
+         "done": [
+           {"title": "帮我家猫挑一款无谷猫粮", "result": "比较了渴望、爱肯拿、百利三款，推荐渴望六种鱼", "hours_ago": 70, "filed": "new"}
+         ]}
+      ]
+    },
+    "dev": {
+      "projects": [
+        {"name": "neko-blog", "description": "个人博客网站，Astro 写的，部署在 Vercel", "git": true, "leader": "L1"},
+        {"name": "记账小程序", "description": "命令行记账工具，Python 写的，数据存在 budget.json", "git": false, "leader": null},
+        {"name": "毕业论文", "description": "硕士论文，LaTeX 写的，题目是城市热岛效应的遥感分析", "git": true, "leader": null}
+      ],
+      "agents": [
+        {"id": "L1", "project": "neko-blog", "kind": "project", "preset": "boss", "title": "博客老大", "duty": "博客网站的总管，只派活", "summary": "派过暗色模式、代码块配色、Astro 升级调研三件事", "status": "closed", "idle_hours": 20, "done": []},
+        {"id": "m1", "project": "neko-blog", "kind": "line", "preset": "worker", "title": "样式小弟", "duty": "博客的样式和主题", "summary": "做了暗色模式，改了代码块配色", "status": "closed", "idle_hours": 20,
+         "done": [
+           {"title": "给博客加暗色模式", "result": "加了主题切换按钮，颜色变量放在 src/styles/theme.css", "hours_ago": 20, "filed": "new"}
+         ]},
+        {"id": "m2", "project": "neko-blog", "kind": "line", "preset": "scout", "title": "", "duty": "查 Astro 的文档和升级说明", "summary": "查了 Astro 4 到 5 的破坏性变更", "status": "closed", "idle_hours": 44,
+         "done": [
+           {"title": "查 Astro 5 有哪些破坏性变更", "result": "列了 6 条，和这个博客有关的是 content collections 的写法", "hours_ago": 44, "filed": "new"}
+         ]},
+        {"id": "c1", "project": "记账小程序", "kind": "line", "preset": "general", "title": "记账猫", "duty": "记账小程序的开发", "summary": "做了 add、list、total 三个命令，写了 README", "status": "closed", "idle_hours": 26,
+         "done": [
+           {"title": "给记账小程序加一个 total 命令", "result": "加了 total 命令，README 补了说明", "hours_ago": 26, "filed": "follow_up"},
+           {"title": "给记账小程序加一个 list 命令", "result": "加了 list 命令，按日期排序", "hours_ago": 50, "filed": "follow_up"}
+         ]},
+        {"id": "t1", "project": "毕业论文", "kind": "line", "preset": "general", "title": "论文猫", "duty": "论文的排版、图表和参考文献", "summary": "整理了第二章的图表编号，修了目录页码", "status": "closed", "idle_hours": 72,
+         "done": [
+           {"title": "把第二章的图表重新编号", "result": "图 2-1 到 2-7 重新编号，交叉引用都更新了", "hours_ago": 72, "filed": "new"}
+         ]},
+        {"id": "d1", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "修 Windows 终端的中文乱码", "summary": "把 PowerShell 的编码改成了 UTF-8", "status": "closed", "idle_hours": 60,
+         "done": [
+           {"title": "PowerShell 里中文显示乱码，修一下", "result": "在 $PROFILE 里加了 chcp 65001 和 OutputEncoding 的设置", "hours_ago": 60, "filed": "new"}
+         ]},
+        {"id": "d2", "project": null, "kind": "single", "preset": "general", "title": "面试题猫", "duty": "整理前端面试题", "summary": "整理了 React 和 CSS 两部分，共 60 题，带答案", "status": "closed", "idle_hours": 12,
+         "done": [
+           {"title": "整理一份前端面试题", "result": "放在 文档/面试/frontend.md，60 题带答案", "hours_ago": 12, "filed": "new"}
+         ]},
+        {"id": "d3", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "把代码里的 TODO 注释列出来", "summary": "在 D:/proj/shop-api 里找到 37 条 TODO，按模块列成了表", "status": "closed", "idle_hours": 300,
+         "done": [
+           {"title": "把 shop-api 里的 TODO 注释都列出来", "result": "37 条，按模块列在 文档/todo-list.md", "hours_ago": 300, "filed": "new"}
+         ]},
+        {"id": "d5", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "根据 git log 写更新日志", "summary": "写了 shop-api v1.2 的更新日志", "status": "closed", "idle_hours": 380,
+         "done": [
+           {"title": "根据 git log 写 v1.2 的更新日志", "result": "写在 CHANGELOG.md 最上面，分了新增、修复、其他三节", "hours_ago": 380, "filed": "new"}
+         ]},
+        {"id": "d6", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "写发版的更新日志", "summary": "写了 shop-api v1.3 的更新日志，照 v1.2 的格式", "status": "closed", "idle_hours": 40,
+         "done": [
+           {"title": "v1.3 发版了，写一下 changelog", "result": "照 v1.2 的三节格式写进了 CHANGELOG.md", "hours_ago": 40, "filed": "recurrence"}
+         ]}
+      ]
+    },
+    "abroad": {
+      "projects": [
+        {"name": "Recipe Box", "description": "A static site collecting family recipes, built with Hugo", "git": true, "leader": "R0"},
+        {"name": "JLPT N2", "description": "Study plan and vocabulary decks for the JLPT N2 exam in July", "git": false, "leader": null}
+      ],
+      "agents": [
+        {"id": "R0", "project": "Recipe Box", "kind": "project", "preset": "boss", "title": "Head chef", "duty": "Runs the recipe site; hands work out", "summary": "Handed out the print stylesheet and the ingredient index", "status": "closed", "idle_hours": 36, "done": []},
+        {"id": "r1", "project": "Recipe Box", "kind": "line", "preset": "worker", "title": "Template tinkerer", "duty": "Hugo templates and page layout", "summary": "Built the print stylesheet and the ingredient index page", "status": "closed", "idle_hours": 36,
+         "done": [
+           {"title": "Add a print stylesheet for recipe pages", "result": "Added assets/print.css and a print button to the recipe template", "hours_ago": 36, "filed": "new"}
+         ]},
+        {"id": "j1", "project": "JLPT N2", "kind": "line", "preset": "general", "title": "Study buddy", "duty": "JLPT N2 vocabulary decks and the weekly study plan", "summary": "Made decks for weeks 1 to 3 and a study plan for each week", "status": "closed", "idle_hours": 90,
+         "done": [
+           {"title": "Make the week 3 vocabulary deck", "result": "30 words in decks/week3.csv, with example sentences", "hours_ago": 90, "filed": "follow_up"}
+         ]},
+        {"id": "e1", "project": null, "kind": "single", "preset": "general", "title": "Invoice helper", "duty": "Fill in the monthly invoice for the freelance client", "summary": "Did the October and November invoices from the timesheet", "status": "closed", "idle_hours": 90,
+         "done": [
+           {"title": "Fill in November's invoice from the timesheet", "result": "Saved as Invoices/2026-11.pdf, 42 hours", "hours_ago": 90, "filed": "recurrence"},
+           {"title": "Fill in the invoice template for October", "result": "Saved as Invoices/2026-10.pdf, 38.5 hours", "hours_ago": 800, "filed": "new"}
+         ]},
+        {"id": "e2", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "Clean up the Downloads folder", "summary": "Sorted Downloads into Documents, Images, Installers and Archives", "status": "closed", "idle_hours": 20,
+         "done": [
+           {"title": "Clean up my Downloads folder", "result": "Moved 340 files into four folders; nothing deleted", "hours_ago": 20, "filed": "new"}
+         ]},
+        {"id": "e3", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "Compare standing desks under $400", "summary": "Compared the Flexispot E7, Uplift V2 and IKEA Mittzon", "status": "closed", "idle_hours": 30,
+         "done": [
+           {"title": "Compare standing desks under $400", "result": "Three desks compared in desks.md; recommended the Flexispot E7", "hours_ago": 30, "filed": "new"}
+         ]},
+        {"id": "e4", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "Plan a weekend trip to Portland", "summary": "Two-day Portland itinerary with food carts and Powell's", "status": "closed", "idle_hours": 120,
+         "done": [
+           {"title": "Plan a weekend trip to Portland", "result": "Itinerary saved to portland.md", "hours_ago": 120, "filed": "new"}
+         ]}
+      ]
+    },
+    "empty": {
+      "projects": [],
+      "agents": []
+    },
+    "shop": {
+      "projects": [
+        {"name": "店铺运营", "description": "淘宝店的日常运营：上新、标题优化、活动报名", "git": false, "leader": null},
+        {"name": "店铺装修", "description": "淘宝店的页面：首页、详情页模板、轮播图", "git": false, "leader": "B1"},
+        {"name": "星港", "description": "长篇科幻小说《星港》，已经写到第三章", "git": false, "leader": null}
+      ],
+      "agents": [
+        {"id": "o1", "project": "店铺运营", "kind": "line", "preset": "general", "title": "运营猫", "duty": "上新、标题优化、活动报名", "summary": "上了 8 个新品，报了双十一活动", "status": "closed", "idle_hours": 28,
+         "done": [
+           {"title": "把这 8 个新品上架", "result": "8 个都上架了，标题按之前的格式写的", "hours_ago": 28, "filed": "follow_up"}
+         ]},
+        {"id": "B1", "project": "店铺装修", "kind": "project", "preset": "boss", "title": "装修老大", "duty": "店铺页面的总管，只派活", "summary": "派过首页改版、详情页模板、找参考三件事", "status": "closed", "idle_hours": 16, "done": []},
+        {"id": "b2", "project": "店铺装修", "kind": "line", "preset": "worker", "title": "首页小弟", "duty": "店铺首页的版式和轮播图", "summary": "首页改成了三栏，轮播图换了秋季款", "status": "closed", "idle_hours": 16,
+         "done": [
+           {"title": "把首页改成三栏", "result": "改好了，预览图在 装修/首页-v3.png", "hours_ago": 16, "filed": "new"}
+         ]},
+        {"id": "b3", "project": "店铺装修", "kind": "line", "preset": "worker", "title": "", "duty": "详情页模板", "summary": "做了一套详情页模板，有卖点、参数、售后三个模块", "status": "closed", "idle_hours": 60,
+         "done": [
+           {"title": "做一套详情页模板", "result": "模板放在 装修/详情页模板.psd", "hours_ago": 60, "filed": "new"}
+         ]},
+        {"id": "b4", "project": "店铺装修", "kind": "line", "preset": "scout", "title": "", "duty": "找同类店铺的页面参考", "summary": "找了 5 家手工皂店的首页截图", "status": "closed", "idle_hours": 100, "done": []},
+        {"id": "n1", "project": "星港", "kind": "line", "preset": "general", "title": "小说猫", "duty": "《星港》的写作和修改", "summary": "写完了前三章，第三章停在主角发现信标的地方", "status": "closed", "idle_hours": 48,
+         "done": [
+           {"title": "写第三章", "result": "第三章 4200 字，放在 星港/ch03.md", "hours_ago": 48, "filed": "follow_up"}
+         ]},
+        {"id": "k1", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "写抖音口播脚本", "summary": "写了一条讲手工皂怎么做的口播脚本", "status": "closed", "idle_hours": 200,
+         "done": [
+           {"title": "写一条抖音口播脚本，讲店里的手工皂是怎么做的", "result": "45 秒的脚本，放在 脚本/手工皂.md", "hours_ago": 200, "filed": "new"}
+         ]},
+        {"id": "k2", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "写抖音口播脚本", "summary": "写了一条讲包装的口播脚本", "status": "closed", "idle_hours": 30,
+         "done": [
+           {"title": "再写一条抖音脚本，讲我们的包装", "result": "40 秒的脚本，放在 脚本/包装.md", "hours_ago": 30, "filed": "recurrence"}
+         ]},
+        {"id": "k3", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "写客服常用话术", "summary": "写了催付、发货、退换三类话术", "status": "closed", "idle_hours": 90,
+         "done": [
+           {"title": "整理一份客服常用话术", "result": "三类共 24 条，放在 客服/话术.md", "hours_ago": 90, "filed": "new"}
+         ]},
+        {"id": "k4", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "画头像", "summary": "画了一张赛博朋克风格的猫头像", "status": "closed", "idle_hours": 110,
+         "done": [
+           {"title": "画一张赛博朋克风格的头像", "result": "头像放在 图片/avatar.png", "hours_ago": 110, "filed": "new"}
+         ]},
+        {"id": "k5", "project": null, "kind": "single", "preset": "general", "title": "数据猫", "duty": "做销售数据周报", "summary": "做了两周的销售周报：销量、客单价、退货率", "status": "closed", "idle_hours": 60,
+         "done": [
+           {"title": "做上周的销售数据周报", "result": "周报放在 报表/销售-W46.xlsx", "hours_ago": 60, "filed": "recurrence"},
+           {"title": "根据后台导出的订单做一份销售周报", "result": "周报放在 报表/销售-W45.xlsx", "hours_ago": 230, "filed": "new"}
+         ]},
+        {"id": "k6", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "查快递到哪了", "summary": "查了一个中通的件，已签收", "status": "closed", "idle_hours": 100,
+         "done": [
+           {"title": "查一下中通 7355 开头那个件到哪了", "result": "已签收，前台代收", "hours_ago": 100, "filed": "new"}
+         ]},
+        {"id": "k7", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "对比快递公司的价格", "summary": "对比了顺丰、中通、极兔发 1 公斤以内的价格", "status": "closed", "idle_hours": 44,
+         "done": [
+           {"title": "对比三家快递公司的发货价格", "result": "极兔最便宜，顺丰最快，表格在 报表/快递对比.xlsx", "hours_ago": 44, "filed": "new"}
+         ]},
+        {"id": "k8", "project": null, "kind": "single", "preset": "general", "title": "", "duty": "写差评回复", "summary": "给一条说皂太小的差评写了回复", "status": "idle", "idle_hours": 3,
+         "done": [
+           {"title": "帮我回复这条差评：皂比图片小很多", "result": "写了一段 80 字的回复，解释了净含量", "hours_ago": 3, "filed": "new"}
+         ]}
+      ]
+    }
+  },
+  "cases": [
+    {"id": "home-01", "world": "home", "lang": "zh", "tags": ["named", "project"], "dispatch": "在旅行手账里加一篇大阪的游记，照片在 D:/照片/大阪", "user": "旅行手账里再加一篇大阪的吧", "truth": {"matter": "project:旅行手账", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "a1"}, "local": "rules"},
+    {"id": "home-02", "world": "home", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "把上个月去大阪拍的照片按天整理好，放进电子手账", "user": "大阪的照片也弄进那本手账里", "truth": {"matter": "project:旅行手账", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "a1"}, "local": "ask"},
+    {"id": "home-03", "world": "home", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "给成都那趟的游记配上每天的路线图", "user": "成都那几篇配个路线图", "truth": {"matter": "project:旅行手账", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "a1"}, "local": "ask"},
+    {"id": "home-04", "world": "home", "lang": "zh", "tags": ["lookalike"], "dispatch": "把手机里的照片全部备份到移动硬盘 E 盘", "user": "手机照片备份一下", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "home-05", "world": "home", "lang": "zh", "tags": ["lookalike"], "dispatch": "查一下京都下周的天气，告诉用户要不要带伞", "user": "京都下礼拜天气咋样", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "home-06", "world": "home", "lang": "zh", "tags": ["recurrence", "third"], "dispatch": "写第47周的周报，工作记录在 文档/工作记录/W47.txt", "user": "这周周报也写一下", "truth": {"matter": "agent:s1", "relation": "recurrence"}, "expect": {"action": "form_family", "members": ["s1"], "agent": "s1"}, "local": "ask"},
+    {"id": "home-07", "world": "home", "lang": "zh", "tags": ["recurrence", "second"], "dispatch": "再把下载文件夹整理一遍，按之前的分类", "user": "下载文件夹又乱了，再收拾收拾", "truth": {"matter": "agent:s2", "relation": "recurrence"}, "expect": {"action": "continue", "agent": "s2"}, "expect_family_at_2": {"action": "form_family", "members": ["s2"], "agent": "s2"}, "local": "ask"},
+    {"id": "home-08", "world": "home", "lang": "zh", "tags": ["follow_up"], "dispatch": "把整理下载文件夹时列出的旧安装包清单里的文件都删掉", "user": "那个清单里的安装包都删了吧", "truth": {"matter": "agent:s2", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "s2"}, "local": "ask"},
+    {"id": "home-09", "world": "home", "lang": "zh", "tags": ["follow_up"], "dispatch": "把例会汇报 PPT 第三页的图换成柱状图", "user": "那个PPT第三页换成柱状图", "truth": {"matter": "agent:s3", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "s3"}, "local": "ask"},
+    {"id": "home-10", "world": "home", "lang": "zh", "tags": ["paraphrase", "follow_up"], "dispatch": "在周一汇报用的幻灯片最后加一页致谢", "user": "幻灯片最后加个致谢页", "truth": {"matter": "agent:s3", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "s3"}, "local": "ask"},
+    {"id": "home-11", "world": "home", "lang": "zh", "tags": ["lookalike"], "dispatch": "做一个送给妈妈的生日贺卡 PPT，温馨一点", "user": "帮我做个生日贺卡的PPT给我妈", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "home-12", "world": "home", "lang": "zh", "tags": ["recurrence", "second", "retired"], "dispatch": "再查一次 RTX 5070 的价格，看有没有降价", "user": "5070 降价了没", "truth": {"matter": "agent:s4", "relation": "recurrence"}, "expect": {"action": "summon_stray"}, "expect_family_at_2": {"action": "form_family", "members": ["s4"], "agent": null}, "local": "ask"},
+    {"id": "home-13", "world": "home", "lang": "zh", "tags": ["one_off"], "dispatch": "把桌面上所有截图合并成一个 PDF", "user": "桌面上的截图合成一个 PDF", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "home-14", "world": "home", "lang": "zh", "tags": ["one_off"], "dispatch": "看看 C 盘还剩多少空间，哪些文件夹最占地方", "user": "C 盘是不是快满了", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "home-15", "world": "home", "lang": "zh", "tags": ["follow_up"], "dispatch": "上次比较的那三款猫粮，查查哪款最近有活动", "user": "那几款猫粮哪个在打折", "truth": {"matter": "agent:s5", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "s5"}, "local": "ask"},
+    {"id": "home-16", "world": "home", "lang": "zh", "tags": ["named", "follow_up"], "dispatch": "让周报助手把第46周周报里的错别字改掉", "user": "叫周报助手把上周那份的错别字改了", "truth": {"matter": "agent:s1", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "s1"}, "local": "rules"},
+    {"id": "home-17", "world": "home", "lang": "zh", "tags": ["lookalike"], "dispatch": "写一份年终总结，两千字左右，讲今年做的三个项目", "user": "年终总结帮我写写", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+
+    {"id": "dev-01", "world": "dev", "lang": "zh", "tags": ["named", "leader"], "dispatch": "修复 neko-blog 的 RSS 订阅，现在返回 404", "user": "neko-blog 的 RSS 挂了修一下", "truth": {"matter": "project:neko-blog", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "neko-blog"}, "local": "rules"},
+    {"id": "dev-02", "world": "dev", "lang": "zh", "tags": ["paraphrase", "leader"], "dispatch": "优化个人网站首页的加载速度，现在首屏要 4 秒", "user": "我那个网站首页太慢了", "truth": {"matter": "project:neko-blog", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "neko-blog"}, "local": "ask"},
+    {"id": "dev-03", "world": "dev", "lang": "zh", "tags": ["paraphrase", "leader"], "dispatch": "博客暗色模式下代码块的字看不清，调一下配色", "user": "暗色模式代码块看不清", "truth": {"matter": "project:neko-blog", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "m1"}, "local": "ask"},
+    {"id": "dev-04", "world": "dev", "lang": "en", "tags": ["paraphrase", "leader", "other_language"], "dispatch": "Add a tag cloud to the sidebar of the blog", "user": "add a tag cloud to my blog sidebar", "truth": {"matter": "project:neko-blog", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "neko-blog"}, "local": "nothing", "local_right": false},
+    {"id": "dev-05", "world": "dev", "lang": "zh", "tags": ["lookalike"], "dispatch": "看一下 Vercel 这个月的账单邮件，告诉用户花了多少钱", "user": "Vercel 这个月扣了我多少", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "dev-06", "world": "dev", "lang": "zh", "tags": ["named", "project"], "dispatch": "给记账小程序加一个按月统计的命令", "user": "记账小程序加个按月统计", "truth": {"matter": "project:记账小程序", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "c1"}, "local": "rules"},
+    {"id": "dev-07", "world": "dev", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "给那个命令行记账工具加上导出 CSV 的功能", "user": "记账那个工具能导出 CSV 就好了", "truth": {"matter": "project:记账小程序", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "c1"}, "local": "ask"},
+    {"id": "dev-08", "world": "dev", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "budget.json 里有一条重复的支出记录，删掉它", "user": "budget.json 里有条重复的", "truth": {"matter": "project:记账小程序", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "c1"}, "local": "ask"},
+    {"id": "dev-09", "world": "dev", "lang": "zh", "tags": ["paraphrase", "leader", "git_derive"], "dispatch": "把论文第三章的图 3-2 换成新跑出来的结果图", "user": "第三章图 3-2 换成新的", "truth": {"matter": "project:毕业论文", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "毕业论文"}, "local": "nothing", "local_right": false},
+    {"id": "dev-10", "world": "dev", "lang": "zh", "tags": ["paraphrase", "leader", "git_derive"], "dispatch": "检查热岛效应那篇的参考文献格式，统一成 GB/T 7714", "user": "参考文献格式帮我统一一下", "truth": {"matter": "project:毕业论文", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "毕业论文"}, "local": "ask"},
+    {"id": "dev-11", "world": "dev", "lang": "zh", "tags": ["paraphrase", "follow_up"], "dispatch": "终端里的中文又变成问号了，再修一下", "user": "终端中文又乱码了", "truth": {"matter": "agent:d1", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "d1"}, "local": "ask"},
+    {"id": "dev-12", "world": "dev", "lang": "zh", "tags": ["follow_up"], "dispatch": "在前端面试题里再补 20 道 TypeScript 的题", "user": "面试题再补点 TS 的", "truth": {"matter": "agent:d2", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "d2"}, "local": "ask"},
+    {"id": "dev-13", "world": "dev", "lang": "zh", "tags": ["recurrence", "second"], "dispatch": "整理一份后端面试题，Go 方向，带答案", "user": "后端的面试题也整理一份，Go 的", "truth": {"matter": "agent:d2", "relation": "recurrence"}, "expect": {"action": "continue", "agent": "d2"}, "expect_family_at_2": {"action": "form_family", "members": ["d2"], "agent": "d2"}, "local": "ask"},
+    {"id": "dev-14", "world": "dev", "lang": "zh", "tags": ["recurrence", "third"], "dispatch": "根据 git log 写 v1.4 的更新日志", "user": "v1.4 发了，更新日志写一下", "truth": {"matter": "agent:d6", "relation": "recurrence"}, "expect": {"action": "form_family", "members": ["d5", "d6"], "agent": "d6"}, "local": "ask"},
+    {"id": "dev-15", "world": "dev", "lang": "zh", "tags": ["one_off"], "dispatch": "把 data/users.csv 转成 JSON，放在同一个目录", "user": "这个 CSV 转成 JSON", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "dev-16", "world": "dev", "lang": "zh", "tags": ["one_off"], "dispatch": "安装 ffmpeg 并加到 PATH", "user": "帮我装一下 ffmpeg", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "dev-17", "world": "dev", "lang": "zh", "tags": ["lookalike"], "dispatch": "写一个 Python 脚本，把一个目录下的图片按拍摄日期重命名", "user": "写个脚本批量重命名照片", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "dev-18", "world": "dev", "lang": "zh", "tags": ["lookalike"], "dispatch": "查一下开源记账软件 Firefly III 怎么部署到 NAS 上，写成步骤", "user": "Firefly III 那个记账软件怎么装到 NAS 上", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "dev-19", "world": "dev", "lang": "zh", "tags": ["follow_up", "retired"], "dispatch": "把上次列出来的 shop-api 的 TODO 注释里和登录有关的几条处理掉", "user": "之前列的 TODO 里登录相关的弄一下", "truth": {"matter": "agent:d3", "relation": "follow_up"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "dev-20", "world": "dev", "lang": "zh", "tags": ["fresh"], "dispatch": "另开一只使魔，重新整理一份前端面试题，不要接着之前那份", "user": "不要接着之前那只了，另开一只重新整理前端面试题", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "rules"},
+
+    {"id": "abroad-01", "world": "abroad", "lang": "en", "tags": ["named", "leader"], "dispatch": "Add grandma's dumpling recipe to Recipe Box", "user": "add grandma's dumpling recipe to Recipe Box", "truth": {"matter": "project:Recipe Box", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "Recipe Box"}, "local": "rules"},
+    {"id": "abroad-02", "world": "abroad", "lang": "en", "tags": ["paraphrase", "leader"], "dispatch": "The search on the recipe site is broken on mobile; fix it", "user": "search is broken on my recipe site on mobile", "truth": {"matter": "project:Recipe Box", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "Recipe Box"}, "local": "ask"},
+    {"id": "abroad-03", "world": "abroad", "lang": "ja", "tags": ["paraphrase", "leader", "other_language"], "dispatch": "レシピサイトに材料で絞り込める検索機能を追加する", "user": "レシピのサイトに材料検索つけて", "truth": {"matter": "project:Recipe Box", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "Recipe Box"}, "local": "ask"},
+    {"id": "abroad-04", "world": "abroad", "lang": "ru", "tags": ["named", "leader", "other_language"], "dispatch": "Добавь рецепт борща в Recipe Box", "user": "добавь рецепт борща в Recipe Box", "truth": {"matter": "project:Recipe Box", "relation": "follow_up"}, "expect": {"action": "to_leader", "project": "Recipe Box"}, "local": "rules"},
+    {"id": "abroad-05", "world": "abroad", "lang": "ja", "tags": ["named", "project", "other_language"], "dispatch": "JLPT N2 の単語カードに今週の分を30語追加する", "user": "N2の単語、今週の分も追加して", "truth": {"matter": "project:JLPT N2", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "j1"}, "local": "rules"},
+    {"id": "abroad-06", "world": "abroad", "lang": "en", "tags": ["paraphrase", "project"], "dispatch": "Make this week's study plan for the Japanese exam", "user": "plan my Japanese study for this week", "truth": {"matter": "project:JLPT N2", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "j1"}, "local": "ask"},
+    {"id": "abroad-07", "world": "abroad", "lang": "en", "tags": ["lookalike"], "dispatch": "Translate this email into Japanese: 'Thank you for your order, it ships on Monday.'", "user": "translate this email into Japanese", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "abroad-08", "world": "abroad", "lang": "en", "tags": ["recurrence", "third"], "dispatch": "Fill in December's invoice for the freelance client from the timesheet", "user": "December's invoice needs doing too", "truth": {"matter": "agent:e1", "relation": "recurrence"}, "expect": {"action": "form_family", "members": ["e1"], "agent": "e1"}, "local": "ask"},
+    {"id": "abroad-09", "world": "abroad", "lang": "en", "tags": ["follow_up"], "dispatch": "Check which of the standing desks compared earlier has the longest warranty", "user": "which of those desks had the best warranty?", "truth": {"matter": "agent:e3", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "e3"}, "local": "ask"},
+    {"id": "abroad-10", "world": "abroad", "lang": "en", "tags": ["lookalike"], "dispatch": "Find a good office chair under $300 and compare three options", "user": "find me an office chair under 300", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "abroad-11", "world": "abroad", "lang": "ko", "tags": ["recurrence", "second", "other_language"], "dispatch": "다운로드 폴더를 다시 정리한다", "user": "다운로드 폴더 다시 정리해 줘", "truth": {"matter": "agent:e2", "relation": "recurrence"}, "expect": {"action": "continue", "agent": "e2"}, "expect_family_at_2": {"action": "form_family", "members": ["e2"], "agent": "e2"}, "local": "ask"},
+    {"id": "abroad-12", "world": "abroad", "lang": "es", "tags": ["one_off", "other_language"], "dispatch": "Resume el PDF informe-anual.pdf en cinco puntos", "user": "resume este PDF en cinco puntos", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "abroad-13", "world": "abroad", "lang": "en", "tags": ["one_off"], "dispatch": "Convert all the HEIC photos on the desktop to JPG", "user": "convert the HEIC photos on my desktop to JPG", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "abroad-14", "world": "abroad", "lang": "en", "tags": ["lookalike"], "dispatch": "Plan a weekend trip to Seattle for two", "user": "plan a weekend in Seattle", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "abroad-15", "world": "abroad", "lang": "en", "tags": ["named", "follow_up"], "dispatch": "Ask the Invoice helper which hourly rate it used on November's invoice", "user": "what rate did the invoice helper use last month?", "truth": {"matter": "agent:e1", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "e1"}, "local": "rules"},
+
+    {"id": "empty-01", "world": "empty", "lang": "zh", "tags": ["one_off"], "dispatch": "把这段话翻译成英文并润色：我们的产品下周上线", "user": "这段话翻成英文润色一下", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "empty-02", "world": "empty", "lang": "en", "tags": ["one_off"], "dispatch": "Set up a Python virtual environment in D:/proj/demo and install requests", "user": "set up a venv in D:/proj/demo with requests", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "empty-03", "world": "empty", "lang": "ja", "tags": ["one_off", "other_language"], "dispatch": "デスクトップのスクリーンショットを日付ごとのフォルダに整理する", "user": "デスクトップのスクショを日付で整理して", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+
+    {"id": "shop-01", "world": "shop", "lang": "zh", "tags": ["named", "project"], "dispatch": "给店铺运营报名下周的双十二活动", "user": "双十二活动报个名", "truth": {"matter": "project:店铺运营", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "o1"}, "local": "rules"},
+    {"id": "shop-02", "world": "shop", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "优化店里十个老商品的标题，加上年货节的关键词", "user": "老商品标题优化一下", "truth": {"matter": "project:店铺运营", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "o1"}, "local": "ask"},
+    {"id": "shop-03", "world": "shop", "lang": "zh", "tags": ["paraphrase", "leader"], "dispatch": "把店铺首页的轮播图换成年货节的", "user": "首页轮播换年货节的图", "truth": {"matter": "project:店铺装修", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "b2"}, "local": "ask"},
+    {"id": "shop-04", "world": "shop", "lang": "zh", "tags": ["paraphrase", "leader"], "dispatch": "在详情页模板里加一个尺码表模块", "user": "详情页加个尺码表", "truth": {"matter": "project:店铺装修", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "b3"}, "local": "ask"},
+    {"id": "shop-05", "world": "shop", "lang": "zh", "tags": ["named", "project"], "dispatch": "把星港第三章的结尾改得更有悬念", "user": "星港第三章结尾改悬一点", "truth": {"matter": "project:星港", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "n1"}, "local": "ask"},
+    {"id": "shop-06", "world": "shop", "lang": "zh", "tags": ["paraphrase", "project"], "dispatch": "给那本科幻长篇写第四章的大纲", "user": "第四章大纲写一下", "truth": {"matter": "project:星港", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "n1"}, "local": "ask"},
+    {"id": "shop-07", "world": "shop", "lang": "zh", "tags": ["lookalike"], "dispatch": "写一个新的科幻短篇的开头，五百字，讲月球上的图书馆", "user": "写个科幻短篇开头", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "shop-08", "world": "shop", "lang": "zh", "tags": ["recurrence", "third"], "dispatch": "再写一条抖音口播脚本，讲新品上架", "user": "抖音脚本再来一条，新品上架的", "truth": {"matter": "agent:k2", "relation": "recurrence"}, "expect": {"action": "form_family", "members": ["k1", "k2"], "agent": "k2"}, "local": "ask"},
+    {"id": "shop-09", "world": "shop", "lang": "zh", "tags": ["recurrence", "third"], "dispatch": "做本周的销售数据周报", "user": "这周销售周报做一下", "truth": {"matter": "agent:k5", "relation": "recurrence"}, "expect": {"action": "form_family", "members": ["k5"], "agent": "k5"}, "local": "ask"},
+    {"id": "shop-10", "world": "shop", "lang": "zh", "tags": ["follow_up"], "dispatch": "把差评回复改得再客气一点", "user": "那个回复再客气点", "truth": {"matter": "agent:k8", "relation": "follow_up"}, "expect": {"action": "continue", "agent": "k8"}, "local": "ask"},
+    {"id": "shop-11", "world": "shop", "lang": "zh", "tags": ["lookalike"], "dispatch": "查一下昨天寄出的顺丰快递到哪了，单号 SF1234567890", "user": "顺丰那个件到哪了", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "ask"},
+    {"id": "shop-12", "world": "shop", "lang": "zh", "tags": ["one_off"], "dispatch": "把这张商品图的背景抠掉，换成纯白", "user": "这张图抠个图换白底", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"},
+    {"id": "shop-13", "world": "shop", "lang": "zh", "tags": ["lookalike"], "dispatch": "给朋友新开的咖啡店想十个店名", "user": "帮我朋友的咖啡店起几个名字", "truth": {"matter": null, "relation": "new"}, "expect": {"action": "summon_stray"}, "local": "nothing"}
+  ]
+}

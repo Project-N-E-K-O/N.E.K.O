@@ -1,12 +1,16 @@
 """Local HTTP controls use synthetic roots, never a desktop login or user chat."""
 
+import json
+import sqlite3
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import chat_sync_router as routes
+from services.chat_sync.writer import WriterQuarantined
 
 
 UID = "a" * 32
@@ -21,6 +25,7 @@ class SyntheticRuntime:
         self.calls = []
         self.originals = [{"messageId": "b" * 32, "text": "synthetic"}]
         self.local_reply_records = []
+        self.state = SimpleNamespace(binding=lambda _uid: None)
 
     async def status(self):
         """Return a bound role and an unrelated stale role to check local projection."""
@@ -76,8 +81,10 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "localOnlyOriginals": 0,
-                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None},
+                    "lastSyncError": None, "channelStatus": None, "writerRecoveryRequired": False, "localMemoryDiagnostics": [], "profile": None},
     }]
+
+
 
 
 @pytest.mark.parametrize('choices,expected', [({}, False), ({UID: False}, False), ({UID: True}, True)])
@@ -89,6 +96,38 @@ def test_status_defaults_an_unconfigured_role_to_off(local_client, choices, expe
     role = client.get('/api/chat-sync/status').json()['characters'][0]
     assert role['syncEnabled'] is expected and role['syncPending'] is False
     assert role['binding'] is None
+
+
+def test_status_route_carries_local_memory_diagnostics(local_client):
+    """The settings page explains a paused long-term sync from this field."""
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    state = client.get('/api/chat-sync/status').json()
+    runtime.status = AsyncMock(return_value={
+        'bindings': [{'character_uid': UID, 'owner_id': OWNER, 'binding_id': 'd' * 32, 'enabled': 1, 'generation': 1,
+                      'pendingOriginals': 0, 'pendingDeletions': 0, 'cursor': 0, 'hasSealedBatch': False,
+                      'localOnlyOriginals': 0, 'localMemoryDiagnostics': ['long_term_memory_capacity_exceeded']}],
+        'syncChoices': {}, 'syncPendingChoices': {},
+        'serviceUrl': state['serviceUrl'], 'deviceId': state['deviceId'],
+    })
+    binding = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
+    assert binding['localMemoryDiagnostics'] == ['long_term_memory_capacity_exceeded']
+
+
+def test_status_route_preserves_independent_channel_outcomes(local_client):
+    client, runtime = local_client
+    channels = {'pull': {'status': 'success', 'lastSuccessAt': 1000, 'lastError': None},
+                'model': {'status': 'error', 'lastSuccessAt': None, 'lastError': 'chat_sync_internal_error'}}
+    original_status = runtime.status
+
+    async def status():
+        state = await original_status()
+        state['bindings'][0]['channelStatus'] = channels
+        return state
+
+    runtime.status = status
+    result = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
+    assert result['channelStatus'] == channels
 
 
 def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client):
@@ -278,4 +317,101 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert client.get('/api/chat-sync/cloud/character-policy').status_code == 404
     assert client.post('/api/chat-sync/cloud/character-policy', json={}).status_code == 404
     assert client.post('/api/chat-sync/cloud/characters/' + UID + '/delete', json={}).status_code == 404
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize('path', [
+    f'/api/chat-sync/characters/{UID}/model-sync',
+    '/api/chat-sync/status',
+])
+def test_runtime_initialization_reports_writer_quarantine(local_client, monkeypatch, path):
+    client, runtime = local_client
+    initialize = AsyncMock(side_effect=WriterQuarantined())
+    monkeypatch.setattr(routes, 'get_desktop_chat_sync_runtime', initialize)
+    client.app.dependency_overrides.pop(routes._runtime)
+    response = client.get(path)
+    assert response.status_code == 409
+    assert response.json() == {'detail': 'chat_sync_writer_recovery_required'}
+    assert response.headers['Cache-Control'] == 'no-store'
+    initialize.assert_awaited_once()
+    assert runtime.calls == []
+
+
+def test_model_status_preserves_result_without_waking(local_client):
+    client, runtime = local_client
+    expected = {'conflict': True, 'failed': False}
+    runtime.models = SimpleNamespace(status=AsyncMock(return_value=expected))
+    response = client.get(f'/api/chat-sync/characters/{UID}/model-sync')
+    assert response.status_code == 200 and response.json() == expected
+    runtime.models.status.assert_awaited_once_with(UID)
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize('error,status,code', [
+    (WriterQuarantined(), 409, 'chat_sync_writer_recovery_required'),
+    (ValueError('chat_sync_login_required'), 401, 'chat_sync_login_required'),
+    (ValueError('chat_sync_unavailable'), 503, 'chat_sync_unavailable'),
+    (ValueError('chat_sync_network_unavailable'), 503, 'chat_sync_network_unavailable'),
+    (ValueError('chat_sync_internal_error'), 503, 'chat_sync_internal_error'),
+    (ValueError('chat_sync_character_not_found'), 404, 'chat_sync_character_not_found'),
+    (ValueError('private malformed state'), 503, 'chat_sync_unavailable'),
+    (json.JSONDecodeError('Expecting value', 'private malformed state', 0), 503, 'chat_sync_unavailable'),
+    (OSError('private local path'), 503, 'chat_sync_unavailable'),
+    (sqlite3.OperationalError('private database path'), 503, 'chat_sync_unavailable'),
+])
+def test_model_status_reports_controlled_errors_without_waking(local_client, error, status, code):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(status=AsyncMock(side_effect=error))
+    response = client.get(f'/api/chat-sync/characters/{UID}/model-sync')
+    assert response.status_code == status
+    assert response.json() == {'detail': code}
+    assert response.headers['Cache-Control'] == 'no-store'
+    runtime.models.status.assert_awaited_once_with(UID)
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize('action', [[], {}, None, True, 1, '', 'unknown'])
+def test_model_action_rejects_invalid_types_without_resolving(local_client, action):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock())
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': action})
+    assert response.status_code == 400
+    assert response.json() == {'detail': 'invalid_model_response'}
+    runtime.models.resolve.assert_not_awaited()
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize('action', ['cloud', 'local', 'retry'])
+def test_model_action_resolves_valid_choice_once(local_client, action):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock())
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': action})
+    assert response.status_code == 200 and response.json() == {'accepted': True}
+    runtime.models.resolve.assert_awaited_once_with(UID, action)
+    assert runtime.calls == [('recent-changed',)]
+
+
+@pytest.mark.parametrize('error,status,code', [
+    (ValueError('chat_sync_not_enabled'), 409, 'chat_sync_not_enabled'),
+    (ValueError('chat_sync_login_required'), 401, 'chat_sync_login_required'),
+    (ValueError('chat_sync_session_changed'), 409, 'chat_sync_session_changed'),
+    (ValueError('chat_sync_writer_recovery_required'), 409, 'chat_sync_writer_recovery_required'),
+    (ValueError('chat_sync_unavailable'), 503, 'chat_sync_unavailable'),
+    (OSError('private local path'), 409, 'chat_sync_binding_changed'),
+])
+def test_model_action_reports_controlled_errors_without_waking(local_client, error, status, code):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock(side_effect=error))
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': 'cloud'})
+    assert response.status_code == status
+    assert response.json() == {'detail': code}
+    assert response.headers['Cache-Control'] == 'no-store'
+    runtime.models.resolve.assert_awaited_once_with(UID, 'cloud')
+    assert runtime.calls == []
+
+
+def test_retired_recent_display_does_not_read_chat_history(local_client):
+    client, runtime = local_client
+    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
+    assert result.status_code == 404
     assert runtime.calls == []

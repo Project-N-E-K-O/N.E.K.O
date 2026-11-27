@@ -6,18 +6,30 @@ will automatically invoke it when the user asks "what's the weather in
 Beijing", wait for the result, then use the returned value to generate
 its final reply.
 
-::: warning Different from a plugin entry
-`@llm_tool(name="get_weather")` registers a conversation-time tool in main_server's `/api/tools` registry. `@plugin_entry(id="get_weather")` declares a runtime entry for Plugin Manager, cross-plugin calls, and the separate user-plugin Agent route. The SDK implements an LLM tool handler internally as a reserved dynamic entry (`__llm_tool__...`) for IPC reuse, but that implementation detail does not merge the two public APIs.
-:::
+## Choosing between `@plugin_entry` and `@llm_tool` {#choosing-an-entry-type}
+
+| | `@plugin_entry` | `@llm_tool` |
+|---|---|---|
+| What it is | A runtime entry of the plugin | A tool in the main dialogue model's tool list (main_server's `/api/tools` registry) |
+| Who uses it | Plugin Manager, other plugins, Hosted UI actions, and the Agent (NekoPower) plugin selection, where the Agent's model picks and calls it | The main dialogue model, which calls it directly during a chat |
+| When to use | **The default, recommended form** for a plugin's capabilities | **Sparingly**, only for the few capabilities the main dialogue model must call directly |
+
+The schema of every registered LLM tool is sent to the model with its
+requests, so each extra tool lengthens the model's tool list. A plugin usually
+needs only a few LLM tools; if a capability can be expressed as a
+`@plugin_entry`, keep it one. Internally the SDK stores an LLM tool's handler as
+a reserved dynamic entry (`__llm_tool__...`) for IPC reuse; entries with this
+prefix are not offered to the Agent's plugin selection or to task agents, so
+the two APIs stay separate.
 
 This mechanism is backed by `ToolRegistry` in
 `main_logic/tool_calling.py` and unified across every provider that
 supports tool calling (OpenAI / Gemini / GLM / Qwen Omni / StepFun, etc.).
 
-## TL;DR — Recommended Path: `@llm_tool`
+## When exposing a tool to the model: use `@llm_tool` (not raw HTTP registration)
 
-If you're building a regular `NekoPluginBase` plugin, **use the
-`@llm_tool` decorator from the SDK**. It handles registration,
+When a regular `NekoPluginBase` plugin needs to expose a tool to the
+dialogue model, **use the `@llm_tool` decorator from the SDK**. It handles registration,
 unregistration, callback routing, and shutdown cleanup for you, with
 zero boilerplate:
 
@@ -55,9 +67,9 @@ on a best-effort basis.
 What the helper *doesn't* do: auto-recover after a `main_server` restart
 or first-boot race. Registration is fired once at plugin startup; if
 `main_server` was unreachable then, the tool stays invisible to the
-model until the plugin reloads or `register_llm_tool` is invoked
-imperatively. The "What Happens When main_server Restarts" section near
-the end of this page covers the resilience pattern in detail.
+model until the plugin reloads or the tool is registered again. How to
+do that safely is in the "What Happens When main_server Restarts" section near
+the end of this page.
 
 The rest of this document explains the underlying HTTP contract and
 when you might need to reach for it directly.
@@ -84,10 +96,11 @@ There are two integration layers, stacked:
 - The plugin returns a JSON result, which main_server feeds back to the
   LLM to continue generation.
 
-This layer is documented in detail in the rest of this page. Use it
-directly only when you need behaviour the SDK helper doesn't cover —
-for example, hosting your own HTTP server outside the plugin process,
-or registering tools from a non-NekoPluginBase context.
+This layer is documented in detail in the rest of this page. It is the
+host's internal contract: plugin code should not use it. Use it directly
+only from host-side code or an integration that runs outside the plugin
+process (for example, an external service registering tools from a
+non-NekoPluginBase context).
 
 ### Layer 2 — `@llm_tool` SDK helper (recommended for plugins)
 
@@ -116,9 +129,34 @@ same IPC trigger machinery used by regular `@plugin_entry`s.
 
 ## Registration Endpoints
 
+::: warning Not for plugin code
+A plugin process must not call `main_server` (or any other N.E.K.O
+server on localhost) directly, and must not start its own HTTP server to
+receive callbacks: ports and addresses differ per installation and per dev
+instance, these endpoints are internal and can change, and they bypass the
+SDK's permission checks. In a plugin, use `@llm_tool` or
+`self.register_llm_tool(...)`. The endpoints below are documented for
+host-side and external integrations.
+:::
+
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
-are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
-`localhost` are allowed).
+are guarded by `verify_local_access` (loopback only — `127.0.0.1`, `::1`,
+or `localhost`; when `NEKO_BEHIND_PROXY` is enabled, callers must connect
+directly over loopback without forwarding headers such as `X-Forwarded`,
+`X-Forwarded-*`, `X-Real-IP`, or `Forwarded` — unauthenticated requests
+are rejected first by `InstanceAccessMiddleware` with HTTP `401`, and
+authenticated requests still carrying forwarding headers are rejected by
+`verify_local_access` with HTTP `403`). When `NEKO_BEHIND_PROXY` or
+`NEKO_ACTIVITY_TRACKER_REMOTE` is enabled, external loopback callers must
+also include valid instance credentials (such as
+`Authorization: Bearer <instance_key>` from `NEKO_INSTANCE_ACCESS_KEY` or
+`instance_access.key`), otherwise requests fail with HTTP `401`. If
+`NEKO_REQUIRE_HTTPS` is also enabled, plaintext `http://` requests fail with
+HTTP `401` even with a valid key unless sent over HTTPS — or, only when
+`NEKO_BEHIND_PROXY` is enabled in a deployment with an outer TLS gateway
+and a private HTTP upstream unexposed to untrusted clients, when `Host`
+matches an `https://` `NEKO_INSTANCE_PUBLIC_ORIGIN` (still directly over
+loopback without forwarding headers).
 
 ### `POST /api/tools/register`
 
@@ -164,6 +202,18 @@ carries the details.
 ```json
 { "name": "get_weather", "role": null }
 ```
+
+Optional fields: `expected_source` (remove only a tool owned by that
+source; other owners are reported in `refused_roles`) and
+`expected_registration_id` (remove only the registration whose
+`registration_id` `/register` returned; a different registration of the
+name is reported in `refused_roles` with `"reason": "different
+registration"` and that registration's `registration_id`; these two
+fields are only added when `expected_source` is given and matches the
+tool's source, and `expected_host_instance_id`, if given, matches too).
+`/register` accepts an optional `registration_id` and
+always returns the one it stored. Without these fields the behaviour is
+unchanged.
 
 ### `POST /api/tools/clear`
 
@@ -222,22 +272,37 @@ side-by-side with your real result and confuse the model.
 `is_error: true` is set, the LLM sees the failure and may skip the tool
 or pick another one.
 
-The `callback_url` may be any path on `127.0.0.1:<plugin_port>`; the
-plugin runs its own HTTP server to receive it.
+The `callback_url` may be any path on a loopback address. With
+`@llm_tool` the plugin server provides this route for you
+(`/api/llm-tools/callback/{plugin_id}/{tool_name}`); only an external
+integration that registers over raw HTTP needs its own server to receive
+it.
 
-## Full Lifecycle Pattern
+## Full Lifecycle Pattern (raw HTTP, external integrations)
+
+This pattern is for an integration that runs outside a plugin process.
+The retry loop is part of this example: `@llm_tool` gives plugins
+registration, callback routing, and cleanup, but registers only once and
+does not retry.
 
 ```python
 import asyncio
+import logging
+import os
 import httpx
 
+# Direct loopback without X-Forwarded-*/X-Real-IP/Forwarded headers; when NEKO_REQUIRE_HTTPS
+# is enabled, connect over HTTPS (plain http:// is accepted only under NEKO_BEHIND_PROXY
+# with outer TLS, a private unexposed upstream, and Host matching https:// NEKO_INSTANCE_PUBLIC_ORIGIN)
 MAIN_SERVER = "http://127.0.0.1:48911"
 MY_PORT = 9876
 TOOL_NAME = "get_weather"
+# Required only when NEKO_BEHIND_PROXY or NEKO_ACTIVITY_TRACKER_REMOTE is enabled
+INSTANCE_KEY = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "")
 
 async def register_with_retry():
     """Call on plugin startup: register the tool once main_server is up,
-    retrying indefinitely."""
+    retrying until accepted or rejected for missing/invalid credentials."""
     payload = {
         "name": TOOL_NAME,
         "description": "Look up the weather in a given city",
@@ -251,58 +316,93 @@ async def register_with_retry():
         "source": "my_plugin",
         "timeout_seconds": 30,
     }
-    async with httpx.AsyncClient() as client:
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
+    async with httpx.AsyncClient(trust_env=False) as client:
         while True:
             try:
                 r = await client.post(f"{MAIN_SERVER}/api/tools/register",
-                                       json=payload, timeout=5)
-                if r.json().get("ok"):
+                                       json=payload, headers=headers, timeout=5)
+                if r.status_code in (401, 403):
+                    logging.error("Tool registration rejected with HTTP %s: %s", r.status_code, r.text)
+                    return
+                if r.is_success and r.json().get("ok"):
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # main_server isn't up yet, try again later
             await asyncio.sleep(2)
 
-async def unregister_on_shutdown():
+async def unregister_on_shutdown() -> bool:
     """Call before exit: unregister so the LLM doesn't hit a dead callback_url."""
+    headers = {"Authorization": f"Bearer {INSTANCE_KEY}"} if INSTANCE_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            await client.post(f"{MAIN_SERVER}/api/tools/unregister",
-                              json={"name": TOOL_NAME, "role": None})
+        async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+            r = await client.post(f"{MAIN_SERVER}/api/tools/unregister",
+                                  json={"name": TOOL_NAME, "role": None},
+                                  headers=headers)
+            if r.status_code in (401, 403):
+                logging.error("Tool unregistration rejected with HTTP %s: %s", r.status_code, r.text)
+                return False
+            if not r.is_success:
+                logging.error("Tool unregistration failed with HTTP %s: %s", r.status_code, r.text)
+                return False
+            data = r.json()
+            failed_roles = data.get("failed_roles") or []
+            if failed_roles:
+                logging.error("Tool unregistration failed for roles: %s", failed_roles)
+                return False
+            return True
     except Exception:
-        pass  # main_server is down too — nothing we can do
+        return False  # main_server is down too — nothing we can do
 ```
 
-Bind it to your plugin lifecycle hooks:
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # Register asynchronously so plugin startup doesn't block on it.
-        asyncio.create_task(register_with_retry())
-        # Also start an HTTP server to receive the callback (FastAPI / aiohttp etc.)
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+Do not wire this into a `NekoPluginBase` plugin. Lifecycle methods run
+only when decorated with `@lifecycle(id=...)` (a plain `on_start` /
+`on_shutdown` method is never called); `startup` runs in its own
+`asyncio.run`, so a task created there with `asyncio.create_task` is
+cancelled as soon as `startup` returns; and a plugin process must not
+call `main_server` or host its own HTTP server (see the warning under
+Registration Endpoints). In a plugin, `@llm_tool` covers registration,
+callback routing, and cleanup.
 
 ## What Happens When main_server Restarts
 
 ⚠️ **Important**: `tool_registry` is an in-memory attribute on
 `LLMSessionManager`, so **everything is lost when main_server
-restarts**. The plugin must handle this:
+restarts**.
 
-- **Plugin outlives main_server** (more common): the plugin needs to
-  detect the heartbeat / connection drop and **re-register** when
-  main_server comes back up. The simplest approach is a background task
-  that periodically `GET /api/tools?role=...` to verify the tool is
-  still there, and re-register if not.
-- **Plugin lifetime tied to main_server**: as long as the plugin's
-  startup hook runs `register_with_retry`, restart means plugin restart
-  too, so registration happens naturally.
+For an `@llm_tool` plugin, recovery has to be triggered by the user (or
+by an entry the user calls): a plugin has no supported way to detect that
+main_server restarted, and it must not poll main_server itself.
+
+- Preferred: reload the plugin. The new process registers every
+  `@llm_tool` again.
+- Without a reload: call `self.unregister_llm_tool(name)`, then
+  `self.register_llm_tool(...)` (registering a name that is still
+  registered locally raises `EntryConflictError` before the host is
+  notified). Pass every argument of the original registration again,
+  especially `role` and `reply_tail`: they default to `role=None`
+  (visible to every character) and `reply_tail=False`.
+
+Either way, the host records a registration only if at least one
+matching character session manager exists when it arrives (any
+character for `role=None`, otherwise the `role` character). It then
+reaches those characters and is restored for matching characters created
+later. If none matches yet (no character loaded, or the `role` character
+is not available), nothing is recorded and the tool does not appear later
+by itself: recover once the character is available.
+
+A raw HTTP integration running outside the plugin process must handle
+this itself:
+
+- **Integration outlives main_server** (more common): the external
+  process needs to detect the heartbeat / connection drop and
+  **re-register** when main_server comes back up. The simplest approach
+  is a background task in that process that periodically
+  `GET /api/tools?role=...` to verify the tool is still there, and
+  re-registers if not.
+- **Integration lifetime tied to main_server**: if the external process
+  runs `register_with_retry` when it starts and is restarted together
+  with main_server, registration happens naturally.
 
 ## Switching Nekos
 
@@ -386,8 +486,14 @@ top-level: `from plugin.sdk.plugin import llm_tool`.
     parameters: dict | None = None, # JSON Schema; default = no args
     timeout: float = 30.0,          # per-call timeout (seconds, ≤ 300)
     role: str | None = None,        # None = global, or specific neko name
+    reply_tail: bool = False,       # opt in to original-reply image context in _ctx.host_reply
 )
 ```
+
+`reply_tail=True` passes the original reply's image context to the
+handler as `_ctx.host_reply`, so the handler must accept `_ctx` or
+`**kwargs`. Realtime voice and older frontends do not provide it. See
+[original-reply image tail](/plugin-reply-tail).
 
 The decorated method is invoked with the parsed JSON arguments as
 keyword arguments. Use `*` in the signature so accidental positional
@@ -400,7 +506,11 @@ async def search(self, *, query: str, limit: int = 10):
 ```
 
 `name` must match `[A-Za-z0-9_.\-]{1,64}` so it stays safe to inline
-into the callback URL path segment.
+into the callback URL path segment, and must not consist only of dots
+(`.`, `..`): the URL path would normalise such a name away, so the tool
+could never be called. The decorator, the sync and async calls and the
+host all refuse those names (`ValueError` in the plugin; the host drops
+such a registration or unregistration).
 
 ### `NekoPluginBase` instance methods
 
@@ -415,11 +525,150 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 
 `unregister_llm_tool(name)` reverses it; `list_llm_tools()` returns the
 current set as plain dicts. Duplicate names raise `EntryConflictError`.
+
+Both calls are fire-and-forget: `True` means the tool was recorded in
+the plugin and the host was notified, not that `main_server` accepted
+it. When the plugin needs the real outcome, use the async variants:
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=40.0,  # seconds to wait, at most 60 (default 40)
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+The host makes the same `main_server` call as for the notification and
+returns what `main_server` answered:
+
+| Field | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | At least one role accepted the tool. | No role still holds this plugin's tool. |
+| `removed` | — | `main_server` actually removed something. |
+| `affected_roles` | Roles that now have the tool. | Roles it was removed from. |
+| `failed_roles` | `[{"role", "error"}]` roles that did not accept it (also on partial success). | `[{"role", "error"}]` roles where removal failed. |
+| `refused_roles` | — | `[{"role", "owned_by"}]` roles where the name belongs to another source, or (with `"reason": "different registration"`) to another registration of this plugin; left untouched. |
+| `error` | `None` or a code (below). | `None` or a code (below). |
+| `message` | Human-readable detail, or `None`. | Human-readable detail, or `None`. |
+| `cleanup` | `None`, or the unregister result of the cleanup after a failed register (below). | — |
+
+`error` codes: `rejected` (register: no role accepted, e.g. the name is
+owned by another source), `plugin_stopped` (register: the plugin was
+stopped while the register was in flight; whatever `main_server` may have
+stored is withdrawn by its registration id on a best-effort basis, and if
+that fails it may remain until the plugin's next cleanup), `partial_failure` (unregister: some roles
+failed), `main_server_unavailable` (the request could not reach
+`main_server`; nothing was applied), `main_server_error`
+(HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none
+from the host within `request_timeout`, none from `main_server` after the
+request was sent, or an answer that is not a JSON object; the outcome is
+unknown), `host_unavailable` (the request could
+not reach the host), `busy` (earlier calls for the same name used up the
+budget before this one could be sent, or the calling entry's time ran out
+before it was sent; nothing was sent and `cleanup` is `None`. A `cleanup`
+not sent because the entry's time ran out is `busy` too. Also on an
+unregister, or a `cleanup`, whose requests already sent
+left too little budget to remove a stale registration they reported
+(below): that removal was not sent and the registration is still
+listed in `refused_roles`), `not_registered` (unregister: the plugin had no local
+record of the name and `main_server` removed nothing of this plugin's under
+it; with a local record the same answer is `ok=True, removed=False` and the
+local handler is dropped), `invalid_request`.
+
+Local state follows `ok`, so the plugin and the host agree:
+
+- `register_llm_tool_async` installs the handler before asking the host
+  (the model may call the tool as soon as `main_server` has it) and
+  rolls it back when `ok` is false or the call is cancelled. The same
+  name can then be registered again.
+- A failed register is not always a no-op on `main_server`: it stores the
+  tool before syncing it to each role and keeps it if every role's sync
+  fails, and a `timeout` says nothing about what was applied. So after a
+  register fails with `rejected`, `timeout`, `host_unavailable` or
+  `plugin_stopped` (the host's own withdrawal may have failed), the SDK
+  sends one unregister for that name, in order with the name's other
+  async calls, and reports it in `cleanup` (it may add up to 15 s to the
+  call). Other errors mean nothing was stored, so `cleanup` stays `None`.
+  If `cleanup["ok"]` is false, call `unregister_llm_tool_async(name)`
+  later. After a `timeout` the cleanup is best effort: `main_server` may
+  still be processing the register and store the tool after the cleanup
+  ran, so `removed=False` does not prove nothing is left; call
+  `unregister_llm_tool_async(name)` again a little later when that
+  matters. A cancelled register rolls back locally but sends no cleanup.
+- Each `register_llm_tool_async` call carries its own registration id,
+  and its cleanup and a later `unregister_llm_tool_async` remove only
+  that registration. So a cleanup or unregister that timed out but is
+  still running on `main_server` cannot remove a newer registration of
+  the same name; that role is reported in `refused_roles` with
+  `"reason": "different registration"`. Such a registration is stale
+  (e.g. a register that timed out and landed late), so both the cleanup
+  and `unregister_llm_tool_async` then remove it too, by the id
+  `main_server` reported (never with an unfiltered request), and report
+  `ok` only once every reported registration is gone. The cleanup skips
+  this removal when the plugin holds a handler for the name again by then
+  (e.g. another thread registered it with the sync call): the reported
+  registration may be that live one, so it is left in place and stays in
+  `refused_roles`. Tools registered through the
+  sync call or `@llm_tool`, and names the plugin no longer holds, are
+  unregistered without an id (any registration of this plugin), as
+  before.
+- `unregister_llm_tool_async` removes the handler only when `ok` is
+  true. Otherwise the tool stays registered in the plugin, as it does on
+  the host, so the roles that still have it keep working and calling it
+  again retries.
+- The host always unregisters with `expected_source=plugin:{plugin_id}`
+  taken from the plugin's connection, so a plugin can never remove
+  another source's tool of the same name.
+- `unregister_llm_tool_async(name)` also works for a name the plugin no
+  longer holds locally: it is still sent to the host, for every role, so
+  a leftover on `main_server` is removed. Stopping the plugin also tries
+  to clear all of the plugin's tools, but only best effort: if
+  `main_server` is unreachable at that moment, tools can stay there, so
+  check (or clear them) once it is back.
+- Async calls for the same name run one at a time, in call order, each
+  waiting for the previous one's answer, also when they come from
+  different event loops (e.g. an entry and an interval timer). For example,
+  in `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
+  the unregister is sent only after the register got its answer. The
+  ordering is all this promises: check each call's own result (an
+  unregister with `ok=False` keeps the local handler). Different names do not wait for each
+  other. `request_timeout` covers the whole call, including the time spent
+  waiting behind earlier calls for the same name; if too little of it is
+  left to send the request (under 5 s, or under half of it for small
+  values), the result is `busy` and nothing was sent to the host. Called
+  from an entry that has a deadline, the effective budget of each request,
+  including the cleanup, is the smaller of its own budget and the entry's
+  remaining time; a request that is not sent because the entry's time is
+  used up reports `busy` (nothing reached the host; for a cleanup,
+  `cleanup` then reports `busy`), while one that was sent but got no answer
+  in time still reports `timeout`. A request that reached the host but
+  expired in the host's queue before it was handled also reports `timeout`:
+  the host answers it like any deadline it ran out of.
+
+Argument errors raise like the sync calls (`ValueError`, `TypeError`,
+`EntryConflictError`; an invalid name, including one made only of dots,
+raises `ValueError` on both). The async calls also raise `ValueError` for a
+`request_timeout` outside (0, 60] (the host's limit) and, for register, a
+`timeout` outside (0, 300] (`main_server`'s limit). Host and
+`main_server` failures never raise. Pick one style per tool name: the
+sync calls are not part of the per-name ordering and travel on a
+different IPC channel, so mixing them for the same name has no ordering
+guarantee. `@llm_tool` methods are registered through that notification
+channel at startup; if the plugin may unregister one with
+`unregister_llm_tool_async` right after startup, register it with
+`register_llm_tool_async` instead of the decorator.
 
 ### Returning errors
 
@@ -446,8 +695,8 @@ plugin doesn't crash — only that one tool call fails.
 - The IPC notification (`LLM_TOOL_REGISTER`) is buffered on the
   plugin's host queue. If `main_server` is not yet up when the
   notification arrives, the registration call fails and the host
-  logs a warning — re-register later via the imperative API or by
-  reloading the plugin once `main_server` is healthy.
+  logs a warning — once `main_server` is healthy, recover as described in
+  "What Happens When main_server Restarts".
 - On plugin stop, `lifecycle_service.stop_plugin` calls
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`,
   which POSTs `/api/tools/clear` with body
@@ -461,9 +710,10 @@ plugin doesn't crash — only that one tool call fails.
 
 | File | Role |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector. |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` + auto-registration in `__init__`. |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector, async result types (`LlmToolRegisterResult` / `LlmToolUnregisterResult`). |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools`, their `_async` variants, and auto-registration in `__init__`. |
 | `plugin/core/communication.py` | Host-side IPC handlers `_handle_llm_tool_register` / `_handle_llm_tool_unregister` (routed by message type in `_MESSAGE_ROUTING`). |
+| `plugin/server/messaging/handlers/llm_tools.py` | Host-side request-response handlers `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` behind the `_async` variants. |
 | `plugin/server/messaging/llm_tool_registry.py` | Process-global tracking + httpx wrappers around `main_server`'s `/api/tools/{register,unregister,clear}`. |
 | `plugin/server/routes/llm_tools.py` | The `/api/llm-tools/callback/{plugin_id}/{tool_name}` route that receives main_server's dispatches and forwards them through `host.trigger`. |
 | `plugin/server/application/plugins/lifecycle_service.py` | Calls `clear_plugin_tools` on plugin stop. |

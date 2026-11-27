@@ -155,7 +155,8 @@
             v-model="query"
             clearable
             :placeholder="t('knowledge.searchPlaceholder')"
-            @keyup.enter="loadEntries(true)"
+            @keydown="enterKey.down"
+            @keyup.enter="enterKey.up(() => loadEntries(true))"
             @clear="loadEntries(true)"
           />
           <el-select
@@ -220,7 +221,7 @@
 
       <el-tab-pane :label="t('knowledge.tabPacks')" name="packs">
         <div class="toolbar">
-          <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="importSelectedPack" />
+          <input ref="fileInput" type="file" accept=".json,.zip,.txt,.md,.docx,.pdf" hidden @change="importSelectedPack" />
           <el-button type="primary" :loading="importing" @click="fileInput?.click()">{{ t('knowledge.importPack') }}</el-button>
           <span class="toolbar__hint">{{ t('knowledge.importHint') }}</span>
           <el-button class="toolbar__end" :loading="marketOpening" @click="openKnowledgeMarket">
@@ -234,7 +235,7 @@
             <el-tag type="primary" effect="plain" size="small">{{ activeJobs.length }}</el-tag>
           </div>
           <p class="job-panel__hint">{{ t('knowledge.activeJobsHint') }}</p>
-          <div v-for="job in activeJobs" :key="job.job_id" class="job-row">
+          <div v-for="job in activeJobs" :key="job.job_id" class="job-row" :data-job-id="job.job_id">
             <div class="job-row__identity">
               <strong>{{ job.pack_id || job.job_id }}</strong>
               <span>{{ t('knowledge.jobMeta', { entries: job.entries_total ?? 0, chunks: job.chunks_total ?? 0 }) }}</span>
@@ -257,11 +258,19 @@
             <strong>{{ t('knowledge.failedJobs') }}</strong>
             <el-tag type="warning" effect="plain" size="small">{{ finishedFailedJobs.length }}</el-tag>
           </div>
-          <div v-for="job in finishedFailedJobs" :key="job.job_id" class="job-row">
+          <div v-for="job in finishedFailedJobs" :key="job.job_id" class="job-row" :data-job-id="job.job_id">
             <div class="job-row__identity">
               <strong>{{ job.pack_id || job.job_id }}</strong>
               <span>{{ jobStateLabel(job.state) }}<template v-if="job.reason"> · {{ reasonMessage(job.reason) }}</template></span>
             </div>
+            <el-button
+              plain
+              :loading="pendingJobs.has(job.job_id)"
+              :disabled="pendingJobs.has(job.job_id)"
+              @click="retryJob(job)"
+            >
+              {{ t('knowledge.retryJob') }}
+            </el-button>
             <el-button
               plain
               :loading="pendingJobs.has(job.job_id)"
@@ -287,6 +296,8 @@
                 <div class="pack-identity">
                   <div class="pack-identity__title">
                     <strong :title="scope.row.pack_id">{{ scope.row.source?.name || scope.row.pack_id }}</strong>
+                    <el-tag size="small" effect="plain">{{ originLabel(scope.row) }}</el-tag>
+                    <el-tag v-if="scope.row.retained" size="small" type="info">{{ t('knowledge.retainedPack') }}</el-tag>
                     <el-tooltip v-if="scope.row.broken" :content="t('knowledge.brokenHint')" placement="top">
                       <el-tag type="danger" size="small">{{ t('knowledge.brokenTag') }}</el-tag>
                     </el-tooltip>
@@ -310,11 +321,22 @@
                 </div>
               </template>
             </el-table-column>
+            <el-table-column :label="t('knowledge.packEnabled')" width="96" align="center">
+              <template #default="scope">
+                <el-switch
+                  :model-value="scope.row.enabled !== false"
+                  :disabled="scope.row.broken || scope.row.retained || pendingPacks.has(scope.row.pack_id)"
+                  :aria-label="t('knowledge.packEnabled')"
+                  :data-testid="`pack-enabled-${scope.row.pack_id}`"
+                  @change="setPackEnabled(scope.row, Boolean($event))"
+                />
+              </template>
+            </el-table-column>
             <el-table-column :label="t('knowledge.materialType')" width="170">
               <template #default="scope">
                 <el-select
                   :model-value="scope.row.material_type_override ?? MATERIAL_FOLLOW"
-                  :disabled="scope.row.broken || pendingPacks.has(scope.row.pack_id)"
+                  :disabled="scope.row.broken || scope.row.retained || pendingPacks.has(scope.row.pack_id)"
                   :aria-label="t('knowledge.materialType')"
                   size="small"
                   @change="setPackMaterialType(scope.row, String($event))"
@@ -358,7 +380,7 @@
               <template #default="scope">
                 <el-switch
                   :model-value="scope.row.local_embedding === true"
-                  :disabled="scope.row.broken || pendingPacks.has(scope.row.pack_id)"
+                  :disabled="scope.row.broken || scope.row.retained || pendingPacks.has(scope.row.pack_id)"
                   :aria-label="t('knowledge.localVectors')"
                   @change="setPackIndexPolicy(scope.row, Boolean($event))"
                 />
@@ -373,18 +395,19 @@
               <template #default="scope">
                 <el-switch
                   :model-value="scope.row.auto_context === true"
-                  :disabled="scope.row.broken || pendingPacks.has(scope.row.pack_id)"
+                  :disabled="scope.row.broken || scope.row.retained || pendingPacks.has(scope.row.pack_id)"
                   :aria-label="t('knowledge.autoContext')"
                   @change="setPackAuto(scope.row, Boolean($event))"
                 />
               </template>
             </el-table-column>
-            <el-table-column :label="t('knowledge.actions')" width="90" align="center">
+            <el-table-column :label="t('knowledge.actions')" width="165" align="center">
               <template #default="scope">
+                <el-button link type="primary" @click="openPack(scope.row)">{{ t('knowledge.managePack') }}</el-button>
                 <el-button
                   link
                   type="danger"
-                  :disabled="pendingPacks.has(scope.row.pack_id)"
+                  :disabled="scope.row.retained || pendingPacks.has(scope.row.pack_id)"
                   @click="removePack(scope.row)"
                 >
                   {{ t('knowledge.remove') }}
@@ -544,6 +567,8 @@
         </section>
       </div>
     </el-drawer>
+    <KnowledgePackDrawer v-model="packDrawerOpen" :pack="selectedPack" :jobs="packJobs" @updated="sourceCommitted" />
+    <KnowledgeSourceImport v-model="sourceDialogOpen" :file="sourceFile" :packs="packs" @committed="sourceCommitted" />
   </div>
 </template>
 
@@ -556,6 +581,7 @@ import {
   createMarketPairing,
   isActiveKnowledgeJob,
   isKnownKnowledgeReason,
+  KnowledgeApiError,
   knowledgeApi,
   knowledgeFailureReason,
   knowledgeMarketUrl,
@@ -563,12 +589,14 @@ import {
   type KnowledgeEntry,
   type KnowledgeEntryDetail,
   type KnowledgeIndexBatch,
+  type KnowledgeImportResponse,
   type KnowledgeMaterialType,
   type KnowledgePack,
   type KnowledgePackJob,
   type KnowledgeStatus,
   type KnowledgeVectorState,
 } from '@/api/knowledge'
+import { useEnterKey } from '@/utils/enterKey'
 import { createLatestRequestGate } from '@/utils/latestRequest'
 import { createOverviewRequestGate, type OverviewRequestTicket } from '@/utils/overviewRequestGate'
 import {
@@ -582,6 +610,8 @@ import {
 } from '@/utils/knowledgeDisplay'
 import { openExternalUrl, prepareExternalWindow } from '@/utils/openExternal'
 import { getMarketUrl } from '@/api/market'
+import KnowledgePackDrawer from '@/components/knowledge/KnowledgePackDrawer.vue'
+import KnowledgeSourceImport from '@/components/knowledge/KnowledgeSourceImport.vue'
 
 const MATERIAL_FOLLOW = '__follow__'
 const EMPTY_MARK = '—'
@@ -598,6 +628,8 @@ const status = ref<KnowledgeStatus | null>(null)
 const savingEnabled = ref(false)
 
 const query = ref('')
+// Enter that picks a word of an input method is not Enter that searches.
+const enterKey = useEnterKey()
 const packFilter = ref('')
 const entries = ref<KnowledgeEntry[]>([])
 const entriesLoading = ref(false)
@@ -613,9 +645,19 @@ const packsLoading = ref(false)
 const pendingPacks = reactive(new Set<string>())
 const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
+// A successful handoff consumes this row locally; a stale poll cannot reoffer it.
+const retriedJobs = reactive(new Set<string>())
+// Keep newly admitted jobs visible until polling acknowledges their IDs.
+// A snapshot captured before admission must not hide the only cancellable row.
+const unconfirmedJobs = new Map<string, KnowledgePackJob>()
 const importing = ref(false)
 const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const sourceFile = ref<File | null>(null)
+const sourceDialogOpen = ref(false)
+const packDrawerOpen = ref(false)
+const selectedPackId = ref('')
+const selectedPack = computed(() => packs.value.find(row => row.pack_id === selectedPackId.value) ?? null)
 
 const queries = ref<KnowledgeDiagnosticQuery[]>([])
 const indexBatches = ref<KnowledgeIndexBatch[]>([])
@@ -709,7 +751,7 @@ const pageRangeLabel = computed(() => {
 
 const activeJobs = computed(() => packJobs.value.filter(isActiveKnowledgeJob))
 const finishedFailedJobs = computed(() =>
-  packJobs.value.filter((job) => job.state === 'failed' || job.state === 'cancelled'),
+  packJobs.value.filter((job) => (job.state === 'failed' || job.state === 'cancelled') && !retriedJobs.has(job.job_id)),
 )
 
 const visibleQueries = computed(() => visibleDiagnosticQueries(queries.value, showMisses.value))
@@ -879,15 +921,17 @@ async function loadPacks(options: { silent?: boolean } = {}) {
 }
 
 function applyJobs(jobs: KnowledgePackJob[]) {
+  for (const job of jobs) unconfirmedJobs.delete(job.job_id)
+  jobs = [...unconfirmedJobs.values(), ...jobs]
   const transitions = finishedJobTransitions(lastJobStates, jobs)
   for (const { job, outcome } of transitions) {
     const name = job.pack_id || job.job_id
     if (outcome === 'active') {
-      ElMessage.success(t('knowledge.importDone', { name }))
+      ElMessage.success(t(job.kind === 'pack_export' ? 'knowledge.exportReady' : 'knowledge.importDone', { name }))
     } else if (outcome === 'failed') {
-      ElMessage.error(t('knowledge.importFailed', { name, reason: reasonMessage(job.reason) }))
+      ElMessage.error(t(job.kind === 'pack_export' ? 'knowledge.exportFailed' : 'knowledge.importFailed', { name, reason: reasonMessage(job.reason) }))
     } else {
-      ElMessage.info(t('knowledge.importCancelled', { name }))
+      ElMessage.info(t(job.kind === 'pack_export' ? 'knowledge.exportCancelled' : 'knowledge.importCancelled', { name }))
     }
   }
   lastJobStates = jobStateSnapshot(jobs)
@@ -931,6 +975,34 @@ function refreshAfterMutation() {
   loading.value = false
   packsLoading.value = false
   void refreshOverview({ silent: true })
+}
+
+function registerImportJob(response: KnowledgeImportResponse, kind: KnowledgePackJob['kind']) {
+  const jobId = response.job_id
+  if (disposed || response.unchanged || !jobId || packJobs.value.some(job => job.job_id === jobId)) return
+  // Observe the admitted state before reading the overview. Otherwise its
+  // first terminal snapshot cannot trigger the normal completion reload.
+  const admitted: KnowledgePackJob = {
+    job_id: jobId, pack_id: response.pack_id, kind, state: response.state, reason: response.reason ?? '',
+    entries_total: Number(response.entries_total) || 0, chunks_total: Number(response.chunks_total) || 0,
+    created_at: '', updated_at: '',
+  }
+  lastJobStates.set(jobId, admitted.state)
+  // Keep the admitted result until the server lists its ID, even if it has
+  // already failed. Its real terminal state never creates synthetic busy work.
+  unconfirmedJobs.set(jobId, admitted)
+  packJobs.value = [admitted, ...packJobs.value]
+}
+
+function sourceCommitted(response?: KnowledgeImportResponse) {
+  if (disposed) return
+  if (response) registerImportJob(response, 'import_commit')
+  refreshAfterMutation()
+  // A source change can finish inside the request (e.g. removing the last
+  // source) and be admitted as `active`; no later job transition would then
+  // reload a catalog the user opened meanwhile. loadEntries() supersedes any
+  // catalog read that predates the change.
+  if (response?.state === 'active' && !response.unchanged && activeTab.value === 'catalog') void loadEntries()
 }
 
 async function loadEntries(reset = false) {
@@ -1101,6 +1173,13 @@ async function importSelectedPack(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || importing.value) return
+  // JSON and ZIP already describe a pack. Documents require an explicit local
+  // preview and retrieval/privacy choice before they join the shared index.
+  if (!/\.(json|zip)$/i.test(file.name)) {
+    sourceFile.value = file
+    sourceDialogOpen.value = true
+    return
+  }
   importing.value = true
   try {
     const response = await knowledgeApi.importPack(file)
@@ -1109,21 +1188,7 @@ async function importSelectedPack(event: Event) {
       ElMessage.info(t('knowledge.importUnchanged', { name: response.pack_id }))
     } else {
       ElMessage.success(t('knowledge.importQueued', { name: response.pack_id }))
-      const jobId = String(response.job_id || '')
-      if (jobId && !packJobs.value.some((job) => job.job_id === jobId)) {
-        const queued: KnowledgePackJob = {
-          job_id: jobId,
-          pack_id: response.pack_id,
-          state: 'queued',
-          reason: '',
-          entries_total: Number(response.entries_total) || 0,
-          chunks_total: Number(response.chunks_total) || 0,
-          created_at: '',
-          updated_at: '',
-        }
-        lastJobStates.set(jobId, 'queued')
-        packJobs.value = [queued, ...packJobs.value]
-      }
+      registerImportJob(response, 'pack_import')
     }
     refreshAfterMutation()
   } catch (error) {
@@ -1156,13 +1221,42 @@ async function cancelJob(job: KnowledgePackJob) {
 }
 
 async function discardJob(job: KnowledgePackJob) {
-  if (pendingJobs.has(job.job_id)) return
+  if (pendingJobs.has(job.job_id) || retriedJobs.has(job.job_id)) return
   pendingJobs.add(job.job_id)
   try {
     await knowledgeApi.discardPackJob({ job_id: job.job_id })
     jobsGate.invalidate()
+    // A discarded job must not be merged back from its unconfirmed local row.
+    unconfirmedJobs.delete(job.job_id)
     packJobs.value = packJobs.value.filter((item) => item.job_id !== job.job_id)
     lastJobStates.delete(job.job_id)
+  } catch (error) {
+    ElMessage.error(errorMessage(error))
+  } finally {
+    pendingJobs.delete(job.job_id)
+  }
+}
+
+async function retryJob(job: KnowledgePackJob) {
+  if (pendingJobs.has(job.job_id) || retriedJobs.has(job.job_id) || !['failed', 'cancelled'].includes(job.state)) return
+  pendingJobs.add(job.job_id)
+  try {
+    // Only terminal tasks reach this action; busy work stays in its original queue.
+    const response = await knowledgeApi.retryPackJob({ job_id: job.job_id })
+    // An unchanged retry has no replacement task; its retained input still
+    // belongs to this card, so keep retry/discard available.
+    if (response.job_id) retriedJobs.add(job.job_id)
+    else if (response.unchanged) ElMessage.info(t('knowledge.importUnchanged', { name: response.pack_id || job.pack_id }))
+    jobsGate.invalidate()
+    // Show the admitted retry immediately, before the follow-up list is available.
+    if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
+      // Admission may already finish with an actionable error before polling catches up.
+      const retry = { ...job, ...response, job_id: response.job_id, reason: response.reason ?? '' }
+      unconfirmedJobs.set(retry.job_id, retry)
+      lastJobStates.set(retry.job_id, retry.state)
+      packJobs.value = [retry, ...packJobs.value]
+    }
+    refreshAfterMutation()
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
@@ -1181,6 +1275,47 @@ async function mutatePack(row: KnowledgePack, mutation: () => Promise<void>) {
   } finally {
     pendingPacks.delete(row.pack_id)
   }
+}
+
+function originLabel(row: KnowledgePack) {
+  const origin = row.origin ?? (row.subscription ? 'market' : 'builtin')
+  return t(`knowledge.${origin === 'imported' ? 'originImported' : origin === 'market' ? 'originMarket' : 'originBuiltin'}`)
+}
+
+function openPack(row: KnowledgePack) {
+  selectedPackId.value = row.pack_id
+  packDrawerOpen.value = true
+}
+
+function setPackEnabled(row: KnowledgePack, enabled: boolean) {
+  // Consent belongs to the body shown when the user opens the confirmation,
+  // not a newer row installed by polling while that confirmation is pending.
+  const packId = row.pack_id
+  const confirmedDigest = row.pack_sha256
+  return mutatePack(row, async () => {
+    try {
+      if (enabled) {
+        if (!confirmedDigest) throw new KnowledgeApiError('pack_content_changed')
+        await ElMessageBox.confirm(t('knowledge.cloudDisclosure'), t('common.warning'), { type: 'warning' })
+      }
+      const response = await knowledgeApi.setPackEnabled({
+        pack_id: packId, enabled, ...(enabled ? { expected_pack_sha256: confirmedDigest } : {}),
+      })
+      // A newer observed policy wins even for the same body. Counters from
+      // different service lifetimes cannot be ordered; keep that refreshed row.
+      const current = packs.value.find(pack => pack.pack_id === packId)
+      const saved = response.policy_revision
+      const observed = current?.policy_revision
+      if (current && current.pack_sha256 === confirmedDigest && saved && observed
+          && saved.epoch === observed.epoch && observed.counter <= saved.counter) {
+        current.enabled = response.pack_enabled ?? enabled
+        current.policy_revision = saved
+      }
+    } catch (error) {
+      if (knowledgeFailureReason(error) === 'pack_content_changed') await loadPacks({ silent: true })
+      throw error
+    }
+  })
 }
 
 function setPackMaterialType(row: KnowledgePack, value: string) {

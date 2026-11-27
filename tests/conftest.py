@@ -1,6 +1,5 @@
 import os as _os
 import sys as _sys
-import tempfile as _tempfile
 from pathlib import Path as _Path
 
 # Project root must be on sys.path before importing `utils.*` — works even when
@@ -41,35 +40,14 @@ def _ensure_builtin_live2d_unpacked(model_name):
 for _builtin_live2d_model in ("yui-origin", "yui-lolita"):
     _ensure_builtin_live2d_unpacked(_builtin_live2d_model)
 
-# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
-# Without this, every pytest session — including ones that intentionally inject
-# OSError / malformed JSON / mock-driven failures via patches — dumps ERROR lines into
-# the user's Documents tree.
-#
-# We override RobustLoggerConfig._get_log_directory directly (rather than going
-# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
-# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
-# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
-# Loggers are constructed at module import time, so the patch must happen here
-# in conftest BEFORE any project module is imported.
-_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
-_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
-from utils import logger_config as _logger_config_module
-# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
-# Env-var-based override (priority 1) and the cascade through application/system
-# data dirs stay intact — so tests that use monkeypatch.setenv on
-# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
-_logger_config_module.RobustLoggerConfig._get_documents_directory = (
-    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
-)
+# Before ANY product module is imported: telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected out of the real Documents/N.E.K.O/logs, and
+# ConfigManager root resolution pointed at a throwaway root (module-level
+# get_config_manager() singletons run the migration chain on import). Shared with
+# plugin/tests/conftest.py; see tests/process_isolation.py for why each step is there.
+from tests.process_isolation import isolate_test_process as _isolate_test_process
 
-# Likewise for the runtime root itself: get_config_manager() defaults migrate=True,
-# so importing any of seven module-level singletons first runs the full migration chain against the real root.
-# Install this before importing any product module (see tests/real_root_isolation.py).
-from utils.config_manager import ConfigManager as _ConfigManagerForIsolation
-from tests import real_root_isolation as _real_root_isolation
-
-_real_root_isolation.install(_ConfigManagerForIsolation)
+_isolate_test_process()
 
 import asyncio
 import asyncio.runners
@@ -100,7 +78,22 @@ def _nested_runner_run(self, coro, *, context=None):
 def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
     """Preserve Python 3.12's loop_factory support after nest_asyncio patches asyncio.run."""
     if loop_factory is None:
-        return _orig_asyncio_run(main, debug=debug)
+        if asyncio.events._get_running_loop() is not None:
+            return _orig_asyncio_run(main, debug=debug)
+        # nest_asyncio's run() reuses the thread's default loop, and its
+        # run_until_complete() returns as soon as the task is done, before the
+        # done-callbacks that completion queued get a turn. The loop is then
+        # left alone, so those callbacks never run. One of them is anyio's
+        # worker.stop (registered by to_thread.run_sync / Starlette's
+        # run_in_threadpool), and its worker is a non-daemon thread blocked
+        # on queue.get(), so the interpreter can never exit. Run the loop for
+        # one more step, as the stock asyncio.run() would have.
+        loop = asyncio.get_event_loop()
+        try:
+            return _orig_asyncio_run(main, debug=debug)
+        finally:
+            if not loop.is_closed() and not loop.is_running():
+                loop.run_until_complete(asyncio.sleep(0))
 
     with asyncio.runners.Runner(debug=debug, loop_factory=loop_factory) as runner:
         return runner.run(main)
@@ -130,6 +123,7 @@ import pytest
 from tests.utils.llm_judger import LLMJudger
 
 logger = logging.getLogger(__name__)
+
 
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
@@ -212,12 +206,53 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # A plugin of its own, not hooks imported here: this conftest already takes
+    # its pytest_runtest_teardown from storage_root_env_guard, and pytest finds
+    # conftest hooks by name, so a second one here would replace that one.
+    from tests import teardown_watchdog
+
+    if not config.pluginmanager.is_registered(teardown_watchdog):
+        config.pluginmanager.register(teardown_watchdog, "neko-teardown-watchdog")
     config.addinivalue_line("markers", "manual: requires human supervision and real API/screen/browser")
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "frontend: frontend integration tests")
 
-    # Auto-install Playwright browsers if not already present.
-    _ensure_playwright_browsers()
+    # Auto-install Playwright browsers if not already present - unless this
+    # run cannot drive a browser at all. On a fresh CI runner the install
+    # takes ~170 s, which used to be most of every Windows unit job's startup.
+    if _run_may_need_playwright(config.args, config.invocation_params.dir):
+        _ensure_playwright_browsers()
+
+
+_UNIT_TEST_DIR = _Path(__file__).resolve().parent / "unit"
+
+
+def _run_may_need_playwright(args, invocation_dir) -> bool:
+    """Whether the paths pytest was given can reach a Playwright browser.
+
+    False only when every argument is a ``.py`` file under tests/unit whose
+    source never mentions Playwright: tests there drive a browser by calling
+    ``sync_playwright()`` themselves, while tests/frontend and tests/e2e also
+    get one through pytest-playwright fixtures (``page``, ``mock_page``) that
+    a file does not have to name. A directory, a node id outside tests/unit,
+    or no argument at all keeps the old behaviour. Argument files
+    (``pytest @shard.args``) are expanded into ``args`` before this runs.
+    """
+    if not args:
+        return True
+    for arg in args:
+        path = _Path(str(arg).split("::", 1)[0])
+        if not path.is_absolute():
+            path = _Path(invocation_dir) / path
+        try:
+            path = path.resolve()
+            if path.suffix != ".py" or not path.is_file() or _UNIT_TEST_DIR not in path.parents:
+                return True
+            if "playwright" in path.read_text(encoding="utf-8", errors="replace").lower():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _ensure_playwright_browsers():
@@ -738,6 +773,25 @@ def mock_memory_server():
 
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture()
+def emote_template_library_dir(tmp_path, monkeypatch):
+    from main_routers import emote_template_router
+
+    directory = tmp_path / "emote-templates"
+    monkeypatch.setattr(emote_template_router, "_template_library_directory", lambda: directory)
+    return directory
+
+
+@pytest.fixture()
+def builtin_emote_template_dir():
+    from main_routers.emote_template_router import _builtin_template_directory
+
+    directory = _builtin_template_directory()
+    if not directory.is_dir():
+        pytest.skip("YUI desktop template assets are not installed")
+    return directory
 
 
 @pytest.fixture(scope="session")

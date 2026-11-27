@@ -11,7 +11,7 @@ import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import Panel from './AuthoringProjectPythonPackages.vue'
-import { pythonPackageMessages } from '@/i18n/python-packages'
+import en from '@/i18n/python-packages/en-US'
 import type { AuthoringProject } from '@/api/pluginProjects'
 import type { PythonPackagesSnapshot } from '@/api/projectPythonPackages'
 const api = vi.hoisted(() => ({
@@ -28,7 +28,6 @@ vi.mock('@/api/projectPythonPackages', async (original) => ({
 }))
 vi.mock('@/api/plugins', () => ({ stopPlugin: api.stopPlugin }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
-const en = pythonPackageMessages['en-US']
 const project = { project_id: 'p1', plugin_id: 'demo' } as AuthoringProject
 const state = (overrides: Partial<PythonPackagesSnapshot> = {}) =>
   pythonPackagesSnapshot({

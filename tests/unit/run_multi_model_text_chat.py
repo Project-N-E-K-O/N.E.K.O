@@ -20,13 +20,13 @@ from utils.file_utils import atomic_write_json
 
 # Configure model targets here.
 # provider: assist provider key in api profiles (e.g. qwen/openai/glm/step/silicon/gemini)
-# model: optional override for CORRECTION_MODEL; set None to use provider default model.
+# model: optional override for MEMORY_MODEL; set None to use provider default model.
 TEST_TARGETS: List[Dict[str, Optional[str]]] = [
     {"provider": "qwen", "model": "qwen3.5-plus"},
     {"provider": "openai", "model":  "gpt-5-chat-latest"},
     {"provider": "free", "model":  "free-model"},
     {"provider": "step", "model":  "step-1o-turbo-vision"},
-    {"provider": "gemini", "model":  "gemini-3-flash-preview"},
+    {"provider": "gemini", "model":  "gemini-3.8-flash"},
     {"provider": "glm", "model":  "glm-4.7-flash"},
     {"provider": "silicon", "model":  "deepseek-ai/DeepSeek-V3.2"},
 ]

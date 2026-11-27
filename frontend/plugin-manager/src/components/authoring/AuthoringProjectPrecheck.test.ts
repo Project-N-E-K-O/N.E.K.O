@@ -4,8 +4,8 @@ import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import Precheck from './AuthoringProjectPrecheck.vue'
-import { authoringMessages } from '@/i18n/authoring'
-import { pythonPackageMessages } from '@/i18n/python-packages'
+import en from '@/i18n/authoring/en-US'
+import pythonPackagesEn from '@/i18n/python-packages/en-US'
 import type { PrecheckReport } from '@/api/pluginProjects'
 
 const api = vi.hoisted(() => ({ precheckPluginProject: vi.fn() }))
@@ -13,7 +13,6 @@ vi.mock('@/api/pluginProjects', async (original) => ({
   ...(await original<typeof import('@/api/pluginProjects')>()),
   ...api,
 }))
-const en = authoringMessages['en-US']
 let app: ReturnType<typeof createApp> | undefined
 async function flush() {
   for (let n = 0; n < 12; n++) {
@@ -32,7 +31,7 @@ async function mount() {
         legacy: false,
         locale: 'en-US',
         messages: {
-          'en-US': { authoring: en, pythonPackages: pythonPackageMessages['en-US'] },
+          'en-US': { authoring: en, pythonPackages: pythonPackagesEn },
         },
       })
     )

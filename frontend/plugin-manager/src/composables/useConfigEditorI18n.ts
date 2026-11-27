@@ -1,9 +1,8 @@
 import { effectScope, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { useI18n, type Composer } from 'vue-i18n'
 import { configEditorMessages } from '@/i18n/config-editor'
 
 type EditorLocale = keyof typeof configEditorMessages
-type Composer = ReturnType<typeof useI18n>
 
 const FALLBACK_LOCALE = 'zh-CN'
 // Any key of the bundle tells whether a dictionary still carries it.

@@ -28,6 +28,29 @@
 //    sharp edge (file:// could open arbitrary local content, javascript:
 //    is a non-starter, data: is unsupported by most OS handlers) — only
 //    schemes a sane new-tab/browser would accept get through.
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/
+
+export function isSafeSameTabUrl(url: string): boolean {
+  if (typeof url !== 'string') return false
+  const trimmed = url.trim()
+  if (!trimmed || CONTROL_CHARS_RE.test(trimmed)) return false
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed, window.location.href)
+  } catch {
+    return false
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false
+  return parsed.origin === window.location.origin
+}
+
+export function isSafeAppRoute(target: string): boolean {
+  if (typeof target !== 'string') return false
+  const trimmed = target.trim()
+  if (!trimmed || CONTROL_CHARS_RE.test(trimmed)) return false
+  return trimmed.startsWith('/') && !trimmed.startsWith('//')
+}
+
 function normalizeExternalUrl(url: string): string | null {
   if (!url) return null
   let normalized: URL
@@ -47,6 +70,13 @@ function externalShell(): { openExternal: (u: string) => void | Promise<unknown>
   return shell && typeof shell.openExternal === 'function'
     ? (shell as { openExternal: (u: string) => void | Promise<unknown> })
     : null
+}
+
+/** Keep native anchor navigation in browsers; route Electron clicks to its system browser. */
+export function handleExternalLinkClick(event: MouseEvent, url: string): void {
+  if (!externalShell()) return
+  event.preventDefault()
+  openExternalUrl(url)
 }
 
 export function openExternalUrl(url: string): void {
@@ -108,7 +138,19 @@ export function prepareExternalWindow(): {
 }
 
 export function openLocalPath(path: string): Promise<void> {
-  const raw = String(path || '').trim()
+  return openLocalPathExact(String(path || '').trim())
+}
+
+/**
+ * Open exactly this path, without trimming it. Use it for a path returned by
+ * `resolvePathWithinRoots`, so the bridge opens the string that was checked
+ * (POSIX names may start or end with spaces).
+ */
+export function openVerifiedLocalPath(path: string): Promise<void> {
+  return openLocalPathExact(String(path || ''))
+}
+
+function openLocalPathExact(raw: string): Promise<void> {
   if (!isLocalPath(raw)) return Promise.reject(new Error('Not a valid local path'))
   const target = normalizeLocalPath(raw)
   const host = (window as unknown as {
@@ -145,7 +187,121 @@ export function openLocalPath(path: string): Promise<void> {
     return Promise.resolve(host.electronShell.openExternal(localPathToFileUrl(target))).then(() => undefined)
   }
   // 纯浏览器环境：没有桌面桥接
-  return Promise.reject(new Error('No desktop bridge available'))
+  return Promise.reject(Object.assign(new Error('No desktop bridge available'), { code: NO_DESKTOP_BRIDGE }))
+}
+
+export const NO_DESKTOP_BRIDGE = 'no_desktop_bridge'
+
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\s*\..*)?$/i
+
+type ScopedPathStyle = 'posix' | 'windows' | 'unc'
+type ScopedPath = {
+  style: ScopedPathStyle
+  // Root marker: '' for posix, 'c:' style drive for windows, '//host/share' for UNC.
+  root: string
+  segments: string[]
+}
+
+/**
+ * Lexically normalize an absolute local path for scope comparison.
+ *
+ * Handles `file://` URLs, `/` and `\` separators, `.` / `..` segments,
+ * repeated and trailing separators, Windows drive letters and UNC shares.
+ * Returns null for anything that is not an absolute path or that cannot be
+ * compared safely (home-relative `~`, Windows device / verbatim prefixes,
+ * `..` above the root, NUL and other control characters, Windows segments
+ * that the OS would silently rewrite).
+ *
+ * Purely lexical: symbolic links and junctions cannot be resolved here.
+ */
+function parseScopedPath(input: string, options: { trimWindowsTrailingSpaces?: boolean } = {}): ScopedPath | null {
+  // No general trimming: spaces are part of POSIX names, and roots must be
+  // compared exactly as given.
+  let raw = normalizeLocalPath(String(input || ''))
+  if (!raw || CONTROL_CHARS_RE.test(raw)) return null
+  // A backslash is an ordinary file-name character in POSIX paths; only
+  // drive-letter and UNC (`\\host\share`, `//host/share`) inputs treat it
+  // as a separator.
+  const windowsLike = /^[a-zA-Z]:([\\/]|$)/.test(raw) || /^[\\/][\\/]/.test(raw)
+  // Windows itself drops trailing spaces from a path, so a drive-letter or
+  // UNC target may lose them here. The trimmed form is what gets checked
+  // and returned for opening; POSIX targets and all roots stay untouched.
+  if (options.trimWindowsTrailingSpaces && windowsLike) raw = raw.replace(/ +$/, '')
+  const posixLiteral = raw.startsWith('/') && !windowsLike
+  const slashed = posixLiteral ? raw : raw.replace(/\\/g, '/')
+  let style: ScopedPathStyle
+  let root: string
+  let rest: string
+  const drive = /^([a-zA-Z]):(?:\/|$)/.exec(slashed)
+  if (drive) {
+    style = 'windows'
+    root = `${drive[1]!.toUpperCase()}:`
+    rest = slashed.slice(2)
+  } else if (slashed.startsWith('//')) {
+    const parts = slashed.slice(2).split('/')
+    const host = parts[0] || ''
+    const share = parts[1] || ''
+    // `//?/...` and `//./...` are Win32 verbatim / device namespaces.
+    if (!host || !share || host === '?' || host === '.') return null
+    style = 'unc'
+    root = `//${host}/${share}`
+    rest = parts.slice(2).join('/')
+  } else if (posixLiteral) {
+    style = 'posix'
+    root = ''
+    rest = slashed
+  } else {
+    return null
+  }
+  const segments: string[] = []
+  for (const segment of rest.split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (!segments.length) return null
+      segments.pop()
+      continue
+    }
+    // Windows drops trailing dots/spaces and treats `:` as a stream
+    // separator, so such segments do not name what they spell.
+    if (style !== 'posix' && (/[. ]$/.test(segment) || segment.includes(':'))) return null
+    // Windows device names (CON, NUL, COM1, ...) open a device, not a file,
+    // whatever directory or extension they appear with.
+    if (style !== 'posix' && WINDOWS_DEVICE_NAME_RE.test(segment)) return null
+    segments.push(segment)
+  }
+  return { style, root, segments }
+}
+
+function scopedPathKey(path: ScopedPath): string[] {
+  // Windows and UNC paths compare case-insensitively; POSIX paths exactly.
+  const fold = (value: string) => (path.style === 'posix' ? value : value.toLowerCase())
+  return [path.style, fold(path.root), ...path.segments.map(fold)]
+}
+
+function formatScopedPath(path: ScopedPath): string {
+  if (path.style === 'posix') return `/${path.segments.join('/')}`
+  const root = path.style === 'unc' ? path.root.replace(/\//g, '\\') : path.root
+  return `${root}\\${path.segments.join('\\')}`
+}
+
+/**
+ * Return the normalized native path when `target` equals or is inside one of
+ * `roots`, comparing whole path segments; otherwise null. Roots that are
+ * empty or not absolute are ignored.
+ */
+export function resolvePathWithinRoots(target: string, roots: ReadonlyArray<string | null | undefined>): string | null {
+  const parsed = parseScopedPath(target, { trimWindowsTrailingSpaces: true })
+  if (!parsed) return null
+  const targetKey = scopedPathKey(parsed)
+  for (const root of roots) {
+    if (typeof root !== 'string' || !root.trim()) continue
+    const parsedRoot = parseScopedPath(root)
+    if (!parsedRoot) continue
+    const rootKey = scopedPathKey(parsedRoot)
+    if (rootKey.length > targetKey.length) continue
+    if (rootKey.every((part, index) => part === targetKey[index])) return formatScopedPath(parsed)
+  }
+  return null
 }
 
 function isLocalPath(value: string): boolean {
@@ -164,8 +320,10 @@ function localPathToFileUrl(value: string): string {
     if (!host) return value
     return `file://${host}/${encodeFilePathParts(parts)}`
   }
-  normalized = normalized.replace(/\\/g, '/')
-  if (/^[a-zA-Z]:\//.test(normalized)) normalized = `/${normalized}`
+  // Only drive-letter paths use `\` as a separator. In POSIX paths it is a
+  // literal file-name character and must stay encoded (%5C), otherwise the
+  // URL could name a different path than the one scope-checked.
+  if (/^[a-zA-Z]:[\\/]/.test(normalized)) normalized = `/${normalized.replace(/\\/g, '/')}`
   return `file://${encodeFilePathParts(normalized.split('/'))}`
 }
 

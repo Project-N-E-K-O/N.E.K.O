@@ -9,10 +9,12 @@ Data persists in PluginStore (SQLite KV) across restarts.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import re
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -31,6 +33,20 @@ _STORE_KEY = "reminders"
 
 _TZ_UTC = timezone.utc
 _DEFAULT_TZ = "Asia/Shanghai"
+_DEFAULT_MAX_REMINDERS = 200
+
+
+def _parse_max_reminders(value: object) -> int:
+    """Parse [memo].max_reminders, allowing 0 and falling back to 200 on invalid input."""
+    if value is None or isinstance(value, bool):
+        return _DEFAULT_MAX_REMINDERS
+    if isinstance(value, float):
+        return _DEFAULT_MAX_REMINDERS
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_REMINDERS
+    return parsed if parsed >= 0 else _DEFAULT_MAX_REMINDERS
 
 _FORMATS_WITH_DATE = (
     ("%Y-%m-%d %H:%M:%S", True),
@@ -52,6 +68,36 @@ _IMMEDIATE_KEYWORDS = frozenset({
 
 def _now(tz: timezone | ZoneInfo) -> datetime:
     return datetime.now(tz)
+
+
+def _parse_iso_datetime(raw: object) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt
+
+
+_UNRECOVERABLE_PUSH_REASONS = frozenset({
+    "payload_too_large",
+    "invalid_payload",
+    "invalid_message",
+    "invalid_context",
+})
+
+
+def _is_push_submitted(receipt: object) -> bool:
+    if not isinstance(receipt, Mapping):
+        return False
+    if "submitted" in receipt:
+        return receipt.get("submitted") is True
+    if "ok" in receipt:
+        return receipt.get("ok") is True
+    return False
 
 
 def _parse_time(raw: str, tz: timezone | ZoneInfo) -> Optional[Tuple[datetime, bool]]:
@@ -135,6 +181,8 @@ class MemoReminderPlugin(NekoPluginBase):
         self._wake_event = threading.Event()
         self._checker_thread: Optional[threading.Thread] = None
         self._reminders_lock = threading.Lock()
+        self._memo_cfg: Dict[str, Any] = {}
+        self._max_reminders = _DEFAULT_MAX_REMINDERS
 
     def _store_get_sync(self, key: str, default: Any = None) -> Any:
         if not self.store.enabled:
@@ -208,11 +256,53 @@ class MemoReminderPlugin(NekoPluginBase):
             self._checker_thread.start()
         self._wake_event.set()
 
+    async def _reload_config(
+        self,
+        cfg: Optional[Mapping[str, Any]] = None,
+        *,
+        full_snapshot: bool = False,
+    ) -> Dict[str, Any]:
+        if isinstance(cfg, Mapping):
+            resolved_cfg: Dict[str, Any] = dict(cfg)
+            raw_memo = resolved_cfg.get("memo")
+            if isinstance(raw_memo, Mapping):
+                memo_cfg: Dict[str, Any] = dict(raw_memo)
+            elif full_snapshot:
+                memo_cfg = {}
+            else:
+                return resolved_cfg
+        else:
+            dumped = await self.config.dump(timeout=5.0)
+            resolved_cfg = dict(dumped) if isinstance(dumped, Mapping) else {}
+            memo_cfg = (
+                dict(resolved_cfg["memo"])
+                if isinstance(resolved_cfg.get("memo"), Mapping)
+                else {}
+            )
+        self._memo_cfg = dict(memo_cfg)
+        self._max_reminders = _parse_max_reminders(
+            memo_cfg.get("max_reminders", _DEFAULT_MAX_REMINDERS)
+        )
+
+        tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
+        try:
+            self._tz: timezone | ZoneInfo = ZoneInfo(tz_name)
+        except Exception as e:
+            self._tz = ZoneInfo(_DEFAULT_TZ)
+            self.logger.warning("Invalid timezone {!r}, falling back to {} ({})", tz_name, _DEFAULT_TZ, e)
+        return resolved_cfg
+
+    @lifecycle(id="config_change")
+    async def on_config_change(self, new_config: Any = None, old_config: Any = None, **_):
+        await self._reload_config(
+            new_config if isinstance(new_config, Mapping) else None,
+            full_snapshot=isinstance(old_config, Mapping),
+        )
+        return Ok({"status": "reloaded", "max_reminders": self._max_reminders, "timezone": str(self._tz)})
+
     @lifecycle(id="startup")
     async def startup(self, **_):
-        cfg = await self.config.dump(timeout=5.0)
-        cfg = cfg if isinstance(cfg, dict) else {}
-        memo_cfg = cfg.get("memo") if isinstance(cfg.get("memo"), dict) else {}
+        cfg = await self._reload_config()
 
         if not self.store.enabled:
             store_cfg = cfg.get("plugin", {})
@@ -223,13 +313,6 @@ class MemoReminderPlugin(NekoPluginBase):
             else:
                 self.store.enabled = True
                 self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
-
-        tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
-        try:
-            self._tz: timezone | ZoneInfo = ZoneInfo(tz_name)
-        except Exception as e:
-            self._tz = ZoneInfo(_DEFAULT_TZ)
-            self.logger.warning("Invalid timezone {!r}, falling back to {} ({})", tz_name, _DEFAULT_TZ, e)
 
         self._stop_event.clear()
         self._wake_event.clear()
@@ -261,11 +344,15 @@ class MemoReminderPlugin(NekoPluginBase):
         now = _now(_TZ_UTC)
         earliest: Optional[float] = None
         for r in reminders:
-            try:
-                dt = datetime.fromisoformat(r.get("trigger_at", ""))
-            except (ValueError, TypeError):
+            dt = _parse_iso_datetime(r.get("trigger_at", ""))
+            if dt is None:
                 continue
-            delta = (dt - now).total_seconds()
+            effective_dt = dt
+            if not r.get("delivered"):
+                retry_dt = _parse_iso_datetime(r.get("next_retry_at"))
+                if retry_dt is not None and retry_dt > effective_dt:
+                    effective_dt = retry_dt
+            delta = (effective_dt - now).total_seconds()
             if earliest is None or delta < earliest:
                 earliest = delta
         return earliest
@@ -323,13 +410,14 @@ class MemoReminderPlugin(NekoPluginBase):
             for raw in reminders:
                 r = self._strip_legacy_deferred_fields(raw)
                 trigger_iso = r.get("trigger_at", "")
-                try:
-                    trigger_dt = datetime.fromisoformat(trigger_iso)
-                except (ValueError, TypeError):
+                trigger_dt = _parse_iso_datetime(trigger_iso)
+                if trigger_dt is None:
                     kept.append(r)
                     continue
 
-                if trigger_dt <= now:
+                retry_dt = _parse_iso_datetime(r.get("next_retry_at"))
+                retry_due = bool(r.get("delivered")) or retry_dt is None or retry_dt <= now
+                if trigger_dt <= now and retry_due:
                     to_push.append(r)
                 else:
                     kept.append(r)
@@ -344,39 +432,86 @@ class MemoReminderPlugin(NekoPluginBase):
 
         for r in to_push:
             rid = r.get("id", "?")
+            was_delivered = bool(r.get("delivered"))
             try:
-                self._push_reminder(r)
+                pushed = self._push_reminder(r)
             except Exception:
                 self.logger.exception("Failed to push reminder {}", rid)
                 continue
+            if not pushed:
+                continue
             fired_ids.append(rid)
+            if not was_delivered:
+                try:
+                    with self._reminders_lock:
+                        current = self._load_reminders_unlocked()
+                        changed = False
+                        for item in current:
+                            if item.get("id") == rid:
+                                item["delivered"] = True
+                                changed = True
+                        if changed:
+                            self._save_reminders_unlocked(current)
+                except Exception:
+                    self.logger.exception("Failed to persist delivered flag for reminder {}", rid)
 
         # Phase 3 - under lock: merge results back (handles concurrent add/delete).
         with self._reminders_lock:
+            now_phase3 = _now(_TZ_UTC)
             processed_ids = {r.get("id") for r in to_push}
+            current = self._load_reminders_unlocked()
+            current_ids = {item.get("id") for item in current}
             final: List[Dict[str, Any]] = []
             for r in to_push:
                 rid = r.get("id", "?")
+                last_reason = r.pop("_last_push_reason", None)
+                if rid not in current_ids:
+                    continue
                 if rid in fired_ids:
-                    updated = self._reschedule(r, now)
+                    updated = self._reschedule(r, now_phase3)
                     if updated:
                         final.append(updated)
                 else:
-                    final.append(r)
-            current = self._load_reminders_unlocked()
+                    failed_item = dict(r)
+                    retry_count = int(failed_item.get("delivery_retry_count") or 0) + 1
+                    if last_reason in _UNRECOVERABLE_PUSH_REASONS:
+                        self.logger.error(
+                            "Abandoning reminder {} delivery after {} attempt(s) (reason={})",
+                            rid,
+                            retry_count,
+                            last_reason,
+                        )
+                        rescheduled = self._reschedule(failed_item, now_phase3)
+                        if rescheduled:
+                            final.append(rescheduled)
+                    else:
+                        delay_sec = min(60.0, 2.0 ** min(retry_count, 6))
+                        failed_item["delivery_retry_count"] = retry_count
+                        failed_item["next_retry_at"] = (
+                            now_phase3 + timedelta(seconds=delay_sec)
+                        ).isoformat()
+                        if retry_count in {1, 5, 10} or retry_count % 10 == 0:
+                            self.logger.warning(
+                                "Reminder {} transient delivery failure #{} (reason={}); keeping pending with {}s backoff",
+                                rid,
+                                retry_count,
+                                last_reason,
+                                delay_sec,
+                            )
+                        final.append(failed_item)
             merged = [r for r in current if r.get("id") not in processed_ids] + final
             self._save_reminders_unlocked(merged)
             if fired_ids:
                 self.logger.info("Fired reminders: {}", fired_ids)
 
-    def _push_reminder(self, r: Dict[str, Any]) -> None:
+    def _push_reminder(self, r: Dict[str, Any]) -> bool:
         msg = r.get("message", "提醒时间到了！")
         rid = r.get("id", "?")
         repeat_label = r.get("repeat", "once")
 
         # Send only reminders whose message has not been sent, preventing duplicate retry delivery.
         if not r.get("delivered"):
-            self.ctx.push_message(
+            receipt = self.ctx.push_message(
                 source="memo_reminder",
                 visibility=[],
                 ai_behavior="respond",
@@ -394,8 +529,19 @@ class MemoReminderPlugin(NekoPluginBase):
                 },
                 target_lanlan=r.get("lanlan_name"),
             )
+            if not _is_push_submitted(receipt):
+                reason = receipt.get("reason") if isinstance(receipt, Mapping) else None
+                r["_last_push_reason"] = reason
+                self.logger.warning(
+                    "Push reminder {} rejected (reason={}); will retry",
+                    rid,
+                    reason,
+                )
+                return False
             # Mark the message as sent.
+            r.pop("_last_push_reason", None)
             r["delivered"] = True
+        return True
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
@@ -411,7 +557,9 @@ class MemoReminderPlugin(NekoPluginBase):
             r = dict(r)
             r["fire_count"] = fire_count
 
-        trigger_dt = datetime.fromisoformat(r["trigger_at"])
+        trigger_dt = _parse_iso_datetime(r.get("trigger_at"))
+        if trigger_dt is None:
+            return None
 
         if repeat == "daily":
             next_dt = trigger_dt + timedelta(days=1)
@@ -447,6 +595,8 @@ class MemoReminderPlugin(NekoPluginBase):
         r["trigger_at"] = next_dt.isoformat()
         # Clear transient state so the next trigger sends a message again.
         r.pop("delivered", None)
+        r.pop("delivery_retry_count", None)
+        r.pop("next_retry_at", None)
         r.pop("callback_pending", None)
         r.pop("callback_error", None)
         r.pop("callback_retry_count", None)
@@ -660,9 +810,8 @@ class MemoReminderPlugin(NekoPluginBase):
         """Returns error message string, or None on success."""
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
-            cfg = self._store_get_sync("_memo_cfg", {})
-            max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
-            if len(reminders) >= max_r:
+            max_r = _parse_max_reminders(getattr(self, "_max_reminders", _DEFAULT_MAX_REMINDERS))
+            if max_r <= 0 or len(reminders) >= max_r:
                 return f"提醒数量已达上限 ({max_r})"
             reminders.append(reminder)
             self._save_reminders_unlocked(reminders)

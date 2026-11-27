@@ -105,8 +105,12 @@ def test_cross_window_adopted_values_roll_the_dirty_baseline():
     apply_index = listener_block.index("const changed = applySharedRuntimeSettings(incoming);")
     roll_index = listener_block.index("_settingsBaseline[key] = S[key];")
     assert apply_index < roll_index, "the baseline roll must observe the applied values"
-    # Keys this window really did touch keep their authority.
-    assert "if (_dirtySettingsKeys.has(key)) continue;" in listener_block
+    # The roll covers keys this window touched earlier too: their authority
+    # lives in _dirtySettingsKeys (left as is), and skipping them let the next
+    # unrelated save send a received value out as this window's explicit write
+    # (behaviour pinned by
+    # test_settings_vision_consent_cross_window.py::test_received_value_is_not_resent_as_own_write_harness).
+    assert "if (_dirtySettingsKeys.has(key)) continue;" not in listener_block
 
 
 def test_equal_write_ids_are_broken_by_explicit_asr_intent():

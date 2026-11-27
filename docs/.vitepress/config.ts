@@ -12,12 +12,6 @@ const SRC_EXCLUDE = new Set([
   'README_ja.md',
   'README_ru.md',
   'README_zh-CN.md',
-  'zh-CN/guide/openclaw_guide.md',
-  'zh-CN/guide/openclaw_guide.en.md',
-  'zh-CN/guide/openclaw_guide.ja.md',
-  'zh-CN/guide/openclaw_guide.ko.md',
-  'zh-CN/guide/openclaw_guide.ru.md',
-  'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
 
@@ -209,9 +203,6 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const implementationRecords = lang === 'en'
     ? [{ text: t.taskHud, link: '/architecture/task-hud-system' }]
     : []
-  const zhCNOnlyItems = lang === 'zh-CN'
-    ? [{ text: 'Neko x QwenPaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
-    : []
   return [
     {
       text: t.group,
@@ -224,7 +215,6 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.agent, link: `${p}/architecture/agent-system` },
         { text: t.tts, link: `${p}/architecture/tts-pipeline` },
         ...implementationRecords,
-        ...zhCNOnlyItems,
       ],
     },
   ]
@@ -348,26 +338,29 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       group: 'Plugin Development', overview: 'Overview',
+      agentStart: 'Build with Coding Agents',
       journey: 'Getting Started', anatomy: 'Getting Started with Plugin Development', quick: 'Quick Start', cli: 'Publish a Plugin',
       toml: 'Plugin Config (plugin.toml)',
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)',
-      sdk: 'Plugin Capabilities & SDK Reference', migration: 'v0.9 Migration', dec: 'Decorators & Lifecycle', ex: 'Examples', adv: 'Adapters & Concurrency',
+      sdk: 'Plugin Capabilities & SDK Reference', push: 'Message Delivery', migration: 'v0.9 Migration', dec: 'Decorators & Lifecycle', ex: 'Examples', adv: 'Adapters & Concurrency',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览',
+      agentStart: '用 AI 零基础做插件',
       journey: '旅程的起点', anatomy: '插件开发入门文档', quick: '快速开始', cli: '发布插件',
       toml: '插件配置 (plugin.toml)',
       entries: '入口与参数', router: 'Router（代码拆分）',
-      sdk: '插件能力与 SDK 参考', migration: 'v0.9 迁移', dec: '装饰器与生命周期', ex: '示例', adv: 'Adapter 与并发编程',
+      sdk: '插件能力与 SDK 参考', push: '消息推送与结果投递', migration: 'v0.9 迁移', dec: '装饰器与生命周期', ex: '示例', adv: 'Adapter 与并发编程',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要',
+      agentStart: 'AI エージェントで作る',
       journey: 'はじめの一歩', anatomy: 'プラグイン開発入門ガイド', quick: 'クイックスタート', cli: 'プラグインを公開',
       toml: 'プラグイン設定 (plugin.toml)',
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）',
-      sdk: 'プラグイン機能と SDK リファレンス', migration: 'v0.9 移行', dec: 'デコレーターとライフサイクル', ex: 'サンプル', adv: 'Adapter と並行処理',
+      sdk: 'プラグイン機能と SDK リファレンス', push: 'メッセージ配信', migration: 'v0.9 移行', dec: 'デコレーターとライフサイクル', ex: 'サンプル', adv: 'Adapter と並行処理',
       hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
     },
   }[lang]
@@ -377,6 +370,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       text: t.group,
       items: [
         { text: t.overview, link: `${p}/plugins/` },
+        { text: t.agentStart, link: `${p}/plugins/coding-agents` },
         {
           text: t.journey,
           collapsed: false,
@@ -391,6 +385,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         },
         { text: t.migration, link: `${p}/plugins/migration-v0.9` },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
+        { text: t.push, link: `${p}/plugins/push-message` },
         { text: t.dec, link: `${p}/plugins/decorators` },
         { text: t.tool, link: `${p}/plugins/tool-calling` },
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),

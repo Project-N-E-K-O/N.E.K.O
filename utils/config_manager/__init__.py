@@ -231,6 +231,14 @@ def _ensure_config_manager_migrated():
             "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
             type(exc).__name__,
         )
+    # Same pattern: persist the emotion/summary -> recognition/memory field rename once.
+    try:
+        _config_manager.migrate_renamed_tiers()
+    except Exception as exc:
+        logger.warning(
+            "[ConfigManager] migrate_renamed_tiers 抛异常（已忽略）: %s",
+            type(exc).__name__,
+        )
     # After basic config/memory migration, perform a one-time soft migration of N.E.K.O/memory under legacy
     # Documents/AppData paths: migrate only entries associated with characters, leaving unassociated entries
     # for manual frontend legacy-cleanup UI rather than deleting them automatically at startup.
@@ -321,6 +329,14 @@ def save_workshop_path(workshop_path):
 def persist_user_workshop_folder(workshop_path):
     """Persist the actual Steam Workshop path into the config file (written only once per startup)"""
     return get_config_manager().persist_user_workshop_folder(workshop_path)
+
+def register_steam_workshop_library_roots(roots):
+    """Remember the Workshop content roots of all Steam libraries (runtime)"""
+    return get_config_manager().register_steam_workshop_library_roots(roots)
+
+def get_steam_workshop_library_roots():
+    """Get the Workshop content roots of all known Steam libraries (runtime)"""
+    return get_config_manager().get_steam_workshop_library_roots()
 
 def get_steam_workshop_path():
     """Get the Steam Workshop root directory path (runtime)"""

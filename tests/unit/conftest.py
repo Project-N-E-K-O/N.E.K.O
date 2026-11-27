@@ -278,6 +278,27 @@ def _reset_icebreaker_routes(request):
 
 
 @pytest.fixture(autouse=True)
+def _reset_steam_workshop_library_roots():
+    """Keep Steam library roots registered by one test out of the next.
+
+    The registry lives on the config manager singleton, which outlives a test;
+    a root left behind (usually a tmp_path) would make later /workshop lookups
+    search it. Only an already-built singleton is touched, never constructed here.
+    """
+    module = sys.modules.get("utils.config_manager")
+    manager = getattr(module, "_config_manager", None) if module is not None else None
+    snapshot = list(getattr(manager, "_steam_workshop_library_roots", None) or [])
+    try:
+        yield
+    finally:
+        # Re-read: the module may have been imported for the first time by this test.
+        module = sys.modules.get("utils.config_manager")
+        manager = getattr(module, "_config_manager", None) if module is not None else None
+        if manager is not None:
+            manager._steam_workshop_library_roots = list(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def _reset_theater_activity():
     """Keep the in-memory theater activity signal from leaking between tests."""
     module = sys.modules.get("utils.theater_activity")
@@ -359,7 +380,12 @@ def _enable_theater_review_modules(request, monkeypatch):
         if not _is_theater_test_module(request):
             return
         from services.theater import numeric_v2_workflow as workflow
+    from services.theater import numeric_v2_options
     from services.theater.numeric_v2_options import default_options
+
+    # Exercise retained review implementations despite the temporary production pause.
+    # Speed-first regressions explicitly restore False and the real options loader.
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", True)
 
     async def _all_on() -> dict[str, bool]:
         # Delivery validation is a new purely programmatic check; exclude it from existing regressions to avoid silently changing their assertions.
@@ -368,23 +394,41 @@ def _enable_theater_review_modules(request, monkeypatch):
     monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
 
 
+
+
 @pytest.fixture(autouse=True)
-def _stub_theater_narrative_proposals(request, monkeypatch):
-    """Isolate the new model component in existing orchestration unit tests.
+def _stub_theater_continuity_check(request, monkeypatch):
+    """Orchestration fixtures isolate the new post-draft check from model transport.
 
-    Proposer tests exercise its real request adapter. Narrative workflow tests
-    override this empty proposal with their explicit event fixtures.
+    Native contract tests retain the real adapter; dedicated gate tests supply
+    their own verdicts to exercise repair, rejection and atomic persistence.
     """
-
-    if (not _is_theater_test_module(request)
-            or request.node.path.name == "test_theater_numeric_v2_narrative_proposer.py"):
+    if not _is_theater_test_module(request) or request.node.path.name in {"test_theater_numeric_v2_contract_gate.py", "test_theater_numeric_v2_contract_evidence.py"}:
         return
-    from services.theater import numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator
+    original = NumericV2MetricEvaluator.verify_contract_boundaries
 
-    async def _empty_proposal(self, **kwargs):
-        return []
+    async def check(self, **kwargs):
+        if kwargs.get("session") is not None:
+            if kwargs.get("proposed_offer") is not None:
+                kwargs["diagnostics"]["offer_actionable"] = True
+            return ()
+        return await original(self, **kwargs)
 
-    monkeypatch.setattr(workflow.NumericV2NarrativeProposer, "propose", _empty_proposal)
+    monkeypatch.setattr(NumericV2MetricEvaluator, "verify_contract_boundaries", check)
+
+
+@pytest.fixture(autouse=True)
+def _stub_theater_story_evidence(request, monkeypatch):
+    """Supply a positive model verdict to tests exercising unrelated turn mechanics."""
+    if not _is_theater_test_module(request) or request.node.path.name == "test_theater_numeric_v2_natural_fact_approval.py":
+        return
+    from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator, NumericV2StoryEvidenceReview
+
+    async def approve(self, *, claims, ending_route, **kwargs):
+        return NumericV2StoryEvidenceReview(tuple(range(len(claims))), ending_route is not None)
+
+    monkeypatch.setattr(NumericV2MetricEvaluator, "review_story_evidence", approve)
 
 
 @pytest.fixture

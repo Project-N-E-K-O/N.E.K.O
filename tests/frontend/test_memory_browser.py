@@ -38,6 +38,65 @@ def _request_json(route):
     return post_data_json() if callable(post_data_json) else post_data_json
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize('timezone,known,epoch', [
+    ('Asia/Shanghai', '[20261103 Tue 10:26]', '[19700101 Thu 08:00]'),
+    ('America/New_York', '[20261102 Mon 21:26]', '[19691231 Wed 19:00]'),
+])
+def test_recent_memory_sync_time_is_display_only(mock_page, running_server, seed_memory_file, timezone, known, epoch):
+    rows = [
+        {'type': 'system', 'data': {'content': 'memo'}},
+        {'type': 'human', 'data': {'content': 'user text', 'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'type': 'ai', 'data': {'content': '[20261103 Tue 10:26] local reply',
+                              'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'synced nested reply',
+                              'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'role': 'assistant', 'content': 'synced flat reply', 'metadata': {'recent_memory_time': '1793672815630'}},
+        {'type': 'ai', 'data': {'content': 'epoch reply', 'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'missing time'}},
+        {'type': 'ai', 'metadata': {}, 'data': {'content': 'top metadata takes precedence',
+                                              'metadata': {'recent_memory_time': '1793672815630'}}},
+    ]
+    for invalid in (None, '', '-1', 'NaN', '1e3', 0, False, '9007199254740992', '8640000000000001'):
+        rows.append({'type': 'ai', 'data': {'content': 'unknown time ' + repr(invalid),
+                                          'metadata': {'recent_memory_time': invalid}}})
+    seed_memory_file.write_text(json.dumps(rows), encoding='utf-8')
+    original_bytes = seed_memory_file.read_bytes()
+    context = mock_page.context.browser.new_context(timezone_id=timezone)
+    try:
+        _install_ready_memory_browser_routes(context, seed_memory_file)
+        posts = []
+
+        def save(route):
+            posts.append(_request_json(route))
+            route.fulfill(json={'success': True, 'need_refresh': False, 'fingerprint': 'next', 'identity_token': 'token'})
+
+        context.route('**/api/memory/recent_file/save', save)
+        page = context.new_page()
+        page.goto(f'{running_server}/memory_browser', wait_until='domcontentloaded')
+        rendered = page.locator('#memory-chat-edit .chat-item')
+        expect(rendered).to_have_count(len(rows))
+        expect(rendered.nth(1).locator('.chat-time')).to_have_count(0)
+        for index, label in [(2, '[20261103 Tue 10:26]'), (3, known), (4, known), (5, epoch)]:
+            expect(rendered.nth(index).locator('.chat-time')).to_have_text(label)
+        expect(rendered.nth(3).locator('.chat-bubble')).to_have_text('synced nested reply')
+        for index in range(6, len(rows)):
+            expect(rendered.nth(index).locator('.chat-time')).to_have_count(0)
+        assert seed_memory_file.read_bytes() == original_bytes
+        page.locator('#memory-chat-edit .memo-textarea').first.fill('edited memo')
+        page.locator('#save-memory-btn').click()
+        expect(page.locator('#memory-unsaved-status')).to_be_hidden()
+        assert len(posts) == 1
+        saved = posts[0]['chat']
+        assert all('displayTime' not in item for item in saved)
+        assert [item['text'] for item in saved[1:]] == [
+            item['data']['content'] if 'data' in item else item['content'] for item in rows[1:]
+        ]
+        assert seed_memory_file.read_bytes() == original_bytes
+    finally:
+        context.close()
+
+
 def _assert_tutorial_reset_notice(page: Page, message: str) -> None:
     notice = page.locator(".tutorial-reset-notice-backdrop")
     expect(notice).to_be_visible()
@@ -319,6 +378,246 @@ def seed_memory_file(clean_user_data_dir, running_server):
     return memory_file
 
 
+def _build_default_memory_overview(character_name: str = "测试猫娘") -> dict:
+    """Return a realistic Phase 1 overview payload for Playwright route mocks."""
+    return {
+        "success": True,
+        "character_name": character_name,
+        "generated_at": "2026-11-21T09:00:00",
+        "imprint": {
+            "stats": {
+                "companion_days": 42,
+                "first_chat_at": "2026-10-10T20:00:00",
+                "total_messages": 368,
+                "facts_total": 27,
+                "imprint_persona_count": 9,
+                "character_card_count": 1,
+                "confirmed_reflections_count": 6,
+                "pending_attention_count": 3,
+            },
+            "warm_summary": {
+                "stage_key": "deep_bond",
+                "top_dimensions": ["preferences", "shared_memories", "habits"],
+                "highlight_snippets": ["一起通宵打通了《双人成行》"],
+                "cached_note": {
+                    "summary": "四十二天里，你们一起留下了许多温柔的日常片段。",
+                    "commentary": "你总能在忙碌之余认真照顾好生活里的小仪式。",
+                    "blessing": "愿接下来的每一个周五夜晚都一样轻松温暖。",
+                    "generated_at": "2026-11-21T08:30:00",
+                    "language": "zh",
+                    "source": "llm_cached",
+                },
+            },
+            "dimensions": [
+                {"key": "preferences", "count": 7, "ratio": 1.0},
+                {"key": "habits", "count": 5, "ratio": 0.714},
+                {"key": "personality", "count": 4, "ratio": 0.571},
+                {"key": "shared_memories", "count": 6, "ratio": 0.857},
+                {"key": "agreements", "count": 4, "ratio": 0.571},
+                {"key": "growth", "count": 3, "ratio": 0.429},
+            ],
+            "milestones": [
+                {
+                    "id": "ms_1",
+                    "kind": "reflection",
+                    "category": "milestone",
+                    "entity": "relationship",
+                    "text": "一起通宵打通了《双人成行》",
+                    "date": "2026-11-15T23:40:00",
+                }
+            ],
+            "evolution": [
+                {
+                    "id": "prom_1",
+                    "entity": "master",
+                    "previous_text": "早上习惯喝冰美式",
+                    "current_text": "最近改喝燕麦拿铁",
+                    "changed_at": "2026-11-18T09:20:00",
+                    "reason": "correction",
+                }
+            ],
+        },
+        "memories": {
+            "pending_corrections": [
+                {
+                    "index": 0,
+                    "entity": "master",
+                    "old_text": "平时完全不吃辣",
+                    "new_text": "最近开始尝试微辣川菜",
+                    "queued_at": "2026-11-20T19:30:00",
+                    "reason": "conflict",
+                }
+            ],
+            "pending_reflections": [
+                {
+                    "kind": "reflection",
+                    "id": "ref_pending_1",
+                    "entity": "master",
+                    "text": "雨天的时候更喜欢听安静的纯音乐。",
+                    "status": "pending",
+                    "relation_type": "preference",
+                    "temporal_scope": "pattern",
+                    "strength": 1,
+                    "reinforce_count": 0,
+                    "created_at": "2026-11-19T20:00:00",
+                    "suppress": False,
+                }
+            ],
+            "near_duplicates": [
+                {
+                    "kind": "persona",
+                    "entity": "master",
+                    "a_id": "prom_1",
+                    "a_text": "最近改喝燕麦拿铁",
+                    "b_id": "prom_2",
+                    "b_text": "现在早上更喜欢燕麦拿铁",
+                    "similarity": 0.934,
+                    "method": "embedding",
+                }
+            ],
+            "groups": {
+                "about_you": [
+                    {
+                        "kind": "persona",
+                        "id": "prom_1",
+                        "entity": "master",
+                        "text": "最近改喝燕麦拿铁",
+                        "source": "reflection",
+                        "protected": False,
+                        "user_pinned": True,
+                        "suppress": False,
+                        "strength": 3,
+                        "reinforce_count": 4,
+                        "created_at": "2026-10-16T09:10:00",
+                        "version_history": [
+                            {
+                                "index": 0,
+                                "text": "早上习惯喝冰美式",
+                                "replaced_at": "2026-11-18T09:20:00",
+                                "reason": "correction",
+                            }
+                        ],
+                    }
+                ],
+                "relationship": [
+                    {
+                        "kind": "persona",
+                        "id": "rel_1",
+                        "entity": "relationship",
+                        "text": "约定每周五晚上一起看电影",
+                        "source": "reflection",
+                        "protected": False,
+                        "user_pinned": False,
+                        "suppress": False,
+                        "strength": 2,
+                        "reinforce_count": 2,
+                        "created_at": "2026-11-08T21:15:00",
+                        "version_history": [],
+                    }
+                ],
+                "growth": [
+                    {
+                        "kind": "persona",
+                        "id": "neko_1",
+                        "entity": "neko",
+                        "text": "学会了在主人加班后先递热茶安慰",
+                        "source": "reflection",
+                        "protected": False,
+                        "user_pinned": False,
+                        "suppress": False,
+                        "strength": 3,
+                        "reinforce_count": 2,
+                        "created_at": "2026-11-04T23:10:00",
+                        "version_history": [],
+                    }
+                ],
+                "character_card": [
+                    {
+                        "kind": "persona",
+                        "id": "card_1",
+                        "entity": "neko",
+                        "text": "性格温柔细心，喜欢泡茶和听雨声",
+                        "source": "character_card",
+                        "protected": True,
+                        "user_pinned": False,
+                        "suppress": False,
+                        "strength": 3,
+                        "reinforce_count": 0,
+                        "created_at": "2026-10-10T20:00:00",
+                        "version_history": [],
+                    }
+                ],
+            },
+            "directives": [
+                {"term": "加班", "kind": "ban_topic", "locale": "zh", "hit_count": 1, "source": "manual"}
+            ],
+            "suppressed": [],
+        },
+        "health": {
+            "overall_score": 88,
+            "overall_status": "warn",
+            "dimensions": [
+                {
+                    "key": "consistency",
+                    "score": 88,
+                    "status": "warn",
+                    "metrics": {"pending_corrections": 1, "negative_evidence": 0, "sub_zero_entries": 0},
+                    "findings": [{"code": "N1", "severity": "warn", "count": 1}],
+                },
+                {
+                    "key": "redundancy",
+                    "score": 90,
+                    "status": "good",
+                    "metrics": {"near_duplicate_pairs": 1},
+                    "findings": [{"code": "A1", "severity": "info", "count": 1}],
+                },
+                {
+                    "key": "embedding",
+                    "score": 94,
+                    "status": "good",
+                    "metrics": {"embedded": 34, "total": 36, "coverage_pct": 94.4, "missing": 2, "stale": 0, "corrupt": 0, "primary_dim": 256},
+                    "findings": [{"code": "E1", "severity": "info", "count": 2}],
+                },
+                {
+                    "key": "structure",
+                    "score": 100,
+                    "status": "good",
+                    "metrics": {"duplicate_ids": 0, "dangling_fact_refs": 0, "sourceless_reflections": 0, "unattributed_persona": 0},
+                    "findings": [],
+                },
+                {
+                    "key": "pipeline",
+                    "score": 92,
+                    "status": "good",
+                    "metrics": {"unabsorbed_facts": 6, "stalled_pending_reflections": 0, "promoted_30d": 5, "denied_30d": 1, "synthesized_30d": 8},
+                    "findings": [],
+                },
+                {
+                    "key": "freshness",
+                    "score": 96,
+                    "status": "good",
+                    "metrics": {"recent_30d_activity": 22, "suppressed_entries": 0, "active_directives": 1, "low_importance_facts": 2},
+                    "findings": [],
+                },
+            ],
+            "funnel_30d": {
+                "facts_added": 27,
+                "reflections_synthesized": 8,
+                "reflections_confirmed": 6,
+                "reflections_promoted": 5,
+                "reflections_denied": 1,
+            },
+            "data_sources": {
+                "time_indexed_db": True,
+                "persona_json": True,
+                "reflections_json": True,
+                "facts_json": True,
+                "events_ndjson": True,
+            },
+        },
+    }
+
+
 def _install_ready_memory_browser_routes(
     page: Page | BrowserContext,
     memory_file: Path,
@@ -327,6 +626,7 @@ def _install_ready_memory_browser_routes(
     current_catgirl: str | None = None,
     card_origins: dict[str, str] | None = None,
     tutorial_seen: bool = True,
+    overview_data: dict | None = None,
 ) -> None:
     """Mock storage + memory APIs so the page (or whole context) is tested in ready mode."""
     if tutorial_seen:
@@ -426,6 +726,38 @@ def _install_ready_memory_browser_routes(
     def handle_save(route):
         route.fulfill(status=200, content_type="application/json", json={"success": True, "need_refresh": False})
 
+    def handle_overview(route):
+        from urllib.parse import unquote
+        char_name = unquote(urlparse(route.request.url).path.rsplit("/", 1)[-1]) or (current_catgirl or "测试猫娘")
+        payload = overview_data if overview_data is not None else _build_default_memory_overview(char_name)
+        route.fulfill(status=200, content_type="application/json", json=payload)
+
+    def handle_star_map(route):
+        from urllib.parse import unquote
+        char_name = unquote(urlparse(route.request.url).path.rsplit("/", 1)[-1]) or (current_catgirl or "测试猫娘")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": char_name,
+                "ready": True,
+                "embedded_count": 16,
+                "min_required": 15,
+                "total_memories": 18,
+                "corpus_hash": "hash123",
+                "labels_source": "llm_cached",
+                "clusters": [
+                    {"id": 0, "label": "咖啡日常", "fallback_label": "燕麦拿铁", "count": 8, "cx": -0.4, "cy": -0.2, "medoid_uid": "persona:master:prom_1", "samples": ["最近改喝燕麦拿铁"]},
+                    {"id": 1, "label": "周五电影夜", "fallback_label": "双人成行", "count": 8, "cx": 0.45, "cy": 0.3, "medoid_uid": "persona:relationship:rel_1", "samples": ["约定每周五晚上一起看电影"]},
+                ],
+                "points": [
+                    {"uid": "persona:master:prom_1", "kind": "persona", "id": "prom_1", "entity": "master", "text": "最近改喝燕麦拿铁", "created_at": "2026-10-16T09:10:00", "strength": 3, "user_pinned": True, "x": -0.4, "y": -0.2, "cluster_id": 0, "neighbors": ["persona:relationship:rel_1"]},
+                    {"uid": "persona:relationship:rel_1", "kind": "persona", "id": "rel_1", "entity": "relationship", "text": "约定每周五晚上一起看电影", "created_at": "2026-11-08T21:15:00", "strength": 3, "user_pinned": False, "x": 0.45, "y": 0.3, "cluster_id": 1, "neighbors": ["persona:master:prom_1"]},
+                ],
+            },
+        )
+
     page.route("**/api/storage/location/bootstrap", handle_bootstrap)
     page.route("**/api/memory/recent_files", handle_recent_files)
     page.route("**/api/characters/current_catgirl", handle_current_catgirl)
@@ -434,6 +766,147 @@ def _install_ready_memory_browser_routes(
     page.route("**/api/memory/review_config", handle_review_config)
     page.route("**/api/memory/powerful_memory_config", handle_powerful_memory_config)
     page.route("**/api/memory/recent_file/save", handle_save)
+    page.route("**/api/memory/overview/**", handle_overview)
+    page.route("**/api/memory/star_map/**", handle_star_map)
+    page.route(
+        "**/api/memory/snapshots/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "snapshots": [
+                    {
+                        "snapshot_id": "snap_20261121_090000_abc123",
+                        "label": "大整理前备份",
+                        "reason": "manual",
+                        "created_at": "2026-11-21T09:00:00",
+                        "files": ["persona.json", "reflections.json", "facts.json"],
+                        "stats": {"persona_count": 9, "reflections_count": 6, "facts_count": 27},
+                    }
+                ],
+            },
+        ),
+    )
+
+
+def _request_storage_location_in_open_page(page: Page, storage_link: str) -> None:
+    page.evaluate(
+        """async url => {
+            const changed = new Promise(resolve =>
+                window.addEventListener('hashchange', resolve, { once: true }));
+            window.location.replace(url);
+            await changed;
+        }""",
+        storage_link,
+    )
+
+
+@pytest.mark.frontend
+def test_storage_location_link_opens_dialog_and_reuses_memory_page(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(storage_link)
+
+    settings = mock_page.locator("#memory-settings-panel")
+    modal = mock_page.locator("#storage-location-modal")
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(mock_page.locator("#storage-target-root-input")).to_be_focused()
+    expect(mock_page.locator("#storage-modal-current-root")).to_have_text(
+        str(seed_memory_file.parents[2])
+    )
+    expect(mock_page).to_have_url(url)
+    close_button = mock_page.locator("#storage-location-modal-close")
+    restart_button = mock_page.locator("#storage-location-restart-btn")
+    close_button.focus()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(restart_button).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(close_button).to_be_focused()
+    close_button.click()
+    expect(modal).to_be_hidden()
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_focused()
+    settings.locator("[data-memory-panel-close]").click()
+
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    _request_storage_location_in_open_page(mock_page, storage_link)
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(draft).to_have_value("unsaved memory draft")
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+def test_storage_location_link_waits_for_memory_import(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    pending_previews = []
+    mock_page.route("**/api/memory/external_import/preview", lambda route: pending_previews.append(route))
+    mock_page.goto(url)
+    _open_auxiliary_panel(mock_page, "import")
+    mock_page.locator("#external-memory-files").set_input_files(
+        {"name": "MEMORY.md", "mimeType": "text/markdown", "buffer": b"# imported memory"}
+    )
+    with mock_page.expect_request("**/api/memory/external_import/preview"):
+        mock_page.locator("#external-memory-import-btn").click()
+    _request_storage_location_in_open_page(mock_page, storage_link)
+
+    modal = mock_page.locator("#storage-location-modal")
+    expect(mock_page.locator("#memory-import-panel")).to_be_visible()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    pending_previews[0].fulfill(status=500, json={"success": False, "error": "Test import ended"})
+    expect(mock_page.locator("#memory-settings-panel")).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("confirm_action", ["cancel", "discard"])
+def test_storage_location_link_waits_for_unsaved_memory_confirmation(
+    mock_page: Page, running_server: str, seed_memory_file: Path, confirm_action: str
+):
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
+    )
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(url)
+    mock_page.locator("#memory-tab-recent").click()
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
+    target.click()
+
+    confirmation = mock_page.locator("#memory-unsaved-switch-dialog")
+    cancel_button = mock_page.locator("#memory-unsaved-switch-cancel")
+    expect(cancel_button).to_be_focused()
+    _request_storage_location_in_open_page(mock_page, storage_link)
+    modal = mock_page.locator("#storage-location-modal")
+    expect(confirmation).to_be_visible()
+    expect(cancel_button).to_be_focused()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    mock_page.locator(f"#memory-unsaved-switch-{confirm_action}").click()
+    expect(confirmation).to_be_hidden()
+    expect(modal).to_be_visible()
+    expect(mock_page).to_have_url(url)
+    if confirm_action == "cancel":
+        expect(draft).to_have_value("unsaved memory draft")
+    else:
+        expect(target).to_have_attribute("aria-current", "true")
 
 
 @pytest.mark.frontend
@@ -445,8 +918,10 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     # Navigate to the memory browser page
     mock_page.goto(f"{running_server}/memory_browser")
     expect(mock_page.locator(".memory-tip-scope")).to_have_text(
-        "仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。"
+        "可浏览与 TA 共同留下的印记，校准长期印象，或编辑近期对话。"
     )
+    expect(mock_page.locator("#memory-tab-imprint")).to_have_attribute("aria-selected", "true")
+    expect(mock_page.locator("#memory-panel-imprint")).to_be_visible()
 
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
     # We should see a button with the neko name in the list
@@ -1403,6 +1878,7 @@ def test_memory_browser_auxiliary_panels_keep_mounted_controls_operable_and_rest
     expect(mock_page.locator("#strong-memory-toggle-checkbox")).to_be_visible()
     expect(mock_page.locator("#review-toggle-checkbox")).to_be_enabled()
     expect(mock_page.locator("#strong-memory-toggle-checkbox")).to_be_enabled()
+    expect(mock_page.locator("#advanced-diagnostics-toggle-checkbox")).to_be_visible()
     storage_manage = mock_page.locator("#storage-location-manage-btn")
     expect(storage_manage).to_be_visible()
     expect(storage_manage).to_have_css("background-color", "rgb(64, 197, 241)")
@@ -1470,7 +1946,7 @@ def test_memory_browser_auxiliary_panels_keep_mounted_controls_operable_and_rest
         """
     )
     panel_height = settings_geometry.pop("panelHeight")
-    assert 440 <= panel_height <= 510
+    assert 490 <= panel_height <= 590
     assert settings_geometry == {
         "reviewHeight": 52,
         "strongReviewHeight": 52,
@@ -1738,9 +2214,9 @@ def test_memory_browser_auxiliary_panels_use_existing_icon_assets(
     ).to_have_count(4)
 
     setting_help = mock_page.locator(".memory-setting-help")
-    expect(setting_help).to_have_count(3)
-    expect(setting_help.locator("img[src='/static/icons/exclamation.png'][alt=''][aria-hidden='true']")).to_have_count(3)
-    expect(mock_page.locator(".review-toggle-heading > [role='tooltip']")).to_have_count(2)
+    expect(setting_help).to_have_count(4)
+    expect(setting_help.locator("img[src='/static/icons/exclamation.png'][alt=''][aria-hidden='true']")).to_have_count(4)
+    expect(mock_page.locator(".review-toggle-heading > [role='tooltip']")).to_have_count(3)
 
 
 @pytest.mark.frontend
@@ -1752,7 +2228,7 @@ def test_memory_browser_wide_workspace_keeps_roles_and_save_actions_in_view(
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     mock_page.set_viewport_size({"width": 1280, "height": 720})
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
 
     expect(mock_page.locator("#memory-role-sidebar")).to_be_visible()
@@ -1848,7 +2324,7 @@ def test_memory_browser_compact_role_panel_reuses_selection_and_restores_focus(
     mock_page.set_viewport_size({"width": width, "height": height})
     mock_page.emulate_media(reduced_motion="no-preference")
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     selected_role = mock_page.locator("#memory-file-list button.cat-btn[aria-current='true']")
     expect(selected_role).to_have_count(1, timeout=10000)
     expect(mock_page.locator("#memory-role-sidebar")).to_be_hidden()
@@ -2694,7 +3170,7 @@ def test_memory_browser_beforeunload_blocks_unsaved_memory_changes(
     seed_memory_file,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(mock_page.locator("#memory-file-list .cat-btn[aria-current='true']")).to_have_count(
         1,
         timeout=10000,
@@ -2834,7 +3310,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.route("**/api/memory/external_import/preview", handle_preview)
     mock_page.route("**/api/memory/external_import/commit", handle_commit)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
     mock_page.evaluate("() => window.i18next.changeLanguage('zh-TW')")
     mock_page.evaluate(
@@ -3077,7 +3553,7 @@ def test_memory_browser_dark_components_resolve_from_semantic_tokens(
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     mock_page.add_init_script("window.localStorage.setItem('neko-dark-mode', 'true')")
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(mock_page.locator("#memory-chat-edit .delete-btn")).to_have_count(2, timeout=10000)
     memo = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
     memo.focus()
@@ -3189,7 +3665,7 @@ def test_memory_browser_contextual_delete_labels_and_quiet_panel_close(
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     delete_buttons = mock_page.locator("#memory-chat-edit .delete-btn")
     expect(delete_buttons).to_have_count(2, timeout=10000)
 
@@ -3549,7 +4025,7 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     
     # Wait for the file list
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
@@ -3634,7 +4110,7 @@ def test_memory_browser_clear_fades_batch_without_crumpling_and_keeps_system_mem
     atomic_write_json(seed_memory_file, memory_data, ensure_ascii=False, indent=2)
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
     expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(9)
     actions_before = mock_page.locator(".actions-right").bounding_box()
@@ -3711,7 +4187,7 @@ def test_memory_browser_command_buttons_use_consistent_desktop_styles(
         recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
         current_catgirl="测试猫娘",
     )
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(
         mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     ).to_have_attribute("aria-current", "true", timeout=10000)
@@ -3836,7 +4312,7 @@ def test_memory_browser_unsaved_close_dialog_guards_cancel_discard_and_save(
     seed_memory_file,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(mock_page.locator("#memory-file-list .cat-btn[aria-current='true']")).to_have_count(
         1,
         timeout=10000,
@@ -3914,7 +4390,7 @@ def test_memory_browser_stale_save_response_does_not_overwrite_new_selection(
         recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
         current_catgirl="测试猫娘",
     )
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
 
     current = mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
@@ -3998,7 +4474,7 @@ def test_memory_browser_serializes_concurrent_saves_for_same_file(
     seed_memory_file,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(mock_page.locator("#memory-file-list .cat-btn").first).to_have_attribute(
         "aria-current",
         "true",
@@ -4116,7 +4592,7 @@ def test_memory_browser_unsaved_role_switch_dialog_guards_discard_and_save(
         if "/api/memory/recent_file/save" in request.url
         else None,
     )
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
 
     current = mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
@@ -4141,6 +4617,8 @@ def test_memory_browser_unsaved_role_switch_dialog_guards_discard_and_save(
     expect(target).to_have_attribute("aria-current", "false")
     expect(mock_page.locator("#memory-unsaved-switch-cancel")).to_be_focused()
 
+    # Measure the settled position; the entrance animation translates the dialog horizontally.
+    dialog.evaluate("element => Promise.all(element.getAnimations().map(animation => animation.finished))")
     geometry = mock_page.evaluate(
         """
         () => {
@@ -4227,7 +4705,7 @@ def test_memory_browser_unsaved_switch_dialog_keeps_compact_role_panel_open_on_c
         current_catgirl="测试猫娘",
     )
     mock_page.set_viewport_size({"width": 839, "height": 600})
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(
         mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     ).to_have_attribute("aria-current", "true", timeout=10000)
@@ -4267,7 +4745,7 @@ def test_memory_browser_unsaved_switch_dialog_stays_open_when_save_fails(
             json={"success": False, "error": "测试失败"},
         ),
     )
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     current = mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
     expect(current).to_have_attribute("aria-current", "true", timeout=10000)
@@ -4307,7 +4785,7 @@ def test_memory_browser_unsaved_switch_dialog_uses_dark_theme_tokens(
         current_catgirl="测试猫娘",
     )
     mock_page.add_init_script("localStorage.setItem('neko-dark-mode', 'true')")
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(
         mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
     ).to_have_attribute("aria-current", "true", timeout=10000)
@@ -4348,7 +4826,7 @@ def test_memory_browser_pagehide_commits_pending_row_exit_for_bfcache_restore(
     seed_memory_file,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3, timeout=10000)
 
     state = mock_page.evaluate(
@@ -4390,7 +4868,7 @@ def test_memory_browser_delete_single_chat_item_uses_flip_reflow(
     """Per-row delete exits intact, then smoothly moves the surviving row into place."""
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-chat-edit .delete-btn", timeout=5000)
     expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3)
 
@@ -4431,7 +4909,7 @@ def test_memory_browser_delete_respects_reduced_motion_synchronously(
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     mock_page.emulate_media(reduced_motion="reduce")
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
     expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3)
 
@@ -4725,6 +5203,10 @@ def test_memory_browser_task4_static_visual_contract() -> None:
     assert "memory-particle-canvas" not in js
     assert "blur(" not in css
     assert "cubic-bezier(0.34, 1.56" not in css
+    imprint_css = (project_root / "static/css/memory_browser_imprint.css").read_text(encoding="utf-8")
+    assert "transition: all" not in imprint_css
+    assert "blur(" not in imprint_css
+    assert "cubic-bezier(0.34, 1.56" not in imprint_css
     assert '.cat-btn[aria-current="true"]::after' not in css
     assert "mask: url('/static/icons/paw_ui.png')" not in css
     assert "memory-role-source-tooltip" in css
@@ -4815,7 +5297,7 @@ def test_memory_browser_renders_older_section_when_divider_present(
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     _install_ready_memory_browser_routes(mock_page, seed_memory_file_with_older_divider)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
@@ -4865,7 +5347,7 @@ def test_memory_browser_splits_non_canonical_divider_spacing(
     memory_file = _write_memo_seed(clean_user_data_dir, divider)
     _install_ready_memory_browser_routes(mock_page, memory_file)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
@@ -4949,7 +5431,7 @@ def test_memory_browser_saves_memo_with_divider_roundtrip(
     mock_page.route("**/api/memory/review_config", handle_review_config)
     mock_page.route("**/api/memory/recent_file/save", handle_save)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
@@ -5041,7 +5523,7 @@ def test_memory_browser_preserves_leading_indent_in_older_section(
     mock_page.route("**/api/memory/review_config", handle_review_config)
     mock_page.route("**/api/memory/recent_file/save", handle_save)
 
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
@@ -5865,7 +6347,15 @@ def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_ov
             mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
-    expect(mock_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
+    overlay = mock_page.locator("#storage-location-overlay")
+    expect(overlay).to_be_visible(timeout=10_000)
+    expect(mock_page.locator("#storage-location-modal")).to_be_hidden()
+    maintenance_close = overlay.locator(".storage-location-close")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(maintenance_close).to_be_focused()
     expect(mock_page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
     assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
     assert mock_page.evaluate("window.location.pathname") == "/memory_browser"
@@ -6141,7 +6631,7 @@ def test_memory_browser_keeps_theater_capsule_read_only_on_save(
         if "/api/memory/recent_file/save" in request.url
         else None,
     )
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
 
     theater_row = mock_page.locator('#memory-chat-edit .chat-item[data-role="theater"]')
     expect(theater_row).to_have_count(1, timeout=10000)
@@ -6199,7 +6689,7 @@ def test_memory_browser_edits_local_memory_without_chat_sync(
     mock_page.route("**/api/memory/recent_file/save", save)
     confirms = []
     mock_page.on("dialog", lambda dialog: (confirms.append(dialog.message), dialog.accept()))
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
     rows = mock_page.locator('#memory-chat-edit .chat-item')
     expect(rows).to_have_count(3)
     expect(mock_page.locator('[data-chat-sync-kind]')).to_have_count(0)
@@ -6547,3 +7037,540 @@ def test_memory_browser_toggle_legacy_repair_is_not_resent_after_timeout(
     expect(mock_page.locator(f"#{checkbox_id}")).to_be_enabled()
     expect(mock_page.locator(f"#{checkbox_id}")).not_to_be_checked()
     assert state["posts"] == [{"enabled": False}]
+
+
+@pytest.mark.frontend
+def test_memory_browser_defaults_to_imprint_tab_with_warm_summary_and_radar(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Opening /memory_browser defaults to Our Imprint with warm copy, stats, radar, and manual note refresh."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    note_requests: list[dict] = []
+
+    def handle_imprint_note(route):
+        note_requests.append(_request_json(route) or {})
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "note": {
+                    "summary": "重新整理后的关系总结：四十二天的点滴都很珍贵。",
+                    "commentary": "你总是把生活里的小仪式打理得很温柔。",
+                    "blessing": "愿接下来的每一天都温暖相伴。",
+                    "generated_at": "2026-11-21T09:15:00",
+                    "language": "zh",
+                    "source": "llm_cached",
+                },
+            },
+        )
+
+    mock_page.route("**/api/memory/imprint_note/**", handle_imprint_note)
+    mock_page.goto(f"{running_server}/memory_browser")
+
+    expect(mock_page.locator("#memory-tab-imprint")).to_have_attribute("aria-selected", "true")
+    expect(mock_page.locator("#memory-panel-imprint")).to_be_visible()
+    expect(mock_page.locator("#memory-panel-recent")).to_be_hidden()
+
+    # Wait for overview hydration
+    expect(mock_page.locator(".imprint-hero-card")).to_be_visible(timeout=10_000)
+    expect(mock_page.locator(".imprint-stage-pill")).to_have_text("深厚羁绊")
+    expect(mock_page.locator(".imprint-summary-text")).to_contain_text("四十二天里")
+    expect(mock_page.locator(".imprint-stat-card")).to_have_count(4)
+    expect(mock_page.locator(".imprint-radar-svg")).to_be_visible()
+    expect(mock_page.locator(".imprint-timeline-item")).to_have_count(2)
+    expect(mock_page.locator("#memory-profile-tab-badge")).to_have_text("3")
+
+    # Manual trigger for refreshing warm relationship note (no automatic LLM call on open)
+    assert len(note_requests) == 0
+    mock_page.locator("#memory-generate-note-btn").click()
+    expect(mock_page.locator(".imprint-summary-text")).to_contain_text("重新整理后的关系总结", timeout=5_000)
+    assert len(note_requests) == 1
+
+
+@pytest.mark.frontend
+def test_memory_browser_profile_tab_optimistic_diagnostics_and_bottom_search(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Profile tab renders optimistic 6-axis diagnostics at top and places keyword search at the very bottom."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    search_queries: list[str] = []
+
+    def handle_search(route):
+        payload = _request_json(route) or {}
+        search_queries.append(str(payload.get("query") or ""))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "results": [
+                    {
+                        "kind": "persona",
+                        "id": "prom_1",
+                        "entity": "master",
+                        "text": "最近改喝燕麦拿铁",
+                        "protected": False,
+                        "user_pinned": True,
+                        "suppress": False,
+                        "strength": 3,
+                    }
+                ],
+            },
+        )
+
+    mock_page.route("**/api/memory/search/**", handle_search)
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator(".imprint-hero-card")).to_be_visible(timeout=10_000)
+
+    mock_page.locator("#memory-tab-profile").click()
+    expect(mock_page.locator("#memory-panel-profile")).to_be_visible()
+
+    summary_bar = mock_page.locator(".memory-health-summary-bar")
+    expect(summary_bar).to_be_visible()
+    expect(summary_bar).to_have_attribute("aria-expanded", "false")
+    expect(summary_bar).to_contain_text("整体很棒，稍作梳理更贴合你 (88/100)")
+
+    # Expand 6-axis technical health diagnostics
+    summary_bar.click()
+    expect(summary_bar).to_have_attribute("aria-expanded", "true")
+    expect(mock_page.locator(".memory-health-encourage-note")).to_contain_text("非常稳健")
+    expect(mock_page.locator(".memory-health-card")).to_have_count(6)
+    expect(mock_page.locator(".memory-health-funnel-row")).to_contain_text("近30天漏斗")
+
+    # Verify search footer sits below the memory cards and protected character card section
+    vertical_order = mock_page.evaluate(
+        """
+        () => {
+            const health = document.querySelector('.memory-health-shell').getBoundingClientRect();
+            const cards = document.querySelector('.memory-cards-list').getBoundingClientRect();
+            const searchFooter = document.getElementById('memory-profile-search-footer').getBoundingClientRect();
+            return {
+                healthHeight: Math.round(health.height),
+                searchBelowCards: searchFooter.top >= cards.bottom - 1,
+            };
+        }
+        """
+    )
+    assert vertical_order["healthHeight"] > 200
+    assert vertical_order["searchBelowCards"] is True
+
+    # Run keyword search from bottom search box
+    search_input = mock_page.locator("#memory-profile-search-footer input.memory-search-input")
+    search_input.fill("燕麦拿铁")
+    mock_page.locator("#memory-profile-search-footer button.is-primary").click()
+    expect(mock_page.locator("#memory-profile-search-footer")).to_contain_text("搜索结果 (1)", timeout=5_000)
+    assert search_queries == ["燕麦拿铁"]
+
+
+@pytest.mark.frontend
+def test_memory_browser_profile_tab_manual_corrections_and_directives(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Manual contradiction resolution, reflection confirmation, duplicate merge, and directives dispatch writes."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    recorded_calls: list[tuple[str, dict]] = []
+
+    for endpoint in (
+        "correction/resolve",
+        "reflection/review",
+        "duplicate/merge",
+        "persona/flags",
+        "persona/restore_version",
+        "directive/add",
+        "directive/remove",
+    ):
+        def _make_handler(ep: str):
+            def _handler(route):
+                recorded_calls.append((ep, _request_json(route) or {}))
+                route.fulfill(status=200, content_type="application/json", json={"success": True})
+            return _handler
+
+        mock_page.route(f"**/api/memory/{endpoint}", _make_handler(endpoint))
+
+    mock_page.goto(f"{running_server}/memory_browser?tab=profile")
+    expect(mock_page.locator(".memory-attention-box")).to_be_visible(timeout=10_000)
+
+    # 1. Resolve contradiction
+    mock_page.get_by_role("button", name="按新的更新").click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "correction/resolve" and body.get("action") == "keep_new" for ep, body in recorded_calls)
+
+    # 2. Confirm pending reflection
+    mock_page.get_by_role("button", name="确实如此").click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "reflection/review" and body.get("decision") == "confirm" for ep, body in recorded_calls)
+
+    # 3. Merge near-duplicate pair
+    mock_page.get_by_role("button", name="合并为一条").click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "duplicate/merge" and body.get("keep_id") == "prom_1" for ep, body in recorded_calls)
+
+    # 4. Toggle pin flag on a persona card
+    mock_page.get_by_role("button", name="取消牢记").first.click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "persona/flags" and body.get("user_pinned") is False for ep, body in recorded_calls)
+
+    # 5. Switch to Off-Limits Directives and add + remove one topic
+    mock_page.locator(".memory-filter-chip", has_text="禁提边界").click()
+    directive_input = mock_page.locator(".memory-directive-form input.memory-search-input")
+    expect(directive_input).to_be_visible()
+    directive_input.fill("相亲话题")
+    mock_page.get_by_role("button", name="添加边界").click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "directive/add" and body.get("term") == "相亲话题" for ep, body in recorded_calls)
+
+    mock_page.locator(".memory-directive-chip", has_text="加班").get_by_role("button", name="解除").click()
+    mock_page.wait_for_timeout(150)
+    assert any(ep == "directive/remove" and body.get("term") == "加班" for ep, body in recorded_calls)
+
+
+@pytest.mark.frontend
+def test_memory_browser_advanced_diagnostics_setting_auto_expands_health_panel(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Enabling Advanced Memory Diagnostics in Settings persists and auto-expands the health panel."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator(".imprint-hero-card")).to_be_visible(timeout=10_000)
+
+    _open_auxiliary_panel(mock_page, "settings")
+    adv_checkbox = mock_page.locator("#advanced-diagnostics-toggle-checkbox")
+    expect(adv_checkbox).not_to_be_checked()
+    mock_page.locator("label.auto-review-toggle-btn[for='advanced-diagnostics-toggle-checkbox']").click()
+    expect(adv_checkbox).to_be_checked()
+    assert mock_page.evaluate("window.localStorage.getItem('neko_memory_advanced_diagnostics')") == "true"
+
+    mock_page.keyboard.press("Escape")
+    mock_page.locator("#memory-tab-profile").click()
+    expect(mock_page.locator(".memory-health-summary-bar")).to_have_attribute("aria-expanded", "true")
+    expect(mock_page.locator(".memory-health-card")).to_have_count(6)
+
+
+@pytest.mark.frontend
+def test_memory_browser_recent_bubble_double_click_inline_edit(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Double-clicking a recent chat bubble enables inline editing and preserves AI timestamp prefix on save."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    saved_payloads: list[dict] = []
+
+    def capture_save(route):
+        saved_payloads.append(_request_json(route) or {})
+        route.fulfill(status=200, content_type="application/json", json={"success": True, "need_refresh": False})
+
+    mock_page.unroute("**/api/memory/recent_file/save")
+    mock_page.route("**/api/memory/recent_file/save", capture_save)
+
+    mock_page.goto(f"{running_server}/memory_browser?tab=recent")
+    ai_bubble = mock_page.locator(".chat-item[data-role='ai'] .chat-bubble")
+    expect(ai_bubble).to_be_visible(timeout=10_000)
+
+    ai_bubble.dblclick()
+    inline_input = mock_page.locator(".chat-bubble-inline-input")
+    expect(inline_input).to_be_visible()
+    inline_input.fill("修正后的回复内容喵~")
+    inline_input.blur()
+
+    expect(ai_bubble).to_have_text("修正后的回复内容喵~")
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+
+    mock_page.locator("#save-memory-btn").click()
+    mock_page.wait_for_timeout(200)
+    assert len(saved_payloads) == 1
+    ai_msgs = [m for m in saved_payloads[0].get("chat", []) if m.get("role") == "ai"]
+    assert ai_msgs and ai_msgs[0]["text"] == "[2026-01-01 12:00:00] 修正后的回复内容喵~"
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_renders_constellations_and_manual_theme_refresh(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Imprint tab renders the interactive Canvas Memory Star Map and refreshes cluster themes only on click."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    label_calls: list[dict] = []
+
+    def handle_label_clusters(route):
+        label_calls.append(_request_json(route) or {})
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "skipped": False,
+                "labels": {"0": "早安咖啡时光", "1": "电影小宇宙"},
+                "star_map": {
+                    "character_name": "测试猫娘",
+                    "ready": True,
+                    "embedded_count": 16,
+                    "min_required": 15,
+                    "total_memories": 18,
+                    "corpus_hash": "hash123",
+                    "labels_source": "llm_cached",
+                    "clusters": [
+                        {"id": 0, "label": "早安咖啡时光", "fallback_label": "燕麦拿铁", "count": 8, "cx": -0.4, "cy": -0.2, "medoid_uid": "persona:master:prom_1", "samples": ["最近改喝燕麦拿铁"]},
+                        {"id": 1, "label": "电影小宇宙", "fallback_label": "双人成行", "count": 8, "cx": 0.45, "cy": 0.3, "medoid_uid": "persona:relationship:rel_1", "samples": ["约定每周五晚上一起看电影"]},
+                    ],
+                    "points": [
+                        {"uid": "persona:master:prom_1", "kind": "persona", "id": "prom_1", "entity": "master", "text": "最近改喝燕麦拿铁", "created_at": "2026-10-16T09:10:00", "strength": 3, "user_pinned": True, "x": -0.4, "y": -0.2, "cluster_id": 0, "neighbors": ["persona:relationship:rel_1"]},
+                        {"uid": "persona:relationship:rel_1", "kind": "persona", "id": "rel_1", "entity": "relationship", "text": "约定每周五晚上一起看电影", "created_at": "2026-11-08T21:15:00", "strength": 3, "user_pinned": False, "x": 0.45, "y": 0.3, "cluster_id": 1, "neighbors": ["persona:master:prom_1"]},
+                    ],
+                },
+            },
+        )
+
+    mock_page.route("**/api/memory/star_map/label_clusters/**", handle_label_clusters)
+    mock_page.goto(f"{running_server}/memory_browser")
+
+    expect(mock_page.locator("#memory-starmap-card canvas.starmap-canvas")).to_be_visible(timeout=10_000)
+    expect(mock_page.locator(".starmap-legend-pill")).to_have_count(2)
+    expect(mock_page.locator(".starmap-detail-text")).to_contain_text("燕麦拿铁")
+    assert len(label_calls) == 0
+
+    mock_page.locator("#memory-starmap-card").get_by_role("button", name="刷新星云主题").click()
+    expect(mock_page.locator(".starmap-legend-pill").first).to_contain_text("早安咖啡时光", timeout=5_000)
+    assert len(label_calls) == 1
+
+
+@pytest.mark.frontend
+def test_memory_browser_lineage_drawer_and_cascade_related_memories(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Profile cards open the 3-step lineage drawer (with root-fact forget) and trigger cascade related checks after edits."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    archived_facts: list[dict] = []
+
+    mock_page.route(
+        "**/api/memory/lineage/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": "测试猫娘",
+                "target": {"kind": "persona", "id": "prom_1", "entity": "master", "text": "最近改喝燕麦拿铁", "created_at": "2026-10-16T09:10:00"},
+                "steps": {
+                    "conversations": [{"role": "human", "text": "早上改喝燕麦拿铁啦，不喝美式了", "timestamp": "2026-10-16T09:05:00", "inferred": False}],
+                    "facts": [{"id": "fact_root_1", "text": "早上改喝燕麦拿铁", "created_at": "2026-10-16T09:06:00", "archived": False, "inferred": False}],
+                    "facts_inferred": False,
+                    "reflections": [{"id": "ref_1", "text": "更偏爱燕麦拿铁", "status": "promoted", "created_at": "2026-10-16T09:08:00"}],
+                    "version_history": [],
+                },
+            },
+        ),
+    )
+    mock_page.route(
+        "**/api/memory/fact/archive",
+        lambda route: (
+            archived_facts.append(_request_json(route) or {}),
+            route.fulfill(status=200, content_type="application/json", json={"success": True}),
+        ),
+    )
+    mock_page.route(
+        "**/api/memory/persona/edit",
+        lambda route: route.fulfill(status=200, content_type="application/json", json={"success": True}),
+    )
+    mock_page.route(
+        "**/api/memory/related/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "related": [
+                    {"kind": "fact", "id": "fact_old_coffee", "entity": "master", "text": "之前常喝冰美式提神", "similarity": 0.84, "method": "embedding"}
+                ],
+            },
+        ),
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser?tab=profile")
+    expect(mock_page.locator(".memory-entry-card").first).to_be_visible(timeout=10_000)
+
+    # 1. Open 3-step lineage drawer & forget root fact
+    mock_page.locator(".memory-entry-card").first.get_by_role("button", name="为什么这么记？").click()
+    drawer = mock_page.locator("#memory-lineage-drawer")
+    expect(drawer).to_be_visible(timeout=5_000)
+    expect(drawer).to_contain_text("① 当时的那几句聊天")
+    expect(drawer).to_contain_text("② 记下的那件事")
+    expect(drawer).to_contain_text("③ 最终形成的印象")
+    drawer.get_by_role("button", name="忘掉这条源头记忆").click()
+    mock_page.wait_for_timeout(150)
+    assert any(item.get("fact_id") == "fact_root_1" for item in archived_facts)
+
+    mock_page.keyboard.press("Escape")
+    expect(drawer).to_be_hidden()
+
+    # 2. Edit a persona card and verify cascade related-memories review banner appears
+    first_card = mock_page.locator(".memory-entry-card").first
+    first_card.get_by_role("button", name="修改").click()
+    first_card.locator("textarea.memory-inline-textarea").fill("现在只喝温热乌龙茶")
+    first_card.get_by_role("button", name="保存").click()
+    banner = mock_page.locator("#memory-related-check-banner")
+    expect(banner).to_be_visible(timeout=5_000)
+    expect(banner).to_contain_text("之前常喝冰美式提神")
+
+
+@pytest.mark.frontend
+def test_memory_browser_phase3_vault_snapshots_and_keepsake_export(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Imprint offers keepsake ZIP export, and Profile Memory Vault creates & restores checkpoints with inline confirmation."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    created_labels: list[str] = []
+    restored_ids: list[str] = []
+    export_modes: list[str] = []
+
+    mock_page.route(
+        "**/api/memory/export/**",
+        lambda route: (
+            export_modes.append(parse_qs(urlparse(route.request.url).query).get("mode", [""])[0]),
+            route.fulfill(status=200, content_type="application/zip", body=b"PK\x05\x06" + b"\x00" * 18),
+        ),
+    )
+    mock_page.route(
+        "**/api/memory/snapshots/create/**",
+        lambda route: (
+            created_labels.append((_request_json(route) or {}).get("label", "")),
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                json={"success": True, "snapshot": {"snapshot_id": "snap_new_1", "label": "我的安全点"}},
+            ),
+        ),
+    )
+    mock_page.route(
+        "**/api/memory/snapshots/restore/**",
+        lambda route: (
+            restored_ids.append((_request_json(route) or {}).get("snapshot_id", "")),
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                json={"success": True, "restored_snapshot_id": "snap_20261121_090000_abc123"},
+            ),
+        ),
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator("#memory-export-keepsake-btn")).to_be_visible(timeout=10_000)
+    mock_page.locator("#memory-export-keepsake-btn").click()
+    mock_page.wait_for_timeout(150)
+    assert "keepsake" in export_modes
+
+    # Switch to Profile tab: Developer tools must stay hidden when toggle is OFF
+    mock_page.locator("#memory-tab-profile").click()
+    expect(mock_page.locator("#memory-dev-tools-box")).to_have_count(0)
+
+    # Expand Memory Vault, create a snapshot, and restore an existing one via 2-step inline confirm
+    vault = mock_page.locator("#memory-vault-section")
+    vault.locator("summary").click()
+    mock_page.locator("#memory-snapshot-label-input").fill("我的安全点")
+    mock_page.locator("#memory-snapshot-create-btn").click()
+    mock_page.wait_for_timeout(150)
+    assert "我的安全点" in created_labels
+
+    vault.get_by_role("button", name="恢复至此").first.click()
+    vault.get_by_role("button", name="确认恢复").click()
+    mock_page.wait_for_timeout(150)
+    assert "snap_20261121_090000_abc123" in restored_ids
+
+
+@pytest.mark.frontend
+def test_memory_browser_phase3_developer_mode_unlocks_dag_and_deep_conflicts(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Enabling Developer Mode unlocks the 5-lane SVG causal DAG, manual deep conflict audit, and redacted ZIP export."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    conflict_calls = 0
+
+    def handle_deep_conflicts(route):
+        nonlocal conflict_calls
+        conflict_calls += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": "测试猫娘",
+                "checked_pairs": 1,
+                "summary": {"contradiction": 1, "duplicate": 0, "complementary": 0, "unrelated": 0},
+                "findings": [
+                    {
+                        "pair_id": "P1",
+                        "entity": "master",
+                        "similarity": 0.89,
+                        "verdict": "contradiction",
+                        "reason": "咖啡偏好冲突：冰美式 vs 燕麦拿铁",
+                        "suggestion": "建议保留燕麦拿铁并归档旧印象",
+                        "left": {"kind": "persona", "id": "p1", "text": "早上习惯喝冰美式"},
+                        "right": {"kind": "persona", "id": "p2", "text": "最近改喝燕麦拿铁"},
+                    }
+                ],
+            },
+        )
+
+    mock_page.route("**/api/memory/deep_conflicts/**", handle_deep_conflicts)
+    mock_page.route(
+        "**/api/memory/lineage_graph/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": "测试猫娘",
+                "lanes": ["message", "recent_memo", "fact", "reflection", "persona_entry"],
+                "lane_counts": {"message": 1, "recent_memo": 0, "fact": 1, "reflection": 1, "persona_entry": 1},
+                "nodes": [
+                    {"id": "msg:0", "lane": "message", "kind": "message", "raw_id": "0", "entity": "human", "label": "早上改喝燕麦拿铁啦", "status": "human"},
+                    {"id": "fact:f1", "lane": "fact", "kind": "fact", "raw_id": "f1", "entity": "master", "label": "早上改喝燕麦拿铁", "status": "absorbed"},
+                    {"id": "reflection:r1", "lane": "reflection", "kind": "reflection", "raw_id": "r1", "entity": "master", "label": "偏好燕麦拿铁", "status": "promoted"},
+                    {"id": "persona:p1", "lane": "persona_entry", "kind": "persona", "raw_id": "p1", "entity": "master", "label": "最近改喝燕麦拿铁", "status": "pinned"},
+                ],
+                "edges": [
+                    {"source": "msg:0", "target": "fact:f1", "relation": "extracted_from", "inferred": True},
+                    {"source": "fact:f1", "target": "reflection:r1", "relation": "synthesized_into", "inferred": False},
+                    {"source": "reflection:r1", "target": "persona:p1", "relation": "promoted_to", "inferred": False},
+                ],
+            },
+        ),
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    _open_auxiliary_panel(mock_page, "settings")
+    mock_page.locator("label.auto-review-toggle-btn[for='advanced-diagnostics-toggle-checkbox']").click()
+    mock_page.keyboard.press("Escape")
+
+    mock_page.locator("#memory-tab-profile").click()
+    dev_box = mock_page.locator("#memory-dev-tools-box")
+    expect(dev_box).to_be_visible(timeout=10_000)
+    assert conflict_calls == 0
+
+    # Trigger manual deep conflict check
+    mock_page.locator("#memory-deep-conflict-btn").click()
+    expect(mock_page.locator("#memory-deep-conflict-results")).to_contain_text("咖啡偏好冲突", timeout=5_000)
+    assert conflict_calls == 1
+
+    # Expand 5-lane SVG DAG and click a node to highlight its chain
+    mock_page.locator("#memory-dag-toggle-btn").click()
+    expect(mock_page.locator("#memory-dag-host svg.memory-dag-svg")).to_be_visible(timeout=5_000)
+    expect(mock_page.locator("#memory-dag-host .memory-dag-node")).to_have_count(4)
+    mock_page.locator("#memory-dag-host .memory-dag-node[data-dag-node-id='persona:p1']").click()
+    expect(mock_page.locator("#memory-dag-host .memory-dag-inspector")).to_contain_text("最近改喝燕麦拿铁")

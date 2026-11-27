@@ -392,3 +392,90 @@ def test_partial_plugin_config_checks_model_declarations(models: object, field: 
         validate_plugin_config_partial({"plugin": {"models": models}})
 
     assert exc_info.value.field == field
+
+
+def test_plugin_dependencies_schema_matches_runtime_dependency_parser() -> None:
+    from plugin.core.dependency import _parse_plugin_dependencies
+
+    class _NoopLogger:
+        def warning(self, *_args, **_kwargs) -> None:
+            return None
+
+        def exception(self, *_args, **_kwargs) -> None:
+            return None
+
+    # 1. [plugin].dependencies accepts plugin ID string list and matches _parse_plugin_dependencies.
+    simple_cfg = _base_config()
+    simple_cfg["plugin"]["dependencies"] = ["provider_a", " provider_b "]
+    validated_simple = validate_plugin_config(simple_cfg)
+    assert validated_simple.plugin.dependencies == ["provider_a", "provider_b"]
+    parsed_simple = _parse_plugin_dependencies(simple_cfg, _NoopLogger(), "schema_demo")
+    assert [dep.id for dep in parsed_simple] == ["provider_a", "provider_b"]
+
+    # 2. [plugin].dependencies rejects table dicts, empty strings, and self-references.
+    for bad_deps in ([{"id": "provider_a", "untested": ">=0"}], [""], ["   "], ["schema_demo"]):
+        bad_cfg = _base_config()
+        bad_cfg["plugin"]["dependencies"] = bad_deps
+        with pytest.raises(ConfigValidationError):
+            validate_plugin_config(bad_cfg)
+
+    # 3. [[plugin.dependency]] accepts table entries with untested or conflicts=True + id.
+    table_cfg = _base_config()
+    table_cfg["plugin"]["dependency"] = [
+        {"id": "provider_a", "untested": ">=0"},
+        {"id": "bad_conflict", "conflicts": True},
+    ]
+    validated_table = validate_plugin_config(table_cfg)
+    assert len(validated_table.plugin.dependency or []) == 2
+    parsed_table = _parse_plugin_dependencies(table_cfg, _NoopLogger(), "schema_demo")
+    assert [(dep.id, dep.untested, dep.conflicts) for dep in parsed_table] == [
+        ("provider_a", ">=0", None),
+        ("bad_conflict", None, True),
+    ]
+
+    # 4. [[plugin.dependency]] rejects missing untested (when conflicts is not True) and conflicts=True without id.
+    for bad_table in (
+        [{"id": "provider_a"}],
+        [{"entry": "provider_a:run", "conflicts": True}],
+        [{"id": "   ", "untested": ">=0"}],
+    ):
+        bad_cfg = _base_config()
+        bad_cfg["plugin"]["dependency"] = bad_table
+        with pytest.raises(ConfigValidationError):
+            validate_plugin_config(bad_cfg)
+
+    # 5. Single-table [plugin.dependency] dict is wrapped into a list like runtime parser.
+    single_table_cfg = _base_config()
+    single_table_cfg["plugin"]["dependency"] = {"id": "provider_a", "untested": ">=1.0.0"}
+    validated_single = validate_plugin_config(single_table_cfg)
+    assert validated_single.plugin.dependency is not None
+    assert len(validated_single.plugin.dependency) == 1
+    assert validated_single.plugin.dependency[0].id == "provider_a"
+    parsed_single = _parse_plugin_dependencies(single_table_cfg, _NoopLogger(), "schema_demo")
+    assert [(dep.id, dep.untested) for dep in parsed_single] == [("provider_a", ">=1.0.0")]
+
+    # 6. Scalar string shorthands for providers and conflicts match runtime parser normalization.
+    scalar_cfg = _base_config()
+    scalar_cfg["plugin"]["dependency"] = [
+        {"id": "dep_scalar_provider", "providers": "search", "untested": ">=1.0.0"},
+        {"id": "dep_scalar_conflict", "conflicts": "<1.0.0", "untested": ">=0"},
+        {"id": "dep_blank_scalars", "providers": "   ", "conflicts": "   ", "untested": ">=0"},
+    ]
+    validated_scalar = validate_plugin_config(scalar_cfg)
+    assert validated_scalar.plugin.dependency is not None
+    assert [(d.providers, d.conflicts) for d in validated_scalar.plugin.dependency] == [
+        (["search"], None),
+        (None, ["<1.0.0"]),
+        (None, None),
+    ]
+    parsed_scalar = _parse_plugin_dependencies(scalar_cfg, _NoopLogger(), "schema_demo")
+    assert [(dep.providers, dep.conflicts) for dep in parsed_scalar] == [
+        (["search"], None),
+        (None, ["<1.0.0"]),
+        (None, None),
+    ]
+
+    bad_scalar_conflict_cfg = _base_config()
+    bad_scalar_conflict_cfg["plugin"]["dependency"] = {"id": "dep_a", "conflicts": "true"}
+    with pytest.raises(ConfigValidationError):
+        validate_plugin_config(bad_scalar_conflict_cfg)

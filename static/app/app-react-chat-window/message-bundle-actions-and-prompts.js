@@ -282,6 +282,8 @@
     // CSS 的居中（top/left:50% + translate）。绝不退回 restorePosition() 的
     // positionWindowAtLeftMiddle() —— 那会把完整窗口甩到屏幕左中。
     I.restoreFullPosition = function restoreFullPosition() {
+        // Electron 完整窗自引入起就由桌面端按 fullChat 保存和恢复原生尺寸与位置。
+        if (document.body?.matches('.neko-electron-runtime[data-chat-host-kind="full"]')) return;
         if (I.isMobileWidth()) return;
         var shell = I.getShell();
         if (!shell) return;
@@ -306,6 +308,7 @@
     }
 
     I.renderWindow = function renderWindow() {
+        if (window.nekoChatHistory) window.nekoChatHistory.publish();
         var overlay = I.getOverlay();
         if (!overlay || overlay.hidden) return;
         if (!I.mounted && I.getCurrentChatSurfaceMode() === 'compact') {
@@ -575,6 +578,31 @@
 
         I.dispatchHostEvent('import-image', {});
     }
+
+    // 语音消息：聊天窗等待这个 Promise；拒绝时 Error.name 为 AudioMessageRejected，
+    // message 为 'busy' 表示会话忙，其余视为一般失败（草稿保留，可用同一 requestId 重试）
+    I.handleComposerAudioMessage = function handleComposerAudioMessage(payload) {
+        var handler = I.state.onComposerAudioMessage;
+        if (typeof handler !== 'function') {
+            var unavailable = new Error('unavailable');
+            unavailable.name = 'AudioMessageRejected';
+            return Promise.reject(unavailable);
+        }
+        return Promise.resolve().then(function () {
+            return handler(payload);
+        });
+    };
+
+    I.handleAudioMessageActiveChange = function handleAudioMessageActiveChange(active, phase) {
+        I.state.audioMessageActive = active === true;
+        I.state.audioMessagePhase = typeof phase === 'string' ? phase : (active === true ? 'active' : 'idle');
+        if (!I.state.audioMessageActive && typeof I.state.deferredAudioMessageTarget === 'string') {
+            // 草稿刚结束：被推迟的收起马上生效，不留可以再点麦克风的空档
+            I.state.audioMessageTarget = I.state.deferredAudioMessageTarget;
+            I.state.deferredAudioMessageTarget = null;
+            I.renderWindow();
+        }
+    };
 
     I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
@@ -1428,7 +1456,7 @@
             reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
         } catch (e) {}
         if (reduceMotion) {
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
             return;
         }
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
@@ -1455,7 +1483,7 @@
             // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
             // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
             if (I.getCurrentChatSurfaceMode() !== 'compact') return;
-            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
@@ -1494,13 +1522,23 @@
         // （codex P2 指出原版 fetch 后 window.open 失败时 state 已 responded
         // 用户失去重试入口）。decline / later 路径不开窗口，无此处理。
         var preOpenedWindow = null;
+        // theater 复用具名窗口（桌面壳靠窗口名识别窗控），所以 window.open 可能返回
+        // 用户上一次邀约或「更多剧本」留下的旧选剧窗口。只有本次新建的空白窗口才归
+        // 我们写占位和关闭——接管旧窗口会擦掉用户正在浏览的页面。
+        var preOpenedIsFresh = false;
         if (option.choice === 'accept') {
             try {
-                preOpenedWindow = window.open('', '_blank');
+                preOpenedWindow = window.open('', prompt.gameType === 'theater' ? 'neko_theater_market' : '_blank');
                 if (preOpenedWindow) {
+                    // 已有同源窗口不是 about:blank；跨域读取抛异常则按「非新建」处理。
+                    try {
+                        preOpenedIsFresh = preOpenedWindow.location.href === 'about:blank';
+                    } catch (_) {
+                        preOpenedIsFresh = false;
+                    }
                     // 给个临时占位文本免得用户看到 about:blank 一闪
                     try {
-                        preOpenedWindow.document.write(
+                        if (preOpenedIsFresh) preOpenedWindow.document.write(
                             '<title>Loading…</title><body style="background:#111;color:#888;font:14px sans-serif;padding:20px">Loading mini-game…</body>'
                         );
                     } catch (_) {}
@@ -1509,10 +1547,13 @@
                 preOpenedWindow = null;
             }
         }
+        // 只关本次新建的占位窗口；旧选剧窗口只聚焦，别替用户关掉它。
         var closePreOpened = function () {
-            if (preOpenedWindow && !preOpenedWindow.closed) {
-                try { preOpenedWindow.close(); } catch (_) {}
-            }
+            if (!preOpenedWindow || preOpenedWindow.closed) return;
+            try {
+                if (preOpenedIsFresh) preOpenedWindow.close();
+                else preOpenedWindow.focus();
+            } catch (_) {}
         };
 
         // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request
@@ -1907,7 +1948,7 @@
         return hadVisibleState;
     }
 
-    I.setMessages = function setMessages(messages) {
+    function replaceMessages(messages, historyRestore, keepClearedScreen) {
         cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1936,11 +1977,104 @@
         }
         I.invalidatePendingGalgameRequest();
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
-            detail: { conversationReset: I.state.messages.length === 0 }
+            detail: {
+                conversationReset: I.state.messages.length === 0,
+                keepClearedScreen: keepClearedScreen === true,
+                historyRestore: historyRestore === true,
+                streamingTurnIds: historyRestore ? I.state.messages.filter(function (message) {
+                    return message.role === 'assistant' && message.status === 'streaming' && message.turnId;
+                }).map(function (message) { return message.turnId; }) : undefined
+            }
         }));
         I.renderWindow();
         return I.state.messages;
     }
+
+    I.setMessages = function setMessages(messages, options) {
+        return replaceMessages(messages, false, !!(options && options.keepClearedScreen));
+    };
+
+    function mergeChatHistoryReplyBlocks(savedBlocks, liveBlocks, pendingMusicCommand) {
+        var savedText = savedBlocks[0];
+        var liveText = liveBlocks[0];
+        if (liveText?.type !== 'text' || typeof liveText.text !== 'string') return liveBlocks.length ? liveBlocks : savedBlocks;
+        var hasSavedText = savedText?.type === 'text' && typeof savedText.text === 'string';
+        var prefix = liveText.text;
+        if (pendingMusicCommand && prefix.endsWith(pendingMusicCommand)) {
+            prefix = prefix.slice(0, -pendingMusicCommand.length).trimEnd();
+        }
+        var keepSavedText = hasSavedText && savedText.text.startsWith(prefix)
+            && (prefix === liveText.text || savedText.text.length > prefix.length);
+        var text = keepSavedText ? savedText : liveText;
+        var extras = liveBlocks.length > 1 ? liveBlocks.slice(1) : savedBlocks.slice(hasSavedText ? 1 : 0);
+        return [text].concat(extras);
+    }
+
+    I.restoreChatHistory = function restoreChatHistory(snapshot) {
+        if (!Array.isArray(snapshot?.messages) || !Number.isFinite(snapshot.updatedAt)) return;
+        var resetAt = Number.isFinite(snapshot.resetAt) ? snapshot.resetAt
+            : (snapshot.messages.length ? 0 : snapshot.updatedAt);
+        function clearedByReset(message) {
+            return resetAt > 0 && message.createdAt <= resetAt;
+        }
+        var currentBubbles = new Map();
+        (window.currentTurnGeminiBubbles || []).forEach(function (bubble) {
+            var id = bubble?.dataset?.reactChatMessageId;
+            if (id) currentBubbles.set(id, bubble);
+        });
+        // Preserve the destination adapter's references to bubbles it is still streaming.
+        var liveMessages = I.state.messages.filter(function (message) {
+            return !clearedByReset(message) && currentBubbles.has(message.id);
+        });
+        var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
+        var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
+        var unmatchedLive = liveMessages.filter(function (message) { return !snapshotIds.has(message.id); });
+        var unmatchedSaved = snapshot.messages.filter(function (message) { return !liveById.has(message.id); });
+        var mergeMessages = window.mergeMessagesEnabled ?? window.appState?.mergeMessagesEnabled;
+
+        function hasMatchingReplyPrefix(saved, live) {
+            if (saved.role !== 'assistant' || live.role !== 'assistant'
+                    || saved.status !== 'streaming' || live.status !== 'streaming'
+                    || !saved.turnId || saved.turnId !== live.turnId) return false;
+            var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
+            var liveText = live.blocks.length === 1 && live.blocks[0].text;
+            return typeof savedText === 'string' && savedText.length > 0
+                && typeof liveText === 'string' && liveText.length > 0
+                && (savedText === liveText || (mergeMessages
+                    && (liveText.startsWith(savedText) || savedText.startsWith(liveText))));
+        }
+
+        var messages = snapshot.messages.map(function (saved) {
+            var live = liveById.get(saved.id);
+            if (!live) {
+                var candidates = unmatchedLive.filter(function (message) { return hasMatchingReplyPrefix(saved, message); });
+                if (candidates.length === 1 && unmatchedSaved.filter(function (message) {
+                    return hasMatchingReplyPrefix(message, candidates[0]);
+                }).length === 1) {
+                    live = candidates[0];
+                }
+            }
+            if (live) {
+                var blocks = mergeChatHistoryReplyBlocks(saved.blocks, live.blocks);
+                // The adapter may still be catching up with the restored text on its own socket.
+                if (live.status === 'streaming') currentBubbles.get(live.id).restoredHistoryBlocks = blocks;
+                return Object.assign({}, live, {
+                    blocks: blocks,
+                    sortKey: saved.sortKey
+                });
+            }
+            if (saved.status === 'streaming') return Object.assign({}, saved, { status: 'sent' });
+            return saved;
+        });
+        var savedIds = new Set(messages.map(function (message) { return message.id; }));
+        var isHandoff = Number.isFinite(snapshot.handoffStartedAt);
+        replaceMessages(messages.concat(I.state.messages.filter(function (message) {
+            if (savedIds.has(message.id) || clearedByReset(message)) return false;
+            var liveReply = message.role === 'assistant' && message.status === 'streaming' && liveById.has(message.id);
+            return message.createdAt > snapshot.updatedAt || (isHandoff && message.createdAt >= snapshot.handoffStartedAt)
+                || (liveReply && (isHandoff || snapshot.messages.length > 0));
+        })), true);
+    };
 
     I.setComposerHidden = function setComposerHidden(hidden) {
         var next = !!hidden;
@@ -2198,6 +2332,7 @@
     };
 
     var MAX_MESSAGES = 50;
+    window.reactChatWindowHost.maxMessages = MAX_MESSAGES;
 
     function getNextAppendSortKey() {
         var maxExistingSortKey = Array.isArray(I.state.messages)
@@ -2242,8 +2377,17 @@
         return normalized;
     }
 
-    I.updateMessage = function updateMessage(messageId, patch) {
+    I.updateMessage = function updateMessage(messageId, patch, options) {
         var updatedMessage = null;
+        var bubble = window.currentGeminiMessage;
+        if (patch?.status === 'streaming' && Array.isArray(patch.blocks)
+                && bubble?.dataset?.reactChatMessageId === String(messageId) && bubble.restoredHistoryBlocks) {
+            // Text-only stream chunks leave attachments intact. An explicit block array replaces them.
+            var blocks = options?.streamText
+                ? mergeChatHistoryReplyBlocks(bubble.restoredHistoryBlocks, patch.blocks, options.pendingMusicCommand) : patch.blocks;
+            bubble.restoredHistoryBlocks = blocks;
+            patch = Object.assign({}, patch, { blocks: blocks });
+        }
 
         I.state.messages = I.state.messages.map(function (message, index) {
             if (String(message.id) !== String(messageId)) return message;
@@ -2303,6 +2447,86 @@
         // session_id 是 uuid 实际撞概率几乎 0，对偶清理更干净）。codex P2 指出。
         I.state.choicePrompt = null;
         I.state._launchedMiniGameSessionIds = Object.create(null);
+        I.renderWindow();
+    }
+
+    function cloneChoicePrompt(prompt) {
+        if (!prompt || typeof prompt !== 'object') return null;
+        return Object.assign({}, prompt, {
+            options: Array.isArray(prompt.options)
+                ? prompt.options.map(function (opt) {
+                    return opt && typeof opt === 'object' ? Object.assign({}, opt) : opt;
+                })
+                : []
+        });
+    }
+
+    I.captureSwitchSnapshot = function captureSwitchSnapshot() {
+        return {
+            messages: I.state.messages.map(I.cloneMessage),
+            choicePrompt: cloneChoicePrompt(I.state.choicePrompt),
+            launchedMiniGameSessionIds: Object.keys(I.state._launchedMiniGameSessionIds || {}),
+            pendingIcebreakerGalgameHandoffMessageId: String(I.state.pendingIcebreakerGalgameHandoffMessageId || '')
+        };
+    }
+
+    I.restoreSwitchSnapshot = function restoreSwitchSnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        var snapshotMessages = Array.isArray(snapshot.messages)
+            ? snapshot.messages.map(I.cloneMessage).filter(Boolean)
+            : [];
+        var seenIds = Object.create(null);
+        var maxSnapshotSortKey = -1;
+        snapshotMessages.forEach(function (msg, idx) {
+            if (msg.id !== undefined && msg.id !== null && msg.id !== '') {
+                seenIds[String(msg.id)] = true;
+            }
+            if (typeof msg.sortKey !== 'number' || !Number.isFinite(msg.sortKey)) {
+                msg.sortKey = idx;
+            }
+            if (msg.sortKey > maxSnapshotSortKey) {
+                maxSnapshotSortKey = msg.sortKey;
+            }
+        });
+        var nextPostClearSortKey = maxSnapshotSortKey + 1;
+        var liveMessages = Array.isArray(I.state.messages) ? I.state.messages : [];
+        var postClearMessages = [];
+        liveMessages.forEach(function (msg) {
+            if (!msg) return;
+            var msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+            if (msgId && seenIds[msgId]) return;
+            if (msgId) seenIds[msgId] = true;
+            var cloned = I.cloneMessage(msg);
+            if (!cloned) return;
+            cloned.sortKey = nextPostClearSortKey++;
+            postClearMessages.push(cloned);
+        });
+        I.setMessages(snapshotMessages.concat(postClearMessages));
+
+        if (!I.state.choicePrompt && snapshot.choicePrompt) {
+            I.state.choicePrompt = cloneChoicePrompt(snapshot.choicePrompt);
+            scheduleChoicePromptReveal();
+        }
+
+        if (Array.isArray(snapshot.launchedMiniGameSessionIds) && snapshot.launchedMiniGameSessionIds.length > 0) {
+            if (!I.state._launchedMiniGameSessionIds || typeof I.state._launchedMiniGameSessionIds !== 'object') {
+                I.state._launchedMiniGameSessionIds = Object.create(null);
+            }
+            snapshot.launchedMiniGameSessionIds.forEach(function (sessionId) {
+                var normalizedId = String(sessionId || '');
+                if (normalizedId) {
+                    I.state._launchedMiniGameSessionIds[normalizedId] = true;
+                }
+            });
+        }
+
+        var restoredHandoffId = String(snapshot.pendingIcebreakerGalgameHandoffMessageId || '');
+        if (!I.state.pendingIcebreakerGalgameHandoffMessageId
+                && restoredHandoffId
+                && I.state.messages.some(function (msg) { return String(msg.id || '') === restoredHandoffId; })) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = restoredHandoffId;
+        }
+
         I.renderWindow();
     }
 

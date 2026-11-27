@@ -807,3 +807,234 @@ def test_observation_detaches_counters_and_rejects_malformed_replacements():
         observation.observe(replacement, reported=True)
         assert observation.usage == {**USAGE, "prompt_tokens_details": {"cached_tokens": 4}}
         assert observation.usage_status == "partial"
+
+
+async def test_stream_options_retry_reserves_quota_again_via_before_send():
+    bodies = []
+    reservations = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
+
+    async def before_send():
+        reservations.append(len(bodies))
+
+    gateway, _ = gateway_for(upstream)
+    parts = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert parts[-1] == b"data: [DONE]\n\n"
+    # The hook runs right before each real send: the first one and the retry.
+    assert reservations == [0, 1]
+    assert ["stream_options" in body for body in bodies] == [True, False]
+
+
+async def test_stream_options_retry_rejected_when_quota_exhausted():
+    bodies = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        pytest.fail("the exhausted retry must never reach upstream")
+
+    reservations = []
+
+    async def before_send():
+        reservations.append(len(bodies))
+        if len(reservations) > 1:
+            raise ModelGatewayError("agent_quota_exceeded", "Free agent daily quota exceeded (500/500)", 429)
+
+    gateway, _ = gateway_for(upstream)
+    with pytest.raises(ModelGatewayError) as error:
+        _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert error.value.code == "agent_quota_exceeded"
+    assert len(bodies) == 1  # only the first send happened
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_invalid_request_never_reaches_before_send(streaming):
+    async def upstream(request):
+        pytest.fail("an invalid request must never reach upstream")
+
+    reservations = []
+
+    async def before_send():
+        reservations.append(True)
+
+    gateway, _ = gateway_for(upstream)
+    invalid = request_body(messages=[], stream=streaming)
+    with pytest.raises(ModelGatewayError) as error:
+        if streaming:
+            _ = [part async for part in gateway.stream(make_slot(), invalid, before_send=before_send)]
+        else:
+            await gateway.complete(make_slot(), invalid, before_send=before_send)
+    assert error.value.code == "invalid_request"
+    # Locally rejected requests must not reserve the shared free quota.
+    assert reservations == []
+
+
+@pytest.mark.parametrize("endpoint,user_agent", [
+    ("https://api.kimi.com/coding", "claude-code/0.1.0"),
+    ("https://api.kimi.com/coding/", "claude-code/0.1.0"),
+    ("https://api.anthropic.com", None),
+])
+def test_anthropic_headers_match_main_app_user_agent(endpoint, user_agent):
+    # Not named base_url: that collides with pytest-base-url's session fixture.
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot("anthropic_messages", base_url=endpoint))
+    if user_agent is None:
+        assert headers["User-Agent"] != "claude-code/0.1.0"
+    else:
+        # Kimi Code rejects other clients; the main app sends the same UA.
+        assert headers["User-Agent"] == user_agent
+    assert headers["x-api-key"] == SECRET
+
+
+def test_openai_headers_never_borrow_the_kimi_code_user_agent():
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot(base_url="https://api.kimi.com/coding"))
+    assert headers["User-Agent"] != "claude-code/0.1.0"
+
+
+DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+def host_follow_slot(model, endpoint, api_key="sk-host"):
+    from plugin.server.infrastructure.host_model_slots import materialize_host_slot
+
+    slot = ModelSlot(
+        name="Familiar model", source="host_follow", host_api="agent",
+        capabilities=["text", "streaming"],
+    )
+    return materialize_host_slot(slot, {
+        "model": model, "base_url": endpoint, "api_key": api_key, "provider_type": "openai_compatible",
+    })
+
+
+def openai_reply():
+    return {
+        "id": "chatcmpl-test", "object": "chat.completion", "created": 1, "model": "m",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": USAGE,
+    }
+
+
+def capture_gateway():
+    sent = []
+
+    async def upstream(request):
+        sent.append((json.loads(request.content), request.headers))
+        return httpx.Response(200, json=openai_reply())
+
+    gateway, _ = gateway_for(upstream)
+    return gateway, sent
+
+
+async def test_host_follow_disables_thinking_like_the_main_app():
+    gateway, sent = capture_gateway()
+    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request_body())
+    body, headers = sent[0]
+    # The same task agent extra_body the main app sends (config.providers).
+    assert body["enable_thinking"] is False
+    # DashScope's session-cache header from get_cache_kwargs.
+    assert headers["x-dashscope-session-cache"] == "enable"
+    assert headers["authorization"] == "Bearer sk-host"
+
+
+@pytest.mark.parametrize("explicit", [None, "max_tokens", "max_completion_tokens"])
+async def test_host_follow_uses_the_endpoint_output_budget_field(explicit):
+    gateway, sent = capture_gateway()
+    extra = {explicit: 32} if explicit else {}
+    await gateway.complete(host_follow_slot("deepseek-chat", "https://api.deepseek.com/v1"), request_body(**extra))
+    body, _ = sent[0]
+    # DeepSeek ignores max_completion_tokens; the budget value is unchanged.
+    assert "max_completion_tokens" not in body
+    assert body["max_tokens"] == (32 if explicit else 1024)
+
+
+async def test_host_follow_unknown_endpoint_keeps_max_completion_tokens():
+    gateway, sent = capture_gateway()
+    await gateway.complete(host_follow_slot("some-model", "https://upstream.test/v1"), request_body(max_tokens=64))
+    body, _ = sent[0]
+    assert body["max_completion_tokens"] == 64
+    assert "max_tokens" not in body
+
+
+async def test_host_follow_adaptation_never_overrides_request_fields(monkeypatch):
+    import config.providers as providers
+
+    monkeypatch.setattr(
+        providers, "get_agent_extra_body",
+        lambda model, base_url=None: {"enable_thinking": False, "top_p": 0.1, "model": "other"},
+    )
+    gateway, sent = capture_gateway()
+    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request_body(top_p=0.8))
+    body, _ = sent[0]
+    assert body["enable_thinking"] is False
+    # Explicit plugin parameters and the resolved model are never replaced.
+    assert body["top_p"] == 0.8
+    assert body["model"] == "qwen3.8-flash"
+
+
+@pytest.mark.parametrize("sent_by_plugin", [False, True])
+async def test_host_follow_never_sends_a_temperature(monkeypatch, sent_by_plugin):
+    # Neither the plugin's value (dropped at request preparation) nor one in
+    # provider settings (never merged) reaches the upstream body.
+    import config.providers as providers
+
+    monkeypatch.setattr(
+        providers, "get_agent_extra_body",
+        lambda model, base_url=None: {"enable_thinking": False, "temperature": 2},
+    )
+    gateway, sent = capture_gateway()
+    request = request_body(temperature=0.3) if sent_by_plugin else request_body()
+    await gateway.complete(host_follow_slot("qwen3.8-flash", DASHSCOPE), request)
+    body, _ = sent[0]
+    assert body["enable_thinking"] is False
+    assert "temperature" not in body
+
+
+async def test_host_follow_never_injects_provider_tools():
+    gateway, sent = capture_gateway()
+    # step-2-mini's registered extra_body carries a built-in web_search tool.
+    slot = host_follow_slot("step-2-mini", "https://api.stepfun.com/v1")
+    await gateway.complete(slot, request_body())
+    body, _ = sent[0]
+    # A plain text call must stay plain: tools are the plugin's decision.
+    assert "tools" not in body
+    assert "tool_choice" not in body
+
+
+async def test_host_follow_stream_and_retry_reuse_the_adapted_request():
+    bodies = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
+
+    gateway, _ = gateway_for(upstream)
+    slot = host_follow_slot("qwen3.8-flash", DASHSCOPE)
+    _ = [part async for part in gateway.stream(slot, request_body(stream=True))]
+    assert len(bodies) == 2
+    assert all(body["enable_thinking"] is False for body in bodies)
+
+
+async def test_manual_slot_request_is_not_provider_adapted():
+    gateway, sent = capture_gateway()
+    await gateway.complete(make_slot(model="qwen3.8-flash", base_url=DASHSCOPE), request_body())
+    body, headers = sent[0]
+    # Manual slots keep sending exactly the validated request.
+    assert "enable_thinking" not in body
+    assert body["max_completion_tokens"] == 1024
+    assert "x-dashscope-session-cache" not in headers

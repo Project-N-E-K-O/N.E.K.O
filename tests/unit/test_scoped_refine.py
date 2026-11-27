@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -527,7 +528,7 @@ async def test_refine_pass_llm_config_is_lite():
     create = AsyncMock(return_value=llm)
     with patch('utils.llm_client.create_chat_llm_async', create):
         await engine.refine_pass(buckets, apply_fn=_apply, scope_label='t')
-    engine._cm.aget_model_api_config.assert_awaited_once_with('summary')
+    engine._cm.aget_model_api_config.assert_awaited_once_with('memory')
     kwargs = create.await_args.kwargs
     assert 'extra_body' not in kwargs
     assert kwargs['timeout'] == SCOPED_REFINE_LLM_TIMEOUT_SECONDS
@@ -1368,9 +1369,17 @@ async def test_scoped_merge_ignores_overflowing_evidence_counters(
 
     assert applied == 1
     merged = next(entry for entry in current if entry.get("merged_from_ids"))
-    assert merged["reinforcement"] == pytest.approx(0.2)
     if store == STORE_PERSONA:
+        assert merged["reinforcement"] == pytest.approx(0.2)
         assert merged["disputation"] == pytest.approx(0.3)
+    else:
+        # Two lines backed by others' words: the merge counts as being seen
+        # again (+SCOPED_REOBSERVED_REINFORCEMENT) on top of the finite 0.2;
+        # the overflowing counter still counts as nothing.
+        from config import SCOPED_REOBSERVED_REINFORCEMENT
+        assert merged["reinforcement"] == pytest.approx(
+            0.2 + SCOPED_REOBSERVED_REINFORCEMENT,
+        )
 
 
 @pytest.mark.asyncio
@@ -2284,6 +2293,14 @@ async def test_scoped_refine_round_caps_calls_and_rotates_characters(monkeypatch
         _with_locale,
     )
     monkeypatch.setattr(refine_loops, "_scoped_refine_character_cursor", None)
+    # The periodic-write gate re-reads the roster before each character.
+    monkeypatch.setattr(
+        refine_loops.runtime,
+        "_config_manager",
+        SimpleNamespace(aload_characters=AsyncMock(
+            return_value={"猫娘": {"甲": {}, "乙": {}, "丙": {}}},
+        )),
+    )
 
     await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
     assert calls == ["甲", "乙"]

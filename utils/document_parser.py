@@ -34,6 +34,15 @@ class DocumentParseError(ValueError):
         self.code = code
 
 
+@dataclass(frozen=True)
+class DocumentLimits:
+    """Caller-owned limits; omitted values preserve attachment behavior."""
+
+    max_document_bytes: int = MAX_DOCUMENT_BYTES
+    max_extracted_chars: int = MAX_EXTRACTED_CHARS
+    max_pdf_pages: int = MAX_PDF_PAGES
+
+
 @dataclass
 class _TextBudget:
     limit: int = MAX_EXTRACTED_CHARS
@@ -46,7 +55,10 @@ class _TextBudget:
         value = _clean_text(text)
         if not value:
             return
-        remaining = self.limit - self.used
+        # The serialized attachment joins accepted nonempty parts with two
+        # newlines; these bytes are part of the same caller-owned character cap.
+        separator = 2 if parts else 0
+        remaining = self.limit - self.used - separator
         if remaining <= 0:
             self.truncated = True
             return
@@ -56,7 +68,7 @@ class _TextBudget:
             self.truncated = True
             return
         parts.append(value)
-        self.used += len(value)
+        self.used += separator + len(value)
 
 
 _WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -67,21 +79,22 @@ _SPREADSHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _OFFICE_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
-def parse_document(filename: str, content_type: str, data: bytes) -> dict[str, Any]:
+def parse_document(filename: str, content_type: str, data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     if not isinstance(data, (bytes, bytearray)) or not data:
         raise DocumentParseError("empty_file")
-    if len(data) > MAX_DOCUMENT_BYTES:
+    if len(data) > limits.max_document_bytes:
         raise DocumentParseError("document_too_large")
 
     document_type = _detect_document_type(filename, content_type, bytes(data))
     if document_type == "pdf":
-        result = _parse_pdf(bytes(data))
+        result = _parse_pdf(bytes(data), limits=limits)
     elif document_type == "docx":
-        result = _parse_docx(bytes(data))
+        result = _parse_docx(bytes(data), limits=limits)
     elif document_type == "xlsx":
-        result = _parse_xlsx(bytes(data))
+        result = _parse_xlsx(bytes(data), limits=limits)
     elif document_type == "pptx":
-        result = _parse_pptx(bytes(data))
+        result = _parse_pptx(bytes(data), limits=limits)
     else:
         raise DocumentParseError("unsupported_document")
 
@@ -117,7 +130,8 @@ def _detect_document_type(filename: str, content_type: str, data: bytes) -> str:
     raise DocumentParseError("unsupported_document")
 
 
-def _parse_pdf(data: bytes) -> dict[str, Any]:
+def _parse_pdf(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - depends on environment
@@ -131,14 +145,14 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
         raise DocumentParseError("encrypted_pdf_unsupported")
 
     total_pages = _get_pdf_declared_page_count(reader)
-    budget = _TextBudget()
+    budget = _TextBudget(limit=limits.max_extracted_chars)
     parts: list[str] = []
     seen_text_keys: set[str] = set()
     observed_pages = 0
-    page_limit = MAX_PDF_PAGES if total_pages and total_pages > MAX_PDF_PAGES else MAX_PDF_PAGES + 1
+    page_limit = limits.max_pdf_pages if total_pages and total_pages > limits.max_pdf_pages else limits.max_pdf_pages + 1
     for index, page in enumerate(_iter_pdf_pages_until(reader, page_limit), start=1):
         observed_pages = index
-        if index > MAX_PDF_PAGES:
+        if index > limits.max_pdf_pages:
             budget.truncated = True
             break
         try:
@@ -148,7 +162,7 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
         _add_unique_text_part(budget, parts, seen_text_keys, f"Page {index}", text)
         if budget.truncated:
             break
-    if total_pages is not None and total_pages > MAX_PDF_PAGES:
+    if total_pages is not None and total_pages > limits.max_pdf_pages:
         budget.truncated = True
     return {
         "content": "\n\n".join(parts),
@@ -164,6 +178,235 @@ def _get_pdf_declared_page_count(reader: Any) -> int | None:
         return count if count >= 0 else None
     except Exception:
         return None
+
+
+def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimits) -> list[dict[str, Any]]:
+    """Extract complete, located sections with shared OOXML/PDF safety guards.
+
+    Unlike attachment previews this mode never silently truncates or removes
+    repeated paragraphs. The source importer persists the complete result or
+    reports a stable capacity/unsupported error.
+    """
+    if not data:
+        raise DocumentParseError("empty_file")
+    if len(data) > limits.max_document_bytes:
+        raise DocumentParseError("document_too_large")
+    kind = _detect_document_type(filename, "", data)
+    sections = []
+    extracted_chars = 0
+
+    def add_section(text, location):
+        nonlocal extracted_chars
+        text = text.strip()
+        if not text:
+            return
+        # Count joining separators before allocating another located record.
+        extracted_chars += len(text) + (2 if sections else 0)
+        if extracted_chars > limits.max_extracted_chars:
+            raise DocumentParseError("document_text_too_large")
+        sections.append({"text": text, "location": location})
+    if kind == "docx":
+        with _open_checked_zip(data, "docx") as archive:
+            _require_member(archive, "word/document.xml")
+            _reject_macro_members(archive, "word/")
+            root = _parse_xml(_read_xml_member(archive, "word/document.xml"))
+            members = [("word/document.xml", root)]
+            members += [(name, _parse_xml(_read_xml_member(archive, name)))
+                        for name in _read_docx_header_footer_names(archive, root)]
+            for name, member in members:
+                for index, paragraph in enumerate(_iter_word_paragraphs(member), 1):
+                    # Read only this paragraph; nested textbox paragraphs are
+                    # visited separately and must not be included twice.
+                    text = _extract_word_paragraph_text(paragraph).strip()
+                    add_section(text, {"member": name, "paragraph": index})
+            for name, reference, tag in (
+                ("word/footnotes.xml", "footnoteReference", "footnote"),
+                ("word/endnotes.xml", "endnoteReference", "endnote"),
+            ):
+                if name not in archive.namelist():
+                    continue
+                ids = _collect_word_note_reference_ids(root, _WORD_NS + reference)
+                notes = _parse_xml(_read_xml_member(archive, name))
+                # Locations belong to the entire XML member, not each note.
+                positions = {id(paragraph): index for index, paragraph in enumerate(_iter_word_paragraphs(notes), 1)}
+                for note in notes.findall(_WORD_NS + tag):
+                    if note.attrib.get(_WORD_NS + "id", "") not in ids:
+                        continue
+                    for paragraph in _iter_word_paragraphs(note):
+                        text = _extract_word_paragraph_text(paragraph).strip()
+                        add_section(text, {"member": name, "paragraph": positions[id(paragraph)]})
+    elif kind == "pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            raise DocumentParseError("encrypted_pdf_unsupported")
+        count = _get_pdf_declared_page_count(reader)
+        if count is not None and count > limits.max_pdf_pages:
+            raise DocumentParseError("document_too_many_pages")
+        for index, page in enumerate(_iter_pdf_pages_until(reader, limits.max_pdf_pages + 1), 1):
+            if index > limits.max_pdf_pages:
+                raise DocumentParseError("document_too_many_pages")
+            text = page.extract_text() or ""
+            contents = page.get_contents()
+            # Pure state/clipping changes are blank; images and painted paths
+            # (including outlined glyphs) cannot silently disappear from a
+            # successful text import when no readable text was extracted.
+            if not text.strip() and _pdf_has_unreadable_content(contents, page.get("/Resources", {}), reader):
+                raise DocumentParseError("scan_unsupported")
+            if extracted_chars + len(text) > limits.max_extracted_chars:
+                raise DocumentParseError("document_text_too_large")
+            for paragraph, value in enumerate(re.split(r"\n\s*\n", text), 1):
+                add_section(value, {"page": index, "paragraph": paragraph})
+    else:
+        raise DocumentParseError("unsupported_document")
+    content = "\n\n".join(section["text"] for section in sections)
+    if len(content) > limits.max_extracted_chars:
+        raise DocumentParseError("document_text_too_large")
+    _validate_text_quality(content)
+    return sections
+
+
+_PDF_SPACE_ENCODINGS = frozenset({"/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"})
+# The standard 14 fonts minus Symbol and ZapfDingbats, whose built-in
+# encodings are not text encodings.
+_PDF_STANDARD_TEXT_FONTS = frozenset(
+    "/" + name for name in (
+        "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic",
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique",
+        "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+    )
+)
+
+
+def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
+    """Recognize actual painting, using a stack for arbitrarily deep Form calls."""
+    if contents is None:
+        return False
+    from pypdf.generic import ContentStream
+
+    def open_frame(content, inherited, font=None):
+        resolved = _resolve_pdf_object(inherited)
+        objects = _resolve_pdf_object(resolved.get("/XObject", {})) if isinstance(resolved, dict) else {}
+        stream = content if isinstance(content, ContentStream) else ContentStream(content, reader)
+        fonts = _resolve_pdf_object(resolved.get("/Font", {})) if isinstance(resolved, dict) else {}
+        return {"operations": iter(stream.operations), "objects": objects, "resources": resolved, "path": False,
+                "fonts": fonts if isinstance(fonts, dict) else {}, "font": font, "saved": []}
+
+    def space_is_blank(font) -> bool:
+        # Only a non-embedded, non-symbolic simple font whose encoding keeps
+        # code 32 as the standard space is known to draw nothing for 0x20.
+        # Composite, Type3, embedded, symbolic and remapped fonts stay painting.
+        if not isinstance(font, dict) or font.get("/Subtype") not in {"/Type1", "/MMType1", "/TrueType"}:
+            return False
+        descriptor = _resolve_pdf_object(font.get("/FontDescriptor"))
+        if isinstance(descriptor, dict):
+            if any(key in descriptor for key in ("/FontFile", "/FontFile2", "/FontFile3")):
+                return False
+            # Symbolic fonts (flag bit 3, value 4) may ignore the named
+            # encoding, so code 32 is not proven to be a space.
+            flags = _resolve_pdf_object(descriptor.get("/Flags"))
+            if not isinstance(flags, int) or flags & 4:
+                return False
+        elif descriptor is not None:
+            return False
+        encoding = _resolve_pdf_object(font.get("/Encoding"))
+        if not isinstance(encoding, dict) and encoding is not None:
+            return encoding in _PDF_SPACE_ENCODINGS
+        base = encoding.get("/BaseEncoding") if isinstance(encoding, dict) else None
+        if base is None:
+            # Without an explicit base, codes follow the font's built-in
+            # encoding. Only the standard non-symbolic fonts are known to keep
+            # 32 as the space there.
+            if _resolve_pdf_object(font.get("/BaseFont")) not in _PDF_STANDARD_TEXT_FONTS:
+                return False
+        elif base not in _PDF_SPACE_ENCODINGS:
+            return False
+        if encoding is None:
+            return True
+        code = None
+        for entry in _resolve_pdf_object(encoding.get("/Differences")) or []:
+            entry = _resolve_pdf_object(entry)
+            if isinstance(entry, int):
+                code = entry
+            elif code is not None:
+                if code == 32 and entry != "/space":
+                    return False
+                code += 1
+        return True
+
+    def shows_only_spaces(values, font) -> bool:
+        # In such fonts byte 0x20 is the space glyph, which has no outline.
+        if not space_is_blank(font):
+            return False
+        for value in values:
+            if isinstance(value, str):
+                value = getattr(value, "original_bytes", value.encode("latin-1", "replace"))
+            if isinstance(value, bytes) and value.strip(b" "):
+                return False
+        return True
+
+    frames = [open_frame(contents, resources)]
+    seen = set()
+    while frames:
+        frame = frames[-1]
+        for operands, operator in frame["operations"]:
+            if operator in {b"INLINE IMAGE", b"sh"}:
+                return True
+            if operator == b"q":
+                frame["saved"].append(frame["font"])
+            elif operator == b"Q":
+                if frame["saved"]:
+                    frame["font"] = frame["saved"].pop()
+            elif operator == b"gs":
+                # An ExtGState may select a font too. A state that cannot be
+                # resolved, or a /Font entry without a usable font, leaves the
+                # font unknown; a state without /Font keeps the current one.
+                states = frame["resources"].get("/ExtGState", {}) if isinstance(frame["resources"], dict) else {}
+                state = _resolve_pdf_object(_resolve_pdf_object(states).get(operands[0])) if (
+                    operands and isinstance(_resolve_pdf_object(states), dict)) else None
+                if not isinstance(state, dict):
+                    frame["font"] = None
+                elif "/Font" in state:
+                    selected = _resolve_pdf_object(state["/Font"])
+                    frame["font"] = _resolve_pdf_object(selected[0]) if isinstance(selected, list) and selected else None
+            elif operator == b"Tf":
+                # A malformed Tf leaves the font unknown, never the previous
+                # font's space exemption.
+                name = operands[0] if len(operands) == 2 else None
+                frame["font"] = _resolve_pdf_object(frame["fonts"].get(name)) if isinstance(name, str) else None
+            elif operator in {b"l", b"c", b"v", b"y", b"re"}:
+                frame["path"] = True
+            elif operator == b"n":
+                frame["path"] = False  # Path/clip construction alone paints nothing.
+            elif operator in {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}:
+                if frame["path"]:
+                    return True
+            elif operator in {b"Tj", b"TJ", b"'", b'"'} and operands:
+                shown = operands[-1]
+                values = shown if isinstance(shown, list) else [shown]
+                if any(isinstance(value, (str, bytes)) and value for value in values) and not shows_only_spaces(
+                        values, frame["font"]):
+                    return True  # Glyph drawing without extractable Unicode is also unreadable.
+            elif operator == b"Do" and operands and isinstance(frame["objects"], dict):
+                target = _resolve_pdf_object(frame["objects"].get(operands[0]))
+                if not isinstance(target, dict):
+                    continue
+                if target.get("/Subtype") == "/Image":
+                    return True
+                if target.get("/Subtype") == "/Form":
+                    inherited = _resolve_pdf_object(target.get("/Resources", frame["resources"]))
+                    # A resource-less Form can be invoked in different resource
+                    # scopes. Keep those scopes distinct while stopping cycles.
+                    # The inherited font decides whether spaces paint, so it is part of the scope.
+                    key = (id(target), id(inherited), id(frame["font"]))
+                    if key not in seen:
+                        seen.add(key)
+                        frames.append(open_frame(target, inherited, frame["font"]))
+                        break
+        else:
+            frames.pop()
+    return False
 
 
 def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
@@ -231,11 +474,12 @@ def _resolve_pdf_object(value: Any) -> Any:
     return value
 
 
-def _parse_docx(data: bytes) -> dict[str, Any]:
+def _parse_docx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     with _open_checked_zip(data, "docx") as archive:
         _require_member(archive, "word/document.xml")
         _reject_macro_members(archive, "word/")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=limits.max_extracted_chars)
         parts: list[str] = []
         seen_text_keys: set[str] = set()
 
@@ -274,7 +518,7 @@ def _parse_docx(data: bytes) -> dict[str, Any]:
         }
 
 
-def _parse_xlsx(data: bytes) -> dict[str, Any]:
+def _parse_xlsx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
     with _open_checked_zip(data, "xlsx") as archive:
         _require_member(archive, "xl/workbook.xml")
         _reject_macro_members(archive, "xl/")
@@ -282,7 +526,7 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         sheets = _read_xlsx_sheets(archive)
         if not sheets:
             raise DocumentParseError("xlsx_no_sheets")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=(limits or DocumentLimits()).max_extracted_chars)
         parts: list[str] = []
         for sheet_index, sheet in enumerate(sheets[:MAX_XLSX_SHEETS], start=1):
             text, rows_truncated = _extract_xlsx_sheet_text(archive, sheet["path"], shared_strings)
@@ -302,11 +546,11 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         }
 
 
-def _parse_pptx(data: bytes) -> dict[str, Any]:
+def _parse_pptx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
     with _open_checked_zip(data, "pptx") as archive:
         _require_member(archive, "ppt/presentation.xml")
         _reject_macro_members(archive, "ppt/")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=(limits or DocumentLimits()).max_extracted_chars)
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
@@ -529,13 +773,24 @@ def _extract_word_text_from_root(root: ET.Element) -> str:
 
 
 def _collect_word_note_reference_ids(root: ET.Element, reference_tag: str) -> set[str]:
-    return {
-        value for value in (
-            element.attrib.get(_WORD_NS + "id", "")
-            for element in root.iter(reference_tag)
-        )
-        if value
-    }
+    references = set()
+    # Reference selection must obey the same visibility as paragraph
+    # extraction; fallback and hidden notes are not source content.
+    # An explicit stack keeps deeply nested XML a parse result, not a
+    # RecursionError.
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.tag == _MC_NS + "Fallback":
+            continue
+        # A reference inside hidden text is hidden too, like the paragraph
+        # traversal: its note must not enter visible content.
+        if node.tag == _WORD_NS + "r" and _word_run_is_hidden(node):
+            continue
+        if node.tag == reference_tag and (value := node.attrib.get(_WORD_NS + "id", "")):
+            references.add(value)
+        stack.extend(node)
+    return references
 
 
 def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]) -> str:
@@ -548,6 +803,25 @@ def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]
         if text:
             lines.append(text)
     return "\n".join(lines)
+
+
+def _iter_word_paragraphs(root: ET.Element):
+    """Traverse once while excluding fallback subtrees and hidden runs.
+
+    A text box inside a hidden run is hidden too; its paragraphs cannot see
+    the outer run, so the whole run subtree is skipped here.
+    """
+    # Document order with an explicit stack, independent of recursion depth.
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.tag == _MC_NS + "Fallback":
+            continue
+        if node.tag == _WORD_NS + "r" and _word_run_is_hidden(node):
+            continue
+        if node.tag == _WORD_NS + "p":
+            yield node
+        stack.extend(reversed(node))
 
 
 def _extract_word_paragraph_text(paragraph: ET.Element) -> str:

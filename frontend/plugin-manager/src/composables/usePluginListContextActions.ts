@@ -2,11 +2,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { deletePlugin } from '@/api/plugins'
+import { collectPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
 import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
-import { openExternalUrl } from '@/utils/openExternal'
+import { isSafeAppRoute, isSafeSameTabUrl, openExternalUrl } from '@/utils/openExternal'
 
 type PluginListContextPlugin = PluginMeta & {
   status?: string
@@ -32,6 +35,7 @@ const BUILTIN_ACTION_IDS = [
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
+  const startGate = usePluginStartGate()
   const { t, locale } = useI18n()
 
   function isRunning(plugin: PluginListContextPlugin): boolean {
@@ -235,7 +239,7 @@ export function usePluginListContextActions() {
         await router.push({ path: `/plugins/${safeId}`, query: { tab: 'guide' } })
         return
       case 'start':
-        await pluginStore.start(plugin.id)
+        if (!(await startGate.startWithConsent(plugin.id))) return
         ElMessage.success(t('messages.pluginStarted'))
         return
       case 'stop':
@@ -277,11 +281,10 @@ export function usePluginListContextActions() {
       case 'delete':
         {
           const result = await deletePlugin(plugin.id)
-          if (result.restored_builtin_restart_error) {
-            ElMessage.warning(t('messages.pluginDeletedBuiltinRestartFailed', {
-              plugin: plugin.name,
-              error: result.restored_builtin_restart_error.message,
-            }))
+          usePluginConsentState().forget(plugin.id)
+          const warnings = collectPluginDeleteWarnings(result, plugin.name, t)
+          if (warnings.length > 0) {
+            warnings.forEach((warning) => ElMessage.warning(warning))
           } else {
             ElMessage.success(t('messages.pluginDeleted'))
           }
@@ -315,13 +318,18 @@ export function usePluginListContextActions() {
     // 后端 _normalize_plugin_list_action 在 plugin/server/application/plugins/
     // ui_query_service.py:481 已经把 `{plugin_id}` 占位符替换并 strip 过；
     // 前端直接消费就行，不再二次替换。
-    const target = typeof action.target === 'string' ? action.target : ''
+    const target = typeof action.target === 'string' ? action.target.trim() : ''
     if (!target) {
       ElMessage.warning(action.label)
       return
     }
 
     if (action.kind === 'route') {
+      if (!isSafeAppRoute(target)) {
+        console.warn('[plugin-list-actions] blocked unsafe route target', { pluginId: plugin.id, target })
+        ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
+        return
+      }
       await router.push(target)
       return
     }
@@ -329,8 +337,13 @@ export function usePluginListContextActions() {
     if (action.kind === 'ui' || action.kind === 'url') {
       // _blank 走 openExternalUrl，让 Electron host 把它转发到系统浏览器，
       // 避免嵌入 webview 没有关闭按钮把用户困住；same_tab 仍是当前窗口
-      // navigation。
+      // navigation，仅允许同源 http(s) URL。
       if (action.open_in === 'same_tab') {
+        if (!isSafeSameTabUrl(target)) {
+          console.warn('[plugin-list-actions] blocked unsafe same_tab target', { pluginId: plugin.id, target })
+          ElMessage.warning(t('plugins.ui.unsafeTargetBlocked'))
+          return
+        }
         window.open(target, '_self')
       } else {
         openExternalUrl(target)

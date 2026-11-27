@@ -16,6 +16,10 @@ import time
 PULL_INTERVAL_MS = 120_000
 RETRY_BASE_MS = 5_000
 RETRY_CAP_MS = 30 * 60_000
+CHANNELS = ('pull', 'long_term', 'profile', 'model')
+# Reasons a learned-memory snapshot could not be made on this device.
+CAPTURE_DIAGNOSTICS = ('long_term_memory_capacity_exceeded', 'long_term_memory_evidence_capacity_exceeded',
+                       'long_term_archive_subject_unavailable')
 
 
 def now_ms() -> int:
@@ -44,8 +48,12 @@ class ChatSyncScheduler:
                     last_attempt INTEGER, retry_at INTEGER NOT NULL DEFAULT 0,
                     failures INTEGER NOT NULL DEFAULT 0, blocked_generation INTEGER,
                     blocked_session TEXT, last_error TEXT, due_at INTEGER NOT NULL DEFAULT 0,
+                    last_success INTEGER,
                     PRIMARY KEY(domain,channel));
             """)
+            if 'last_success' not in {row[1] for row in conn.execute('PRAGMA table_info(scheduler_tasks)')}:
+                # Existing attempts are not evidence of a successful sync.
+                conn.execute('ALTER TABLE scheduler_tasks ADD COLUMN last_success INTEGER')
 
     def _connect(self):
         """Persist admission before HTTP; a killed process cannot erase its gate."""
@@ -56,7 +64,7 @@ class ChatSyncScheduler:
 
     def request_check(self, domain, channel, *, verified_login=None) -> None:
         """Coalesce hints; a fresh subscription may repair a local login pause."""
-        if channel not in {"pull", "profile", "long_term"}:
+        if channel not in {"pull", "profile", "model", "long_term"}:
             raise ValueError("invalid_chat_sync_channel")
         with closing(self._connect()) as conn, conn:
             conn.execute("INSERT OR IGNORE INTO scheduler_tasks(domain,channel) VALUES (?,?)", (domain, channel))
@@ -75,12 +83,19 @@ class ChatSyncScheduler:
             deadline = conn.execute("SELECT origin_retry_at FROM scheduler_device WHERE singleton=1").fetchone()[0]
         return self.clock() >= deadline
 
+    def retry_model(self, domain):
+        """An explicit model retry retains the service-wide Retry-After fence."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE scheduler_tasks SET due_at=0,retry_at=0,failures=0,blocked_generation=NULL,"
+                         "blocked_session=NULL,last_error=NULL,last_success=NULL WHERE domain=? AND channel='model'", (domain,))
+
     def next_wake_at(self) -> int | None:
         """Expose future admission deadlines so an idle host can sleep longer."""
         now = self.clock()
         with closing(self._connect()) as conn:
             origin = conn.execute("SELECT origin_retry_at FROM scheduler_device WHERE singleton=1").fetchone()[0]
-            rows = conn.execute("SELECT retry_at,due_at FROM scheduler_tasks WHERE blocked_generation IS NULL").fetchall()
+            rows = conn.execute("SELECT retry_at,due_at FROM scheduler_tasks "
+                                "WHERE blocked_generation IS NULL AND channel<>'media'").fetchall()
         deadlines = [max(origin, row['retry_at'], row['due_at']) for row in rows]
         return min((value for value in [origin, *deadlines] if value > now), default=None)
 
@@ -99,7 +114,7 @@ class ChatSyncScheduler:
                 # schema/integrity errors require explicit re-enabling instead.
                 if task["blocked_session"] is None or task["blocked_session"] == session:
                     return False
-            if channel in {"pull", "profile", "long_term"} and not manual and now < task["due_at"]:
+            if channel in {"pull", "profile", "model", "long_term"} and not manual and now < task["due_at"]:
                 return False
         return True
 
@@ -121,23 +136,50 @@ class ChatSyncScheduler:
             conn.execute("UPDATE scheduler_tasks SET last_attempt=?,retry_at=? WHERE domain=? AND channel=?", (
                 now, now + RETRY_BASE_MS, domain, channel,
             ))
-            if channel in {"pull", "profile", "long_term"}:
+            if channel in {"pull", "profile", "model", "long_term"}:
                 # The next periodic poll survives a restart.
                 conn.execute("UPDATE scheduler_tasks SET due_at=MAX(due_at,?) WHERE domain=? AND channel=?", (
                     now + PULL_INTERVAL_MS, domain, channel,
                 ))
             return True
 
-    def success(self, domain, channel) -> None:
-        """Clear retry/error state only after the exact channel receipt was accepted."""
+    def success(self, domain, channel, *, pending=False) -> None:
+        """Clear accepted transport errors while deferred work remains waiting."""
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE scheduler_tasks SET retry_at=0,failures=0,blocked_generation=NULL,"
-                         "blocked_session=NULL,last_error=NULL WHERE domain=? AND channel=?", (domain, channel))
+                         "blocked_session=NULL,last_error=NULL,last_success=? WHERE domain=? AND channel=?",
+                         (None if pending else self.clock(), domain, channel))
+
+    def record_long_term_capture_error(self, domain, generation, code):
+        """Expose fixed local publication diagnostics without gating transport."""
+        channel = 'long_term_capture'
+        if code is not None and code not in CAPTURE_DIAGNOSTICS:
+            raise ValueError('invalid_long_term_diagnostic')
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT last_error,blocked_generation FROM scheduler_tasks WHERE domain=? AND channel=?',
+                               (domain, channel)).fetchone()
+            if code is not None:
+                if row and row['last_error'] == code and row['blocked_generation'] == generation:
+                    return
+                conn.execute('INSERT INTO scheduler_tasks(domain,channel,last_attempt,blocked_generation,last_error) '
+                             'VALUES(?,?,?,?,?) ON CONFLICT(domain,channel) DO UPDATE SET '
+                             'last_attempt=excluded.last_attempt,blocked_generation=excluded.blocked_generation,last_error=excluded.last_error',
+                             (domain, channel, self.clock(), generation, code))
+            elif row and row['last_error'] in CAPTURE_DIAGNOSTICS:
+                conn.execute('DELETE FROM scheduler_tasks WHERE domain=? AND channel=?', (domain, channel))
+
+    def clear_archive_subject_error(self, domain, generation):
+        """Clear only the repaired archive notice for the applied binding."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture' "
+                         "AND blocked_generation=? AND last_error='long_term_archive_subject_unavailable'",
+                         (domain, generation))
 
     def failure(self, domain, channel, generation, session, exc) -> None:
         """Retain safe retry metadata without storing server bodies or credentials."""
         code, status = str(exc), getattr(exc, "status_code", None)
-        transient = isinstance(exc, OSError) or code in {"chat_sync_unavailable", "chat_sync_session_unavailable", "chat_sync_retry_later"}
+        transient = isinstance(exc, OSError) or code in {"chat_sync_unavailable", "chat_sync_network_unavailable",
+                                                       "chat_sync_session_unavailable", "chat_sync_retry_later"}
         transient = transient or status in {408, 425, 429} or (status is not None and status >= 500)
         auth = status in {401, 403} or code in {"chat_sync_login_required", "chat_sync_session_changed"}
         with closing(self._connect()) as conn, conn:
@@ -149,9 +191,9 @@ class ChatSyncScheduler:
             if transient:
                 base = min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** min(failures - 1, 20))
                 delay = min(RETRY_CAP_MS, base + int(self.uniform(0, base / 4)))
-                # New pure HTTP transport failures recover promptly; server
+                # Pure HTTP transport loss backs off to thirty seconds; server
                 # status codes, Retry-After and older persisted deadlines stay.
-                retry = self.clock() + (min(delay, 3000) if code == "chat_sync_unavailable" else delay)
+                retry = self.clock() + (min(delay, 30_000) if code in {"chat_sync_unavailable", "chat_sync_network_unavailable"} else delay)
             else:
                 blocked, blocked_session = generation, session if auth else None
             if status == 429:
@@ -162,24 +204,65 @@ class ChatSyncScheduler:
             safe_codes = {
                 "chat_sync_account_mismatch", "chat_sync_binding_changed", "chat_sync_login_required",
                 "chat_sync_session_changed", "chat_sync_session_unavailable", "chat_sync_unavailable",
+                "chat_sync_network_unavailable", "chat_sync_internal_error",
                 "chat_sync_service_rejected", "chat_sync_retry_later", "invalid_chat_sync_response",
                 "chat_sync_local_ca_invalid", "chat_sync_local_ca_loopback_required",
+                "chat_sync_not_enabled", "chat_sync_character_not_found", "chat_sync_writer_recovery_required",
+                "character_profile_changed", "character_profile_name_conflict", "character_profile_unsupported_value",
+                "character_profile_conflict", "profile_revision_conflict",
+                "cloud_model_upload_unavailable", "cloud_model_download_unavailable",
+                "long_term_memory_conflict_unresolved", "long_term_memory_upload_refused",
+                "long_term_memory_upload_unsupported", "chat_sync_closing",
+                "recent_write_receipt_conflict", "invalid_recent_write_receipt",
             }
-            safe_code = code if code in safe_codes else "chat_sync_unavailable"
+            # An unclassified I/O failure does not establish an internal defect.
+            fallback = "chat_sync_unavailable" if isinstance(exc, OSError) else "chat_sync_internal_error"
+            safe_code = code if code in safe_codes else fallback
+            # A cleared failure is still waiting for a new successful receipt.
             conn.execute("UPDATE scheduler_tasks SET retry_at=?,failures=?,blocked_generation=?,"
-                         "blocked_session=?,last_error=? WHERE domain=? AND channel=?", (
+                         "blocked_session=?,last_error=?,last_success=NULL WHERE domain=? AND channel=?", (
                              retry, failures, blocked, blocked_session, safe_code, domain, channel,
                          ))
-            if code in {"chat_sync_session_unavailable", "chat_sync_unavailable"}:
+            if code in {"chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_network_unavailable"}:
                 # Retry temporary login verification at its error deadline,
                 # without also waiting for the ordinary two-minute poll.
                 conn.execute("UPDATE scheduler_tasks SET due_at=0 WHERE domain=? AND channel=?", (domain, channel))
+
+    def channel_status(self, domain) -> dict:
+        """Read independent outcomes without exposing sessions or exception text."""
+        with closing(self._connect()) as conn:
+            rows = {row['channel']: row for row in conn.execute(
+                'SELECT channel,last_success,last_error,retry_at FROM scheduler_tasks WHERE domain=?',
+                (domain,),
+            )}
+        channels = {}
+        for channel in CHANNELS:
+            row = rows.get(channel)
+            status = 'waiting'
+            if row is not None:
+                if row['last_error']:
+                    status = 'error'
+                elif row['last_success'] is not None and row['retry_at'] == 0:
+                    status = 'success'
+            channels[channel] = {
+                'lastSuccessAt': row['last_success'] if row else None,
+                'lastError': row['last_error'] if row else None,
+                'status': status,
+            }
+        return channels
 
     def last_error(self, domain) -> str | None:
         """Expose only the latest fixed error for local progress UI."""
         with closing(self._connect()) as conn:
             # Retired body/marker rows can keep an old error that no pass clears.
             row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND last_error IS NOT NULL "
-                               "AND channel NOT IN ('body','deletion') "
+                               "AND channel NOT IN ('body','deletion','media','long_term_capture') "
                                "ORDER BY last_attempt DESC LIMIT 1", (domain,)).fetchone()
         return row[0] if row else None
+
+    def local_memory_diagnostics(self, domain) -> list[str]:
+        """Keep local capacity notices separate from transport failures."""
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture'",
+                               (domain,)).fetchone()
+        return [row[0]] if row and row[0] in CAPTURE_DIAGNOSTICS else []

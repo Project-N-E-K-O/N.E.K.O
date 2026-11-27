@@ -61,6 +61,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from config import (
+    EVIDENCE_REINFORCEMENT_CAP,
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     PERSONA_VERSION_HISTORY_MAX,
     SCOPED_REFINE_CLUSTER_SIZE_MAX,
@@ -69,6 +70,14 @@ from config import (
     SCOPED_REFINE_MIN_ENTRIES,
     SCOPED_REFINE_REVISIT_AFTER_DAYS,
     SCOPED_REFINE_TOPK_PER_ENTRY,
+    SCOPED_REOBSERVED_REINFORCEMENT,
+)
+from memory.evidence import (
+    counted_fact_ids,
+    has_others_backing,
+    merge_fact_source_counts,
+    merge_observed_days,
+    observed_days,
 )
 
 
@@ -85,22 +94,21 @@ def _detect_scoped_refine_prompt_language(text: str) -> str:
 
 try:
     from memory.embeddings import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 except ImportError:
     # Match memory/refine.py: use a stub if embeddings are unavailable; clustering stays empty, making the entire
     # pass a no-op without changing the behavior contract.
     from memory.embeddings_fallback import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
         _warn_once,
     )
     _warn_once(__name__)
+from memory._embeddings.ranking import cosine_clusters, run_clusters_off_loop
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.introspection import is_permanently_suppressed
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
@@ -429,7 +437,10 @@ class ScopedLiteRefineEngine:
         rotation = ordered[start:] + ordered[:start]
 
         for bucket in rotation:
-            clusters = self._compute_clusters(bucket.entries)
+            # Off the event loop; see ``run_clusters_off_loop``.
+            clusters = await run_clusters_off_loop(
+                self._compute_clusters, bucket.entries,
+            )
             if not clusters:
                 continue
             result['clusters_seen'] += len(clusters)
@@ -510,11 +521,9 @@ class ScopedLiteRefineEngine:
         valid: list[dict] = []
         vecs: list = []
         for e in entries:
-            text = e.get('text', '')
-            if not is_cached_embedding_valid(e, text, model_id):
-                continue
-            v = decode_embedding(e.get('embedding'))
-            if v is None or v.size == 0:
+            # One decode per entry (the validity check's own vector).
+            v = decode_valid_cached_embedding(e, e.get('text', ''), model_id)
+            if v is None:
                 continue
             if target_dim is None:
                 target_dim = int(v.size)
@@ -526,61 +535,13 @@ class ScopedLiteRefineEngine:
         if len(valid) < 2:
             return []
 
-        matrix = np.stack(vecs)
-        sim_matrix = matrix @ matrix.T
-        np.fill_diagonal(sim_matrix, -1.0)
-
-        threshold = SCOPED_REFINE_COSINE_THRESHOLD
-        topk = SCOPED_REFINE_TOPK_PER_ENTRY
-        n = len(valid)
-
-        adj: list[list[int]] = [[] for _ in range(n)]
-        for i in range(n):
-            row = sim_matrix[i]
-            cand = [
-                (int(j), float(row[j]))
-                for j in range(n) if float(row[j]) >= threshold
-            ]
-            cand.sort(key=lambda x: -x[1])
-            adj[i] = [j for j, _ in cand[:topk]]
-
-        parent = list(range(n))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for i in range(n):
-            for j in adj[i]:
-                union(i, j)
-
-        groups: dict[int, list[int]] = {}
-        for i in range(n):
-            groups.setdefault(find(i), []).append(i)
-
-        clusters: list[list[dict]] = []
-        for indices in groups.values():
-            if len(indices) < 2:
-                continue
-            if len(indices) > SCOPED_REFINE_CLUSTER_SIZE_MAX:
-                strengths = []
-                for i in indices:
-                    others = [j for j in indices if j != i]
-                    max_sim = max(
-                        (float(sim_matrix[i][j]) for j in others), default=-1.0,
-                    )
-                    strengths.append((i, max_sim))
-                strengths.sort(key=lambda x: -x[1])
-                indices = [s[0] for s in strengths[:SCOPED_REFINE_CLUSTER_SIZE_MAX]]
-            clusters.append([valid[i] for i in indices])
-        return clusters
+        groups = cosine_clusters(
+            np.stack(vecs),
+            threshold=SCOPED_REFINE_COSINE_THRESHOLD,
+            topk=SCOPED_REFINE_TOPK_PER_ENTRY,
+            size_max=SCOPED_REFINE_CLUSTER_SIZE_MAX,
+        )
+        return [[valid[i] for i in indices] for indices in groups]
 
     # ── Hash skip + starvation (full-engine semantics; no facts in pool, so count all entries) ──
 
@@ -640,13 +601,13 @@ class ScopedLiteRefineEngine:
             .replace('{COUNT}', str(len(cluster)))
         )
 
-        # Lite-pipeline cost contract: its purpose requires lower cost than the full engine:
-        #   summary tier instead of the full engine's correction tier;
+        # Lite-pipeline cost contract: its purpose requires lower cost than the full engine.
+        # Both use the summary tier (the correction tier was merged into it); the savings are:
         #   omit extra_body so create_chat_llm supplies each provider's default thinking-disabled dialect,
         #   unlike the full engine's explicit None enabling thinking;
         #   short 60s timeout instead of 110s.
         set_call_type("memory_scoped_refine")
-        api_config = await self._cm.aget_model_api_config('summary')
+        api_config = await self._cm.aget_model_api_config('memory')
         llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'],
@@ -1198,15 +1159,43 @@ async def apply_scoped_reflection_merge(
             })
             # Confirmed rendering requires evidence_score > 0: inherit the highest source
             # reinforcement with floor 0.1, matching scoped synthesis's minimum positive seed.
-            max_rein = max(
-                (
-                    _finite_counter_value(s.get('reinforcement'))
-                    for s in semantic_sources
+            max_rein = min(
+                max(
+                    (
+                        _finite_counter_value(s.get('reinforcement'))
+                        for s in semantic_sources
+                    ),
+                    default=0.0,
                 ),
-                default=0.0,
+                EVIDENCE_REINFORCEMENT_CAP,
             )
-            merged['reinforcement'] = max(max_rein, 0.1)
+            # Two lines each backed by others' words are one thing seen
+            # twice: like a restatement in synthesis, the merge counts as
+            # being seen again and lifts it to the front of the subject's
+            # render budget. Lines resting only on the character's own words
+            # add nothing.
+            if sum(1 for s in semantic_sources if has_others_backing(s)) >= 2:
+                merged['reinforcement'] = min(
+                    max_rein + SCOPED_REOBSERVED_REINFORCEMENT,
+                    EVIDENCE_REINFORCEMENT_CAP,
+                )
+            else:
+                merged['reinforcement'] = max(max_rein, 0.1)
             merged['rein_last_signal_at'] = now_iso
+            # The accounting follows the content (semantic_sources, like
+            # source_fact_ids): how many facts are others' words and on
+            # which days the line was seen, or the merge would reset the
+            # promotion gate (memory.evidence.scoped_promotion_ready) or
+            # wave a line resting on the character's own words through.
+            counts = merge_fact_source_counts(semantic_sources)
+            if counts is not None:
+                merged['fact_source_counts'] = counts
+                merged['counted_fact_ids'] = sorted(
+                    set().union(*(counted_fact_ids(s) for s in semantic_sources))
+                )
+            merged['observed_days'] = merge_observed_days(
+                *(observed_days(s) for s in semantic_sources)
+            )
             from memory.speaker_trust import provenance_of_entries
             merged.update(provenance_of_entries(provenance_sources))
             # Subject stamp: unstamped reflections fail closed on scoped read paths.

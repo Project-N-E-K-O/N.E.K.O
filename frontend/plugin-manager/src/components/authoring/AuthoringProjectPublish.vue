@@ -178,6 +178,7 @@ import AuthoringPublishToolchain from '@/components/authoring/AuthoringPublishTo
 import AuthoringPublishWorkspace from '@/components/authoring/AuthoringPublishWorkspace.vue'
 import {
   PUBLISH_PAGE_ORDER,
+  isReleaseUrlOf,
   publishFlow,
   type ActionBlocker,
   type FlowMessage,
@@ -190,26 +191,35 @@ import {
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
   getPluginToolchain,
+  isMarketPublicationStatus,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
+  type MarketPublicationStatus,
   type PublishStatus,
   type PublishTask,
   type Toolchain,
 } from '@/api/pluginProjects'
-import type { SubmissionPanelState } from '@/api/marketSubmissions'
+import {
+  listMarketPublicationReceipts,
+  PUBLICATION_RECEIPT_PAGE_SIZE,
+  type MarketPublicationReceipt,
+  type SubmissionPanelState,
+} from '@/api/marketSubmissions'
 import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
-const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info'> = {
+const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info' | 'danger'> = {
   done: 'success',
+  failed: 'danger',
   todo: 'warning',
   waiting: 'info',
   unknown: 'info',
 }
 const STATE_LABELS: Record<PublishStepState, string> = {
   done: 'authoring.publishStatusDone',
+  failed: 'authoring.publishTaskFailed',
   todo: 'authoring.publishStatusTodo',
   waiting: 'authoring.publishStatusWaiting',
   unknown: 'authoring.publishStatusUnknown',
@@ -269,6 +279,7 @@ const submissionState = ref<SubmissionPanelState>({
 const submissionPanel = ref<InstanceType<typeof AuthoringProjectSubmission>[]>([])
 /** Whether the Market lists this Release; read from the Market, not from the task. */
 const marketListed = ref<boolean | null>(null)
+const marketReceipt = ref<MarketPublicationStatus | null>(null)
 let marketReads = 0
 let disposed = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -283,6 +294,7 @@ const flow = computed(() =>
         submission: submissionState.value,
         task: task.value,
         marketListed: marketListed.value,
+        marketReceipt: marketReceipt.value,
         toolchain: toolchain.value,
       })
     : null
@@ -393,6 +405,35 @@ async function load(options: { fresh?: boolean } = {}) {
   await loadMarketListing()
 }
 
+function newestReleaseReceipt(
+  receipts: MarketPublicationReceipt[], repository: string, tag: string, afterId = 0,
+  channel?: MarketPublicationReceipt['channel'],
+) {
+  return receipts
+    .filter(item => item.id > afterId && (!channel || (item.channel ?? 'stable') === channel)
+      && isReleaseUrlOf(item.release_url, repository, tag, item.target_version))
+    .reduce<MarketPublicationReceipt | undefined>((latest, item) => (!latest || item.id > latest.id ? item : latest), undefined)
+}
+
+// Market pages are newest first. Stop at the pinned request; older receipts cannot replace it.
+async function findReplacementReceipt(
+  pluginId: number, repository: string, tag: string, requestId: number,
+  channel: MarketPublicationReceipt['channel'], read: number,
+) {
+  let offset = 0
+  let previousOldest = Infinity
+  while (!disposed && read === marketReads) {
+    const page = await listMarketPublicationReceipts(pluginId, undefined, offset).catch(() => [])
+    if (!Array.isArray(page) || !page.length) return
+    const replacement = newestReleaseReceipt(page, repository, tag, requestId, channel)
+    if (replacement) return replacement
+    const oldest = Math.min(...page.map(item => item.id))
+    if (page.length < PUBLICATION_RECEIPT_PAGE_SIZE || oldest <= requestId || oldest >= previousOldest) break
+    previousOldest = oldest
+    offset += page.length
+  }
+}
+
 /**
  * Read whether the approved plugin's public version list has this Release's
  * tag (the Market stores the tag as the version). Only the newest read
@@ -401,21 +442,38 @@ async function load(options: { fresh?: boolean } = {}) {
 async function loadMarketListing() {
   const read = ++marketReads
   marketListed.value = null
+  marketReceipt.value = null
   const pluginId = submissionState.value.marketPluginId
   const tag = status.value?.repository.tag
   if (pluginId === null || !tag) {
     marketListed.value = null
     return
   }
+  const repository = status.value?.repository.github_repository
+  const currentTask = task.value
+  const requestId = repository && currentTask && isReleaseUrlOf(currentTask.release_url, repository, tag)
+    ? currentTask.market_request_id
+    : null
+  const receiptsRequest = repository
+    ? listMarketPublicationReceipts(pluginId, requestId ?? undefined).catch(() => [])
+    : []
   const versions = await fetchMarketPluginVersions(pluginId)
   if (disposed || read !== marketReads) return
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
+  const receipts = await receiptsRequest
+  if (disposed || read !== marketReads || !repository || !Array.isArray(receipts)) return
+  const pinned = requestId ? receipts.find(item => item.id === requestId) : undefined
+  let receipt = pinned ?? newestReleaseReceipt(receipts, repository, tag)
+  if (requestId && (pinned?.status ?? currentTask?.market_status) === 'superseded') {
+    const replacement = await findReplacementReceipt(pluginId, repository, tag, requestId, pinned?.channel ?? 'stable', read)
+    if (disposed || read !== marketReads) return
+    receipt = replacement ?? receipt
+  }
+  if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }
 // The submission panel finds the approved plugin after the status is read.
-watch(
-  () => submissionState.value.marketPluginId,
-  () => void loadMarketListing()
-)
+watch([() => submissionState.value.marketPluginId, () => task.value?.market_request_id],
+  () => void loadMarketListing())
 
 function applyTask(next: PublishTask) {
   task.value = next

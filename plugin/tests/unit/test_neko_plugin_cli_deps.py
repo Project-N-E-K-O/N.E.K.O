@@ -967,7 +967,7 @@ def test_sync_installs_into_a_mounted_vendor_root_in_place(tmp_path, monkeypatch
     assert handle_sync(
         TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)
     ) == 0
-    assert vendor.is_dir() and not deps_cmd._is_link(vendor)
+    assert vendor.is_dir() and not deps_cmd.is_link(vendor)
     assert (vendor / "fresh.py").read_text() == "new"
     assert (vendor / "old.py").exists() is (not clean)
     assert not list(plugin_dir.glob(".vendor.*"))
@@ -1313,7 +1313,7 @@ def test_zero_inode_targets_are_compared_by_path(tmp_path, monkeypatch):
     zero = os.stat_result((0o40755, 0, 1, 1, 0, 0, 0, 0, 0, 0))
 
     link = tmp_path / "vendor_link"
-    monkeypatch.setattr(deps_cmd, "_is_link", lambda path: path in {shared, tmp_path})
+    monkeypatch.setattr(deps_cmd, "is_link", lambda path: path in {shared, tmp_path})
     assert deps_cmd._contains_plugin(zero, shared, plugin_dir) is False
     assert deps_cmd._contains_plugin(zero, tmp_path, plugin_dir) is True
     # A mount point (not a link) can not be resolved to what it mounts.

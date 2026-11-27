@@ -53,6 +53,14 @@ from ._shared import (
     _extract_keywords,
 )
 
+
+def _next_text_revision(entry: dict) -> int:
+    """Revision number the next event-driven text rewrite of ``entry`` stores."""
+    try:
+        return int(entry.get('text_revision') or 0) + 1
+    except (TypeError, ValueError):
+        return 1
+
 class FactsMixin:
     @staticmethod
     def _normalize_entry(entry) -> dict:
@@ -635,6 +643,8 @@ class FactsMixin:
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
         source_provenance: dict | None = None,
+        expected_target_text: str | None = None,
+        expected_target_version: tuple[int, str] | None = None,
     ) -> str:
         """Merge a reflection's content into an existing persona entry.
 
@@ -752,6 +762,28 @@ class FactsMixin:
                 )
                 return 'noop'
 
+            if expected_target_text is not None:
+                if str(target_entry.get('text') or '') != expected_target_text:
+                    logger.info(
+                        f"[Persona] {name}: amerge_into stale target text "
+                        f"target={canonical_entry_id} src={source_reflection_id}"
+                    )
+                    return 'stale_target'
+            if expected_target_version is not None:
+                vh = target_entry.get('version_history')
+                cur_len = len(vh) if isinstance(vh, list) else 0
+                cur_ts = (
+                    str(vh[-1].get('replaced_at') or '')
+                    if isinstance(vh, list) and vh and isinstance(vh[-1], dict)
+                    else ''
+                )
+                if (cur_len, cur_ts) != expected_target_version:
+                    logger.info(
+                        f"[Persona] {name}: amerge_into stale target version "
+                        f"target={canonical_entry_id} src={source_reflection_id}"
+                    )
+                    return 'stale_target'
+
             merged_provenance = None
             if source_provenance is not None:
                 from memory.speaker_trust import provenance_of_entries
@@ -820,6 +852,15 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': canonical_entry_id,
                 'rewrite_text_sha256': new_text_sha,
+                # Lets replay write a merge back that a crash kept off disk,
+                # and tell that apart from a later rewrite.
+                'rewrite_text': merged_text or '',
+                'previous_text_sha256': hashlib.sha256(
+                    str(target_entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                # Persisted on the entry by the same save; replay compares
+                # the two to tell a lost save from a later change.
+                'text_revision': _next_text_revision(target_entry),
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
                 # Both clocks bumped — the merge IS a fresh signal on this
@@ -883,6 +924,7 @@ class FactsMixin:
                 # to the log, so any crash from here onward is
                 # replay-recoverable.
                 target_entry['text'] = merged_text
+                target_entry['text_revision'] = entry_payload['text_revision']
                 target_entry['reinforcement'] = float(merged_reinforcement)
                 target_entry['disputation'] = float(merged_disputation)
                 target_entry['rein_last_signal_at'] = now_iso
@@ -974,6 +1016,8 @@ class FactsMixin:
             entry = self._find_entry_in_section(section_facts, entry_id)
             if entry is None:
                 return None
+            if entry.get('protected') or entry.get('user_pinned'):
+                return None
             # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
             # so the cached entry is NOT mutated until inside the locked
             # record_and_save critical section. If event append or save
@@ -1025,7 +1069,7 @@ class FactsMixin:
             return new_count
 
     async def aarchive_persona_entry(
-        self, name: str, entity_key: str, entry_id: str,
+        self, name: str, entity_key: str, entry_id: str, *, skip_pinned: bool = False,
     ) -> bool:
         """Move one persona entry from main view to a sharded archive file.
 
@@ -1034,7 +1078,11 @@ class FactsMixin:
         the archive flow from a regular fact_added (regular adds have no
         such field). Mirrors `ReflectionEngine.aarchive_reflection`.
 
-        Returns True if archived; False if not found / protected.
+        When ``skip_pinned=True`` (used by automatic archive sweep), also skips
+        entries marked ``user_pinned`` under the persona lock so concurrent pin
+        actions are never overwritten by an in-flight sweep.
+
+        Returns True if archived; False if not found / protected / skipped.
         """
         from memory.archive_shards import aappend_to_shard, apick_today_shard_path
         from memory.event_log import EVT_PERSONA_FACT_ADDED
@@ -1061,9 +1109,9 @@ class FactsMixin:
                     f"entry_id={entry_id}"
                 )
                 return False
-            if entry.get('protected'):
+            if entry.get('protected') or (skip_pinned and entry.get('user_pinned')):
                 logger.debug(
-                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected "
+                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected/pinned "
                     f"entry_id={entry_id}"
                 )
                 return False
@@ -1079,6 +1127,7 @@ class FactsMixin:
             shard_path = await apick_today_shard_path(archive_dir, now=now)
             shard_basename = os.path.basename(shard_path)
             archive_entry = dict(entry)
+            archive_entry['entity_key'] = entity_key
             archive_entry['archived_at'] = now_iso
             archive_entry['archive_shard_path'] = shard_basename
 
@@ -1140,6 +1189,335 @@ class FactsMixin:
                 f"→ {shard_basename}"
             )
             return True
+
+    async def aedit_persona_entry(
+        self, name: str, entity_key: str, entry_id: str, new_text: str,
+    ) -> dict | None:
+        """Manually edit one non-protected persona entry, preserving version_history."""
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED
+
+        cleaned = str(new_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Persona text must be 1..1000 chars")
+        if self._event_log is None:
+            raise RuntimeError("[Persona.aedit_persona_entry] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+
+            old_text = str(entry.get('text') or '').strip()
+            if old_text == cleaned:
+                return dict(entry)
+
+            now_iso = datetime.now().isoformat()
+            prev_history = list(entry.get('version_history') or [])
+            prev_history.append({
+                'text': old_text,
+                'replaced_at': now_iso,
+                'reason': 'manual_edit',
+            })
+            updated_history = prev_history[-PERSONA_VERSION_HISTORY_MAX:]
+
+            import hashlib
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                'rewrite_text': cleaned,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                'text_revision': _next_text_revision(entry),
+                'history_reason': 'manual_edit',
+                'replaced_at': now_iso,
+                'source': 'manual_edit',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                entry['text'] = cleaned
+                entry['text_revision'] = payload['text_revision']
+                entry['version_history'] = updated_history
+                self._invalidate_token_count_cache(entry)
+                self._invalidate_embedding_cache(entry)
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            return dict(entry)
+
+    async def amerge_persona_entries(
+        self,
+        name: str,
+        entity_key: str,
+        keep_id: str,
+        drop_id: str,
+        merged_text: str,
+    ) -> dict:
+        """Atomically update ``keep_id`` with ``merged_text`` and archive ``drop_id`` under one lock."""
+        import hashlib
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.archive_shards import aappend_to_shard, apick_today_shard_path
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED, EVT_PERSONA_FACT_ADDED
+
+        cleaned = str(merged_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Persona text must be 1..1000 chars")
+        if keep_id == drop_id:
+            raise ValueError("keep_id and drop_id must differ")
+        if self._event_log is None:
+            raise RuntimeError("[Persona.amerge_persona_entries] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                raise LookupError("Persona section not found")
+            section_facts = section.get('facts', [])
+            keep_entry = self._find_entry_in_section(section_facts, keep_id)
+            drop_entry = self._find_entry_in_section(section_facts, drop_id)
+            if keep_entry is None or is_permanently_suppressed(keep_entry):
+                raise LookupError("keep_id not found")
+            if drop_entry is None or is_permanently_suppressed(drop_entry):
+                raise LookupError("drop_id not found")
+            if (
+                keep_entry.get('protected') or keep_entry.get('source') == 'character_card'
+                or drop_entry.get('protected') or drop_entry.get('source') == 'character_card'
+            ):
+                raise PermissionError("Character card entries are protected")
+            from memory.scopes import subject_from_entry
+            if (
+                subject_from_entry(keep_entry) != subject_from_entry(drop_entry)
+                or str(keep_entry.get('scope') or '') != str(drop_entry.get('scope') or '')
+            ):
+                raise ValueError("Cannot merge persona entries from different subjects or scopes")
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+
+            # Prepare archive shard BEFORE mutating or writing persona.json so a shard
+            # preparation failure never leaves keep_entry rewritten while drop_entry stays active.
+            archive_dir = self._persona_archive_dir(name)
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+
+            # Step 1: update keep_id FIRST so any validation/save failure leaves drop_id active.
+            old_text = str(keep_entry.get('text') or '').strip()
+            if old_text != cleaned:
+                prev_history = list(keep_entry.get('version_history') or [])
+                prev_history.append({
+                    'text': old_text,
+                    'replaced_at': now_iso,
+                    'reason': 'manual_merge',
+                })
+                updated_history = prev_history[-PERSONA_VERSION_HISTORY_MAX:]
+                edit_payload = {
+                    'entity_key': entity_key,
+                    'entry_id': keep_id,
+                    'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                    'rewrite_text': cleaned,
+                    'previous_text_sha256': hashlib.sha256(
+                        str(keep_entry.get('text') or '').encode('utf-8'),
+                    ).hexdigest(),
+                    'text_revision': _next_text_revision(keep_entry),
+                    'history_reason': 'manual_merge',
+                    'replaced_at': now_iso,
+                    'source': 'manual_merge',
+                }
+
+                def _sync_load(_n: str):
+                    return persona
+
+                def _sync_mutate_edit(_view):
+                    keep_entry['text'] = cleaned
+                    keep_entry['text_revision'] = edit_payload['text_revision']
+                    keep_entry['version_history'] = updated_history
+                    self._invalidate_token_count_cache(keep_entry)
+                    self._invalidate_embedding_cache(keep_entry)
+
+                await self._event_log.arecord_and_save(
+                    name, EVT_PERSONA_ENTRY_UPDATED, edit_payload,
+                    sync_load_view=_sync_load,
+                    sync_mutate_view=_sync_mutate_edit,
+                    sync_save_view=self._sync_save_persona_view,
+                )
+
+            # Step 2: archive drop_id under the same per-character lock.
+            archive_entry = dict(drop_entry)
+            archive_entry['entity_key'] = entity_key
+            archive_entry['archived_at'] = now_iso
+            archive_entry['archive_shard_path'] = shard_basename
+            archive_entry['merged_into'] = keep_id
+
+            archive_payload = {
+                'entity_key': entity_key,
+                'entry_id': drop_id,
+                'archive_shard_path': shard_basename,
+                'archived_at': now_iso,
+                'text': drop_entry.get('text', ''),
+                'source': drop_entry.get('source', 'unknown'),
+                'entry_snapshot': archive_entry,
+            }
+
+            def _sync_load_arch(_n: str):
+                return persona
+
+            def _sync_mutate_arch(_view):
+                section_facts[:] = [
+                    e for e in section_facts
+                    if not (isinstance(e, dict) and e.get('id') == drop_id)
+                ]
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_FACT_ADDED, archive_payload,
+                sync_load_view=_sync_load_arch,
+                sync_mutate_view=_sync_mutate_arch,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+            return dict(keep_entry)
+
+    async def aset_persona_flags(
+        self,
+        name: str,
+        entity_key: str,
+        entry_id: str,
+        *,
+        user_pinned: bool | None = None,
+        suppress: bool | None = None,
+    ) -> dict | None:
+        """Toggle user_pinned or suppress flags on a non-protected persona entry."""
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+
+            changed = False
+            if user_pinned is not None:
+                entry['user_pinned'] = bool(user_pinned)
+                changed = True
+            if suppress is not None:
+                want_suppress = bool(suppress)
+                entry['suppress'] = want_suppress
+                entry['suppressed_at'] = datetime.now().isoformat() if want_suppress else None
+                if not want_suppress:
+                    entry['recent_mentions'] = []
+                changed = True
+            if changed:
+                await self.asave_persona(name, persona)
+            return dict(entry)
+
+    async def arestore_persona_version(
+        self,
+        name: str,
+        entity_key: str,
+        entry_id: str,
+        version_index: int,
+        *,
+        expected_text: str | None = None,
+        expected_replaced_at: str | None = None,
+    ) -> dict | None:
+        """Restore a historical text snapshot from version_history."""
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED
+
+        if self._event_log is None:
+            raise RuntimeError("[Persona.arestore_persona_version] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+            vh = entry.get('version_history')
+            if not isinstance(vh, list) or not (0 <= version_index < len(vh)):
+                raise IndexError("Invalid version_index")
+            target_snap = vh[version_index]
+            restored_text = str(
+                target_snap.get('text') if isinstance(target_snap, dict) else ''
+            ).strip()
+            if not restored_text:
+                raise ValueError("Target version snapshot is empty")
+            actual_replaced_at = str(
+                (target_snap.get('replaced_at') if isinstance(target_snap, dict) else '') or ''
+            )
+            if expected_text is not None and restored_text != str(expected_text).strip():
+                raise LookupError("Version history changed; selected snapshot no longer matches")
+            if expected_replaced_at is not None and actual_replaced_at != str(expected_replaced_at or ''):
+                raise LookupError("Version history changed; selected snapshot timestamp no longer matches")
+
+            current_text = str(entry.get('text') or '').strip()
+            now_iso = datetime.now().isoformat()
+            new_history = list(vh)
+            if current_text and current_text != restored_text:
+                new_history.append({
+                    'text': current_text,
+                    'replaced_at': now_iso,
+                    'reason': 'manual_restore',
+                })
+            new_history = new_history[-PERSONA_VERSION_HISTORY_MAX:]
+
+            import hashlib
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'rewrite_text_sha256': hashlib.sha256(restored_text.encode('utf-8')).hexdigest(),
+                'rewrite_text': restored_text,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                'text_revision': _next_text_revision(entry),
+                'source': 'manual_restore',
+            }
+            if current_text and current_text != restored_text:
+                payload['history_reason'] = 'manual_restore'
+                payload['replaced_at'] = now_iso
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                entry['text'] = restored_text
+                entry['text_revision'] = payload['text_revision']
+                entry['version_history'] = new_history
+                self._invalidate_token_count_cache(entry)
+                self._invalidate_embedding_cache(entry)
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            return dict(entry)
 
     def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
         if subject is not None:

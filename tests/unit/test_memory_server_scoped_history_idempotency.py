@@ -98,6 +98,29 @@ class FakePersona:
         return {}
 
 
+def _isolate_locale_sidecars(monkeypatch, memory_root: Path) -> None:
+    """Point the process-wide ConfigManager's memory_dir at this test's tmp dir.
+
+    ``locale_state`` resolves the scoped-locale sidecar through
+    ``get_config_manager().memory_dir`` on every call. Left alone that is
+    whatever root the worker happens to hold: the isolated root from
+    ``tests/real_root_isolation``, or pytest's basetemp once any earlier test
+    used the session-scoped ``clean_user_data_dir``. Both the old string-prefix
+    check against ``tempfile.gettempdir()`` and the sidecar rows themselves
+    then depended on test order (Windows 8.3 short temp paths, ``--basetemp``
+    outside the system temp dir). Only ``memory_dir`` is redirected; the real
+    ConfigManager keeps serving cloudsave fences and local state.
+    """
+    from utils.config_manager import get_config_manager
+
+    monkeypatch.setattr(get_config_manager(), "memory_dir", memory_root)
+
+
+def _assert_under(path: Path, root: Path) -> None:
+    """Never touch real runtime root directories: ``path`` must lie under ``root``."""
+    assert path.resolve().is_relative_to(root.resolve()), (path, root)
+
+
 def _cm(root: Path):
     cm = MagicMock()
     cm.memory_dir = str(root)
@@ -118,6 +141,7 @@ def env(tmp_path, monkeypatch):
     # Never touch actual runtime roots: every path must lie under tmp_path.
     assert str(memory_root).startswith(str(tmp_path))
     monkeypatch.setattr(runtime, "_config_manager", cm)
+    _isolate_locale_sidecars(monkeypatch, memory_root)
     monkeypatch.setattr(trust_store, "pool_path", lambda: str(tmp_path / "trust.json"))
     trust_store.reset_for_tests()
 
@@ -974,10 +998,13 @@ async def test_same_key_in_another_language_is_rejected(env):
 async def test_repaired_facts_file_is_not_overwritten_by_a_stale_empty_cache(env):
     facts_path = Path(env.fs._facts_path(NAME))
     facts_path.write_text("{torn", encoding="utf-8")
-    assert await env.fs.aload_facts(NAME) == []            # The permissive loader caches a corrupt file as empty.
+    with pytest.raises(RuntimeError):
+        await env.fs.aload_facts(NAME)                     # Fail-closed loader refuses to cache corrupt files.
+    assert NAME not in env.fs._facts
     kept = {"id": "kept-1", "text": "修好的旧事实", "importance": 6, "hash": "h-kept",
             **{k: v for k, v in GROUP.items()}, "scope": f"{GROUP['subject_kind']}:{GROUP['subject_id']}"}
     facts_path.write_text(json.dumps([kept], ensure_ascii=False), encoding="utf-8")
+    env.fs._facts[NAME] = []                               # Even with a stale empty cache, keyed writes reload from disk.
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(display_name=None))
     on_disk = json.loads(facts_path.read_text(encoding="utf-8"))
@@ -2568,8 +2595,6 @@ async def test_unrelated_subject_epochs_do_not_change_the_request_identity(env):
 
 
 async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
-    import tempfile
-
     from app.memory_server import locale_state
 
     env.llm.responses = [RuntimeError("LLM failed"), PART_ONLY_BATCH_FACTS]
@@ -2582,7 +2607,7 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
+    _assert_under(sidecar, env.root)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()                                         # GP is absent from language storage after clearing.
@@ -2666,12 +2691,10 @@ async def test_forget_epochs_endpoint_reports_the_current_fence(env):
 
 
 async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
-    import tempfile
-
     from app.memory_server import locale_state
 
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
+    _assert_under(sidecar, env.root)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()
@@ -2696,16 +2719,16 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
     assert any(PART["subject_id"] in key for key in rows)
 
 
-def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
-    import tempfile
-
+def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row(tmp_path, monkeypatch):
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject
+
+    _isolate_locale_sidecars(monkeypatch, tmp_path)
 
     name = "LocaleRaceChar"
     subject = MemorySubject.participant("neko_visit", "u_race")
     sidecar = Path(locale_state._subject_locale_path(name))
-    assert str(sidecar).startswith(tempfile.gettempdir())
+    _assert_under(sidecar, tmp_path)
     (stale,) = locale_state.allocate_subject_prompt_locale_orders(name, [subject])
     locale_state.forget_subject_prompt_locale(name, subject)     # Clearing completes after allocation but before reservation persistence.
     locale_state.reserve_subject_prompt_locale_orders(name, [subject], orders=[stale])
@@ -3783,6 +3806,46 @@ async def test_unusable_target_epochs_are_422(env, body, detail):
     assert _tombstones(env) == {}
 
 
+async def test_forget_refuses_while_a_snapshot_journal_cannot_be_recovered(env, monkeypatch):
+    """Recovering that journal later would restore what the erase removed."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+
+    async def unrecoverable(name):
+        raise LongTermMemoryRecoveryRequired()
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", unrecoverable)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    assert _tombstones(env) == {}
+
+
+async def test_forget_refuses_a_snapshot_journal_left_after_its_first_check(env, monkeypatch):
+    """A snapshot commit can fail between the entry check and the erase lock."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import JOURNAL
+    directory = os.path.join(env.runtime._config_manager.memory_dir, NAME)
+    os.makedirs(directory, exist_ok=True)
+
+    async def journal_appears_after_the_check(name):
+        with open(os.path.join(directory, JOURNAL), "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "phase": "pending"}, handle)
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", journal_appears_after_the_check)
+    forget = AsyncMock(return_value={})
+    monkeypatch.setattr(env.runtime.fact_store, "aforget_subject", forget)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    forget.assert_not_awaited()
+    assert not env.runtime._reload_lock.locked()
+
+
 def test_target_epochs_reject_negative_values(env):
     with pytest.raises(Exception):
         env.routes.ScopedForgetRequest.model_validate(
@@ -4576,3 +4639,48 @@ async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # Segment 1 is newly cleared now.
     # Report only newly blocked segment 1, without adding segment 0 to the fallback again.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}
+
+
+# ── whole-group digest: the character's own lines get labelled ─────────────
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_with_own_lines_labels_sources(env, keyed):
+    """A group digest that includes the character's own messages asks the
+    model for each fact's source; the label is stored, so the character's
+    own words never count as the group's (memory.evidence.others_fact_days)."""
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return [
+            {"text": "Neko 家铺了地毯", "importance": 5, "source": "ai_disclosure"},
+            {"text": "对方的猫喜欢软地毯", "importance": 5, "source": "user_observation"},
+        ]
+
+    env.fs._allm_call_with_retries = _llm
+    history = json.dumps([
+        {"role": "user", "content": "[对方的猫] 这个地毯好软"},
+        {"role": "assistant", "content": "我家铺了地毯哦"},
+    ])
+    body = _single_body(KEY_GROUP if keyed else None, input_history=history)
+    await _post(env, body)
+
+    assert len(prompts) == 1 and "`source`" in prompts[0]
+    sources = {row["text"]: row.get("source") for row in _facts_of(env, GROUP)}
+    assert sources == {
+        "Neko 家铺了地毯": "ai_disclosure", "对方的猫喜欢软地毯": "user_observation",
+    }
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_without_own_lines_keeps_the_plain_prompt(env, keyed):
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return list(SINGLE_FACTS)
+
+    env.fs._allm_call_with_retries = _llm
+    await _post(env, _single_body(KEY_GROUP if keyed else None))
+    assert len(prompts) == 1 and "`source`" not in prompts[0]

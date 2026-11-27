@@ -89,10 +89,25 @@ async def read_public_knowledge(path: str, request: Request):
         return _failure("not_found", 404)
     from utils.internal_http_client import get_internal_http_client
 
+    # Each private management read has exactly one permitted URI-encoded header.
+    # Ignore retired URL fields instead of propagating them into another log.
+    private_field = {"entries": "query", "entry": "title"}.get(path)
+    params = [(key, value) for key, value in request.query_params.multi_items() if key not in {"token", private_field}]
+    headers = {}
+    if private_field and (header := f"x-knowledge-{private_field}") in request.headers:
+        headers[header] = request.headers[header]
     try:
+        if path == "packs/artifacts":
+            from utils.http.knowledge_artifacts import relay_artifact
+
+            return await relay_artifact(
+                get_internal_http_client(), _target(path),
+                params=params, timeout=_READ_TIMEOUT_SECONDS,
+            )
         response = await get_internal_http_client().get(
             _target(path),
-            params=list(request.query_params.multi_items()),
+            params=params,
+            headers=headers,
             timeout=_READ_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError as exc:
@@ -116,13 +131,21 @@ async def write_public_knowledge(path: str, request: Request):
     if problem is not None:
         return _failure(*problem)
     headers = {"content-type": request.headers.get("content-type", "application/json")}
+    if path == "sources/preview":
+        # Source display names travel in a narrow header allowlist rather than
+        # URLs, where ordinary access logs would retain private filenames.
+        for name in ("x-knowledge-filename", "x-knowledge-name"):
+            if name in request.headers:
+                headers[name] = request.headers[name]
     if declared is not None:
         headers["content-length"] = declared
     from utils.internal_http_client import get_internal_http_client
 
+    excluded = {"token", "filename", "name"} if path == "sources/preview" else {"token"}
     try:
         response = await get_internal_http_client().post(
             _target(path),
+            params=[(key, value) for key, value in request.query_params.multi_items() if key not in excluded],
             content=capped_body(request, max_bytes),
             headers=headers,
             timeout=_WRITE_TIMEOUT_SECONDS,
