@@ -122,12 +122,14 @@ function entryPreview(row: KnowledgeEntry): string {
 <style scoped src="./knowledgeTables.css"></style>
 
 <style scoped>
+/* Keep pagination layout together, with its narrow-screen override below. */
 .pager {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
+  margin-top: 14px;
 }
 
 .link-cell {
@@ -149,11 +151,6 @@ function entryPreview(row: KnowledgeEntry): string {
 .link-cell:hover,
 .link-cell:focus-visible {
   color: var(--el-color-primary);
-}
-
-.pager {
-  justify-content: flex-end;
-  margin-top: 14px;
 }
 
 .pager span {

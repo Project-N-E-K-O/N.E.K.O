@@ -12,6 +12,24 @@ location does not change `ConfigManager.knowledge_dir`, the HTTP paths or ZIP
 schema. `test_knowledge_package_layout.py` additionally checks wheel/sdist,
 the three Nuitka entrypoints and the lightweight import in a fresh process.
 
+## Frozen-build contracts
+
+Run the knowledge layout check with the workshop exclusion guard when changing
+the frozen package namespace:
+
+```bash
+uv run --no-sync python -m pytest \
+  tests/unit/test_knowledge_package_layout.py \
+  tests/unit/theater_workshop/test_sdk_lifecycle.py::test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds \
+  -v -rfE
+```
+
+The three compiler steps retain both the parent `services` include and the
+explicit `services.knowledge` include, while excluding `services.theater_workshop`.
+Count complete package arguments: a child include is not a second parent
+include. These checks cover workflow registration and the source SDK smoke;
+they do not compile or validate a frozen release.
+
 ## Resources and isolation
 
 Set `NEKO_REAL_EMBEDDING_ROOT` to an existing model root containing:
