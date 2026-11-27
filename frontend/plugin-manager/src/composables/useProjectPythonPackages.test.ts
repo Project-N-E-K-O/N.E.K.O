@@ -218,6 +218,48 @@ describe('project Python package session', () => {
     await flush()
     expect(session.changed).toHaveBeenCalledTimes(1)
   })
+  it('keeps the terminal task when an earlier running poll finishes after refresh', async () => {
+    const finished = task({ status: 'succeeded', phase: 'finished' })
+    api.getProjectPythonPackages
+      .mockResolvedValueOnce(state({ task: task() }))
+      .mockResolvedValue(state({ task: finished }))
+    let resolve!: (value: PythonPackagesTask) => void
+    api.getProjectPythonTask.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    const session = await mount()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
+    await session.reload()
+    expect(session.task.value?.status).toBe('succeeded')
+    resolve(task())
+    await flush()
+    expect(session.task.value?.status).toBe('succeeded')
+    expect(session.busy.value).toBe(false)
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
+    expect(session.changed).toHaveBeenCalledTimes(1)
+  })
+  it('clears a refresh error that failed while a task was being started', async () => {
+    const session = await mount()
+    let started!: (value: PythonPackagesTask) => void
+    api.startProjectPythonTask.mockReturnValueOnce(
+      new Promise((done) => {
+        started = done
+      })
+    )
+    api.getProjectPythonPackages.mockRejectedValueOnce(new Error('Read failed'))
+    const running = session.run('sync')
+    await flush()
+    await session.reload()
+    expect(session.error.value).toBeInstanceOf(Error)
+    started(task())
+    await expect(running).resolves.toBe(true)
+    expect(session.error.value).toBeNull()
+  })
   it('does not repeat the notification for a canceled task returned by refresh', async () => {
     const finished = task({ status: 'canceled', phase: 'finished' })
     api.getProjectPythonPackages

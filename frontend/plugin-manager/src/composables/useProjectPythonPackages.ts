@@ -33,6 +33,8 @@ export function useProjectPythonPackages(
   let generation = 0
   let request = 0
   let snapshotRefreshPending = false
+  // The error a failed refresh wrote, so a later task start clears only that one.
+  let refreshError: unknown = null
   let timer: ReturnType<typeof setTimeout> | undefined
   const terminalNotifications = new Set<string>()
   const current = (id: string, seq: number) => alive && projectId.value === id && generation === seq
@@ -73,7 +75,10 @@ export function useProjectPythonPackages(
         applySnapshot(next, discardDraft || (!dirty.value && !editing.value))
       }
     } catch (cause) {
-      if (current(id, seq) && req === request) error.value = cause
+      if (current(id, seq) && req === request) {
+        error.value = cause
+        refreshError = cause
+      }
     } finally {
       if (current(id, seq) && req === request) {
         loading.value = false
@@ -96,6 +101,9 @@ export function useProjectPythonPackages(
     try {
       const next = await getProjectPythonTask(id, taskId)
       if (!current(id, seq) || task.value?.task_id !== taskId) return
+      // A task never leaves a terminal state: once a refresh has shown this
+      // one finished, a slower poll that read it still running is stale.
+      if (!pythonTaskActive(task.value) && pythonTaskActive(next)) return
       task.value = next
       error.value = null
       if (!pythonTaskActive(next)) {
@@ -127,6 +135,8 @@ export function useProjectPythonPackages(
       if (current(id, seq)) {
         request += 1
         loading.value = false
+        // A refresh that failed while the task was being created is stale now.
+        if (refreshError !== null && error.value === refreshError) error.value = null
         task.value = next
         snapshotRefreshPending = !pythonTaskActive(next)
         schedule()

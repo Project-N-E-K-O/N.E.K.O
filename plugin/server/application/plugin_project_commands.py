@@ -24,11 +24,13 @@ import psutil
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.utils.asyncio_utils import await_cancellation_safe
 from utils import process_creation
 
 logger = get_logger("server.application.plugin_project_commands")
+_STORE_READ_ERRORS = frozenset({Code.PROJECT_STORE_INVALID.value, Code.PROJECT_STORE_UNREADABLE.value})
 
 _TERMINATE_GRACE_SECONDS = 15.0
 
@@ -146,24 +148,36 @@ def require_plugin_project_available(plugin_id: str) -> None:
         meta = state.plugins.get(plugin_id)
         project_id = meta.get("project_id") if isinstance(meta, dict) else None
         source_dir = meta.get("source_dir") if isinstance(meta, dict) else None
-    if not isinstance(project_id, str) or isinstance(source_dir, str):
+    if isinstance(source_dir, str):
         from plugin.server.infrastructure import authoring_project_store as store
         from plugin.server.application.plugins.project_sources import same_source_directory
 
+        # A registered project source: a store failure stays an error.
         records = store.list_records()
-        if isinstance(source_dir, str):
-            project_id = next((
-                item.project_id for item in records if same_source_directory(item.source_dir, source_dir)
-            ), project_id)
-        elif meta is None and records:
-            # A registered project can be started before registry discovery has
-            # populated state.plugins. Resolve its identity without importing it.
-            from plugin.server.application.plugins.project_sources import list_project_sources_sync
+        project_id = next((
+            item.project_id for item in records if same_source_directory(item.source_dir, source_dir)
+        ), project_id)
+    elif meta is None:
+        from plugin.server.infrastructure import authoring_project_store as store
+        from plugin.server.application.plugins.project_sources import list_project_sources_sync
 
-            sources, _failures = list_project_sources_sync()
-            project_id = next((
-                item.project_id for item in sources if item.plugin_id == plugin_id
-            ), None)
+        # A registered project can be started before registry discovery has
+        # populated state.plugins. Resolve its identity without importing it.
+        # Registry discovery skips an unreadable store, so this plugin can not
+        # be a project there either: let the start proceed.
+        try:
+            if store.list_records():
+                sources, _failures = list_project_sources_sync()
+                project_id = next((
+                    item.project_id for item in sources if item.plugin_id == plugin_id
+                ), None)
+        except ServerDomainError as exc:
+            if exc.code not in _STORE_READ_ERRORS:
+                raise
+            logger.warning("workbench project store unreadable; plugin {} treated as no project: {}", plugin_id, exc.code)
+    # Any other known entry without a source directory is a builtin or user
+    # plugin, never a workbench project: the workbench store is not read, so a
+    # broken store can not block it.
     if isinstance(project_id, str):
         require_project_available(project_id)
 

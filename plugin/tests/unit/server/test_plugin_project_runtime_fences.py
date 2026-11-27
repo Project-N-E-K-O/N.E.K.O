@@ -88,6 +88,20 @@ def test_busy_project_resolved_from_source_directory_before_project_discovery(pr
     assert error.value.code == "PLUGIN_OPERATION_BUSY"
 
 
+def test_broken_project_store_does_not_fence_managed_plugins(project):
+    store.store_path().write_text("{not json", encoding="utf-8")
+    # A known builtin / user plugin never reads the workbench store.
+    state.plugins["builtin_demo"] = {"id": "builtin_demo"}
+    commands.require_plugin_project_available("builtin_demo")
+    # Not discovered yet: registry discovery skips an unreadable store too.
+    commands.require_plugin_project_available("not_discovered")
+    # A registered project source still reports the broken store.
+    state.plugins["old_identity"] = {"source_dir": str(project.source_dir)}
+    with pytest.raises(ServerDomainError) as error:
+        commands.require_plugin_project_available("old_identity")
+    assert error.value.code == "PROJECT_STORE_INVALID"
+
+
 @pytest.mark.asyncio
 async def test_dependency_check_cannot_reserve_between_reload_stop_and_start(project, monkeypatch):
     state.plugins["runtime_demo"] = {"project_id": project.project_id}

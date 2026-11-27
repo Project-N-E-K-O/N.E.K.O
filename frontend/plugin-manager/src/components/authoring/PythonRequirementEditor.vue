@@ -24,6 +24,7 @@
             :placeholder="t('pythonPackages.nameExample')"
             :disabled="saving"
             @paste="pastePackageInput"
+            @change="normalizeNameInput"
         /></label>
         <label for="python-package-version-policy"
           >{{ t('pythonPackages.versionChoice') }}

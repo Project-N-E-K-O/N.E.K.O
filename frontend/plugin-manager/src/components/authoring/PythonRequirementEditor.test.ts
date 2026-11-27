@@ -95,6 +95,17 @@ describe('Python requirement editor', () => {
     await click(en.saveOnly)
     expect(submitted).toHaveBeenCalledWith('demo==2.0.1', false)
   })
+  it('keeps a version chosen after typing a constraint into the name field', async () => {
+    await mount()
+    await fill('python-package-name', 'demo==1.0')
+    // Leaving the field (change) parses the name before other fields are edited.
+    document.querySelector<HTMLInputElement>('#python-package-name')!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('demo')
+    await fill('python-package-exact-version', '2.0')
+    await click(en.saveOnly)
+    expect(submitted).toHaveBeenCalledWith('demo==2.0', false)
+  })
   it('can return from an empty manual declaration to the simple form', async () => {
     await mount()
     const details = document.querySelector<HTMLDetailsElement>('.el-dialog details')!
