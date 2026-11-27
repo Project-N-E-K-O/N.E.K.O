@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="922" viewBox="0 0 900 922" role="img" aria-labelledby="title description" xml:lang="zh-CN">
+  <title id="title">模型工坊开发总览</title>
+  <desc id="description">从 NEKO 打开市场并给当前角色连续换装。市场审核和分发固定包，NEKO 校验、安装和应用。本体汇入 PR 3752，市场有 11 个开放的叠加 PR。连续换装、兼容提醒、永久删除均已确认，生产开放待联合验收后拍板。</desc>
+  <style>
+    text { font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #132d29; }
+    .h1 { font-size: 49px; font-weight: 720; }
+    .deck { font-size: 24px; fill: #365b54; }
+    .section { font-size: 23px; font-weight: 720; fill: #20554b; }
+    .body { font-size: 22px; }
+    .label { font-size: 20px; font-weight: 700; fill: #20554b; }
+    .decision { font-size: 23px; font-weight: 720; }
+    .state { font-size: 18px; font-weight: 700; fill: #20554b; }
+    .pending { fill: #79430a; }
+  </style>
+
+  <rect width="900" height="922" rx="24" fill="#eff5f2"/>
+  <rect x="40" y="40" width="7" height="68" rx="3.5" fill="#247265"/>
+  <text class="h1" x="66" y="92">模型工坊</text>
+  <text class="deck" x="328" y="88">NEKO 本体 × 市场</text>
+
+  <rect x="40" y="130" width="820" height="198" rx="18" fill="#fff" stroke="#d1e1d9"/>
+  <text class="section" x="68" y="170">TLDR</text>
+  <g fill="#2c7969">
+    <circle cx="73" cy="200" r="4"/>
+    <circle cx="73" cy="232" r="4"/>
+    <circle cx="73" cy="264" r="4"/>
+    <circle cx="73" cy="296" r="4"/>
+  </g>
+  <g class="body">
+    <text x="92" y="208">从 NEKO 打开市场，下载并应用到当前角色，支持 A → B → A。</text>
+    <text x="92" y="240">市场审核与分发，NEKO 校验、安装与应用。</text>
+    <text x="92" y="272">本体汇入 #3752，市场 11 个叠加 PR 开放审查。</text>
+    <text x="92" y="304">本地主流程已有验证，生产联调和恢复演练待完成。</text>
+  </g>
+
+  <rect x="40" y="348" width="820" height="166" rx="18" fill="#fff" stroke="#d1e1d9"/>
+  <text class="section" x="68" y="386">导言</text>
+  <g class="label">
+    <text x="68" y="420">项目</text>
+    <text x="68" y="452">进展</text>
+    <text x="68" y="484">目标</text>
+  </g>
+  <g class="body">
+    <text x="154" y="420">分享 Live2D、VRM 和 MMD 模型资源。</text>
+    <text x="154" y="452">投稿、审核、分发和本体换装均已实现。</text>
+    <text x="154" y="484">确认交付规则和生产开放条件。</text>
+  </g>
+
+  <rect x="40" y="534" width="820" height="346" rx="18" fill="#fff" stroke="#d1e1d9"/>
+  <text class="section" x="68" y="573">拍板项</text>
+  <g fill="#e7f2ed">
+    <rect x="740" y="592" width="92" height="31" rx="15.5"/>
+    <rect x="740" y="660" width="92" height="31" rx="15.5"/>
+    <rect x="740" y="728" width="92" height="31" rx="15.5"/>
+  </g>
+  <rect x="740" y="796" width="92" height="31" rx="15.5" fill="#fff0d7"/>
+  <g stroke="#dbe7e1">
+    <path d="M68 653H832"/>
+    <path d="M68 721H832"/>
+    <path d="M68 789H832"/>
+  </g>
+  <g class="decision">
+    <text x="68" y="609">连续换装</text>
+    <text x="68" y="677">固定包与兼容提醒</text>
+    <text x="68" y="745">删除与备份</text>
+    <text x="68" y="813">生产开放</text>
+  </g>
+  <g class="body">
+    <text x="68" y="642">同一角色可连续选择，目标变更时回 NEKO 确认。</text>
+    <text x="68" y="710">首发审核。主体合格时，可容错的附加效果只做提醒。</text>
+    <text x="68" y="778">删除市场作品及其文件，本地安装保留，备份协调清理。</text>
+    <text x="68" y="846">建议完成 Auth、HTTPS、三平台联调与恢复演练再开放。</text>
+  </g>
+  <g class="state" text-anchor="middle">
+    <text x="786" y="614">已确认</text>
+    <text x="786" y="682">已确认</text>
+    <text x="786" y="750">已确认</text>
+    <text class="pending" x="786" y="818">待拍板</text>
+  </g>
+</svg>
