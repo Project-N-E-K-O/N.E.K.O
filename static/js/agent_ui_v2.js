@@ -396,14 +396,6 @@
             setStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪', {
                 stabilizeTutorialText: true
             });
-        } else if (!FLAG_KEYS.some((k) => (
-            Object.prototype.hasOwnProperty.call(state.optimistic, k) ? !!state.optimistic[k] : !!flags[k]
-        ))) {
-            // 只开了总开关：喵能力要至少开一项能力才算开着（agent 进程的 nekopower_on），
-            // 不然她不会派任务，面板却看着像开了。
-            setStatus(window.t ? window.t('agent.status.noCapability') : '再打开下面至少一项，喵能力才会替你办事', {
-                stabilizeTutorialText: true
-            });
         } else {
             setStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启', {
                 stabilizeTutorialText: true

@@ -517,6 +517,9 @@ const messages: PowerMessages = {
       mcp_server: 'Использовать MCP-сервер',
       usage_limit: 'Продолжить сверх лимита расхода',
       browser_reopen: 'Снова открыть браузер',
+      enable_browser: 'Включить управление браузером',
+      enable_keyboard_mouse: 'Включить управление клавиатурой и мышью',
+      enable_plugins: 'Включить пользовательские плагины',
       session_action: 'Действие с другим фамильяром',
     },
     facts: {

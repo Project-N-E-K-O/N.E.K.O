@@ -517,6 +517,9 @@ const messages: PowerMessages = {
       mcp_server: 'MCP サーバーを使う',
       usage_limit: '使用量の上限を超えて続ける',
       browser_reopen: 'ブラウザーをもう一度開く',
+      enable_browser: 'ブラウザー操作をオンにする',
+      enable_keyboard_mouse: 'キーボード・マウス操作をオンにする',
+      enable_plugins: 'ユーザープラグインをオンにする',
       session_action: 'ほかの使い魔に働きかける',
     },
     facts: {

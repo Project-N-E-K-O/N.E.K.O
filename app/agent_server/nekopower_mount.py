@@ -81,18 +81,15 @@ _HUD_ENDED = frozenset({"completed", "blocked", "failed", "cancelled"})
 HUD_ACTIVE = frozenset({"queued", "running", "waiting_user"})
 
 
-_CAPABILITY_SWITCHES = ("computer_use_enabled", "browser_use_enabled", "user_plugin_enabled")
-
-
 def nekopower_on() -> bool:
-    """Whether NekoPower is on: the master switch and at least one capability switch.
+    """Whether NekoPower is on: the master switch alone.
 
     The main server reads a session the same way (``_is_agent_enabled``).
-    With the master switch alone a session carries no task tool, so nothing
-    is dispatched in her name either, and no turn of hers is checked.
+    With the master switch on, the task brain, host support and task agents
+    are active even while plugins, the browser and the keyboard and mouse
+    are all switched off.
     """
-    flags = _shared.Modules.agent_flags or {}
-    return bool(_shared.Modules.analyzer_enabled) and any(bool(flags.get(key)) for key in _CAPABILITY_SWITCHES)
+    return bool(_shared.Modules.analyzer_enabled)
 
 
 def _plugins_enabled() -> bool:
@@ -428,6 +425,85 @@ async def _count_task_agent_request(commission_id: str) -> bool:
     return bool(allowed)
 
 
+def _screen_capture_needs_the_user() -> bool:
+    """Whether the keyboard and mouse can only be turned on by the user at the panel (Wayland display capture)."""
+    import os
+    import sys
+
+    return sys.platform.startswith("linux") and (
+        os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+    )
+
+
+# How long a task agent that asked for the plugins waits for them to come up. Under the
+# minute a runtime that ends a call at one gives it; what is not up by then goes on in the
+# background and is told as not yet.
+_PLUGIN_ENABLE_WAIT_SECONDS = 40.0
+
+
+class _HostCapabilityEnabler:
+    """Turns on what a task agent that found it switched off asked the user to, once the user said yes.
+
+    The host (``nekopower/host``) cannot reach the switches of this process;
+    it is handed this (``CapabilityEnabler``). Turning one on is what the
+    user's own switch does (``set_agent_flags``): the same checks, the same
+    status sent to the pages. What the user chose at start is left as it was
+    (``_persist_intent`` False): a task agent's request is for this run.
+    Imports are made when asked: nothing here costs startup.
+    """
+
+    async def can_enable(self, capability: str) -> tuple[bool, str]:
+        if not _shared.Modules.analyzer_enabled:
+            return False, "NekoPower is switched off"
+        if capability == "plugins":
+            return True, ""
+        from .capabilities import _browser_availability, _keyboard_mouse_availability
+
+        if capability == "browser":
+            ready, reason = await asyncio.to_thread(_browser_availability)
+            return (True, "") if ready else (False, reason or "no usable browser")
+        if capability == "keyboard_mouse":
+            if _screen_capture_needs_the_user():
+                return False, "the screen capture has to be allowed by the user at the panel first"
+            availability = await asyncio.to_thread(_keyboard_mouse_availability)
+            if availability.get("ready"):
+                return True, ""
+            return False, str((availability.get("reasons") or ["unavailable"])[0])
+        return False, f"unknown capability {capability}"
+
+    async def enable(self, capability: str, *, lanlan_name: Optional[str] = None) -> tuple[bool, str]:
+        if not _shared.Modules.analyzer_enabled:
+            return False, "NekoPower is switched off"
+        from .api_routes import set_agent_flags
+
+        if capability in ("browser", "keyboard_mouse"):
+            from .nekopower_builtins import _state
+
+            flag = "browser_use_enabled" if capability == "browser" else "computer_use_enabled"
+            await set_agent_flags({flag: True, "lanlan_name": lanlan_name, "_persist_intent": False})
+            ready, reason = _state(capability)
+            return (True, "") if ready else (False, reason or "not ready")
+        if capability == "plugins":
+            await set_agent_flags({"user_plugin_enabled": True, "lanlan_name": lanlan_name, "_persist_intent": False})
+            starting = _shared.Modules.user_plugin_enable_task
+            if starting is not None and not starting.done():
+                await asyncio.wait({starting}, timeout=_PLUGIN_ENABLE_WAIT_SECONDS)
+                if not starting.done():
+                    return False, "the plugins are still starting; try again in a moment"
+            if starting is not None and starting.done() and not starting.cancelled() and starting.exception() is None:
+                outcome = starting.result()
+                if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
+                    return False, str(outcome[1] or "the plugin server did not come up")
+            if not (_shared.Modules.agent_flags or {}).get("user_plugin_enabled", False):
+                return False, "no plugin could be started (none installed, or the plugin server did not come up)"
+            from nekopower.host import mount
+
+            # The host's plugin list is fetched again at once.
+            mount.notify_plugins_changed()
+            return True, ""
+        return False, f"unknown capability {capability}"
+
+
 def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> None:
     """Register this process with the NekoPower host. Cheap; safe to call twice."""
     global _unsubscribe
@@ -449,6 +525,9 @@ def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> No
             task_agent_meter=_count_task_agent_request,
             # The slots of the model panel each preset's model is chosen from.
             model_slots=PluginModelSlots(),
+            # What a task agent that found the browser, the keyboard and mouse or the plugins
+            # switched off turns on, after the user said yes.
+            capability_enabler=_HostCapabilityEnabler(),
         )
         if _unsubscribe is None:
             # A plugin that starts, stops, reloads, is installed or removed

@@ -146,13 +146,14 @@ def agent_process(monkeypatch):
         ({"agent_enabled": True, "user_plugin_enabled": True}, True),
         ({"agent_enabled": True, "user_plugin_enabled": False, "computer_use_enabled": True}, True),
         ({"agent_enabled": True, "user_plugin_enabled": False, "browser_use_enabled": True}, True),
-        # The master switch alone offers nothing to do anything with.
-        ({"agent_enabled": True, "user_plugin_enabled": False}, False),
+        # The master switch alone is enough: the task agent starts with it.
+        ({"agent_enabled": True, "user_plugin_enabled": False}, True),
+        ({"agent_enabled": True, "user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}, True),
         # A capability switch left on under a master switch that is off.
         ({"agent_enabled": False, "user_plugin_enabled": True, "computer_use_enabled": True}, False),
     ],
 )
-def test_nekopower_is_on_with_the_master_switch_and_one_capability(flags, expected):
+def test_nekopower_is_on_with_the_master_switch_alone(flags, expected):
     assert _manager(**flags)._is_agent_enabled() is expected
 
 
@@ -226,7 +227,12 @@ def test_a_switch_change_reaches_the_live_session_once():
     manager.update_agent_flags({"agent_enabled": True})
     assert len(manager.fired) == 1
 
+    # With the master switch on, a capability switch going off changes nothing for the session.
     manager.update_agent_flags({"user_plugin_enabled": False})
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is not None
+    assert len(manager.fired) == 1
+
+    manager.update_agent_flags({"agent_enabled": False})
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
     assert len(manager.fired) == 2
 

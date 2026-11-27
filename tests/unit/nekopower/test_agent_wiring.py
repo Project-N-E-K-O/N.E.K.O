@@ -204,14 +204,14 @@ async def test_dispatch_with_the_master_switch_off_builds_nothing(wiring, monkey
         ({"user_plugin_enabled": True}, True),
         ({"computer_use_enabled": True}, True),
         ({"browser_use_enabled": True}, True),
-        ({}, False),
-        ({"user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}, False),
-        (None, False),
+        ({}, True),
+        ({"user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}, True),
+        (None, True),
     ],
 )
-def test_nekopower_is_on_with_the_master_switch_and_one_capability_switch(wiring, monkeypatch, flags, on):
-    # The same reading as the main server's: a session it gave no task tool
-    # to must not have anything dispatched in her name on this side.
+def test_nekopower_is_on_with_the_master_switch_alone(wiring, monkeypatch, flags, on):
+    # The same reading as the main server's: the task agent starts with the master switch
+    # alone, whatever capability switch is on.
     monkeypatch.setattr(wiring.shared.Modules, "agent_flags", flags)
 
     assert wiring.mount_module.nekopower_on() is on
@@ -219,8 +219,11 @@ def test_nekopower_is_on_with_the_master_switch_and_one_capability_switch(wiring
     assert wiring.mount_module.nekopower_on() is False
 
 
-async def test_the_master_switch_alone_dispatches_checks_and_tells_nothing(wiring, monkeypatch):
-    monkeypatch.setattr(wiring.shared.Modules, "agent_flags", {})
+async def test_with_the_master_switch_off_dispatches_checks_and_tells_nothing(wiring, monkeypatch):
+    monkeypatch.setattr(wiring.shared.Modules, "analyzer_enabled", False)
+    monkeypatch.setattr(
+        wiring.shared.Modules, "agent_flags", {"user_plugin_enabled": True, "computer_use_enabled": True}
+    )
 
     dispatched = await wiring.runtime.nekopower_dispatch({"text": "查天气", "lanlan_name": "Lan", "language": "zh-CN"})
     queried = await wiring.runtime.nekopower_query({"text": "在办什么", "lanlan_name": "Lan", "language": "en"})
@@ -233,6 +236,165 @@ async def test_the_master_switch_alone_dispatches_checks_and_tells_nothing(wirin
     assert brief == {"success": True, "lines": []}
     assert wiring.host_mount.peek_host() is None
     assert wiring.llm.calls == []
+
+
+async def test_with_the_master_switch_alone_dispatches_checks_and_tells_reach_the_host(wiring, monkeypatch):
+    # No plugin, no browser and no keyboard and mouse: the task agent side, the analyzer and the
+    # host's support are there all the same, and a task agent may ask for what it finds off.
+    monkeypatch.setattr(
+        wiring.shared.Modules,
+        "agent_flags",
+        {"user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False},
+    )
+
+    dispatched = await wiring.runtime.nekopower_dispatch({"text": "查天气", "lanlan_name": "Lan", "language": "zh-CN"})
+    queried = await wiring.runtime.nekopower_query({"text": "在办什么", "lanlan_name": "Lan", "language": "en"})
+    brief = await wiring.runtime.nekopower_brief(lanlan_name="Lan")
+    await wiring.runtime._handle_turn_check_request(_turn("alone"))
+    await wait_until(lambda: wiring.of("turn_check_ack"), what="the acknowledgement")
+
+    assert dispatched.get("reason") != "disabled"
+    assert queried["text"] != "Cannot be done: NekoPower is switched off"
+    assert brief["success"] is True
+    assert wiring.host_mount.peek_host() is not None
+
+
+class _EnablerWorld:
+    """What the agent process's enabler reaches, replaced: the toggle route, the checks, the host."""
+
+    def __init__(self, wiring: Any, monkeypatch: Any) -> None:
+        from app.agent_server import capabilities, nekopower_builtins
+
+        self.wiring = wiring
+        self.requests: list[dict[str, Any]] = []
+        self.refreshed: list[int] = []
+        self.ready: dict[str, tuple[bool, str]] = {"browser": (True, ""), "keyboard_mouse": (True, "")}
+        flags = {"user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}
+        monkeypatch.setattr(wiring.shared.Modules, "agent_flags", flags)
+        monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", None)
+
+        async def set_agent_flags(payload: dict[str, Any]) -> dict[str, Any]:
+            self.requests.append(dict(payload))
+            for key in ("browser_use_enabled", "computer_use_enabled", "user_plugin_enabled"):
+                if key in payload:
+                    flags[key] = bool(payload[key])
+            return {"success": True}
+
+        monkeypatch.setattr(wiring.routes, "set_agent_flags", set_agent_flags)
+        monkeypatch.setattr(capabilities, "_browser_availability", lambda: self.ready["browser"])
+        monkeypatch.setattr(
+            capabilities,
+            "_keyboard_mouse_availability",
+            lambda: {"ready": self.ready["keyboard_mouse"][0], "reasons": [self.ready["keyboard_mouse"][1]]},
+        )
+        monkeypatch.setattr(nekopower_builtins, "_state", lambda name: self.ready[name])
+        monkeypatch.setattr(wiring.mount_module, "_screen_capture_needs_the_user", lambda: False)
+        monkeypatch.setattr(wiring.host_mount, "notify_plugins_changed", lambda *a, **k: self.refreshed.append(1))
+        self.enabler = wiring.mount_module._HostCapabilityEnabler()
+
+
+async def test_the_enabler_only_works_while_the_master_switch_is_on(wiring, monkeypatch):
+    world = _EnablerWorld(wiring, monkeypatch)
+    monkeypatch.setattr(wiring.shared.Modules, "analyzer_enabled", False)
+
+    assert await world.enabler.can_enable("plugins") == (False, "NekoPower is switched off")
+    assert await world.enabler.enable("browser") == (False, "NekoPower is switched off")
+    assert world.requests == []
+
+
+async def test_the_enabler_looks_before_the_user_is_asked(wiring, monkeypatch):
+    world = _EnablerWorld(wiring, monkeypatch)
+    world.ready["browser"] = (False, "no usable browser")
+    world.ready["keyboard_mouse"] = (False, "no input")
+
+    assert await world.enabler.can_enable("browser") == (False, "no usable browser")
+    assert await world.enabler.can_enable("keyboard_mouse") == (False, "no input")
+    assert await world.enabler.can_enable("plugins") == (True, "")
+    assert (await world.enabler.can_enable("files"))[0] is False
+    world.ready["browser"] = (True, "")
+    world.ready["keyboard_mouse"] = (True, "")
+    assert await world.enabler.can_enable("browser") == (True, "")
+    assert await world.enabler.can_enable("keyboard_mouse") == (True, "")
+    monkeypatch.setattr(wiring.mount_module, "_screen_capture_needs_the_user", lambda: True)
+    assert (await world.enabler.can_enable("keyboard_mouse"))[0] is False
+    assert world.requests == []
+
+
+@pytest.mark.parametrize(
+    "capability, flag", [("browser", "browser_use_enabled"), ("keyboard_mouse", "computer_use_enabled")]
+)
+async def test_the_enabler_turns_the_switch_on_for_this_run_only(wiring, monkeypatch, capability, flag):
+    world = _EnablerWorld(wiring, monkeypatch)
+
+    assert await world.enabler.enable(capability, lanlan_name="Lan") == (True, "")
+
+    assert world.requests == [{flag: True, "lanlan_name": "Lan", "_persist_intent": False}]
+    world.ready[capability] = (False, "gone")
+    assert await world.enabler.enable(capability, lanlan_name="Lan") == (False, "gone")
+
+
+async def test_the_enabler_turns_the_plugins_on_and_tells_the_host_once_they_are_up(wiring, monkeypatch):
+    world = _EnablerWorld(wiring, monkeypatch)
+
+    async def starting() -> tuple[bool, str]:
+        await asyncio.sleep(0.05)
+        return True, ""
+
+    task = asyncio.ensure_future(starting())
+    monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", task)
+
+    assert await world.enabler.enable("plugins", lanlan_name="Lan") == (True, "")
+
+    assert task.done() and world.refreshed == [1]
+    assert world.requests == [{"user_plugin_enabled": True, "lanlan_name": "Lan", "_persist_intent": False}]
+
+
+@pytest.mark.parametrize(
+    "outcome, flag_stays_on, reason",
+    [
+        ((False, "no plugins are installed or enabled"), False, "no plugins are installed or enabled"),
+        # The registry did not answer: the switch stays on for recovery, and the task agent is still told no.
+        ((False, "the plugin server did not respond in time"), True, "the plugin server did not respond in time"),
+    ],
+)
+async def test_the_enabler_does_not_say_the_plugins_are_on_when_they_did_not_come_up(
+    wiring, monkeypatch, outcome, flag_stays_on, reason
+):
+    world = _EnablerWorld(wiring, monkeypatch)
+    flags = wiring.shared.Modules.agent_flags
+
+    async def starting() -> tuple[bool, str]:
+        flags["user_plugin_enabled"] = flag_stays_on
+        return outcome
+
+    monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", asyncio.ensure_future(starting()))
+
+    assert await world.enabler.enable("plugins") == (False, reason)
+
+    assert world.refreshed == []
+    assert flags["user_plugin_enabled"] is flag_stays_on
+
+
+async def test_the_enabler_tells_a_task_agent_the_plugins_are_still_starting_when_they_take_too_long(
+    wiring, monkeypatch
+):
+    world = _EnablerWorld(wiring, monkeypatch)
+    monkeypatch.setattr(wiring.mount_module, "_PLUGIN_ENABLE_WAIT_SECONDS", 0.05)
+    never = asyncio.Event()
+
+    async def starting() -> tuple[bool, str]:
+        await never.wait()
+        return True, ""
+
+    task = asyncio.ensure_future(starting())
+    monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", task)
+    try:
+        done, why = await world.enabler.enable("plugins")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert done is False and "still starting" in why and world.refreshed == []
 
 
 async def test_stopping_everything_drops_a_dispatch_still_in_its_first_round(wiring, server, monkeypatch):
