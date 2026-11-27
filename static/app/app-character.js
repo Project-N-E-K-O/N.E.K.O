@@ -2196,6 +2196,8 @@
             // Publish the mounted path at the actual commit, never from a retired startup.
             if (mountedType === 'mmd' && mounted && window.mmdManager.currentModel?.url) {
                 window.mmdModel = window.mmdManager.currentModel.url;
+            } else if (localModelPage && mountedType === 'vrm' && mounted && window.vrmManager.currentModel?.url) {
+                window.vrmModel = window.vrmManager.currentModel.url;
             }
             committedRenderer = mounted
                 ? { name: newCatgirl, revision: switchRevision || 0, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }

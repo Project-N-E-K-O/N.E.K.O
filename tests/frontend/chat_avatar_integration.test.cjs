@@ -3054,12 +3054,13 @@ for (const takeover of [false, true]) test('late VRM load confirms only its own 
 for (const failFirstFresh of [false, true]) test('a B/83 central commit cannot retire the in-flight B/84 IPC model snapshot (fresh read fails initially: ' + failFirstFresh + ')', async () => {
     const h = harness(), olderStarted = deferred(), releaseOlder = deferred(), snapshotStarted = deferred(), releaseSnapshot = deferred();
     const older = '/static/vrm/B-rev83.vrm', fresh = '/static/vrm/B-rev84.vrm';
+    const snapshotPath = '/static/vrm/B-snapshot-before-last-save.vrm';
     let roles = 0;
     const startup = startDesktopAvatarBootstrap(h, undefined, async url => {
         if (String(url).startsWith('/api/config/page_config')) {
             snapshotStarted.resolve();
             await releaseSnapshot.promise;
-            return { json: async () => desktopAvatarConfig('B', 'vrm', 84, fresh) };
+            return { json: async () => desktopAvatarConfig('B', 'vrm', 84, snapshotPath) };
         }
         if (url === '/api/characters') {
             if (++roles === 1) {
@@ -3101,6 +3102,13 @@ for (const failFirstFresh of [false, true]) test('a B/83 central commit cannot r
     assert.deepEqual([w.lanlan_config.lanlan_name, w.lanlan_config.switch_revision, w.vrmManager.currentModel.url],
         ['B', 84, fresh]);
     assert.equal(w.appCharacter.hasCommittedPageModel('B', 84), true);
+    const published = w.vrmModel;
+    // The same startup entrypoint is called again by tutorial-model recovery.
+    // It must not fall back to the sample or the earlier HTTP snapshot.
+    await w.initVRMModel();
+    assert.equal(w.vrmManager.currentModel.url, fresh, 'later startup must load the committed B/84 asset');
+    assert.equal(published, fresh, 'publish the actual mounted asset, not the earlier HTTP snapshot');
+    assert.deepEqual(startup.loads, [older, fresh, fresh]);
 });
 
 for (const failStale of [false, true]) test('VRM startup follows an authoritative path change during the model load (old failure: ' + failStale + ')', async () => {
@@ -3208,7 +3216,7 @@ test('VRM startup path refresh has a bounded retry budget under continuous saves
 });
 
 test('same-name VRM replay retires the old loader through the real manager token', async () => {
-    const h = harness(), entered = deferred(), release = deferred(), confirmed = [];
+    const h = harness(), entered = deferred(), release = deferred(), confirmed = [], requested = [];
     const oldPath = '/static/vrm/A-rev82.vrm', latest = '/static/vrm/A-rev84.vrm';
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', switch_revision: 82 }, async url => {
         if (String(url).startsWith('/api/config/page_config')) return { json: async () => desktopAvatarConfig('A', 'vrm', 82, oldPath) };
@@ -3216,6 +3224,7 @@ test('same-name VRM replay retires the old loader through the real manager token
     });
     const w = h.window, sameManager = w.vrmManager, load = sameManager._loadModelInternal;
     sameManager._loadModelInternal = async function (url, options, token) {
+        requested.push(url);
         if (url === oldPath) { entered.resolve(); await release.promise; }
         return load.call(this, url, options, token);
     };
@@ -3231,4 +3240,63 @@ test('same-name VRM replay retires the old loader through the real manager token
     await startup.vrmBoot;
     assert.equal(sameManager.currentModel.url, latest);
     assert.deepEqual(confirmed, []);
+    await new Promise(setImmediate);
+    assert.deepEqual(requested, [oldPath, latest], 'retired startup may not schedule its own retry for the successor asset');
+});
+
+for (const takeoverSucceeds of [false, true]) test('post-load VRM path reconciliation survives only a failed takeover (' + takeoverSucceeds + ')', async () => {
+    const h = harness(), oldEntered = deferred(), releaseOld = deferred(), switchEntered = deferred(), releaseSwitch = deferred();
+    const older = '/static/vrm/A-old.vrm', fresh = '/static/vrm/A-fresh.vrm', other = '/static/vrm/C.vrm';
+    const w = h.window, requested = [], confirmed = [];
+    let snapshotPath = older, armed = false, switching = false, started;
+    const startup = startDesktopAvatarBootstrap(h, {lanlan_name: 'A', switch_revision: 82}, async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            return {json: async () => desktopAvatarConfig('A', 'vrm', 82, snapshotPath)};
+        }
+        if (url === '/api/characters' && switching) {
+            switchEntered.resolve();
+            await releaseSwitch.promise;
+            if (!takeoverSucceeds) return {ok: false};
+            return {ok: true, json: async () => ({'猫娘': {C: {model_type: 'vrm', vrm: other}}})};
+        }
+        return {ok: true, json: async () => ({})};
+    });
+    const manager = w.vrmManager, originalLoad = manager._loadModelInternal;
+    manager._loadModelInternal = async function (url, options, token) {
+        requested.push(url);
+        if (url === older) { oldEntered.resolve(); await releaseOld.promise; }
+        const result = await originalLoad.call(this, url, options, token);
+        if (url === older) armed = true;
+        return result;
+    };
+    const confirm = w.appCharacter.confirmRestoredRenderer;
+    w.appCharacter.confirmRestoredRenderer = (...args) => {
+        confirmed.push(manager.currentModel?.url); return confirm(...args);
+    };
+    // Deliver an actual central receipt in the microtask between the old
+    // boot's post-load ownership observation and its continuation.
+    Object.defineProperty(w.appState, 'isSwitchingCatgirl', {configurable: true,
+        get() {
+            if (armed) {
+                armed = false;
+                queueMicrotask(() => {started = w.handleCatgirlSwitch('C', 'A', {switchRevision: 83});});
+            }
+            return switching;
+        },
+        set(value) {switching = value;}
+    });
+    await startup.ready; await oldEntered.promise;
+    snapshotPath = fresh;
+    assert.equal(await w.reloadPageConfig(), true);
+    assert.deepEqual([w.lanlan_config.switch_revision, w.vrmModel], [82, fresh]);
+    releaseOld.resolve(); await switchEntered.promise; await new Promise(setImmediate);
+    assert.deepEqual(requested, [older], 'do not interfere while central switch still owns the renderer');
+    releaseSwitch.resolve(); assert.equal(await started, takeoverSucceeds);
+    const tick = [...h.timers.entries()].find(([, t]) => t.delay === 50);
+    if (tick) {h.timers.delete(tick[0]);tick[1].callback();}
+    await startup.vrmBoot; await new Promise(setImmediate);
+    assert.deepEqual(requested, [older, takeoverSucceeds ? other : fresh]);
+    assert.equal(w.lanlan_config.lanlan_name, takeoverSucceeds ? 'C' : 'A');
+    assert.equal(manager.currentModel.url, takeoverSucceeds ? other : fresh);
+    assert.deepEqual(confirmed, takeoverSucceeds ? [] : [fresh]);
 });

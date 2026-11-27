@@ -704,7 +704,15 @@ async function initVRMModelWithPathRetries(pathRetries) {
         catch (error) { failed = true; loadError = error; }
         // A same-revision asset save can arrive during the actual download,
         // not just during Three.js initialization. Never confirm the old path.
-        if (!await ownsStartupAfterSwitchSettlement() || !stillOwnsStartupNow() || retryIfPathChanged()) return;
+        const postLoadDeadline = Date.now() + 46000;
+        if (!await ownsStartupAfterSwitchSettlement(postLoadDeadline)) return;
+        // A takeover can start as this await resumes. If it rolls back without
+        // replacing the load token, this boot still owns path reconciliation.
+        while (!stillOwnsStartupNow()) {
+            if (!window.appState?.isSwitchingCatgirl || Date.now() >= postLoadDeadline
+                || !await ownsStartupAfterSwitchSettlement(postLoadDeadline)) return;
+        }
+        if (retryIfPathChanged()) return;
         if (failed) throw loadError;
         window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel?.vrm);
 
