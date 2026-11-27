@@ -17,6 +17,7 @@ from utils.instance_access import _same_origin
 from utils.loopback import is_direct_loopback_peer, is_loopback_peer_host
 
 _ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
+_KNOWN_FETCH_SITES = frozenset({"same-origin", "same-site", "cross-site", "none"})
 
 
 def _header_values(request: Request, name: str) -> list[str]:
@@ -95,13 +96,13 @@ def is_local_or_instance_authorized_request(request: Request) -> bool:
 def is_same_origin_browser_request(request: Request) -> bool:
     """Reject cross-site, opaque, malformed, or cross-port browser requests."""
     headers = getattr(request, "headers", None) or {}
-    fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
-    if fetch_site and fetch_site not in _ALLOWED_FETCH_SITES:
-        return False
-
     origin_headers = _header_values(request, "origin")
     referer_headers = _header_values(request, "referer")
     if len(origin_headers) > 1 or len(referer_headers) > 1:
+        return False
+
+    fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site and fetch_site not in _KNOWN_FETCH_SITES:
         return False
 
     if origin_headers:
@@ -109,14 +110,18 @@ def is_same_origin_browser_request(request: Request) -> bool:
     elif referer_headers:
         parsed = _parse_referer_origin(referer_headers[0])
     else:
+        if fetch_site and fetch_site not in _ALLOWED_FETCH_SITES:
+            return False
         return True
 
     if parsed is None:
         return False
-    if _same_origin(request, _format_origin_url(parsed)):
-        return True
     trusted = _read_trusted_origins(os.getenv(TRUSTED_ORIGINS_ENV))
-    return any(_origins_match(parsed, entry) for entry in trusted)
+    if any(_origins_match(parsed, entry) for entry in trusted):
+        return True
+    if fetch_site and fetch_site not in _ALLOWED_FETCH_SITES:
+        return False
+    return _same_origin(request, _format_origin_url(parsed))
 
 
 def validate_local_browser_request(

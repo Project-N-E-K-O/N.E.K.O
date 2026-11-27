@@ -230,7 +230,7 @@ async def find_first_image(folder: str = None):
                         # Return only a relative path or filename, not a full filesystem path, to avoid information disclosure
                         # Calculate the path relative to base_dir
                         try:
-                            relative_path = os.path.relpath(real_image_path, base_dir)
+                            relative_path = os.path.relpath(real_image_path, os.path.realpath(base_dir))
                             return JSONResponse(content={"success": True, "imagePath": relative_path})
                         except ValueError:
                             # If a relative path cannot be calculated (such as across drives), return only the filename

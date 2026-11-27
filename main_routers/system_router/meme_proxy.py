@@ -60,6 +60,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
             }
         )
     
+    hostname = ""
     try:
         logger.info(f"[Meme Proxy] 收到代理请求, url: {url[:100] if url else 'None'}...")
         
@@ -73,7 +74,10 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
         allowed_hosts = MEME_ALLOWED_HOSTS
         
         from urllib.parse import urlparse, urljoin
-        parsed = urlparse(decoded_url)
+        try:
+            parsed = urlparse(decoded_url)
+        except ValueError:
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
         hostname = (parsed.hostname or '').lower()
         
         if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
@@ -113,8 +117,12 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
                         if not location:
                             break
                         
-                        new_url = urljoin(current_url, location)
-                        new_parsed = urlparse(new_url)
+                        try:
+                            new_url = urljoin(current_url, location)
+                            new_parsed = urlparse(new_url)
+                        except ValueError:
+                            logger.warning("[Meme Proxy] 重定向URL格式无效")
+                            return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
                         new_hostname = (new_parsed.hostname or '').lower()
                         
                         if new_parsed.scheme not in ('http', 'https') or not any(
@@ -182,11 +190,11 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
     except (ssl.SSLError, httpx.ConnectError) as e:
-        logger.warning("[Meme Proxy] TLS/连接失败: host=%s error=%s", hostname, e)
+        logger.warning("[Meme Proxy] TLS/连接失败: host=%s error=%s", hostname or "<unknown>", e)
         return JSONResponse(content={"success": False, "error": "上游 TLS 校验或连接失败"}, status_code=502)
     except httpx.HTTPStatusError as e:
-        logger.warning("[Meme Proxy] 上游返回错误状态: host=%s status=%s", hostname, e.response.status_code)
+        logger.warning("[Meme Proxy] 上游返回错误状态: host=%s status=%s", hostname or "<unknown>", e.response.status_code)
         return JSONResponse(content={"success": False, "error": "上游图片请求失败"}, status_code=502)
     except Exception as e:
-        logger.error("[Meme Proxy] 代理失败: host=%s error=%s", hostname, e)
+        logger.error("[Meme Proxy] 代理失败: host=%s error=%s", hostname or "<unknown>", e)
         return JSONResponse(content={"success": False, "error": "代理请求失败"}, status_code=500)

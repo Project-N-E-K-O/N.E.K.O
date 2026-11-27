@@ -129,6 +129,35 @@ async def test_meme_proxy_blocks_non_http_redirect_and_masks_internal_errors(mon
             )
         assert r_err.status_code == 500
         assert "INTERNAL_SECRET_XYZ" not in r_err.body.decode("utf-8")
+
+        # 4. Malformed URLs/redirects and pre-hostname errors must not raise UnboundLocalError.
+        r_bad_url = await meme_proxy.fetch_meme_image_response("https://[", write_cache=False)
+        assert r_bad_url.status_code == 400
+        assert json.loads(r_bad_url.body) == {"success": False, "error": "无效的URL"}
+
+        mock_bad_302 = MagicMock()
+        mock_bad_302.status_code = 302
+        mock_bad_302.headers = {"Location": "https://["}
+
+        @asynccontextmanager
+        async def _stream_bad_redirect(*_args, **_kwargs):
+            yield mock_bad_302
+
+        with monkeypatch.context() as mp:
+            mp.setattr(httpx.AsyncClient, "stream", _stream_bad_redirect)
+            r_bad_redir = await meme_proxy.fetch_meme_image_response(
+                "https://i.imgflip.com/bad_redirect.jpg", write_cache=False
+            )
+        assert r_bad_redir.status_code == 403
+        assert json.loads(r_bad_redir.body) == {"success": False, "error": "非法重定向"}
+
+        with monkeypatch.context() as mp:
+            mp.setattr(meme_proxy, "unquote", lambda _u: (_ for _ in ()).throw(RuntimeError("PRE_HOST_BOOM")))
+            r_pre_host = await meme_proxy.fetch_meme_image_response(
+                "https://i.imgflip.com/pre_host.jpg", write_cache=False
+            )
+        assert r_pre_host.status_code == 500
+        assert json.loads(r_pre_host.body) == {"success": False, "error": "代理请求失败"}
     finally:
         meme_proxy.MEME_PROXY_CACHE.clear()
         meme_proxy.MEME_PROXY_CACHE.update(saved_cache)
@@ -293,15 +322,64 @@ async def test_file_exists_enforces_local_access_and_same_origin(tmp_path, monke
         assert r_native.status_code == 200
         assert r_native.json() == {"exists": True}
 
-        # Explicitly configured NEKO_TRUSTED_ORIGINS succeeds.
-        monkeypatch.setenv("NEKO_TRUSTED_ORIGINS", "https://trusted.example")
-        r_trusted = await local_client.get(
-            "/api/file-exists",
-            params={"path": str(ok_file)},
-            headers={"Origin": "https://trusted.example", "Sec-Fetch-Site": "none"},
-        )
-        assert r_trusted.status_code == 200
-        assert r_trusted.json() == {"exists": True}
+        # Explicitly configured NEKO_TRUSTED_ORIGINS succeeds even with browser Fetch Metadata.
+        monkeypatch.setenv("NEKO_TRUSTED_ORIGINS", "https://trusted.example,http://127.0.0.1:3000")
+        for trusted_headers in (
+            {"Origin": "https://trusted.example", "Sec-Fetch-Site": "none"},
+            {"Origin": "https://trusted.example", "Sec-Fetch-Site": "cross-site"},
+            {"Origin": "http://127.0.0.1:3000", "Sec-Fetch-Site": "same-site"},
+            {"Referer": "https://trusted.example/page", "Sec-Fetch-Site": "cross-site"},
+        ):
+            r_trusted = await local_client.get(
+                "/api/file-exists",
+                params={"path": str(ok_file)},
+                headers=trusted_headers,
+            )
+            assert r_trusted.status_code == 200, f"trusted={trusted_headers!r} got {r_trusted.status_code}"
+            assert r_trusted.json() == {"exists": True}
+
+        # Untrusted/invalid origins and cross-site same-origin remain rejected even with NEKO_TRUSTED_ORIGINS set.
+        for rejected_headers in (
+            {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+            {"Origin": "null", "Sec-Fetch-Site": "cross-site"},
+            {"Origin": "https://trusted.example", "Sec-Fetch-Site": "invalid"},
+            {"Sec-Fetch-Site": "cross-site"},
+            {"Origin": "http://127.0.0.1:48911", "Sec-Fetch-Site": "cross-site"},
+        ):
+            r_rej = await local_client.get(
+                "/api/file-exists",
+                params={"path": str(ok_file)},
+                headers=rejected_headers,
+            )
+            assert r_rej.status_code == 403, f"rejected={rejected_headers!r} got {r_rej.status_code}"
+            assert r_rej.json() == {"exists": False, "error_code": "cross_origin_request_rejected"}
+
+
+def test_find_first_image_normalizes_symlinked_base_dir(tmp_path, monkeypatch):
+    from main_routers import system_router
+    from main_routers.system_router import files as files_mod
+
+    real_root = tmp_path / "real_root"
+    static_dir = real_root / "static"
+    static_dir.mkdir(parents=True)
+    preview = static_dir / "preview.png"
+    preview.write_bytes(b"\x89PNG\r\n\x1a\nok")
+
+    link_root = tmp_path / "link_root"
+    try:
+        link_root.symlink_to(real_root, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable in this environment")
+
+    monkeypatch.setattr(files_mod, "_get_app_root", lambda: str(link_root))
+    app = FastAPI()
+    app.include_router(system_router.router)
+    with TestClient(app) as client:
+        resp = client.get("/api/find-first-image", params={"folder": str(link_root / "static")})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["imagePath"] == os.path.join("static", "preview.png")
 
 
 # ---------------------------------------------------------------------------
