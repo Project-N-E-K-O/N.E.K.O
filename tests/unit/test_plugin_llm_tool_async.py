@@ -2744,10 +2744,14 @@ async def test_register_cancelled_and_not_withdrawn_stays_tracked(monkeypatch, r
 
 
 @pytest.mark.asyncio
-async def test_unregister_cancelled_after_it_was_sent_is_retried(monkeypatch, registry):
+@pytest.mark.parametrize("tracked_id", ["reg-1", "reg-0"])
+async def test_unregister_cancelled_after_it_was_sent_is_retried(monkeypatch, registry, tracked_id):
+    """The retry drops tracking only of the registration it targets: a
+    tracked other registration of the name (``reg-0``) is kept."""
     from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
 
-    await _seed_tracking(registry)
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 12.0, "registration_id": tracked_id}
     server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
     task = asyncio.create_task(handle_llm_tool_unregister(
         _rpc_ctx(), dict(_UNREGISTER_REQUEST, expected_registration_id="reg-1"),
@@ -2759,7 +2763,7 @@ async def test_unregister_cancelled_after_it_was_sent_is_retried(monkeypatch, re
 
     assert server.ops() == ["unregister", "unregister"]
     assert server.posts[1][1]["expected_registration_id"] == "reg-1"
-    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a") is (tracked_id == "reg-0")
     assert registry._name_locks == {}
 
 

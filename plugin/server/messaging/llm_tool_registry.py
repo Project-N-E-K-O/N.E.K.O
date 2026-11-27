@@ -808,7 +808,9 @@ async def _unregister_remote_tool_locked(
 async def _retry_cancelled_unregister(
     *, plugin_id: str, name: str, role: Optional[str], expected_registration_id: Optional[str],
 ) -> None:
-    drop_tracking_only_of: Optional[str] = None
+    # Either way the retry drops host tracking only of the registration it
+    # targets: tracking may record another registration of the name.
+    drop_tracking_only_of: Optional[str] = expected_registration_id
     if expected_registration_id is None:
         # The retry is bounded, so main_server may still be applying it after
         # the name lock is released. Unfiltered, it could then remove a later
