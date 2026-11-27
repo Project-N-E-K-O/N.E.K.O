@@ -2481,7 +2481,12 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         if (currentCatgirl) {
             if (isUnsafeCharacterPathSegment(currentCatgirl)) {
                 console.warn('[CharacterCardManager] 当前角色名不能安全放进 URL path，跳过语音状态检查以允许救援切换:', currentCatgirl);
-                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+                return {
+                    ok: true,
+                    currentCatgirl,
+                    switchRevision: currentData.switch_revision,
+                    skippedVoiceCheckForInvalidName: true
+                };
             }
             const voiceResp = await fetch(
                 `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
@@ -2493,7 +2498,12 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
             const voiceData = await voiceResp.json();
             if (voiceData && voiceData.invalid_name) {
                 console.warn('[CharacterCardManager] 当前角色名已被后端标记为非法，跳过语音状态检查以允许救援切换:', currentCatgirl);
-                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+                return {
+                    ok: true,
+                    currentCatgirl,
+                    switchRevision: currentData.switch_revision,
+                    skippedVoiceCheckForInvalidName: true
+                };
             }
             if (voiceData.is_voice_mode) {
                 const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
@@ -2502,7 +2512,7 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
                 return { ok: false };
             }
         }
-        return { ok: true, currentCatgirl };
+        return { ok: true, currentCatgirl, switchRevision: currentData.switch_revision };
     } catch (error) {
         console.error('检查语音模式状态失败:', error);
         const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
@@ -2529,19 +2539,23 @@ function isUnsafeCharacterPathSegment(name) {
 // 主窗口未必握着 session（比如还没点过开始），WebSocket 路径会沉默。BroadcastChannel
 // 兜底覆盖这一情况，且对端 handleCatgirlSwitch 自带 isSwitchingCatgirl/同名跳过的去重。
 let _nekoPageChannelForCharaSwitch = null;
-function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
+function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl, switchRevision = 0) {
     if (!newCatgirl || newCatgirl === oldCatgirl) return;
     if (typeof BroadcastChannel === 'undefined') return;
     try {
         if (!_nekoPageChannelForCharaSwitch) {
             _nekoPageChannelForCharaSwitch = new BroadcastChannel('neko_page_channel');
         }
-        _nekoPageChannelForCharaSwitch.postMessage({
+        const message = {
             action: 'catgirl_switched',
             new_catgirl: newCatgirl,
             old_catgirl: oldCatgirl,
             timestamp: Date.now()
-        });
+        };
+        if (Number.isSafeInteger(switchRevision) && switchRevision > 0) {
+            message.switch_revision = switchRevision;
+        }
+        _nekoPageChannelForCharaSwitch.postMessage(message);
     } catch (e) {
         console.warn('[CharaCardManager] catgirl_switched 广播失败:', e);
     }
@@ -2552,12 +2566,14 @@ async function applyCurrentCatgirlSelection(name, options = {}) {
     if (!targetName) return false;
 
     let oldCatgirl = String(options.oldCatgirl || window._workshopCurrentCatgirl || '').trim();
+    let oldRevision = options.oldRevision;
     if (!oldCatgirl) {
         try {
             const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
                 oldCatgirl = String(currentData.current_catgirl || '').trim();
+                oldRevision = currentData.switch_revision;
             }
         } catch (e) {
             console.warn('[CharaCardManager] 读取当前角色失败，继续尝试切换:', e);
@@ -2565,8 +2581,8 @@ async function applyCurrentCatgirlSelection(name, options = {}) {
     }
 
     if (oldCatgirl === targetName) {
-        window._workshopCurrentCatgirl = targetName;
-        return true;
+        // A no-op preflight is still a read and may predate a newer switch POST.
+        return applyWorkshopCurrentCatgirlSnapshot(targetName, oldRevision);
     }
 
     const response = await fetch('/api/characters/current_catgirl', {
@@ -2582,19 +2598,22 @@ async function applyCurrentCatgirlSelection(name, options = {}) {
         return false;
     }
 
-    window._workshopCurrentCatgirl = targetName;
+    const switchRevision = Number.isSafeInteger(result.switch_revision) && result.switch_revision > 0
+        ? result.switch_revision
+        : 0;
+    if (!applyWorkshopCurrentCatgirlSnapshot(targetName, switchRevision)) return false;
     renderCharaCardsView();
     _refreshOpenCatgirlPanelActions();
 
     if (typeof window.handleCatgirlSwitch === 'function') {
         const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         if (currentName !== targetName) {
-            await Promise.resolve(window.handleCatgirlSwitch(targetName, oldCatgirl)).catch(e => {
+            await Promise.resolve(window.handleCatgirlSwitch(targetName, oldCatgirl, { switchRevision })).catch(e => {
                 console.warn('[CharaCardManager] 同页角色切换失败:', e);
             });
         }
     }
-    _broadcastCatgirlSwitched(targetName, oldCatgirl);
+    _broadcastCatgirlSwitched(targetName, oldCatgirl, switchRevision);
     return true;
 }
 
@@ -2633,7 +2652,7 @@ async function workshopSwitchCatgirl(name) {
     const oldCatgirl = guard.currentCatgirl || window._workshopCurrentCatgirl || '';
 
     try {
-        const switched = await applyCurrentCatgirlSelection(name, { oldCatgirl });
+        const switched = await applyCurrentCatgirlSelection(name, { oldCatgirl, oldRevision: guard.switchRevision });
         if (switched) {
             showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
         }
