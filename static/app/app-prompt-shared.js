@@ -270,6 +270,7 @@
         // 重取 token 的请求上限：挂住时到点取消，refreshPromise 才会清掉、之后的 refreshToken 另发新请求
         // （否则所有调用方都一直拿到同一个永远不落定的 promise）。首屏读初始 token 不受影响
         const TOKEN_REFRESH_TIMEOUT_MS = 10000;
+        const INITIAL_TOKEN_READY_WAIT_MS = 3000;
 
         async function fetchPageConfigToken(timeoutMs) {
             const controller = timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
@@ -298,8 +299,13 @@
             initialTokenPromise = (async function () {
                 const ready = window.pageConfigReady;
                 if (ready && typeof ready.then === 'function') {
+                    let readyTimer;
                     try {
-                        const data = await ready;
+                        // Initial mutations must not wait through renderer
+                        // bootstrap retries. Preserve the already-ready fast path.
+                        const data = await Promise.race([ready, new Promise(resolve => {
+                            readyTimer = setTimeout(resolve, INITIAL_TOKEN_READY_WAIT_MS);
+                        })]);
                         const token = extractAutostartCsrfToken(data);
                         if (token) {
                             cachedToken = token;
@@ -307,6 +313,8 @@
                         }
                     } catch (_) {
                         // fall through to explicit refetch below
+                    } finally {
+                        if (readyTimer !== undefined) clearTimeout(readyTimer);
                     }
                 } else if (!warnedMissingPageConfig) {
                     warnedMissingPageConfig = true;

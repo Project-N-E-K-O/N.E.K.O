@@ -1841,7 +1841,7 @@
      * @param {string} dataUrl - base64 data URL
      * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
      */
-    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
+    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType, { displayOnly = false } = {}) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
 
@@ -1854,8 +1854,10 @@
                 modelType: externalAvatarModelType || getCurrentModelType(),
                 capturedAt: Date.now()
             };
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            if (!displayOnly) {
+                saveToStorage(cachedPreview);
+                syncAvatarToCardDrop(cachedPreview.dataUrl);
+            }
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
@@ -1918,7 +1920,8 @@
 
     // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
     if (window.__nekoPendingAvatar) {
-        mod.setExternalAvatar(window.__nekoPendingAvatar.dataUrl, window.__nekoPendingAvatar.modelType);
+        const avatar = window.__nekoPendingAvatar;
+        mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
         delete window.__nekoPendingAvatar;
     }
     if (window.__nekoPendingTutorialChatIdentity) {

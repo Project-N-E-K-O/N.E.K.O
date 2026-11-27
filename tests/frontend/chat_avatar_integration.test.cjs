@@ -3383,3 +3383,223 @@ for (const [phase, outcome] of [
     assert.deepEqual(confirmed, outcome === 'failure' ? [p2] : []);
     assert.equal(w._isVRMLoading, false);
 });
+
+function setupReviewWindow(pathname, search = '') {
+    const h = harness();
+    h.context.URL = URL;
+    h.context.URLSearchParams = URLSearchParams;
+    h.context.AbortController = AbortController;
+    h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location = {pathname, search, href: 'https://example.test' + pathname + search};
+    return h;
+}
+
+for (const [pathname, source, consumer, explicit] of [
+    ['/web_chat_compact', 'cached', 'loaded', false],
+    ['/focus', 'event', 'loaded', false],
+    ['/toast', 'cached', 'pending', false],
+    ['/web_chat_compact', 'cached', 'loaded', true],
+]) test('review 070a restores same-role IPC avatar while the model waits (' + pathname + ', ' + source + ', ' + consumer + ', explicit=' + explicit + ')', {timeout: 5000}, async () => {
+    const h = setupReviewWindow(pathname, explicit ? '?lanlan_name=A' : '');
+    const w = h.window, began = deferred(), release = deferred();
+    const detail = {lanlan_name: 'A', avatarDataUrl: 'data:image/png;base64,YWJj', avatarModelType: 'vrm',
+        ...(!explicit ? {switch_revision: 82} : {})};
+    const shown = [];
+    if (consumer === 'loaded') w.appChatAvatar = {setExternalAvatar(...args) {shown.push(args);}};
+    if (source === 'cached') w.__nekoInjectedConfig = detail;
+    h.context.fetch = async url => {
+        assert.ok(String(url).startsWith('/api/config/page_config?'));
+        began.resolve(); await release.promise;
+        return {ok: true,json: async () => desktopAvatarConfig('A','vrm',explicit ? 0 : 82,'/A/model.vrm')};
+    };
+    h.load('static/js/index.js');
+    const loading = w.startPageConfigLoad();
+    if(source==='event'){
+        await new Promise(setImmediate);
+        w.dispatchEvent(new h.context.CustomEvent('neko:config-injected',{detail}));
+    }
+    await began.promise;
+    let ready = 'pending';
+    w.pageConfigReady.then(v => {ready=v;});
+    await new Promise(setImmediate);
+    assert.equal(ready,'pending');
+    assert.ok(!w.vrmModel, 'avatar receipt is not model configuration');
+    if (consumer === 'loaded') {
+        assert.deepEqual(shown.map(([url, type, options]) => [url, type, options?.displayOnly]),
+            [[detail.avatarDataUrl, detail.avatarModelType, true]]);
+    } else {
+        assert.deepEqual([w.__nekoPendingAvatar?.dataUrl, w.__nekoPendingAvatar?.modelType,
+            w.__nekoPendingAvatar?.displayOnly], [detail.avatarDataUrl, detail.avatarModelType, true]);
+    }
+    release.resolve();
+    assert.equal(await loading,true);
+    assert.equal(w.vrmModel,'/A/model.vrm');
+    if(consumer==='loaded') assert.equal(shown.length,1);
+});
+
+for (const order of ['already-loaded', 'loads-late']) {
+    test('review 070a injected IPC portrait stays in the local popup (' + order + ')', async () => {
+        const h = setupReviewWindow('/web_chat_compact'), w = h.window;
+        const release = deferred(), writes = [], saved = [];
+        const dataUrl = 'data:image/png;base64,YQ==';
+        w.__nekoInjectedConfig = {lanlan_name: 'A', switch_revision: 82, avatarModelType: 'vrm', avatarDataUrl: dataUrl};
+        const dom = w.appState.dom = {
+            chatAvatarPreviewCard: {hidden: false},
+            chatAvatarPreviewImage: {hidden: true},
+            chatAvatarPreviewPlaceholder: {hidden: false},
+            chatAvatarPreviewImageShell: {classList: {add() {}, remove() {}}},
+        };
+        h.context.localStorage = {setItem(key) {saved.push(key);}};
+        h.context.fetch = async (url, options) => {
+            if (options?.method === 'POST') { writes.push(String(url)); return {ok: true}; }
+            await release.promise;
+            return {ok: true, json: async () => desktopAvatarConfig('A', 'vrm', 82, '/A/model.vrm')};
+        };
+        h.load('static/js/index.js');
+        if (order === 'already-loaded') h.load('static/app/app-chat-avatar.js');
+        const ready = w.startPageConfigLoad();
+        await new Promise(setImmediate);
+        if (order === 'loads-late') h.load('static/app/app-chat-avatar.js');
+        assert.equal(dom.chatAvatarPreviewImage.src, dataUrl);
+        assert.equal(dom.chatAvatarPreviewImage.hidden, false);
+        assert.equal(w.__nekoPendingAvatar, undefined);
+        assert.deepEqual(saved, [], 'a provisional portrait is not a durable model cache entry');
+        assert.deepEqual(writes, [], 'a secondary window must not mirror the Pet window identity');
+        release.resolve();
+        assert.equal(await ready, true);
+    });
+}
+
+test('review 070a does not import a stale stamped avatar on a non-chat window', async () => {
+    const h = setupReviewWindow('/web_chat_compact'), w = h.window;
+    w.appState._latestCatgirlSwitchRevision=90;
+    w.__nekoInjectedConfig={lanlan_name:'A',switch_revision:82,avatarDataUrl:'data:image/png;base64,YQ=='};
+    const calls=[];
+    w.appChatAvatar = {setExternalAvatar(...args) {calls.push(args);}};
+    h.context.fetch=async ()=>{throw new Error('stale receipt must not start a fetch');};
+    h.load('static/js/index.js');
+    assert.equal(await w.startPageConfigLoad(),false);
+    assert.deepEqual(calls,[]);
+    assert.equal(w.__nekoPendingAvatar,undefined);
+});
+
+test('review 070a a rejected local avatar import does not gate full model readiness', async () => {
+    const h = setupReviewWindow('/focus'), w = h.window;
+    w.__nekoInjectedConfig={lanlan_name:'A',switch_revision:82,avatarDataUrl:'data:image/png;base64,YQ=='};
+    let avatarCalls=0;
+    w.appChatAvatar={async setExternalAvatar(){++avatarCalls;throw new Error('fixture rejected avatar');}};
+    h.context.fetch=async ()=>({ok:true,json:async()=>desktopAvatarConfig('A','mmd',82,'/A/model.pmx')});
+    h.load('static/js/index.js');
+    assert.equal(await w.startPageConfigLoad(),true);
+    assert.equal(await w.pageConfigReady,true);
+    assert.equal(avatarCalls,1);
+    assert.equal(w.mmdModel,'/A/model.pmx');
+});
+
+for (const [pathname, search] of [['/Preview',''], ['/web_chat_compact','?lanlan_name=Preview']]) {
+    test('review 070a explicit preview fetches immediately without an IPC producer (' + pathname + ')', {timeout: 5000}, async () => {
+        const h = setupReviewWindow(pathname, search),w=h.window;
+        const hit=[];
+        h.context.fetch=async url=>{
+            hit.push(new URL(String(url),'https://example.test'));
+            return {ok:true,json:async()=>desktopAvatarConfig('Preview','vrm',0,'/Preview/model.vrm')};
+        };
+        h.load('static/js/index.js');
+        w.appState._latestCatgirlSwitchRevision=92;
+        const ready=w.startPageConfigLoad();
+        await new Promise(setImmediate);
+        assert.equal(hit.length,1,'do not wait 5s for an unadvertised provider');
+        assert.equal(hit[0].searchParams.get('lanlan_name'),'Preview');
+        assert.equal(await ready,true);
+        assert.equal(w.vrmModel,'/Preview/model.vrm');
+        assert.equal(w.lanlan_config.switch_revision,0);
+        assert.equal(w.getPageSwitchRevision(),92,'preview does not erase the live watermark');
+    });
+}
+
+test('review 070a producer-less explicit preview cannot apply another role snapshot', {timeout: 5000}, async () => {
+    const h = setupReviewWindow('/Preview'),w=h.window;
+    let fetches=0;
+    h.context.fetch=async ()=>{
+        if(++fetches===1)return {ok:true,json:async()=>desktopAvatarConfig('Other','vrm',0,'/Other/wrong.vrm')};
+        return {ok:false,status:404};
+    };
+    h.load('static/js/index.js');
+    const load=w.startPageConfigLoad();
+    for(let n=0;n<6&&!Array.from(h.timers.values()).some(t=>t.delay===600);n++)await new Promise(setImmediate);
+    assert.equal(fetches,1);
+    assert.ok(!w.vrmModel);
+    await advanceModelBootTimer(h,600);
+    assert.equal(await load,false);
+    assert.equal(w.lanlan_config.lanlan_name,'Preview');
+    assert.ok(!w.vrmModel);
+});
+
+test('review 070a explicit preview still waits for a producer which advertises IPC', async () => {
+    const h=setupReviewWindow('/Preview'),w=h.window;
+    let dataReads=0,requests=0;
+    w.__nekoRequestConfigInjection=()=>{
+        ++requests;
+        w.dispatchEvent(new h.context.CustomEvent('neko:config-injected',{detail:{lanlan_name:'Preview'}}));
+    };
+    h.context.fetch=async ()=>{
+        ++dataReads;return {ok:true,json:async()=>desktopAvatarConfig('Preview','vrm',0,'/Preview/model.vrm')};
+    };
+    h.load('static/js/index.js');
+    const ready=w.startPageConfigLoad();
+    await new Promise(setImmediate);
+    assert.equal(dataReads,0);
+    const entry=[...h.timers.entries()].find(([,t])=>t.delay===0);
+    assert.ok(entry);
+    h.timers.delete(entry[0]);entry[1].callback();
+    assert.equal(await ready,true);
+    assert.equal(dataReads,1);
+    assert.equal(requests,1);
+});
+
+for (const path of ['/web_chat_compact','/focus']) test('review 070a first local mutation gets CSRF while model config is held (' + path + ')', {timeout: 5000}, async () => {
+    const h=setupReviewWindow(path), w=h.window, began=deferred(), release=deferred(), requested=[];
+    w.__nekoInjectedConfig={lanlan_name:'A',switch_revision:82};
+    h.context.fetch=async url=>{
+        const parsed=new URL(String(url),'https://example.test');
+        assert.equal(parsed.pathname,'/api/config/page_config');
+        requested.push(parsed);
+        if(parsed.searchParams.has('model_boot')){
+            began.resolve();await release.promise;
+            return {ok:true,json:async()=>desktopAvatarConfig('A','vrm',82,'/A/model.vrm')};
+        }
+        return {ok:true,json:async()=>({success:false,error:'fixture config still changing',autostart_csrf_token:'fixture-local-only'})};
+    };
+    h.load('static/js/index.js');
+    h.load('static/app/app-prompt-shared.js');
+    const loading=w.startPageConfigLoad();
+    await began.promise;
+    let ready='pending';
+    w.pageConfigReady.then(value=>{ready=value;});
+    const first=w.nekoLocalMutationSecurity.getMutationHeaders();
+    const second=w.nekoLocalMutationSecurity.getMutationHeaders();
+    await new Promise(setImmediate);
+    // Reuse the UI's short startup deadline without releasing the actual boot.
+    const timer=[...h.timers.entries()].find(([,t])=>t.delay===3000);
+    if(timer){h.timers.delete(timer[0]);timer[1].callback();}
+    await new Promise(setImmediate);
+    assert.equal(requested.length,2,'the token fetch starts while renderer bootstrap is still held');
+    assert.equal(requested[0].searchParams.get('model_boot'),'1');
+    assert.equal(requested[1].searchParams.has('model_boot'),false);
+    assert.equal((await first)['X-CSRF-Token'],'fixture-local-only');
+    assert.equal((await second)['X-CSRF-Token'],'fixture-local-only');
+    assert.equal(ready,'pending');
+    assert.ok(!w.vrmModel);
+    release.resolve();
+    assert.equal(await loading,true);
+    assert.equal(w.vrmModel,'/A/model.vrm');
+});
+
+test('review 070a a page readiness object with a direct CSRF token stays the no-fetch fast path', async ()=>{
+    const h=setupReviewWindow('/'),w=h.window;
+    w.pageConfigReady=Promise.resolve({autostart_csrf_token:'fixture-already-ready'});
+    h.context.fetch=async ()=>{assert.fail('no token refetch is required');};
+    h.load('static/app/app-prompt-shared.js');
+    const headers=await w.nekoLocalMutationSecurity.getMutationHeaders();
+    assert.equal(headers['X-CSRF-Token'],'fixture-already-ready');
+});

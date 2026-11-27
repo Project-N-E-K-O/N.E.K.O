@@ -521,13 +521,35 @@ function startMultiWindowPageConfigLoad() {
                 }
             }, typeof delay === 'number' ? delay : 0);
         }
-        async function loadMatchingPageConfig(name, revision, pinned = false) {
+        async function applyInjectedAvatar(detail, options) {
+            if (!detail.avatarDataUrl) return;
+            const modelType = detail.avatarModelType || '';
+            if (typeof window.appChatAvatar?.setExternalAvatar === 'function') {
+                await window.appChatAvatar.setExternalAvatar(detail.avatarDataUrl, modelType, options);
+            } else {
+                window.__nekoPendingAvatar = { dataUrl: detail.avatarDataUrl, modelType, ...options };
+            }
+        }
+        async function loadMatchingPageConfig(name, revision, pinned = false, injected = null) {
             const priorHighWater = latestPageSwitchRevision();
             if (revision && revision < priorHighWater) return false;
+            let avatar = name && injected?.lanlan_name === name ? injected : null;
+            function publishMatchingAvatar() {
+                if (!avatar?.avatarDataUrl || (revision && revision < latestPageSwitchRevision())
+                    || (!pinned && window.lanlan_config?.lanlan_name !== name)) return;
+                // Secondary windows can show the matching portrait without
+                // publishing the Pet window's canonical card-drop identity.
+                applyInjectedAvatar(avatar, { displayOnly: true })
+                    .catch(() => console.warn('[主页] Could not restore the injected avatar.'));
+                avatar = null;
+            }
             // An early live receipt may already have committed this precise
             // identity while desktop IPC was pairing its metadata. Do not
             // replace established model ownership with a new boot attempt.
-            if (window.appCharacter?.hasCommittedPageModel?.(name, revision)) return true;
+            if (window.appCharacter?.hasCommittedPageModel?.(name, revision)) {
+                publishMatchingAvatar();
+                return true;
+            }
             let retire;
             const retired = new Promise(resolve => { retire = resolve; });
             const expected = { name, revision, pinned, failed: false, handoffQueued: false, retired, retire };
@@ -542,9 +564,12 @@ function startMultiWindowPageConfigLoad() {
                 document.title = name + ' Terminal - Project N.E.K.O.';
             }
             rememberPageSwitchRevision(revision);
+            publishMatchingAvatar();
             expected.inFlight = finishModelBootstrap(expected);
             try {
-                return await expected.inFlight;
+                const loaded = await expected.inFlight;
+                if (loaded) publishMatchingAvatar();
+                return loaded;
             } finally {
                 expected.inFlight = null;
             }
@@ -573,7 +598,7 @@ function startMultiWindowPageConfigLoad() {
             if (explicitName && !switchRevision) {
                 // A pinned preview without a stamped committed revision is local
                 // preview state. Never borrow the current character's revision.
-                resolve(await loadMatchingPageConfig(explicitName, 0, true));
+                resolve(await loadMatchingPageConfig(explicitName, 0, true, d));
                 return;
             }
             if (!switchRevision) {
@@ -604,7 +629,7 @@ function startMultiWindowPageConfigLoad() {
             rememberPageSwitchRevision(switchRevision);
             if (!/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '')) {
                 // IPC conveys chat display data, not model URLs needed by the local renderers.
-                resolve(await loadMatchingPageConfig(d.lanlan_name, switchRevision, !!explicitName));
+                resolve(await loadMatchingPageConfig(d.lanlan_name, switchRevision, !!explicitName, d));
                 return;
             }
             const liveSwitch = handoffPageSnapshotToSwitch(d.lanlan_name, switchRevision);
@@ -631,15 +656,7 @@ function startMultiWindowPageConfigLoad() {
             lanlan_config.master_display_name = window.master_display_name;
             var pageTitleName = lanlan_config.master_display_name || lanlan_config.lanlan_name;
             document.title = pageTitleName ? `${pageTitleName} Terminal - Project N.E.K.O.` : 'Project N.E.K.O.';
-            // 头像：如果 IPC 注入了头像 dataUrl，设置到 appChatAvatar
-            // appChatAvatar 可能尚未加载（脚本顺序靠后），先暂存到全局变量
-            if (d.avatarDataUrl) {
-                if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
-                    await window.appChatAvatar.setExternalAvatar(d.avatarDataUrl, d.avatarModelType || '');
-                } else {
-                    window.__nekoPendingAvatar = { dataUrl: d.avatarDataUrl, modelType: d.avatarModelType || '' };
-                }
-            }
+            if (d.avatarDataUrl) await applyInjectedAvatar(d);
             // resolve 类型与 5s 超时分支（loadPageConfig() → bool）保持一致，
             // 避免未来有 consumer 做 result === true 判断时 IPC 路径悄悄失效。
             resolve(true);
@@ -648,9 +665,18 @@ function startMultiWindowPageConfigLoad() {
         var handler = function (event) {
             applyInjectedConfig((event && event.detail) || {}).catch(reject);
         };
+        const cached = window.__nekoInjectedConfig;
+        const hasCachedConfig = cached && Object.prototype.hasOwnProperty.call(cached, 'lanlan_name');
+        const explicitName = explicitPageCharacterName();
+        if (explicitName && !hasCachedConfig && typeof window.__nekoRequestConfigInjection !== 'function') {
+            // A named preview can start its validated HTTP read immediately;
+            // the desktop multi-window flag alone does not advertise IPC.
+            loadMatchingPageConfig(explicitName, 0, true).then(resolve, reject);
+            return;
+        }
         window.addEventListener('neko:config-injected', handler);
-        if (window.__nekoInjectedConfig && Object.prototype.hasOwnProperty.call(window.__nekoInjectedConfig, 'lanlan_name')) {
-            applyInjectedConfig(window.__nekoInjectedConfig).catch(reject);
+        if (hasCachedConfig) {
+            applyInjectedConfig(cached).catch(reject);
             return;
         }
         requestInjectedConfig(0);
