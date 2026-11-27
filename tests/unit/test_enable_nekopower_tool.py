@@ -785,6 +785,8 @@ def _flagged(*, session_up=True, master_on=False):
         return None
 
     manager.dropped = []
+    manager.final_swap_task = None
+    manager.is_hot_swap_imminent = False
 
     async def cleanup():
         manager.dropped.append("cleanup")
@@ -917,3 +919,59 @@ def test_switched_on_again_later_is_renewed_again():
 
     asyncio.run(run())
     assert manager.renewals == [True, True]
+
+
+def test_a_swap_under_way_is_not_cut_short_by_switching_off():
+    # Greptile on #4155: the swap may have closed the old connection already; cut short, no
+    # session would be left. It is let finish.
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        _held_renewal(manager)
+        manager.update_agent_flags({"agent_enabled": True})
+        await asyncio.sleep(0)
+        manager.is_hot_swap_imminent = True
+        manager.update_agent_flags({"agent_enabled": False})
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert manager.dropped == []
+
+
+def test_switched_on_again_while_the_last_renewal_is_dropped_waits_for_it():
+    # Greptile on #4155: the earlier dropping's cleanup must not take the newer preparation.
+    manager = _flagged()
+    order = []
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        _held_renewal(manager)
+        cleaned = asyncio.Event()
+
+        async def slow_cleanup():
+            order.append("cleanup starts")
+            await cleaned.wait()
+            order.append("cleanup done")
+
+        manager._cleanup_pending_session_resources = slow_cleanup
+        manager.update_agent_flags({"agent_enabled": True})
+        await asyncio.sleep(0)
+        manager.update_agent_flags({"agent_enabled": False})
+        await asyncio.sleep(0)
+
+        async def renew():
+            order.append("renew")
+            return True
+
+        manager.renew_session_now = renew
+        manager.update_agent_flags({"agent_enabled": True})
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert "renew" not in order
+        cleaned.set()
+        await asyncio.wait_for(manager._nekopower_renewal[1], 2)
+
+    asyncio.run(run())
+    assert order == ["cleanup starts", "cleanup done", "renew"]

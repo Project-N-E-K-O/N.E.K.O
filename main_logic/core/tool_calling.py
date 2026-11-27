@@ -532,9 +532,16 @@ class ToolCallingMixin:
         held = getattr(self, "_nekopower_renewal", None)
         if held is not None and held[0] == count:
             return held[1]
-        task = self._fire_task(self.renew_session_now())
+        task = self._fire_task(self._renew_once_dropped())
         self._nekopower_renewal = (count, task)
         return task
+
+    async def _renew_once_dropped(self) -> bool:
+        """Renew, once an earlier renewal's dropping is over: its cleanup must not take this one's preparation."""
+        dropping = getattr(self, "_nekopower_dropping", None)
+        if dropping is not None and not dropping.done():
+            await asyncio.wait({dropping})
+        return await self.renew_session_now()
 
     def _drop_nekopower_renewal(self) -> None:
         """NekoPower went off again (a command taken back, the panel): a renewal under way for it is dropped.
@@ -547,9 +554,14 @@ class ToolCallingMixin:
             return
         self._nekopower_renewal = None
         held[1].cancel()
-        self._fire_task(self._drop_prepared_session())
+        self._nekopower_dropping = self._fire_task(self._drop_prepared_session())
 
     async def _drop_prepared_session(self) -> None:
+        swap = getattr(self, "final_swap_task", None)
+        if getattr(self, "is_hot_swap_imminent", False) or (swap is not None and not swap.done()):
+            # A swap under way may have closed the old connection already: cut short, it
+            # could leave no session at all. It is let finish.
+            return
         await self._cleanup_pending_session_resources()
         await self._reset_preparation_state()
 
