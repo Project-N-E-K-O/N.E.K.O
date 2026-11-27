@@ -444,6 +444,9 @@ def _publish_github(
         # A clean rebuild by default must not silently drop an unreconciled
         # backup of vendor/; only an explicit `sync --clean` may.
         discard_backups=False,
+        # Nor may it empty a hand-maintained vendor/ when no external
+        # dependency is declared; only an explicit sync does that.
+        clear_empty_vendor=False,
     )
     if deps_cmd.handle_sync(sync_args) != 0:
         raise RuntimeError(

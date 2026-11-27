@@ -2034,6 +2034,60 @@ def test_sync_explicit_empty_dependencies_only_clears_vendor_when_clean(tmp_path
     assert (vendor / "manual.py").exists() is (not clean)
 
 
+@pytest.mark.parametrize("expired", [True, False])
+def test_task_deadline_inside_sync_keeps_its_timeout_reason(tmp_path, expired):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    installed = []
+
+    def install(command, **kwargs):
+        (Path(command[command.index("--target") + 1]) / "new.py").write_text("new")
+        installed.append(True)
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    def check_cancelled():
+        if installed and expired:
+            raise TimeoutError("The dependency task exceeded its time budget")
+
+    def progress(phase):
+        # A filesystem ETIMEDOUT while the task itself still has time left.
+        if phase == "replacing" and not expired:
+            raise TimeoutError("network share timed out")
+
+    options = dict(
+        clean=True, uv_executable="uv", installer_runner=install,
+        check_cancelled=check_cancelled, progress=progress, report=lambda line: None,
+    )
+    if expired:
+        with pytest.raises(TimeoutError, match="time budget"):
+            vendor_sync.sync_vendor(plugin_dir, **options)
+    else:
+        assert vendor_sync.sync_vendor(plugin_dir, **options) == 1
+    assert (vendor / "old.py").read_text() == "old"
+    assert not list(plugin_dir.glob(".vendor.staging-*"))
+
+
+def test_publish_style_sync_keeps_vendor_without_external_dependencies(tmp_path):
+    # publish cleans by default; that must not empty a hand-maintained vendor/
+    # of a plugin declaring `dependencies = []` (the scaffold default).
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "pyproject.toml").write_text('[project]\ndependencies = []\n', encoding="utf-8")
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "local.py").write_text("manual dependency", encoding="utf-8")
+    args = TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=True)
+    args.discard_backups = False
+    args.clear_empty_vendor = False
+
+    assert handle_sync(args) == 0
+    assert (vendor / "local.py").read_text(encoding="utf-8") == "manual dependency"
+    assert not list(plugin_dir.glob(".vendor.backup-*"))
+
+
 @pytest.mark.parametrize("declaration", ['dependencies = ["--help"]', 'dynamic = ["dependencies"]'])
 def test_sync_rejects_unsupported_declarations_before_touching_vendor(tmp_path, monkeypatch, capsys, declaration):
     from plugin.neko_plugin_cli.core import vendor_sync

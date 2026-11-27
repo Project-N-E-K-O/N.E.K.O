@@ -136,6 +136,10 @@ def read_package_tools() -> dict[str, object]:
     pip = _pip_available()
     prepared_python = _prepared_python() if packaged else sys.executable
     supported = sys.platform in _SUPPORTED_PLATFORMS
+    # A packaged sync only trusts a system uv after a version probe, which a
+    # read never runs; until the pinned copy is cached, preparation may still
+    # download it.
+    packaged_uv_ready = _cached_uv().is_file()
     return {
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "platform": sys.platform,
@@ -146,7 +150,7 @@ def read_package_tools() -> dict[str, object]:
         "packaged": packaged,
         "can_sync": supported or (not packaged and (uv is not None or pip)),
         "reason": None if supported or (not packaged and (uv or pip)) else "unsupported_platform",
-        "setup_required": (packaged and (prepared_python is None or uv is None)) or (uv is None and not pip),
+        "setup_required": (packaged and (prepared_python is None or not packaged_uv_ready)) or (uv is None and not pip),
     }
 
 

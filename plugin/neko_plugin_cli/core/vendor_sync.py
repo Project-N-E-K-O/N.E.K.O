@@ -51,6 +51,7 @@ class VendorSyncOptions:
     progress: Callable[[str], None] | None
     check_cancelled: Callable[[], None] | None
     expected_revision: str | None = None
+    clear_empty_vendor: bool = True
 
 
 def find_uv() -> str | None:
@@ -130,8 +131,13 @@ def sync_vendor(
     progress: Callable[[str], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
     expected_revision: str | None = None,
+    clear_empty_vendor: bool = True,
 ) -> int:
     """Install declared packages without exposing an incomplete ordinary vendor tree.
+
+    With ``clean`` and ``clear_empty_vendor``, an explicitly empty dependency
+    list empties vendor/. Callers that clean only by default (publish) pass
+    ``clear_empty_vendor=False`` and leave a hand-maintained vendor/ alone.
 
     The runner controls only external installer execution; locks, staging, recovery,
     and safe directory replacement stay identical for CLI and background tasks.
@@ -143,7 +149,7 @@ def sync_vendor(
     """
     args = VendorSyncOptions(python, project_root, clean, discard_backups,
                              installer_runner, uv_executable, allow_pip_fallback, report, progress, check_cancelled,
-                             expected_revision)
+                             expected_revision, clear_empty_vendor)
     emit = _diagnostic_emitter(report)
     _checkpoint(args, "preparing")
     vendor_dir = plugin_dir / "vendor"
@@ -197,9 +203,12 @@ def sync_vendor(
                 )
                 return 1
 
-            if not external_deps and (not args.clean or declared_deps is None):
+            if not external_deps and (
+                not args.clean or not args.clear_empty_vendor or declared_deps is None
+            ):
                 # Missing declarations do not authorize replacing a manually
-                # maintained vendor/; an explicitly empty list does.
+                # maintained vendor/; an explicitly empty list does, but only
+                # for a sync the user asked to clean (not publish's default).
                 # Leftovers of finished swaps would otherwise never go away.
                 _remove_retained_backups(plugin_dir)
                 emit(f"[OK] {plugin_dir.name}: no external dependencies to sync")
@@ -338,6 +347,12 @@ def sync_vendor(
         emit(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:
+        if isinstance(exc, TimeoutError) and args.check_cancelled is not None:
+            # A task deadline raises TimeoutError, an OSError. Ask the caller
+            # again: an expired task re-raises its own reason, which must not
+            # turn into a generic install failure; a filesystem ETIMEDOUT falls
+            # through.
+            args.check_cancelled()
         emit(f"[FAIL] Could not sync dependencies for {plugin_dir}: {exc}", file=sys.stderr)
         return 1
     finally:

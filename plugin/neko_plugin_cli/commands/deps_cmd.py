@@ -45,4 +45,5 @@ def handle_sync(args: argparse.Namespace) -> int:
     return sync_vendor(
         plugin_dir, python=args.python, project_root=defaults.repo_root,
         clean=args.clean, discard_backups=getattr(args, "discard_backups", args.clean),
+        clear_empty_vendor=getattr(args, "clear_empty_vendor", True),
     )

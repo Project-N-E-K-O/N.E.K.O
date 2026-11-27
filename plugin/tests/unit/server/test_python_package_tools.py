@@ -234,7 +234,12 @@ def test_packaged_capabilities_recognize_prepared_tools_without_running_them(too
     }), encoding="utf-8")
     result = module.read_package_tools()
     assert result["python_executable"] == str(python)
-    assert result["setup_required"] is False
+    # A system uv is only trusted after a version probe, which reads never run.
+    assert result["setup_required"] is True
+    cached_uv = module._cached_uv()
+    cached_uv.parent.mkdir(parents=True)
+    cached_uv.touch()
+    assert module.read_package_tools()["setup_required"] is False
     python.unlink()
     assert module.read_package_tools()["setup_required"] is True
 

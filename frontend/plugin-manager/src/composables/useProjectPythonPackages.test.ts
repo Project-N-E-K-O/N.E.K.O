@@ -243,6 +243,30 @@ describe('project Python package session', () => {
     expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
     expect(session.changed).toHaveBeenCalledTimes(1)
   })
+  it('keeps a newer task when the poll of an older one reports it missing', async () => {
+    const newer = task({ task_id: 'newer-task' })
+    api.getProjectPythonPackages
+      .mockResolvedValueOnce(state({ task: task() }))
+      .mockResolvedValue(state({ task: newer }))
+    let reject!: (reason: unknown) => void
+    api.getProjectPythonTask.mockReturnValueOnce(
+      new Promise((_, fail) => {
+        reject = fail
+      })
+    )
+    const session = await mount()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
+    await session.reload()
+    expect(session.task.value?.task_id).toBe('newer-task')
+    reject({ response: { data: { detail: { code: 'PYTHON_PACKAGES_TASK_NOT_FOUND' } } } })
+    await flush()
+    expect(session.task.value?.task_id).toBe('newer-task')
+    expect(session.error.value).toBeNull()
+    // The stale NOT_FOUND neither dropped the newer task nor forced a refresh.
+    expect(api.getProjectPythonPackages).toHaveBeenCalledTimes(2)
+  })
   it('clears a refresh error that failed while a task was being started', async () => {
     const session = await mount()
     let started!: (value: PythonPackagesTask) => void

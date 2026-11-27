@@ -21,8 +21,10 @@ code disagree, the code wins.
   N.E.K.O update.
 - **Starting a plugin installs nothing.** Start and reload only check
   `vendor/`. It is filled by an explicit sync, either
-  `neko-plugin sync <plugin> --clean` (removes the old `vendor/` first so
-  dropped dependencies do not linger) or the plugin studio's **Dependencies**
+  `neko-plugin sync <plugin> --clean` (installs into a staging directory and
+  replaces the old `vendor/` only after that succeeds, so dropped
+  dependencies do not linger and a failed install keeps the old ones) or the
+  plugin studio's **Dependencies**
   tab, which runs the same sync
   ([vendor_sync.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/neko_plugin_cli/core/vendor_sync.py))
   for a registered project, in packaged N.E.K.O builds too. Sync after every

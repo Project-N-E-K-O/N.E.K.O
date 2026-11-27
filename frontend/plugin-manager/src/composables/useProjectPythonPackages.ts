@@ -112,7 +112,8 @@ export function useProjectPythonPackages(
         if (current(id, seq)) notifyTerminalTask(next)
       }
     } catch (cause) {
-      if (current(id, seq)) {
+      // A newer task may have replaced the one this poll asked about.
+      if (current(id, seq) && task.value?.task_id === taskId) {
         if (projectErrorCode(cause) === 'PYTHON_PACKAGES_TASK_NOT_FOUND') {
           task.value = null
           snapshotRefreshPending = true
