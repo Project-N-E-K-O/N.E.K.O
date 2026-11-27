@@ -167,7 +167,8 @@ appearanceTest(
       'Plugins',
       'Overview',
       'Plugin forge',
-      'Knowledge',
+      // Keep main's expanded navigation and the unified knowledge entry's label.
+      'Knowledge base',
       'Plugin API',
       'Runs',
       'Server Logs',

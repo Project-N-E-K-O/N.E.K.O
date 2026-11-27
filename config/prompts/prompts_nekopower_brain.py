@@ -1252,6 +1252,29 @@ GENERIC_WORD_PATTERNS = (
     r"\b(?:hoy|mañana|ayer|noche|tarde|ahora|luego|después|hoje|amanhã|ontem|noite|agora|depois|logo|me|mi|meu|minha|de|do|da|la|el|los|las|o|os|as|a|para)\b",
 )
 
+# Words a stop says without naming what it stops: the stopping, how much of
+# it (all, every), and the work under way ("in progress", "what is on hand").
+# Left out of the sentence where a stop the model says is named, while the
+# list was cut, is checked against the words of what it named
+# (``decision._words_name``): "cancel the work in progress" names nothing,
+# though a title may say "work out the shop budget" (owner's automatic
+# review). What is left of a sentence that names its work is that work.
+UNDER_WAY_STOP_WORD_PATTERNS = (
+    # Chinese, Simplified and Traditional.
+    # (Kanji the Japanese share first, whole: "進行中" before "進行".)
+    r"进行中|進行中|执行中|執行中|実行中|运行中|運行中|停止|停下|停掉|暂停|暫停|叫停|取消|撤销|撤銷|别做|別做|不做|算了|停|全部|所有|一切|在办|在辦|在做|在跑|在弄|进行|進行|正在|手上|手头|手頭|手里|手裡|任务|任務|工作|事情",
+    # English.
+    r"\b(?:stop(?:s|ped|ping)?|cancel(?:s|ed|led|ing|ling)?|halt|abort|kill|quit|drop|pause|end|every(?:thing|one)?|whatever|anything|work(?:s|ing)?|tasks?|jobs?|things?|stuff|ones?|items?|ongoing|running|current(?:ly)?|active|pending|doing|wip|in[\s-]+progress|under[\s-]*way|going[\s-]+on)\b",
+    # Japanese.
+    r"止めて|中止|停止|キャンセル|取り消し|全部|全て|進行中|実行中|作業|仕事|タスク",
+    # Korean.
+    r"멈춰\w*|중지\w*|중단\w*|취소\w*|그만\w*|전부|모두|진행\s*중\w*|작업\w*",
+    # Russian.
+    r"\b(?:стоп|останови\w*|отмени\w*|прекрати\w*|всё|все|всех|всю|весь|работ\w*|задач\w*|дела|текущ\w*|в\s+процессе)\b",
+    # Spanish and Portuguese.
+    r"\b(?:para|parar|pare|det[eé]n\w*|cancel\w*|todo|todos|todas|tudo|tarea\w*|tarefa\w*|trabajo\w*|trabalho\w*|en\s+curso|en\s+marcha|em\s+andamento|em\s+curso)\b",
+)
+
 SUPPLEMENT_CUE_PATTERNS = (
     r"补充|補充|另外|还有|還有|顺便|順便|再加|加上|改成|换成|換成|改为|改為|记得|記得|对了|對了",
     r"\b(?:also|additionally|in\s+addition|by\s+the\s+way|instead|change\s+it\s+to|make\s+sure|one\s+more\s+thing|and\s+add)\b",

@@ -127,6 +127,7 @@ from utils.logger_config import install_httpx_filter, setup_logging  # noqa: E40
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
+from utils.http.knowledge_proxy import PACK_BODY_MAX_BYTES  # noqa: E402
 from utils.avatar_tool_store import AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES  # noqa: E402
 from utils.host_origin_guard import HostOriginGuardMiddleware  # noqa: E402
 
@@ -672,14 +673,16 @@ def _emote_template_multipart_preflight(scope):
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
 # External memory import preview/commit upload the archive as base64 inside JSON: those two
-# exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
-# other route stays at 16 MiB.
+# exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom.
+# Both guards share the raw knowledge ZIP limits; every other route stays at 16 MiB.
 from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
 from main_routers.workshop_router.preview_cards import (  # noqa: E402
     WORKSHOP_PREVIEW_MAX_MULTIPART_BODY_BYTES,
 )
 
 _non_multipart_body_limits = {
+    "/api/public-knowledge/packs/import": PACK_BODY_MAX_BYTES,
+    "/market/knowledge/packs/import": PACK_BODY_MAX_BYTES,
     "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
     "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
 }

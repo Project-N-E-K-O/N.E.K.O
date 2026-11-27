@@ -31,7 +31,7 @@ SHA = hashlib.sha256(ARTIFACT).hexdigest()
 def _descriptor(package_id: int = 42, pack_id: str = "market-memes", version: str = "1.0.0"):
     return km.KnowledgeVersionDescriptor.model_validate(
         {
-            "protocol_version": 1,
+            "protocol_version": 2,
             "package_id": package_id,
             "remote_id": f"knowledge/{pack_id}",
             "pack_id": pack_id,
@@ -40,11 +40,11 @@ def _descriptor(package_id: int = 42, pack_id: str = "market-memes", version: st
             "channel": "stable",
             "artifacts": {
                 "knowledge": {
-                    "url": f"https://github.com/o/r/releases/download/v1/{pack_id}.neko-knowledge.json",
+                    "url": f"https://github.com/o/r/releases/download/v1/{pack_id}.neko-knowledge.zip",
                     "sha256": SHA,
                     "bytes": len(ARTIFACT),
                 },
-                # v1 ignores prebuilt index artifacts a descriptor may list.
+                # Unknown optional descriptor metadata cannot replace the bound v2 artifact.
                 "index_manifest": {"url": "https://github.com/x.json", "sha256": SHA, "bytes": 1},
             },
         }
@@ -330,7 +330,7 @@ async def test_subscriptions_show_installed_imports_and_tasks(env):
 
 def _removal(*releases: tuple[str, str]) -> dict:
     return {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "pack_id": "market-memes",
         "expected_subscription": {
             "provider": "plugin-market", "provider_package_id": "42", "remote_id": "knowledge/market-memes",
@@ -643,20 +643,107 @@ async def test_main_hop_failures_are_told_apart_from_memory_server_answers(monke
 @pytest.mark.parametrize(
     "url, final, allowed",
     [
-        ("https://github.com/o/r/releases/download/v1/p.neko-knowledge.json", True, True),
+        ("https://github.com/o/r/releases/download/v1/p.neko-knowledge.zip", True, True),
         ("https://github.com/o/r/releases/download/v1/p.zip", True, False),
-        ("http://github.com/o/r/p.neko-knowledge.json", True, False),
-        ("https://evil.example/p.neko-knowledge.json", True, False),
-        ("https://user:pw@github.com/p.neko-knowledge.json", True, False),
+        ("http://github.com/o/r/p.neko-knowledge.zip", True, False),
+        ("https://evil.example/p.neko-knowledge.zip", True, False),
+        ("https://user:pw@github.com/p.neko-knowledge.zip", True, False),
         ("https://objects.githubusercontent.com/some/cdn/path", False, True),
-        ("https://127.0.0.1/p.neko-knowledge.json", False, False),
+        ("https://127.0.0.1/p.neko-knowledge.zip", False, False),
     ],
 )
 def test_artifact_hosts_are_allowlisted(url, final, allowed):
     assert km._artifact_url_allowed(url, final=final) is allowed
 
 
-RELEASE = "https://github.com/o/r/releases/download/v1/p.neko-knowledge.json"
+RELEASE = "https://github.com/o/r/releases/download/v1/p.neko-knowledge.zip"
+
+
+async def test_market_download_uses_oauth_only_on_the_configured_exact_route(monkeypatch):
+    """A redirect to an allowed release host must never carry market credentials."""
+    monkeypatch.setattr(km, "MARKET_API_URL", "https://market.test")
+    seen = []
+
+    async def token(**_kwargs):
+        return {"access_token": "isolated-market-token"}
+
+    def handler(request):
+        seen.append((request.url.host, request.headers.get("authorization")))
+        if request.url.host == "market.test":
+            return httpx.Response(302, headers={"location": RELEASE})
+        return httpx.Response(200, content=ARTIFACT)
+
+    real_client = httpx.AsyncClient
+
+    class Fake:
+        AsyncClient = staticmethod(lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        Timeout = httpx.Timeout
+
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    url = "https://market.test/api/v1/shares/42/download?revision=2"
+    assert km._artifact_url_allowed(url, final=True)
+    assert not km._artifact_url_allowed("https://market.test/api/v1/admin", final=True)
+    assert not km._artifact_url_allowed("https://market.test:8443/api/v1/shares/42/download", final=True)
+    assert await km._download(url, Fake) == ARTIFACT
+    assert seen == [("market.test", "Bearer isolated-market-token"), ("github.com", None)]
+
+
+async def test_loopback_bearer_download_bypasses_environment_proxies(monkeypatch):
+    monkeypatch.setattr(km, "MARKET_API_URL", "http://127.0.0.1:49199")
+    options = []
+    async def token(**_kwargs):
+        return {"access_token": "isolated-loopback-token"}
+    real_client = httpx.AsyncClient
+    def make_client(**kwargs):
+        options.append(kwargs)
+        return real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=ARTIFACT)), **kwargs)
+    class Fake:
+        AsyncClient = staticmethod(make_client)
+        Timeout = httpx.Timeout
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    assert await km._download("http://127.0.0.1:49199/api/v1/shares/42/download", Fake) == ARTIFACT
+    assert options and options[-1].get("trust_env") is False
+
+
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_artifact_refresh_has_its_own_budget_and_transient_errors_remain_retryable(monkeypatch, refresh_fails):
+    monkeypatch.setattr(km, "MARKET_API_URL", "https://market.test")
+    refreshed = False
+    async def token(**kwargs):
+        nonlocal refreshed
+        if kwargs.get("force_refresh"):
+            if refresh_fails:
+                raise HTTPException(503, "synthetic unavailable Auth")
+            refreshed = True
+        return {"access_token": "fresh" if refreshed else "stale"}
+    requests = []
+    def handler(request):
+        requests.append(request)
+        hop = int(request.url.params.get("hop", "0"))
+        if hop < 5:
+            return httpx.Response(302, headers={"location": f"/api/v1/shares/42/download?hop={hop + 1}"})
+        return httpx.Response(200, content=ARTIFACT) if refreshed else httpx.Response(401)
+    real_client = httpx.AsyncClient
+    class Fake:
+        AsyncClient = staticmethod(lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        Timeout = httpx.Timeout
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    if refresh_fails:
+        with pytest.raises(km._TaskError) as error:
+            await km._download("https://market.test/api/v1/shares/42/download", Fake)
+        assert error.value.retryable and error.value.code == "download_failed"
+    else:
+        assert await km._download("https://market.test/api/v1/shares/42/download", Fake) == ARTIFACT
+        assert len(requests) == 7
+
+
+def test_old_protocol_cannot_be_misread_as_a_unified_zip_descriptor():
+    """An ignored optional field must never upgrade a protocol-v1 descriptor."""
+    raw = _descriptor().model_dump(mode="json")
+    raw["protocol_version"] = 1
+    raw["artifacts"]["index_manifest"] = {"url": "https://github.com/x.json", "sha256": SHA, "bytes": 1}
+    with pytest.raises(ValueError):
+        km.KnowledgeVersionDescriptor.model_validate(raw)
 
 
 def test_mirror_hosts_of_the_plugin_install_path_are_allowlisted():
@@ -687,8 +774,8 @@ async def test_download_sources_follow_the_speed_test(monkeypatch):
     assert fallback[:2] == [f"{km._GITHUB_MIRROR_PREFIXES[0]}{RELEASE}", RELEASE]
     assert set(fallback) == set(sources)
     # Not a GitHub Release asset: downloaded as published only.
-    assert await km._artifact_sources("https://objects.githubusercontent.com/x.neko-knowledge.json") == [
-        "https://objects.githubusercontent.com/x.neko-knowledge.json"
+    assert await km._artifact_sources("https://objects.githubusercontent.com/x.neko-knowledge.zip") == [
+        "https://objects.githubusercontent.com/x.neko-knowledge.zip"
     ]
 
 
@@ -751,7 +838,7 @@ async def test_redirect_off_the_allowlist_is_refused(monkeypatch):
         Timeout = httpx.Timeout
 
     with pytest.raises(km._TaskError) as excinfo:
-        await km._download("https://github.com/o/r/releases/download/v1/p.neko-knowledge.json", Fake)
+        await km._download("https://github.com/o/r/releases/download/v1/p.neko-knowledge.zip", Fake)
     assert excinfo.value.code == "unsafe_artifact_redirect"
 
 
@@ -870,3 +957,23 @@ def test_pair_code_origin_gate_and_main_port(monkeypatch, origin, status):
         # Main's port whichever server the manager page reached (decision A).
         assert response.json()["port"] == 48911
         assert response.json()["one_time_code"]
+
+
+async def test_lan_https_bearer_download_is_direct_but_keeps_configured_ca(monkeypatch):
+    """A self-hosted HTTPS market bypasses proxies without dropping SSL_CERT_FILE trust."""
+    monkeypatch.setattr(km, "MARKET_API_URL", "https://192.168.1.20")
+    options = []
+    async def token(**_kwargs):
+        return {"access_token": "isolated-lan-token"}
+    real_client = httpx.AsyncClient
+    def make_client(**kwargs):
+        options.append(kwargs)
+        return real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=ARTIFACT)), **kwargs)
+    class Fake:
+        AsyncClient = staticmethod(make_client)
+        Timeout = httpx.Timeout
+    marker = object()
+    monkeypatch.setattr(httpx, "create_ssl_context", lambda **kwargs: marker if kwargs.get("trust_env") else None)
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    assert await km._download("https://192.168.1.20/api/v1/shares/42/download", Fake) == ARTIFACT
+    assert options and options[-1].get("trust_env") is False and options[-1].get("verify") is marker

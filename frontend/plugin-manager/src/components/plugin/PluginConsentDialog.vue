@@ -52,6 +52,9 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { capabilityMessageKey, consentSaveErrorKey, consentSnapshot, INCOMPLETE_STATUSES, isConsentChanged } from '@/utils/pluginCapabilities'
+// Keep the async wrapper's close listener from falling through to ElDialog
+// and bypassing cancel()'s saving guard. The loaded dialog owns cancellation.
+defineEmits(['close'])
 const { t } = useI18n()
 const consentState = usePluginConsentState()
 const saving = ref(false)

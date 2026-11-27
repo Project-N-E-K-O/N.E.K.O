@@ -1316,7 +1316,10 @@ async def test_how_much_a_stop_means_decides_what_is_asked_about_what_was_left_o
     mixed = [*shop[:2], commission("c3", "write the cat food post", route="task_agent", project="Blog")]
 
     async def read(reading: dict[str, Any], active: list[Commission]) -> tuple[str, list[str]]:
-        triage, _calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(request("stop", active=active))
+        # (Words that name the shop site's work: where the list was cut, a stop said to be named whose
+        # words share none with what it names is asked about, below.)
+        said = request("stop the shop site work", active=active)
+        triage, _calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(said)
         assert not unread
         return triage.kind, triage.targets
 
@@ -1347,9 +1350,11 @@ async def test_how_much_a_stop_means_decides_what_is_asked_about_what_was_left_o
     assert await read(said, mixed) == ("stop", ["c1", "c2", "c3"])
     said = {"does": "stop", "items": [1, 2, 3], "named": False, "scope": "all"}
     assert await read(said, mixed) == ("ambiguous", ["c1", "c2", "c3"])
-    # "All" with fewer than all under way may be all of a project ("stop all the shop site work"): no
-    # more than those.
-    assert await read({"does": "stop", "items": [1, 2], "named": True, "scope": "all"}, mixed) == ("stop", ["c1", "c2"])
+    # "All" with fewer than all under way: which, the user is asked, among all. (It was taken for all
+    # of a project's, "stop all the shop site work"; the model says "project" of those, and has said
+    # "all" of what was at work alone, what waits for the user left out: measured, below.)
+    said = {"does": "stop", "items": [1, 2], "named": True, "scope": "all"}
+    assert await read(said, mixed) == ("ambiguous", ["c1", "c2", "c3"])
     # "These" or "project" said of a bare "stop it" with several under way: which, all the same.
     for scope in ("these", "project"):
         said = {"does": "stop", "items": [1], "named": False, "scope": scope}
@@ -1363,8 +1368,14 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
     # go on as well). No one is asked.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
 
-    async def read(reading: dict[str, Any], active: list[Commission]) -> tuple[str, list[str], list[str]]:
-        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(request("stop", active=active))
+    async def read(
+        reading: dict[str, Any], active: list[Commission], said: str = "stop the shop site work", **values: Any
+    ) -> tuple[str, list[str], list[str]]:
+        # (In words that name what it stops: where the list was cut, a stop whose words share none with
+        # what it names is asked about.)
+        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(
+            request(said, active=active, **values)
+        )
         assert (calls, unread) == (1, False)
         return triage.kind, triage.targets, triage.left_running
 
@@ -1375,9 +1386,10 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
     assert await read({**these, "items": [1, 2]}, shop) == ("stop", ["c1", "c2"], ["c3"])
     # So for a familiar's work (its session), and for what one plugin runs.
     scout = [commission(f"c{n}", f"look up page {n}", route="task_agent", session_id="s-scout") for n in (1, 2, 3)]
-    assert await read(these, scout) == ("stop", ["c1"], ["c2", "c3"])
+    said = "stop whatever the scout cat is doing"
+    assert await read(these, scout, said, familiars={"s-scout": "Scout cat"}) == ("stop", ["c1"], ["c2", "c3"])
     weather = [commission(f"c{n}", f"weather in city {n}", route="plugin", plugin_id="weather") for n in (1, 2, 3)]
-    assert await read(these, weather) == ("stop", ["c1"], ["c2", "c3"])
+    assert await read(these, weather, "stop the weather lookups") == ("stop", ["c1"], ["c2", "c3"])
     # What was left out that is none of theirs is not said: it is not what the stop is about. Nor is
     # what of their project was shown and not named, when none of it was left out: what it names is
     # what was meant, as with the whole list.
@@ -1388,7 +1400,8 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
     blog = [commission(f"b{n}", f"blog post {n}", route="task_agent", project="Blog") for n in (1, 2)]
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 4)
     two = [shop[0], *blog, *shop[1:]]
-    assert await read({**these, "items": [1, 2]}, two) == ("stop", ["c1", "b1"], ["c2", "c3"])
+    # (Words of the two it names, which leave the third of the shop site's out of the list.)
+    assert await read({**these, "items": [1, 2]}, two, "stop page 1 and post 1") == ("stop", ["c1", "b1"], ["c2", "c3"])
     # Nothing left out: nothing said.
     monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 3)
     assert await read(these, shop) == ("stop", ["c1"], [])
@@ -1409,6 +1422,164 @@ async def test_a_stop_of_the_items_it_names_leaves_what_of_their_project_was_not
         assert await read(said, mixed) == ("ambiguous", ["c1", "c2", "c3"], []), scope
     # Named, the one shown is stopped, and the rest of its project is said to go on.
     assert await read(these, shop[:2]) == ("stop", ["c1"], ["c2"])
+
+
+async def test_all_said_of_less_than_all_her_work_under_way_asks_which():
+    # The model has read "cancel all the ongoing work" (and "进行中的活都取消") as all, named, of the
+    # items at work alone, what waits for the user left out (2 of 48 readings, measured): those were
+    # stopped and the rest went on, unsaid. "All" of less than all her work under way asks which, among
+    # all of it, the list whole; all of it named is stopped.
+    ask = {"kind": "confirmation", "question": "Overwrite the tags there are?"}
+    waiting = [_waiting(f"w{n}", f"tag album batch {n}", {**ask, "id": f"q{n}"}) for n in (1, 2, 3)]
+    working = [commission(f"c{n}", f"shop site page {n}", route="task_agent", project="Shop site") for n in (1, 2, 3)]
+    everything = ["w1", "w2", "w3", "c1", "c2", "c3"]
+
+    async def read(items: list[int]) -> tuple[str, list[str]]:
+        said = {"does": "stop", "items": items, "named": True, "scope": "all"}
+        triage, calls, unread = await LexicalDecisionModel(_reading(said)).read_under_way(
+            request("cancel all the ongoing work", active=[*waiting, *working])
+        )
+        assert (calls, unread) == (1, False)
+        return triage.kind, triage.targets
+
+    assert await read([4, 5, 6]) == ("ambiguous", everything)
+    assert await read([1]) == ("ambiguous", everything)
+    assert await read([1, 2, 3, 4, 5, 6]) == ("stop", everything)
+
+
+async def test_a_stop_whose_words_share_none_with_what_it_names_asks_which_where_the_list_was_cut(monkeypatch):
+    # Where the list was cut, the model has said a stop of what is under way ("在办的都取消吧", "stop the
+    # work in progress") names the one item at work it saw, the rest waiting for the user or not shown:
+    # that one was stopped ("these") or asked about with its project's ("project"), and the rest went
+    # on (11 of 84 readings of such words, measured). Its words share none with what that item is, its
+    # project, familiar or plugin: which, the user is asked, among all of her work.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
+    shop = [commission(f"c{n}", f"shop site page {n}", route="task_agent", project="Shop site") for n in (1, 2, 3)]
+    active = [*shop, commission("b1", "write the cat food post", route="task_agent", project="Blog")]
+
+    async def read(reading: dict[str, Any], said: str, work: list[Commission], **values: Any) -> tuple[str, list[str]]:
+        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(
+            request(said, active=work, **values)
+        )
+        assert (calls, unread) == (1, False)
+        return triage.kind, sorted(triage.targets)
+
+    everything = sorted(["c1", "c2", "c3", "b1"])
+    for scope in ("these", "project", None):
+        said = {"does": "stop", "items": [1], "named": True, "scope": scope}
+        for words in ("stop the work in progress", "cancel what is under way", "在办的都取消吧"):
+            assert await read(said, words, active) == ("ambiguous", everything), (scope, words)
+        # Words every request has say nothing of it ("please stop it now" of "fix it now please").
+        fix = [commission("x1", "fix it now please", route="task_agent"), *active]
+        assert await read(said, "please stop it now", fix) == ("ambiguous", sorted(["x1", *everything])), scope
+    # Its words naming it, as before: "these" stops what it names (what of its project goes on is said),
+    # "project" asks among its project's.
+    these = {"does": "stop", "items": [1], "named": True, "scope": "these"}
+    assert await read(these, "stop the shop site work", active) == ("stop", ["c1"])
+    assert await read({**these, "scope": "project"}, "stop the shop site work", active) == ("ambiguous", ["c1", "c3"])
+    assert await read(these, "把商城网站的活都停了", [
+        commission("z1", "把商城网站的页脚重做一下，适配手机", route="task_agent", project="商城网站"),
+        commission("z2", "把商城网站商品页的图片压缩一下", route="task_agent", project="商城网站"),
+        commission("z3", "查一下博客上周的访问量", route="task_agent", project="博客"),
+    ]) == ("stop", ["z1"])
+    # The user's own words count as well as hers.
+    assert await read(these, "cancel what is under way", active, user_text="stop the shop site stuff") == ("stop", ["c1"])
+    # A word shared with any of what tells it apart names it: its project, the familiar on it or that
+    # handed it on, its plugin (its id, name or keywords), the words it was asked with, what it asks, its
+    # members' work and familiars. (The others are none of its project, familiar or plugin.)
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    others = [commission("o1", "beta", route="task_agent"), commission("o2", "gamma", route="task_agent")]
+    familiars = {"s-boss": "Boss cat", "s-w": 'Working cat "images"'}
+    member = commission("m1", "compress the photos", route="task_agent", parent_id="c1", session_id="s-w")
+    named = [
+        (commission("c1", "alpha", route="task_agent", project="Shop site"), "stop the shop site", {}),
+        (commission("c1", "alpha", route="task_agent", session_id="s-boss"), "stop what the boss cat does", {}),
+        (commission("c1", "alpha", route="task_agent", handed_by="s-boss"), "stop what the boss cat handed on", {}),
+        (commission("c1", "alpha", route="plugin", plugin_id="weather"), "stop the weather run", {}),
+        (commission("c1", "alpha", route="plugin", plugin_id="weather"), "天气那个停了", {}),
+        # (A plugin's id in words.)
+        (commission("c1", "alpha", route="plugin", plugin_id="weather_lookup"), "stop the weather one", {}),
+        (commission("c1", "alpha", route="plugin", plugin_id="weather_lookup"), "stop the weather_lookup one", {}),
+        (commission("c1", "alpha", route="task_agent", user_text="redo the footer"), "stop the footer", {}),
+        (_waiting("c1", "alpha", {"kind": "question", "question": "Which month first?", "id": "q1"}),
+         "stop the one asking about the month", {}),
+        # What it asks as the list shows it: the command a request for approval asks to run, each
+        # question one put together asks and the answers on offer, a report's details.
+        (_waiting("c1", "prepare release", {**_BUILD, "detail": {"command": "npm install"}}),
+         "stop the npm install one", {}),
+        (_waiting("c1", "alpha", {"kind": "questions", "questions": [
+            {"question": "Which title?", "options": [{"label": "Cats"}, {"label": "Dogs"}]}], "id": "q1"}),
+         "stop the one about cats or dogs", {}),
+        (_waiting("c1", "alpha", {"kind": "report", "question": "What time?", "details": "Two tables are free."}),
+         "stop the tables one", {}),
+        # (Read as written, not as quoted for the list: a word after a line break is a word.)
+        (_waiting("c1", "alpha", {"kind": "question", "question": "Choose a\nmonth.", "id": "q1"}),
+         "stop the month one", {}),
+        (commission("c1", "alpha", route="task_agent"), "stop compressing the photos", {"children": [member]}),
+        (commission("c1", "alpha", route="task_agent"), "stop the images cat", {"children": [member]}),
+    ]
+    for item, words, values in named:
+        assert await read(these, words, [item, *others], familiars=familiars, **values) == ("stop", ["c1"]), words
+        # The same item, of words that share none of those.
+        assert await read(these, "stop the work in progress", [item, *others], familiars=familiars, **values) == (
+            "ambiguous", ["c1", "o1", "o2"]
+        ), words
+    # The list whole, the words are not looked at: what it names is stopped, as before.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 12)
+    assert await read(these, "stop the work in progress", active) == ("stop", ["c1"])
+
+
+async def test_words_of_the_stop_itself_name_nothing_where_the_list_was_cut(monkeypatch):
+    # "Stop the work in progress" shares "work" with "work out the shop budget", and "进行中的活都取消"
+    # shares "进行" with "对竞品进行调研": those words say the stopping, how much and the work under way,
+    # not which (owner's automatic review). Left out of the sentence, in each language: which, the user is
+    # asked, among all.
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 1)
+    others = [commission("o1", "beta", route="task_agent"), commission("o2", "gamma", route="task_agent")]
+    these = {"does": "stop", "items": [1], "named": True, "scope": "these"}
+
+    async def read(reading: dict[str, Any], item: Commission, words: str, **values: Any) -> tuple[str, list[str]]:
+        triage, calls, unread = await LexicalDecisionModel(_reading(reading)).read_under_way(
+            request(words, active=[item, *others], **values)
+        )
+        assert (calls, unread) == (1, False)
+        return triage.kind, sorted(triage.targets)
+
+    asked = ("ambiguous", ["c1", "o1", "o2"])
+    for title, words in (
+        ("对竞品进行调研", "进行中的活都取消"),
+        ("整理正在进行的任务清单", "正在办的都停了吧"),
+        ("work out the shop budget", "stop the work in progress"),
+        ("cancel the old jobs", "cancel all the ongoing work"),
+        # (Hyphenated as well: CodeRabbit, fourth round.)
+        ("write progress report", "stop all the work-in-progress"),
+        ("find the way out", "cancel what is under-way"),
+    ):
+        assert await read(these, commission("c1", title, route="task_agent"), words) == asked, words
+    # What is left of words that name it names it.
+    item = commission("c1", "对竞品进行调研", route="task_agent")
+    assert await read(these, item, "停掉竞品调研那个") == ("stop", ["c1"])
+    item = commission("c1", "work out the shop budget", route="task_agent")
+    assert await read(these, item, "stop working out the budget") == ("stop", ["c1"])
+    item = commission("c1", "write progress report", route="task_agent")
+    assert await read(these, item, "stop the progress report") == ("stop", ["c1"])
+    # The familiar's name as the host writes it ("Working cat") is not named by "working".
+    item = commission("c1", "alpha", route="task_agent", session_id="s-w")
+    assert await read(these, item, "stop everything that's working", familiars={"s-w": "Working cat"}) == asked
+    # In each language: a title with every word of the sentence in it, and one more.
+    for words in (
+        "在办的都取消吧", "進行中的都取消吧", "stop the work in progress", "進行中のタスクを全部キャンセルして",
+        "진행 중인 작업 전부 취소해", "отмени все текущие задачи", "cancela todas las tareas en curso",
+        "cancele todas as tarefas em andamento",
+    ):
+        assert await read(these, commission("c1", f"{words} alpha", route="task_agent"), words) == asked, words
+    # Several picked: each must be named. One the model picked beside the one the sentence names is not
+    # stopped with it (owner's automatic review).
+    monkeypatch.setattr("config.nekopower_settings.UNDER_WAY_READ_ROWS", 2)
+    shop = commission("c1", "shop site page", route="task_agent", project="Shop site")
+    two = {**these, "items": [1, 2]}
+    assert await read(two, shop, "stop the shop site page") == asked
+    assert await read(two, shop, "stop the shop site page and beta") == ("stop", ["c1", "o1"])
 
 
 async def test_all_of_nothing_under_way_stops_nothing():

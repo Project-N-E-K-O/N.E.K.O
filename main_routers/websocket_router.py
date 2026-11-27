@@ -667,23 +667,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # If the character does not exist, notify frontend and close the connection.
     if lanlan_name not in session_manager:
         logger.warning(f"❌ 角色 {lanlan_name} 不存在，当前可用角色: {list(session_manager.keys())}")
-        # Get the currently correct character name.
-        current_catgirl = None
         if session_manager:
-            current_catgirl = next(iter(session_manager))
-        # Tell frontend to switch to the correct character.
-        if current_catgirl:
             try:
-                # session_manager does not exist yet, so user language is unavailable; use the default.
-                message = {
-                    "type": "catgirl_switched",
-                    "new_catgirl": current_catgirl,
-                    "old_catgirl": lanlan_name
-                }
-                await websocket.send_text(json.dumps(message))
-                logger.info(f"已通知前端切换到正确的角色: {current_catgirl}")
-                # Briefly allow client message handling so onclose cannot precede onmessage.
-                await asyncio.sleep(0.5)
+                from .characters_router.crud import current_catgirl_switch_snapshot
+                current_catgirl, switch_revision = await current_catgirl_switch_snapshot(_config_manager)
+                if current_catgirl in session_manager:
+                    # Redirect only to the committed role, never an arbitrary live session.
+                    await websocket.send_text(json.dumps({
+                        "type": "catgirl_switched", "new_catgirl": current_catgirl,
+                        "old_catgirl": lanlan_name, "switch_revision": switch_revision,
+                    }))
+                    logger.info(f"已通知前端切换到正确的角色: {current_catgirl}")
+                    # Briefly allow client message handling so onclose cannot precede onmessage.
+                    await asyncio.sleep(0.5)
             except Exception as e:
                 logger.warning(f"通知前端失败: {e}")
         await websocket.close()

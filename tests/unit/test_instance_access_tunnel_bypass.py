@@ -600,9 +600,11 @@ _INTERNAL_HTTPX_EXEMPT_SITES = {
     ("plugin/server/routes/knowledge_market.py", "_download"),
     ("plugin/server/routes/knowledge_market.py", "_report_subscription_best_effort"),
     ("plugin/server/routes/knowledge_market.py", "_report_unsubscribe_best_effort"),
-    # Sends desktop OAuth only to the fixed Market API. Local service proofs
-    # belong on the separate Main-to-Plugin hop.
+    # This factory only fetches from Market. The relay to Main has its own signed client.
     ("plugin/server/routes/model_market.py", "_client"),
+    # Only the external Market upload is exempt; the Main artifact client
+    # in the same function must still carry hooks (one exemption per site).
+    ("plugin/server/routes/knowledge_publish.py", "_publish_owned"),
     ("plugin/server/routes/market_bridge.py", "_proxy_market_catalog"),
     ("plugin/server/routes/market_bridge.py", "_proxy_market_authenticated"),
     ("plugin/server/routes/market_bridge.py", "market_feedback_avatars"),
