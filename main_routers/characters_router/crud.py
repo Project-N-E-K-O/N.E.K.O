@@ -2608,12 +2608,15 @@ async def _delete_synced_character(uid: str, before_delete):
                     created_fallback = True
                 characters['当前猫娘'] = fallback
                 await before_delete()
-                # ConfigManager saves in a worker thread. Settle this write
-                # before rollback so a cancelled caller cannot leave a late
-                # provisional selection after the lifecycle lock is released.
-                _, save_cancelled = await _await_coroutine_to_completion(cm.asave_characters(characters))
+                # Settle the worker-thread write before rollback, preserving
+                # caller cancellation even when the provisional save also fails.
+                _, save_error, save_cancelled = await _await_coroutine_outcome_to_completion(
+                    cm.asave_characters(characters)
+                )
                 if save_cancelled:
-                    raise asyncio.CancelledError
+                    raise asyncio.CancelledError from save_error
+                if save_error is not None:
+                    raise save_error
                 if created_fallback:
                     await get_init_one_catgirl()(fallback, is_new=False)
                 await get_switch_current_catgirl_fast()()

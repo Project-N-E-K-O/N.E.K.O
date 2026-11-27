@@ -5900,7 +5900,12 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("cancel_save", "fail_save"),
+    [(True, False), (True, True), (False, True)],
+    ids=["cancel-late-write", "cancel-and-write-error", "write-error-without-cancel"],
+)
+async def test_synced_delete_settles_provisional_save_before_returning(tmp_path, monkeypatch, cancel_save, fail_save):
     from main_routers.characters_router import crud
 
     cm = _make_config_manager(tmp_path)
@@ -5911,6 +5916,7 @@ async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(
     roles['猫娘'] = {old: {'昵称': old, '_reserved': {'character_uid': uid}}, fallback: {'昵称': fallback}}
     cm.save_characters(roles, bypass_write_fence=True)
     actual_save = cm.save_characters
+    save_error = OSError('synthetic provisional save failure')
     entered, landed = asyncio.Event(), asyncio.Event()
     do_save = threading.Event()
     loop = asyncio.get_running_loop()
@@ -5924,6 +5930,8 @@ async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(
             if not do_save.wait(8):
                 raise TimeoutError('test release of the real writer')
             try:
+                if fail_save:
+                    raise save_error
                 return actual_save(value, *args, **kwargs)
             finally:
                 loop.call_soon_threadsafe(landed.set)
@@ -5948,17 +5956,21 @@ async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
         writer_entered = True
-        task.cancel()
-        # Cancellation must not outrun the real ConfigManager writer thread.
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
-        assert crud.character_config_mutation_lock.locked()
+        if cancel_save:
+            task.cancel()
+            # Cancellation must not outrun the real ConfigManager writer thread.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+            assert crud.character_config_mutation_lock.locked()
     finally:
         do_save.set()
         if writer_entered:
             await asyncio.wait_for(landed.wait(), timeout=5)
-            with pytest.raises(asyncio.CancelledError):
+            expected_error = asyncio.CancelledError if cancel_save else OSError
+            with pytest.raises(expected_error) as exc_info:
                 await asyncio.wait_for(task, timeout=5)
+            if not cancel_save:
+                assert exc_info.value is save_error
         elif task.done() and not task.cancelled():
             task.result()  # surface the original early failure instead of masking it with cleanup timeout
         elif not task.done():
@@ -5966,6 +5978,7 @@ async def test_cancelling_synced_delete_cannot_leave_late_provisional_selection(
             with pytest.raises(asyncio.CancelledError):
                 await task
 
+    assert not crud.character_config_mutation_lock.locked()
     stored = cm.load_characters()
     response = json.loads((await crud.get_current_catgirl()).body)
     delete.assert_not_awaited()
