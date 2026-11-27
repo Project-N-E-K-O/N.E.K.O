@@ -398,13 +398,23 @@ def _validate_tga_pixels(resources: _Resources, path: str, layout: _TgaLayout) -
         return
     with resources.archive.open("model/" + path) as handle:
         handle.seek(layout.offset)
+        block_size = 64 * 1024
+        max_packet_size = 1 + 128 * layout.pixel_bytes
+        payload = b""
+        cursor = 0
+        eof = False
         unread_pixels = layout.pixels
         while unread_pixels:
-            packet = handle.read(1)
-            _require(packet, path, "invalid_model_image")
-            count = (packet[0] & 0x7f) + 1
-            length = layout.pixel_bytes if packet[0] & 0x80 else count * layout.pixel_bytes
-            _require(count <= unread_pixels and len(handle.read(length)) == length,
+            if not eof and len(payload) - cursor < max_packet_size:
+                block = handle.read(block_size)
+                payload = payload[cursor:] + block
+                cursor = 0
+                eof = len(block) < block_size
+            _require(cursor < len(payload), path, "invalid_model_image")
+            packet = payload[cursor]
+            count = (packet & 0x7f) + 1
+            cursor += 1 + (layout.pixel_bytes if packet & 0x80 else count * layout.pixel_bytes)
+            _require(count <= unread_pixels and cursor <= len(payload),
                      path, "invalid_model_image")
             unread_pixels -= count
 
@@ -889,8 +899,10 @@ def _vrm(resources: _Resources) -> None:
             _require(isinstance(sampler, dict), entry)
             input_ref, output_ref = sampler.get("input"), sampler.get("output")
             if parameters is not None:
-                # GLTFLoader supports legacy sampler names, even in a GLB 2 file.
-                _require(all(type(ref) in (int, str) for ref in (input_ref, output_ref)), entry)
+                # Legacy numeric keys must round-trip through JavaScript Number
+                # without rounding or changing to exponential notation.
+                _require(all(isinstance(ref, str) or (type(ref) is int and 0 <= ref < 2**53)
+                             for ref in (input_ref, output_ref)), entry)
                 input_ref, output_ref = parameters.get(str(input_ref)), parameters.get(str(output_ref))
             input_index = _index(input_ref, accessors, entry)
             output_index = _index(output_ref, accessors, entry)
@@ -944,11 +956,14 @@ def _vrm(resources: _Resources) -> None:
     skinned_meshes = set()
     mesh_references: dict[int, int] = {}
     children_seen = set()
+    extensions_used = data.get("extensionsUsed")
+    checks_node_constraints = extensions_used is None or "VRMC_node_constraint" in extensions_used
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         _require(isinstance(node.get("name"), str) or node.get("name") in (None, False, ""), entry)
         for child in node.get("children", []):
             _index(child, nodes, entry)
+            # Shared children are reparented by GLTFLoader and invalid in glTF.
             _require(child not in children_seen, entry)
             children_seen.add(child)
         for field, table in (("mesh", meshes), ("skin", skins), ("camera", cameras)):
@@ -959,7 +974,21 @@ def _vrm(resources: _Resources) -> None:
             _require_morph_weights(node["weights"], mesh_morph_counts[node["mesh"]], entry)
             _require(not node["weights"] or node["mesh"] not in meshes_without_node_influences,
                      entry, "unsupported_model_structure")
-        light = node.get("extensions", {}).get("KHR_lights_punctual")
+        node_extensions = node.get("extensions", {})
+        constraint_extension = node_extensions.get("VRMC_node_constraint")
+        if checks_node_constraints and constraint_extension is not None:
+            _require(isinstance(constraint_extension, dict), entry)
+            if constraint_extension.get("specVersion") in ("1.0", "1.0-beta"):
+                constraint = constraint_extension.get("constraint")
+                _require(isinstance(constraint, dict), entry)
+                # The bundled VRM plugin imports only the first non-null type.
+                for kind in ("roll", "aim", "rotation"):
+                    definition = constraint.get(kind)
+                    if definition is not None:
+                        _require(isinstance(definition, dict), entry)
+                        _index(definition.get("source"), nodes, entry)
+                        break
+        light = node_extensions.get("KHR_lights_punctual")
         if light is not None:
             _require(isinstance(light, dict), entry)
             if "light" in light:
@@ -972,7 +1001,7 @@ def _vrm(resources: _Resources) -> None:
                 if definition["type"] == "spot":
                     _require(isinstance(definition.get("spot", {}), dict), entry)
         instances = 1
-        instancing = node.get("extensions", {}).get("EXT_mesh_gpu_instancing")
+        instancing = node_extensions.get("EXT_mesh_gpu_instancing")
         if instancing is not None and "mesh" in node:
             mesh_index = node["mesh"]
             _require(isinstance(instancing, dict) and isinstance(instancing.get("attributes"), dict), entry)

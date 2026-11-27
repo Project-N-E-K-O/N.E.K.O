@@ -675,6 +675,11 @@ def vrm_graph(data):
 @pytest.mark.parametrize("parameters,selectors,accepted", [
     ({"0": 0, "1": 1}, (0, 1), True),
     ({"time": 0, "motion": 1}, ("time", "motion"), True),
+    ({str(2**53 - 1): 0, "1": 1}, (2**53 - 1, 1), True),
+    ({str(10**21): 0, "1": 1}, (str(10**21), 1), True),
+    ({str(2**53): 0, "1": 1}, (2**53, 1), False),
+    ({str(2**53 + 1): 0, "1": 1}, (2**53 + 1, 1), False),
+    ({"0": 0, str(10**21): 1}, (0, 10**21), False),
     ({}, (0, 1), False),
     ({"0": 0, "1": 2}, (0, 1), False),
     (None, (0, 1), False),
@@ -685,6 +690,45 @@ def test_vrm_checks_resolved_legacy_animation_accessors(tmp_path, parameters, se
         animation = data["animations"][0]
         animation["parameters"] = parameters
         animation["samplers"][0].update(input=selectors[0], output=selectors[1])
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("kind", ["roll", "aim", "rotation"])
+@pytest.mark.parametrize("source,accepted", [(1, True), (None, False), (2, False), (-1, False), (True, False)])
+def test_vrm_node_constraint_requires_an_existing_source(tmp_path, kind, source, accepted):
+    def graph(data):
+        data["nodes"].append({})
+        data["scenes"][0]["nodes"].append(1)
+        data["extensionsUsed"].append("VRMC_node_constraint")
+        definition = {} if source is None else {"source": source}
+        data["nodes"][0]["extensions"] = {
+            "VRMC_node_constraint": {"specVersion": "1.0", "constraint": {kind: definition}},
+        }
+
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    if accepted:
+        assert validate_vrm_bundle(path).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^invalid_model_structure$"):
+            validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize("version,declared,accepted", [
+    ("1.0-beta", True, False), ("1.0", False, True), ("2.0", True, True),
+])
+def test_vrm_checks_constraints_used_by_the_bundled_plugin(tmp_path, version, declared, accepted):
+    def graph(data):
+        if declared:
+            data["extensionsUsed"].append("VRMC_node_constraint")
+        data["nodes"][0]["extensions"] = {
+            "VRMC_node_constraint": {"specVersion": version, "constraint": {"rotation": {"source": 2}}},
+        }
 
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
     if accepted:
@@ -1025,6 +1069,28 @@ def test_mmd_checks_total_tga_budget_before_reading_packets(tmp_path, monkeypatc
     if second_reference == "other.tga":
         files["other.tga"] = image
     path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
+    pixel_scans = []
+    seek = zipfile.ZipExtFile.seek
+
+    def track(handle, offset, whence=0):
+        if handle.name.endswith(".tga"):
+            pixel_scans.append(handle.name)
+        return seek(handle, offset, whence)
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "seek", track)
+    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+        validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=budget))
+    assert not pixel_scans
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_mmd_reads_rle_packets_across_block_boundaries(tmp_path, monkeypatch, truncated):
+    packet = b"\x7f" + bytes(128 * 3)
+    count = 171
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 10, 0, 0, 0, 0, 0, 128 * count, 1, 24, 0)
+    image = header + packet * count
+    files = {"Avatar.pmx": pmx_bytes("face.tga"), "face.tga": image[:-1] if truncated else image}
+    path = make_native_bundle(tmp_path, kind="mmd", entry="Avatar.pmx", files=files)
     packet_reads = []
     read = zipfile.ZipExtFile.read
 
@@ -1034,8 +1100,11 @@ def test_mmd_checks_total_tga_budget_before_reading_packets(tmp_path, monkeypatc
         return read(handle, size)
 
     monkeypatch.setattr(zipfile.ZipExtFile, "read", track)
-    with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
-        validate_mmd_bundle(path, format_limits=FormatLimits(mmd_tga_bytes=budget))
+    if truncated:
+        with pytest.raises(ModelFormatError, match="^invalid_model_image$"):
+            validate_mmd_bundle(path)
+    else:
+        assert validate_mmd_bundle(path).model_format == "mmd"
     assert not packet_reads
 
 
