@@ -1993,8 +1993,25 @@ for (const rejectBeforeTakeover of [false, true]) {
         assert.equal(await startup.ready, true);
         await started.promise;
         assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), !rejectBeforeTakeover);
-        settings.resolve(); await startup.vrmBoot;
-        await new Promise(resolve => setImmediate(resolve));
+        settings.resolve();
+
+        // The bootstrap harness launches VRM startup alongside MMD startup. VRM
+        // now waits for switch settlement with the same fake 50ms timer used by
+        // the MMD startup path. Advance those harness-only settlement waiters so
+        // this MMD ownership test does not leave the unrelated VRM boot promise
+        // parked after the switch has already settled.
+        let vrmBootSettled = false;
+        Promise.resolve(startup.vrmBoot).finally(() => { vrmBootSettled = true; });
+        for (let turn = 0; turn < 16 && !vrmBootSettled; turn++) {
+            for (const [id, timer] of [...h.timers.entries()]) {
+                if (timer.delay !== 50) continue;
+                h.timers.delete(id);
+                timer.callback();
+            }
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.equal(vrmBootSettled, true, 'unrelated VRM bootstrap must settle after the switch does');
+        await startup.vrmBoot;
         assert.equal(h.window.lanlan_config.lanlan_name, rejectBeforeTakeover ? 'B' : 'C');
         assert.deepEqual(startup.loads, [rejectBeforeTakeover ? pathB : pathC]);
         assert.equal(canvas.style.visibility, 'visible');
