@@ -2204,3 +2204,15 @@ test('crossfade snapshot reuses the displayed weights without advancing or reque
     assert.deepEqual(samples,weights);assert.equal(p.lastSelection,selection);
     assert.equal(p.lastDraw,lastDraw);assert.equal(p.openness,openness);assert.equal(p.lastIndex,lastIndex);
 });
+
+
+for (const scale of [1,.5]) test(`transition snapshot uses logical bounds at render scale ${scale}`, () => {
+    const {manager:m}=fixture();m.hasReviewedActions=()=>true;
+    m.layeredCanvasLogicalWidth=720;m.layeredCanvasLogicalHeight=960;
+    const snapshot={width:720*scale,height:960*scale};
+    m._reviewedTransition={at:100,snapshot};
+    const drawn=[];const ctx={save(){},restore(){},drawImage(...args){drawn.push(args)}};
+    m.drawReviewedTransition(ctx,140);
+    assert.deepEqual(drawn,[[snapshot,0,0,720,960]]);
+    assert.equal(ctx.globalAlpha,.5);
+});

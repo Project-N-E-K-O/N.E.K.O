@@ -1794,7 +1794,9 @@
             const mix = (timestamp - transition.at) / 80;
             if (mix >= 1) { if (!snapshot) this._reviewedTransition = null; return; }
             ctx.save(); ctx.globalAlpha = Math.max(0, 1 - mix);
-            ctx.drawImage(transition.snapshot, 0, 0); ctx.restore();
+            ctx.drawImage(transition.snapshot, 0, 0,
+                this.layeredCanvasLogicalWidth, this.layeredCanvasLogicalHeight);
+            ctx.restore();
         }
 
         handleReviewedVisit(msg) {
