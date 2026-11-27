@@ -357,7 +357,10 @@ def _task_result(before: dict, after: dict) -> dict:
         for name in sorted(old.keys() | new.keys()) if old.get(name) != new.get(name)
     ]
     return {
-        "after": {key: after[key] for key in ("revision", "installed", "issues")},
+        "after": {
+            **{key: after[key] for key in ("revision", "installed", "issues")},
+            "check_issues": after.get("check_issues", []),
+        },
         "changes": changes,
     }
 

@@ -238,7 +238,17 @@ const checked = computed(
     task.value.result.after.revision === snapshot.value?.revision &&
     JSON.stringify(task.value.result.after.installed) === JSON.stringify(snapshot.value?.installed)
 )
-const inspection = computed(() => (checked.value ? task.value!.result!.after : snapshot.value!))
+// A reused check keeps the current inspection's diagnostics (they can change,
+// e.g. broken metadata, without changing the installed inventory) and adds the
+// check's own findings, which depend on that inventory only.
+const inspection = computed(() =>
+  checked.value
+    ? {
+        ...snapshot.value!,
+        issues: [...snapshot.value!.issues, ...(task.value!.result!.after.check_issues ?? [])],
+      }
+    : snapshot.value!
+)
 const canSync = computed(
   () =>
     !!snapshot.value?.environment.can_sync &&

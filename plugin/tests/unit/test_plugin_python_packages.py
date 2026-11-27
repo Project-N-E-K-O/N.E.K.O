@@ -78,6 +78,17 @@ def test_closure_reports_missing_transitive_dependency_and_python_constraint(tmp
     assert codes == {"dependency_missing", "python_version_mismatch"}
 
 
+def test_check_separates_its_findings_from_inspection_diagnostics(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["demo", "absent"]\n')
+    _distribution(project, "demo", "1.0", "Requires-Dist: missing")
+    snapshot = check_python_packages(project)
+    inspected = inspect_python_packages(project)["issues"]
+    # issues = the inspection's diagnostics, then the check's own findings.
+    assert [row["code"] for row in inspected] == ["missing"]
+    assert snapshot["issues"] == inspected + snapshot["check_issues"]
+    assert [row["code"] for row in snapshot["check_issues"]] == ["dependency_missing"]
+
+
 def test_graph_preserves_shared_dependencies_and_unrelated_installed_packages(tmp_path):
     project = _project(tmp_path, '[project]\ndependencies = ["alpha", "beta"]\n')
     _distribution(project, "alpha", "1.0", "Requires-Dist: shared>=1")

@@ -137,6 +137,7 @@ def check_python_packages(plugin_dir: Path) -> dict:
     """Check active requirements of all installed packages."""
     plugin_dir = Path(plugin_dir)
     snapshot = inspect_python_packages(plugin_dir)
+    inspected = len(snapshot["issues"])
     installed = {canonicalize_distribution_name(row["name"]): row for row in snapshot["installed"]}
     for node in snapshot["dependency_graph"]["nodes"]:
         row = installed.get(node["id"])
@@ -158,6 +159,10 @@ def check_python_packages(plugin_dir: Path) -> dict:
                 if status in {"missing", "version_mismatch"}:
                     snapshot["issues"].append({"code": f"dependency_{status}", "package": row["name"],
                                                "requirement": text, "message": f"{row['name']} requires {text}: {status.replace('_', ' ')}"})
+    # The findings only this check produces. They depend on the installed
+    # inventory alone, so a later inspection of the same inventory can show
+    # them next to its own, fresher diagnostics.
+    snapshot["check_issues"] = snapshot["issues"][inspected:]
     return snapshot
 
 

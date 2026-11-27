@@ -220,6 +220,34 @@ describe('project dependency management', () => {
       expect(document.body.textContent).not.toContain(en.noFindings)
     }
   )
+  it('keeps fresh inspection diagnostics when reusing a completed check', async () => {
+    const finding = {
+      code: 'dependency_missing',
+      package: 'httpx',
+      requirement: 'anyio',
+      message: 'httpx requires anyio: missing',
+    }
+    const broken = { code: 'invalid_metadata', message: 'distribution metadata must contain Name and Version' }
+    const checkedState = state()
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        // Broken metadata appeared after the check; the inventory is unchanged.
+        issues: [broken],
+        task: task({
+          status: 'succeeded',
+          phase: 'finished',
+          result: {
+            after: { ...checkedState, issues: [finding], check_issues: [finding] },
+            changes: [],
+          },
+        }),
+      })
+    )
+    await mount()
+    expect(document.body.textContent).toContain(broken.message)
+    expect(document.body.textContent).toContain(finding.message)
+    expect(document.body.textContent).not.toContain(en.noFindings)
+  })
   it('releases the UI after the server forgets an active task', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     api.getProjectPythonPackages
@@ -421,22 +449,18 @@ describe('project dependency management', () => {
   it('distinguishes unchecked state from full check results and rejects stale findings', async () => {
     await mount()
     expect(document.body.textContent).toContain(en.notChecked)
+    const finding = {
+      code: 'dependency_missing',
+      package: 'httpx',
+      requirement: 'missing-lib>=1',
+      message: 'Required package is missing',
+    }
     api.getProjectPythonPackages.mockResolvedValue(
       state({
         task: task({
           status: 'succeeded',
           result: {
-            after: {
-              ...state(),
-              issues: [
-                {
-                  code: 'dependency_missing',
-                  package: 'httpx',
-                  requirement: 'missing-lib>=1',
-                  message: 'Required package is missing',
-                },
-              ],
-            },
+            after: { ...state(), issues: [finding], check_issues: [finding] },
             changes: [],
           },
         }),
