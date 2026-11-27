@@ -1845,6 +1845,7 @@ def test_without_the_summary_the_audit_files_answer_as_before(env):
         b"[]",
         b'{"schema_version": 0, "plugins": {}}',
         b'{"schema_version": "1", "plugins": {}}',
+        b'{"schema_version": true, "plugins": {}}',
         b'{"schema_version": 1, "plugins": []}',
     ],
 )
@@ -2478,3 +2479,21 @@ def test_the_index_reads_the_files_before_a_rotation():
     from plugin.server.application.plugins import permission_usage
 
     assert permission_usage.usage_index.ensure_seeded in call_audit._rollover_observers
+
+
+def test_two_saves_move_a_corrupt_summary_aside_once(tmp_path):
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_bytes(b"{not json")
+    index.observe(_decision("a", MEMORY))
+    assert index._ensure_summary() == "corrupt"
+    # A second save that read the state before the first one moved the file.
+    original = index._ensure_summary
+    index._ensure_summary = lambda: "corrupt"
+    try:
+        assert index.save_summary() is True
+        index.observe(_decision("b", MEMORY))
+        assert index.save_summary() is True
+    finally:
+        index._ensure_summary = original
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+    assert set(json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]) == {"a", "b"}

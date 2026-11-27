@@ -261,6 +261,7 @@ class UsageIndex:
         # format) is tried again and never overwritten meanwhile.
         self._summary_state: str | None = None
         self._summary_lock = threading.Lock()
+        self._unreadable_said: str | None = None
 
     # ------------------------------------------------------------------
     # Feeding
@@ -468,6 +469,12 @@ class UsageIndex:
                 self._summary_state = self._load_summary()
             return self._summary_state
 
+    def _warn_unreadable(self, message: str) -> None:
+        # Retried on every save: said once per reason, not every minute.
+        if message != self._unreadable_said:
+            self._unreadable_said = message
+            logger.warning("permission usage: {}", message)
+
     def _load_summary(self) -> str | None:
         """Merge the summary file into the index. Content that is not a
         summary (not JSON, wrong shape, an older or unknown format, too
@@ -482,16 +489,17 @@ class UsageIndex:
         except FileNotFoundError:
             return "missing"
         except Exception as exc:
-            logger.warning("permission usage: summary not readable now, kept as it is: error={}",
-                           type(exc).__name__)
+            self._warn_unreadable(f"summary not readable now, kept as it is: error={type(exc).__name__}")
             return None
         try:
             if len(raw) > _SUMMARY_MAX_BYTES:
                 raise ValueError("summary too large")
             document = json.loads(raw.decode("utf-8"))
             version = document.get("schema_version") if isinstance(document, dict) else None
-            if isinstance(version, int) and not isinstance(version, bool) and version > SUMMARY_SCHEMA:
-                logger.warning("permission usage: summary from a newer version, kept as it is")
+            if isinstance(version, bool) or not isinstance(version, int):
+                raise ValueError("unknown summary format")
+            if version > SUMMARY_SCHEMA:
+                self._warn_unreadable("summary from a newer version, kept as it is")
                 return None
             plugins = document.get("plugins")
             if version != SUMMARY_SCHEMA or not isinstance(plugins, dict):
@@ -591,6 +599,8 @@ class UsageIndex:
 
                     path = self._summary_path()
                     os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with self._summary_lock:
+                        state = self._summary_state  # another save may have moved it already
                     if state == "corrupt":
                         try:
                             os.replace(path, path + ".bad")  # kept for a look, never read back
