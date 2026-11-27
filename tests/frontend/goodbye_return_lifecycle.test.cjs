@@ -140,6 +140,34 @@ function harness(type = 'live2d') {
 }
 
 for (const type of types) {
+    for (const cancelled of [false, true]) {
+        test(`${type}: a ${cancelled ? 'stale' : 'current'} pre-commit failure ${cancelled ? 'cannot reveal a newer' : 'restores the'} return ball`, async () => {
+            const h = harness(type);
+            const viewport = deferred();
+            const ball = {
+                style: { display: 'flex', visibility: 'hidden', pointerEvents: 'none', opacity: '0' },
+                removeAttribute() {},
+            };
+            h.I.getVisibleIdleReturnBallContainer = () => ball;
+            h.I.scheduleIdleReturnBallDesktopBridge = () => {};
+            h.I.ensureModelViewportReadyBeforeShowCurrentModel = async () => {
+                await viewport.promise;
+                throw new Error('viewport restore unavailable');
+            };
+            const returning = h.dispatchReturn();
+            await flush();
+            if (cancelled) h.depart();
+            viewport.resolve();
+            await assert.rejects(returning, /viewport restore unavailable/);
+            assert.equal(ball.style.visibility, cancelled ? 'hidden' : 'visible');
+            assert.equal(ball.style.pointerEvents, cancelled ? 'none' : 'auto');
+            assert.equal(ball.style.opacity, cancelled ? '0' : '1');
+            assert.equal(h.I.nekoCatReturnInProgress, false);
+            assert.equal(h.I.nekoCatReturnOperation, null);
+            assert.equal(h.events.filter(event => event.type === 'neko:cat-return-abort').length, 1);
+        });
+    }
+
     test(`${type}: a departure cancels a return waiting for entrance before it can snap/save`, async () => {
         const h = harness(type);
         const entrance = deferred();
