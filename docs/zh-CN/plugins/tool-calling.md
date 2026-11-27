@@ -499,6 +499,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   `host_unavailable` 或 `plugin_stopped`（host 自己的撤回可能失败）失败后，SDK 会对这个名字补发一次注销，和这个名字的其他 async 调用按顺序排队，
   结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
   `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
+  host 发出了注册却没拿到 `main_server` 的回复时，会先按注册 ID 尝试撤回，所以清理常常报 `removed=False`；而且
   `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；
   在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。被取消的注册只回滚本地，不补发注销。
 - 每次 `register_llm_tool_async` 都带一个自己的注册 ID，它的补发清理和之后的 `unregister_llm_tool_async`

@@ -551,7 +551,8 @@ result = await self.unregister_llm_tool_async("custom_tool")
   解除を 1 回送り（同じ名前の他の async 呼び出しと順番に実行）、結果を `cleanup` に入れます（呼び出しが
   最大 15 秒延びることがあります）。それ以外のエラーは何も保存されていないので `cleanup` は `None` です。
   `cleanup["ok"]` が偽なら、後で `unregister_llm_tool_async(name)` を呼んでください。`timeout` 後の解除は
-  ベストエフォートです。`main_server` がまだ登録を処理中で、解除の後にツールを保存することがあるため、
+  ベストエフォートです。ホストが登録を送ったのに `main_server` の応答を受け取れなかった場合、ホストが先に登録 ID で
+  取り消しを試みているため、解除は `removed=False` になることがよくあります。また `main_server` がまだ登録を処理中で、解除の後にツールを保存することがあるため、
   `removed=False` は何も残っていないことの証明になりません。重要なら少し後でもう一度
   `unregister_llm_tool_async(name)` を呼んでください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
 - `register_llm_tool_async` の呼び出しごとに専用の登録 ID が付き、その後片付けと後の

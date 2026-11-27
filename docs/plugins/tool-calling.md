@@ -602,7 +602,10 @@ Local state follows `ok`, so the plugin and the host agree:
   async calls, and reports it in `cleanup` (it may add up to 15 s to the
   call). Other errors mean nothing was stored, so `cleanup` stays `None`.
   If `cleanup["ok"]` is false, call `unregister_llm_tool_async(name)`
-  later. After a `timeout` the cleanup is best effort: `main_server` may
+  later. After a `timeout` the cleanup is best effort: when the host sent
+  the register but lost `main_server`'s answer, the host has already tried
+  to withdraw it by registration id, so the cleanup often reports
+  `removed=False`; and `main_server` may
   still be processing the register and store the tool after the cleanup
   ran, so `removed=False` does not prove nothing is left; call
   `unregister_llm_tool_async(name)` again a little later when that
