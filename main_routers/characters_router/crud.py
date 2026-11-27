@@ -554,16 +554,30 @@ async def _await_cleanup_to_completion(coro):
     return result
 
 
-async def _await_coroutine_to_completion(coro):
-    """Return a coroutine result and whether cancellation arrived while it ran."""
+async def _await_coroutine_outcome_to_completion(coro):
+    """Finish a coroutine and retain both its outcome and caller-cancellation state."""
     operation = asyncio.create_task(coro)
+    caller_cancelled = False
     try:
-        return await asyncio.shield(operation), False
+        await asyncio.shield(operation)
     except asyncio.CancelledError:
+        current = asyncio.current_task()
+        caller_cancelled = bool(current is not None and current.cancelling())
         while not operation.done():
             with suppress(asyncio.CancelledError):
                 await asyncio.wait({operation})
-        return operation.result(), True
+    try:
+        return operation.result(), None, caller_cancelled
+    except BaseException as exc:
+        return None, exc, caller_cancelled
+
+
+async def _await_coroutine_to_completion(coro):
+    """Return a coroutine result and whether caller cancellation arrived while it ran."""
+    result, error, caller_cancelled = await _await_coroutine_outcome_to_completion(coro)
+    if error is not None:
+        raise error
+    return result, caller_cancelled
 
 
 async def _await_thread_mutation(func, *args, **kwargs):
@@ -1565,10 +1579,23 @@ async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
     *, sync_commit=None,
 ):
-    rename_notification_ws = (
-        session_manager[old_name].websocket if is_current_catgirl and old_name in session_manager else None
+    rename_notification_sockets = (
+        [manager.websocket for manager in session_manager.values() if getattr(manager, "websocket", None)]
+        if is_current_catgirl else []
     )
     switch_revision = 0
+
+    async def notify_committed_rename():
+        if not (memory_server_reloaded and rename_notification_sockets and switch_revision):
+            return
+        frame = json.dumps({
+            "type": "catgirl_switched", "new_catgirl": new_name,
+            "old_catgirl": old_name, "switch_revision": switch_revision,
+        })
+        await asyncio.gather(
+            *(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in rename_notification_sockets),
+            return_exceptions=True,
+        )
 
     assert_cloudsave_writable(
         _config_manager,
@@ -1846,6 +1873,17 @@ async def _rename_catgirl_transaction(
                     release_character_recent_transaction(
                         memory_rename_result.get("_recent_rename_transaction"),
                     )
+                if is_current_catgirl and switch_revision:
+                    # The rename is already durable and publicly ordered. Finish
+                    # delivery of that committed authority before propagating
+                    # caller cancellation; never roll a committed rename back.
+                    try:
+                        await _await_cleanup_to_completion(notify_committed_rename())
+                    except (Exception, asyncio.CancelledError):
+                        logger.exception(
+                            "Failed to notify committed rename before propagating cancellation: %s -> %s",
+                            old_name, new_name,
+                        )
             else:
                 await _await_cleanup_to_completion(
                     _rollback_character_operation(
@@ -1917,16 +1955,19 @@ async def _rename_catgirl_transaction(
         finally:
             release_character_recent_transaction(recent_transaction)
 
-    # Notify frontend only after data update, reload, and cover migration complete.
-    if memory_server_reloaded and rename_notification_ws and switch_revision:
+    # Notify all open character pages only after the rename is durable. This
+    # matches ordinary switch/delete delivery so every page advances the same
+    # revision high-water instead of waiting for a later poll.
+    if memory_server_reloaded and rename_notification_sockets and switch_revision:
         try:
-            await rename_notification_ws.send_text(json.dumps({
-                "type": "catgirl_switched", "new_catgirl": new_name,
-                "old_catgirl": old_name, "switch_revision": switch_revision,
-            }))
-            logger.info(f"已向 {old_name} 发送重命名通知")
+            _, notify_cancelled = await _await_coroutine_to_completion(notify_committed_rename())
+            logger.info("已广播角色重命名通知: %s -> %s", old_name, new_name)
+            if notify_cancelled:
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+            logger.warning(f"发送重命名通知 {old_name} -> {new_name} 失败: {e}")
 
     pending_rename_ok = True
     pending_rename_error = ""
@@ -2572,6 +2613,9 @@ async def _delete_synced_character(uid: str, before_delete):
             if switched and not success:
                 async def restore_previous_character():
                     nonlocal rollback_switch_revision
+                    # Restoration must be based on an authoritative disk read.
+                    # If that read is unavailable, writing from an older cached
+                    # snapshot could overwrite a newer committed sync update.
                     latest = await _aload_authoritative_characters(cm)
                     registry = latest.get('猫娘', {})
                     restored = registry.get(name)
@@ -2600,18 +2644,27 @@ async def _delete_synced_character(uid: str, before_delete):
                     # observer fired. Reconcile ordering/delivery to the actual
                     # persisted authority before returning.
                     try:
-                        latest, reconcile_cancelled = await _await_coroutine_to_completion(
-                            _aload_authoritative_characters(cm)
+                        latest, reconcile_error, reconcile_cancelled = (
+                            await _await_coroutine_outcome_to_completion(
+                                _aload_authoritative_characters(cm)
+                            )
                         )
-                        registry = latest.get('猫娘', {})
-                        surviving = str(latest.get('当前猫娘', '') or '').strip()
-                        if surviving and surviving in registry:
-                            surviving_switch_target = surviving
-                            if _catgirl_switch_revision_target != surviving:
-                                committed_switch_revision = _advance_current_catgirl_switch_revision(surviving)
+                        if reconcile_error is not None:
+                            if isinstance(reconcile_error, asyncio.CancelledError):
+                                reconcile_cancelled = True
+                            else:
+                                raise reconcile_error
+                        if latest is not None:
+                            registry = latest.get('猫娘', {})
+                            surviving = str(latest.get('当前猫娘', '') or '').strip()
+                            if surviving and surviving in registry:
+                                surviving_switch_target = surviving
+                                if _catgirl_switch_revision_target != surviving:
+                                    committed_switch_revision = _advance_current_catgirl_switch_revision(surviving)
                     except Exception:
                         logger.exception("Failed to reconcile current character after sync deletion rollback")
             notify_revision = rollback_switch_revision or committed_switch_revision
+            notify_cancelled = False
             if switched and notify_revision:
                 notify_new_catgirl = (
                     previous_current
@@ -2631,10 +2684,17 @@ async def _delete_synced_character(uid: str, before_delete):
                         return_exceptions=True,
                     )
                 try:
-                    await _await_cleanup_to_completion(notify_committed_switch())
-                except (Exception, asyncio.CancelledError):
+                    _, notify_error, notify_cancelled = (
+                        await _await_coroutine_outcome_to_completion(notify_committed_switch())
+                    )
+                    if notify_error is not None:
+                        if isinstance(notify_error, asyncio.CancelledError):
+                            notify_cancelled = True
+                        else:
+                            raise notify_error
+                except Exception:
                     logger.exception("Failed to notify committed fallback after sync deletion")
-            if reconcile_cancelled:
+            if reconcile_cancelled or notify_cancelled:
                 raise asyncio.CancelledError
         return success
 

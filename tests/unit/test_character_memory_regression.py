@@ -6200,6 +6200,180 @@ async def test_synced_delete_cancel_during_successful_finalize_publishes_fallbac
     assert current == {"current_catgirl": fallback, "switch_revision": frame["switch_revision"]}
 
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coroutine_outcome_retains_caller_cancel_when_inner_operation_fails(monkeypatch):
+    from main_routers.characters_router import crud
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fail_after_cancel():
+        entered.set()
+        await release.wait()
+        raise OSError("authoritative read failed")
+
+    task = asyncio.create_task(
+        crud._await_coroutine_outcome_to_completion(fail_after_cancel())
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    release.set()
+
+    result, error, caller_cancelled = await asyncio.wait_for(task, timeout=5)
+    assert result is None
+    assert isinstance(error, OSError)
+    assert str(error) == "authoritative read failed"
+    assert caller_cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_cancel_during_committed_notification_finishes_send_then_propagates(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "d" * 32
+    name, fallback = "NotifyCancelPrimary", "NotifyCancelSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+
+    notify_entered = asyncio.Event()
+    release_notify = asyncio.Event()
+    sent_frames = []
+
+    async def slow_send(frame):
+        notify_entered.set()
+        await release_notify.wait()
+        sent_frames.append(json.loads(frame))
+
+    socket = SimpleNamespace(send_text=slow_send)
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=True))
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    await asyncio.wait_for(notify_entered.wait(), timeout=5)
+    deletion.cancel()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(deletion), timeout=0.1)
+
+    release_notify.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(deletion, timeout=5)
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == fallback
+    assert name not in stored["猫娘"]
+    assert len(sent_frames) == 1
+    frame = sent_frames[0]
+    assert (frame["old_catgirl"], frame["new_catgirl"]) == (name, fallback)
+    assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == fallback
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_current_rename_cancel_after_finalize_notifies_all_pages_before_propagating(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    old_socket = SimpleNamespace(send_text=AsyncMock())
+    watcher_socket = SimpleNamespace(send_text=AsyncMock())
+    old_manager = SimpleNamespace(websocket=old_socket, is_active=False, session=None)
+    watcher_manager = SimpleNamespace(websocket=watcher_socket, is_active=False, session=None)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state=_make_role_state_for_test({"Old": old_manager, "Watcher": watcher_manager}),
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        from main_routers.characters_router import crud
+        crud = reload_module("main_routers.characters_router.crud")
+
+        chars = cm.load_characters()
+        chars.setdefault("猫娘", {})["Old"] = {
+            "昵称": "Old",
+            "_reserved": {"character_id": "character_" + "8" * 32},
+        }
+        chars["猫娘"]["Watcher"] = {
+            "昵称": "Watcher",
+            "_reserved": {"character_id": "character_" + "9" * 32},
+        }
+        chars["当前猫娘"] = "Old"
+        cm.save_characters(chars, bypass_write_fence=True)
+        recent = Path(cm.memory_dir) / "Old" / "recent.json"
+        recent.parent.mkdir(parents=True, exist_ok=True)
+        recent.write_text("[]", encoding="utf-8")
+
+        monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+        monkeypatch.setattr(crud, "_catgirl_switch_revision_target", "Old")
+        finalize_entered = asyncio.Event()
+        release_finalize = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def finalize_success(_result):
+            loop.call_soon_threadsafe(finalize_entered.set)
+            if not release_finalize.wait(8):
+                raise TimeoutError("release rename finalize")
+            return None
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(crud, "finalize_character_recent_rename", side_effect=finalize_success),
+        ):
+            rename = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+            rename.cancel()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(rename), timeout=0.1)
+            release_finalize.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(rename, timeout=5)
+
+        stored = cm.load_characters()
+        assert stored["当前猫娘"] == "New"
+        assert "New" in stored["猫娘"] and "Old" not in stored["猫娘"]
+        assert crud._catgirl_switch_revision_target == "New"
+        assert crud._catgirl_switch_revision > 71
+        for socket in (old_socket, watcher_socket):
+            socket.send_text.assert_awaited_once()
+            frame = json.loads(socket.send_text.await_args.args[0])
+            assert (frame["old_catgirl"], frame["new_catgirl"]) == ("Old", "New")
+            assert frame["switch_revision"] == crud._catgirl_switch_revision
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_synced_delete_publishes_surviving_authority_when_inner_config_restore_fails(tmp_path, monkeypatch):
@@ -8559,7 +8733,7 @@ def test_f0064_same_directory_entry_ignores_zero_inode_scandir_cache(tmp_path, m
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_current_rename_finalize_failure_does_not_publish_provisional_revision(tmp_path):
+async def test_current_rename_finalize_failure_does_not_publish_provisional_revision(tmp_path, monkeypatch):
     """A failed rename finalize must roll disk back without ever publishing the new name."""
     cm = _make_config_manager(tmp_path)
     bootstrap_local_cloudsave_environment(cm)
@@ -8591,8 +8765,8 @@ async def test_current_rename_finalize_failure_does_not_publish_provisional_revi
         recent.parent.mkdir(parents=True, exist_ok=True)
         recent.write_text("[]", encoding="utf-8")
 
-        crud._catgirl_switch_revision = 4242
-        crud._catgirl_switch_revision_target = "Old"
+        monkeypatch.setattr(crud, "_catgirl_switch_revision", 4242)
+        monkeypatch.setattr(crud, "_catgirl_switch_revision_target", "Old")
 
         with (
             patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
@@ -8601,13 +8775,14 @@ async def test_current_rename_finalize_failure_does_not_publish_provisional_revi
                 crud,
                 "finalize_character_recent_rename",
                 side_effect=OSError("finalize failed"),
-            ),
+            ) as finalize_mock,
         ):
             response = await crud.rename_catgirl(
                 "Old",
                 _DummyRequest({"new_name": "New"}),
             )
 
+        finalize_mock.assert_called_once()
         assert response.status_code == 500
         persisted = cm.load_characters()
         assert persisted["当前猫娘"] == "Old"
