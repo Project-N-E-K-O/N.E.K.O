@@ -58,12 +58,16 @@ def test_production_pngtuber_packs_unpack_for_static_serving(tmp_path):
             output_root,
         )
         assert (target / "model.json").is_file()
-        assert (target / "metadata.pngtube-remix.json").is_file()
+        config = json.loads((target / "model.json").read_text(encoding="utf-8"))[
+            "pngtuber"
+        ]
+        assert (target / config["layered_metadata"]).is_file()
         assert (target / unpack_builtin_pngtuber.READY_MARKER).read_text(
             encoding="utf-8"
         ) == model["archive_sha256"]
 
     assert sorted(path.name for path in output_root.iterdir()) == [
+        "yui-chibi",
         "yui-lolita",
         "yui-origin",
         "yui-sister",
@@ -165,3 +169,115 @@ def test_frontend_build_scripts_unpack_builtin_pngtuber_models():
 
     assert "scripts/unpack_builtin_pngtuber.py" in shell_build
     assert "scripts\\unpack_builtin_pngtuber.py" in batch_build
+
+
+def _multipart(packs, *, duplicate=False):
+    model = _write_valid_pack(packs)
+    with zipfile.ZipFile(packs / model["archive"]) as archive:
+        members = [(info.filename, archive.read(info)) for info in archive.infolist()]
+    groups = [members[:2], members[2:]]
+    if duplicate:
+        groups[1].append(members[0])
+    parts = []
+    for index, group in enumerate(groups):
+        name = f"part-{index}.zip"
+        path = packs / name
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for key, value in group:
+                archive.writestr(key, value)
+        parts.append(
+            {
+                "archive": name,
+                "archive_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "archive_size": path.stat().st_size,
+                "file_count": len(group),
+                "unpacked_size": sum(len(value) for _, value in group),
+            }
+        )
+    model.update(
+        archive=parts[0]["archive"],
+        archives=parts,
+        archive_sha256=unpack_builtin_pngtuber.parts_fingerprint(parts),
+        file_count=sum(p["file_count"] for p in parts),
+        unpacked_size=sum(p["unpacked_size"] for p in parts),
+    )
+    return model
+
+
+def test_multipart_unpack_is_complete_and_idempotent(tmp_path, capsys):
+    packs, output = tmp_path / "packs", tmp_path / "out"
+    model = _multipart(packs)
+    target = unpack_builtin_pngtuber.unpack_model(model, packs, output)
+    before = (target / "model.json").stat().st_mtime_ns
+    unpack_builtin_pngtuber.unpack_model(model, packs, output)
+    assert (target / "layers/layer.png").read_bytes() == b"png"
+    assert (target / "model.json").stat().st_mtime_ns == before
+    assert "up to date, skip" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["missing", "checksum", "fingerprint", "duplicate", "part-path", "limit", "total"],
+)
+def test_multipart_rejection_keeps_existing_model(tmp_path, monkeypatch, failure):
+    packs, output = tmp_path / "packs", tmp_path / "out"
+    model = _multipart(packs, duplicate=failure == "duplicate")
+    target = output / model["folder"]
+    target.mkdir(parents=True)
+    (target / "previous.txt").write_text("previous")
+    if failure == "missing":
+        (packs / model["archives"][1]["archive"]).unlink()
+    elif failure == "checksum":
+        (packs / model["archives"][1]["archive"]).write_bytes(b"damaged")
+    elif failure == "fingerprint":
+        model["archives"][1]["archive_sha256"] = "0" * 64
+    elif failure == "part-path":
+        model["archives"][1]["archive"] = "../outside.zip"
+        model["archive_sha256"] = unpack_builtin_pngtuber.parts_fingerprint(
+            model["archives"]
+        )
+    elif failure == "limit":
+        monkeypatch.setattr(unpack_builtin_pngtuber, "MAX_ARCHIVE_FILES", 1)
+    elif failure == "total":
+        monkeypatch.setattr(unpack_builtin_pngtuber, "MAX_COMBINED_SIZE", 1)
+    with pytest.raises(ValueError):
+        unpack_builtin_pngtuber.unpack_model(model, packs, output)
+    assert (target / "previous.txt").read_text() == "previous"
+    assert not list(output.glob("*.tmp"))
+
+
+def test_tracked_frames_and_mouth_plates_must_exist(tmp_path):
+    model = _write_valid_pack(tmp_path / "packs")
+    target = unpack_builtin_pngtuber.unpack_model(
+        model, tmp_path / "packs", tmp_path / "out"
+    )
+    metadata = target / "metadata.pngtube-remix.json"
+    value = json.loads(metadata.read_text())
+    value["tracked_animations"] = {
+        "0": {
+            "frames": [{"image": "idle.png", "mouth_patch": {"image": "missing.png"}}]
+        }
+    }
+    metadata.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="missing tracked image"):
+        unpack_builtin_pngtuber._validate_package(target)
+
+
+def test_multipart_publish_failure_rolls_back(monkeypatch, tmp_path):
+    model = _multipart(tmp_path / "packs")
+    target = tmp_path / "out" / model["folder"]
+    target.mkdir(parents=True)
+    (target / "previous.txt").write_text("previous")
+    rename = Path.rename
+
+    def fail_publish(path, destination):
+        if path.name.endswith(".tmp"):
+            raise OSError("publish failed")
+        return rename(path, destination)
+
+    monkeypatch.setattr(Path, "rename", fail_publish)
+    with pytest.raises(OSError, match="publish failed"):
+        unpack_builtin_pngtuber.unpack_model(
+            model, tmp_path / "packs", tmp_path / "out"
+        )
+    assert (target / "previous.txt").read_text() == "previous"

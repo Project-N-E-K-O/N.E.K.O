@@ -28,7 +28,7 @@ test('a newer goodbye cancels PNG setup before it can reveal or publish the retu
     vm.createContext(sandbox);
     const loadMethod = extractSlice('        async load(config, options = {}) {', '        stateToSrc(state)', coreSource);
     const loader = extractSlice('    async function loadPNGTuberAvatar(', '    function playPNGTuberAnimation(', coreSource);
-    vm.runInContext(`globalThis.manager = { _loadGeneration: 0, _latestLifecycleLoadToken: 0, ${loadMethod} };\n${loader}`, sandbox);
+    vm.runInContext(`globalThis.manager = new (class { constructor() { this._loadGeneration = 0; this._latestLifecycleLoadToken = 0; } ${loadMethod} })();\n${loader}`, sandbox);
     const manager = sandbox.manager;
     sandbox.window.pngtuberManager = manager;
     manager.setupLayeredAdapter = () => setup;

@@ -985,3 +985,19 @@ def test_steamworks_native_libraries_are_scanned(tmp_path: Path) -> None:
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"steamworks/{CJK_NAME}.dylib"}
+
+
+def test_collects_offender_in_secondary_pngtuber_part(tmp_path: Path) -> None:
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    packs = tmp_path / "frontend/pngtuber-packs"
+    packs.mkdir(parents=True)
+    for name, member in [("first.zip", "ok.png"), ("second.zip", f"layers/{CJK_NAME}")]:
+        with zipfile.ZipFile(packs / name, "w") as archive:
+            archive.writestr(member, "x")
+    (packs / "manifest.json").write_text(json.dumps({"models": [{"folder": "tuber", "archive": "first.zip",
+        "archives": [{"archive": "first.zip"}, {"archive": "second.zip"}]}]}), encoding="utf-8")
+    offenders, origins = module.collect_offenders(tmp_path)
+    member = f"static/pngtuber/tuber/layers/{CJK_NAME}"
+    assert member in offenders
+    assert origins[member] == "frontend/pngtuber-packs/second.zip"

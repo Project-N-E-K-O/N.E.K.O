@@ -1,0 +1,8 @@
+{
+  "id": "visit-leave",
+  "state_index": 16,
+  "group": "visit-leave",
+  "clip_metadata": "../../metadata.actions.json",
+  "source_id": "visit-leave",
+  "speech": true
+}

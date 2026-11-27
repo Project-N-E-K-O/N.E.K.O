@@ -1,0 +1,8 @@
+{
+  "id": "leisure-groom",
+  "state_index": 18,
+  "group": "leisure",
+  "clip_metadata": "../../metadata.actions.json",
+  "source_id": "leisure-groom",
+  "speech": false
+}

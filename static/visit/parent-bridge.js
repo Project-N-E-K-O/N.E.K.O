@@ -1096,6 +1096,15 @@
         state.voiceClosed = true;
         if (voice) voice.reset();
       }
+      // Only filtered live guest events for the current visit drive local YUI actions.
+      if (!fromRecovery && current && msg.visit_id === current && (msg.side || state.side) === 'guest'
+          && (!msg.side || !state.side || msg.side === state.side)
+          && (action === 'departed' || action === 'ended')) {
+        var manager = win.pngtuberManager;
+        if (manager && typeof manager.handleReviewedVisit === 'function') {
+          manager.handleReviewedVisit({ action: action, visit_id: msg.visit_id, side: 'guest' });
+        }
+      }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);
       else if (action === 'peer_visible') setPeerHidden(false);

@@ -1,0 +1,10 @@
+{
+  "status": "approved_by_user",
+  "confirmed_date": "2026-11-26",
+  "file": "baseline-approved-2026-11-26.png",
+  "source_filename": "26.11.26 q版修正.png",
+  "sha256": "2a0750e8cb2d2e2af79b0fb517a00026269ca87f4f1c205a2e7501820f56a41e",
+  "width": 1086,
+  "height": 1448,
+  "note": "Artist-corrected canonical reference; preserve unchanged. Reviewed action assets are supplied in the built-in multipart package."
+}

@@ -3291,5 +3291,11 @@
 
     // ======================== module export ========================
 
+    // Read-only activity gate for opt-in reviewed PNGTuber idle performances.
+    window.getReviewedPNGTuberActivity = function () {
+        return { proactiveEnabled: !!S.proactiveChatEnabled, owner: isProactiveLeader(),
+            busy: !!(S.gameRouteActive || isProactiveChatSuppressed() || _isAssistantSpeaking()
+                || S.isProactiveChatRunning || (Date.now() - (S.userRecentSpeechTime || 0) < 2000)) };
+    };
     window.appProactive = mod;
 })();

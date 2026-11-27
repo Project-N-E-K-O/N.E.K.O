@@ -69,6 +69,64 @@
         "offset_y": 0,
         "mirror": false
       }
+    },
+    {
+      "folder": "yui-chibi",
+      "archive": "yui-chibi-001.zip",
+      "archives": [
+        {
+          "archive": "yui-chibi-001.zip",
+          "archive_sha256": "761fc53c24bb16e3186f51cf3e2b2bd571d2b6014965536cb844c224838e9495",
+          "archive_size": 44726046,
+          "file_count": 600,
+          "unpacked_size": 44719255
+        },
+        {
+          "archive": "yui-chibi-002.zip",
+          "archive_sha256": "34034cfa3fbe2a7295247a3b8f2572a99fbd7282bd83c8e94f24eea4d7bd3d20",
+          "archive_size": 38169318,
+          "file_count": 600,
+          "unpacked_size": 38148202
+        },
+        {
+          "archive": "yui-chibi-003.zip",
+          "archive_sha256": "10a057e8bb54abbd57fdcc201b18582a4ea21fd5a7b1b54b753d5af189583c0f",
+          "archive_size": 47476219,
+          "file_count": 600,
+          "unpacked_size": 47467559
+        },
+        {
+          "archive": "yui-chibi-004.zip",
+          "archive_sha256": "9ec0faebe707b3b80c3b48053da1c9fa6ba267fe586b92c9666f175b95f91fb4",
+          "archive_size": 66418181,
+          "file_count": 600,
+          "unpacked_size": 66426962
+        },
+        {
+          "archive": "yui-chibi-005.zip",
+          "archive_sha256": "2aca37f76f4ba71b2c9806508da1cfe3e6ad44caef12ec720c7e885e62b2d917",
+          "archive_size": 42804778,
+          "file_count": 600,
+          "unpacked_size": 42792317
+        },
+        {
+          "archive": "yui-chibi-006.zip",
+          "archive_sha256": "4de942bdb3466392c97d5a1d14c0779861b314cc54cb5577caf5a02e84f53819",
+          "archive_size": 40210666,
+          "file_count": 600,
+          "unpacked_size": 40182468
+        },
+        {
+          "archive": "yui-chibi-007.zip",
+          "archive_sha256": "97c9371de7208982510091e5c9aa33f5f0de48feaebdb126b30998290dc9cbe5",
+          "archive_size": 940963,
+          "file_count": 64,
+          "unpacked_size": 2114302
+        }
+      ],
+      "archive_sha256": "55e80bdc4879b4dbd2cc11057c057baf8fed8f436f27057df309cbcb842310ae",
+      "file_count": 3664,
+      "unpacked_size": 281851065
     }
   ]
 }

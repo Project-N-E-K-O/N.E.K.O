@@ -135,13 +135,28 @@ test('持续输入会刷新判定窗口，到期后才搭话', async () => {
     chat.emit('focusin', chat.input);
     flush();
     const focusedTimer = pet.appState.proactiveChatTimer;
-    assert.ok(pet.scheduledDelay() >= 30000, '聚焦后至少等待 30 秒再判定');
+    const initialDelay = pet.scheduledDelay();
+    assert.ok(initialDelay < 20000, '聚焦保留已排定的基础计时器');
 
-    clock.now += 20000;
+    clock.now += initialDelay;
+    await pet.fire();
+    assert.equal(pet.fetches.length, 0, '原计时器到点时仍在输入窗口内，不得发送');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+    assert.ok(Math.abs(pet.scheduledDelay() - (30000 - initialDelay)) < 1,
+        '只补足到聚焦后的30秒截止时间');
+    assert.notEqual(pet.appState.proactiveChatTimer, focusedTimer);
+
+    clock.now = 1_020_000;
+    const pendingTimer = pet.appState.proactiveChatTimer;
     chat.emit('input', chat.input);
     flush();
-    assert.notEqual(pet.appState.proactiveChatTimer, focusedTimer, '继续输入必须重新排定');
-    assert.ok(pet.scheduledDelay() >= 30000, '输入后从当前时刻再给一个完整输入窗口');
+    assert.equal(pet.appState.proactiveChatTimer, pendingTimer, '继续输入只刷新截止时间，保留计时器');
+
+    clock.now = 1_030_000;
+    await pet.fire();
+    assert.equal(pet.fetches.length, 0, '继续输入将截止时间延长到50秒，30秒时不得发送');
+    assert.equal(pet.scheduledDelay(), 20000, '只等待刷新后窗口的剩余20秒');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
 
     clock.now += pet.scheduledDelay();
     await pet.fire();
@@ -295,6 +310,7 @@ test('输入取消屏幕搭话时不消耗视觉冷却', async () => {
     flush();
     const releaseHeaders = holdMutationHeaders(pet);
     pet.window.proactiveVisionEnabled = true;
+    pet.appState.proactiveVisionEnabled = true; // 真实页面由 app-state 桥接，此处补齐模拟状态。
     pet.window.appScreen = {
         acquireOrReuseCachedStream: async () => null,
         fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),
@@ -346,6 +362,7 @@ test('CSRF 重试期间开始输入也会退还视觉冷却', async () => {
         return { ok: true, status: 200, json: async () => ({ success: false }) };
     };
     pet.window.proactiveVisionEnabled = true;
+    pet.appState.proactiveVisionEnabled = true; // 真实页面由 app-state 桥接，此处补齐模拟状态。
     pet.window.appScreen = {
         acquireOrReuseCachedStream: async () => null,
         fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),

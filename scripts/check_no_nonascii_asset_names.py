@@ -572,15 +572,13 @@ def _pngtuber_archive_dests(repo_root: Path) -> list[tuple[str, str]]:
         if not isinstance(model, dict):
             continue
         folder = model.get("folder")
-        archive = model.get("archive")
-        if not isinstance(folder, str) or not isinstance(archive, str):
+        parts = model.get("archives", [{"archive": model.get("archive")}])
+        if not isinstance(folder, str) or not isinstance(parts, list):
             continue
-        dests.append(
-            (
-                (packs_dir / archive).as_posix(),
-                f"{ZIP_MANIFEST_DEST_ROOT}/{folder}",
-            )
-        )
+        for part in parts:
+            archive = part.get("archive") if isinstance(part, dict) else None
+            if isinstance(archive, str):
+                dests.append(((packs_dir / archive).as_posix(), f"{ZIP_MANIFEST_DEST_ROOT}/{folder}"))
     return sorted(dests)
 
 

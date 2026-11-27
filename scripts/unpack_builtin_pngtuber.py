@@ -21,13 +21,20 @@ IMAGE_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_PACKAGE_SIZE = 250 * 1024 * 1024
 MAX_ARCHIVE_FILES = 1000
+MAX_ARCHIVE_PARTS = 32
+MAX_COMBINED_SIZE = 2 * 1024 * 1024 * 1024
+MAX_COMBINED_FILES = 10000
 CHUNK_SIZE = 1024 * 1024
 READY_MARKER = ".builtin-pack-sha256"
 
 
 def _safe_relative_path(raw_path: str) -> PurePosixPath | None:
     normalized = (raw_path or "").replace("\\", "/")
-    if not normalized or normalized.startswith("/") or re.match(r"^[a-zA-Z]:", normalized):
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[a-zA-Z]:", normalized)
+    ):
         return None
     path = PurePosixPath(normalized)
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
@@ -80,14 +87,98 @@ def _validate_package(package_dir: Path) -> None:
         raise ValueError("layered metadata contains no layers")
     for layer in layers:
         image_name = layer.get("image") if isinstance(layer, dict) else None
-        relative = _safe_relative_path(image_name) if isinstance(image_name, str) else None
+        relative = (
+            _safe_relative_path(image_name) if isinstance(image_name, str) else None
+        )
         if relative is None or relative.suffix.lower() not in IMAGE_EXTENSIONS:
             raise ValueError("invalid layered image path")
         if not (package_dir / relative.as_posix()).is_file():
             raise ValueError(f"missing layered image: {image_name}")
 
+    tracks = metadata.get("tracked_animations", {})
+    if not isinstance(tracks, dict):
+        raise ValueError("invalid tracked animations")
+    for track in [metadata.get("tracked_animation"), *tracks.values()]:
+        if track is None:
+            continue
+        if not isinstance(track, dict) or not isinstance(track.get("frames"), list):
+            raise ValueError("invalid tracked animation frames")
+        for frame in track["frames"]:
+            if not isinstance(frame, dict):
+                raise ValueError("invalid tracked frame")
+            names = [frame.get("image")]
+            if frame.get("mouth_patch") is not None:
+                patch = frame["mouth_patch"]
+                names.append(patch.get("image") if isinstance(patch, dict) else None)
+            for name in names:
+                relative = _safe_relative_path(name) if isinstance(name, str) else None
+                if relative is None or relative.suffix.lower() not in IMAGE_EXTENSIONS:
+                    raise ValueError("invalid tracked image path")
+                if not (package_dir / relative.as_posix()).is_file():
+                    raise ValueError(f"missing tracked image: {name}")
 
-def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT) -> Path:
+
+def parts_fingerprint(parts: list[dict]) -> str:
+    """Bind part names, checksums and declared sizes to one installation marker."""
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _archive_parts(model: dict) -> list[dict]:
+    parts = model.get("archives")
+    if parts is None:
+        parts = [
+            {
+                key: model.get(key)
+                for key in ("archive", "archive_sha256", "file_count", "unpacked_size")
+            }
+        ]
+    else:
+        if not isinstance(parts, list) or not 1 <= len(parts) <= MAX_ARCHIVE_PARTS:
+            raise ValueError("invalid built-in PNGTuber archive parts")
+        if any(not isinstance(part, dict) for part in parts):
+            raise ValueError("invalid archive part")
+        if model.get("archive_sha256") != parts_fingerprint(parts):
+            raise ValueError("archive parts fingerprint mismatch")
+        if model.get("archive") != parts[0].get("archive"):
+            raise ValueError("first archive does not match manifest")
+    seen = set()
+    for part in parts:
+        name = part.get("archive")
+        path = _safe_relative_path(name) if isinstance(name, str) else None
+        if (
+            path is None
+            or len(path.parts) != 1
+            or path.suffix != ".zip"
+            or name != path.as_posix()
+        ):
+            raise ValueError("invalid built-in PNGTuber archive name")
+        if name.casefold() in seen:
+            raise ValueError("duplicate archive part")
+        seen.add(name.casefold())
+        if not re.fullmatch(r"[0-9a-f]{64}", str(part.get("archive_sha256") or "")):
+            raise ValueError("invalid built-in PNGTuber archive hash")
+        count, size = part.get("file_count"), part.get("unpacked_size")
+        if (
+            type(count) is not int
+            or type(size) is not int
+            or not 1 <= count <= MAX_ARCHIVE_FILES
+            or not 0 <= size <= MAX_PACKAGE_SIZE
+        ):
+            raise ValueError("archive limits exceeded")
+    count = sum(part["file_count"] for part in parts)
+    size = sum(part["unpacked_size"] for part in parts)
+    if count > MAX_COMBINED_FILES or size > MAX_COMBINED_SIZE:
+        raise ValueError("combined archive limits exceeded")
+    if model.get("file_count") != count or model.get("unpacked_size") != size:
+        raise ValueError("archive totals do not match manifest")
+    return parts
+
+
+def unpack_model(
+    model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT
+) -> Path:
     folder = model.get("folder")
     folder_path = _safe_relative_path(folder) if isinstance(folder, str) else None
     if (
@@ -98,13 +189,8 @@ def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path =
         raise ValueError("invalid built-in PNGTuber folder")
     folder_name = folder_path.name
 
-    archive_name = model.get("archive")
-    archive_path = _safe_relative_path(archive_name) if isinstance(archive_name, str) else None
-    if archive_path is None or len(archive_path.parts) != 1 or archive_path.suffix != ".zip":
-        raise ValueError("invalid built-in PNGTuber archive name")
-    expected_hash = str(model.get("archive_sha256") or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-        raise ValueError("invalid built-in PNGTuber archive hash")
+    parts = _archive_parts(model)
+    expected_hash = model["archive_sha256"]
 
     target_dir = output_root / folder_name
     backup_dir = output_root / f".{folder_name}.backup"
@@ -115,52 +201,75 @@ def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path =
             backup_dir.rename(target_dir)
     marker = target_dir / READY_MARKER
     existing_files = (
-        sum(1 for path in target_dir.rglob("*") if path.is_file() and path.name != READY_MARKER)
+        sum(
+            1
+            for path in target_dir.rglob("*")
+            if path.is_file() and path.name != READY_MARKER
+        )
         if target_dir.is_dir()
         else 0
     )
     if (
         marker.is_file()
         and (target_dir / "model.json").is_file()
-        and (target_dir / "metadata.pngtube-remix.json").is_file()
         and existing_files == model.get("file_count")
         and marker.read_text(encoding="utf-8").strip() == expected_hash
     ):
-        print(f"[build_frontend] PNGTuber {folder} up to date, skip")
-        return target_dir
+        try:
+            _validate_package(target_dir)
+        except (ValueError, OSError, json.JSONDecodeError):
+            pass  # An interrupted or damaged installation must be rebuilt.
+        else:
+            print(f"[build_frontend] PNGTuber {folder} up to date, skip")
+            return target_dir
 
-    source_archive = packs_root / archive_path.as_posix()
-    if not source_archive.is_file() or _sha256_file(source_archive) != expected_hash:
-        raise ValueError(f"archive missing or checksum failed: {source_archive}")
+    for part in parts:
+        source_archive = packs_root / part["archive"]
+        if (
+            not source_archive.is_file()
+            or _sha256_file(source_archive) != part["archive_sha256"]
+        ):
+            raise ValueError(f"archive missing or checksum failed: {source_archive}")
+        if (
+            "archive_size" in part
+            and source_archive.stat().st_size != part["archive_size"]
+        ):
+            raise ValueError(f"archive size mismatch: {source_archive}")
 
     output_root.mkdir(parents=True, exist_ok=True)
     temp_dir = output_root / f".{folder_name}.{uuid.uuid4().hex}.tmp"
     temp_dir.mkdir()
     try:
-        with zipfile.ZipFile(source_archive) as archive:
-            infos = [info for info in archive.infolist() if not info.is_dir()]
-            unpacked_size = sum(info.file_size for info in infos)
-            if len(infos) > MAX_ARCHIVE_FILES or unpacked_size > MAX_PACKAGE_SIZE:
-                raise ValueError(f"archive limits exceeded: {archive_name}")
-            if model.get("file_count") != len(infos) or model.get("unpacked_size") != unpacked_size:
-                raise ValueError(f"archive does not match manifest: {archive_name}")
+        seen: set[str] = set()
+        for part in parts:
+            source_archive = packs_root / part["archive"]
+            with zipfile.ZipFile(source_archive) as archive:
+                infos = [info for info in archive.infolist() if not info.is_dir()]
+                unpacked_size = sum(info.file_size for info in infos)
+                if len(infos) > MAX_ARCHIVE_FILES or unpacked_size > MAX_PACKAGE_SIZE:
+                    raise ValueError(f"archive limits exceeded: {part['archive']}")
+                if (
+                    part.get("file_count") != len(infos)
+                    or part.get("unpacked_size") != unpacked_size
+                ):
+                    raise ValueError(
+                        f"archive does not match manifest: {part['archive']}"
+                    )
 
-            seen: set[str] = set()
-            for info in infos:
-                relative = _safe_relative_path(info.filename)
-                unix_mode = info.external_attr >> 16
-                if relative is None or stat.S_IFMT(unix_mode) == stat.S_IFLNK:
-                    raise ValueError(f"unsafe archive path: {info.filename}")
-                normalized = relative.as_posix().casefold()
-                if normalized in seen or info.file_size > MAX_FILE_SIZE:
-                    raise ValueError(f"invalid archive member: {info.filename}")
-                seen.add(normalized)
-                destination = (temp_dir / relative.as_posix()).resolve()
-                destination.relative_to(temp_dir.resolve())
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as source, destination.open("xb") as output:
-                    shutil.copyfileobj(source, output, CHUNK_SIZE)
-
+                for info in infos:
+                    relative = _safe_relative_path(info.filename)
+                    unix_mode = info.external_attr >> 16
+                    if relative is None or stat.S_IFMT(unix_mode) == stat.S_IFLNK:
+                        raise ValueError(f"unsafe archive path: {info.filename}")
+                    normalized = relative.as_posix().casefold()
+                    if normalized in seen or info.file_size > MAX_FILE_SIZE:
+                        raise ValueError(f"invalid archive member: {info.filename}")
+                    seen.add(normalized)
+                    destination = (temp_dir / relative.as_posix()).resolve()
+                    destination.relative_to(temp_dir.resolve())
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as source, destination.open("xb") as output:
+                        shutil.copyfileobj(source, output, CHUNK_SIZE)
         _validate_package(temp_dir)
         (temp_dir / READY_MARKER).write_text(expected_hash, encoding="utf-8")
         if target_dir.exists():

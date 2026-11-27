@@ -1,0 +1,8 @@
+{
+  "id": "sad",
+  "state_index": 2,
+  "group": "sad",
+  "clip_metadata": "../../metadata.actions.json",
+  "source_id": "original-2",
+  "speech": true
+}

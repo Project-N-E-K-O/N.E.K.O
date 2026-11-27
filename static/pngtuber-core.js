@@ -422,6 +422,10 @@
 
         pauseRendering() {
             this._renderingPaused = true;
+            // Invalidate a decoded entry awaiting commit; resuming keeps the visible pose.
+            this._reviewedRequest = (this._reviewedRequest || 0) + 1;
+            this._reviewedPreparing = false;
+            this._reviewedQueued = null;
             this.clearLayeredTimers();
             if (this.speakingMouthTimer) {
                 clearTimeout(this.speakingMouthTimer);
@@ -602,6 +606,7 @@
         }
 
         setLayeredStateIndex(index, options = {}) {
+            if (this.hasReviewedActions() && !options.reviewedCommit) return this.requestReviewedState(index, options);
             if (!this.isLayeredActive()) return false;
             const stateCount = this.getLayeredStateCount();
             const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
@@ -612,6 +617,9 @@
                 this.layeredStateReturnTimer = null;
             }
             this.layeredStateIndex = nextIndex;
+            if (this._trackedPlayback && previousIndex !== nextIndex) {
+                this.initializeTrackedPlayback(this.layeredMetadata, this._trackedPlayback.baseUrl);
+            }
             // 显式的状态切换（情绪、快捷键、外部 API）重定义"家"，并作废旧的瞬时槽：
             // 槽里的动作此刻已被盖掉，留着它只会在结束时把用户刚选中的状态抢走。
             // 槽自己发起的切换（source 以 slot 开头）不参与这个判断。
@@ -649,9 +657,14 @@
 
         playLayeredAnimation(target, options = {}) {
             if (this._renderingPaused) return false;
+            if (this.hasReviewedActions()) return this.requestReviewedState(this.resolveLayeredAnimationTarget(target), options);
             if (!this.isLayeredActive()) return false;
             return this.setLayeredStateIndex(this.resolveLayeredAnimationTarget(target), {
-                returnToDefaultAfterMs: options.returnToDefaultAfterMs,
+                returnToDefaultAfterMs: options.returnToDefaultAfterMs ?? (() => {
+                    const index = this.resolveLayeredAnimationTarget(target);
+                    const clip = this.layeredMetadata?.tracked_animations?.[index];
+                    return clip?.playback === 'once' ? clip.duration_ms : 0;
+                })(),
                 source: options.source || 'api'
             });
         }
@@ -929,6 +942,9 @@
             this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
+            this._trackedPlayback = null;
+            this._reviewedIdleMetadata = null;
+            this._reviewedIdleResources = null;
             if (config.adapter !== 'layered_canvas_v1' || !config.layered_metadata) return false;
             try {
                 const response = await fetch(config.layered_metadata, { cache: 'no-cache' });
@@ -953,7 +969,12 @@
                 if (layeredImages.size === 0) throw new Error('no layer images loaded');
                 this.layeredImages = layeredImages;
                 this.layeredMetadata = metadata;
-                this.layeredStateIndex = 0;
+                this.layeredStateIndex = this.hasReviewedActions() ? this.reviewedChooseIdle() : 0;
+                this.initializeTrackedPlayback(metadata, config.layered_metadata);
+                if (this.hasReviewedActions()) {
+                    await this.prepareReviewedEntry(this.layeredStateIndex);
+                    if (!isCurrentLoad()) return false;
+                }
             // 说话优先时被延后的情绪：话说完再补上（不是丢弃，也不是插进来）
             this.pendingEmotion = null;
             this.activeLayeredEmotionIndex = null;
@@ -1004,6 +1025,9 @@
                 if (!isCurrentLoad()) return false;
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
+                this._trackedPlayback = null;
+                this._reviewedIdleMetadata = null;
+                this._reviewedIdleResources = null;
                 this.layeredImages = new Map();
                 this.layeredCanvasPadding = 0;
                 this.layeredCanvasLogicalWidth = 1;
@@ -1373,8 +1397,614 @@
                 && layerState.non_animated_sheet !== true;
         }
 
+        hasReviewedActions() {
+            return this.isLayeredActive() && this.layeredMetadata?.reviewed_actions?.version === 1;
+        }
+
+        reviewedPick(group) {
+            const list = this.layeredMetadata?.reviewed_actions?.groups?.[group] || [];
+            const choices = list.filter(index => index !== this._reviewedLast?.[group]);
+            const pool = choices.length ? choices : list;
+            if (!pool.length) return null;
+            const index = pool[Math.floor(Math.random() * pool.length)];
+            (this._reviewedLast ||= {})[group] = index;
+            return index;
+        }
+
+        reviewedChooseIdle() {
+            const list = this.layeredMetadata?.reviewed_actions?.groups?.idle || [];
+            const choices = list.filter(index => this.layeredMetadata.tracked_animations?.[index]?.playback === 'loop');
+            // Independent entry choice: repetition is allowed, no forced alternation.
+            return choices.length ? choices[Math.floor(Math.random() * choices.length)] : 0;
+        }
+
+        requestReviewedState(index, options = {}) {
+            if (this._renderingPaused || !this.hasReviewedActions()) return false;
+            const idleIndices = this.layeredMetadata.reviewed_actions.groups.idle || [];
+            if (index === 0 && !options.reviewedIdleEntry) {
+                if (idleIndices.includes(this.layeredStateIndex)) {
+                    // A speech cleanup or redundant idle request must keep the running phase.
+                    this._reviewedRequest = (this._reviewedRequest || 0) + 1;
+                    this._reviewedPreparing = false; this._reviewedQueued = null;
+                    return true;
+                }
+                index = this.reviewedChooseIdle();
+                options = { ...options, reviewedIdleEntry: true };
+            }
+            const metadata = this.layeredMetadata, data = metadata.tracked_animations?.[index];
+            if (!data) return false;
+            const current = this._trackedPlayback;
+            if (!options.force && index === this.layeredStateIndex && current?.data === data) return true;
+            const elapsed = performance.now() - this.layeredAnimationStart;
+            if (!options.force && current?.data.playback === 'once' && (elapsed < current.data.duration_ms || current.lastIndex < current.data.frames.length - 1)) {
+                this._reviewedQueued = { index, options };
+                this.prepareReviewedEntry(index).catch(() => {});
+                return true;
+            }
+            this._reviewedQueued = null;
+            const token = (this._reviewedRequest || 0) + 1;
+            this._reviewedRequest = token;
+            this._reviewedPreparing = true;
+            this.prepareReviewedEntry(index).then(entries => {
+                if (this.layeredMetadata !== metadata || this._reviewedRequest !== token || !this.hasReviewedActions()) return;
+                if (this._renderingPaused) { this._reviewedPreparing = false; return; }
+                const canvas = this.canvasElement;
+                if (canvas) {
+                    const snapshot = document.createElement('canvas');
+                    snapshot.width = canvas.width; snapshot.height = canvas.height;
+                    snapshot.getContext('2d').drawImage(canvas, 0, 0);
+                    this._reviewedTransition = { snapshot, at: performance.now() };
+                }
+                this._reviewedPreparing = false;
+                if (idleIndices.includes(index)) { this.currentEmotion = null; this.activeLayeredEmotionIndex = null; }
+                this.setLayeredStateIndex(index, { source: options.source || 'reviewed', reviewedCommit: true });
+                const playback = this._trackedPlayback;
+                for (const [i, item] of entries.entries()) {
+                    playback.cache.set(i, item.image);
+                    if (item.patch) playback.mouthPatches.set(data.frames[i].mouth_patch.image, item.patch);
+                }
+                this.restartLayeredAnimationLoop();
+                this._reviewedIdleSince = null;
+                this._reviewedPreserveIdleSince = null;
+                this._reviewedIdleCycle = 0;
+                this.prepareReviewedEntry(0).catch(() => {});
+            }).catch(error => {
+                if (this._reviewedRequest !== token || this.layeredMetadata !== metadata) return;
+                this._reviewedPreparing = false;
+                console.warn('[PNGTuber] reviewed entry decode failed; retaining current pose', error);
+            });
+            return true;
+        }
+
+        reviewedIdleResources(index) {
+            const metadata = this.layeredMetadata;
+            if (!this.hasReviewedActions() || !metadata.reviewed_actions.groups.idle?.includes(index)) return null;
+            const data = metadata.tracked_animations[index];
+            if (!data || data.playback !== 'loop') return null;
+            // Only the opted-in idle clips share decoded frames across state changes.
+            // Reserve conservatively for RGBA bodies and their small speech plates.
+            const bytes = data.frames.length * ((data.width || 720) * (data.height || 960) * 4 + 16384);
+            const budget = 512 * 1024 * 1024;
+            if (this._reviewedIdleMetadata !== metadata) {
+                this._reviewedIdleMetadata = metadata;
+                this._reviewedIdleResources = new Map();
+            }
+            const resources = this._reviewedIdleResources;
+            if (resources.has(index)) return resources.get(index);
+            const reserved = [...resources.values()].reduce((sum, item) => sum + item.bytes, 0);
+            if (bytes + reserved > budget) return null;
+            const item = { metadata, data, bytes, cache: new Map(), patches: new Map(), pending: new Map() };
+            resources.set(index, item);
+            return item;
+        }
+
+        loadReviewedIdleFrame(resource, index, base) {
+            if (resource.cache.has(index)) return Promise.resolve({ image: resource.cache.get(index),
+                patch: resource.patches.get(resource.data.frames[index].mouth_patch?.image) });
+            if (resource.pending.has(index)) return resource.pending.get(index);
+            const frame = resource.data.frames[index];
+            const patch = resource.data.speech_mouth_patches && frame.mouth_patch;
+            const ready = Promise.all([loadImageElement(resolveSiblingAsset(base, frame.image)),
+                patch ? loadImageElement(resolveSiblingAsset(base, patch.image)) : Promise.resolve(null)
+            ]).then(async ([image, mouthPatch]) => {
+                await Promise.all([image, mouthPatch].filter(Boolean).map(item =>
+                    typeof item.decode === 'function' ? item.decode() : Promise.resolve()));
+                if (this.layeredMetadata === resource.metadata && this._reviewedIdleMetadata === resource.metadata) {
+                    resource.cache.set(index, image);
+                    if (mouthPatch) resource.patches.set(patch.image, mouthPatch);
+                }
+                return { image, patch: mouthPatch };
+            }).finally(() => resource.pending.delete(index));
+            resource.pending.set(index, ready);
+            return ready;
+        }
+
+        warmReviewedIdle(index) {
+            const resource = this.reviewedIdleResources(index);
+            if (!resource || resource.warming || resource.cache.size === resource.data.frames.length) return;
+            const base = this._trackedPlayback?.baseUrl || this.config.layered_metadata;
+            let cursor = 0;
+            const worker = async () => {
+                while (cursor < resource.data.frames.length && this.layeredMetadata === resource.metadata
+                    && this._reviewedIdleMetadata === resource.metadata && this.hasReviewedActions()) {
+                    const frame = cursor++;
+                    await this.loadReviewedIdleFrame(resource, frame, base);
+                    // Yield between decodes; never enqueue a whole clip on the main thread.
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            };
+            resource.warming = Promise.all([worker(), worker()]).catch(error => {
+                console.warn('[PNGTuber] idle prewarm deferred; retaining current loop', error);
+            }).finally(() => { resource.warming = null; });
+        }
+
+        prepareReviewedEntry(index) {
+            const metadata = this.layeredMetadata, data = metadata.tracked_animations[index];
+            if (this._reviewedEntryMetadata !== metadata) { this._reviewedEntryMetadata = metadata; this._reviewedEntries = new Map(); }
+            const cache = this._reviewedEntries;
+            if (cache.has(index)) return cache.get(index);
+            const base = this._trackedPlayback?.baseUrl || this.config.layered_metadata;
+            const idleResource = this.reviewedIdleResources(index);
+            const ready = idleResource
+                ? Promise.all(data.frames.slice(0, 6).map((frame, i) => this.loadReviewedIdleFrame(idleResource, i, base)))
+                : Promise.all(data.frames.slice(0, 6).map(async frame => {
+                const image = await loadImageElement(resolveSiblingAsset(base, frame.image));
+                const patch = data.speech_mouth_patches && frame.mouth_patch
+                    ? await loadImageElement(resolveSiblingAsset(base, frame.mouth_patch.image)) : null;
+                await Promise.all([image, patch].filter(Boolean).map(x => typeof x.decode === 'function' ? x.decode() : Promise.resolve()));
+                return { image, patch };
+            }));
+            cache.set(index, ready);
+            ready.catch(() => { if (cache.get(index) === ready) cache.delete(index); });
+            while (cache.size > 8) cache.delete(cache.keys().next().value);
+            return ready;
+        }
+
+        reviewedPlaybackTick(timestamp) {
+            if (!this.hasReviewedActions() || this._reviewedPreparing) return;
+            const playback = this._trackedPlayback;
+            if (!playback) return;
+            const elapsed = timestamp - this.layeredAnimationStart;
+            const group = this.layeredStateCatalog().find(x => x.state_index === this.layeredStateIndex)?.group;
+            let activity = null;
+            try { activity = window.getReviewedPNGTuberActivity?.(); } catch (_) {}
+            if (group === 'leisure' && (this.isSpeaking || activity?.proactiveEnabled || activity?.busy)) {
+                this.requestReviewedState(0, { force: true, source: 'reviewed-interrupt' }); return;
+            }
+            if (playback.data.playback === 'once' && elapsed >= playback.data.duration_ms && playback.lastIndex === playback.data.frames.length - 1) {
+                const next = this._reviewedQueued;
+                this.requestReviewedState(next?.index ?? 0, { ...next?.options, force: true }); return;
+            }
+            const idle = group === 'idle';
+            const eligible = idle && activity?.proactiveEnabled === false && activity?.owner === true && !activity.busy
+                && !this.isSpeaking && !this._dragState && !this._touchZoomState && !this._reviewedVisit && !this.currentEmotion;
+            if (!eligible) this._reviewedIdleSince = null;
+            else {
+                this._reviewedIdleSince ??= timestamp;
+                if (timestamp - this._reviewedIdleSince >= 30000) {
+                    const index = this.reviewedPick('leisure');
+                    this._reviewedIdleSince = null;
+                    if (index !== null) this.requestReviewedState(index, { source: 'reviewed-leisure' });
+                    return;
+                }
+            }
+            if (idle && !this._dragState && !this._touchZoomState) {
+                const list = this.layeredMetadata.reviewed_actions.groups.idle || [];
+                // Warm the other variant only after the active loop is fully resident.
+                if (playback.cache.size === playback.data.frames.length) {
+                    for (const index of list) if (index !== this.layeredStateIndex) this.warmReviewedIdle(index);
+                }
+                // The selected idle loops until an actual action/model change.
+                // Prewarming prepares a later return; it never schedules a variant switch.
+            }
+        }
+
+        drawReviewedTransition(ctx, timestamp) {
+            const transition = this._reviewedTransition;
+            if (!transition || !this.hasReviewedActions()) return;
+            const mix = (timestamp - transition.at) / 80;
+            if (mix >= 1) { this._reviewedTransition = null; return; }
+            ctx.save(); ctx.globalAlpha = Math.max(0, 1 - mix);
+            ctx.drawImage(transition.snapshot, 0, 0); ctx.restore();
+        }
+
+        handleReviewedVisit(msg) {
+            if (!this.hasReviewedActions() || !msg?.visit_id || msg.side !== 'guest' || msg.recovery) return false;
+            if (msg.action === 'departed' && !this._reviewedVisit) {
+                this._reviewedVisit = msg.visit_id;
+                const index = this.reviewedPick('visit-leave');
+                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit' });
+            }
+            if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) {
+                this._reviewedVisit = null;
+                const index = this.reviewedPick('visit-return');
+                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit' });
+            }
+            return false;
+        }
+
+        initializeTrackedPlayback(metadata, baseUrl) {
+            if (this._reviewedSessionMetadata !== metadata) {
+                this._reviewedSessionMetadata = metadata; this._reviewedRequest = (this._reviewedRequest || 0) + 1;
+                this._reviewedPreparing = false; this._reviewedQueued = null; this._reviewedVisit = null; this._reviewedEntries = new Map(); this._reviewedEntryMetadata = null;
+                this._reviewedIdleSince = null; this._reviewedTransition = null;
+            }
+            const data = metadata.tracked_animations?.[this.layeredStateIndex]
+                || metadata.tracked_animation;
+            if (!data) return;
+            const frames = data.frames;
+            if (!Array.isArray(frames) || !frames.length || frames.length > 2000
+                || !Number.isFinite(data.duration_ms) || data.duration_ms <= 0) {
+                throw new Error('invalid tracked animation timeline');
+            }
+            let end = 0;
+            for (const frame of frames) {
+                if (!Number.isFinite(frame.time_ms) || frame.time_ms !== end
+                    || !Number.isFinite(frame.duration_ms) || frame.duration_ms <= 0
+                    || !Number.isFinite(frame.x) || !Number.isFinite(frame.y)
+                    || typeof frame.image !== 'string' || !frame.image) {
+                    throw new Error('invalid tracked animation frame');
+                }
+                end += frame.duration_ms;
+            }
+            if (end !== data.duration_ms) throw new Error('tracked animation duration mismatch');
+            const crop = data.mouth_crop;
+            if (data.lipsync !== false && (!Array.isArray(crop) || crop.length !== 4
+                || !crop.every(Number.isFinite) || crop[0] < 0 || crop[1] < 0
+                || crop[2] <= 0 || crop[3] <= 0)) throw new Error('invalid mouth crop');
+            if ((data.width !== undefined && !(Number.isFinite(data.width) && data.width > 0))
+                || (data.height !== undefined && !(Number.isFinite(data.height) && data.height > 0))) {
+                throw new Error('invalid tracked animation dimensions');
+            }
+            const initialIndex = this.trackedLoopSelection(data, 0).index;
+            const idleResource = this.reviewedIdleResources(this.layeredStateIndex);
+            this._trackedPlayback = {
+                data, baseUrl, cache: data === metadata.tracked_animation && !data.speech_mouth_patches
+                    ? new Map([[initialIndex, this.layeredImages.get(0)]]) : new Map(),
+                mouthPatches: new Map(),
+                pending: new Set(), failed: new Set(), lastIndex: initialIndex, initialIndex,
+                openness: 0, lastDraw: 0, idleResource
+            };
+            if (idleResource) {
+                this._trackedPlayback.cache = idleResource.cache;
+                this._trackedPlayback.mouthPatches = idleResource.patches;
+            }
+        }
+
+        requestTrackedFrame(index) {
+            const playback = this._trackedPlayback;
+            if (!playback || playback.cache.has(index) || playback.pending.has(index)
+                || playback.failed.has(index) || playback.pending.size >= 6) return;
+            playback.pending.add(index);
+            const frame = playback.data.frames[index];
+            if (playback.idleResource) {
+                this.loadReviewedIdleFrame(playback.idleResource, index, playback.baseUrl).catch(error => {
+                    if (this._trackedPlayback !== playback) return;
+                    playback.failed.add(index);
+                    console.warn('[PNGTuber] tracked idle frame unavailable:', index, error);
+                }).finally(() => playback.pending.delete(index));
+                return;
+            }
+            const src = resolveSiblingAsset(playback.baseUrl, frame.image);
+            const patch = playback.data.speech_mouth_patches && frame.mouth_patch;
+            const patchLoad = patch ? loadImageElement(resolveSiblingAsset(playback.baseUrl, patch.image)) : Promise.resolve(null);
+            Promise.all([loadImageElement(src), patchLoad]).then(async ([image, mouthPatch]) => {
+                // Publish body and its matching speech plate together, after both decode.
+                await Promise.all([image, mouthPatch].filter(Boolean).map(item =>
+                    typeof item.decode === 'function' ? item.decode() : Promise.resolve()));
+                if (this._trackedPlayback !== playback) return;
+                playback.cache.set(index, image);
+                if (mouthPatch) playback.mouthPatches.set(patch.image, mouthPatch);
+                while (playback.cache.size > 12) {
+                    const evicted = playback.cache.keys().next().value;
+                    playback.cache.delete(evicted);
+                    const oldPatch = playback.data.frames[evicted].mouth_patch;
+                    if (oldPatch && ![...playback.cache.keys()].some(key => playback.data.frames[key].mouth_patch?.image === oldPatch.image)) {
+                        playback.mouthPatches.delete(oldPatch.image);
+                    }
+                }
+            }).catch((error) => {
+                if (this._trackedPlayback !== playback) return;
+                playback.failed.add(index);
+                console.warn('[PNGTuber] tracked frame unavailable:', index, error);
+            }).finally(() => playback.pending.delete(index));
+        }
+
+        trackedLoopSelection(data, elapsed) {
+            if (data.playback === 'once') {
+                const time = Math.min(data.duration_ms - 0.001, Math.max(0, elapsed));
+                const index = data.frames.findIndex(frame => time < frame.time_ms + frame.duration_ms);
+                return { index: index < 0 ? data.frames.length - 1 : index, blendIndex: null, mix: 0 };
+            }
+            const loop = data.loop || {};
+            const end = Math.max(1, Math.min(data.duration_ms, Number(loop.end_ms) || data.duration_ms));
+            const start = Math.max(0, Math.min(end - 1, Number(loop.start_ms) || 0));
+            const overlap = Math.max(0, Math.min((end - start) / 3, Number(loop.crossfade_ms) || 0));
+            const time = start + overlap + Math.max(0, elapsed) % (end - start - overlap);
+            const frameAt = (at) => {
+                const index = data.frames.findIndex((frame) => at < frame.time_ms + frame.duration_ms);
+                return index < 0 ? data.frames.length - 1 : index;
+            };
+            if (!overlap || time < end - overlap) {
+                return { index: frameAt(time), blendIndex: null, mix: 0 };
+            }
+            const progress = (time - (end - overlap)) / overlap;
+            return { index: frameAt(time), blendIndex: frameAt(start + time - (end - overlap)),
+                mix: progress * progress * (3 - 2 * progress) };
+        }
+
+        classifyTrackedViseme(f1, f2) {
+            if (!(Number.isFinite(f1) && Number.isFinite(f2) && f1 > 0 && f2 > f1)) return 'a';
+            const vowels = { a: [800, 1400], e: [550, 2100], i: [300, 2600], o: [550, 1000], u: [350, 900] };
+            return Object.keys(vowels).reduce((best, key) => {
+                const distance = ([first, second]) => Math.log(f1 / first) ** 2 + 1.6 * Math.log(f2 / second) ** 2;
+                return distance(vowels[key]) < distance(vowels[best]) ? key : best;
+            }, 'a');
+        }
+
+        estimateTrackedFormants(bytes, sampleRate) {
+            // LPC estimates broad vowel resonances. This is an audio approximation,
+            // not phoneme recognition; timed visemes can override it when available.
+            const step = Math.max(1, Math.round(sampleRate / 12000));
+            const rate = sampleRate / step, count = Math.floor(bytes.length / step);
+            if (count < 80) return null;
+            const signal = new Float64Array(count);
+            let previous = 0;
+            for (let i = 0; i < count; i++) {
+                const value = (bytes[i * step] - 128) / 128;
+                signal[i] = (value - 0.96 * previous) * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (count - 1)));
+                previous = value;
+            }
+            const order = 16, r = new Float64Array(order + 1);
+            for (let lag = 0; lag <= order; lag++) {
+                for (let i = lag; i < count; i++) r[lag] += signal[i] * signal[i - lag];
+            }
+            if (r[0] < 0.00001) return null;
+            let a = new Float64Array(order + 1), error = r[0]; a[0] = 1;
+            for (let n = 1; n <= order; n++) {
+                let value = r[n];
+                for (let j = 1; j < n; j++) value += a[j] * r[n - j];
+                const reflection = Math.max(-0.98, Math.min(0.98, -value / Math.max(error, 1e-9)));
+                const next = a.slice(); next[n] = reflection;
+                for (let j = 1; j < n; j++) next[j] = a[j] + reflection * a[n - j];
+                a = next; error *= 1 - reflection * reflection;
+            }
+            const spectrum = [];
+            for (let frequency = 175; frequency <= 3200; frequency += 25) {
+                let real = 1, imaginary = 0;
+                for (let j = 1; j <= order; j++) {
+                    const phase = -2 * Math.PI * frequency / rate * j;
+                    real += a[j] * Math.cos(phase); imaginary += a[j] * Math.sin(phase);
+                }
+                spectrum.push({ frequency, power: 1 / Math.max(1e-8, real * real + imaginary * imaginary) });
+            }
+            const peaks = spectrum.filter((value, i) => i > 0 && i < spectrum.length - 1
+                && value.power > spectrum[i - 1].power && value.power >= spectrum[i + 1].power);
+            const strongest = values => values.sort((x, y) => y.power - x.power)[0];
+            const first = peaks.filter(p => p.frequency >= 200 && p.frequency <= 1000).sort((x, y) => x.frequency - y.frequency)[0];
+            if (!first) return null;
+            const second = strongest(peaks.filter(p => p.frequency >= Math.max(850, first.frequency + 350) && p.frequency <= 3100));
+            return second ? [first.frequency, second.frequency] : null;
+        }
+
+        setTrackedVisemeTimeline(cues, startMs = performance.now()) {
+            const supported = new Set(['a', 'e', 'i', 'o', 'u', 'closed']);
+            if (!Array.isArray(cues) || !Number.isFinite(startMs)) return false;
+            let end = 0;
+            for (const cue of cues) {
+                if (!cue || !supported.has(cue.viseme) || !Number.isFinite(cue.start_ms)
+                    || !Number.isFinite(cue.end_ms) || cue.start_ms < end || cue.end_ms <= cue.start_ms) return false;
+                end = cue.end_ms;
+            }
+            this._trackedVisemeTimeline = { cues: cues.map(cue => ({ ...cue })), startMs };
+            return true;
+        }
+
+        updateTrackedViseme(bytes, analyser, rms, timestamp) {
+            const timeline = this._trackedVisemeTimeline;
+            if (timeline) {
+                const at = timestamp - timeline.startMs;
+                const cue = timeline.cues.find(c => at >= c.start_ms && at < c.end_ms);
+                this._trackedViseme = cue ? cue.viseme : 'closed';
+                this._trackedVisemeSource = 'timed-cues';
+                return;
+            }
+            if (rms < 0.012 || timestamp - (this._trackedVisemeAt || 0) < 65) return;
+            this._trackedVisemeAt = timestamp;
+            const formants = this.estimateTrackedFormants(bytes, Number(analyser.context?.sampleRate) || 48000);
+            if (!formants) return;
+            const candidate = this.classifyTrackedViseme(...formants);
+            // Require two consecutive votes before switching to prevent vowel chatter.
+            if (this._trackedVisemeVote === candidate) this._trackedViseme = candidate;
+            else this._trackedVisemeVote = candidate;
+            this._trackedVisemeSource = 'audio-estimate';
+        }
+
+        drawTrackedVectorMouth(ctx, frame, amount) {
+            const rawAngle = Number(frame.mouth_rotation);
+            const angle = Number.isFinite(rawAngle) ? Math.max(-0.35, Math.min(0.35, rawAngle)) : 0;
+            const perspective = frame.mouth_perspective;
+            const bounded = (value, fallback, low, high) => Number.isFinite(value) ? Math.max(low, Math.min(high, value)) : fallback;
+            const sx = bounded(perspective?.scale_x, 1, 0.8, 1.12);
+            const sy = bounded(perspective?.scale_y, 1, 0.8, 1.12);
+            const shear = bounded(perspective?.shear, 0, -0.08, 0.08);
+            if (!angle && sx === 1 && sy === 1 && shear === 0) return this.drawTrackedVectorMouthLocal(ctx, frame, amount);
+            ctx.save();
+            ctx.translate(frame.x, frame.y + 3);
+            ctx.rotate(angle);
+            if (sx !== 1 || sy !== 1 || shear !== 0) ctx.transform(sx, shear, shear, sy, 0, 0);
+            try {
+                return this.drawTrackedVectorMouthLocal(ctx, { ...frame, x: 0, y: -3 }, amount);
+            } finally {
+                ctx.restore();
+            }
+        }
+
+        drawTrackedVectorMouthLocal(ctx, frame, amount) {
+            const playback = this._trackedPlayback;
+            if (playback.data.speech_mouth_patches && this.isSpeaking && amount < 0.04) {
+                const frown = ['sad', 'angry'].includes(playback.data.mouth_emotion);
+                ctx.save(); ctx.globalAlpha = 1; ctx.strokeStyle = '#4b333b'; ctx.lineWidth = 1.2;
+                ctx.beginPath(); ctx.moveTo(frame.x - 10, frame.y + 3);
+                ctx.quadraticCurveTo(frame.x, frame.y + (frown ? -1 : 7), frame.x + 10, frame.y + 3);
+                ctx.stroke(); ctx.restore(); return;
+            }
+            const profiles = { a: [25, 21, 0.0], e: [30, 11, 0.5], i: [32, 6, 0.8], o: [16, 20, 0.0], u: [12, 12, 0.0], closed: [22, 0.5, 0] };
+            const target = profiles[this._trackedViseme] || profiles.a;
+            const shape = playback.visemeShape || (playback.visemeShape = target.slice());
+            const now = playback.lastDraw || performance.now();
+            const dt = Math.max(0, Math.min(80, now - (playback.visemeDrawAt ?? now - 16)));
+            playback.visemeDrawAt = now;
+            const blend = 1 - Math.exp(-dt / 45);
+            for (let i = 0; i < shape.length; i++) shape[i] += (target[i] - shape[i]) * blend;
+            const width = shape[0] * (0.88 + amount * 0.12), height = Math.max(0.7, shape[1] * amount);
+            const x = frame.x, y = frame.y + 3;
+            ctx.save(); ctx.globalAlpha = Math.min(1, amount / 0.12);
+            ctx.beginPath(); ctx.ellipse(x, y, width / 2, height / 2, 0, 0, Math.PI * 2);
+            ctx.fillStyle = '#69414b'; ctx.fill(); ctx.clip();
+            if (height > 4) {
+                ctx.fillStyle = '#cb8c96'; ctx.beginPath();
+                ctx.ellipse(x, y + height * 0.42, width * 0.35, height * 0.28, 0, 0, Math.PI * 2);ctx.fill();
+            }
+            if (shape[2] > 0.1) {
+                ctx.fillStyle = '#fff5ee';
+                ctx.fillRect(x - width / 2, y - height / 2, width, Math.min(height * 0.4, 3.5) * shape[2]);
+            }
+            ctx.restore();ctx.save();ctx.globalAlpha = Math.min(1, amount / 0.12);
+            ctx.strokeStyle = '#4b333b';ctx.lineWidth = 0.9;
+            ctx.beginPath();ctx.ellipse(x, y, width / 2, height / 2, 0, 0, Math.PI * 2);ctx.stroke();ctx.restore();
+        }
+
+        drawTrackedMouth(ctx, image, frame, amount) {
+            if (this._trackedPlayback.data.lipsync === false) return;
+            const mouth = this.layeredImages.get(1);
+            const playback = this._trackedPlayback;
+            const speechPlate = playback.data.speech_mouth_patches === true;
+            if ((!mouth && playback.data.mouth_renderer !== 'viseme_v1')
+                || (amount < 0.008 && !(speechPlate && this.isSpeaking))) return;
+            const patch = speechPlate && frame.mouth_patch;
+            const patchImage = patch && playback.mouthPatches.get(patch.image);
+            const coverAlpha = speechPlate && this.isSpeaking ? 1 : Math.min(1, amount / 0.18);
+            if (patchImage) {
+                ctx.save(); ctx.globalAlpha = coverAlpha;
+                ctx.drawImage(patchImage, patch.x, patch.y, patch.width, patch.height);
+                ctx.restore();
+                this.drawTrackedVectorMouth(ctx, frame, amount);
+                return;
+            }
+            ctx.save();
+            ctx.globalAlpha = coverAlpha;
+            ctx.beginPath();
+            const coverWidth = Math.max(42, Math.min(speechPlate ? 96 : 68, (Number(frame.mouth_width) || 32) + 10));
+            const coverHeight = Math.max(22, Math.min(speechPlate ? 80 : 40, (Number(frame.mouth_height) || 12) + 10));
+            ctx.ellipse(frame.x, frame.y + 1, coverWidth / 2, coverHeight / 2, 0, 0, Math.PI * 2);
+            ctx.clip();
+            ctx.drawImage(image, frame.x - coverWidth / 2, frame.y - coverHeight / 2 - 7, coverWidth, 7,
+                frame.x - coverWidth / 2, frame.y + 1 - coverHeight / 2, coverWidth, coverHeight);
+            ctx.restore();
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, amount / 0.12);
+            if (this._trackedPlayback.data.mouth_renderer === 'viseme_v1') {
+                ctx.restore();
+                this.drawTrackedVectorMouth(ctx, frame, amount);
+                return;
+            }
+            const width = 23 * (0.86 + 0.14 * amount);
+            ctx.drawImage(mouth, ...this._trackedPlayback.data.mouth_crop,
+                frame.x - width / 2, frame.y - 1.5, width, Math.max(0.8, 16 * amount));
+            ctx.restore();
+        }
+
+        drawTrackedPlayback(ctx, timestamp) {
+            this.reviewedPlaybackTick(timestamp);
+            const playback = this._trackedPlayback;
+            const data = playback.data;
+            const elapsed = Math.max(0, timestamp - (this.layeredAnimationStart || timestamp));
+            const selection = this.trackedLoopSelection(data, elapsed);
+            const index = selection.index;
+            this.requestTrackedFrame(index);
+            if (selection.blendIndex !== null) this.requestTrackedFrame(selection.blendIndex);
+            // Decode contiguous upcoming samples. Fixed millisecond jumps can skip
+            // the very next frame at 24 fps and repeatedly stall on an uncached frame.
+            const loop = data.loop || {};
+            const end = Math.max(1, Math.min(data.duration_ms, Number(loop.end_ms) || data.duration_ms));
+            const start = Math.max(0, Math.min(end - 1, Number(loop.start_ms) || 0));
+            const overlap = Math.max(0, Math.min((end - start) / 3, Number(loop.crossfade_ms) || 0));
+            const phase = data.playback === 'once' ? Math.min(elapsed, data.duration_ms - 0.001)
+                : start + overlap + elapsed % (end - start - overlap);
+            let aheadMs = data.frames[index].time_ms + data.frames[index].duration_ms - phase + 0.001;
+            for (let step = 0; step < 5; step++) {
+                const ahead = this.trackedLoopSelection(data, elapsed + aheadMs);
+                this.requestTrackedFrame(ahead.index);
+                if (ahead.blendIndex !== null) this.requestTrackedFrame(ahead.blendIndex);
+                aheadMs += data.frames[ahead.index].duration_ms;
+            }
+            if (playback.cache.has(index)) playback.lastIndex = index;
+            const image = playback.cache.get(playback.lastIndex) || this.layeredImages.get(0);
+            const frame = data.frames[playback.cache.has(playback.lastIndex) ? playback.lastIndex : playback.initialIndex];
+            if (!image) return false;
+            // Keep the loaded idle body visible until the requested action has a decoded frame.
+            if (!playback.cache.size) {
+                ctx.save();
+                const padding = Number(this.layeredCanvasPadding) || 0;
+                ctx.translate(padding, padding);
+                ctx.drawImage(image, 0, 0, this.layeredMetadata.canvas.width, this.layeredMetadata.canvas.height);
+                ctx.restore();
+                return true;
+            }
+            const dt = Math.min(80, Math.max(0, timestamp - (playback.lastDraw || timestamp)));
+            playback.lastDraw = timestamp;
+            const target = this.isSpeaking && !(data.mouth_renderer === 'viseme_v1' && this._trackedViseme === 'closed')
+                ? (this.lipSyncFrame ? this.lipSyncMouthOpen : (this.speakingMouthOpen ? 0.7 : 0))
+                : 0;
+            const tau = target > playback.openness ? 42 : 78;
+            playback.openness += (Math.max(0, Math.min(1, target)) - playback.openness) * (1 - Math.exp(-dt / tau));
+            const amount = playback.openness;
+            const padding = Number(this.layeredCanvasPadding) || 0;
+            const blendImage = selection.blendIndex === null ? null : playback.cache.get(selection.blendIndex);
+            const mix = blendImage ? selection.mix : 0;
+            if (!mix) {
+                ctx.save();
+                ctx.translate(padding, padding);
+                if (data.width && data.height) {
+                    ctx.scale(this.layeredMetadata.canvas.width / data.width,
+                        this.layeredMetadata.canvas.height / data.height);
+                }
+                ctx.drawImage(image, 0, 0);
+                this.drawTrackedMouth(ctx, image, frame, amount);
+                ctx.restore();
+                this.drawReviewedTransition(ctx, timestamp);
+                return true;
+            }
+            const scratch = playback.mixCanvas || (playback.mixCanvas = document.createElement('canvas'));
+            const reviewedScale = this.hasReviewedActions() && data.width && data.height;
+            const width = Number(reviewedScale ? data.width : this.layeredMetadata.canvas.width);
+            const height = Number(reviewedScale ? data.height : this.layeredMetadata.canvas.height);
+            if (scratch.width !== width) scratch.width = width;
+            if (scratch.height !== height) scratch.height = height;
+            const mixContext = scratch.getContext('2d');
+            const drawSample = (body, sample, weight) => {
+                mixContext.clearRect(0, 0, scratch.width, scratch.height);
+                mixContext.drawImage(body, 0, 0);
+                this.drawTrackedMouth(mixContext, body, sample, amount);
+                ctx.globalAlpha = weight;
+                ctx.drawImage(scratch, 0, 0);
+            };
+            ctx.save();
+            ctx.translate(padding, padding);
+            if (reviewedScale) ctx.scale(this.layeredMetadata.canvas.width / data.width, this.layeredMetadata.canvas.height / data.height);
+            drawSample(image, frame, 1 - mix);
+            if (mix > 0) {
+                ctx.globalCompositeOperation = 'lighter';
+                drawSample(blendImage, data.frames[selection.blendIndex], mix);
+            }
+            ctx.restore();
+            return true;
+        }
+
         hasMotionLayersForCurrentState(stateName = this.state || 'idle') {
             if (!this.isLayeredActive()) return false;
+            if (this._trackedPlayback) return true;
             if (this.stateHasModelMotion(stateName) || this.layeredPointerNeedsFrame()) return true;
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             return layers.some((layer) => {
@@ -1408,6 +2038,7 @@
         // 满帧余温。否则以 PNGTUBER_ANIMATION_IDLE_FPS 定时器低频驱动（避免
         // rAF 请求把 Blink 主帧调度顶到显示器刷新率——live2d round-2 同款策略）。
         _layeredAnimationNeedsFullRate(timestamp) {
+            if (this.hasReviewedActions()) return true;
             try {
                 // 页面级豁免（demo/模型管理器等）：与 VRM/MMD governor 的豁免对齐
                 if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return true;
@@ -2498,6 +3129,7 @@
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
+            if (this._trackedPlayback) return this.drawTrackedPlayback(ctx, timestamp);
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             if (this.isLayeredPlusModel()) {
                 return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);
@@ -2584,12 +3216,19 @@
         }
 
         showDragImage() {
+            if (this.hasReviewedActions()) {
+                const index = this.reviewedPick('drag');
+                if (index !== null) this.requestReviewedState(index, { source: 'reviewed-drag' });
+                return;
+            }
             // 分层：拖动是"用这个动作演一演"，只有状态目录里真有 drag 这一格才接管
             if (this.setLayeredTransientSlot('drag')) {
                 this.applyTransform();
                 this.updateLockIconPosition();
                 return;
             }
+            // Position-only dragging does not replace a tracked body's pose.
+            if (this._trackedPlayback && this.isLayeredActive()) return;
             this.showTransientImage(this.config.drag_image || this.config.idle_image);
         }
 
@@ -2689,13 +3328,29 @@
             return Number.isFinite(value) ? value : fallback;
         }
 
+        getModelScaleLimits() {
+            // Optional per-model policy; absent/invalid metadata keeps existing limits.
+            const limits = this.layeredMetadata?.scale_limits;
+            if (!limits || typeof limits !== 'object') return { min: SCALE_MIN, max: SCALE_MAX };
+            const valid = value => typeof value === 'number' && Number.isFinite(value) && value > 0;
+            const min = valid(limits.min) ? clampNumber(limits.min, SCALE_MIN, SCALE_MAX, SCALE_MIN) : SCALE_MIN;
+            const max = valid(limits.max) ? clampNumber(limits.max, SCALE_MIN, SCALE_MAX, SCALE_MAX) : SCALE_MAX;
+            return min <= max ? { min, max } : { min: SCALE_MIN, max: SCALE_MAX };
+        }
+
+        clampModelScale(value, fallback = 1) {
+            const limits = this.getModelScaleLimits();
+            return clampNumber(value, limits.min, limits.max,
+                clampNumber(fallback, limits.min, limits.max, 1));
+        }
+
         getActivePlacement() {
             const fields = this.getActiveLayoutFields();
             const desktopScale = this.readConfigNumber('scale', 1);
             const scaleFallback = fields.scale === 'mobile_scale' ? Math.min(desktopScale, 1) : 1;
             return {
                 fields,
-                scale: clampNumber(this.config[fields.scale], SCALE_MIN, SCALE_MAX, scaleFallback),
+                scale: this.clampModelScale(this.config[fields.scale], scaleFallback),
                 offsetX: this.readConfigNumber(fields.offsetX, 0),
                 offsetY: this.readConfigNumber(fields.offsetY, 0)
             };
@@ -2725,7 +3380,7 @@
 
         setActiveScale(nextScale) {
             const placement = this.getActivePlacement();
-            this.config[placement.fields.scale] = clampNumber(nextScale, SCALE_MIN, SCALE_MAX, placement.scale);
+            this.config[placement.fields.scale] = this.clampModelScale(nextScale, placement.scale);
         }
 
         setActiveOffsets(offsetX, offsetY) {
@@ -3599,8 +4254,14 @@
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
             }
             this.setModelDraggingState(false);
-            this.restoreStateImage();
-            this.restartLayeredAnimationLoop();
+            // Pointer capture starts on every press, even a stationary click.
+            // Without a drag performance there is nothing to restore or rewind.
+            const hasDragPerformance = this.layeredSlotStateIndex('drag') !== null
+                || this.layeredTransientSlots?.some(slot => slot.kind === 'drag');
+            if (!this._trackedPlayback || (state.moved && hasDragPerformance)) {
+                this.restoreStateImage();
+                this.restartLayeredAnimationLoop();
+            }
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
             }
@@ -3634,6 +4295,11 @@
             event.preventDefault();
             event.stopPropagation();
             if (this.clickTimer) clearTimeout(this.clickTimer);
+            this.clickTimer = null;
+            // A tracked body without a click state has no click performance to
+            // restore. Keep its clock (and active emotion) running untouched.
+            if (this.isLayeredActive() && this._trackedPlayback
+                && this.layeredSlotStateIndex('click') === null) return;
             const layeredDuration = this.showClickImage();
             this.clickTimer = setTimeout(() => {
                 this.clickTimer = null;
@@ -3657,7 +4323,7 @@
             const scaleFactor = 1 + zoomStep;
             const currentScale = this.getActivePlacement().scale;
             const requestedScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
-            const nextScale = clampNumber(requestedScale, SCALE_MIN, SCALE_MAX, currentScale);
+            const nextScale = this.clampModelScale(requestedScale, currentScale);
             if (nextScale === currentScale) return;
 
             this._dragSequence += 1;
@@ -3734,10 +4400,8 @@
             const changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
             if (changed && !state.changed) {
                 const candidatePlacement = this.getRenderPlacement(this.getActivePlacement());
-                const nextScale = clampNumber(
+                const nextScale = this.clampModelScale(
                     candidatePlacement.scale * scaleChange,
-                    SCALE_MIN,
-                    SCALE_MAX,
                     candidatePlacement.scale
                 );
                 const nextOffsetX = Math.max(-5000, Math.min(5000, candidatePlacement.offsetX + dx));
@@ -4324,6 +4988,12 @@
         }
 
         clearEmotion(options = {}) {
+            if (this.hasReviewedActions()) {
+                if (this.emotionTimer) { clearTimeout(this.emotionTimer); this.emotionTimer = null; }
+                this.currentEmotion = null; this.activeLayeredEmotionIndex = null; this.clearPendingEmotion();
+                if (options.render !== false) return this.requestReviewedState(0, { source: 'emotion-clear' });
+                return true;
+            }
             if (this.emotionTimer) {
                 clearTimeout(this.emotionTimer);
                 this.emotionTimer = null;
@@ -4354,6 +5024,13 @@
         }
 
         setLayeredEmotion(emotionName, options = {}) {
+            if (this.hasReviewedActions()) {
+                const index = this.reviewedPick(emotionName);
+                if (index === null) return false;
+                if (this.emotionTimer) { clearTimeout(this.emotionTimer); this.emotionTimer = null; }
+                this.clearPendingEmotion(); this.currentEmotion = emotionName; this.activeLayeredEmotionIndex = index;
+                return this.requestReviewedState(index, { source: 'emotion' });
+            }
             if (!this.isLayeredActive()) return false;
             const stateIndex = this.layeredEmotionTarget(emotionName);
             if (stateIndex === null) return false;
@@ -4373,7 +5050,9 @@
                 this.emotionTimer = setTimeout(() => {
                     this.emotionTimer = null;
                     this.clearEmotion();
-                }, options.durationMs === undefined ? DEFAULT_EMOTION_DURATION_MS : durationMs);
+                }, options.durationMs === undefined
+                    ? (this.layeredMetadata?.tracked_animations?.[stateIndex]?.duration_ms || DEFAULT_EMOTION_DURATION_MS)
+                    : durationMs);
             }
             return this.setLayeredStateIndex(stateIndex, { source: 'emotion' });
         }
@@ -4453,6 +5132,7 @@
         }
 
         speakingBounceConfig() {
+            if (this._trackedPlayback) return null;
             if (this.isLayeredRemixModel()) return null;
             if (this.isLayeredActive()) return null;
             const settings = this.layeredMetadata && this.layeredMetadata.settings;
@@ -4547,6 +5227,7 @@
         }
 
         startTalkingHopAnimation() {
+            if (this._trackedPlayback) return;
             if (this._renderingPaused) return;
             if (this.talkingHopFrame || !this.isSpeaking || !this.isLayeredActive()) return;
             this.talkingHopStart = performance.now();
@@ -4623,6 +5304,9 @@
             this.startTalkingHopAnimation();
             this.syncLayeredSpeechSlot();
             this.lipSyncMouthOpen = 0;
+            this._trackedViseme = 'a';
+            this._trackedVisemeAt = 0;
+            this._trackedVisemeVote = null;
             this.lipSyncMouthState = !!this.speakingMouthOpen;
             this.lipSyncLastStateChangeAt = performance.now();
             this.lipSyncNextPulseAt = this.lipSyncLastStateChangeAt;
@@ -4641,8 +5325,17 @@
                     sum += value * value;
                 }
                 const rms = Math.sqrt(sum / dataArray.length);
+                if (this._trackedPlayback?.data.mouth_renderer === 'viseme_v1') {
+                    this.updateTrackedViseme(dataArray, analyser, rms, timestamp);
+                }
                 const targetOpen = Math.min(1, rms * 10);
                 this.lipSyncMouthOpen = this.lipSyncMouthOpen * 0.55 + targetOpen * 0.45;
+                if (this._trackedPlayback) {
+                    // Continuous amplitude is rendered separately from the legacy binary pulse.
+                    this.speakingMouthOpen = this.lipSyncMouthOpen >= 0.07;
+                    this.lipSyncFrame = requestAnimationFrame(tick);
+                    return;
+                }
                 const activeThreshold = 0.16;
                 const quietThreshold = 0.07;
                 const pulseOpenMs = Math.max(42, Math.min(72, 42 + this.lipSyncMouthOpen * 34));
@@ -4664,6 +5357,9 @@
         }
 
         stopLipSync() {
+            this._trackedVisemeTimeline = null;
+            this._trackedViseme = 'closed';
+            this._trackedVisemeVote = null;
             if (this.lipSyncFrame) {
                 cancelAnimationFrame(this.lipSyncFrame);
                 this.lipSyncFrame = null;
@@ -4892,9 +5588,14 @@
                 return;
             }
             this.stopSpeakingMouthAnimation();
+            const returnLoadGeneration = this._loadGeneration;
             this.returnIdleTimer = setTimeout(() => {
                 this.returnIdleTimer = null;
-                this.setState('idle');
+                if (this._loadGeneration !== returnLoadGeneration) return;
+                // Speech cleanup must not rewind an active tracked emotion while
+                // its independent expiry timer keeps counting from the first play.
+                const preserveEmotionTimeline = Boolean(this._trackedPlayback && this.layeredEmotionHeld());
+                this.setState('idle', { restartLayeredAnimation: !preserveEmotionTimeline });
                 // 说话期间被压住的情绪，在这里回到画面（若它还没过期）
                 this.flushPendingEmotion();
             }, 160);
@@ -4991,6 +5692,9 @@
             this.detachLayeredPlayEvent();
             this.detachLayeredPointerTracking();
             this.layeredMetadata = null;
+            this._trackedPlayback = null;
+            this._reviewedIdleMetadata = null;
+            this._reviewedIdleResources = null;
             this.layeredImages = new Map();
             this.layeredToggleVisibility = new Map();
             this.layeredLayerById = new Map();

@@ -1,0 +1,8 @@
+{
+  "id": "angry-3",
+  "state_index": 10,
+  "group": "angry",
+  "clip_metadata": "../../metadata.actions.json",
+  "source_id": "angry-3",
+  "speech": true
+}

@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "default_action": "idle",
+  "stage": "idle-entry-20261127-v2",
+  "actions": [
+    {
+      "id": "idle",
+      "label": "待机·轻眨眼",
+      "state_index": 0,
+      "definition": "idle/action.json"
+    },
+    {
+      "id": "happy",
+      "label": "happy",
+      "state_index": 1,
+      "definition": "happy/action.json"
+    },
+    {
+      "id": "sad",
+      "label": "sad",
+      "state_index": 2,
+      "definition": "sad/action.json"
+    },
+    {
+      "id": "angry",
+      "label": "angry",
+      "state_index": 3,
+      "definition": "angry/action.json"
+    },
+    {
+      "id": "surprised",
+      "label": "surprised",
+      "state_index": 4,
+      "definition": "surprised/action.json"
+    },
+    {
+      "id": "happy-2",
+      "label": "开心·歪头甜笑",
+      "state_index": 5,
+      "definition": "happy-2/action.json"
+    },
+    {
+      "id": "happy-3",
+      "label": "开心·拍小手",
+      "state_index": 6,
+      "definition": "happy-3/action.json"
+    },
+    {
+      "id": "sad-2",
+      "label": "难过·耷耳低头",
+      "state_index": 7,
+      "definition": "sad-2/action.json"
+    },
+    {
+      "id": "sad-3",
+      "label": "难过·委屈搓手",
+      "state_index": 8,
+      "definition": "sad-3/action.json"
+    },
+    {
+      "id": "angry-2",
+      "label": "生气·鼓脸轻哼",
+      "state_index": 9,
+      "definition": "angry-2/action.json"
+    },
+    {
+      "id": "angry-3",
+      "label": "生气·轻跺脚",
+      "state_index": 10,
+      "definition": "angry-3/action.json"
+    },
+    {
+      "id": "surprised-2",
+      "label": "惊讶·小手捂嘴",
+      "state_index": 11,
+      "definition": "surprised-2/action.json"
+    },
+    {
+      "id": "surprised-3",
+      "label": "惊讶·轻轻后仰",
+      "state_index": 12,
+      "definition": "surprised-3/action.json"
+    },
+    {
+      "id": "idle-2",
+      "label": "待机·清醒轻甩尾",
+      "state_index": 13,
+      "definition": "idle-2/action.json"
+    },
+    {
+      "id": "drag-1",
+      "label": "拖拽·好奇歪头",
+      "state_index": 14,
+      "definition": "drag-1/action.json"
+    },
+    {
+      "id": "drag-2",
+      "label": "拖拽·惊讶晃动",
+      "state_index": 15,
+      "definition": "drag-2/action.json"
+    },
+    {
+      "id": "visit-leave",
+      "label": "串门·挥手出发",
+      "state_index": 16,
+      "definition": "visit-leave/action.json"
+    },
+    {
+      "id": "visit-return",
+      "label": "串门·回来啦",
+      "state_index": 17,
+      "definition": "visit-return/action.json"
+    },
+    {
+      "id": "leisure-groom",
+      "label": "闲暇·整理蝴蝶结",
+      "state_index": 18,
+      "definition": "leisure-groom/action.json"
+    },
+    {
+      "id": "leisure-hug",
+      "label": "闲暇·抱猫贴贴",
+      "state_index": 19,
+      "definition": "leisure-hug/action.json"
+    },
+    {
+      "id": "leisure-snack",
+      "label": "闲暇·吃小鱼干",
+      "state_index": 20,
+      "definition": "leisure-snack/action.json"
+    },
+    {
+      "id": "leisure-teaser",
+      "label": "闲暇·被逗猫棒吸引",
+      "state_index": 21,
+      "definition": "leisure-teaser/action.json"
+    },
+    {
+      "id": "leisure-work",
+      "label": "闲暇·认真工作",
+      "state_index": 22,
+      "definition": "leisure-work/action.json"
+    }
+  ]
+}
