@@ -345,7 +345,7 @@ const toolsNotice = computed(() => {
       detail: '',
     }
   }
-  if (tools.state === 'failed') {
+  if (tools.state === 'failed' || tools.state === 'unsupported') {
     return {
       title: t('pythonPackages.toolsFailed'),
       type: 'warning' as const,

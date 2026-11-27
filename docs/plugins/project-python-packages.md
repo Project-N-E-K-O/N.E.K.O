@@ -90,7 +90,8 @@ existing uv, with the existing pip fallback when uv is unavailable. A packaged
 server prepares the tools on the first sync that has packages to install: it
 downloads a pinned uv release from PyPI (SHA-256 checked against PyPI HTTPS
 metadata; a compatible uv already installed is only a fallback when that
-download fails), then installs the CPython release matching the application's
+download fails, so on a slow network the fallback waits for that download to
+fail), then installs the CPython release matching the application's
 exact version and architecture with `--no-bin --no-registry`, so no system
 interpreter is registered. Preparation can be canceled with the task, counts
 against the task's time budget, and waits for another N.E.K.O. process that is

@@ -534,22 +534,39 @@ describe('project dependency management', () => {
     await mount()
     expect(document.querySelector('[data-testid="python-tools-status"]')).toBeNull()
   })
-  it('explains why a sync is unavailable with the layer code', async () => {
+  it('keeps an unsupported packaged build retryable and explains it', async () => {
     api.getProjectPythonPackages.mockResolvedValue(
       state({
         environment: {
           ...state().environment,
           packaged: true,
+          tools: toolRuntimeStatus({
+            state: 'unsupported',
+            packaged: true,
+            error_code: 'unsupported_platform',
+          }),
+        },
+      })
+    )
+    const { container } = await mount()
+    const notice = document.querySelector('[data-testid="python-tools-status"]')!.textContent!
+    expect(notice).toContain(en.toolErrorUnsupportedPlatform)
+    expect(container.textContent).not.toContain(en.unavailable)
+  })
+  it('explains a source checkout without an installer', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        environment: {
+          ...state().environment,
           installer: null,
           can_sync: false,
-          reason: 'unsupported_platform',
-          tools: toolRuntimeStatus({ state: 'unsupported', packaged: true }),
+          reason: 'installer_missing',
         },
       })
     )
     const { container } = await mount()
     expect(container.textContent).toContain(en.unavailable)
-    expect(container.textContent).toContain(en.toolErrorUnsupportedPlatform)
+    expect(container.textContent).toContain(en.installerMissing)
   })
   it.each([
     [

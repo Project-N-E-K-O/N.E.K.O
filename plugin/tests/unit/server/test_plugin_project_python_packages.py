@@ -522,11 +522,14 @@ def test_environment_follows_the_shared_tool_status(record, monkeypatch):
     assert environment["tools"]["state"] == "preparing"
     assert environment["tools"]["progress"]["phase"] == "installing_python"
     unsupported = tool_runtime.RuntimeStatus(
-        "unsupported", True, "0.13.6", error_code="unsupported_platform", error_detail="no",
+        "unsupported", True, "0.13.6", error_code="unsupported_platform",
+        error_detail="GET https://user:secret@mirror.example/uv failed",
     )
     monkeypatch.setattr(packages, "read_tool_runtime_status", lambda: unsupported)
     environment = packages.read_packages(record.project_id)["environment"]
-    assert environment["can_sync"] is False and environment["reason"] == "unsupported_platform"
+    # Retryable: the layer also says unsupported after one failed attempt.
+    assert environment["can_sync"] is True and environment["tools"]["state"] == "unsupported"
+    assert "secret" not in environment["tools"]["error_detail"]
     source = tool_runtime.RuntimeStatus("source", False, "0.13.6", python=sys.executable, uv=None)
     monkeypatch.setattr(packages, "read_tool_runtime_status", lambda: source)
     monkeypatch.setattr(packages.importlib.util, "find_spec", lambda name: None)

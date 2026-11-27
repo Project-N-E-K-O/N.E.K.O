@@ -68,7 +68,7 @@ export interface PythonPackagesSnapshot {
     packaged: boolean
     installer: 'uv' | 'pip' | null
     can_sync: boolean
-    /** Why can_sync is false: a ToolErrorCode, or 'installer_missing' from source. */
+    /** Why can_sync is false: 'installer_missing' (source checkout without uv or pip). */
     reason: string | null
     tools: ToolRuntimeStatus
   }

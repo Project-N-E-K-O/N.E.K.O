@@ -147,10 +147,15 @@ def _snapshot(task: _Task) -> dict:
 def _environment() -> dict:
     """Installer facts for the page; reads only (no child process or download)."""
     tools = read_tool_runtime_status()
+    status = tools.as_dict()
+    if tools.error_detail:
+        # uv output and download errors can carry an authenticated index URL.
+        status["error_detail"] = _redact(tools.error_detail)
     if tools.packaged:
         # Packaged sync always installs with the prepared uv and managed Python.
-        installer = "uv" if tools.state != "unsupported" else None
-        reason = tools.error_code if tools.state == "unsupported" else None
+        # Even "unsupported" stays retryable: the layer reports it after a
+        # failed attempt too, and a later attempt can find a uv installed since.
+        installer, reason = "uv", None
     else:
         pip = importlib.util.find_spec("pip") is not None
         installer = "uv" if tools.uv else "pip" if pip else None
@@ -163,7 +168,7 @@ def _environment() -> dict:
         "installer": installer,
         "can_sync": installer is not None,
         "reason": reason,
-        "tools": tools.as_dict(),
+        "tools": status,
     }
 
 
