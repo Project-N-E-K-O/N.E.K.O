@@ -536,7 +536,7 @@ def test_renewal_prepares_anew_and_swaps_at_once_when_nothing_is_under_way():
     old = fake.session
     assert _renew(fake, wait_seconds=5) is True
     assert fake.session is not old
-    assert fake.calls == ["cleanup", "reset", "prepare", "swap"]
+    assert fake.calls == ["cleanup", "reset", "cleanup", "reset", "prepare", "swap"]
 
 
 def test_renewal_lets_the_turn_under_way_end_before_it_prepares():
@@ -554,7 +554,26 @@ def test_renewal_lets_the_turn_under_way_end_before_it_prepares():
         return await LifecycleMixin.renew_session_now(fake, wait_seconds=5)
 
     assert asyncio.run(run()) is True
-    assert fake.calls == ["turn ends", "cleanup", "reset", "prepare", "swap"]
+    # The older preparation goes before the wait; the new one is made after the turn.
+    assert fake.calls == ["cleanup", "reset", "turn ends", "cleanup", "reset", "prepare", "swap"]
+
+
+def test_an_ordinary_swap_while_the_turn_ends_is_renewed_from_not_taken_for_an_end():
+    # Greptile on #4155: swapped at the end of the turn all the same, the renewal goes on
+    # from that session instead of giving up; only an ended session stops it.
+    fake = _Renewing(idle=False)
+
+    async def run():
+        async def turn_ends_with_a_swap():
+            await asyncio.sleep(0.3)
+            fake.session = object()
+            fake.idle = True
+
+        asyncio.ensure_future(turn_ends_with_a_swap())
+        return await LifecycleMixin.renew_session_now(fake, wait_seconds=5)
+
+    assert asyncio.run(run()) is True
+    assert fake.calls[-2:] == ["prepare", "swap"]
 
 
 def test_renewal_still_waits_for_a_turn_begun_after_it_prepared():

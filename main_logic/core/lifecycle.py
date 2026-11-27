@@ -2919,18 +2919,27 @@ class LifecycleMixin:
                 await asyncio.wait_for(asyncio.shield(swap), timeout=wait_seconds)
             except Exception:
                 return False
+
+        def ended() -> bool:
+            return not self.is_active or self.session is None
+
+        # A preparation made with the switches as they were goes first: left warm, the end
+        # of the turn under way would swap it in instead.
+        await self._cleanup_pending_session_resources()
+        await self._reset_preparation_state()
+        # The turn under way ends first, so that what it said is in memory for the new session.
+        while not self._can_release_proactive():
+            if loop.time() >= deadline or ended():
+                return False
+            await asyncio.sleep(0.2)
+        if ended():
+            return False
+        # Swapped meanwhile all the same (a renewal begun since): that one is what is renewed.
         session = self.session
 
         def still_up() -> bool:
             return self.is_active and self.session is session
 
-        # The turn under way ends first, so that what it said is in memory for the new session.
-        while not self._can_release_proactive():
-            if loop.time() >= deadline or not still_up():
-                return False
-            await asyncio.sleep(0.2)
-        if not still_up():
-            return False
         await self._cleanup_pending_session_resources()
         await self._reset_preparation_state()
         if not still_up():
