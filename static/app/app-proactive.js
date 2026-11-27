@@ -418,6 +418,8 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
+                } else if (data.type === 'reviewed_input_activity') {
+                    recordReviewedInputActivity(true);
                 } else if (data.type === 'chat_input_focus_slowdown') {
                     // 其他窗口的聚焦或继续输入。只刷新本窗口的截止时间，不再向外广播。
                     _refreshChatInputSlowdown({ fromPeer: true });
@@ -670,13 +672,23 @@
         if (!(_systemQuietUntil >= until)) _systemQuietUntil = until;
     }
 
+    let reviewedInputAt = 0;
+    function recordReviewedInputActivity(fromPeer = false) {
+        reviewedInputAt = Date.now();
+        const manager = window.pngtuberManager;
+        if (manager?.hasReviewedActions?.()) manager._reviewedIdleSince = null;
+        if (!fromPeer) _proactiveBroadcast('reviewed_input_activity');
+    }
+
     document.addEventListener('focusin', function (event) {
         if (!_isChatInputElement(event.target)) return;
+        recordReviewedInputActivity();
         _refreshChatInputSlowdown();
     }, true);
 
     document.addEventListener('input', function (event) {
         if (!_isChatInputElement(event.target)) return;
+        recordReviewedInputActivity();
         _refreshChatInputSlowdown();
     }, true);
 
@@ -3294,6 +3306,7 @@
     // Read-only activity gate for opt-in reviewed PNGTuber idle performances.
     window.getReviewedPNGTuberActivity = function () {
         return { proactiveEnabled: !!S.proactiveChatEnabled, owner: isProactiveLeader(),
+            inputAt: reviewedInputAt,
             busy: !!(S.gameRouteActive || isProactiveChatSuppressed() || _isAssistantSpeaking()
                 || S.isProactiveChatRunning || (Date.now() - (S.userRecentSpeechTime || 0) < 2000)) };
     };

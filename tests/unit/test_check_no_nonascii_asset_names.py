@@ -1001,3 +1001,19 @@ def test_collects_offender_in_secondary_pngtuber_part(tmp_path: Path) -> None:
     member = f"static/pngtuber/tuber/layers/{CJK_NAME}"
     assert member in offenders
     assert origins[member] == "frontend/pngtuber-packs/second.zip"
+
+
+def test_explicit_null_archives_falls_back_to_single_archive():
+    import importlib.util
+    script = Path(__file__).resolve().parents[2] / "scripts/check_no_nonascii_asset_names.py"
+    spec = importlib.util.spec_from_file_location("asset_names_null", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # The manifest reader is isolated; scanning itself remains covered by the ZIP tests above.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        path = root / module.ZIP_MANIFEST_REL
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"version": 1, "models": [{"folder": "legacy", "archive": "legacy.zip", "archives": None}]}))
+        assert module._pngtuber_archive_dests(root) == [("frontend/pngtuber-packs/legacy.zip", "static/pngtuber/legacy")]

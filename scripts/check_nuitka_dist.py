@@ -95,6 +95,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
+    ("static/pngtuber/yui-chibi", "model.json"),
+    ("static/pngtuber/yui-chibi", "metadata.actions.json"),
+    ("static/pngtuber/yui-chibi", "idle.png"),
     # React chat-window build artifacts (in a gitignored directory); if missing, chat panels in index.html/chat.html return 404.
     # CSS is generated separately by sync-css.mjs and can be missing independently of iife.js, so assert both.
     ("static/react/neko-chat", "neko-chat-window.iife.js"),

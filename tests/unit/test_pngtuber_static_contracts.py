@@ -1805,7 +1805,9 @@ def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     assert "event.key === '1' || event.code === 'Digit1' || event.keyCode === 49" in cycle_hotkey_block
     assert "this.getLayeredStateCount() <= 1" in cycle_block
     assert "const stateCount = this.getLayeredStateCount();" in cycle_block
-    assert "this.setLayeredStateIndex((this.layeredStateIndex + 1) % stateCount" in cycle_block
+    assert "next = (next + 1) % stateCount" in cycle_block
+    assert "group !== 'visit-leave' && group !== 'visit-return'" in cycle_block
+    assert "this.setLayeredStateIndex(next" in cycle_block
     assert "source: 'alt-one-cycle-hotkey'" in cycle_block
 
 

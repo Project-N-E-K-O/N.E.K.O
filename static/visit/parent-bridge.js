@@ -600,6 +600,7 @@
           // 和收到 ended 一样处理，离家样式已经在上面清掉，迟到的 ended / 辅助事件按已结束场次丢掉
           state.liveGen += 1;   // 和 ended 一样：在途的重载恢复快照作废，不再给已结束的场次补建 iframe
           state.endedVisitId = closedId;
+          if (closedSide === 'guest' && closedId) notifyReviewedVisit('ended', closedId, closedSide, false);
           state.closedVisitId = null;
           state.phase = null;
           return;
@@ -1058,6 +1059,14 @@
       applyStateChange(msg, false);
     }
 
+    function notifyReviewedVisit(action, visitId, side, recovery) {
+      var manager = win.pngtuberManager;
+      if (manager && typeof manager.handleReviewedVisit === 'function') {
+        try { manager.handleReviewedVisit({ action: action, visit_id: visitId, side: side, recovery: !!recovery }); }
+        catch (error) { logFrame('warn', 'PNGTuber notification failed: ' + String(error)); }
+      }
+    }
+
     function applyStateChange(msg, fromRecovery) {
       if (!msg || msg.type !== 'visit_state_change') return;
       var action = msg.action;
@@ -1097,13 +1106,10 @@
         if (voice) voice.reset();
       }
       // Only filtered live guest events for the current visit drive local YUI actions.
-      if (!fromRecovery && current && msg.visit_id === current && (msg.side || state.side) === 'guest'
+      if (current && msg.visit_id === current && (msg.side || state.side) === 'guest'
           && (!msg.side || !state.side || msg.side === state.side)
           && (action === 'departed' || action === 'ended')) {
-        var manager = win.pngtuberManager;
-        if (manager && typeof manager.handleReviewedVisit === 'function') {
-          manager.handleReviewedVisit({ action: action, visit_id: msg.visit_id, side: 'guest' });
-        }
+        notifyReviewedVisit(action, msg.visit_id, 'guest', fromRecovery);
       }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);

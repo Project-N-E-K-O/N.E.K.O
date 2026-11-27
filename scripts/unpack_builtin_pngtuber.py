@@ -5,12 +5,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import time
+import warnings
 import re
 import shutil
 import stat
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
+
+
+try:
+    from .pngtuber_publish import publication_lock, recover_publication
+except ImportError:
+    from pngtuber_publish import publication_lock, recover_publication
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +107,27 @@ def _validate_package(package_dir: Path) -> None:
     tracks = metadata.get("tracked_animations", {})
     if not isinstance(tracks, dict):
         raise ValueError("invalid tracked animations")
+    reviewed = metadata.get("reviewed_actions")
+    if isinstance(reviewed, dict) and reviewed.get("version") == 1:
+        count = metadata.get("state_count")
+        groups, catalog = reviewed.get("groups"), metadata.get("state_catalog")
+        if type(count) is not int or count < 1 or not isinstance(groups, dict) or not isinstance(catalog, list):
+            raise ValueError("invalid reviewed metadata")
+        if len(catalog) != count or any(not isinstance(row, dict) for row in catalog):
+            raise ValueError("invalid reviewed catalog")
+        indices = [row.get("state_index") for row in catalog]
+        if any(type(i) is not int for i in indices) or sorted(indices) != list(range(count)):
+            raise ValueError("invalid reviewed catalog")
+        if any(str(i) not in tracks for i in range(count)):
+            raise ValueError("missing reviewed track")
+        for values in groups.values():
+            if not isinstance(values, list) or any(type(i) is not int or not 0 <= i < count for i in values) or len(set(values)) != len(values):
+                raise ValueError("invalid reviewed group")
+        idle = groups.get("idle")
+        if not isinstance(idle, list) or not idle or any(tracks[str(i)].get("playback") != "loop" for i in idle):
+            raise ValueError("invalid reviewed idle group")
+        for track in tracks.values():
+            _validate_reviewed_track(track)
     for track in [metadata.get("tracked_animation"), *tracks.values()]:
         if track is None:
             continue
@@ -116,6 +146,28 @@ def _validate_package(package_dir: Path) -> None:
                     raise ValueError("invalid tracked image path")
                 if not (package_dir / relative.as_posix()).is_file():
                     raise ValueError(f"missing tracked image: {name}")
+
+
+def _validate_reviewed_track(track):
+    def finite(value):
+        return type(value) in (int, float) and math.isfinite(value)
+    if not isinstance(track, dict) or not isinstance(track.get("frames"), list) or not 1 <= len(track["frames"]) <= 2000:
+        raise ValueError("invalid reviewed frames")
+    if track.get("playback") not in ("once", "loop"):
+        raise ValueError("invalid reviewed playback")
+    end = 0
+    for frame in track["frames"]:
+        if not isinstance(frame, dict) or not finite(frame.get("time_ms")) or frame["time_ms"] != end or not finite(frame.get("duration_ms")) or frame["duration_ms"] <= 0:
+            raise ValueError("invalid reviewed timeline")
+        if any(not finite(frame.get(key)) for key in ("x", "y")):
+            raise ValueError("invalid reviewed mouth position")
+        end += frame["duration_ms"]
+    if not finite(track.get("duration_ms")) or track["duration_ms"] != end:
+        raise ValueError("invalid reviewed duration")
+    if track.get("lipsync") is not False:
+        crop = track.get("mouth_crop")
+        if not isinstance(crop, list) or len(crop) != 4 or not all(finite(v) for v in crop) or min(crop[:2]) < 0 or min(crop[2:]) <= 0:
+            raise ValueError("invalid reviewed mouth crop")
 
 
 def parts_fingerprint(parts: list[dict]) -> str:
@@ -176,7 +228,7 @@ def _archive_parts(model: dict) -> list[dict]:
     return parts
 
 
-def unpack_model(
+def _unpack_model(
     model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT
 ) -> Path:
     folder = model.get("folder")
@@ -194,9 +246,11 @@ def unpack_model(
 
     target_dir = output_root / folder_name
     backup_dir = output_root / f".{folder_name}.backup"
+    if backup_dir.is_symlink() or target_dir.is_symlink():
+        raise ValueError("unsafe installed package directory")
     if backup_dir.exists():
         if target_dir.exists():
-            shutil.rmtree(backup_dir)
+            _cleanup_backup(backup_dir)
         else:
             backup_dir.rename(target_dir)
     marker = target_dir / READY_MARKER
@@ -281,12 +335,34 @@ def unpack_model(
                 backup_dir.rename(target_dir)
             raise
         if backup_dir.exists():
-            shutil.rmtree(backup_dir)
+            _cleanup_backup(backup_dir)
         print(f"[build_frontend] PNGTuber {folder} unpacked")
         return target_dir
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _cleanup_backup(path: Path):
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        warnings.warn(f"Installed PNGTuber retained; backup cleanup deferred: {error}", RuntimeWarning)
+
+
+def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT) -> Path:
+    folder = model.get("folder")
+    if not isinstance(folder, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", folder):
+        raise ValueError("invalid built-in PNGTuber folder")
+    # The pack lock prevents observing an in-progress multi-file publication.
+    with publication_lock(packs_root, "publish"), publication_lock(output_root, folder):
+        recover_publication(packs_root)
+        if output_root.is_dir():
+            for path in output_root.glob(f".{folder}.*.tmp"):
+                if re.fullmatch(r"\." + re.escape(folder) + r"\.[0-9a-f]{32}\.tmp", path.name) and not path.is_symlink() and path.is_dir() and time.time() - path.stat().st_mtime > 86400:
+                    path.resolve().relative_to(output_root.resolve())
+                    _cleanup_backup(path)
+        return _unpack_model(model, packs_root, output_root)
 
 
 def main() -> None:

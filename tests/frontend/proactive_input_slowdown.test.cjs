@@ -388,3 +388,34 @@ test('CSRF 重试期间开始输入也会退还视觉冷却', async () => {
     assert.equal(pet.appState._lastProactiveChatScreenTime, 0, '重试被输入取消后也要退还视觉冷却');
     assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
 });
+
+
+test('reviewed idle observes typing even with proactive chat disabled, without scheduling chat', () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    pet.appState.proactiveChatEnabled = false;
+    const manager = { hasReviewedActions: () => true, _reviewedIdleSince: 1 };
+    pet.window.pngtuberManager = manager;
+    pet.emit('input', pet.input);
+    assert.equal(manager._reviewedIdleSince, null);
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt, clock.now);
+    assert.equal(pet.appState.proactiveChatTimer, null);
+    clock.now += 30001;
+    assert.equal(pet.window.getReviewedPNGTuberActivity().busy, false);
+});
+
+
+test('chat-follower input reaches the reviewed owner while proactive chat is off', () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 2_000_000;
+    const pet = createWindow('/'), chat = createWindow('/chat');
+    pet.appState.proactiveChatEnabled = chat.appState.proactiveChatEnabled = false;
+    flush();
+    chat.emit('input', chat.input);
+    flush();
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt, clock.now);
+    assert.equal(pet.appState.proactiveChatTimer, null);
+});

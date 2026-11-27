@@ -18,7 +18,12 @@ import zipfile
 from pathlib import Path
 from urllib.parse import unquote
 
-from unpack_builtin_pngtuber import MAX_FILE_SIZE, _validate_package, parts_fingerprint
+try:
+    from .unpack_builtin_pngtuber import MAX_FILE_SIZE, MAX_COMBINED_FILES, MAX_COMBINED_SIZE, _validate_package, parts_fingerprint
+    from .pngtuber_publish import publication_lock, publish_files, recover_publication
+except ImportError:
+    from unpack_builtin_pngtuber import MAX_FILE_SIZE, MAX_COMBINED_FILES, MAX_COMBINED_SIZE, _validate_package, parts_fingerprint
+    from pngtuber_publish import publication_lock, publish_files, recover_publication
 
 PART_SIZE = 64 * 1024 * 1024
 PART_FILES = 600
@@ -39,7 +44,7 @@ def write_json(path, value):
     )
 
 
-def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
+def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
     source = source.resolve()
     metadata = json.loads(
         (source / "metadata.actions.json").read_text(encoding="utf-8")
@@ -114,6 +119,8 @@ def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
         write_json(stage / "metadata.actions.json", metadata)
         _validate_package(stage)
         members = sorted(p for p in stage.rglob("*") if p.is_file())
+        if len(members) > MAX_COMBINED_FILES or sum(p.stat().st_size for p in members) > MAX_COMBINED_SIZE:
+            raise ValueError("combined archive limits exceeded")
         groups, group, size = [], [], 0
         for path in members:
             amount = path.stat().st_size
@@ -129,6 +136,7 @@ def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
         if len(groups) > 32:
             raise ValueError("Too many archive parts")
         parts = []
+        outputs = {}
         for index, group in enumerate(groups, 1):
             name = f"yui-chibi-{index:03}.zip"
             output = packs / name
@@ -144,7 +152,8 @@ def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
                     info.external_attr = 0o100644 << 16
                     with path.open("rb") as src, archive.open(info, "w") as dst:
                         shutil.copyfileobj(src, dst, 1024 * 1024)
-            shutil.copyfile(temporary, output)
+            outputs[name] = temporary
+            output = temporary
             parts.append(
                 {
                     "archive": name,
@@ -168,11 +177,12 @@ def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
         manifest["models"] = [
             m for m in manifest["models"] if m["folder"] != "yui-chibi"
         ] + [entry]
-        write_json(manifest_path, manifest)
+        candidate_manifest = stage / "manifest.json"
+        write_json(candidate_manifest, manifest)
         for name in ("model.json", "metadata.actions.json"):
-            shutil.copyfile(stage / name, authoring / name)
+            outputs["yui-chibi-source/" + name] = stage / name
         write_json(
-            authoring / "reviewed-resource-manifest.json",
+            stage / "reviewed-resource-manifest.json",
             {
                 "version": 1,
                 "model": "yui-chibi",
@@ -181,7 +191,21 @@ def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
                 "package_fingerprint": entry["archive_sha256"],
             },
         )
+        outputs["yui-chibi-source/reviewed-resource-manifest.json"] = stage / "reviewed-resource-manifest.json"
+        outputs["manifest.json"] = candidate_manifest
+        obsolete = [p.name for p in packs.glob("yui-chibi-*.zip") if p.name not in outputs]
+        publish_files(packs, outputs, obsolete)
         return entry
+
+
+def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
+    source, packs = source.resolve(), packs.resolve()
+    if source == packs or source in packs.parents or packs in source.parents:
+        raise ValueError("source and package output must not overlap")
+    packs.mkdir(parents=True, exist_ok=True)
+    with publication_lock(packs, "publish"):
+        recover_publication(packs)
+        return _build(source, packs, compatibility_dir)
 
 
 if __name__ == "__main__":

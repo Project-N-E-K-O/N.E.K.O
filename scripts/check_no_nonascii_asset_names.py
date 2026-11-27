@@ -572,7 +572,9 @@ def _pngtuber_archive_dests(repo_root: Path) -> list[tuple[str, str]]:
         if not isinstance(model, dict):
             continue
         folder = model.get("folder")
-        parts = model.get("archives", [{"archive": model.get("archive")}])
+        parts = model.get("archives")
+        if parts is None:
+            parts = [{"archive": model.get("archive")}]
         if not isinstance(folder, str) or not isinstance(parts, list):
             continue
         for part in parts:
