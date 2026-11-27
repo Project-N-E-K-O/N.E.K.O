@@ -597,6 +597,14 @@ async function autoInitMMDOnMainPage() {
         manager = await initMMDModel();
         if (!await ownsStartupAfterSwitchSettlement()) return;
         if (!manager) {
+            const replacementManager = window.mmdManager;
+            if (replacementManager && !replacementManager._isDisposed) {
+                // Another owner replaced the manager while initMMDModel awaited.
+                // Its loading/model lifecycle owns the surface; do not overlay a
+                // stale failure from this retired startup attempt.
+                window.MMDLoadingOverlay.end(loadingSessionId);
+                return;
+            }
             const detail = (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败';
             window.MMDLoadingOverlay.fail(loadingSessionId, { detail });
             return;

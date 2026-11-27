@@ -27,7 +27,6 @@ from fastapi import Response
 from ..shared_state import get_config_manager
 from ..characters_router.live2d_models import resolve_live2d_model_snapshot
 from ..characters_router.crud import (
-    current_catgirl_snapshot_generation,
     read_current_catgirl_snapshot,
     wait_for_current_catgirl_snapshot_settlement,
 )
@@ -237,7 +236,7 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
 
 
 @router.get("/page_config")
-async def get_page_config(response: Response, lanlan_name: str = ""):
+async def get_page_config(response: Response, lanlan_name: str = "", model_boot: bool = False):
     """Get page config (lanlan_name and model_path); supports Live2D, VRM and MMD (Live3D) models."""
     try:
         response.headers["Cache-Control"] = "no-store"
@@ -247,26 +246,40 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         _config_manager = get_config_manager()
         # The heavy lifecycle lock can span a remote memory reload. Pair each
         # read with the committed identity without waiting for that operation.
+        her_name = ""
+        current_switch_revision = 0
         for attempt in range(3):
-            snapshot_generation = current_catgirl_snapshot_generation()
-            data, her_name, current_switch_revision = await read_current_catgirl_snapshot(
+            data, her_name, current_switch_revision, snapshot_generation = await read_current_catgirl_snapshot(
                 _config_manager.aget_character_data, lambda value: value[1],
             )
             if data is None:
+                if model_boot and attempt == 1:
+                    await wait_for_current_catgirl_snapshot_settlement(snapshot_generation)
                 continue
             master_name, observed_name, master_basic_config, lanlan_basic_config = data[:4]
             if (lanlan_name and lanlan_name != her_name) or her_name == observed_name or her_name in lanlan_basic_config:
                 break
-            if attempt == 1:
-                # A rename may temporarily remove the committed entry from the
-                # file. Stay on this request until that exact mutation settles;
-                # a later unrelated writer must not extend this boot request.
+            if model_boot and attempt == 1:
+                # Only the renderer/bootstrap request waits for the writer that
+                # produced this inconsistent snapshot. Token/CSRF consumers of
+                # page_config remain non-blocking during a slow rename.
                 await wait_for_current_catgirl_snapshot_settlement(snapshot_generation)
         else:
             # A provisional rename may have already removed A from disk. Do not
             # present another character's assets as A before it actually commits.
-            return {"success": False, "lanlan_name": her_name, "switch_revision": current_switch_revision,
-                    "error": "Current character configuration is changing"}
+            return {
+                "success": False,
+                "error": "Current character configuration is changing",
+                "lanlan_name": her_name,
+                "switch_revision": current_switch_revision,
+                "master_name": "",
+                "master_profile_name": "",
+                "master_nickname": "",
+                "master_display_name": "",
+                "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
+                "model_path": "",
+                "model_type": "",
+            }
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # Use lanlan_name when provided; otherwise use the current character.

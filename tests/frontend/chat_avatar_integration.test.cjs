@@ -321,7 +321,7 @@ test('older switch revision stays ignored after a newer BC-only switch has compl
 });
 
 test('legacy receipt cannot replace a newer versioned pending target', async () => {
-    const h = harness(); const firstFetch = deferred();
+    const h = harness(); const calls = avatarCalls(h); const firstFetch = deferred();
     let fetchCount = 0;
     h.context.fetch = async () => {
         fetchCount += 1;
@@ -353,6 +353,8 @@ test('legacy receipt cannot replace a newer versioned pending target', async () 
     await new Promise(resolve => setImmediate(resolve));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.ok(calls.some(call => call[0] === 'commit' && call[2]?.name === 'A'),
+        'the queued A/12 intent must actually replay and commit A');
 });
 
 test('same revision duplicate queued during an active attempt becomes retry only if that attempt fails', async () => {
@@ -1359,7 +1361,7 @@ for (const kind of ['mmd', 'vrm']) {
         const model = desktopAvatarConfig('B', kind, 82, path);
         const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
             if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
-            if (url === '/api/config/page_config') { started.resolve(); await slow.promise; return { json: async () => model }; }
+            if (String(url).startsWith('/api/config/page_config')) { started.resolve(); await slow.promise; return { json: async () => model }; }
             return { ok: true, json: async () => ({}) };
         });
         await started.promise;
@@ -1380,7 +1382,7 @@ for (const kind of ['mmd', 'vrm']) {
 test('matching desktop IPC still needs asset config on a local model host', async () => {
     const h = harness(), path = '/static/mmd/B/B.pmx';
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' }, async url => ({
-        ok: true, json: async () => url === '/api/config/page_config' ? desktopAvatarConfig('B', 'mmd', 82, path) : {}
+        ok: true, json: async () => String(url).startsWith('/api/config/page_config') ? desktopAvatarConfig('B', 'mmd', 82, path) : {}
     }));
     assert.equal(await startup.ready, true);
     await startup.vrmBoot; await new Promise(resolve => setImmediate(resolve));
@@ -1390,7 +1392,7 @@ test('matching desktop IPC still needs asset config on a local model host', asyn
 test('a verified MMD role with no configured path may use the normal MMD default', async () => {
     const h = harness();
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' }, async url => ({
-        ok: true, json: async () => url === '/api/config/page_config' ? desktopAvatarConfig('B', 'mmd', 82, '') : {}
+        ok: true, json: async () => String(url).startsWith('/api/config/page_config') ? desktopAvatarConfig('B', 'mmd', 82, '') : {}
     }));
     h.window.mmdModel = '/A/stale.pmx';
     assert.equal(await startup.ready, true);
@@ -1405,7 +1407,14 @@ test('pinned multi-window preview rejects a successful config response for anoth
     h.window.__nekoInjectedConfig = { lanlan_name: 'A' };
     h.context.fetch = async () => ({ json: async () => desktopAvatarConfig('A', 'mmd', 0, '/A/wrong.pmx') });
     h.load('static/js/index.js');
-    assert.equal(await h.window.startPageConfigLoad(), false);
+    const loading = h.window.startPageConfigLoad();
+    for (const delay of [600, 1200, 1800, 2400, 3000, 3600]) {
+        for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === delay); turn++) {
+            await new Promise(setImmediate);
+        }
+        await advanceModelBootTimer(h, delay);
+    }
+    assert.equal(await loading, false);
     assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
     assert.ok(!h.window.mmdModel);
 });
@@ -1415,14 +1424,114 @@ test('pinned preview accepts revision zero despite the current-character high-wa
     h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
     h.window.location.pathname = '/';
     h.window.location.search = '?lanlan_name=Preview';
-    h.window.lanlan_config = { lanlan_name: 'C', switch_revision: 83, model_type: 'live2d' };
     h.window.__nekoInjectedConfig = { lanlan_name: 'Preview' };
     h.context.fetch = async () => ({ json: async () => desktopAvatarConfig('Preview', 'mmd', 0, '/Preview/model.pmx') });
     h.load('static/js/index.js');
+    h.window.lanlan_config = { lanlan_name: 'C', switch_revision: 83, model_type: 'live2d' };
     assert.equal(await h.window.startPageConfigLoad(), true);
     assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
     assert.equal(h.window.lanlan_config.switch_revision, 0);
     assert.equal(h.window.mmdModel, '/Preview/model.pmx');
+    assert.equal(h.context.latestPageSwitchRevision(), 83, 'preview must preserve current-character high-water');
+
+    h.window.location.search = '';
+    h.context.fetch = async () => ({ json: async () => desktopAvatarConfig('A', 'mmd', 82, '/A/stale.pmx') });
+    assert.equal(await h.window.reloadPageConfig(), false, 'preview revision zero must not lower current-character high-water 83');
+    assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
+    assert.equal(h.window.mmdModel, '/Preview/model.pmx');
+});
+
+test('positive pinned preview snapshot is still ordered against the current-character high-water', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/'; h.window.location.search = '?lanlan_name=Preview';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'Preview', switch_revision: 82 };
+    let configReads = 0;
+    h.context.fetch = async () => { configReads++; return { json: async () => desktopAvatarConfig('Preview', 'mmd', 82, '/Preview/stale.pmx') }; };
+    h.load('static/js/index.js');
+    h.window.lanlan_config = { lanlan_name: 'C', switch_revision: 83, model_type: 'live2d' };
+    assert.equal(await h.window.startPageConfigLoad(), false);
+    assert.equal(configReads, 0, 'stale positive pinned receipt is rejected before model config is fetched');
+    assert.equal(h.window.lanlan_config.lanlan_name, 'C');
+    assert.equal(h.window.lanlan_config.switch_revision, 83);
+});
+
+test('path-form preview uses the same explicit-character parser for desktop IPC bootstrap', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/Preview'; h.window.location.search = '';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'A', switch_revision: 83 };
+    h.context.fetch = async url => {
+        assert.ok(String(url).includes('lanlan_name=Preview'));
+        return { json: async () => desktopAvatarConfig('Preview', 'mmd', 0, '/Preview/path.pmx') };
+    };
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), true);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'Preview');
+    assert.equal(h.window.lanlan_config.switch_revision, 0);
+    assert.equal(h.window.mmdModel, '/Preview/path.pmx');
+});
+
+test('permanent model bootstrap failure releases the renderer gate', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'vrm' };
+    h.context.fetch = async url => {
+        if (String(url).startsWith('/api/config/page_config')) return { ok: false, status: 404 };
+        return { ok: true, json: async () => ({}) };
+    };
+    h.load('static/js/index.js');
+    assert.equal(await h.window.startPageConfigLoad(), false);
+    assert.equal(h.window.__nekoPageModelConfigPending, null, 'non-retryable bootstrap failure must unblock normal renderer recovery');
+});
+
+test('failed page-model handoff keeps bootstrap ownership and schedules a retry', async () => {
+    const h = harness(); let pageReads = 0, handoffs = 0;
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' };
+    const cfg = desktopAvatarConfig('B', 'live2d', 82, '/B.model3.json');
+    h.context.fetch = async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            pageReads++;
+            return pageReads === 1 ? { ok: true, json: async () => cfg } : { ok: false, status: 404 };
+        }
+        return { ok: true, json: async () => ({}) };
+    };
+    h.load('static/js/index.js');
+    h.window.lanlan_config = { lanlan_name: 'A', switch_revision: 81, model_type: 'live2d' };
+    h.window.appState = { isSwitchingCatgirl: false, _latestCatgirlSwitchRevision: 81, _pendingCatgirlSwitch: null };
+    h.window.handleCatgirlSwitch = async () => { handoffs++; return false; };
+    const loading = h.window.startPageConfigLoad();
+    for (let turn = 0; turn < 12 && ![...h.timers.values()].some(timer => timer.delay === 600); turn++) await new Promise(setImmediate);
+    assert.equal(handoffs, 1);
+    assert.ok(h.window.__nekoPageModelConfigPending, 'failed handoff must retain bootstrap ownership for retry');
+    await advanceModelBootTimer(h, 600);
+    assert.equal(await loading, false);
+    assert.equal(pageReads, 2, 'temporary handoff failure must retry page_config');
+    assert.equal(h.window.__nekoPageModelConfigPending, null, 'permanent retry failure releases the renderer gate');
+});
+
+test('queued page-model handoff yields to the central switch without scheduling a competing retry', async () => {
+    const h = harness();
+    h.context.URLSearchParams = URLSearchParams; h.window.__NEKO_MULTI_WINDOW__ = true;
+    h.window.location.pathname = '/web_chat_compact'; h.window.location.search = '';
+    h.window.__nekoInjectedConfig = { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' };
+    const cfg = desktopAvatarConfig('B', 'live2d', 82, '/B.model3.json');
+    h.context.fetch = async url => String(url).startsWith('/api/config/page_config')
+        ? { ok: true, json: async () => cfg } : { ok: true, json: async () => ({}) };
+    h.load('static/js/index.js');
+    h.window.lanlan_config = { lanlan_name: 'A', switch_revision: 81, model_type: 'live2d' };
+    h.window.appState = { isSwitchingCatgirl: true, _latestCatgirlSwitchRevision: 81, _pendingCatgirlSwitch: null };
+    h.window.handleCatgirlSwitch = async (name, _old, options) => {
+        h.window.appState._pendingCatgirlSwitch = { newCatgirl: name, switchRevision: options.switchRevision };
+        return false;
+    };
+    assert.equal(await h.window.startPageConfigLoad(), false);
+    assert.ok(h.window.__nekoPageModelConfigPending, 'queued central switch keeps renderer gate until it settles');
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 600), false,
+        'queued handoff must not start a competing page-model retry');
 });
 
 test('failed model bootstrap preserves identity and a real same-revision receipt recovers it', async () => {
@@ -1430,7 +1539,7 @@ test('failed model bootstrap preserves identity and a real same-revision receipt
     const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
         if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
-        if (url === '/api/config/page_config') return { ok: false, status: 503 };
+        if (String(url).startsWith('/api/config/page_config')) return { ok: false, status: 503 };
         return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, vrm: path } } } : {} };
     });
     await new Promise(setImmediate);
@@ -1457,7 +1566,7 @@ for (const [kind, path] of [['live2d', '/B.model3.json'], ['mmd', '/static/mmd/B
         const h = harness(); let reads = 0;
         const cfg = desktopAvatarConfig('B', kind, 82, path);
         const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
-            if (url === '/api/config/page_config') {
+            if (String(url).startsWith('/api/config/page_config')) {
                 return ++reads === 1 ? { ok: false, status: 503 } : { json: async () => cfg };
             }
             return { ok: true, json: async () => ({}) };
@@ -1483,7 +1592,7 @@ for (const [phase, early] of [['headers', false], ['body', true]]) {
         const path = '/static/vrm/B.vrm', model = desktopAvatarConfig('B', 'vrm', 82, path);
         let signal, reads = 0;
         const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async (url, options) => {
-            if (url === '/api/config/page_config') {
+            if (String(url).startsWith('/api/config/page_config')) {
                 signal = options.signal; reads++;
                 if (phase === 'headers') { entered.resolve(); await complete.promise; }
                 return { json: async () => {
@@ -1514,7 +1623,7 @@ test('newer C retires the held B page request before a stale body can mutate any
     const path = '/static/mmd/C/C.pmx', model = desktopAvatarConfig('C', 'mmd', 83, path);
     let signal;
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async (url, options) => {
-        if (url === '/api/config/page_config') {
+        if (String(url).startsWith('/api/config/page_config')) {
             signal = options.signal;
             return { json: async () => { entered.resolve(); await complete.promise; return desktopAvatarConfig('B', 'mmd', 82, '/wrong/B.pmx'); } };
         }
@@ -1538,7 +1647,7 @@ test('central model bootstrap preserves recovery through a fourth successful rea
     const h = harness(); let reads = 0;
     const path = '/B.model3.json', cfg = desktopAvatarConfig('B', 'live2d', 82, path);
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
-        if (url === '/api/config/page_config') {
+        if (String(url).startsWith('/api/config/page_config')) {
             reads++;
             return reads <= 3 ? { ok: false, status: 503 } : { json: async () => cfg };
         }
@@ -1557,7 +1666,7 @@ test('bootstrap exhaustion is finite and still permits an authoritative receipt'
     const h = harness(), calls = avatarCalls(h); let reads = 0;
     const path = '/static/mmd/B/B.pmx', model = desktopAvatarConfig('B', 'mmd', 82, path);
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
-        if (url === '/api/config/page_config') { reads++; return { ok: false, status: 503 }; }
+        if (String(url).startsWith('/api/config/page_config')) { reads++; return { ok: false, status: 503 }; }
         return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, mmd: path } } } : {} };
     });
     await new Promise(setImmediate);
@@ -1587,7 +1696,7 @@ for (const kind of ['vrm', 'mmd']) {
                 entered.resolve(); await identity.promise;
                 return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
             }
-            if (url === '/api/config/page_config') { fullReads++; return { ok: false, status: 503 }; }
+            if (String(url).startsWith('/api/config/page_config')) { fullReads++; return { ok: false, status: 503 }; }
             return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, [kind]: path } } } : {} };
         });
         await entered.promise;
@@ -1611,7 +1720,7 @@ test('a truly missing previously committed model still permits verified bootstra
             entered.resolve(); await identity.promise;
             return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
         }
-        if (url === '/api/config/page_config') { fullReads++; return { ok: false, status: 503 }; }
+        if (String(url).startsWith('/api/config/page_config')) { fullReads++; return { ok: false, status: 503 }; }
         return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, mmd: path } } } : {} };
     });
     await entered.promise;
@@ -1636,7 +1745,7 @@ for (const alreadyLoading of [false, true]) {
                 entered.resolve(); await identity.promise;
                 return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
             }
-            if (url === '/api/config/page_config') {
+            if (String(url).startsWith('/api/config/page_config')) {
                 return ++reads === 1 ? { ok: false, status: 503 } : { json: async () => model };
             }
             return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { B: { ...model, vrm: path } } } : {} };
@@ -1663,7 +1772,7 @@ test('pre-index Live2D startup does not refetch or reload after C has committed'
     };
     const path = '/C.model3.json', config = desktopAvatarConfig('C', 'live2d', 83, path);
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
-        if (url === '/api/config/page_config') { reads++; return { ok: false, status: 503 }; }
+        if (String(url).startsWith('/api/config/page_config')) { reads++; return { ok: false, status: 503 }; }
         if (url.includes('/current_live2d_model')) return { ok: true, json: async () => ({
             success: true, model_info: { path },
         }) };
@@ -1684,7 +1793,8 @@ test('pre-index Live2D startup does not refetch or reload after C has committed'
 test('initial Live2D startup rechecks ownership immediately before delayed model load', () => {
     const source = fs.readFileSync(path.join(root, 'static/live2d/live2d-init.js'), 'utf8');
     const ownership = source.match(/const stillOwnsInitialLive2DStartup = \(\) => \{[\s\S]*?^    \};/m)?.[0] || '';
-    assert.match(ownership, /currentPath === targetModelPath[\s\S]*?!hasMountedLive2D\(\)/);
+    assert.match(ownership, /currentPath === targetModelPath[\s\S]*?\(!hasMountedLive2D\(\) \|\| recoveringSkippedTutorialBoot\)/);
+    assert.match(source, /hasMountedLive2D\(\) && !recoveringSkippedTutorialBoot/, 'tutorial recovery may replace the still-mounted Yui model');
     assert.doesNotMatch(ownership, /lanlan_config\?\.switch_revision/, 'receipt high-water mark is not renderer-commit ownership');
     assert.match(source, /const ownsInitialLive2DStartupAfterSwitchSettlement = async \(\) => \{[\s\S]*?isSwitchingCatgirl[\s\S]*?setTimeout\(resolve, 50\)/);
     assert.match(
@@ -1692,6 +1802,9 @@ test('initial Live2D startup rechecks ownership immediately before delayed model
         /if \(!await ownsInitialLive2DStartupAfterSwitchSettlement\(\)\) \{[\s\S]{0,500}?return;[\s\S]{0,500}?live2dManager\.loadModel\(targetModelPath/,
         'the settlement-aware ownership check must stay between delayed preference work and loadModel'
     );
+    assert.match(source, /confirmRestoredRenderer\?\.\(startupName, 'live2d'/);
+    const vrmSource = fs.readFileSync(path.join(root, 'static/vrm/vrm-init.js'), 'utf8');
+    assert.match(vrmSource, /confirmRestoredRenderer\?\.\(startupName, 'vrm'/);
 });
 
 test('failed takeover may raise receipt revision without cancelling authoritative Live2D startup', async () => {
@@ -1702,7 +1815,7 @@ test('failed takeover may raise receipt revision without cancelling authoritativ
         h,
         { lanlan_name: 'A', switch_revision: 82, model_type: 'live2d' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => modelA };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelA };
             if (url === '/api/characters') return { ok: false, status: 503, json: async () => ({}) };
             return { ok: true, json: async () => ({}) };
         },
@@ -1739,7 +1852,7 @@ test('Live2D loaded ahead of index waits past the old 5-second local fallback fo
     const path = '/B.model3.json';
     const cfg = desktopAvatarConfig('B', 'live2d', 82, path);
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
-        if (url === '/api/config/page_config') {
+        if (String(url).startsWith('/api/config/page_config')) {
             if (++reads === 1) return { ok: false, status: 503 };
             await delayed.promise;
             return { json: async () => cfg };
@@ -1772,7 +1885,7 @@ test('MMD startup waits for an in-flight switch to settle and resumes when takeo
     const modelB = desktopAvatarConfig('B', 'mmd', 82, pathB);
     let holdSwitchRead = false;
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' }, async url => {
-        if (url === '/api/config/page_config') return { json: async () => modelB };
+        if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelB };
         if (url.endsWith('/B/mmd_settings')) {
             settingsStarted.resolve();
             await settings.promise;
@@ -1833,7 +1946,7 @@ test('MMD startup restarts when manager initialization loses ownership to a fail
         h,
         { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelB };
             if (url.endsWith('/B/mmd_settings')) {
                 bSettingsReads++;
                 return { ok: true, json: async () => ({ success: false }) };
@@ -1893,7 +2006,7 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
         h,
         { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelB };
             if (url.endsWith('/B/mmd_settings')) {
                 bSettingsReads++;
                 if (bSettingsReads === 1) {
@@ -1951,7 +2064,7 @@ test('same-name MMD path refresh retires the old startup and loads only the new 
         h,
         { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelB };
             if (url.endsWith('/B/mmd_settings')) {
                 settingsReads++;
                 if (settingsReads === 1) {
@@ -1985,7 +2098,7 @@ for (const rejectBeforeTakeover of [false, true]) {
         const modelC = desktopAvatarConfig('C', 'mmd', 83, pathC);
         const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
             if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
-            if (url === '/api/config/page_config') return { json: async () => modelB };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelB };
             if (url.endsWith('/B/mmd_settings')) { started.resolve(); await settings.promise; }
             if (url === '/api/characters' && rejectBeforeTakeover) return { ok: false, status: 503 };
             return { ok: true, json: async () => url === '/api/characters' ? { '猫娘': { C: { ...modelC, mmd: pathC } } } : {} };
@@ -2029,7 +2142,7 @@ test('VRM startup waits for an in-flight switch to settle and resumes when takeo
         h,
         { lanlan_name: 'A', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'vrm' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => modelA };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => modelA };
             if (url === '/api/model/vrm/config') {
                 metadataStarted.resolve();
                 await metadata.promise;
@@ -2080,7 +2193,7 @@ test('VRM boot applies its own outline after a different switch fails before tak
     let failNextRoles = true;
     const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', model_type: 'live2d' }, async url => {
         if (url === '/api/characters/current_catgirl') return { json: async () => ({ current_catgirl: 'B', switch_revision: 82 }) };
-        if (url === '/api/config/page_config') return { json: async () => ({ ...model, lighting }) };
+        if (String(url).startsWith('/api/config/page_config')) return { json: async () => ({ ...model, lighting }) };
         if (url === '/api/model/vrm/config') { entered.resolve(); await metadata.promise; }
         if (url === '/api/characters' && failNextRoles) {
             failNextRoles = false;
@@ -2436,7 +2549,7 @@ test('MMD startup restores the original settings after watchdog rollback between
         h,
         { lanlan_name: 'A', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
         async url => {
-            if (url === '/api/config/page_config') return { json: async () => cfgA };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => cfgA };
             if (url.endsWith('/A/mmd_settings')) {
                 settingsA++;
                 if (settingsA === 1) {

@@ -573,8 +573,9 @@ async function _initLive2DModelInner() {
     if (!_preInitModelPath && window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await _nekoAwaitWithTimeout(window.pageConfigReady, NEKO_LIVE2D_AWAIT_TIMEOUT_MS);
     }
+    const recoveringSkippedTutorialBoot = window.NekoAvatarFloatingBoot?.wasUserModelBootSkipped?.() === true;
     if (window.__nekoPageModelConfigPending || window.appState?.isSwitchingCatgirl
-        || (!_preInitModelPath && hasMountedLive2D())) return;
+        || (!_preInitModelPath && hasMountedLive2D() && !recoveringSkippedTutorialBoot)) return;
 
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
@@ -589,7 +590,7 @@ async function _initLive2DModelInner() {
             // while leaving this same name/path authoritative.
             && (window.lanlan_config?.model_type || 'live2d').toLowerCase() === 'live2d'
             && currentPath === targetModelPath
-            && !hasMountedLive2D();
+            && (!hasMountedLive2D() || recoveringSkippedTutorialBoot);
     };
     const ownsInitialLive2DStartupAfterSwitchSettlement = async () => {
         const deadline = Date.now() + 46000;
@@ -880,6 +881,7 @@ async function _initLive2DModelInner() {
         window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
         window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
         window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'live2d', window.LanLan1.currentModel);
 
         // 设置页面卸载时的自动清理（确保资源正确释放）
         revealInitialLive2DModelWhenUiReady('initial-live2d-load');

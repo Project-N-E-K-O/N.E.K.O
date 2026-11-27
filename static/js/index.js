@@ -22,6 +22,21 @@ function isReservedPagePath(pathname) {
     const pathParts = String(pathname || '').split('/').filter(Boolean);
     return pathParts.length > 0 && RESERVED_PAGE_PATHS.has(pathParts[0]);
 }
+
+function explicitPageCharacterName() {
+    const fromQuery = new URLSearchParams(window.location.search || '').get('lanlan_name');
+    if (fromQuery) return fromQuery;
+    const pathParts = String(window.location.pathname || '').split('/').filter(Boolean);
+    if (!pathParts.length || RESERVED_PAGE_PATHS.has(pathParts[0])) return '';
+    try { return decodeURIComponent(pathParts[0]); } catch (_) { return ''; }
+}
+
+function pageNeedsModelSnapshotSettlement() {
+    const pathname = String(window.location.pathname || '');
+    if (explicitPageCharacterName()) return true;
+    const first = pathname.split('/').filter(Boolean)[0] || '';
+    return !first || first === 'web_chat_compact';
+}
 window.lanlan_config = lanlan_config;
 let cubism4Model = "";
 let vrmModel = "";
@@ -78,9 +93,17 @@ function validPageSwitchRevision(value) {
     return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+let pageSwitchRevisionHighWater = validPageSwitchRevision(window.lanlan_config?.switch_revision);
+
+function rememberPageSwitchRevision(value) {
+    pageSwitchRevisionHighWater = Math.max(pageSwitchRevisionHighWater, validPageSwitchRevision(value));
+    return pageSwitchRevisionHighWater;
+}
+
 function latestPageSwitchRevision() {
-    return Math.max(validPageSwitchRevision(window.lanlan_config?.switch_revision),
-        validPageSwitchRevision(window.appState?._latestCatgirlSwitchRevision));
+    rememberPageSwitchRevision(window.lanlan_config?.switch_revision);
+    rememberPageSwitchRevision(window.appState?._latestCatgirlSwitchRevision);
+    return pageSwitchRevisionHighWater;
 }
 
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
@@ -93,7 +116,12 @@ function handoffPageSnapshotToSwitch(name, revision) {
             || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }))) {
         return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
             switchRevision: revision
-        }));
+        })).then(applied => {
+            const pending = state?._pendingCatgirlSwitch;
+            const queued = applied !== true && pending?.newCatgirl === name
+                && (!revision || !pending.switchRevision || pending.switchRevision === revision);
+            return { applied: applied === true, queued };
+        });
     }
     return null;
 }
@@ -149,6 +177,7 @@ async function finishModelBootstrap(expected) {
         expected.retryable = false;
         const loaded = await loadPageConfig({ modelBoot: expected });
         if (loaded || window.__nekoPageModelConfigPending !== expected) return loaded;
+        if (expected.handoffQueued) return false;
         // A real stamped receipt can take over a failed/stalled boot, including
         // during retry. It cannot take over a healthy first read by name alone.
         expected.failed = true;
@@ -159,7 +188,17 @@ async function finishModelBootstrap(expected) {
                 switchRevision: receipt.switchRevision,
             })).catch(error => console.warn('[主页] 角色配置恢复失败:', error));
         }
-        if (!expected.retryable || attempt === MODEL_SNAPSHOT_RETRY_DELAYS.length) return false;
+        if (!expected.retryable || attempt === MODEL_SNAPSHOT_RETRY_DELAYS.length) {
+            if (window.__nekoPageModelConfigPending === expected) {
+                window.__nekoPageModelConfigFailed = {
+                    name: expected.name || window.lanlan_config?.lanlan_name || '',
+                    revision: expected.revision || latestPageSwitchRevision(),
+                };
+                window.__nekoPageModelConfigPending = null;
+                expected.retire?.();
+            }
+            return false;
+        }
         await waitForModelRetry(MODEL_SNAPSHOT_RETRY_DELAYS[attempt], expected.retired);
     }
     return false;
@@ -168,22 +207,15 @@ async function finishModelBootstrap(expected) {
 // 异步获取页面配置
 async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
     try {
-        // 优先从 URL 获取 lanlan_name
-        const urlParams = new URLSearchParams(window.location.search);
-        let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
+        // Query and path-form previews share one parser.
+        const lanlanNameFromUrl = explicitPageCharacterName();
 
-        // 从路径中提取 lanlan_name (例如 /{lanlan_name})
-        if (!lanlanNameFromUrl) {
-            const pathParts = window.location.pathname.split('/').filter(Boolean);
-            if (pathParts.length > 0 && !RESERVED_PAGE_PATHS.has(pathParts[0])) {
-                lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
-            }
-        }
-
-        // 从 API 获取配置
-        const apiUrl = lanlanNameFromUrl
-            ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
-            : '/api/config/page_config';
+        // Only model/bootstrap reads opt into waiting for lifecycle settlement.
+        const params = new URLSearchParams();
+        if (lanlanNameFromUrl) params.set('lanlan_name', lanlanNameFromUrl);
+        if (modelBoot || pageNeedsModelSnapshotSettlement()) params.set('model_boot', '1');
+        const query = params.toString();
+        const apiUrl = '/api/config/page_config' + (query ? '?' + query : '');
 
         const data = await readPageSnapshot(apiUrl, modelBoot
             ? { timeoutMs: MODEL_SNAPSHOT_TIMEOUT_MS, retired: modelBoot.retired }
@@ -198,23 +230,40 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // ordering when the backend returns revision 0. This is true both for
             // the initial pinned bootstrap and later reloadPageConfig() reads.
             const explicitPreview = !!lanlanNameFromUrl && switchRevision === 0;
-            if (!expected?.pinned && !explicitPreview && switchRevision < latestPageSwitchRevision()) {
+            const priorHighWater = latestPageSwitchRevision();
+            if (!explicitPreview && switchRevision < priorHighWater) {
                 if (modelBoot) modelBoot.retryable = true;
                 return false;
             }
-            if (expected && (
+            const expectedMismatch = !!expected && (
                 !data.lanlan_name || typeof data.model_type !== 'string' || !data.model_type.trim()
                 || typeof data.model_path !== 'string'
                 || (expected.pinned
-                    ? data.lanlan_name !== expected.name
+                    ? data.lanlan_name !== expected.name || (!!expected.revision && switchRevision < expected.revision)
                     : switchRevision < expected.revision
                         || (switchRevision === expected.revision && data.lanlan_name !== expected.name))
-            )) return false;
+            );
+            if (expectedMismatch) {
+                if (modelBoot) modelBoot.retryable = true;
+                return false;
+            }
             const name = lanlanNameFromUrl || data.lanlan_name || "";
+            // Decide takeover against ordering evidence that existed before this
+            // read. The first authoritative HTTP bootstrap must not turn itself
+            // into a live switch merely by publishing its own revision early.
             const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision);
-            if (liveSwitch) return (await liveSwitch) === true;
+            if (liveSwitch) {
+                const outcome = await liveSwitch;
+                if (outcome.applied) return true;
+                if (modelBoot) {
+                    modelBoot.handoffQueued = outcome.queued;
+                    modelBoot.retryable = !outcome.queued;
+                }
+                return false;
+            }
             lanlan_config.lanlan_name = name;
             lanlan_config.switch_revision = switchRevision;
+            rememberPageSwitchRevision(switchRevision);
             const modelPath = data.model_path || "";
             // 使用API返回的model_type，并转换为小写以防后端/旧数据大小写不一致
             const modelType = (data.model_type || 'live2d').toLowerCase();
@@ -340,6 +389,11 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
             if (expected) window.__nekoPageModelConfigPending = null;
+            const failedBoot = window.__nekoPageModelConfigFailed;
+            if (failedBoot?.name === name
+                && (!failedBoot.revision || !switchRevision || switchRevision >= failedBoot.revision)) {
+                window.__nekoPageModelConfigFailed = null;
+            }
             return true;
         }
         if (modelBoot) modelBoot.retryable = true;
@@ -408,23 +462,26 @@ function startMultiWindowPageConfigLoad() {
             }, typeof delay === 'number' ? delay : 0);
         }
         async function loadMatchingPageConfig(name, revision, pinned = false) {
-            if (!pinned && revision && revision < latestPageSwitchRevision()) return false;
+            const priorHighWater = latestPageSwitchRevision();
+            if (revision && revision < priorHighWater) return false;
             // An early live receipt may already have committed this precise
             // identity while desktop IPC was pairing its metadata. Do not
             // replace established model ownership with a new boot attempt.
             if (window.appCharacter?.hasCommittedPageModel?.(name, revision)) return true;
             let retire;
             const retired = new Promise(resolve => { retire = resolve; });
-            const expected = { name, revision, pinned, failed: false, retired, retire };
+            const expected = { name, revision, pinned, failed: false, handoffQueued: false, retired, retire };
             window.__nekoPageModelConfigPending = expected;
             // Identity is useful to the chat/socket layer, but is not model readiness.
             // Leave the existing full fetch in charge of boot; app.js already
             // bounds how long the rest of the UI waits for pageConfigReady.
-            if (!window.lanlan_config?.lanlan_name && !latestPageSwitchRevision() && !window.appState?.isSwitchingCatgirl) {
+            if (!window.lanlan_config?.lanlan_name && !window.appState?.isSwitchingCatgirl
+                && (!priorHighWater || revision >= priorHighWater)) {
                 lanlan_config.lanlan_name = name;
                 lanlan_config.switch_revision = revision;
                 document.title = name + ' Terminal - Project N.E.K.O.';
             }
+            rememberPageSwitchRevision(revision);
             expected.inFlight = finishModelBootstrap(expected);
             try {
                 return await expected.inFlight;
@@ -447,12 +504,18 @@ function startMultiWindowPageConfigLoad() {
                 emptyConfigRetryTimer = null;
             }
             window.removeEventListener('neko:config-injected', handler);
-            const explicitName = new URLSearchParams(window.location.search).get('lanlan_name');
+            const explicitName = explicitPageCharacterName();
             if (explicitName && explicitName !== d.lanlan_name) {
                 resolve(await loadMatchingPageConfig(explicitName, 0, true));
                 return;
             }
             let switchRevision = validPageSwitchRevision(d.switch_revision);
+            if (explicitName && !switchRevision) {
+                // A pinned preview without a stamped committed revision is local
+                // preview state. Never borrow the current character's revision.
+                resolve(await loadMatchingPageConfig(explicitName, 0, true));
+                return;
+            }
             if (!switchRevision) {
                 // Legacy desktop IPC includes the name but not its commit order. Pair it with
                 // the small current-character snapshot; never borrow another character's revision.
@@ -468,10 +531,17 @@ function startMultiWindowPageConfigLoad() {
                     console.warn('[主页] Could not verify injected character revision:', error);
                 }
             }
-            if (switchRevision < latestPageSwitchRevision()) {
+            const priorHighWater = latestPageSwitchRevision();
+            if (switchRevision < priorHighWater) {
                 resolve(false);
                 return;
             }
+            if (!window.lanlan_config?.lanlan_name && !window.appState?.isSwitchingCatgirl
+                && (!priorHighWater || switchRevision >= priorHighWater)) {
+                lanlan_config.lanlan_name = d.lanlan_name || '';
+                lanlan_config.switch_revision = switchRevision;
+            }
+            rememberPageSwitchRevision(switchRevision);
             if (!/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '')) {
                 // IPC conveys chat display data, not model URLs needed by the local renderers.
                 resolve(await loadMatchingPageConfig(d.lanlan_name, switchRevision, !!explicitName));
@@ -479,7 +549,7 @@ function startMultiWindowPageConfigLoad() {
             }
             const liveSwitch = handoffPageSnapshotToSwitch(d.lanlan_name, switchRevision);
             if (liveSwitch) {
-                resolve((await liveSwitch) === true);
+                resolve((await liveSwitch).applied === true);
                 return;
             }
             lanlan_config.switch_revision = switchRevision;
@@ -561,7 +631,8 @@ window.startPageConfigLoad = function startPageConfigLoad() {
             }
             await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
 
-            if (window.__NEKO_MULTI_WINDOW__ && isReservedPagePath(window.location.pathname)) {
+            if (window.__NEKO_MULTI_WINDOW__
+                && (isReservedPagePath(window.location.pathname) || !!explicitPageCharacterName())) {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());
             }
 

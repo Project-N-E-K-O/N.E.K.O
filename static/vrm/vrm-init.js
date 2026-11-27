@@ -574,6 +574,14 @@ async function initVRMModel() {
                 targetModelPath.includes('null') ||
                 targetModelPath.trim() === ''
             ))) {
+            const failedBoot = window.__nekoPageModelConfigFailed;
+            if (failedBoot?.name && failedBoot.name === startupName) {
+                // The page bootstrap exhausted its authoritative config reads.
+                // Release its ownership gate so receipts/self-heal can recover,
+                // but do not replace an unknown configured asset with the sample
+                // VRM while authority is unavailable.
+                return;
+            }
             // 获取当前是否应该处于 VRM 模式
             const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
 
@@ -661,6 +669,7 @@ async function initVRMModel() {
         loadStarted = true;
         await loading;
         if (!await ownsStartupAfterSwitchSettlement()) return;
+        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel);
 
         // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
         _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);

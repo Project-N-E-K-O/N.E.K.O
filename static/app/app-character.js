@@ -319,10 +319,16 @@
         }
         if (!ownsLocalRenderer()) return false;
         const bootstrap = window.__nekoPageModelConfigPending;
+        const failedBootstrap = window.__nekoPageModelConfigFailed;
         // The current identity may be known while full desktop model config
-        // failed. Let a real receipt recover it through the normal attempt.
-        if (!fromSnapshot && bootstrap?.failed && bootstrap.name === name
-            && (!bootstrap.revision || switchRevision >= bootstrap.revision)) return true;
+        // failed. Let a real receipt recover it through the normal attempt even
+        // after the pending bootstrap gate has been released.
+        if (!fromSnapshot && (
+            (bootstrap?.failed && bootstrap.name === name
+                && (!bootstrap.revision || switchRevision >= bootstrap.revision))
+            || (failedBootstrap?.name === name
+                && (!failedBootstrap.revision || switchRevision >= failedBootstrap.revision))
+        )) return true;
         const renderer = configuredRenderer(config);
         const mounted = getMountedRenderer(renderer);
         if (renderer === 'pngtuber' && rolledBackPngtuberName === name) return true;
@@ -339,7 +345,7 @@
     function hasCommittedPageModel(name, revision) {
         const config = window.lanlan_config;
         if (!revision || config?.switch_revision !== revision || config.lanlan_name !== name
-            || committedRenderer?.name !== name
+            || committedRenderer?.name !== name || committedRenderer.revision !== revision
             || (S.isSwitchingCatgirl && S._currentSwitchAttemptId !== committedRenderer.attemptId)) return false;
         const type = configuredRenderer(config);
         const mounted = getMountedRenderer(type);
@@ -2177,13 +2183,18 @@
             const mountedType = configuredRenderer(window.lanlan_config);
             const mounted = getMountedRenderer(mountedType);
             committedRenderer = mounted
-                ? { name: newCatgirl, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }
+                ? { name: newCatgirl, revision: switchRevision || 0, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }
                 : null;
             const bootstrap = window.__nekoPageModelConfigPending;
             if (bootstrap && (bootstrap.name === newCatgirl
                 || (!bootstrap.pinned && switchRevision && switchRevision >= bootstrap.revision))) {
                 window.__nekoPageModelConfigPending = null;
                 bootstrap.retire?.();
+            }
+            const failedBootstrap = window.__nekoPageModelConfigFailed;
+            if (failedBootstrap?.name === newCatgirl
+                && (!failedBootstrap.revision || !switchRevision || switchRevision >= failedBootstrap.revision)) {
+                window.__nekoPageModelConfigFailed = null;
             }
             window.appChatAvatarState?.commitCharacterSwitch(myAttemptId, {
                 uid: catgirlConfig._reserved?.character_uid || '',

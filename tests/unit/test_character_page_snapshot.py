@@ -26,6 +26,91 @@ async def _wait_for_test_start(started: asyncio.Event, task: asyncio.Task, timeo
         raise
 
 
+
+@pytest.mark.asyncio
+async def test_revision_zero_snapshot_crossing_mutation_never_publishes_provisional_name(monkeypatch):
+    lock = type(crud.character_config_mutation_lock)()
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 0)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', '')
+
+    await lock.acquire()
+    try:
+        data, name, revision, generation = await crud.read_current_catgirl_snapshot(
+            AsyncMock(return_value=('payload', 'Provisional')), lambda value: value[1],
+        )
+    finally:
+        lock.release()
+
+    assert data is None
+    assert (name, revision) == ('', 0)
+    assert generation == 0
+    assert crud._catgirl_switch_revision == 0
+    assert crud._catgirl_switch_revision_target == ''
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reports_generation_of_writer_that_caused_final_inconsistent_read(monkeypatch):
+    lock = type(crud.character_config_mutation_lock)()
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
+    reads = 0
+
+    async def read():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            await lock.acquire()
+            crud._advance_current_catgirl_switch_revision('B')
+            lock.release()  # generation 0 -> 1
+            return ('payload', 'B')
+        await lock.acquire()  # a later writer now owns generation 1
+        return ('payload', 'C')
+
+    try:
+        data, name, revision, generation = await crud.read_current_catgirl_snapshot(
+            read, lambda value: value[1],
+        )
+        assert data == ('payload', 'C')
+        assert name == 'B'
+        assert revision == crud._catgirl_switch_revision > 71
+        assert generation == 1
+        waiter = asyncio.create_task(crud.wait_for_current_catgirl_snapshot_settlement(generation))
+        await asyncio.sleep(0)
+        assert waiter.done() is False
+    finally:
+        if lock.locked():
+            lock.release()
+    await asyncio.wait_for(waiter, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_page_config_only_model_boot_waits_for_snapshot_settlement_and_failure_keeps_defaults(monkeypatch):
+    page_config = importlib.import_module('main_routers.config_router.page_config')
+    manager = SimpleNamespace(aget_character_data=AsyncMock())
+    snapshot = AsyncMock(return_value=(None, 'A', 0, 7))
+    settlement = AsyncMock()
+    monkeypatch.setattr(page_config, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(page_config, 'read_current_catgirl_snapshot', snapshot)
+    monkeypatch.setattr(page_config, 'wait_for_current_catgirl_snapshot_settlement', settlement)
+
+    fast = await page_config.get_page_config(SimpleNamespace(headers={}))
+    settlement.assert_not_awaited()
+    assert fast['success'] is False
+    assert fast['lanlan_name'] == 'A'
+    assert fast['switch_revision'] == 0
+    assert fast['autostart_csrf_token']
+    assert fast['model_path'] == '' and fast['model_type'] == ''
+    assert fast['master_name'] == '' and fast['master_display_name'] == ''
+
+    snapshot.reset_mock()
+    settlement.reset_mock()
+    boot = await page_config.get_page_config(SimpleNamespace(headers={}), model_boot=True)
+    assert boot['success'] is False
+    settlement.assert_awaited_once_with(7)
+
+
 @pytest.mark.asyncio
 async def test_page_config_returns_committed_identity_while_lifecycle_mutation_is_suspended(monkeypatch):
     page_config = importlib.import_module('main_routers.config_router.page_config')
