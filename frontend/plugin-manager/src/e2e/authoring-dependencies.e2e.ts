@@ -130,7 +130,14 @@ async function dependencyFixture(page: Page, running = false, sharedDependencies
         phase: 'finished' as const,
         finished_at: Date.now() / 1000,
         result: {
-          after: { revision: after.revision, installed: after.installed, issues: after.issues },
+          after: {
+            revision: after.revision,
+            installed: after.installed,
+            issues: after.issues,
+            // The finding only the full check produces; the page shows it with
+            // the current snapshot's own diagnostics.
+            check_issues: after.issues,
+          },
           changes: [],
         },
       }

@@ -502,3 +502,18 @@ def test_forked_plugin_drops_lease_handles_without_unlocking_parent(project):
         if process.is_alive():
             process.terminate()
             process.join(5)
+
+
+def test_release_clears_the_busy_mark_even_when_unlock_fails(project, monkeypatch):
+    commands.claim_project(project.project_id, "python-packages-sync")
+
+    def unlock(_handle):
+        raise OSError("unlock failed")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(commands.portalocker, "unlock", unlock)
+        with pytest.raises(OSError):
+            commands.release_project(project.project_id)
+    assert commands.project_operation_name(project.project_id) is None
+    commands.claim_project(project.project_id, "python-packages-sync")
+    commands.release_project(project.project_id)

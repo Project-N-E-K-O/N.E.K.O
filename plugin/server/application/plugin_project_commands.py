@@ -106,13 +106,17 @@ def claim_project(project_id: str, operation: str) -> None:
 
 def release_project(project_id: str) -> None:
     with _busy_lock:
-        handle = _project_leases.pop(project_id, None)
-        if handle is not None:
-            try:
-                portalocker.unlock(handle)
-            finally:
-                handle.close()
-        _busy.pop(project_id, None)
+        try:
+            handle = _project_leases.pop(project_id, None)
+            if handle is not None:
+                try:
+                    portalocker.unlock(handle)
+                finally:
+                    handle.close()
+        finally:
+            # A failed unlock must not leave the project busy until restart;
+            # closing the handle releases the lock anyway.
+            _busy.pop(project_id, None)
 
 
 def project_operation_name(project_id: str) -> str | None:
