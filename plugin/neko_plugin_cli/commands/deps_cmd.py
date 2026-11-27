@@ -32,6 +32,13 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         action="store_true",
         help="Remove vendor/ before reinstalling (fresh sync)",
     )
+    # Internal: syncs that only clean by default (precheck) keep a
+    # hand-maintained vendor/ when no external dependency is declared.
+    sync_parser.add_argument(
+        "--keep-empty-vendor",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     sync_parser.set_defaults(handler=handle_sync, _defaults=defaults)
 
 
@@ -45,5 +52,7 @@ def handle_sync(args: argparse.Namespace) -> int:
     return sync_vendor(
         plugin_dir, python=args.python, project_root=defaults.repo_root,
         clean=args.clean, discard_backups=getattr(args, "discard_backups", args.clean),
-        clear_empty_vendor=getattr(args, "clear_empty_vendor", True),
+        clear_empty_vendor=getattr(
+            args, "clear_empty_vendor", not getattr(args, "keep_empty_vendor", False)
+        ),
     )

@@ -16,8 +16,9 @@ inspection and transactional synchronization implementation.
   resolve to newer versions, including related dependencies.
 - Remove a declaration and synchronize to remove packages no longer needed.
   An explicitly empty dependency list also clears the old vendor contents
-  (workbench sync and `neko-plugin sync --clean`; the sync that
-  `neko-plugin publish` runs by default leaves vendor/ alone then).
+  (workbench sync and `neko-plugin sync --clean`; the syncs that
+  `neko-plugin precheck` and `neko-plugin publish` run by default leave
+  vendor/ alone then).
   A missing declaration preserves hand-maintained vendor files; dynamic dependency
   declarations are rejected before synchronization.
 - Existing URL, Git and local source declarations are retained verbatim; change

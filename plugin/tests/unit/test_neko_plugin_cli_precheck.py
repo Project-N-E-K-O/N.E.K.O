@@ -211,3 +211,31 @@ def test_precheck_prints_environment_issues_without_json(
     out = capsys.readouterr().out
     assert "[WARNING] git status failed" in out
     assert "precheck passed" in out
+
+
+@pytest.mark.parametrize("from_precheck", [True, False])
+def test_precheck_sync_keeps_hand_maintained_vendor_without_external_dependencies(
+    tmp_path: Path, from_precheck: bool,
+) -> None:
+    # precheck only cleans by default, like publish: an explicitly empty
+    # dependency list must not empty vendor/ there; an explicit sync --clean may.
+    import argparse
+
+    plugin_dir = _make_plugin_dir(tmp_path, "keep_vendor")
+    (plugin_dir / "pyproject.toml").write_text(
+        '[project]\nname = "keep_vendor"\nversion = "0.1.0"\ndependencies = []\n',
+        encoding="utf-8",
+    )
+    vendor_file = plugin_dir / "vendor" / "local.py"
+    vendor_file.parent.mkdir()
+    vendor_file.write_text("value = 1\n", encoding="utf-8")
+    if from_precheck:
+        argv = precheck_cmd._stage_argv(
+            precheck_cmd.STAGE_SYNC, str(plugin_dir), argparse.Namespace(),
+        )[3:]  # drop "<python> -m plugin.neko_plugin_cli.cli"
+        assert argv[0] == "sync"
+    else:
+        argv = ["sync", str(plugin_dir), "--clean"]
+
+    assert neko_plugin_cli.main(argv) == 0
+    assert vendor_file.is_file() is from_precheck
