@@ -238,6 +238,8 @@ async def test_failed_register_cleans_up_what_main_server_may_have_stored():
     TimeoutError("late"),
     {"ok": False, "error": "timeout", "message": "ReadTimeout: x"},
     {"ok": False, "error": "host_unavailable"},
+    # The host's own withdrawal after a plugin stop may have failed.
+    {"ok": False, "error": "plugin_stopped"},
     RuntimeError("Plugin context is closed"),
 ])
 async def test_register_failures_that_may_have_stored_are_cleaned_up(first):

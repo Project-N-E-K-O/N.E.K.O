@@ -547,7 +547,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
   その後、同じ名前を再登録できます。
 - 登録の失敗は `main_server` 上で何も起きなかったことを意味するとは限りません。`main_server` はツールを
   保存してから role ごとに同期し、全 role の同期が失敗してもツールは残ります。`timeout` も何が適用された
-  かは分かりません。そのため登録が `rejected`、`timeout`、`host_unavailable` で失敗すると、SDK はその名前の
+  かは分かりません。そのため登録が `rejected`、`timeout`、`host_unavailable`、`plugin_stopped`（ホスト自身の取り消しが失敗している可能性がある）で失敗すると、SDK はその名前の
   解除を 1 回送り（同じ名前の他の async 呼び出しと順番に実行）、結果を `cleanup` に入れます（呼び出しが
   最大 15 秒延びることがあります）。それ以外のエラーは何も保存されていないので `cleanup` は `None` です。
   `cleanup["ok"]` が偽なら、後で `unregister_llm_tool_async(name)` を呼んでください。`timeout` 後の解除は

@@ -596,7 +596,8 @@ Local state follows `ok`, so the plugin and the host agree:
 - A failed register is not always a no-op on `main_server`: it stores the
   tool before syncing it to each role and keeps it if every role's sync
   fails, and a `timeout` says nothing about what was applied. So after a
-  register fails with `rejected`, `timeout` or `host_unavailable`, the SDK
+  register fails with `rejected`, `timeout`, `host_unavailable` or
+  `plugin_stopped` (the host's own withdrawal may have failed), the SDK
   sends one unregister for that name, in order with the name's other
   async calls, and reports it in `cleanup` (it may add up to 15 s to the
   call). Other errors mean nothing was stored, so `cleanup` stays `None`.
