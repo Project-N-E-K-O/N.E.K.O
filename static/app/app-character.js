@@ -2216,7 +2216,7 @@
                 && (!failedBootstrap.revision || !switchRevision || switchRevision >= failedBootstrap.revision)) {
                 window.__nekoPageModelConfigFailed = null;
             }
-            window.discardSupersededIpcAvatar?.(newCatgirl, switchRevision);
+            window.reconcilePendingIpcAvatar?.(newCatgirl, switchRevision);
             window.appChatAvatarState?.commitCharacterSwitch(myAttemptId, {
                 uid: catgirlConfig._reserved?.character_uid || '',
                 name: newCatgirl

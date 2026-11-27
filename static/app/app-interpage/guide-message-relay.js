@@ -236,13 +236,18 @@
                         // 校验 lanlan_name：多角色场景下避免串头像
                         // 本地角色名未就绪时也跳过，等 config 注入后由 request_avatar 回填
                         const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-                        if (event.data.lanlan_name && (!currentName || event.data.lanlan_name !== currentName)) break;
+                        if (!currentName || event.data.lanlan_name !== currentName) break;
                         const incomingDataUrl = event.data.dataUrl || '';
                         const incomingModelType = event.data.modelType || '';
                         if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
                             window.appChatAvatar.setExternalAvatar(incomingDataUrl, incomingModelType);
-                        } else if (incomingDataUrl) {
-                            window.__nekoPendingAvatar = { dataUrl: incomingDataUrl, modelType: incomingModelType };
+                        } else if (incomingDataUrl && !window.__nekoPendingAvatar?.identity?.revision) {
+                            // This relay does not carry server ordering evidence.
+                            window.__nekoPendingAvatar = {
+                                dataUrl: incomingDataUrl,
+                                modelType: incomingModelType,
+                                identity: { name: currentName, revision: 0 },
+                            };
                         }
                         break;
                     }

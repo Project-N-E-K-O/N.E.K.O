@@ -3759,3 +3759,132 @@ for (const supersede of [true, false]) {
         assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, supersede ? undefined : avatar);
     });
 }
+
+for (const outcome of ['changed', 'same', 'unnamed']) {
+    test('review e9c5 guide broadcast pending portrait is bound to its actual role (' + outcome + ')', async () => {
+        const {h, w, avatar} = deskAvatarRace('/chat', () => { throw new Error('unneeded page config'); });
+        delete w.__nekoInjectedConfig.avatarDataUrl;
+        assert.equal(await w.startPageConfigLoad(), true);
+        const deliver = loadSwitchRelay(h);
+        await deliver({data: {
+            action: 'avatar_updated', lanlan_name: outcome === 'unnamed' ? '' : 'A',
+            dataUrl: avatar, modelType: 'vrm',
+        }});
+        if (outcome !== 'unnamed') assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar, 'the real relay must stage the portrait');
+        if (outcome === 'changed') {
+            h.load('static/app/app-character.js');
+            assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 83}), true);
+            assert.equal(w.lanlan_config.lanlan_name, 'B');
+        }
+        h.load('static/app/app-chat-avatar.js');
+        assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, outcome === 'same' ? avatar : undefined);
+        assert.equal(w.__nekoPendingAvatar, undefined);
+    });
+}
+
+async function stagedDesktopPortraitReplay() {
+    const h = setupReviewWindow('/web_chat_compact'), w = h.window;
+    const a = deferred(), b = deferred(), releaseOlder = deferred(), releaseNewer = deferred(), committedNewer = deferred();
+    const avatar = 'data:image/png;base64,Yg==';
+    const manager = w.live2dManager = {
+        currentModel: {url: '/B.model3.json'},
+        pixi_app: {renderer: {}},
+        getCurrentModel() { return this.currentModel; },
+        async removeModel() { this.currentModel = null; },
+        async loadUserPreferences() { return []; },
+        async loadModel(p) { this.currentModel = {url: p.url}; },
+    };
+    w.appState.dom = {
+        chatAvatarPreviewCard: {hidden: false},
+        chatAvatarPreviewImage: {hidden: true},
+        chatAvatarPreviewPlaceholder: {hidden: false},
+        chatAvatarPreviewImageShell: {classList: {add() {}, remove() {}}},
+    };
+    h.context.localStorage = {getItem: () => null, setItem() {}};
+    let gets = 0;
+    h.context.fetch = async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            return {ok: true, json: async () => desktopAvatarConfig('B', 'live2d', 84, '/B.model3.json')};
+        }
+        if (String(url).startsWith('/api/characters/current_live2d_model')) {
+            const name = new URL(String(url), 'https://example.test').searchParams.get('catgirl_name');
+            return {ok: true, json: async () => ({success: true, model_info: {path: '/' + name + '.model3.json'}})};
+        }
+        if (url === '/api/characters') {
+            if (++gets === 1) { a.resolve(); await releaseOlder.promise; }
+            else { b.resolve(); await releaseNewer.promise; }
+            return {ok: true, json: async () => ({ ['\u732b\u5a18']: {
+                B: {model_type: 'live2d', _reserved: {character_uid: UID_B}},
+                C: {model_type: 'live2d', _reserved: {character_uid: 'c'.repeat(32)}},
+            } })};
+        }
+        return {ok: true, json: async () => ({})};
+    };
+    const settled = [];
+    w.appChatAvatarState = {
+        beginCharacterSwitch() {},
+        rollbackCharacterSwitch() {},
+        commitCharacterSwitch(_, who) {
+            settled.push(who.name);
+            if (who.name === 'B') committedNewer.resolve();
+        },
+    };
+    h.load('static/js/index.js');
+    Object.assign(w.lanlan_config, {lanlan_name: 'B', model_type: 'live2d', switch_revision: 82});
+    h.load('static/app/app-character.js');
+    const older = w.handleCatgirlSwitch('C', 'B', {switchRevision: 83});
+    await a.promise;
+    assert.equal(w.lanlan_config.lanlan_name, 'B', 'C is still waiting on the characters response');
+    w.__nekoInjectedConfig = {lanlan_name: 'B', switch_revision: 84, avatarDataUrl: avatar, avatarModelType: 'live2d'};
+    const ready = w.startPageConfigLoad();
+    for (let i = 0; i < 8 && w.appState._pendingCatgirlSwitch?.switchRevision !== 84; i++) await new Promise(setImmediate);
+    assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar);
+    assert.equal(w.appState._pendingCatgirlSwitch?.switchRevision, 84, 'full config must queue a real newer central switch');
+    return {h, w, manager, avatar, older, ready, settled, releaseOlder, releaseNewer, newerEntered: b.promise, newerCommitted: committedNewer.promise};
+}
+
+for (const loads of ['during C', 'after B']) {
+    test('review e9c5 C/83 cannot consume or delete the queued B/84 portrait (module loads ' + loads + ')', {timeout: 6000}, async () => {
+        const run = await stagedDesktopPortraitReplay(), {h, w, avatar} = run;
+        run.releaseOlder.resolve();
+        await run.older; // The return indicates latest intent, not whether the older attempt committed.
+        await run.newerEntered;
+        assert.deepEqual(run.settled, ['C']);
+        assert.equal(w.lanlan_config.lanlan_name, 'C');
+        assert.equal(run.manager.currentModel?.url, '/C.model3.json');
+        assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar, 'an older committed role cannot discard the future stamped portrait');
+        if (loads === 'during C') {
+            h.load('static/app/app-chat-avatar.js');
+            assert.equal(w.appChatAvatar.getExternalAvatar(), null, 'do not show B as C');
+            assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar, 'the consumer must leave a genuinely queued future receipt alone');
+        }
+        run.releaseNewer.resolve();
+        await run.newerCommitted;
+        assert.equal(w.lanlan_config.lanlan_name, 'B');
+        assert.equal(run.manager.currentModel?.url, '/B.model3.json');
+        if (loads === 'after B') h.load('static/app/app-chat-avatar.js');
+        assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, avatar);
+        assert.equal(w.__nekoPendingAvatar, undefined);
+        await advanceModelBootTimer(h, 50);
+        assert.equal(await run.ready, true);
+        assert.deepEqual(run.settled, ['C','B']);
+    });
+}
+
+test('review e9c5 unstamped guide portrait cannot replace a staged stamped receipt', {timeout: 6000}, async () => {
+    const run = await stagedDesktopPortraitReplay(), {h, w, avatar} = run;
+    const relay = loadSwitchRelay(h);
+    await relay({data: {
+        action: 'avatar_updated', lanlan_name: 'B', dataUrl: 'data:image/png;base64,Mg==', modelType: 'live2d',
+    }});
+    assert.equal(w.__nekoPendingAvatar?.dataUrl, avatar);
+    run.releaseOlder.resolve();
+    await run.older;
+    await run.newerEntered;
+    run.releaseNewer.resolve();
+    await run.newerCommitted;
+    h.load('static/app/app-chat-avatar.js');
+    assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, avatar);
+    await advanceModelBootTimer(h, 50);
+    assert.equal(await run.ready, true);
+});

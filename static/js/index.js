@@ -109,13 +109,19 @@ function latestPageSwitchRevision() {
 // A named preview can publish revision zero without erasing an earlier committed receipt.
 window.getPageSwitchRevision = latestPageSwitchRevision;
 
-function discardSupersededIpcAvatar(name, revision) {
-    const identity = window.__nekoPendingAvatar?.identity;
-    if (identity && (identity.name !== name || identity.revision < revision)) {
+function reconcilePendingIpcAvatar(name, revision) {
+    const avatar = window.__nekoPendingAvatar;
+    if (!avatar) return;
+    const identity = avatar.identity;
+    // An intermediate commit does not own a portrait for a newer receipt.
+    if (identity?.name && identity.revision > revision) return;
+    if (!identity?.name || identity.name !== name || identity.revision < revision) {
         delete window.__nekoPendingAvatar;
+        return;
     }
+    window.appChatAvatar?.consumePendingIpcAvatar?.();
 }
-window.discardSupersededIpcAvatar = discardSupersededIpcAvatar;
+window.reconcilePendingIpcAvatar = reconcilePendingIpcAvatar;
 
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
@@ -456,7 +462,7 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // 动态设置页面标题
             document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
-            discardSupersededIpcAvatar(name, switchRevision);
+            reconcilePendingIpcAvatar(name, switchRevision);
             if (expected) window.__nekoPageModelConfigPending = null;
             const failedBoot = window.__nekoPageModelConfigFailed;
             if (failedBoot?.name === name
@@ -659,7 +665,7 @@ function startMultiWindowPageConfigLoad() {
                 ? Object.assign({}, d.lighting)
                 : null;
             window.lanlan_config = lanlan_config;
-            discardSupersededIpcAvatar(lanlan_config.lanlan_name, switchRevision);
+            reconcilePendingIpcAvatar(lanlan_config.lanlan_name, switchRevision);
             // master 信息
             window.master_name = d.master_name || '';
             window.master_profile_name = d.master_profile_name || '';

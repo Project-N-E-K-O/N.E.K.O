@@ -1916,18 +1916,26 @@
     mod.restoreModelAvatar = function () { return window.appChatAvatarEditor.restore(); };
     mod.getCustomEditState = function () { return window.appChatAvatarEditor.getState(); };
 
-    window.appChatAvatar = mod;
-
-    // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
-    if (window.__nekoPendingAvatar) {
+    mod.consumePendingIpcAvatar = function () {
         const avatar = window.__nekoPendingAvatar;
-        delete window.__nekoPendingAvatar;
-        // Revision retirement belongs to successful publishers. A failed switch
-        // can raise the receipt watermark without replacing the displayed role.
-        if (!avatar.identity || (avatar.identity.name && avatar.identity.name === window.lanlan_config?.lanlan_name)) {
-            mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
+        if (!avatar) return;
+        if (!avatar.identity?.name) {
+            delete window.__nekoPendingAvatar;
+            return;
         }
-    }
+        // Only a successful publisher retires another role's portrait.
+        // The module may arrive before its queued switch commits.
+        if (avatar.identity.name !== window.lanlan_config?.lanlan_name) return;
+        delete window.__nekoPendingAvatar;
+        try {
+            mod.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
+        } catch (error) {
+            console.warn('[chat-avatar] Could not restore the pending IPC avatar:', error);
+        }
+    };
+
+    window.appChatAvatar = mod;
+    mod.consumePendingIpcAvatar();
     if (window.__nekoPendingTutorialChatIdentity) {
         if (window.__nekoPendingTutorialChatIdentity.active) {
             mod.setTutorialAvatarOverride(
