@@ -979,22 +979,59 @@ def test_foreground_call_past_its_deadline_keeps_the_previous_state(root, monkey
     assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
 
 
-def test_cancel_does_not_wait_for_a_grandchild_holding_the_pipes():
-    canceled = threading.Event()
-    threading.Timer(0.3, canceled.set).start()
+def test_cancel_does_not_wait_for_a_grandchild_holding_the_output(tmp_path):
+    # The grandchild inherits the child's output handles and outlives it; the
+    # cancel must not wait for it (it did on Windows while output used pipes).
+    pid_file = tmp_path / "grandchild.pid"
     script = (
-        "import subprocess, sys, time; "
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)']); "
-        "time.sleep(12)"
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid)); "
+        "print('started', flush=True); time.sleep(30)"
     )
-    started = time.monotonic()
-    with pytest.raises(module.ToolRuntimeError) as raised:
-        module._run_command(
-            [sys.executable, "-c", script], label="spawn",
-            env=dict(os.environ), cancel=canceled, deadline=time.monotonic() + 60,
-        )
-    assert raised.value.code == "canceled"
-    assert time.monotonic() - started < 10
+    canceled = threading.Event()
+    set_at: list[float] = []
+
+    def cancel_once_started():
+        limit = time.monotonic() + 20
+        while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < limit:
+            time.sleep(0.05)
+        set_at.append(time.monotonic())
+        canceled.set()
+
+    threading.Thread(target=cancel_once_started, daemon=True).start()
+    try:
+        with pytest.raises(module.ToolRuntimeError) as raised:
+            module._run_command(
+                [sys.executable, "-c", script], label="spawn",
+                env=dict(os.environ), cancel=canceled, deadline=time.monotonic() + 60,
+            )
+        returned_at = time.monotonic()
+        assert raised.value.code == "canceled"
+        assert pid_file.read_text()  # the grandchild was running when the cancel came
+    finally:
+        if pid_file.exists() and pid_file.read_text():
+            _kill_pid(int(pid_file.read_text()))
+    # Only the poll interval and the kill of the child itself remain.
+    assert returned_at - set_at[0] < 3
+
+
+def _kill_pid(pid: int) -> None:
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass  # Already gone.
+
+
+def test_default_runner_keeps_only_the_tail_of_huge_output(monkeypatch):
+    monkeypatch.setattr(module, "_MAX_OUTPUT_BYTES", 10)
+    result = module._run_command(
+        [sys.executable, "-c", "print('x' * 100 + 'END')"], label="echo",
+        env=dict(os.environ), cancel=threading.Event(), deadline=time.monotonic() + 60,
+    )
+    assert result.stdout.strip().endswith("END") and len(result.stdout) <= 10
 
 
 def test_python_that_cannot_be_started_is_reinstalled_once(root, monkeypatch):

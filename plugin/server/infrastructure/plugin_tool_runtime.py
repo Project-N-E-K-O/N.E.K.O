@@ -65,6 +65,7 @@ _MAX_METADATA_BYTES = 2 * 1024 * 1024
 _MAX_WHEEL_BYTES = 128 * 1024 * 1024
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
 _MAX_LICENSE_BYTES = 1024 * 1024
+_MAX_OUTPUT_BYTES = 1024 * 1024
 _SUPPORTED_PLATFORMS = frozenset({"win32", "darwin", "linux"})
 # How often lock waits re-check the cancel event and the deadline.
 _POLL_SECONDS = 0.1
@@ -388,39 +389,45 @@ class _Reporter:
             self._callback(event)
 
 
+def _read_output(stream) -> str:
+    # Only the end matters to callers (paths, versions, error tails).
+    stream.seek(0, os.SEEK_END)
+    stream.seek(max(0, stream.tell() - _MAX_OUTPUT_BYTES))
+    return stream.read().decode("utf-8", errors="replace").replace("\r\n", "\n")
+
+
 def _run_command(
     cmd: list[str], *, label: str, env: dict[str, str], cancel: threading.Event, deadline: float,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one tool command, killing it on cancel or at the deadline."""
+    """Run one tool command, killing it on cancel or at the deadline.
+
+    Output goes to temporary files, not pipes: a grandchild that inherits the
+    handles (uv can start helpers) would otherwise keep a pipe open after the
+    child is killed, and reading or even closing it would wait for that
+    grandchild. Waiting on the child alone stays bounded on every platform.
+    """
     del label  # Only fake runners in tests use it.
     _check(cancel, deadline)
     kwargs: dict[str, object] = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    process = subprocess.Popen(
-        cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", env=env, **kwargs,
-    )
-    try:
-        while True:
-            try:
-                stdout, stderr = process.communicate(timeout=_POLL_SECONDS)
-                break
-            except subprocess.TimeoutExpired:
-                _check(cancel, deadline)
-    except BaseException:
-        process.kill()
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env, **kwargs,
+        )
         try:
-            # A grandchild that inherited the pipes can keep them open after
-            # the kill; do not let a cancel wait on it.
-            process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            # The child itself is gone: reap it and drop the leftover pipes.
-            process.stdout.close()
-            process.stderr.close()
+            while True:
+                try:
+                    process.wait(timeout=_POLL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    _check(cancel, deadline)
+        except BaseException:
+            process.kill()
             process.wait()
-        raise
-    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+            raise
+        result = subprocess.CompletedProcess(cmd, process.returncode, _read_output(stdout), _read_output(stderr))
+    return result
 
 
 def _tail(result: subprocess.CompletedProcess[str]) -> str:
