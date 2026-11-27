@@ -18,6 +18,7 @@ No real HTTP, no real plugin process, no real main_server.
 from __future__ import annotations
 
 import asyncio
+import types
 import logging
 import queue
 import sys
@@ -2827,29 +2828,67 @@ async def test_withdrawal_keeps_tracking_of_an_earlier_registration_of_the_name(
 
 
 @pytest.mark.asyncio
-async def test_rejected_register_after_the_plugin_stops_is_withdrawn(monkeypatch, registry):
+@pytest.mark.parametrize("answer", ["rejected", "server_error"])
+async def test_failed_register_after_the_plugin_stops_is_withdrawn(monkeypatch, registry, answer):
     """main_server records the tool before syncing roles, so ``ok: false``
-    (every role's sync failed) may still leave it stored."""
+    (every role's sync failed) may still leave it stored; any other failure
+    after the stop is withdrawn too (harmless when nothing was stored), and
+    reported as ``plugin_stopped``."""
     from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
 
-    class _RejectsAfterStoring(_HeldMainServer):
+    class _FailsAfterStoring(_HeldMainServer):
         async def post(self, url, json=None, **kw):
             if url.endswith("/register"):
                 self.posts.append(("register", json))
                 self.arrived["register"].set()
                 await self.release.wait()
+                if answer == "server_error":
+                    return _FakeResp({"detail": "boom"}, status_code=500)
                 return _FakeResp({"ok": False, "registration_id": json["registration_id"], "affected_roles": [],
                                   "failed_roles": [{"role": "Lanlan", "error": "sync failed"}]})
             return await super().post(url, json=json, **kw)
 
-    server = _use_main_server(monkeypatch, registry, _RejectsAfterStoring())
+    server = _use_main_server(monkeypatch, registry, _FailsAfterStoring())
     task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
     await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
     await registry.clear_plugin_tools(PLUGIN_ID)
     server.release.set()
     result = await asyncio.wait_for(task, timeout=2.0)
 
-    assert result["ok"] is False and result["error"] == "rejected"
+    assert result["ok"] is False and result["error"] == "plugin_stopped"
     assert server.ops() == ["register", "clear", "unregister"]
     assert server.posts[2][1]["expected_registration_id"] == "reg-1"
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+async def test_notification_register_failing_after_the_stop_logs_no_traceback(monkeypatch, registry):
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+
+    class _Rejects(_HeldMainServer):
+        async def post(self, url, json=None, **kw):
+            if url.endswith("/register"):
+                self.posts.append(("register", json))
+                self.arrived["register"].set()
+                await self.release.wait()
+                return _FakeResp({"ok": False, "affected_roles": [], "failed_roles": []})
+            return await super().post(url, json=json, **kw)
+
+    server = _use_main_server(monkeypatch, registry, _Rejects())
+    owner = _notification_handler_owner()
+    calls: list[str] = []
+    owner.logger = types.SimpleNamespace(
+        info=lambda *a, **k: calls.append("info"),
+        warning=lambda *a, **k: calls.append("warning"),
+        exception=lambda *a, **k: calls.append("exception"),
+    )
+    task = asyncio.create_task(Comm._handle_llm_tool_register(
+        owner, dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID),
+    ))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert calls == ["info"]
+    assert server.ops() == ["register", "clear", "unregister"]
