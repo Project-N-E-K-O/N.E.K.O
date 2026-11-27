@@ -76,6 +76,7 @@ def _reset_native_cooldown():
         ("typesafe/jev-1.14", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "systemone"),
         ("typesafe/jev-1.13", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "systemone"),
         ("typesafe/jev-1.14.0", "https://router.requesty.ai/v1", None, None, "systemone"),
+        ("typesafe/jev-1.14.0", "https://router.eu.requesty.ai/v1", None, None, "systemone"),
         ("typesafe/jev-1.14.0", "https://api.opper.ai/v3/compat", "systemone", "typesafe/jev-1.14.0", "systemone"),
         ("liquid/d1.2-ultra", "https://openrouter.ai/api/v1", "openrouter_decisions", "liquid/d1.2-ultra", "openrouter_decisions"),
         ("anthropic/claude-haiku-4.5", "https://api.orcarouter.ai/v1", "systemone", "typesafe/jev-1.14", "chat_fallback"),

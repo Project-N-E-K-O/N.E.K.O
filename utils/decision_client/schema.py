@@ -51,6 +51,7 @@ _KNOWN_NATIVE_MODELS: dict[str, str] = {
 _SYSTEMONE_ROUTER_HOSTS = frozenset({
     "api.orcarouter.ai",
     "router.requesty.ai",
+    "router.eu.requesty.ai",
     "api.opper.ai",
 })
 

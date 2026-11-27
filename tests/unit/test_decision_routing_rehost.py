@@ -559,3 +559,43 @@ async def test_ask_site_questions_without_questions_means_the_sites_chat():
 
     assert await ask_site_questions(SITE_MASTER_EMOTION, state="s", questions={}, chat_config=DOUBAO_CHAT,
                                     decision_config=BAILIAN) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_warm_pool_returns_the_raced_client_even_if_dropped_while_closing_its_twin():
+    from utils.llm_client import warm_pool
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    made: list[SimpleNamespace] = []
+
+    async def _slow_close():
+        # While the duplicate closes, other settings fill and churn the pool.
+        for i in range(warm_pool.WARM_POOL_MAX_CLIENTS + 1):
+            await warm_pool.get_warm_chat_llm(f"other{i}", "u", "k")
+
+    async def _create(model, base_url, api_key, **kw):
+        client = SimpleNamespace(model=model, aclose=AsyncMock())
+        if model == "m" and not made:
+            # The slow maker's client is the duplicate; closing it churns the pool.
+            made.append(client)
+            client.aclose = AsyncMock(side_effect=_slow_close)
+            first_started.set()
+            await release_first.wait()
+        elif model == "m":
+            made.append(client)
+        return client
+
+    with patch("utils.llm_client.create_chat_llm_async", _create):
+        try:
+            slow = asyncio.create_task(warm_pool.get_warm_chat_llm("m", "u", "k"))
+            await first_started.wait()
+            fast = await warm_pool.get_warm_chat_llm("m", "u", "k")  # wins the race
+            release_first.set()
+            # Ends up as the duplicate whose close churns the pool; must still return.
+            got = await asyncio.wait_for(slow, 2.0)
+        finally:
+            await warm_pool.close_warm_chat_llms()
+    assert got is fast
+    made[0].aclose.assert_awaited_once()

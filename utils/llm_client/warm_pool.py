@@ -108,8 +108,9 @@ async def get_warm_chat_llm(
     raced = pool.get(key)
     if raced is not None:
         # Another caller made the same client while this one was being made.
-        await _close_quietly(made)
+        # Reorder before awaiting: the key may be dropped while the close runs.
         pool.move_to_end(key)
+        await _close_quietly(made)
         return raced
     pool[key] = made
     while len(pool) > WARM_POOL_MAX_CLIENTS:
