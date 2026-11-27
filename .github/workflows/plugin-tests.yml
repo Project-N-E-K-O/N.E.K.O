@@ -84,13 +84,27 @@ jobs:
         run: uv run pytest plugin/tests -n auto --dist loadfile -q --durations=20
 
   plugin-pytest:
-    name: Plugin pytest (Windows)
+    name: Plugin pytest (Windows, ${{ matrix.label }})
     # Windows is the product's primary desktop platform. Directory junction,
     # Windows shell API and msvcrt lock-retry cases only execute here; the
     # Linux job skips them. Native-extra cohorts that are genuinely optional
     # (dxcam etc.) self-skip when not installed.
     runs-on: windows-latest
     timeout-minutes: 30
+    # TEMPORARY experiment matrix (removed before merge): compares serial and
+    # xdist runs, all with the pytest basetemp on the runner work drive.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: A-serial
+            xdist: ''
+          - label: B-n2
+            xdist: '-n 2 --dist loadfile'
+          - label: C-n4
+            xdist: '-n 4 --dist loadfile'
+          - label: D-nauto
+            xdist: '-n auto --dist loadfile'
     steps:
       - uses: actions/checkout@v5
 
@@ -118,4 +132,8 @@ jobs:
         # collected too.
         # --durations keeps the slowest cases visible in the log, for deciding
         # whether this serial run needs pytest-xdist.
-        run: uv run pytest plugin/tests -q --durations=20
+        run: |
+          Write-Host "runner.temp=${{ runner.temp }} NUMBER_OF_PROCESSORS=$env:NUMBER_OF_PROCESSORS"
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free -AutoSize
+          uv run python -c "import psutil; print('xdist auto workers (physical cores):', psutil.cpu_count(logical=False), 'logical:', psutil.cpu_count())"
+          uv run pytest plugin/tests -q ${{ matrix.xdist }} --basetemp "${{ runner.temp }}/neko-plugin-tests" --durations=0
