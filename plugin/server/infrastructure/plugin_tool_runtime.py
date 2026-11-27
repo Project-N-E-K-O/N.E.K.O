@@ -424,7 +424,10 @@ def _run_command(
                     _check(cancel, deadline)
         except BaseException:
             process.kill()
-            process.wait()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass  # Killed but not yet reaped (stuck in the kernel); do not block the cancel on it.
             raise
         result = subprocess.CompletedProcess(cmd, process.returncode, _read_output(stdout), _read_output(stderr))
     return result
