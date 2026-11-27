@@ -1066,9 +1066,10 @@ def test_model_cat_transition_contract_is_present():
         return_handler_block,
         "return handler stops when model viewport is still shrunken",
         "let modelDisplayReady = true;",
-        "modelDisplayReady = await showCurrentModel({ isCurrent: isCurrentReturn });",
+        "modelDisplayReady = await showCurrentModel({ isCurrent: isCurrentReturn, prepareModelForm: true });",
         "if (modelDisplayReady === false) {",
         "                return;",
+        "await window._nekoModelReturnEnterPromise;",
     )
     return_handler_start = source.index("const handleReturnClick = async (event) => {")
     return_handler_full_block = source[
@@ -1310,7 +1311,7 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
     assert branch.count("consumeModelReturnEnterRect()") == 1
     assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig, { isCurrent });") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
     assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
-    assert "if (modelReturnEnterRect) {" in branch
+    assert "if (modelReturnEnterRect || (options.prepareModelForm === true && !shouldAnimateModelCatTransition())) {" in branch
     assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
     assert branch.index("prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });") < branch.index("playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);")
 
