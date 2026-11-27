@@ -151,7 +151,6 @@ class FakeUv:
         self.identity = _identity() if identity is None else identity
         self.install_fails = install_fails
         self.versions = versions or {}
-        self.installed = False
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
     def __call__(self, cmd, *, label, env, cancel, deadline):
@@ -161,15 +160,20 @@ class FakeUv:
             # A real file is the uv this module downloaded (the fake wheel's).
             version = self.versions.get(cmd[0]) or (module.PINNED_UV_VERSION if Path(cmd[0]).is_file() else None)
             return subprocess.CompletedProcess(cmd, 0 if version else 1, f"uv {version}\n" if version else "", "")
+        # Modelled on uv 0.13.6: `find` queries the interpreter, so an empty or
+        # non-executable one fails it; `install` sees the installation directory
+        # and answers "already installed" (exit 0) without repairing anything.
         if cmd[1:3] == ["python", "find"]:
-            if self.installed:
+            if module._usable_executable(self.python):
                 return subprocess.CompletedProcess(cmd, 0, self.python + "\n", "")
+            if Path(self.python).exists():
+                return subprocess.CompletedProcess(cmd, 2, "", "error: Failed to query Python interpreter")
             return subprocess.CompletedProcess(cmd, 2, "", "not found")
         if cmd[1:3] == ["python", "install"]:
             if self.install_fails:
                 return subprocess.CompletedProcess(cmd, 1, "", "error: no download for this platform")
-            self.installed = True
-            Path(self.python).parent.mkdir(parents=True, exist_ok=True)
+            if Path(self.python).exists():
+                return subprocess.CompletedProcess(cmd, 0, "", "already installed")
             _write_executable(Path(self.python), b"#!python")
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == self.python:
@@ -822,9 +826,7 @@ def test_damaged_tool_after_preparation_is_not_ready_and_is_repaired(root, monke
     else:
         target.chmod(0o644)
     assert module.read_tool_runtime_status().state == "missing"
-    if tool == "python":
-        target.unlink()
-        uv.installed = False
+    # The damaged file stays: preparation itself has to get rid of it.
     repaired = _prepare(uv)
     assert module.read_tool_runtime_status().state == "ready"
     assert pypi.wheel_downloads == (2 if tool == "uv" else 1)

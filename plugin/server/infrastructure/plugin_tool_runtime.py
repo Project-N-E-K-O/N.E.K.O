@@ -622,6 +622,18 @@ def _prepare_python(
     found = run(find, "Locate managed Python")
     if found.returncode:
         _check(cancel, deadline)
+        # uv answers "already installed" for an existing but broken interpreter
+        # (emptied, or stripped of its executable bit) and leaves it alone, so
+        # `find` would keep failing. Only interpreters this module installed
+        # live here, under the preparation lock: start from an empty directory.
+        try:
+            shutil.rmtree(python_root)
+        except FileNotFoundError:
+            pass  # Nothing installed yet.
+        except OSError as exc:
+            raise ToolRuntimeError(
+                "python_install_failed", f"Could not clear the managed Python directory: {exc}",
+            ) from exc
         installed = run(
             [uv, "python", "install", "--no-config", request, "--install-dir", str(python_root),
              "--no-bin", "--no-registry"],
