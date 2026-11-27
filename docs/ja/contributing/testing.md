@@ -38,7 +38,7 @@ uv run pytest plugin/tests -q
 
 ## CI の範囲
 
-- `.github/workflows/plugin-tests.yml`：Windows 上の plugin suite と選択されたルート契約。
+- `.github/workflows/plugin-tests.yml`：Linux と Windows 上の plugin suite 全体（`plugin/tests`）。
 - `.github/workflows/analyze.yml`：Ruff とプロジェクト固有の静的契約。
 - `.github/workflows/docs.yml`：`npm ci` と VitePress build。
 - desktop／Docker workflow はパッケージング経路を別に検証します。

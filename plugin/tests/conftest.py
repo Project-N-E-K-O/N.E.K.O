@@ -36,6 +36,7 @@ from tests.storage_root_env_guard import (  # noqa: E402
 )
 
 import asyncio.events as _events
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -170,6 +171,48 @@ def _no_background_host_model_autobind(request: pytest.FixtureRequest, monkeypat
     monkeypatch.setattr(
         capability_analysis_service, "_auto_bind_host_models_safe", lambda *_a, **_k: None
     )
+
+
+_GIT_IDENTITY_ENV = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep the developer's git identity and config out of test repos.
+
+    Identity variables beat ``git -c user.name=...``, and a global or system
+    config (signing, hooks, default branch, aliases) changes what the CLI's
+    git calls see. Configuration passed through the environment
+    (``GIT_CONFIG_COUNT`` with ``GIT_CONFIG_KEY_<n>`` / ``_VALUE_<n>``,
+    ``GIT_CONFIG_PARAMETERS``, e.g. a ``url.*.insteadOf`` rewrite) does the
+    same; the CLI forwards it on purpose, so tests must drop it here.
+    Repository-locating variables exported by a git hook (``GIT_DIR``,
+    ``GIT_INDEX_FILE`` ...) would point the tests' own bare git helpers at
+    the outer repository. CI runners have none of these, so a test that passed
+    there could fail on a developer machine.
+    """
+    from plugin.neko_plugin_cli.git_env import REPOSITORY_ENV_VARS
+
+    for name in (*_GIT_IDENTITY_ENV, *REPOSITORY_ENV_VARS, "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"):
+        monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            monkeypatch.delenv(name)
+    # Not under tmp_path: many tests turn tmp_path itself into the repository.
+    empty_config = tmp_path_factory.getbasetemp() / "gitconfig-isolated"
+    if not empty_config.exists():
+        empty_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 @pytest.fixture(autouse=True)
