@@ -560,6 +560,10 @@ class ToolCallingMixin:
         except Exception as e:
             renewed = False
             logger.warning("[%s] enable_nekopower: session not renewed: %s", self.lanlan_name, type(e).__name__)
+        if not self._nekopower_master_on():
+            # Switched off while the session was being renewed: as above.
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
+            return
         if not renewed:
             # The tools reached the live session all the same (update_agent_flags), save on
             # Gemini Live, which takes them at connect: she is told to look before she acts.

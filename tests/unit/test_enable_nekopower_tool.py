@@ -420,11 +420,32 @@ def test_switched_off_again_on_the_panel_meanwhile_she_is_not_told_it_is_on():
     # CodeRabbit on #4155: the command went through, then the panel switched it off again
     # before the report; the session's switch says off, and so does the report.
     manager = _session(page=_Page(), master_on=False)
-    manager.renew_session_now = None  # not to be called
+    renewed = []
+
+    async def renew():
+        renewed.append(True)
+        return True
+
+    manager.renew_session_now = renew
     asyncio.run(manager.after_nekopower_enabled("", note="好"))
     assert [report["summary"] for report in manager.reports] == [
         ENABLE_REPORT_OFF_AGAIN["zh"] + ENABLE_REPORT_NOTE["zh"].format(text="好"),
     ]
+    # Nor is the session renewed for nothing.
+    assert renewed == []
+
+
+def test_switched_off_on_the_panel_while_the_session_is_renewed_she_is_not_told_it_is_on():
+    # CodeRabbit on #4155: renewing takes a while; switched off meanwhile, the report says so.
+    manager = _session(page=_Page(), master_on=True)
+
+    async def renew():
+        manager.agent_flags["agent_enabled"] = False
+        return True
+
+    manager.renew_session_now = renew
+    asyncio.run(manager.after_nekopower_enabled(""))
+    assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_OFF_AGAIN["zh"]]
 
 
 @pytest.mark.parametrize("failure", ["unreachable", "refused", "unknown", "something else"])
