@@ -3810,6 +3810,9 @@ def test_ignored_link_warning_skips_what_the_build_excludes(
         (plugin_dir / "scratch").mkdir()
         (plugin_dir / "scratch" / "data").symlink_to(target)
         (plugin_dir / "notes.lnk").symlink_to(target)
+        # The build lists a directory symlink as one entry under the full
+        # rules, so "exclude" drops it (unlike a junction, which it walks into).
+        (plugin_dir / "folder.lnk").symlink_to(tmp_path, target_is_directory=True)
         (plugin_dir / "local_cache").mkdir()
         (plugin_dir / "local_cache" / "config.txt").symlink_to(target)
     except OSError:
@@ -3862,3 +3865,16 @@ def test_link_scan_keeps_going_when_an_ignored_link_cannot_be_followed(
     assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in captured.err
     assert "could not be scanned" not in captured.out
     assert f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('node_modules/.pnpm/pkg')})" in captured.out
+
+    # The build fails on the same is_dir() call, so file-only rules that
+    # would drop a file link do not hide it from the warning.
+    from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet
+
+    issues = []
+    validate_cmd._check_symlink_tree(
+        plugin_dir,
+        issues,
+        ignored_paths=["node_modules/"],
+        build_rules=BuildRuleSet(exclude=["node_modules/.pnpm/pkg"]),
+    )
+    assert any("1 symbolic link(s) in gitignored paths" in message for _, message in issues)

@@ -82,6 +82,25 @@ class LocalStatus(NamedTuple):
     actions: dict[str, str]
 
 
+def push_command(state: RepoState) -> str | None:
+    """The git push that gets HEAD to its origin branch, None when none is due.
+
+    Quoted as the CLI prints it, with a note when it shows a placeholder.
+    """
+    from plugin.neko_plugin_cli.commands.release_cmd import _push_hint, _push_hint_notes
+
+    if not state.branch or state.head is None or state.head_pushed is True:
+        return None
+    remote, _, remote_branch = (state.upstream or "").partition("/")
+    if remote == "origin" and remote_branch:
+        # Named in full: a bare git push is refused for a differently named
+        # upstream under push.default=simple.
+        hint = _push_hint(state.branch, remote_branch)
+    else:
+        hint = _push_hint(state.branch)
+    return hint.command + _push_hint_notes(hint)[0]
+
+
 def read_local_status(project_id: str) -> LocalStatus:
     """Local facts of a registered project; shared with the publish gate."""
     # The template generator pulls in the build rules (pydantic); keep it out
@@ -318,7 +337,7 @@ async def get_publish_status(project_id: str, *, fresh: bool = False) -> dict[st
     return {
         "plugin_id": local.plugin_id,
         "version": local.version,
-        "repository": asdict(state),
+        "repository": {**asdict(state), "push_command": push_command(state)},
         "actions": local.actions,
         "remote": remote,
         "workspace": asdict(workspace) if workspace else None,

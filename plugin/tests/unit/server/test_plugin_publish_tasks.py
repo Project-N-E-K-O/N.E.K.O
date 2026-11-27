@@ -490,7 +490,12 @@ async def test_task_lookup_for_a_project_that_never_published(app, tmp_path):
         ),
         # A leading + would make git force-push main instead.
         ({"branch": "+main", "upstream": None, "head_pushed": None}, "run git push -u origin refs/heads/+main"),
-        ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push"),
+        ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push origin main"),
+        # A bare git push is refused for a differently named upstream (push.default=simple).
+        (
+            {"branch": "feat", "upstream": "origin/main", "head_pushed": False},
+            "HEAD is not pushed to origin/main; run git push origin feat:main",
+        ),
         ({"tag_exists": True, "tag_at_head": False}, "tag v0.1.0 already points at another commit"),
     ],
 )
@@ -510,7 +515,24 @@ def test_the_gate_names_a_plus_branch_behind_a_placeholder_as_its_refspec(monkey
     _ready_gate(monkeypatch, tmp_path, branch="+a%b", upstream=None, head_pushed=None)
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github")
-    assert 'run git push -u origin "<branch>" (branch: refs/heads/+a%b)' in caught.value.message
+    assert 'run git push -u origin "<branch>" (for <branch>: refs/heads/+a%b)' in caught.value.message
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ({}, None),
+        ({"head_pushed": None, "upstream": None}, "git push -u origin main"),
+        ({"head_pushed": False, "upstream": "fork/main"}, "git push -u origin main"),
+        ({"head_pushed": False, "upstream": "origin/feature/x"}, "git push origin main:feature/x"),
+        ({"head_pushed": None, "upstream": None, "detached": True, "branch": None}, None),
+    ],
+)
+def test_the_status_carries_the_push_command_the_gate_names(state, expected):
+    from plugin.neko_plugin_cli.repo_state import RepoState
+    from plugin.server.application.plugin_publish_status import push_command
+
+    assert push_command(RepoState(**{**_READY, **state})) == expected
 
 
 def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):

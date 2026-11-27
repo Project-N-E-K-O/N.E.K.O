@@ -166,6 +166,7 @@ function publishStatus(overrides: {
       head: 'abc',
       detached: false,
       head_pushed: true,
+      push_command: null,
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -1142,12 +1143,15 @@ describe('authoring workbench backed by the server project list', () => {
     ],
     [
       'the branch has no upstream',
-      publishStatus({ repository: { upstream: null, head_pushed: null } }),
-      'Branch main has no upstream; run git push -u origin main.',
+      // The command comes quoted from the server; the page shows it as is.
+      publishStatus({
+        repository: { branch: 'feat;$(x)', upstream: null, head_pushed: null, push_command: "git push -u origin 'feat;$(x)'" },
+      }),
+      "Branch feat;$(x) has no upstream; run git push -u origin 'feat;$(x)'.",
     ],
     [
       'the upstream is not on origin',
-      publishStatus({ repository: { upstream: 'fork/main', head_pushed: false } }),
+      publishStatus({ repository: { upstream: 'fork/main', head_pushed: false, push_command: 'git push -u origin main' } }),
       'Branch main tracks fork/main, not origin; run git push -u origin main.',
     ],
     [

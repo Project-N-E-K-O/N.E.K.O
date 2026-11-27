@@ -49,6 +49,7 @@ def test_fresh_is_passed_through_to_the_remote_read(monkeypatch, tmp_path):
         is_repository=True,
         tag="v0.1.0",
         github_repository="owner/repo",
+        branch="main",
         head="a" * 40,
         detached=False,
         dirty_paths=("notes.txt",),
@@ -66,3 +67,5 @@ def test_fresh_is_passed_through_to_the_remote_read(monkeypatch, tmp_path):
     assert calls == [(("owner/repo", "a" * 40, "v0.1.0", "demo"), True)]
     assert result["repository"]["dirty_paths"] == ("notes.txt",)
     assert result["repository"]["detached"] is False
+    # The page shows the server's quoted push command rather than building one.
+    assert result["repository"]["push_command"] == "git push -u origin main"

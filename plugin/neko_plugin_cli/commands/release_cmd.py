@@ -12,6 +12,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 from packaging.version import InvalidVersion, Version
 
@@ -692,6 +693,7 @@ _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
 # Likewise for the values of printed git commands; quoted so that pasting one
 # unreplaced passes a literal word rather than a < redirection.
 _BRANCH_PLACEHOLDER = '"<branch>"'
+_REFSPEC_PLACEHOLDER = '"<branch>:<remote-branch>"'
 _REMOTE_PLACEHOLDER = '"<repository-url>"'
 
 
@@ -746,6 +748,51 @@ def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
         return f"refs/heads/{name}" if name.startswith("+") else name
 
     return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+
+
+class PushHint(NamedTuple):
+    """A printed ``git push`` and, when it shows a placeholder, what to type there."""
+
+    command: str
+    placeholder: str
+    # The refspec behind the placeholder, None when the command shows the real one.
+    fill_in: str | None
+
+
+def _push_hint(branch: str, remote_branch: str | None = None) -> PushHint:
+    """``git push -u origin <branch>``, or a push to ``remote_branch`` on origin.
+
+    The refspec is one quoted argument (``<branch>:<remote_branch>`` when the
+    names differ: a bare ``git push`` is refused under push.default=simple).
+    The fill-in is the refspec, not the raw branch, so a leading + stays
+    spelled out when the user types it in.
+    """
+    if remote_branch is None or remote_branch == branch:
+        refspec, placeholder = _push_refspec(branch), _BRANCH_PLACEHOLDER
+    else:
+        refspec, placeholder = _push_refspec(branch, remote_branch), _REFSPEC_PLACEHOLDER
+    argument = _shell_argument(refspec, placeholder)
+    options = "-u " if remote_branch is None else ""
+    return PushHint(
+        f"git push {options}origin {argument}",
+        placeholder,
+        refspec if argument == placeholder else None,
+    )
+
+
+def _push_hint_notes(hint: PushHint) -> tuple[str, str, str]:
+    """English, Chinese and Japanese notes naming what fills the placeholder, or blanks.
+
+    Each follows the command directly (the English one starts with a space).
+    """
+    if hint.fill_in is None:
+        return ("", "", "")
+    name = hint.placeholder.strip('"')
+    return (
+        f" (for {name}: {hint.fill_in})",
+        f"（{name} 处填写：{hint.fill_in}）",
+        f"（{name} に入れる値：{hint.fill_in}）",
+    )
 
 
 def _shell_argument(value: str, placeholder: str) -> str:

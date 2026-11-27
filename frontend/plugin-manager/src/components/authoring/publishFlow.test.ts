@@ -37,6 +37,7 @@ function status(
       head: HEAD,
       detached: false,
       head_pushed: true,
+      push_command: null,
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -322,12 +323,15 @@ describe('publishFlow', () => {
 
   it('reports local git problems first and withholds the submission commit', () => {
     const flow = flowOf({
-      status: status({ repository: { head_pushed: false } }),
+      status: status({ repository: { head_pushed: false, push_command: 'git push origin main' } }),
       submission: approved(),
       task: null,
     })
     expect(flow.currentStepId).toBe('repository')
-    expect(step(flow, 'repository').detail).toEqual({ key: 'publishRepoUnpushed' })
+    expect(step(flow, 'repository').detail).toEqual({
+      key: 'publishRepoUnpushed',
+      params: { command: 'git push origin main' },
+    })
     expect(flow.pushedHead).toBeNull()
   })
 

@@ -85,8 +85,8 @@ def test_printed_push_of_a_plus_branch_pushes_that_branch_without_force(tmp_path
     _git(plugin_dir, "commit", "-q", "--amend", "-m", "rewritten")
     _git(plugin_dir, "checkout", "-q", "-b", "+main")
 
-    command, hidden = init_cmd._push_step(plugin_dir)
-    assert hidden is None
+    command, hint = init_cmd._push_step(plugin_dir)
+    assert hint.fill_in is None
     assert command.endswith(" push -u origin refs/heads/+main")
     subprocess.run(["sh", "-c", command], cwd=tmp_path, check=True, capture_output=True)
 
@@ -234,7 +234,7 @@ def test_push_steps_name_the_branch_behind_a_placeholder(tmp_path, monkeypatch, 
     init_cmd._print_push_next_step(plugin_dir)
     out = capsys.readouterr().out
     assert out.count('push -u origin "<branch>"') == 2
-    assert out.count("(branch: feature/$name)") == 2
+    assert out.count("(for <branch>: feature/$name)") == 2
 
     monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "main")
     init_cmd._print_manual_repo_steps(plugin_dir, repo_name="demo")
@@ -252,7 +252,7 @@ def test_push_steps_name_a_plus_branch_behind_a_placeholder_as_its_refspec(tmp_p
     init_cmd._print_push_next_step(plugin_dir)
     out = capsys.readouterr().out
     assert 'push -u origin "<branch>"' in out
-    assert "(branch: refs/heads/+a%b)" in out
+    assert "(for <branch>: refs/heads/+a%b)" in out
 
 
 def test_manual_steps_do_not_add_a_directory_note_to_quoted_commands(tmp_path, monkeypatch, capsys):
