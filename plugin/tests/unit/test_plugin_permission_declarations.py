@@ -3108,12 +3108,13 @@ def test_a_constructor_held_in_an_attribute_is_not_trusted(tmp_path, constructio
     assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
 
 
-def test_a_module_socket_rebound_through_globals_is_not_trusted(tmp_path):
+def test_a_globals_call_disables_the_downgrade(tmp_path):
     source = (
         "import socket\ns = socket.socket(socket.AF_UNIX)\nglobals()['s'] = socket.socket()\n"
         "s.bind(('', 0))\ns.listen()\n"
     )
-    # As on main: definite evidence.
+    # As on main: definite evidence. The name globals alone disables the
+    # downgrade; the rebinding itself is not tracked.
     assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
 
 
@@ -3132,3 +3133,39 @@ def test_only_reflective_imports_disable_the_downgrade(tmp_path, imports, downgr
     report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + imports, 1))
     basis = "resolved_name" if downgraded else "resolved_call"
     assert _bases(report) == {CONNECT: basis, LISTEN: basis}
+
+
+_PATCHED_THROUGH_COMPAT = (
+    "import socket\n{import_line}class Fake:\n    pass\nsa(socket, 'socket', Fake)\n"
+    "s = socket.socket(socket.AF_UNIX)\ns.bind(('', 8080))\ns.listen()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "import_line,files",
+    [
+        ("from .compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from plugin.plugins.demo.compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from .pkg import setattr as sa\n", {"pkg/__init__.py": "x = 1\n"}),
+        # Relative, even when the module is not among the scanned files.
+        ("from . import setattr as sa\n", {}),
+    ],
+)
+def test_a_writer_re_exported_by_a_plugin_module_disables_the_downgrade(tmp_path, import_line, files):
+    report = _scan(tmp_path, _PATCHED_THROUGH_COMPAT.format(import_line=import_line), **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_star_import_of_builtins_disables_the_downgrade(tmp_path):
+    # compat.py names no writer, so only the star import gives it away; the
+    # writer re-exported from it is then used under any name.
+    report = _scan(tmp_path, _UNIX_SERVER, **{"compat.py": "from builtins import *\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+    report = _scan(tmp_path, _UNIX_SERVER, **{"compat.py": "from os.path import *\n"})
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+def test_writer_names_from_third_party_modules_keep_the_downgrade(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\nfrom re import compile\n", 1))
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}

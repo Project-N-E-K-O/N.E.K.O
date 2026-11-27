@@ -494,6 +494,29 @@ def _super_call(node) -> bool:
     )
 
 
+def _module_suffixes(paths) -> set[str]:
+    """Every dotted tail of the plugin's own module paths (pkg/compat.py gives
+    pkg.compat and compat), so an absolute import of a plugin module matches
+    however deep the plugin is mounted (plugin.plugins.x.compat)."""
+    suffixes: set[str] = set()
+    for path in paths:
+        parts = str(path).replace("\\", "/").split("/")
+        if not parts[-1].endswith(".py"):
+            continue
+        parts[-1] = parts[-1][:-3]
+        if parts[-1] == "__init__":
+            parts.pop()
+        suffixes.update(".".join(parts[index:]) for index in range(len(parts)))
+    suffixes.discard("")
+    return suffixes
+
+
+def _own_module(module: str, own_modules: set[str]) -> bool:
+    """module (from module import ...) may be one of the plugin's own files."""
+    parts = module.split(".") if module else []
+    return any(".".join(parts[index:]) in own_modules for index in range(len(parts)))
+
+
 def _families_written(sources, walker, written=None) -> bool:
     """The plugin's own code may rebind a socket family constant.
 
@@ -524,6 +547,8 @@ def _families_written(sources, walker, written=None) -> bool:
     imports from socket (socket.socket.connect = ..., S.connect = ... after
     from socket import socket as S), directly or by a constant setattr.
     """
+    sources = list(sources)
+    own_modules = _module_suffixes(relative for relative, _ in sources)
     for relative, source in sources:
         walker.poll()
         parts = str(relative).replace("\\", "/").split("/")
@@ -553,12 +578,16 @@ def _families_written(sources, walker, written=None) -> bool:
             elif isinstance(node, ast.ImportFrom):
                 if node.module == "socket" and not node.level:
                     socket_names.update(item.asname or item.name for item in node.names)
-                if (
-                    not node.level
-                    and (node.module or "").split(".")[0] in _REFLECTION_MODULES
-                    and any(item.name in _DYNAMIC_WRITERS for item in node.names)
+                module = node.module or ""
+                reflective = not node.level and module.split(".")[0] in _REFLECTION_MODULES
+                if (reflective or node.level or _own_module(module, own_modules)) and any(
+                    item.name in _DYNAMIC_WRITERS or (reflective and item.name == "*") for item in node.names
                 ):
-                    # from builtins import getattr as g; from operator import attrgetter
+                    # from builtins import getattr as g; from operator import attrgetter;
+                    # from builtins import *; from .compat import setattr as sa
+                    # (re-exported by the plugin's own module). Matching by
+                    # module tail errs strict: from .utils import compile, or a
+                    # plugin json.py with from json import ..., also counts.
                     return True
             elif isinstance(node, ast.Call):
                 callee = node.func
@@ -787,7 +816,8 @@ def _constructor_via_attribute(func: ast.AST, bindings) -> bool:
     ns.mod.socket(...), getattr(ns.mod, "socket")(...))."""
     found = _constant_getattr(func, bindings)
     if found is not None:
-        return _through_attribute_binding(_name(found[0]), bindings)
+        receiver = _name(found[0])
+        return _through_attribute_binding(receiver and f"{receiver}.{found[1]}", bindings)
     return _through_attribute_binding(_dotted_name(func), bindings)
 
 
