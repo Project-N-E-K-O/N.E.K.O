@@ -38,8 +38,20 @@ the SDK / host code makes itself (reply channel, model gateway client and so
 on). Who made a use is read from the Python stack: the innermost frame that
 is plugin code (records) or host code (exempt) decides; library frames in
 between are transparent. The walk stops at the event loop: inside an asyncio
-task only the task's own coroutine chain counts. A use with neither on the stack (a thread a library
-started) is recorded and flagged ``unattributed``, and never refused.
+task only the task's own coroutine chain counts. It also stops at a thread
+pool's work item (``concurrent.futures``): a job counts as whoever submitted
+it, not whoever happened to start the pool's worker thread.
+
+A use with neither on the stack falls back to who started the thread (or
+submitted the pool job), noted when ``threading.Thread.start`` /
+``ThreadPoolExecutor.submit`` ran (``install`` wraps both): one started by
+plugin code (directly or through a library it called, or from a thread it
+started) is flagged ``plugin_thread`` and carries the handler that was running
+then (``ctx.handler_ctx``, e.g. ``plugin_entry.<id>``) as ``handler``. Anything
+else (a thread the SDK / host started, the main thread's event loop, a thread
+started through ``_thread`` directly) is flagged ``unattributed``. Both kinds
+are recorded and never refused (they count as background uses outside any
+handler).
 
 Like the rest of the permission checks this only constrains honest plugins:
 ctypes or a C extension can do all of the above without an audit event.
@@ -74,7 +86,8 @@ REFUSES_SYSTEM_USES = False
 # Known gap to close before switching it on: a use with no plugin frame on the
 # stack is never refused (it may be the SDK's own work on a library thread),
 # so ``asyncio.to_thread(open, path)`` / ``run_in_executor(None, open, path)``
-# is recorded (flagged ``unattributed``) but would not be refused.
+# is recorded (flagged ``plugin_thread`` when plugin code submitted it) but
+# would not be refused.
 
 SYSTEM_AUDIT = "SYSTEM_AUDIT"  # message type on the plugin's message uplink
 
@@ -92,6 +105,12 @@ DEDUP_SECONDS = 60.0
 _DEDUP_LIMIT = 4096
 _LOOKUP_SECONDS = 10.0
 _MAX_FRAMES = 128
+# Attribute set on a started thread / a submitted pool job: (kind, handler).
+_ORIGIN_ATTR = "_neko_audit_origin"
+_HANDLER_MAX_CHARS = 128
+_POOL_MODULE = "concurrent.futures.thread"
+# A pool worker's own frames: below them is the job's boundary.
+_POOL_FRAMES = frozenset({"run", "_worker"})
 TARGET_MAX_CHARS = 200
 _PATH_DIR_DEPTH = 3
 
@@ -455,24 +474,33 @@ class SystemAuditor:
     def _handle(self, event: str, args: tuple, ident: int) -> SystemPermissionDeniedError | None:
         if event in _LOOKUP_EVENTS:
             # A host lookup must not lend its name to a plugin's connect.
-            if self._attribution() != _HOST:
+            if self._attribution()[0] != _HOST:
                 self._remember_lookup(event, args, ident)
             return None
         uses = self._uses(event, args, ident)
         if not uses:
             return None
-        attribution = self._attribution()
+        attribution, origin = self._attribution()
         if attribution == _HOST:
             return None
+        handler = None
+        if attribution is None:
+            if origin is not None and origin[0] == _PLUGIN:
+                extra, handler = ("plugin_thread",), origin[1]
+            else:
+                extra = ("unattributed",)
+        else:
+            extra = ()
+        # Only a use made by plugin code is refused: with no plugin frame on
+        # the stack it may be the SDK's own work on a library thread, and a
+        # use on a thread the plugin started is a background use.
+        refusable = attribution == _PLUGIN
         refusal = None
         for permission, target, flags in uses:
             would_deny, reason = self._judge(permission)
-            if attribution is None:
-                flags = (*flags, "unattributed")
-            self._record(permission, event, target, would_deny, reason, flags)
-            # Only a use made by plugin code is refused: with no plugin frame
-            # on the stack it may be the SDK's own work on a library thread.
-            if REFUSES_SYSTEM_USES and would_deny and attribution == _PLUGIN and refusal is None:
+            self._record(permission, event, target, would_deny, reason, (*flags, *extra),
+                         handler=handler, refusable=refusable)
+            if REFUSES_SYSTEM_USES and would_deny and refusable and refusal is None:
                 refusal = SystemPermissionDeniedError(permission=permission, reason=reason)
         return refusal
 
@@ -731,26 +759,74 @@ class SystemAuditor:
             self._frame_kinds[filename] = kind
         return kind
 
-    def _attribution(self) -> int | None:
-        """``_PLUGIN``, ``_HOST``, or None when neither is on the stack."""
+    def _attribution(self) -> tuple[int | None, tuple[int | None, str | None] | None]:
+        """``(kind, origin)``: kind is ``_PLUGIN``, ``_HOST``, or None when
+        neither is on the stack; then origin is who started this thread or
+        submitted this pool job (``(kind, handler)``, see ``note_origin``),
+        None when that is not known."""
         frame = sys._getframe(1)
         own = globals()
         while frame is not None and frame.f_globals is own:
             frame = frame.f_back  # this module's own frames
         for _ in range(_MAX_FRAMES):
             if frame is None:
-                break
-            if frame.f_code.co_name == "_run" and frame.f_globals.get("__name__") == "asyncio.events":
+                # The bottom of this thread's stack: who started the thread.
+                return None, self._thread_origin()
+            code = frame.f_code
+            module = frame.f_globals.get("__name__")
+            if code.co_name == "_run" and module == "asyncio.events":
                 # The event loop running a task or callback: whatever lies
                 # below is whoever started the loop (the host runner), not
                 # who made this use. A task with no plugin or host frame of
-                # its own (one a library created) is unattributed.
-                return None
+                # its own (one a library created) counts as the loop's thread.
+                return None, self._thread_origin()
+            if module == _POOL_MODULE and code.co_name in _POOL_FRAMES:
+                # A pool job: whoever submitted it, never the worker thread
+                # (started by an earlier submitter, maybe someone else).
+                item = frame.f_locals.get("self") if code.co_name == "run" else None
+                return None, getattr(item, _ORIGIN_ATTR, None)
             kind = self._frame_kind(frame)
             if kind != _OTHER:
-                return kind
+                return kind, None
             frame = frame.f_back
-        return None
+        return None, None  # too deep to tell
+
+    @staticmethod
+    def _thread_origin() -> tuple[int | None, str | None] | None:
+        # threading._active is a plain dict: a lock-free read, as the hook needs.
+        thread = threading._active.get(threading.get_ident())
+        return getattr(thread, _ORIGIN_ATTR, None)
+
+    @staticmethod
+    def _handler_label() -> str | None:
+        """The handler the current context runs in (``ctx.handler_ctx``)."""
+        context = sys.modules.get("plugin.core.context")
+        variable = getattr(context, "_IN_HANDLER", None)
+        if variable is None:
+            return None
+        label = variable.get()
+        return label[:_HANDLER_MAX_CHARS] if isinstance(label, str) and label else None
+
+    def note_origin(self, target: object) -> None:
+        """Remember on ``target`` (a thread about to start, a pool job being
+        submitted) who is starting it, for uses made there with neither
+        plugin nor host code on the stack. Called by the wrappers ``install``
+        sets up; never raises."""
+        if not self._active:
+            return
+        try:
+            kind, inherited = self._attribution()
+            if kind == _PLUGIN:
+                origin = (_PLUGIN, self._handler_label())
+            elif kind == _HOST:
+                origin = (_HOST, None)
+            else:
+                # A library starting it: whoever started the current thread
+                # (or submitted the current job) started this one too.
+                origin = inherited
+            setattr(target, _ORIGIN_ATTR, origin)
+        except Exception:
+            self.errors += 1
 
     # -- judging and queueing ----------------------------------------------
 
@@ -769,8 +845,9 @@ class SystemAuditor:
         return True, "denied" if state.status == "denied" else "undecided"
 
     def _record(self, permission: str, event: str, target: str, would_deny: bool,
-                reason: str | None, flags: tuple[str, ...]) -> None:
-        key = (permission, target, would_deny, flags)
+                reason: str | None, flags: tuple[str, ...], *, handler: str | None = None,
+                refusable: bool = True) -> None:
+        key = (permission, target, would_deny, flags, handler)
         now = time.monotonic()
         if now - self._dedup.get(key, -DEDUP_SECONDS) < DEDUP_SECONDS:
             return
@@ -786,8 +863,9 @@ class SystemAuditor:
             "target": target,
             "verdict": "would_deny" if would_deny else "allow",
             "reason": reason,
-            "enforcing": REFUSES_SYSTEM_USES and would_deny and "unattributed" not in flags,
+            "enforcing": REFUSES_SYSTEM_USES and would_deny and refusable,
             "flags": list(flags),
+            "handler": handler,
         })
         # No wake-up from here: Event.set takes a lock, and the hook takes none.
         # The sender polls the queue length.
@@ -877,6 +955,53 @@ _HANDLED_EVENTS = frozenset({
 _installed: SystemAuditor | None = None
 
 
+def _note_origin(target: object) -> None:
+    auditor = _installed
+    if auditor is not None:
+        auditor.note_origin(target)
+
+
+def wrap_thread_start(start):
+    """``threading.Thread.start`` that first notes who starts the thread."""
+
+    def wrapped(self, *args, **kwargs):
+        _note_origin(self)
+        return start(self, *args, **kwargs)
+
+    wrapped.__wrapped__ = start
+    wrapped.__name__, wrapped.__qualname__, wrapped.__doc__ = start.__name__, start.__qualname__, start.__doc__
+    return wrapped
+
+
+def wrap_work_item_init(init):
+    """``concurrent.futures.thread._WorkItem.__init__`` that notes who submits the job."""
+
+    def wrapped(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        _note_origin(self)
+
+    wrapped.__wrapped__ = init
+    wrapped.__name__, wrapped.__qualname__ = init.__name__, init.__qualname__
+    return wrapped
+
+
+def _wrap_thread_creation() -> None:
+    """Note who starts each thread and submits each pool job (see the module
+    doc). Plain attribute wrappers: a process that replaced them already
+    keeps its own."""
+    if not getattr(threading.Thread.start, "_neko_audit", False):
+        threading.Thread.start = wrap_thread_start(threading.Thread.start)
+        threading.Thread.start._neko_audit = True
+    try:
+        from concurrent.futures import thread as pool
+    except Exception:
+        return
+    item = getattr(pool, "_WorkItem", None)
+    if item is not None and not getattr(item.__init__, "_neko_audit", False):
+        item.__init__ = wrap_work_item_init(item.__init__)
+        item.__init__._neko_audit = True
+
+
 def install(auditor: SystemAuditor) -> SystemAuditor:
     """Install ``auditor``'s hook for the rest of this process (once).
 
@@ -887,6 +1012,10 @@ def install(auditor: SystemAuditor) -> SystemAuditor:
     first = _installed is None
     _installed = auditor
     if first:
+        try:
+            _wrap_thread_creation()
+        except Exception:
+            auditor.errors += 1  # no thread attribution: uses there stay unattributed
         sys.addaudithook(_dispatch)
     auditor.start()
     return auditor

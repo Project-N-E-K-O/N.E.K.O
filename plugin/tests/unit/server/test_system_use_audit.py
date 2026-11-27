@@ -208,3 +208,19 @@ async def test_communication_shutdown_flushes_pending_loss(monkeypatch):
     monkeypatch.setattr(manager, "_shutdown_local", nothing)
     await manager.shutdown(timeout=0.1)
     assert flushed == ["demo"]
+
+
+def test_a_plugin_thread_use_keeps_its_handler(written):
+    capability_gate.record_system_uses("demo", {"items": [
+        _item(flags=["plugin_thread"], handler="plugin_entry.sync"),
+        _item(target="b.invalid:443", flags=["plugin_thread"], handler="bad handler\n"),
+        # A handler is only kept with the flag.
+        _item(target="c.invalid:443", flags=[], handler="plugin_entry.sync"),
+        # Both claims: the weaker one wins.
+        _item(target="d.invalid:443", flags=["plugin_thread", "unattributed"], handler="plugin_entry.sync"),
+    ]})
+    first, second, third, fourth = written
+    assert first["flags"] == ["plugin_thread", "plugin_reported"] and first["handler"] == "plugin_entry.sync"
+    assert second["handler"] == "<invalid>"
+    assert "handler" not in third and third["flags"] == ["plugin_reported"]
+    assert fourth["flags"] == ["unattributed", "plugin_reported"] and "handler" not in fourth

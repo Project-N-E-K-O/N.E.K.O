@@ -285,7 +285,11 @@ SYSTEM_USE_PERMISSIONS = frozenset({
 # message push and the system.* uses a plugin process reports. Uses of any
 # other permission are not recorded, so "never used" cannot be told for it.
 USAGE_AUDITED_PERMISSIONS = frozenset(CAPABILITY_BY_OPERATION.values()) | {MESSAGES_PUSH} | SYSTEM_USE_PERMISSIONS
-_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
+# ``plugin_thread``: made on a thread (or pool job) plugin code started, with
+# no plugin code on the stack; like ``unattributed`` it is a background use
+# and never refused, but it is the plugin's (``handler`` says in which handler
+# the thread was started, when one was running).
+_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback", "plugin_thread"})
 _SYSTEM_USE_BATCH_LIMIT = 100
 _SYSTEM_USE_PER_MINUTE = 600
 _SYSTEM_USE_WINDOW = 60.0
@@ -312,7 +316,11 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
     reason = item.get("reason")
     flags = item.get("flags")
     flags = {flag for flag in flags if isinstance(flag, str) and flag in _SYSTEM_USE_FLAGS} if isinstance(flags, list) else set()
-    return {
+    if "unattributed" in flags:
+        flags.discard("plugin_thread")  # contradictory: keep the weaker claim
+    handler = item.get("handler")
+    handler = _identifier(handler) if "plugin_thread" in flags and isinstance(handler, str) and handler else None
+    entry = {
         "kind": "system_use", "mode": mode,
         # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).
         "enforcing": would_deny and item.get("enforcing") is True,
@@ -323,6 +331,9 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
         "reason": reason if would_deny and isinstance(reason, str) and reason in _SYSTEM_USE_REASONS else None,
         "flags": sorted(flags) + ["plugin_reported"],
     }
+    if handler is not None:
+        entry["handler"] = handler
+    return entry
 
 
 def flush_system_use_loss(plugin_id: str) -> None:

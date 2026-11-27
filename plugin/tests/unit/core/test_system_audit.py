@@ -43,6 +43,15 @@ import asyncio
 def call(hook, event, args):
     hook(event, args)
 
+def start(target, *args):
+    import threading
+    worker = threading.Thread(target=target, args=args)
+    worker.start()
+    worker.join()
+
+def submit(executor, fn, *args):
+    return executor.submit(fn, *args).result()
+
 async def use_in_inner_task(hook, event, args):
     async def inner():
         hook(event, args)
@@ -54,6 +63,16 @@ import asyncio
 
 def call(hook, event, args):
     hook(event, args)
+
+def start(target, *args):
+    # A library starting its own thread.
+    import threading
+    worker = threading.Thread(target=target, args=args)
+    worker.start()
+    worker.join()
+
+def run_loop_with_inner_task(hook, event, args):
+    asyncio.run(connect_via_inner_task(hook, event, args))
 
 async def _inner(hook, event, args):
     hook(event, args)
@@ -68,6 +87,15 @@ async def connect_via_inner_task(hook, event, args):
 HOST_CODE = '''
 def call(hook, event, args):
     hook(event, args)
+
+def start(target, *args):
+    import threading
+    worker = threading.Thread(target=target, args=args)
+    worker.start()
+    worker.join()
+
+def submit(executor, fn, *args):
+    return executor.submit(fn, *args).result()
 
 def dispatch(handler, *args):
     return handler(*args)
@@ -657,6 +685,141 @@ def test_refusal_switch_on_raises_for_unauthorised_uses_only(tmp_path, monkeypat
     env.from_host("open", (str(env.outside / "b.txt"), "w", os.O_WRONLY))
 
 
+# ---------------------------------------------------------- thread origins
+
+
+@pytest.fixture
+def threads(env, monkeypatch):
+    """What ``install`` sets up, undone after the test."""
+    from concurrent.futures import thread as pool
+
+    monkeypatch.setattr(threading.Thread, "start", system_audit.wrap_thread_start(threading.Thread.start))
+    monkeypatch.setattr(pool._WorkItem, "__init__", system_audit.wrap_work_item_init(pool._WorkItem.__init__))
+    monkeypatch.setattr(system_audit, "_installed", env.auditor)
+    return env
+
+
+def _handler(label):
+    from plugin.core import context
+
+    return context._IN_HANDLER.set(label)
+
+
+def test_a_thread_plugin_code_started_is_the_plugins(threads):
+    env = threads
+    target = str(env.outside / "a.txt")
+    token = _handler("plugin_entry.sync")
+    try:
+        # The thread runs library code only: nothing of the plugin's on its stack.
+        env.plugin.start(env.other.call, env.auditor.hook, "open", (target, "r", 0))
+    finally:
+        from plugin.core import context
+
+        context._IN_HANDLER.reset(token)
+    (record,) = env.records()
+    assert record["flags"] == ["plugin_thread"] and record["handler"] == "plugin_entry.sync"
+    assert record["enforcing"] is False
+
+
+def test_a_thread_started_outside_any_handler_has_no_handler(threads):
+    env = threads
+    env.plugin.start(env.other.call, env.auditor.hook, "open", (str(env.outside / "a.txt"), "r", 0))
+    (record,) = env.records()
+    assert record["flags"] == ["plugin_thread"] and record["handler"] is None
+
+
+def test_a_thread_a_library_starts_for_the_plugin_is_the_plugins(threads):
+    env = threads
+    # Plugin -> library -> thread; and a thread started from that thread by a library.
+    env.plugin.call(lambda *_: env.other.start(env.other.call, env.auditor.hook, "open",
+                                               (str(env.outside / "a.txt"), "r", 0)), None, None)
+    env.plugin.start(env.other.start, env.other.call, env.auditor.hook, "open", (str(env.outside / "b.md"), "r", 0))
+    assert [record["flags"] for record in env.records()] == [["plugin_thread"], ["plugin_thread"]]
+
+
+def test_host_threads_are_not_the_plugins(threads):
+    env = threads
+    env.host.start(env.other.call, env.auditor.hook, "open", (str(env.outside / "a.txt"), "r", 0))
+    # A thread started with neither on the stack (e.g. by a library at import time).
+    env.other.start(env.other.call, env.auditor.hook, "open", (str(env.outside / "b.md"), "r", 0))
+    assert [record["flags"] for record in env.records()] == [["unattributed"], ["unattributed"]]
+    assert all(record["handler"] is None for record in env.records())
+
+
+def test_a_pool_job_is_whoever_submitted_it(threads):
+    from concurrent.futures import ThreadPoolExecutor
+
+    env = threads
+    hook = env.auditor.hook
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        # The plugin submits first, so its job starts the pool's only worker.
+        env.plugin.submit(executor, env.other.call, hook, "open", (str(env.outside / "a.txt"), "r", 0))
+        # The host's job then runs on that same worker thread.
+        env.host.submit(executor, env.other.call, hook, "open", (str(env.outside / "b.md"), "r", 0))
+        # Submitted with neither on the stack: not the worker's starter either.
+        executor.submit(env.other.call, hook, "open", (str(env.outside / "c.csv"), "r", 0)).result()
+    first, second, third = env.records()
+    assert first["flags"] == ["plugin_thread"]
+    assert second["flags"] == ["unattributed"] and third["flags"] == ["unattributed"]
+
+
+def test_asyncio_to_thread_from_plugin_code_is_the_plugins(threads):
+    import asyncio
+
+    env = threads
+    code = '''
+import asyncio
+async def go(fn, *args):
+    await asyncio.to_thread(fn, *args)
+'''
+    path = env.plugin_dir / "aio.py"
+    path.write_text(code, encoding="utf-8")
+    plugin_aio = _load(path, f"fake_plugin_aio_{id(env)}")
+    asyncio.run(plugin_aio.go(env.other.call, env.auditor.hook, "open", (str(env.outside / "a.txt"), "r", 0)))
+    (record,) = env.records()
+    assert record["flags"] == ["plugin_thread"]
+
+
+def test_the_event_loop_boundary_still_holds(threads):
+    env = threads
+    # On this (main / test) thread, nobody noted as its starter: a library
+    # task stays unattributed, as before.
+    env.host.run(env.other.connect_via_inner_task(env.auditor.hook, "socket.connect", (None, ("192.0.2.1", 443))))
+    # A loop the plugin runs on a thread it started: the library task there
+    # is on the plugin's thread.
+    env.plugin.start(env.other.run_loop_with_inner_task, env.auditor.hook, "socket.connect",
+                     (None, ("192.0.2.2", 443)))
+    first, second = env.records()
+    assert first["flags"] == ["unattributed"] and second["flags"] == ["plugin_thread"]
+
+
+def test_plugin_thread_uses_are_never_refused(threads, monkeypatch):
+    env = threads
+    monkeypatch.setattr(system_audit, "REFUSES_SYSTEM_USES", True)
+    raised = []
+
+    def use():
+        try:
+            env.other.call(env.auditor.hook, "open", (str(env.outside / "a"), "w", os.O_WRONLY))
+        except Exception as exc:
+            raised.append(exc)
+
+    env.plugin.start(use)
+    assert raised == []
+    (record,) = env.records()
+    assert record["verdict"] == "would_deny" and record["enforcing"] is False
+    assert record["flags"] == ["plugin_thread"]
+
+
+def test_a_deactivated_auditor_notes_no_origin(threads):
+    env = threads
+    env.auditor.deactivate()
+    worker = threading.Thread(target=lambda: None)
+    env.plugin.call(lambda *_: worker.start(), None, None)
+    worker.join()
+    assert not hasattr(worker, "_neko_audit_origin")
+
+
 # ---------------------------------------------------------------- hook rules
 
 
@@ -875,6 +1038,16 @@ if mode == "observe":
     os.makedirs(os.path.join(data_dir, "tree", "a", "b"))
     open(os.path.join(data_dir, "tree", "a", "b", "f.txt"), "w").close()
     shutil.rmtree(os.path.join(data_dir, "tree"))
+elif mode == "threads":
+    from concurrent.futures import ThreadPoolExecutor
+    # Library-only targets (the builtin open): no plugin frame on those stacks.
+    worker = threading.Thread(target=open, args=(os.path.join(outside, "t.thr"), "w"))
+    worker.start(); worker.join()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(open, os.path.join(outside, "p.pool"), "w").result()
+    # A thread host code starts.
+    exec(compile("import threading\nt = threading.Thread(target=open, args=(p, 'w'))\nt.start(); t.join()",
+                 "<string>", "exec"), {{"__name__": "plugin.fake_host", "p": os.path.join(outside, "h.host")}})
 elif mode == "refuse":
     try:
         open(os.path.join(outside, "x.txt"), "w")
@@ -941,6 +1114,13 @@ def test_real_hook_records_each_kind(tmp_path):
         for r in result["records"]
     )
     assert all(r["verdict"] == "would_deny" and r["enforcing"] is False for r in result["records"])
+
+
+def test_real_hook_attributes_threads_the_plugin_starts(tmp_path):
+    result = _run_driver(tmp_path, "threads")
+    assert result["errors"] == 0
+    flags = {r["target"].rsplit(".", 1)[-1]: r["flags"] for r in result["records"] if r["event"] == "open"}
+    assert flags == {"thr": ["plugin_thread"], "pool": ["plugin_thread"], "host": ["unattributed"]}
 
 
 def test_real_hook_refuses_when_switched_on(tmp_path):
