@@ -768,9 +768,14 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
+                const pendingRevision = Number(pendingSwitch?.switchRevision) || 0;
+                const committedRevision = Number(switchRevision) || 0;
+                const pendingHasNewerRevision = pendingRevision > 0
+                    && (!committedRevision || pendingRevision > committedRevision);
                 const pendingAlreadySatisfied = !!(
                     switchAlreadyCompleted
                     && pendingSwitch?.newCatgirl === newCatgirl
+                    && !pendingHasNewerRevision
                 );
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     Promise.resolve().then(() => handleCatgirlSwitch(
@@ -2371,9 +2376,14 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
+                const pendingRevision = Number(pendingSwitch?.switchRevision) || 0;
+                const committedRevision = Number(switchRevision) || 0;
+                const pendingHasNewerRevision = pendingRevision > 0
+                    && (!committedRevision || pendingRevision > committedRevision);
                 const pendingAlreadySatisfied = !!(
                     switchHasCommitted
                     && pendingSwitch?.newCatgirl === newCatgirl
+                    && !pendingHasNewerRevision
                 );
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     // A failed attempt may roll the name back to the pending target after

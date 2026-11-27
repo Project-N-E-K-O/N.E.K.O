@@ -357,6 +357,40 @@ test('legacy receipt cannot replace a newer versioned pending target', async () 
         'the queued A/12 intent must actually replay and commit A');
 });
 
+test('newer same-name revision queued after commit still replays', async () => {
+    const h = harness(); const calls = avatarCalls(h); const unlock = deferred(), unlockEntered = deferred();
+    h.context.fetch = async () => ({ ok: true, json: async () => ({ ['猫娘']: {
+        A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+        B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+    } }) });
+    h.window.unlockAchievement = async () => {
+        unlockEntered.resolve();
+        await unlock.promise;
+    };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 82 });
+    await unlockEntered.promise;
+    assert.deepEqual(calls.map(call => call[0]), ['begin', 'commit'], 'B/82 has crossed its real commit point');
+
+    assert.equal(await h.window.handleCatgirlSwitch('B', 'B', { switchRevision: 83 }), false);
+    assert.deepEqual(
+        [h.window.appState._pendingCatgirlSwitch?.newCatgirl, h.window.appState._pendingCatgirlSwitch?.switchRevision],
+        ['B', 83]
+    );
+
+    unlock.resolve();
+    assert.equal(await first, false, 'B/82 committed but its caller is superseded by queued B/83');
+    for (let turn = 0; turn < 12 && calls.filter(call => call[0] === 'commit').length < 2; turn++) {
+        await new Promise(setImmediate);
+    }
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.equal(h.window.appState._latestCatgirlSwitchRevision, 83);
+    assert.deepEqual(calls.map(call => call[0]), ['begin', 'commit', 'begin', 'commit'],
+        'B/83 must replay after B/82 commits instead of being deduped by name alone');
+});
+
 test('same revision duplicate queued during an active attempt becomes retry only if that attempt fails', async () => {
     const h = harness(); const calls = avatarCalls(h); const firstFetch = deferred();
     let fetchCount = 0;
