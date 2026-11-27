@@ -2160,3 +2160,15 @@ for(const explicit of [false,true]) test(`paused queue survives and hands off at
     }
     assert.equal(m.layeredStateIndex,3);assert.equal(m._reviewedQueued,null);
 });
+
+
+test('manual drawing while reviewed playback is paused uses the frozen body phase', async t => {
+    const {manager:m,advance,context}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();
+    const p=m._trackedPlayback;p.cache.set(1,{name:'later'});
+    advance(300);m.pauseRendering();advance(1800);
+    m.drawTrackedPlayback(context,1800);
+    assert.equal(p.lastIndex,0,'show or an explicit redraw cannot skip ahead while paused');
+    m.resumeRendering();m.drawTrackedPlayback(context,1800);
+    assert.equal(p.lastIndex,0,'resuming uses the same visible phase');
+});

@@ -2143,7 +2143,8 @@
             if (!snapshot) this.reviewedPlaybackTick(timestamp);
             const playback = this._trackedPlayback;
             const data = playback.data;
-            const elapsed = Math.max(0, timestamp - (this.layeredAnimationStart || timestamp));
+            const bodyTimestamp = this._reviewedBodyFrozenAt ?? timestamp;
+            const elapsed = Math.max(0, bodyTimestamp - (this.layeredAnimationStart || bodyTimestamp));
             const selection = snapshot ? { index: playback.lastIndex, blendIndex: null, mix: 0 }
                 : this.trackedLoopSelection(data, elapsed);
             const index = selection.index;
