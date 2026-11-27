@@ -209,3 +209,112 @@ def test_installer_recovers_interrupted_publication_before_reading_parts(tmp_pat
     target = unpack.unpack_model(entry, dest, tmp_path / "runtime")
     assert (target / "clips/idle/frames/0000.png").read_bytes() == b"body"
     assert archive.read_bytes() == original
+
+
+def interrupted_generation(tmp_path):
+    src, dest = source(tmp_path), packs(tmp_path)
+    (dest / "manifest.json").write_text(json.dumps({"version": 1, "models": []}))
+    old = pack.build(src, dest)
+    original = snapshot(dest)
+    (src / "body.png").write_bytes(b"new-generation")
+    new = pack.build(src, dest)
+    tx = dest / ".yui-chibi-publish"
+    entries = []
+    for name, data in original.items():
+        backup = tx / "old" / name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        backup.write_bytes(data)
+        entries.append({"path": name, "existed": True})
+    (tx / "journal.json").write_text(json.dumps(entries))
+    return dest, old, new
+
+
+def test_main_recovers_then_reads_and_consumes_manifest_under_one_lock(tmp_path, monkeypatch):
+    dest, old, new = interrupted_generation(tmp_path)
+    assert old["archive_sha256"] != new["archive_sha256"]
+    monkeypatch.setattr(unpack, "PACKS_ROOT", dest)
+    monkeypatch.setattr(unpack, "MANIFEST_PATH", dest / "manifest.json")
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr(unpack, "OUTPUT_ROOT", runtime)
+    original_read = unpack._read_json
+    checked = []
+    def read_locked(path):
+        if path == dest / "manifest.json":
+            with pytest.raises(OSError):
+                with publish.publication_lock(dest, "publish"):
+                    pytest.fail("manifest read outside lock")
+            assert not (dest / ".yui-chibi-publish/journal.json").exists()
+            checked.append(True)
+        return original_read(path)
+    monkeypatch.setattr(unpack, "_read_json", read_locked)
+    unpack.main()
+    assert checked
+    target = runtime / "yui-chibi"
+    assert (target / "clips/idle/frames/0000.png").read_bytes() == b"body"
+    assert (target / unpack.READY_MARKER).read_text() == old["archive_sha256"]
+
+
+def test_public_installer_refreshes_a_stale_entry_after_manifest_rollback(tmp_path):
+    dest, old, stale = interrupted_generation(tmp_path)
+    target = unpack.unpack_model(stale, dest, tmp_path / "runtime")
+    assert (target / unpack.READY_MARKER).read_text() == old["archive_sha256"]
+    assert (target / "clips/idle/frames/0000.png").read_bytes() == b"body"
+
+
+def test_recovery_cleanup_interruption_does_not_replay_deleted_backups(tmp_path, monkeypatch):
+    dest, old, _ = interrupted_generation(tmp_path)
+    original = publish.shutil.rmtree
+    def interrupted(path, *args, **kwargs):
+        path = Path(path)
+        if path.name == ".yui-chibi-publish":
+            assert not (path / "journal.json").exists()
+            original(path / "old")
+            raise OSError("interrupted cleanup")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(publish.shutil, "rmtree", interrupted)
+    with pytest.raises(OSError, match="interrupted cleanup"):
+        publish.recover_publication(dest)
+    monkeypatch.setattr(publish.shutil, "rmtree", original)
+    publish.recover_publication(dest)
+    model = json.loads((dest / "manifest.json").read_text())["models"][0]
+    assert model == old
+
+
+def test_journal_publication_failure_never_changes_published_outputs(tmp_path, monkeypatch):
+    src, dest = source(tmp_path), packs(tmp_path)
+    pack.build(src, dest)
+    before = snapshot(dest)
+    (src / "body.png").write_bytes(b"new")
+    original = publish.os.replace
+    def fail_journal(a, b):
+        if Path(b).name == "journal.json":
+            assert json.loads(Path(a).read_text())
+            raise OSError("journal publication failed")
+        return original(a, b)
+    monkeypatch.setattr(publish.os, "replace", fail_journal)
+    with pytest.raises(OSError, match="journal publication"):
+        pack.build(src, dest)
+    assert snapshot(dest) == before
+
+
+def test_partial_unpublished_journal_is_discarded_without_touching_targets(tmp_path):
+    dest = packs(tmp_path)
+    before = (dest / "manifest.json").read_bytes()
+    tx = dest / ".yui-chibi-publish"
+    tx.mkdir()
+    (tx / "journal.tmp").write_text('[{"path":')
+    publish.recover_publication(dest)
+    assert (dest / "manifest.json").read_bytes() == before
+    assert not tx.exists()
+
+
+def test_corrupt_installed_null_track_is_rebuilt_from_valid_archive(tmp_path):
+    src, dest = source(tmp_path), packs(tmp_path)
+    entry = pack.build(src, dest)
+    target = unpack.unpack_model(entry, dest, tmp_path / "runtime")
+    path = target / "metadata.actions.json"
+    metadata = json.loads(path.read_text())
+    metadata["tracked_animations"]["0"] = None
+    path.write_text(json.dumps(metadata))
+    unpack.unpack_model(entry, dest, tmp_path / "runtime")
+    assert json.loads(path.read_text())["tracked_animations"]["0"]["playback"] == "loop"

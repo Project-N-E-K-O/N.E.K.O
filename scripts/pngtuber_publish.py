@@ -64,6 +64,8 @@ def recover_publication(root: Path):
                 os.replace(temporary, target)
             elif target.exists():
                 target.unlink()
+        # Recovery is complete. A later cleanup interruption must not replay missing backups.
+        journal.unlink()
     if transaction.exists():
         shutil.rmtree(transaction)
 
@@ -87,7 +89,12 @@ def publish_files(root: Path, files: dict[str, Path], obsolete: list[str]):
                 candidate = transaction / "new" / name
                 candidate.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(files[name], candidate)
-        (transaction / "journal.json").write_text(json.dumps(entries), encoding="utf-8")
+        temporary_journal = transaction / "journal.tmp"
+        with temporary_journal.open("w", encoding="utf-8") as stream:
+            json.dump(entries, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_journal, transaction / "journal.json")
         # The manifest is inserted last by the caller. Other readers use the same lock.
         for name in files:
             target = _target(root, name)

@@ -123,11 +123,11 @@ def _validate_package(package_dir: Path) -> None:
         for values in groups.values():
             if not isinstance(values, list) or any(type(i) is not int or not 0 <= i < count for i in values) or len(set(values)) != len(values):
                 raise ValueError("invalid reviewed group")
+        for track in tracks.values():
+            _validate_reviewed_track(track)
         idle = groups.get("idle")
         if not isinstance(idle, list) or not idle or any(tracks[str(i)].get("playback") != "loop" for i in idle):
             raise ValueError("invalid reviewed idle group")
-        for track in tracks.values():
-            _validate_reviewed_track(track)
     for track in [metadata.get("tracked_animation"), *tracks.values()]:
         if track is None:
             continue
@@ -350,13 +350,11 @@ def _cleanup_backup(path: Path):
         warnings.warn(f"Installed PNGTuber retained; backup cleanup deferred: {error}", RuntimeWarning)
 
 
-def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT) -> Path:
+def _install_entry(model: dict, packs_root: Path, output_root: Path) -> Path:
     folder = model.get("folder")
     if not isinstance(folder, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", folder):
         raise ValueError("invalid built-in PNGTuber folder")
-    # The pack lock prevents observing an in-progress multi-file publication.
-    with publication_lock(packs_root, "publish"), publication_lock(output_root, folder):
-        recover_publication(packs_root)
+    with publication_lock(output_root, folder):
         if output_root.is_dir():
             for path in output_root.glob(f".{folder}.*.tmp"):
                 if re.fullmatch(r"\." + re.escape(folder) + r"\.[0-9a-f]{32}\.tmp", path.name) and not path.is_symlink() and path.is_dir() and time.time() - path.stat().st_mtime > 86400:
@@ -365,15 +363,33 @@ def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path =
         return _unpack_model(model, packs_root, output_root)
 
 
-def main() -> None:
-    manifest = _read_json(MANIFEST_PATH)
+def _manifest_models(path: Path) -> list[dict]:
+    manifest = _read_json(path)
     models = manifest.get("models")
-    if manifest.get("version") != 1 or not isinstance(models, list):
+    if manifest.get("version") != 1 or not isinstance(models, list) or any(not isinstance(m, dict) for m in models):
         raise ValueError("invalid built-in PNGTuber manifest")
-    for model in models:
-        if not isinstance(model, dict):
-            raise ValueError("invalid built-in PNGTuber manifest entry")
-        unpack_model(model)
+    return models
+
+
+def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path = OUTPUT_ROOT) -> Path:
+    with publication_lock(packs_root, "publish"):
+        recover_publication(packs_root)
+        # A caller may have read this entry before a concurrent publication or recovery.
+        manifest = packs_root / "manifest.json"
+        if manifest.is_file():
+            models = _manifest_models(manifest)
+            model = next((entry for entry in models if entry.get("folder") == model.get("folder")), None)
+            if model is None:
+                raise ValueError("model no longer listed in built-in manifest")
+        return _install_entry(model, packs_root, output_root)
+
+
+def main() -> None:
+    # Recovery, manifest read and consumption belong to one non-reentrant publication lock.
+    with publication_lock(PACKS_ROOT, "publish"):
+        recover_publication(PACKS_ROOT)
+        for model in _manifest_models(MANIFEST_PATH):
+            _install_entry(model, PACKS_ROOT, OUTPUT_ROOT)
 
 
 if __name__ == "__main__":

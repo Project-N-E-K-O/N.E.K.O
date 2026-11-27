@@ -619,6 +619,7 @@
             if (this._trackedPlayback && previousIndex !== nextIndex) {
                 this.initializeTrackedPlayback(this.layeredMetadata, this._trackedPlayback.baseUrl);
             }
+            if (options.reviewedCommit) this.seedReviewedEntry(options.reviewedEntries);
             // 显式的状态切换（情绪、快捷键、外部 API）重定义"家"，并作废旧的瞬时槽：
             // 槽里的动作此刻已被盖掉，留着它只会在结束时把用户刚选中的状态抢走。
             // 槽自己发起的切换（source 以 slot 开头）不参与这个判断。
@@ -648,7 +649,8 @@
                 this.layeredStateReturnTimer = setTimeout(() => {
                     this.layeredStateReturnTimer = null;
                     if (this.layeredSlotStack().length) this.layeredSlotHomeIndex = 0;
-                    else this.setLayeredStateIndex(0, { source: 'return', force: this.hasReviewedActions() });
+                    else if (this.hasReviewedActions()) this.finishReviewedAction();
+                    else this.setLayeredStateIndex(0, { source: 'return' });
                 }, Math.max(80, returnDelay));
             }
             return true;
@@ -920,6 +922,7 @@
                 ? options.isCurrentLoad
                 : () => true;
             if (!isCurrentLoad()) return false;
+            this.cancelReviewedRequests(true);
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -1439,6 +1442,7 @@
                 this._reviewedSessionMetadata = null;
                 this._reviewedTransition = null;
                 this._reviewedVisit = null;
+                this._reviewedVisitPermit = null;
                 this._reviewedHoldLast = false;
                 this._reviewedLast = null;
                 this._reviewedHiddenAt = null;
@@ -1474,6 +1478,13 @@
             }
             const metadata = this.layeredMetadata, data = metadata.tracked_animations?.[index];
             if (!data) return false;
+            const visitOnly = ['visit-leave', 'visit-return'].includes(this.layeredStateCatalog().find(row => row.state_index === index)?.group);
+            if (visitOnly && (!options.visitPermit || options.visitPermit !== this._reviewedVisitPermit)) return false;
+            if (options.source === 'reviewed-leisure') {
+                const inputAt = this.reviewedActivity()?.inputAt || 0;
+                options = { ...options, leisureInputAt: options.leisureInputAt ?? inputAt };
+                if (options.leisureInputAt !== inputAt || !this.reviewedLeisureEligible()) return false;
+            }
             const current = this._trackedPlayback;
             if (!options.force && index === this.layeredStateIndex && current?.data === data) return true;
             const elapsed = performance.now() - this.layeredAnimationStart;
@@ -1485,10 +1496,10 @@
             this._reviewedRequest = token;
             this._reviewedRetry = null;
             this._reviewedPreparing = true;
-            const inputAt = this.reviewedActivity()?.inputAt || 0;
+            const inputAt = options.leisureInputAt ?? (this.reviewedActivity()?.inputAt || 0);
             this.prepareReviewedEntry(index).then(entries => {
                 if (this.layeredMetadata !== metadata || this._reviewedRequest !== token || !this.hasReviewedActions()) return;
-                if (this._renderingPaused || this._reviewedHidden
+                if (this._renderingPaused || this._reviewedHidden || (visitOnly && options.visitPermit !== this._reviewedVisitPermit)
                     || (options.source === 'reviewed-leisure' && (!this.reviewedLeisureEligible() || (this.reviewedActivity()?.inputAt || 0) !== inputAt))) {
                     this._reviewedPreparing = false;
                     return;
@@ -1511,14 +1522,8 @@
                 else if (options.emotion) { this.currentEmotion = options.emotion; this.activeLayeredEmotionIndex = index; }
                 this.setLayeredStateIndex(index, {
                     source: options.source || 'reviewed', reviewedCommit: true,
-                    returnToDefaultAfterMs: options.returnToDefaultAfterMs
+                    returnToDefaultAfterMs: options.returnToDefaultAfterMs, reviewedEntries: entries
                 });
-                const playback = this._trackedPlayback;
-                for (const [i, item] of entries.entries()) {
-                    playback.cache.set(i, item.image);
-                    if (item.patch) playback.mouthPatches.set(data.frames[i].mouth_patch.image, item.patch);
-                }
-                this.restartLayeredAnimationLoop();
                 this._reviewedIdleSince = null;
                 this._reviewedPreserveIdleSince = null;
                 this._reviewedIdleCycle = 0;
@@ -1539,6 +1544,21 @@
                 console.warn('[PNGTuber] reviewed entry unavailable; retaining current pose', error);
             });
             return true;
+        }
+
+        seedReviewedEntry(entries = []) {
+            const playback = this._trackedPlayback;
+            for (const [i, item] of entries.entries()) {
+                playback.cache.set(i, item.image);
+                if (item.patch) playback.mouthPatches.set(playback.data.frames[i].mouth_patch.image, item.patch);
+            }
+        }
+
+        finishReviewedAction() {
+            const next = this._reviewedQueued;
+            if (next && this.requestReviewedState(next.index, { ...next.options, force: true })) return true;
+            // A recovered visit can invalidate a queued visit-only request. Do not strand the old action.
+            return this.requestReviewedState(0, { force: true });
         }
 
         reviewedIdleResources(index) {
@@ -1644,7 +1664,10 @@
             if (!playback) return;
             if (this._reviewedRetry) {
                 const retry = this._reviewedRetry;
-                if (!retry.exhausted && timestamp >= retry.at) this.requestReviewedState(retry.index, retry.options);
+                if (!retry.exhausted && timestamp >= retry.at) {
+                    this._reviewedRetry = null;
+                    this.requestReviewedState(retry.index, retry.options);
+                }
                 return;
             }
             const elapsed = timestamp - this.layeredAnimationStart;
@@ -1657,13 +1680,13 @@
             if (playback.data.playback === 'once' && this.reviewedActionComplete(playback, elapsed)
                 && (!this._reviewedHoldLast || this._reviewedQueued)
                 && (this._reviewedReturnAfterMs == null || elapsed >= this._reviewedReturnAfterMs)) {
-                const next = this._reviewedQueued;
-                this.requestReviewedState(next?.index ?? 0, { ...next?.options, force: true }); return;
+                this.finishReviewedAction(); return;
             }
             const idle = group === 'idle';
+            if (idle) this._reviewedIdleSince ??= timestamp;
             if (idle && activity?.inputAt && activity.inputAt !== this._reviewedInputAt) {
                 this._reviewedInputAt = activity.inputAt;
-                this._reviewedIdleSince = timestamp - Math.max(0, Date.now() - activity.inputAt);
+                this._reviewedIdleSince = Math.max(this._reviewedIdleSince, timestamp - Math.max(0, Date.now() - activity.inputAt));
             }
             const eligible = idle && this.reviewedLeisureEligible(activity);
             if (!eligible) this._reviewedIdleSince = null;
@@ -1699,18 +1722,22 @@
         handleReviewedVisit(msg) {
             if (!this.hasReviewedActions() || !msg?.visit_id || msg.side !== 'guest') return false;
             if (msg.recovery) {
-                if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) this._reviewedVisit = null;
+                if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) {
+                    this._reviewedVisit = null; this._reviewedVisitPermit = null;
+                }
                 return false;
             }
             if (msg.action === 'departed' && !this._reviewedVisit) {
                 this._reviewedVisit = msg.visit_id;
                 const index = this.reviewedPick('visit-leave');
-                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit' });
+                this._reviewedVisitPermit = {};
+                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit', visitPermit: this._reviewedVisitPermit });
             }
             if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) {
                 this._reviewedVisit = null;
                 const index = this.reviewedPick('visit-return');
-                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit' });
+                this._reviewedVisitPermit = {};
+                return index !== null && this.requestReviewedState(index, { source: 'reviewed-visit', visitPermit: this._reviewedVisitPermit });
             }
             return false;
         }

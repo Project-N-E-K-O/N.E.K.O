@@ -14,7 +14,7 @@ function fixture() {
     }
     const window = { location: { pathname: '/' }, lanlan_config: {model_type: 'pngtuber'}, dispatchEvent: () => {} };
     vm.runInNewContext(source, { window, document: { getElementById: () => null, body: { classList: { contains: () => false } } },
-        console, Image, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
+        console, Image, Date: class extends Date { static now() { return 1_000_000 + clock; } }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
         requestAnimationFrame: fn => { callbacks.set(++next, fn); return next; },
         cancelAnimationFrame: id => callbacks.delete(id), setTimeout, clearTimeout });
     const manager = new window.PNGTuberManager();
@@ -29,7 +29,7 @@ function fixture() {
     manager.stopTalkingHopAnimation = () => {};
     manager.syncLayeredSpeechSlot = () => {};
     manager.setState = () => {};
-    return { window, manager, metadata, context, callbacks, images, advance: value => { clock = value; } };
+    return { window, manager, metadata, context, callbacks, images, wallNow: () => 1_000_000 + clock, advance: value => { clock = value; } };
 }
 
 test('rejects a discontinuous frame clock before starting playback', () => {
@@ -607,7 +607,7 @@ function reviewedFixture() {
     m.initializeTrackedPlayback(m.layeredMetadata,'/meta.json');m.layeredAnimationStart=100;
     m.prepareReviewedEntry=async()=>[{image:{name:'prepared'}}];
     m.reviewedChooseIdle=()=>0; // deterministic default; entry-selection tests choose the other variant explicitly.
-    m.setLayeredStateIndex=(index,options)=>{assert.equal(options.reviewedCommit,true);m.layeredStateIndex=index;m.initializeTrackedPlayback(m.layeredMetadata,'/meta.json');};
+    m.setLayeredStateIndex=(index,options)=>{assert.equal(options.reviewedCommit,true);m.layeredStateIndex=index;m.initializeTrackedPlayback(m.layeredMetadata,'/meta.json');m.seedReviewedEntry(options.reviewedEntries);};
     return f;
 }
 const flushReviewed=()=>new Promise(resolve=>setImmediate(resolve));
@@ -1090,7 +1090,7 @@ function visitBridgeFixture(throws = false) {
     const bridge = sandbox.NekoVisitParentBridge.createParentBridge({ window, document });
     const frame = { contentWindow: { postMessage() {} }, style: {}, remove() {} };
     Object.assign(bridge._state, { visitId: 'a', side: 'guest', phase: 'active', frame });
-    return { bridge, frame, messages };
+    return { bridge, frame, messages, window };
 }
 
 test('real parent normal-close fallback notifies once and completes bridge teardown', () => {
@@ -1168,8 +1168,8 @@ test('a transient frame error can recover without resetting the action clock', a
 });
 
 test('actual input restarts the leisure countdown rather than adding a second quiet window', async () => {
-    const { manager: m, window, advance } = realReviewedFixture();
-    const activity = { proactiveEnabled: false, owner: true, busy: false, inputAt: Date.now() };
+    const { manager: m, window, advance, wallNow } = realReviewedFixture();
+    const activity = { proactiveEnabled: false, owner: true, busy: false, inputAt: wallNow() };
     window.getReviewedPNGTuberActivity = () => activity;
     advance(100);
     m.reviewedPlaybackTick(100);
@@ -1214,5 +1214,164 @@ test('missing-analyser fallback resets a closed viseme without disturbing an act
     m.startSpeakingMouthAnimation();
     assert.equal(m._trackedViseme, 'i');
     m.stopSpeakingMouthAnimation();
+    m.clearLayeredTimers();
+});
+
+
+test('explicit return timer hands off to an accepted queued action', async () => {
+    const { manager: m } = realReviewedFixture();
+    m.requestReviewedState(2, { returnToDefaultAfterMs: 80 });
+    await flushReviewed();
+    m.requestReviewedState(3);
+    await new Promise(resolve => setTimeout(resolve, 110));
+    assert.equal(m.layeredStateIndex, 3);
+    m.clearLayeredTimers();
+});
+
+test('real commit draws and dispatches only after decoded body and plate are installed', async () => {
+    const { manager: m, window } = realReviewedFixture();
+    let draws = 0, events = 0;
+    m.layeredMetadata.tracked_animations[2].frames[0].mouth_patch = { image: 'plate.png' };
+    m.prepareReviewedEntry = async () => [{ image: { name: 'target' }, patch: { name: 'plate' } }];
+    m.drawLayeredState = () => {
+        draws++;
+        assert.equal(m._trackedPlayback.cache.get(0).name, 'target');
+        assert.equal(m._trackedPlayback.mouthPatches.get('plate.png').name, 'plate');
+    };
+    window.dispatchEvent = () => { events++; assert.equal(m._trackedPlayback.cache.get(0).name, 'target'); };
+    m.requestReviewedState(2);
+    await flushReviewed();
+    assert.equal(draws, 1);
+    assert.equal(events, 1);
+    m.clearLayeredTimers();
+});
+
+test('switching to a plain image adapter releases the old reviewed session', async () => {
+    const { manager: m } = realReviewedFixture();
+    m._reviewedEntries = new Map([[2, Promise.resolve([{ image: {} }])]]);
+    m._reviewedTransition = { snapshot: {} };
+    m._reviewedVisit = 'a';
+    assert.equal(await m.setupLayeredAdapter({ config: { adapter: 'image' } }), false);
+    assert.equal(m._reviewedEntries.size, 0);
+    assert.equal(m._reviewedTransition, null);
+    assert.equal(m._reviewedVisit, null);
+    assert.equal(m._trackedPlayback, null);
+});
+
+test('a stale adapter setup cannot cancel the newer reviewed session', async () => {
+    const { manager: m } = realReviewedFixture();
+    const entries = m._reviewedEntries = new Map([[2, Promise.resolve([])]]);
+    const token = m._reviewedRequest;
+    assert.equal(await m.setupLayeredAdapter({ isCurrentLoad: () => false }), false);
+    assert.equal(m._reviewedEntries, entries);
+    assert.equal(m._reviewedRequest, token);
+});
+
+test('ordinary requests cannot select visit-only actions or forge a source string', async () => {
+    const { manager: m } = realReviewedFixture();
+    m.layeredMetadata.state_catalog[4].group = 'visit-leave';
+    m.layeredMetadata.state_catalog[6].group = 'visit-return';
+    for (const index of [4, 6]) {
+        assert.equal(m.requestReviewedState(index, { source: 'api' }), false);
+        assert.equal(m.requestReviewedState(index, { source: 'reviewed-visit' }), false);
+    }
+    assert.equal(m.handleReviewedVisit({ action: 'departed', visit_id: 'a', side: 'guest' }), true);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    m._trackedPlayback.lastIndex = 1;
+    m.layeredAnimationStart = -2500;
+    m.handleReviewedVisit({ action: 'ended', visit_id: 'a', side: 'guest' });
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 6);
+    m.clearLayeredTimers();
+});
+
+test('new typing during leisure retry backoff cancels the original request', async () => {
+    const { manager: m, window, advance, wallNow } = realReviewedFixture();
+    const activity = { proactiveEnabled: false, owner: true, busy: false, inputAt: 0 };
+    window.getReviewedPNGTuberActivity = () => activity;
+    let attempts = 0;
+    m.prepareReviewedEntry = async () => { attempts++; throw Error('temporary'); };
+    m.requestReviewedState(5, { source: 'reviewed-leisure' });
+    await flushReviewed();
+    activity.inputAt = wallNow();
+    advance(500);
+    m.reviewedPlaybackTick(500);
+    await flushReviewed();
+    assert.equal(attempts, 1);
+    assert.equal(m.layeredStateIndex, 0);
+    assert.equal(m._reviewedRetry, null);
+});
+
+test('input during a previous action never backdates the next idle countdown', async () => {
+    const { manager: m, window, advance, wallNow } = realReviewedFixture();
+    const activity = { proactiveEnabled: false, owner: true, busy: false, inputAt: wallNow() };
+    window.getReviewedPNGTuberActivity = () => activity;
+    advance(10100); // Enter idle ten seconds after the input.
+    m._reviewedIdleSince = null;
+    m.reviewedPlaybackTick(10100);
+    advance(30100);
+    m.reviewedPlaybackTick(30100);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+    advance(40101);
+    m.reviewedPlaybackTick(40101);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 5);
+    m.clearLayeredTimers();
+});
+
+test('abnormal guest close followed by an ended recovery snapshot clears the real model marker only', async () => {
+    const { bridge, frame, messages, window } = visitBridgeFixture();
+    const { manager: m } = realReviewedFixture();
+    let actions = 0;
+    m._reviewedVisit = 'a';
+    m.requestReviewedState = () => { actions++; return true; };
+    window.pngtuberManager.handleReviewedVisit = msg => { messages.push(msg); return m.handleReviewedVisit(msg); };
+    bridge._onFrameMessage({ source: frame.contentWindow, origin: 'http://localhost', data: { t: 'closed', code: 1006 } });
+    assert.equal(bridge._state.side, null);
+    assert.equal(bridge._state.closedSide, 'guest');
+    window.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'token' }) };
+    window.fetch = async () => ({ ok: true, json: async () => ({ active: false }) });
+    assert.equal(await bridge.recoverAfterReload('YUI', 10000), true);
+    assert.equal(m._reviewedVisit, null);
+    assert.equal(actions, 0);
+    assert.equal(messages[0].recovery, true);
+    assert.equal(bridge._state.closedSide, null);
+    assert.equal(m.handleReviewedVisit({ action: 'departed', visit_id: 'b', side: 'guest' }), true);
+});
+
+test('an ended event without side after abnormal close still cleans a guest visit', () => {
+    const { bridge, frame, messages } = visitBridgeFixture();
+    bridge._onFrameMessage({ source: frame.contentWindow, origin: 'http://localhost', data: { t: 'closed', code: 1006 } });
+    bridge.onStateChange({ type: 'visit_state_change', action: 'ended', visit_id: 'a' });
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].side, 'guest');
+    assert.equal(messages[0].visit_id, 'a');
+});
+
+test('unknown-visit transport close clears only the matching guest session without a return animation', () => {
+    const { bridge, frame, messages } = visitBridgeFixture();
+    bridge._onFrameMessage({ source: frame.contentWindow, origin: 'http://localhost', data: { t: 'closed', code: 4404 } });
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].action, 'ended');
+    assert.equal(messages[0].recovery, true);
+});
+
+
+test('recovery invalidating a queued visit action still allows the current action to finish', async () => {
+    const { manager: m, advance } = realReviewedFixture();
+    m.layeredMetadata.state_catalog[4].group = 'visit-leave';
+    m.requestReviewedState(2);
+    await flushReviewed();
+    m.handleReviewedVisit({ action: 'departed', visit_id: 'a', side: 'guest' });
+    assert.equal(m._reviewedQueued.index, 4);
+    m.handleReviewedVisit({ action: 'ended', visit_id: 'a', side: 'guest', recovery: true });
+    m._trackedPlayback.lastIndex = 1;
+    advance(2500);
+    m.reviewedPlaybackTick(2500);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
+    assert.equal(m._reviewedVisit, null);
     m.clearLayeredTimers();
 });
