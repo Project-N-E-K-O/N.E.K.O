@@ -481,16 +481,18 @@ class ToolCallingMixin:
             return {"output": _loc(ENABLE_COOLDOWN, lang).format(minutes=minutes), "is_error": True}
         if outcome == nekopower_enable.WAITING:
             return {"output": _loc(ENABLE_WAITING, lang), "is_error": True}
+        sent = False
         try:
             await websocket.send_json(nekopower_enable.card_frame(self.lanlan_name))
-        except BaseException as e:
-            # Taken down whatever stopped the sending, a cancelled tool call too (the user
-            # speaking over her): a card left up with no expiry would block her for good.
-            nekopower_enable.withdraw(self.lanlan_name, question_id)
-            if not isinstance(e, Exception):
-                raise
+            sent = True
+        except Exception as e:
             logger.warning("[%s] enable_nekopower: card not sent: %s", self.lanlan_name, type(e).__name__)
             return {"output": _loc(ENABLE_UNAVAILABLE, lang), "is_error": True}
+        finally:
+            if not sent:
+                # Taken down whatever stopped the sending, a cancelled tool call too (the user
+                # speaking over her): a card left up with no expiry would block her for good.
+                nekopower_enable.withdraw(self.lanlan_name, question_id)
         self._fire_task(self._expire_enable_nekopower_card(question_id))
         return _loc(ENABLE_ASKED, lang)
 
