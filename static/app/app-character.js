@@ -349,13 +349,15 @@
         return !!mounted && !mounted.destroyed && owner.objects.has(mounted);
     }
 
-    function hasCommittedPageModel(name, revision, { olderThan = false } = {}) {
+    function hasCommittedPageModel(name, revision, { olderThan = false, pinnedPreview = false } = {}) {
         const config = window.lanlan_config;
         const committedRevision = committedRenderer?.revision || 0;
+        const projectedZero = pinnedPreview && revision === 0;
         const revisionMatches = olderThan
             ? committedRevision > 0 && committedRevision < revision
-            : config?.switch_revision === revision && committedRevision === revision;
-        if (!revision || !revisionMatches || config?.lanlan_name !== name || committedRenderer?.name !== name
+            : committedRevision === revision && (projectedZero || config?.switch_revision === revision);
+        if ((!revision && !projectedZero) || !revisionMatches
+            || config?.lanlan_name !== name || committedRenderer?.name !== name
             || (S.isSwitchingCatgirl && S._currentSwitchAttemptId !== committedRenderer.attemptId)) return false;
         const type = configuredRenderer(config);
         const mounted = getMountedRenderer(type);
@@ -1475,8 +1477,10 @@
                     modelUrl = '/static/vrm/sister1.0.vrm';
                 }
 
+                // Preserve HTTP(S) before treating a colon as a drive marker.
+                const remoteModelUrl = /^https?:\/\//i.test(modelUrl);
                 // 处理 Windows 路径：提取文件名并转换为 Web 路径
-                if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                if (!remoteModelUrl && (modelUrl.includes('\\') || modelUrl.includes(':'))) {
                     const filename = modelUrl.split(/[\\/]/).pop();
                     if (filename && filename !== 'undefined' && filename !== 'null' && !filename.includes('undefined')) {
                         modelUrl = `/user_vrm/${filename}`;
@@ -1484,7 +1488,7 @@
                         console.error('[猫娘切换] Windows 路径提取的文件名无效，使用默认模型:', filename);
                         modelUrl = '/static/vrm/sister1.0.vrm';
                     }
-                } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                } else if (!remoteModelUrl && !modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                     // 相对路径，添加 /user_vrm/ 前缀
                     // 再次验证 modelUrl 的有效性
                     if (modelUrl !== 'undefined' && modelUrl !== 'null' && !modelUrl.includes('undefined')) {
@@ -1493,15 +1497,14 @@
                         console.error('[猫娘切换] 相对路径无效，使用默认模型:', modelUrl);
                         modelUrl = '/static/vrm/sister1.0.vrm';
                     }
-                } else {
+                } else if (!remoteModelUrl) {
                     // 确保路径格式正确（统一使用正斜杠）
                     modelUrl = modelUrl.replace(/\\/g, '/');
                 }
 
                 // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
                 if (typeof modelUrl !== 'string' ||
-                    modelUrl.includes('undefined') ||
-                    modelUrl.includes('null') ||
+                    (!remoteModelUrl && (modelUrl.includes('undefined') || modelUrl.includes('null'))) ||
                     modelUrl.trim() === '') {
                     console.error('[猫娘切换] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
                     modelUrl = '/static/vrm/sister1.0.vrm';

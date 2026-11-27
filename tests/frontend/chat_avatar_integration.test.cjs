@@ -4147,7 +4147,7 @@ for (const [route, source, alreadyLoaded, rollback] of [
         if (!alreadyLoaded) h.load('static/app/app-chat-avatar.js');
         assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl, portrait, 'show the injected photo after the matching commit, without waiting for another receipt');
         assert.equal(image.src, portrait);
-        assert.deepEqual(saved, [['neko_avatar:B',portrait]]);
+        assert.deepEqual(saved, [], 'chat handoff portraits are display-only, even after commit');
         assert.ok(!fetched.some(([path,method]) => path.startsWith('/api/model') || method === 'POST'));
     });
 }
@@ -4189,3 +4189,144 @@ for (const [scenario, keep] of [
             keep ? 'chat.avatarPreviewReady · VRM' : 'chat.avatarPreviewFailed');
     });
 }
+
+function reviewFbAttachVrm(h) {
+    const w = h.window, loaded = [];
+    w.vrmModuleLoaded = true;
+    w.VRMCore = {};
+    h.context.document.querySelector = () => null;
+    h.context.requestAnimationFrame = () => 0;
+    h.load('static/js/index.js');
+    h.load('static/vrm/vrm-manager.js');
+    h.load('static/vrm/vrm-init.js');
+    w.vrmManager = Object.assign(Object.create(w.VRMManager.prototype), {
+        currentModel: null, _activeLoadToken: 0, _pendingModelLoadCount: 0,
+        async initThreeJS() {}, pauseRendering() {}, resumeRendering() {}, cleanupUI() {},
+        async _loadModelInternal(url, _options, token) {
+            if (!this._isLoadTokenActive(token)) return null;
+            loaded.push(url);
+            return (this.currentModel = {url, vrm: {}});
+        },
+    });
+    h.load('static/app/app-character.js');
+    return loaded;
+}
+
+test('review fb projected zero still protects the accepted positive IPC portrait', async () => {
+    const h = popupHarness(), w = h.window;
+    h.context.URL = URL; h.context.URLSearchParams = URLSearchParams;
+    h.context.AbortController = AbortController;
+    w.location = {pathname: '/B', search: '', href: 'https://example.test/B'};
+    w.__NEKO_MULTI_WINDOW__ = true;
+    w.avatarPortrait = null;
+    w.requestAnimationFrame = () => 0;
+    h.dom.chatAvatarPreviewCard = {hidden: false, style: {}, classList: {add() {}, remove() {}}};
+    let revision = 84, captures = 0;
+    const photo = 'data:image/png;base64,cG9ydHJhaXQ=';
+    h.context.fetch = async u => {
+        assert.ok(String(u).startsWith('/api/config/page_config'));
+        return {ok: true, json: async () => desktopAvatarConfig('B', 'vrm', revision, '/shared.vrm')};
+    };
+    w.__nekoRequestAvatarPreview = () => { ++captures; };
+    h.load('static/js/index.js');
+    assert.equal(await w.startPageConfigLoad(), true);
+    assert.equal(w.lanlan_config.switch_revision, 84);
+    const capture = w.appChatAvatar.showPopup();
+    assert.equal(captures, 1);
+    revision = 0;
+    assert.equal(await w.reloadPageConfig(), true);
+    assert.equal(w.lanlan_config.switch_revision, 0);
+    w.__nekoPendingAvatar = {dataUrl: photo, modelType: 'vrm', displayOnly: true,
+        identity: {name: 'B', revision: 84}};
+    await w.restorePendingIpcAvatar();
+    assert.equal(h.dom.chatAvatarPreviewImage.src, photo, 'B/84 was already accepted under the B/0 projection');
+    revision = 84;
+    assert.equal(await w.reloadPageConfig(), true);
+    w.dispatchEvent(new h.context.CustomEvent('neko:avatar-preview-ipc-result', {detail: {error: true}}));
+    await capture;
+    assert.equal(h.dom.chatAvatarPreviewImage.src, photo,
+        'a late failure cannot erase the actual accepted B/84 portrait');
+});
+
+for (const selection of ['positive already queued', 'positive replaces queued zero', 'zero really commits']) {
+    test('review fb named configuration follows actual queued renderer ownership: ' + selection, {timeout: 5000}, async () => {
+        const h = setupReviewWindow('/web_chat_compact', '?lanlan_name=A'), w = h.window;
+        const enteredPage = deferred(), releasePage = deferred(), enteredC = deferred(), releaseC = deferred();
+        const a='/static/vrm/A.vrm', b='/static/vrm/B.vrm', c='/static/vrm/C.vrm';
+        let calls = 0, pageReads = 0;
+        h.context.fetch = async u => {
+            const p = new URL(String(u), 'https://example.test');
+            if (p.pathname === '/api/config/page_config') {
+                assert.equal(p.searchParams.get('lanlan_name'), 'A');
+                ++pageReads; enteredPage.resolve(); await releasePage.promise;
+                return {ok: true, json: async () => desktopAvatarConfig('A', 'vrm', 0, a)};
+            }
+            if (p.pathname === '/api/characters') {
+                if (++calls === 2) { enteredC.resolve(); await releaseC.promise; }
+                return {ok: true, json: async () => ({'猫娘': Object.fromEntries(
+                    [['A',a],['B',b],['C',c]].map(([n,url]) => [n,{...desktopAvatarConfig(n,'vrm',0,url),vrm:url}]))})};
+            }
+            return {ok: true, json: async () => ({})};
+        };
+        const loads = reviewFbAttachVrm(h);
+        assert.equal(await w.handleCatgirlSwitch('B', '', {switchRevision: 82}), true);
+        const startup = w.startPageConfigLoad();
+        await enteredPage.promise;
+        const switchingC = w.handleCatgirlSwitch('C', 'B', {switchRevision: 83});
+        await enteredC.promise;
+        if (selection === 'positive already queued') {
+            assert.equal(await w.handleCatgirlSwitch('A', 'C', {switchRevision:84}), false);
+        }
+        releasePage.resolve();
+        for (let turn=0;turn<24 && !w.__nekoPageModelConfigPending?.handoffQueued;turn++) await new Promise(setImmediate);
+        assert.ok(w.__nekoPageModelConfigPending?.handoffQueued, 'held request entered existing queued bootstrap');
+        if (selection === 'positive replaces queued zero') {
+            assert.equal(w.appState._pendingCatgirlSwitch?.switchRevision, 0);
+            await w.handleCatgirlSwitch('A', 'C', {switchRevision: 84});
+        }
+        releaseC.resolve();
+        await switchingC;
+        for (let i=0;i<24 && (w.appState.isSwitchingCatgirl || w.__nekoPageModelConfigPending);i++) {
+            await new Promise(setImmediate);
+            if ([...h.timers.values()].some(timer => timer.delay===50)) await advanceModelBootTimer(h,50);
+        }
+        if ([...h.timers.values()].some(timer => timer.delay===50)) await advanceModelBootTimer(h,50);
+        assert.equal(await startup, true, 'already-mounted authoritative A can close the named wait');
+        const positive = selection !== 'zero really commits';
+        assert.equal(w.lanlan_config.switch_revision, positive ? 84 : 0);
+        assert.equal(w.getPageSwitchRevision(), positive ? 84 : 83);
+        if (positive) assert.equal(w.appCharacter.hasCommittedPageModel('A',84),true);
+        assert.equal(w.vrmManager.currentModel.url,a);
+        assert.deepEqual(loads,[b,c,a]);
+        assert.equal(pageReads,1);
+    });
+}
+
+for (const [configured, actual] of [
+    ['https://assets.example.test/a%20b.vrm?stamp=ok:84', 'https://assets.example.test/a%20b.vrm?stamp=ok:84'],
+    ['http://assets.example.test/a.vrm', 'http://assets.example.test/a.vrm'],
+    ['D:\\models\\a b.vrm', '/user_vrm/a%20b.vrm'],
+]) test('review fb named VRM takeover preserves intended path: ' + configured, async () => {
+    const h = setupReviewWindow('/A'), w = h.window, began=deferred(), release=deferred();
+    w.__NEKO_MULTI_WINDOW__ = false;
+    const b='/static/vrm/B.vrm';
+    h.context.fetch=async u=>{
+        if(String(u).startsWith('/api/config/page_config')){
+            began.resolve();await release.promise;
+            return {ok:true,json:async()=>desktopAvatarConfig('A','vrm',0,configured)};
+        }
+        if(u==='/api/characters') return {ok:true,json:async()=>({'猫娘':{
+            A:{...desktopAvatarConfig('A','vrm',0,configured),vrm:configured},
+            B:{...desktopAvatarConfig('B','vrm',83,b),vrm:b},
+        }})};
+        return {ok:true,json:async()=>({})};
+    };
+    const loads = reviewFbAttachVrm(h);
+    const ready = w.startPageConfigLoad();
+    await began.promise;
+    assert.equal(await w.handleCatgirlSwitch('B','A',{switchRevision:83}),true);
+    release.resolve();
+    assert.equal(await ready,true);
+    assert.deepEqual(loads,[b,actual]);
+    assert.equal(w.vrmManager.currentModel.url,actual);
+});

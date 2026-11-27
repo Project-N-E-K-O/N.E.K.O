@@ -127,7 +127,14 @@ function applyReadyPendingIpcAvatar(retireUnversioned = false) {
     const target = window.appChatAvatar;
     if (typeof target?.setExternalAvatar !== 'function') return;
     delete window.__nekoPendingAvatar;
-    return target.setExternalAvatar(avatar.dataUrl, avatar.modelType, avatar);
+    const accepted = pageAvatarIdentity;
+    return target.setExternalAvatar(avatar.dataUrl, avatar.modelType, {
+        ...avatar,
+        // A named preview may project config revision zero without changing
+        // the already accepted avatar actor. Follow the same authority.
+        isCurrentIdentity: () => pageAvatarIdentity?.name === accepted.name
+            && pageAvatarIdentity.revision === accepted.revision,
+    });
 }
 
 async function restorePendingIpcAvatar(retireUnversioned = false) {
@@ -169,8 +176,12 @@ function handoffPageSnapshotToSwitch(name, revision, modelBoot = null, explicitP
             switchRevision: revision, ...((recover || replaceOlderRenderer || previewTakeover) ? { forceReload: true } : {})
         })).then(applied => {
             const pending = state?._pendingCatgirlSwitch;
+            const pendingRevision = validPageSwitchRevision(pending?.switchRevision);
+            // A same-name live successor can finish boot, but wait for its
+            // actual revision rather than treating it as the zero preview.
             const queued = applied !== true && pending?.newCatgirl === name
-                && (!revision || !pending.switchRevision || pending.switchRevision === revision);
+                && (pendingRevision === revision || (previewTakeover && pendingRevision > revision))
+                ? { name, revision: pendingRevision } : null;
             return { applied: applied === true, queued };
         });
     }
@@ -179,7 +190,8 @@ function handoffPageSnapshotToSwitch(name, revision, modelBoot = null, explicitP
 
 function publishPinnedPreviewRevision(name, revision) {
     const config = window.lanlan_config;
-    if (revision === 0 && config?.lanlan_name === name && explicitPageCharacterName() === name) {
+    if (revision === 0 && config?.lanlan_name === name && explicitPageCharacterName() === name
+        && window.appCharacter?.hasCommittedPageModel?.(name, 0, { pinnedPreview: true })) {
         rememberPageSwitchRevision(config.switch_revision);
         config.switch_revision = revision;
     }
@@ -187,13 +199,17 @@ function publishPinnedPreviewRevision(name, revision) {
 
 function queuedPageSwitchMatches(name, revision) {
     const pending = window.appState?._pendingCatgirlSwitch;
-    return pending?.newCatgirl === name
-        && (!revision || !pending.switchRevision || pending.switchRevision === revision);
+    return pending?.newCatgirl === name && validPageSwitchRevision(pending.switchRevision) === revision;
 }
 
 function pageSwitchIntentApplied(name, revision) {
+    if (revision === 0) {
+        const currentRevision = validPageSwitchRevision(window.lanlan_config?.switch_revision);
+        return !!(window.appCharacter?.hasCommittedPageModel?.(name, 0, { pinnedPreview: true })
+            || (currentRevision && window.appCharacter?.hasCommittedPageModel?.(name, currentRevision)));
+    }
     return window.lanlan_config?.lanlan_name === name
-        && (!revision || latestPageSwitchRevision() >= revision)
+        && latestPageSwitchRevision() >= revision
         && !window.appCharacter?.needsCurrentCharacterRecovery?.(
             name, { fromSnapshot: true, switchRevision: revision }
         );
@@ -371,7 +387,7 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
                     return true;
                 }
                 if (modelBoot) {
-                    modelBoot.handoffQueued = outcome.queued ? { name, revision: switchRevision } : null;
+                    modelBoot.handoffQueued = outcome.queued;
                     modelBoot.retryable = !outcome.queued;
                 }
                 return false;
@@ -695,7 +711,7 @@ function startMultiWindowPageConfigLoad() {
             if (liveSwitch) {
                 // The switch may still be queued. Give its own commit gate the
                 // stamped portrait before returning from the IPC listener.
-                applyInjectedAvatar(d, switchRevision)
+                applyInjectedAvatar(d, switchRevision, { displayOnly: true })
                     .catch(error => console.warn('[主页] Could not restore the injected avatar:', error));
                 resolve((await liveSwitch).applied === true);
                 return;

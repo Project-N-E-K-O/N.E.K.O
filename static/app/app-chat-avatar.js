@@ -1465,11 +1465,8 @@
             if (token !== activeCaptureToken) return;
             // A fallback request may fail after IPC filled this same popup.
             // The model cache key alone can be shared by different characters.
-            const ipcOwner = cachedPreview?.ipcOwner;
-            const current = window.lanlan_config;
-            if (!manualCrop && cachedPreview !== previewAtCaptureStart && ipcOwner?.name
-                && ipcOwner.name === current?.lanlan_name && ipcOwner.revision === current.switch_revision
-                && hasUsableCachedPreview()) return;
+            if (!manualCrop && cachedPreview !== previewAtCaptureStart
+                && cachedPreview?.ownsIpcIdentity?.() && hasUsableCachedPreview()) return;
 
             if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
@@ -1853,7 +1850,7 @@
      * @param {string} dataUrl - base64 data URL
      * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
      */
-    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType, { displayOnly = false } = {}) {
+    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType, { displayOnly = false, isCurrentIdentity } = {}) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
 
@@ -1862,7 +1859,10 @@
         if (externalAvatarDataUrl) {
             const { lanlan_name: name, switch_revision: revision } = window.lanlan_config || {};
             cachedPreview = {
-                ipcOwner: { name, revision },
+                ownsIpcIdentity: isCurrentIdentity || (() => {
+                    const current = window.lanlan_config;
+                    return !!name && current?.lanlan_name === name && current.switch_revision === revision;
+                }),
                 cacheKey: getCurrentModelCacheKey(),
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
