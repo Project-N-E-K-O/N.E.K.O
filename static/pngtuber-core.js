@@ -1492,6 +1492,10 @@
                 this._reviewedQueued = { index, options };
                 return true;
             }
+            // Keep the identity across retries: a newer queue item can target the same clip.
+            if (!Object.prototype.hasOwnProperty.call(options, 'reviewedQueueEntry')) {
+                options = { ...options, reviewedQueueEntry: this._reviewedQueued?.index === index ? this._reviewedQueued : null };
+            }
             const token = (this._reviewedRequest || 0) + 1;
             this._reviewedRequest = token;
             this._reviewedRetry = null;
@@ -1514,7 +1518,7 @@
                     this._reviewedTransition = { snapshot, at: performance.now() };
                 }
                 this._reviewedPreparing = false;
-                this._reviewedQueued = null;
+                if (this._reviewedQueued === options.reviewedQueueEntry) this._reviewedQueued = null;
                 this._reviewedHoldLast = options.returnToDefaultAfterMs === 0;
                 this._reviewedReturnAfterMs = Number(options.returnToDefaultAfterMs) > 0 ? Number(options.returnToDefaultAfterMs) : null;
                 this._reviewedLeisureInputAt = inputAt;
@@ -1536,8 +1540,11 @@
                         at: performance.now() + 250 * 2 ** (attempts - 1) };
                 } else {
                     // A failed fallback must settle, not create an every-frame request loop.
-                    this._reviewedQueued = null;
-                    if (!idleIndices.includes(index) && !options.failureFallback) {
+                    if (this._reviewedQueued === options.reviewedQueueEntry) this._reviewedQueued = null;
+                    if (this._reviewedQueued) {
+                        const next = this._reviewedQueued;
+                        this._reviewedRetry = { index: next.index, options: { ...next.options, force: true }, at: performance.now() + 1000 };
+                    } else if (!idleIndices.includes(index) && !options.failureFallback) {
                         this._reviewedRetry = { index: 0, options: { force: true, failureFallback: true }, at: performance.now() + 1000 };
                     } else this._reviewedRetry = { exhausted: true };
                 }
@@ -5180,7 +5187,10 @@
                 if (index === null) return false;
                 if (this.emotionTimer) { clearTimeout(this.emotionTimer); this.emotionTimer = null; }
                 this.clearPendingEmotion();
-                return this.requestReviewedState(index, { source: 'emotion', emotion: emotionName });
+                return this.requestReviewedState(index, {
+                    source: 'emotion', emotion: emotionName,
+                    ...(options.durationMs === undefined ? {} : { returnToDefaultAfterMs: Number(options.durationMs) })
+                });
             }
             if (!this.isLayeredActive()) return false;
             const stateIndex = this.layeredEmotionTarget(emotionName);

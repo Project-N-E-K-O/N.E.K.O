@@ -602,7 +602,21 @@ function reviewedFixture() {
     const f=fixture(),m=f.manager;
     m.isLayeredActive=()=>true;
     const clip=(playback='once')=>({duration_ms:2000,playback,width:720,height:960,mouth_crop:[0,0,1,1],mouth_renderer:'viseme_v1',lipsync:true,frames:[{time_ms:0,duration_ms:1000,image:'a.png',x:20,y:25},{time_ms:1000,duration_ms:1000,image:'b.png',x:20,y:25}]});
-    m.layeredMetadata={state_count:7,canvas:{width:720,height:960},reviewed_actions:{version:1,groups:{idle:[0,1],happy:[2,3],drag:[4],leisure:[5],'visit-leave':[4],'visit-return':[6]}},state_catalog:[0,1,2,3,4,5,6].map((state_index)=>({state_index,group:['idle','idle','happy','happy','drag','leisure','visit'][state_index]})),tracked_animations:{0:clip('loop'),1:clip('loop'),2:clip(),3:clip(),4:clip(),5:{...clip(),lipsync:false},6:clip()}};
+    const groups = {
+        idle: [0, 1], happy: [2, 3], drag: [4], leisure: [5],
+        'visit-return': [6], 'visit-leave': [7]
+    };
+    const names = ['idle', 'idle', 'happy', 'happy', 'drag', 'leisure', 'visit-return', 'visit-leave'];
+    m.layeredMetadata = {
+        state_count: names.length,
+        canvas: { width: 720, height: 960 },
+        reviewed_actions: { version: 1, groups },
+        state_catalog: names.map((group, state_index) => ({ state_index, group })),
+        tracked_animations: {
+            0: clip('loop'), 1: clip('loop'), 2: clip(), 3: clip(),
+            4: clip(), 5: { ...clip(), lipsync: false }, 6: clip(), 7: clip()
+        }
+    };
     m.layeredMetadata.tracked_animation=m.layeredMetadata.tracked_animations[0];m.layeredStateIndex=0;
     m.initializeTrackedPlayback(m.layeredMetadata,'/meta.json');m.layeredAnimationStart=100;
     m.prepareReviewedEntry=async()=>[{image:{name:'prepared'}}];
@@ -635,8 +649,8 @@ test('reviewed guest visit animations require a matched real departure and dedup
     assert.equal(m.handleReviewedVisit({side:'host',action:'departed',visit_id:'v1'}),false);
     assert.equal(m.handleReviewedVisit({side:'guest',action:'departed',visit_id:'v1',recovery:true}),false);
     for(const action of ['pending','started','cancelled'])assert.equal(m.handleReviewedVisit({side:'guest',action,visit_id:'v1'}),false);
-    m.handleReviewedVisit({side:'guest',action:'departed',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'departed',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'wrong'});assert.deepEqual(calls,[4]);
-    m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'v1'});assert.deepEqual(calls,[4,6]);
+    m.handleReviewedVisit({side:'guest',action:'departed',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'departed',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'wrong'});assert.deepEqual(calls,[7]);
+    m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'v1'});m.handleReviewedVisit({side:'guest',action:'ended',visit_id:'v1'});assert.deepEqual(calls,[7,6]);
 });
 test('reviewed leisure never replaces speech and legacy data has identity perspective',async()=>{
     const {manager:m,context}=reviewedFixture();m.requestReviewedState(5);await flushReviewed();m.isSpeaking=true;m.reviewedPlaybackTick(200);await flushReviewed();assert.equal(m.layeredStateIndex,0);
@@ -795,7 +809,10 @@ test('speech completion through real setState preserves idle and return-action c
     for (const index of [0, 1, 2, 6]) {
         const { manager: m, advance } = realReviewedFixture();
         if (index) {
-            m.requestReviewedState(index, { reviewedIdleEntry: index === 1, force: true });
+            if (index === 6) {
+                m._reviewedVisit = 'speech-clock';
+                m.handleReviewedVisit({ action: 'ended', visit_id: 'speech-clock', side: 'guest' });
+            } else m.requestReviewedState(index, { reviewedIdleEntry: index === 1, force: true });
             await flushReviewed();
         }
         m.layeredAnimationStart = 123;
@@ -965,16 +982,14 @@ test('all production reviewed tracks and groups pass the real runtime validator'
 
 test('Alt+1 skips visit-only states for reviewed models and retains legacy cycling', () => {
     const { manager: m } = realReviewedFixture();
-    m.layeredMetadata.state_catalog[4].group = 'visit-leave';
-    m.layeredMetadata.state_catalog[5].group = 'visit-return';
-    m.layeredStateIndex = 3;
+    m.layeredStateIndex = 5;
     let selected;
     m.setLayeredStateIndex = index => { selected = index; return true; };
     m.cycleLayeredState();
-    assert.equal(selected, 6);
+    assert.equal(selected, 0);
     delete m.layeredMetadata.reviewed_actions;
     m.cycleLayeredState();
-    assert.equal(selected, 4);
+    assert.equal(selected, 6);
 });
 
 test('recovered visit cleanup clears only its own marker without playing a return action', () => {
@@ -1269,15 +1284,13 @@ test('a stale adapter setup cannot cancel the newer reviewed session', async () 
 
 test('ordinary requests cannot select visit-only actions or forge a source string', async () => {
     const { manager: m } = realReviewedFixture();
-    m.layeredMetadata.state_catalog[4].group = 'visit-leave';
-    m.layeredMetadata.state_catalog[6].group = 'visit-return';
-    for (const index of [4, 6]) {
+    for (const index of [7, 6]) {
         assert.equal(m.requestReviewedState(index, { source: 'api' }), false);
         assert.equal(m.requestReviewedState(index, { source: 'reviewed-visit' }), false);
     }
     assert.equal(m.handleReviewedVisit({ action: 'departed', visit_id: 'a', side: 'guest' }), true);
     await flushReviewed();
-    assert.equal(m.layeredStateIndex, 4);
+    assert.equal(m.layeredStateIndex, 7);
     m._trackedPlayback.lastIndex = 1;
     m.layeredAnimationStart = -2500;
     m.handleReviewedVisit({ action: 'ended', visit_id: 'a', side: 'guest' });
@@ -1361,11 +1374,10 @@ test('unknown-visit transport close clears only the matching guest session witho
 
 test('recovery invalidating a queued visit action still allows the current action to finish', async () => {
     const { manager: m, advance } = realReviewedFixture();
-    m.layeredMetadata.state_catalog[4].group = 'visit-leave';
     m.requestReviewedState(2);
     await flushReviewed();
     m.handleReviewedVisit({ action: 'departed', visit_id: 'a', side: 'guest' });
-    assert.equal(m._reviewedQueued.index, 4);
+    assert.equal(m._reviewedQueued.index, 7);
     m.handleReviewedVisit({ action: 'ended', visit_id: 'a', side: 'guest', recovery: true });
     m._trackedPlayback.lastIndex = 1;
     advance(2500);
@@ -1374,4 +1386,180 @@ test('recovery invalidating a queued visit action still allows the current actio
     assert.equal(m.layeredStateIndex, 0);
     assert.equal(m._reviewedVisit, null);
     m.clearLayeredTimers();
+});
+
+
+test('reviewed fixture catalog matches disjoint drag and visit groups', () => {
+    const { manager: m } = realReviewedFixture();
+    const metadata = m.layeredMetadata;
+    m.validateReviewedMetadata(metadata);
+    const seen = new Set();
+    for (const [group, indices] of Object.entries(metadata.reviewed_actions.groups)) {
+        for (const index of indices) {
+            assert.equal(metadata.state_catalog[index].group, group);
+            assert.equal(seen.has(index), false);
+            seen.add(index);
+        }
+    }
+    assert.equal(seen.size, metadata.state_count);
+});
+
+for (const nextIndex of [4, 3]) {
+    test(`queued handoff preserves a newer C request (${nextIndex}) accepted while B decodes`, async t => {
+        const { manager: m, window, advance } = realReviewedFixture();
+        t.after(() => m.clearLayeredTimers());
+        const committed = [];
+        window.dispatchEvent = () => committed.push(m.layeredStateIndex);
+        let resolveB;
+        const bReady = new Promise(resolve => { resolveB = resolve; });
+        m.prepareReviewedEntry = index => index === 3 ? bReady : Promise.resolve([{ image: {} }]);
+        m.requestReviewedState(2, { returnToDefaultAfterMs: 80 });
+        await flushReviewed();
+        m.requestReviewedState(3);
+        const bQueue = m._reviewedQueued;
+        await new Promise(resolve => setTimeout(resolve, 110));
+        assert.equal(m._reviewedPreparing, true);
+        assert.equal(m.layeredStateIndex, 2);
+        m.requestReviewedState(nextIndex);
+        const cQueue = m._reviewedQueued;
+        assert.notEqual(cQueue, bQueue);
+        resolveB([{ image: { name: 'decoded B' } }]);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, 3);
+        assert.equal(m._reviewedQueued, cQueue);
+        m._trackedPlayback.lastIndex = 1;
+        advance(2200);
+        m.reviewedPlaybackTick(2200);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, nextIndex);
+        assert.equal(m._reviewedQueued, null);
+        m._trackedPlayback.lastIndex = 1;
+        advance(4300);
+        m.reviewedPlaybackTick(4300);
+        await flushReviewed();
+        assert.deepEqual(committed, [2, 3, nextIndex, 0]);
+    });
+}
+
+test('queued handoff retains newer C through B transient retry', async t => {
+    const { manager: m, advance } = realReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let failB, attempts = 0;
+    m.prepareReviewedEntry = index => {
+        if (index === 3 && ++attempts === 1) return new Promise((_, reject) => { failB = reject; });
+        return Promise.resolve([{ image: {} }]);
+    };
+    m.requestReviewedState(3);
+    m.finishReviewedAction();
+    m.requestReviewedState(4);
+    const cQueue = m._reviewedQueued;
+    failB(Error('temporary B decode failure'));
+    await flushReviewed();
+    advance(400);
+    m.reviewedPlaybackTick(400);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 3);
+    assert.equal(m._reviewedQueued, cQueue);
+    m._trackedPlayback.lastIndex = 1;
+    advance(2500);
+    m.reviewedPlaybackTick(2500);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    assert.equal(m._reviewedQueued, null);
+});
+
+test('queued handoff does not discard C when B exhausts its retries', async t => {
+    const { manager: m, advance } = realReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.requestReviewedState(2);
+    await flushReviewed();
+    let failB;
+    m.prepareReviewedEntry = index => index === 3
+        ? new Promise((_, reject) => { failB = reject; }) : Promise.resolve([{ image: {} }]);
+    m.requestReviewedState(3);
+    m.finishReviewedAction();
+    m.requestReviewedState(4);
+    for (const time of [100, 400, 1000]) {
+        advance(time);
+        if (time !== 100) m.reviewedPlaybackTick(time);
+        failB(Error('permanent B decode failure'));
+        await flushReviewed();
+    }
+    assert.equal(m._reviewedQueued.index, 4);
+    advance(2100);
+    m.reviewedPlaybackTick(2100);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 4);
+    assert.equal(m._reviewedQueued, null);
+});
+
+test('queued handoff consumes its own B request so B never replays on completion', async t => {
+    const { manager: m, window, advance } = realReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    const committed = [];
+    window.dispatchEvent = () => committed.push(m.layeredStateIndex);
+    m.requestReviewedState(2);
+    await flushReviewed();
+    m.requestReviewedState(3);
+    m._trackedPlayback.lastIndex = 1;
+    advance(2200);
+    m.reviewedPlaybackTick(2200);
+    await flushReviewed();
+    assert.equal(m._reviewedQueued, null);
+    m._trackedPlayback.lastIndex = 1;
+    advance(4300);
+    m.reviewedPlaybackTick(4300);
+    await flushReviewed();
+    assert.deepEqual(committed, [2, 3, 0]);
+});
+
+for (const durationMs of [0, '0']) {
+    test(`emotion duration ${JSON.stringify(durationMs)} holds the reviewed final frame`, async t => {
+        const { manager: m, advance } = realReviewedFixture();
+        t.after(() => m.clearLayeredTimers());
+        m.reviewedPick = () => 2;
+        assert.equal(m.setEmotion('happy', { durationMs }), true);
+        await flushReviewed();
+        m._trackedPlayback.lastIndex = 1;
+        advance(2500);
+        m.reviewedPlaybackTick(2500);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, 2);
+        assert.equal(m._reviewedHoldLast, true);
+        assert.equal(m.currentEmotion, 'happy');
+        m.requestReviewedState(0);
+        await flushReviewed();
+        assert.equal(m.layeredStateIndex, 0);
+    });
+}
+
+test('emotion duration positive value hands off at the requested visible delay', async t => {
+    const { manager: m } = realReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.reviewedPick = () => 2;
+    m.setEmotion('happy', { durationMs: 80 });
+    await flushReviewed();
+    assert.equal(m._reviewedReturnAfterMs, 80);
+    assert.equal(m.layeredStateIndex, 2);
+    await new Promise(resolve => setTimeout(resolve, 110));
+    assert.equal(m.layeredStateIndex, 0);
+    assert.equal(m.currentEmotion, null);
+});
+
+test('emotion duration omitted follows the clip rather than creating a return timer', async t => {
+    const { manager: m, advance } = realReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    m.reviewedPick = () => 2;
+    m.setEmotion('happy');
+    await flushReviewed();
+    assert.equal(m._reviewedReturnAfterMs, null);
+    assert.equal(m._reviewedHoldLast, false);
+    assert.equal(m.layeredStateReturnTimer, null);
+    m._trackedPlayback.lastIndex = 1;
+    advance(2200);
+    m.reviewedPlaybackTick(2200);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 0);
 });
