@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import threading
 from datetime import datetime, timedelta, timezone
@@ -241,6 +242,129 @@ async def test_bind_task_is_kept_as_compatibility_noop() -> None:
     assert result.value == {"bound": True, "ignored": True}
     reminder = plugin.store.data[_STORE_KEY][0]
     assert _legacy_keys().isdisjoint(reminder)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_memo_reminder_enforces_configured_max_reminders_and_config_change() -> None:
+    plugin = _plugin()
+    cfg_state: dict[str, object] = {"memo": {"max_reminders": 0, "timezone": "UTC"}}
+
+    class _FakeConfig:
+        async def dump(self, **_kwargs: object) -> dict[str, object]:
+            return cfg_state
+
+    plugin.config = _FakeConfig()
+    try:
+        start_res = await plugin.startup()
+        assert start_res.is_ok()
+        assert str(plugin._tz) == "UTC"
+
+        # max_reminders = 0 prevents adding even the first reminder.
+        rejected_zero = await plugin.add_reminder(time="30m", message="m0")
+        assert rejected_zero.is_err()
+
+        # Hot reload via config_change updates limit to 2 and timezone to Asia/Tokyo.
+        cfg_state = {"memo": {"max_reminders": 2, "timezone": "Asia/Tokyo"}}
+        change_res = await plugin.on_config_change()
+        assert change_res.is_ok()
+        assert str(plugin._tz) == "Asia/Tokyo"
+
+        assert (await plugin.add_reminder(time="30m", message="m1")).is_ok()
+        assert (await plugin.add_reminder(time="30m", message="m2")).is_ok()
+        rejected_third = await plugin.add_reminder(time="30m", message="m3")
+        assert rejected_third.is_err()
+
+        # Increasing limit beyond default 200 works too.
+        cfg_state = {"memo": {"max_reminders": 250, "timezone": "Asia/Shanghai"}}
+        await plugin.on_config_change()
+        assert plugin._max_reminders == 250
+
+        # Invalid max_reminders falls back to 200.
+        for bad in (-1, "abc", True, 1.5):
+            cfg_state = {"memo": {"max_reminders": bad}}
+            await plugin.on_config_change()
+            assert plugin._max_reminders == 200
+    finally:
+        await asyncio.to_thread(plugin.shutdown)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_memo_reminder_temporary_config_change_uses_new_config_over_stale_dump() -> None:
+    plugin = _plugin()
+
+    class _StaleDiskConfig:
+        async def dump(self, **_kwargs: object) -> dict[str, object]:
+            return {"memo": {"max_reminders": 200, "timezone": "UTC"}}
+
+    plugin.config = _StaleDiskConfig()
+    try:
+        start_res = await plugin.startup()
+        assert start_res.is_ok()
+        assert plugin._max_reminders == 200
+        assert str(plugin._tz) == "UTC"
+
+        # Temporary hot update provides new_config directly even while config.dump() is stale.
+        change_res = await plugin.on_config_change(
+            new_config={"memo": {"max_reminders": 1, "timezone": "America/New_York"}},
+            mode="temporary",
+        )
+        assert change_res.is_ok()
+        assert plugin._max_reminders == 1
+        assert str(plugin._tz) == "America/New_York"
+
+        assert (await plugin.add_reminder(time="30m", message="only-one")).is_ok()
+        blocked = await plugin.add_reminder(time="30m", message="over-temp-limit")
+        assert blocked.is_err()
+
+        # Unrelated temporary config patch without [memo] preserves current limit & timezone.
+        unrelated_res = await plugin.on_config_change(
+            new_config={"other": {"flag": True}},
+            mode="temporary",
+        )
+        assert unrelated_res.is_ok()
+        assert plugin._max_reminders == 1
+        assert str(plugin._tz) == "America/New_York"
+
+        # Deleting [memo] keys in full snapshot resets them to defaults instead of keeping stale values.
+        reset_res = await plugin.on_config_change(
+            new_config={"memo": {}},
+            mode="temporary",
+        )
+        assert reset_res.is_ok()
+        assert plugin._max_reminders == 200
+        assert str(plugin._tz) == "Asia/Shanghai"
+
+        # Host full-snapshot replacement where [memo] table was removed completely resets to defaults,
+        # while direct partial calls without old_config keep preserving existing memo settings.
+        custom_res = await plugin.on_config_change(
+            old_config={"memo": {}},
+            new_config={"memo": {"max_reminders": 3, "timezone": "UTC"}},
+            mode="temporary",
+        )
+        assert custom_res.is_ok()
+        assert plugin._max_reminders == 3
+        assert str(plugin._tz) == "UTC"
+
+        partial_no_memo = await plugin.on_config_change(
+            new_config={"other": {"flag": False}},
+            mode="temporary",
+        )
+        assert partial_no_memo.is_ok()
+        assert plugin._max_reminders == 3
+        assert str(plugin._tz) == "UTC"
+
+        full_without_memo = await plugin.on_config_change(
+            old_config={"memo": {"max_reminders": 3, "timezone": "UTC"}},
+            new_config={"other": {"flag": False}},
+            mode="temporary",
+        )
+        assert full_without_memo.is_ok()
+        assert plugin._max_reminders == 200
+        assert str(plugin._tz) == "Asia/Shanghai"
+    finally:
+        await asyncio.to_thread(plugin.shutdown)
 
 
 @pytest.mark.plugin_unit

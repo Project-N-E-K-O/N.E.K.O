@@ -177,6 +177,13 @@ class PluginDispatchService:
                     details={"plugin_id": to_plugin},
                 )
             normalized_args = _normalize_args(args)
+            if "_ctx" in normalized_args:
+                raw_ctx = normalized_args.get("_ctx")
+                sanitized_ctx = dict(raw_ctx) if isinstance(raw_ctx, Mapping) else {}
+                sanitized_ctx.pop("host_reply", None)
+                if sanitized_ctx.get("channel") != "plugin_to_plugin":
+                    sanitized_ctx["channel"] = "custom_event"
+                normalized_args["_ctx"] = sanitized_ctx
             return await host.trigger_custom_event(
                 event_type=event_type,
                 event_id=event_id,

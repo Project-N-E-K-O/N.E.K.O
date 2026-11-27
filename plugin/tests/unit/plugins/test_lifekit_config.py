@@ -387,3 +387,42 @@ async def test_lifekit_add_location_serializes_store_updates(monkeypatch) -> Non
     locations = plugin.store._data["saved_locations"]
     assert {item["label"] for item in locations} == {"Home", "Office"}
     assert sum(1 for item in locations if item.get("is_default")) == 1
+
+
+@pytest.mark.asyncio
+async def test_lifekit_update_config_allows_hosted_ui_ctx_with_map_key_and_other_fields() -> None:
+    from plugin.plugins.lifekit import LifeKitPlugin
+
+    plugin = LifeKitPlugin(_DummyLifeKitContext())
+    saved_updates: list[dict[str, object]] = []
+
+    class _Config:
+        async def update(self, value: dict[str, object]) -> None:
+            saved_updates.append(value)
+
+        async def dump(self, **_kwargs: object) -> dict[str, object]:
+            return {"lifekit": {"default_city": "Shanghai", "amap_key": "new-amap"}}
+
+    plugin.config = _Config()
+    ui_ctx = {"run_id": "ui-run-1", "channel": "ui"}
+
+    clarify = await plugin.update_config_entry(
+        default_city="Shanghai",
+        forecast_days=5,
+        amap_key="new-amap",
+        confirmed=True,
+        _ctx=ui_ctx,
+    )
+    assert clarify.is_ok()
+    assert clarify.value["status"] == "clarify"
+
+    ready = await plugin.update_config_entry(**clarify.value["context"], _ctx=ui_ctx)
+    assert ready.is_ok()
+    assert ready.value["status"] == "ready"
+    assert saved_updates == [{
+        "lifekit": {
+            "default_city": "Shanghai",
+            "forecast_days": 5,
+            "amap_key": "new-amap",
+        }
+    }]

@@ -267,3 +267,32 @@ async def test_nested_request_is_bounded_by_the_entry_budget():
     assert request["_rpc_parent_request_id"] == "outer"
     assert 0 < budget <= 0.5
     assert request["timeout"] == budget
+
+
+async def test_custom_event_drops_unsupported_host_ctx_for_strict_handlers():
+    seen_ctx: list[object] = []
+
+    async def strict_ping(value: str):
+        return {"value": value}
+
+    async def ctx_ping(value: str, _ctx: object = None):
+        seen_ctx.append(_ctx)
+        return {"value": value, "ctx": _ctx}
+
+    runtime = executor({})
+    runtime._events = {"custom": {"strict_ping": strict_ping, "ctx_ping": ctx_ping}}
+
+    res_strict = await runtime.invoke(
+        "custom",
+        "strict_ping",
+        {"value": "ok", "_ctx": {"channel": "plugin_to_plugin"}},
+    )
+    assert res_strict == {"value": "ok"}
+
+    res_ctx = await runtime.invoke(
+        "custom",
+        "ctx_ping",
+        {"value": "ok", "_ctx": {"channel": "plugin_to_plugin"}},
+    )
+    assert res_ctx == {"value": "ok", "ctx": {"channel": "plugin_to_plugin"}}
+    assert seen_ctx == [{"channel": "plugin_to_plugin"}]

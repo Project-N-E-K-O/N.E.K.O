@@ -98,19 +98,6 @@ class InstallStartPayload(BaseModel):
     force: bool = False
 
 
-@router.get("/plugin/{plugin_id}/ui-api/locale")
-async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
-    await _get_plugin_registration(plugin_id)
-    try:
-        from utils.language_utils import get_global_language_full
-
-        locale = _normalize_ui_locale(str(get_global_language_full()))
-    except Exception:
-        logger.warning("plugin ui locale detection failed; falling back to en", exc_info=True)
-        locale = "en"
-    return JSONResponse({"locale": locale})
-
-
 @router.get("/plugin/{plugin_id}/ui-api/i18n/ui/{locale}.json")
 async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
     registration = await _get_plugin_registration(plugin_id)
@@ -181,27 +168,6 @@ def _read_ui_locale_payload(
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)
-
-
-def _normalize_ui_locale(locale: str) -> str:
-    normalized = str(locale or "").strip().replace("_", "-").lower()
-    if normalized in {"zh-tw", "zh-hant", "zh-hk", "zh-mo"}:
-        return "zh-TW"
-    if normalized == "zh" or normalized.startswith("zh-"):
-        return "zh-CN"
-    if normalized.startswith("en"):
-        return "en"
-    if normalized.startswith("ja"):
-        return "ja"
-    if normalized.startswith("ru"):
-        return "ru"
-    if normalized.startswith("ko"):
-        return "ko"
-    if normalized.startswith("es"):
-        return "es"
-    if normalized.startswith("pt"):
-        return "pt"
-    return "zh-CN"
 
 
 def _get_install_kind_spec(
