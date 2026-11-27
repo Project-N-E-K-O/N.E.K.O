@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.memory_server import knowledge_routes
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 
 
 pytestmark = pytest.mark.unit
@@ -207,8 +207,8 @@ async def test_export_route_admits_only_complete_package_requests(client, monkey
 
 async def test_delete_export_route_validates_body_and_removes_the_completed_card(client):
     """The public action accepts a job identity, never a client file path."""
-    from knowledge.registry import utc_now
-    from knowledge.service import ImportJob
+    from services.knowledge.registry import utc_now
+    from services.knowledge.service import ImportJob
 
     http, service = client
     job_id, digest = "a" * 32, "b" * 64

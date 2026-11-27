@@ -7,8 +7,8 @@ import uuid
 
 import pytest
 
-from knowledge import service as module
-from knowledge.service import ImportJob, KnowledgeService, MAX_PENDING_IMPORTS
+from services.knowledge import service as module
+from services.knowledge.service import ImportJob, KnowledgeService, MAX_PENDING_IMPORTS
 from tests.knowledge_archive_fixtures import make_archive
 from tests.knowledge_fixtures import _finished, _import, _pack
 from utils.knowledge_package import hash_file

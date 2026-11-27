@@ -13,8 +13,8 @@ import threading
 import numpy as np
 import pytest
 
-from knowledge.models import parse_pack
-import knowledge.service as service_module
+from services.knowledge.models import parse_pack
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import FakeEmbedder, _entries, _import, _pack, _started, fast_indexer  # noqa: F401
 
@@ -76,7 +76,7 @@ async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp
 
 
 def test_first_chunk_keeps_its_body_despite_a_long_summary():
-    from knowledge.chunking import derive_chunks
+    from services.knowledge.chunking import derive_chunks
 
     entry = parse_pack(_pack(entries=[{
         "title": "Long summary",
@@ -170,7 +170,7 @@ async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast
 
 
 def test_a_damaged_vector_rewritten_meanwhile_is_not_cleared(tmp_path):
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()
@@ -190,7 +190,7 @@ def test_a_damaged_vector_rewritten_meanwhile_is_not_cleared(tmp_path):
 
 
 def test_empty_vector_blobs_do_not_outvote_real_ones(tmp_path):
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()
@@ -211,7 +211,7 @@ def test_empty_vector_blobs_do_not_outvote_real_ones(tmp_path):
 
 
 def test_stored_vectors_that_are_not_unit_length_are_damaged(tmp_path):
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()

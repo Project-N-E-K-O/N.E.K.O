@@ -1,7 +1,7 @@
 """Keep refused inputs, terminal vector buffers and per-pack failures isolated."""
 
 # Index scheduling hooks follow VectorIndexer; shared service state is unchanged.
-from knowledge import indexing as index_module
+from services.knowledge import indexing as index_module
 import asyncio
 import hashlib
 import json
@@ -11,9 +11,9 @@ import pytest
 
 from tests.knowledge_helpers import _stop_automatic_indexer
 
-from knowledge import service as module
-from knowledge.models import KnowledgePackError
-from knowledge.service import ImportJob, KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import ImportJob, KnowledgeService
 from tests.knowledge_archive_fixtures import make_archive, specification
 from tests.knowledge_fixtures import FakeEmbedder, _finished, _import, _pack
 

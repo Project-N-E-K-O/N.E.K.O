@@ -2,9 +2,9 @@
 
 import pytest
 
-from knowledge.models import decode_pack_bytes
-from knowledge.service import KnowledgeService
-from knowledge.store import count_pack_chunks
+from services.knowledge.models import decode_pack_bytes
+from services.knowledge.service import KnowledgeService
+from services.knowledge.store import count_pack_chunks
 from tests.knowledge_helpers import _stop_automatic_indexer
 from tests.knowledge_fixtures import _finished, _import, _pack, _raw
 
@@ -26,7 +26,7 @@ async def service(tmp_path):
 @pytest.mark.parametrize("installed", [False, True])
 @pytest.mark.parametrize("count_limit,write_limit", [(5000, 100), (100, 5000)])
 async def test_changed_fit_cannot_publish_a_different_chunk_count(service, monkeypatch, installed, count_limit, write_limit):
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     pack_id = "imp.chunk-plan"
     if installed:

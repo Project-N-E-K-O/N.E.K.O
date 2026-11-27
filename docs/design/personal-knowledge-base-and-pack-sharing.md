@@ -18,14 +18,14 @@
 
 | 位置 | 职责 |
 | --- | --- |
-| `knowledge/importing/documents.py` | 有上限的 TXT/Markdown/DOCX/PDF 解析、位置与隐私保护 |
-| `knowledge/importing/sources.py` | 原件、不可变全文版本、预览和历史；不存向量 |
-| `knowledge/importing/projection.py` | 当前文档版本投影为严格 schema-v1 pack，写入 `doc:` / `ver:` 标签 |
-| `knowledge/importing/commit_policy.py` | 由已核验正文、任务、旧登记和服务提供的时间构造下一条登记记录；无 IO、预算或锁所有权 |
-| `knowledge/service.py` / `store.py` / `registry.py` | 运行时、导入/来源/移除事务、SQLite FTS/向量及注册表；服务统一拥有锁、容量、查询嵌入任务、向量快照发布、导出首次入队及任务生命周期，不增加第二套 Store |
-| `knowledge/querying.py` / `indexing.py` / `exports.py` | 分别编排查询与自动参考、后台索引与快照、成品导出；显式复用同一个服务所有者，不复制共享状态 |
-| `knowledge/jobs.py` / `pack_files.py` | 共享任务记录与后台结果消费、有界文件读取和历史副本；不接管调度、锁或保留策略 |
-| `knowledge/archive.py` | 用已计算向量导出通用 v2、读取成品种子向量；不调用模型 |
+| `services/knowledge/importing/documents.py` | 有上限的 TXT/Markdown/DOCX/PDF 解析、位置与隐私保护 |
+| `services/knowledge/importing/sources.py` | 原件、不可变全文版本、预览和历史；不存向量 |
+| `services/knowledge/importing/projection.py` | 当前文档版本投影为严格 schema-v1 pack，写入 `doc:` / `ver:` 标签 |
+| `services/knowledge/importing/commit_policy.py` | 由已核验正文、任务、旧登记和服务提供的时间构造下一条登记记录；无 IO、预算或锁所有权 |
+| `services/knowledge/service.py` / `store.py` / `registry.py` | 运行时、导入/来源/移除事务、SQLite FTS/向量及注册表；服务统一拥有锁、容量、查询嵌入任务、向量快照发布、导出首次入队及任务生命周期，不增加第二套 Store |
+| `services/knowledge/querying.py` / `indexing.py` / `exports.py` | 分别编排查询与自动参考、后台索引与快照、成品导出；显式复用同一个服务所有者，不复制共享状态 |
+| `services/knowledge/jobs.py` / `pack_files.py` | 共享任务记录与后台结果消费、有界文件读取和历史副本；不接管调度、锁或保留策略 |
+| `services/knowledge/archive.py` | 用已计算向量导出通用 v2、读取成品种子向量；不调用模型 |
 | `utils/knowledge_package.py` | 纯标准库包规范、规格、ZIP 安全与数值检查；市场逐字同步 |
 | `memory/_embeddings/spec.py` / `resources.py` | 纯函数：按需计算模型指纹与无截断 token 计数；不加载 ONNX，不在模型加载路径上 |
 | `utils/embedding_contract.py` | 无进程依赖的后台延后异常 |
@@ -35,7 +35,9 @@
 | `frontend/plugin-manager/src/components/knowledge/Knowledge{Overview,Catalog,EntryDrawer,Packs,Diagnostics}.vue` | 各区域展示、派生显示和样式；通过 props/emits 复用页面状态和动作，既有 PackDrawer/SourceImport 保留来源管理流程 |
 | `plugin/server/routes/knowledge_market.py` / `knowledge_publish.py` | 现有订阅和新增发布；账号凭据不进入 Main 或页面 |
 
-运行资料归 `ConfigManager.knowledge_dir`：
+源码归 `services/knowledge/`，保持轻量父包和独立的 knowledge 分层边界；Memory Server 适配器注入模型，其他服务仍经 HTTP 使用。迁移同步 wheel/sdist、Unix/Windows/Linux 三处 Nuitka 登记及测试导入，不修改共享成品校验器字节。本机未入库的打包脚本也须将旧 include-package 参数同步为 `services.knowledge`。
+
+运行资料仍归 `ConfigManager.knowledge_dir`，不随源码目录迁移：
 
 ```text
 knowledge/

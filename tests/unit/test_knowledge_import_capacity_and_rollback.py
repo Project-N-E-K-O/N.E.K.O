@@ -14,9 +14,9 @@ import threading
 
 import pytest
 
-from knowledge.models import canonical_pack_bytes, parse_pack
-from knowledge.registry import load_registry
-import knowledge.service as service_module
+from services.knowledge.models import canonical_pack_bytes, parse_pack
+from services.knowledge.registry import load_registry
+import services.knowledge.service as service_module
 from tests.knowledge_fixtures import (
     _entries,
     _import,

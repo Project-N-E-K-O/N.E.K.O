@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from knowledge.importing import documents
+from services.knowledge.importing import documents
 
 
 pytestmark = pytest.mark.unit_fast

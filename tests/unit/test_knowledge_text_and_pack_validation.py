@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from knowledge.models import KnowledgePackError, canonical_pack_bytes, decode_pack_bytes, parse_pack
-from knowledge.render import RenderCard, render_reference_block
-import knowledge.service as service_module
-from knowledge.text import fts_match_expression, neutralize_fence, search_tokens, strip_chat_markup
+from services.knowledge.models import KnowledgePackError, canonical_pack_bytes, decode_pack_bytes, parse_pack
+from services.knowledge.render import RenderCard, render_reference_block
+import services.knowledge.service as service_module
+from services.knowledge.text import fts_match_expression, neutralize_fence, search_tokens, strip_chat_markup
 from tests.knowledge_fixtures import _import, _pack, _raw, _started
 
 pytestmark = pytest.mark.unit
@@ -113,7 +113,7 @@ async def test_canonical_form_over_the_size_limit_is_rejected_up_front(tmp_path,
 
 
 def test_pack_id_with_trailing_newline_is_rejected():
-    from knowledge.models import pack_id_is_valid
+    from services.knowledge.models import pack_id_is_valid
 
     assert pack_id_is_valid("demo-pack") is True
     assert pack_id_is_valid("demo-pack\n") is False
@@ -127,7 +127,7 @@ def test_unicode_line_breaks_cannot_hide_a_role_marker():
 
 
 def test_registry_too_large_to_read_back_is_never_written(tmp_path, monkeypatch):
-    from knowledge import registry as registry_module
+    from services.knowledge import registry as registry_module
 
     monkeypatch.setattr(registry_module, "MAX_REGISTRY_BYTES", 10)
     with pytest.raises(registry_module.KnowledgeRegistryError):
@@ -186,7 +186,7 @@ def test_invisible_combining_marks_cannot_hide_a_role_marker():
 
 
 def test_an_oversized_registry_is_never_read_whole(tmp_path, monkeypatch):
-    from knowledge import registry as registry_module
+    from services.knowledge import registry as registry_module
 
     monkeypatch.setattr(registry_module, "MAX_REGISTRY_BYTES", 16)
     (tmp_path / registry_module.REGISTRY_FILE).write_bytes(b"x" * 1_000)
@@ -205,7 +205,7 @@ def test_an_oversized_registry_is_never_read_whole(tmp_path, monkeypatch):
 
 def test_raw_pack_reads_are_bounded(tmp_path, monkeypatch):
     # The bounded IO primitive owns its limit after extraction from the service.
-    from knowledge import pack_files
+    from services.knowledge import pack_files
 
     big = tmp_path / "big.json"
     big.write_bytes(b"x" * 64)

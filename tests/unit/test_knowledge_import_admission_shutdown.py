@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from knowledge.service import KnowledgeService, STAGING_DIR
+from services.knowledge.service import KnowledgeService, STAGING_DIR
 from tests.knowledge_archive_fixtures import make_archive
 from tests.knowledge_fixtures import _finished, _pack
 from tests.unit.test_knowledge_subscriptions import _subscription
@@ -91,7 +91,7 @@ async def test_cancelled_bytes_zip_keeps_input_until_retain_owner_finishes(tmp_p
         with pytest.raises(asyncio.CancelledError):
             await request
         assert spool.is_file() and service._parsing == 1 and service._incoming
-        from knowledge import service as module
+        from services.knowledge import service as module
         monkeypatch.setattr(module, "MAX_PENDING_IMPORTS", 1)
         assert await service.import_pack(json.dumps(_pack()).encode()) == {"ok": False, "reason": "knowledge_busy"}
         owners = tuple(service._detached)
@@ -144,7 +144,7 @@ async def test_cancel_at_archive_owner_creation_keeps_the_handed_off_input(tmp_p
 
 
 async def test_cancelled_initial_zip_write_is_cleaned_only_after_the_real_writer(tmp_path, monkeypatch):
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     raw = make_archive(tmp_path / "input.zip").read_bytes()
     service = KnowledgeService(tmp_path / "library")
@@ -227,7 +227,7 @@ async def test_cancelled_http_zip_keeps_its_external_path_until_the_owner_finish
 
 async def test_cancelled_zip_verification_drains_before_its_input_is_removed(tmp_path, monkeypatch):
     """Keep a queued native parser's input while returning cancellation promptly."""
-    from knowledge import archive
+    from services.knowledge import archive
 
     raw = make_archive(tmp_path / "input.zip").read_bytes()
     service = KnowledgeService(tmp_path / "library")

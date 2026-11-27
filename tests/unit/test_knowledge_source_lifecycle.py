@@ -16,9 +16,9 @@ import zipfile
 
 import pytest
 
-from knowledge.models import KnowledgePackError
-from knowledge.registry import load_registry
-from knowledge.service import KnowledgeService
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.registry import load_registry
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _prepare_export_vectors
 from tests.knowledge_fixtures import _finished, _import, _pack
 from tests.process_isolation import child_process_env
@@ -73,8 +73,8 @@ async def test_sources_share_existing_pack_search_and_retain_all_versions(tmp_pa
 
 @pytest.mark.parametrize("pending", ["queued", "admitting", "export"])
 async def test_removing_the_last_source_does_not_cancel_a_waiting_append(tmp_path, pending):
-    from knowledge.models import KnowledgePackError
-    from knowledge.service import ImportJob
+    from services.knowledge.models import KnowledgePackError
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -112,8 +112,8 @@ async def test_removing_the_last_source_does_not_cancel_a_waiting_append(tmp_pat
 
 async def test_last_source_removal_rechecks_an_append_admitted_before_its_lock(tmp_path):
     """The check and the registry removal happen under one lock acquisition."""
-    from knowledge.models import KnowledgePackError
-    from knowledge.service import ImportJob
+    from services.knowledge.models import KnowledgePackError
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -258,7 +258,7 @@ async def test_removed_source_pack_stays_absent_after_refresh_and_restart_withou
 @pytest.mark.parametrize("remove_last_source", [False, True])
 async def test_failed_source_pack_removal_keeps_the_active_registry_row(tmp_path, monkeypatch, failed_write, remove_last_source):
     """Visibility metadata cannot hide an active pack when removal does not commit."""
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -303,7 +303,7 @@ async def test_killed_source_commit_retries_frozen_input_without_new_version(tmp
     script = '''
 import asyncio,json,os,sys
 from pathlib import Path
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 async def main():
     service = KnowledgeService(Path(sys.argv[1]))
     await service.start()
@@ -338,7 +338,7 @@ asyncio.run(main())
 
 
 async def test_offline_imported_pack_has_no_managed_sources_and_cannot_be_reprojected(tmp_path):
-    from knowledge.models import KnowledgePackError
+    from services.knowledge.models import KnowledgePackError
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -362,7 +362,7 @@ async def test_offline_imported_pack_has_no_managed_sources_and_cannot_be_reproj
 
 
 async def test_retained_history_does_not_authorize_overwriting_an_unrelated_same_id_pack(tmp_path):
-    from knowledge.models import KnowledgePackError
+    from services.knowledge.models import KnowledgePackError
 
     service = KnowledgeService(tmp_path)
     await service.start()

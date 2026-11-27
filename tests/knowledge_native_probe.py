@@ -32,8 +32,8 @@ from fastapi import FastAPI  # noqa: E402
 
 from app.memory_server import knowledge_routes  # noqa: E402
 from app.memory_server.knowledge_routes import _SharedEmbedder  # noqa: E402
-from knowledge.archive import export_archive, read_archive  # noqa: E402
-from knowledge.service import DATABASE_FILE, KnowledgeService  # noqa: E402
+from services.knowledge.archive import export_archive, read_archive  # noqa: E402
+from services.knowledge.service import DATABASE_FILE, KnowledgeService  # noqa: E402
 from memory.embeddings import EmbeddingService  # noqa: E402
 from tests.knowledge_helpers import _stop_automatic_indexer  # noqa: E402
 from utils.knowledge_package import validate_package  # noqa: E402
@@ -204,7 +204,7 @@ async def _recover(root: Path) -> dict:
     assert all(protected.values())
     # Construct without starting: remove only this run's derived database,
     # never the saved Pack/ZIP inputs or a previously existing runtime root.
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(folder / DATABASE_FILE)
     assert store.database_path.exists()
@@ -245,7 +245,7 @@ def _elapsed_ms(started: float) -> float:
 
 async def _measure_build(root: Path) -> dict:
     """Measure real background backfill, including unchanged production pauses."""
-    from knowledge import indexing
+    from services.knowledge import indexing
     from tests.knowledge_fixtures import _entries, _pack, _raw
 
     count = _read(root, "run")["entries"]

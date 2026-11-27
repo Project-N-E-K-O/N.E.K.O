@@ -11,8 +11,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from knowledge import querying as query_module
-from knowledge.text import fts_match_expression, search_tokens
+from services.knowledge import querying as query_module
+from services.knowledge.text import fts_match_expression, search_tokens
 from tests.knowledge_fixtures import _entries, _import, _pack, _started
 
 pytestmark = pytest.mark.unit
@@ -52,8 +52,8 @@ async def test_lookup_renders_the_matching_passage_of_a_long_entry(tmp_path):
 
 
 def test_semantic_match_reports_the_best_chunk_and_scales_with_many_packs():
-    from knowledge.retrieval import semantic_candidates
-    from knowledge.store import VectorSnapshot
+    from services.knowledge.retrieval import semantic_candidates
+    from services.knowledge.store import VectorSnapshot
 
     class CountingPackIds(tuple):
         """Counts per-pack lookups; a linear filter needs none of them."""
@@ -91,7 +91,7 @@ def test_semantic_match_reports_the_best_chunk_and_scales_with_many_packs():
 
 
 async def test_the_tail_of_a_long_entry_is_searchable_and_rendered(tmp_path):
-    from knowledge.chunking import MAX_CHUNKS_PER_ENTRY, chunk_bodies
+    from services.knowledge.chunking import MAX_CHUNKS_PER_ENTRY, chunk_bodies
 
     # Short and long paragraphs alternate, so paragraph-aware chunking needs
     # more than MAX_CHUNKS_PER_ENTRY chunks and the even-window path is used.
@@ -101,7 +101,7 @@ async def test_the_tail_of_a_long_entry_is_searchable_and_rendered(tmp_path):
         paragraphs.append(f"Paragraph {i}: " + "lorem ipsum dolor " * 63)
     content = "\n\n".join(paragraphs + ["Finally the zanzibar detail lives at the very end."])
     assert 60_000 < len(content) < 80_000
-    from knowledge.chunking import _bodies
+    from services.knowledge.chunking import _bodies
 
     assert len(_bodies(content)) > MAX_CHUNKS_PER_ENTRY
     bodies = chunk_bodies(content)
@@ -118,8 +118,8 @@ async def test_the_tail_of_a_long_entry_is_searchable_and_rendered(tmp_path):
 
 
 def test_latin_coverage_counts_whole_words_only():
-    from knowledge.retrieval import token_coverage
-    from knowledge.store import StoredEntry
+    from services.knowledge.retrieval import token_coverage
+    from services.knowledge.store import StoredEntry
 
     entry = StoredEntry(
         entry_id=1, pack_id="p", title="Cats", terms={}, tags=[], summary="",
@@ -225,7 +225,7 @@ async def test_symbol_bearing_names_have_no_loose_exact_form(tmp_path):
 
 
 def test_loose_surface_rules():
-    from knowledge.text import loose_surface
+    from services.knowledge.text import loose_surface
 
     assert loose_surface("C++") == ""
     assert loose_surface("C#") == ""
@@ -246,9 +246,9 @@ def test_loose_surface_rules():
 
 
 def test_coverage_scoring_is_bounded_for_long_queries(monkeypatch):
-    from knowledge import retrieval
-    from knowledge.store import StoredEntry
-    from knowledge.text import MAX_QUERY_TOKENS
+    from services.knowledge import retrieval
+    from services.knowledge.store import StoredEntry
+    from services.knowledge.text import MAX_QUERY_TOKENS
 
     checked = []
     real = retrieval.is_cjk_token
@@ -267,8 +267,8 @@ def test_coverage_scoring_is_bounded_for_long_queries(monkeypatch):
 
 
 def test_names_in_questions_respect_symbols():
-    from knowledge.retrieval import names_in_query
-    from knowledge.store import StoredEntry
+    from services.knowledge.retrieval import names_in_query
+    from services.knowledge.store import StoredEntry
 
     def entry(title):
         return StoredEntry(
@@ -302,8 +302,8 @@ def test_names_in_questions_respect_symbols():
 
 
 def test_coverage_ignores_words_glued_to_symbols():
-    from knowledge.retrieval import token_coverage
-    from knowledge.store import StoredEntry
+    from services.knowledge.retrieval import token_coverage
+    from services.knowledge.store import StoredEntry
 
     def entry(title, content):
         return StoredEntry(
@@ -328,8 +328,8 @@ async def test_a_bare_letter_does_not_match_a_symbol_name_without_vectors(tmp_pa
 
 
 def test_cjk_coverage_ignores_runs_glued_to_symbols():
-    from knowledge.retrieval import token_coverage
-    from knowledge.store import StoredEntry
+    from services.knowledge.retrieval import token_coverage
+    from services.knowledge.store import StoredEntry
 
     def entry(title, content):
         return StoredEntry(
@@ -343,7 +343,7 @@ def test_cjk_coverage_ignores_runs_glued_to_symbols():
 
 
 def test_accents_tell_strict_surfaces_apart():
-    from knowledge.text import loose_surface, strict_surface
+    from services.knowledge.text import loose_surface, strict_surface
 
     plain, accented = "resume", "résumé"
     assert strict_surface(plain) != strict_surface(accented)

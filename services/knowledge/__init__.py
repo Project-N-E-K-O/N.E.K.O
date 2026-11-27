@@ -14,6 +14,8 @@
 
 """Public knowledge: user-imported reference packs, kept apart from memory.
 
+The implementation lives under services.knowledge; the services parent stays
+free of eager child imports so importing this domain cannot initialize a server.
 The package runs inside the Memory Server process and is reached by Main only
 over HTTP (``/internal/knowledge/*``). It owns ``<root>/knowledge/`` and never
 reads or writes user or character memory. Embedding inference is borrowed

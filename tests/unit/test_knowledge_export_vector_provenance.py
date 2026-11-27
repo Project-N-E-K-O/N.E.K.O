@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from app.memory_server import knowledge_routes
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import (
     _PackageEmbedder,
     _prepare_export_vectors,

@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 
 from app.memory_server import knowledge_routes
-from knowledge.models import KnowledgePackError
-from knowledge.service import ImportJob, KnowledgeService
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import ImportJob, KnowledgeService
 from tests.unit.test_knowledge_job_discard_durability import _retryable_job
 
 

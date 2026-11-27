@@ -5,9 +5,9 @@ import uuid
 
 import pytest
 
-from knowledge import service as module
-from knowledge.registry import load_registry
-from knowledge.service import KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.registry import load_registry
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_fixtures import _finished, _import, _pack
 
 

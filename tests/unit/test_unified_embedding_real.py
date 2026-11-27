@@ -10,7 +10,7 @@ import pytest
 
 from app.memory_server.knowledge_routes import _SharedEmbedder
 # Manual batches use the real indexer; model lifetime and task draining stay on the service.
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from memory.embeddings import EmbeddingService
 from utils.knowledge_package import validate_package
 

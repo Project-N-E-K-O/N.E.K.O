@@ -12,9 +12,9 @@ import sqlite3
 import numpy as np
 import pytest
 
-from knowledge import querying as query_module
-from knowledge.models import parse_pack
-import knowledge.service as service_module
+from services.knowledge import querying as query_module
+from services.knowledge.models import parse_pack
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import FakeEmbedder, _entries, _import, _pack, _started, fast_indexer  # noqa: F401
 
@@ -59,7 +59,7 @@ async def test_semantic_search_skips_packs_with_local_vectors_off(tmp_path, monk
 
 
 async def test_cards_are_labelled_from_the_registry_snapshot_of_the_query(tmp_path):
-    from knowledge.retrieval import RankedHit
+    from services.knowledge.retrieval import RankedHit
 
     service = await _started(tmp_path)
     try:
@@ -105,8 +105,8 @@ async def test_entries_disabled_in_the_query_snapshot_stay_hidden(tmp_path):
 
 
 def test_disabled_entries_do_not_crowd_out_semantic_candidates():
-    from knowledge.retrieval import SEMANTIC_CANDIDATES, semantic_candidates
-    from knowledge.store import VectorSnapshot
+    from services.knowledge.retrieval import SEMANTIC_CANDIDATES, semantic_candidates
+    from services.knowledge.store import VectorSnapshot
 
     count = SEMANTIC_CANDIDATES + 6
     matrix = np.zeros((count, 4), dtype=np.float32)

@@ -12,8 +12,8 @@ import sqlite3
 
 import pytest
 
-from knowledge.registry import REGISTRY_FILE, load_registry
-import knowledge.service as service_module
+from services.knowledge.registry import REGISTRY_FILE, load_registry
+import services.knowledge.service as service_module
 from tests.knowledge_fixtures import _import, _pack, _started
 
 pytestmark = pytest.mark.unit
@@ -233,7 +233,7 @@ async def test_reconcile_persists_updated_counts_after_chunking_change(tmp_path,
     """F0137: startup reconcile updates PackRecord counts on disk so subsequent startups do not rebuild."""
     from dataclasses import replace as dc_replace
 
-    from knowledge.registry import save_registry
+    from services.knowledge.registry import save_registry
 
     long_content = " ".join(f"segment-{i}" for i in range(400))
     pack = _pack(
@@ -298,7 +298,7 @@ async def test_reconcile_registry_save_failure_warns_without_wiping_db(tmp_path,
     """F0137: OSError while persisting reconciled registry must not trigger DB wipe retry."""
     from dataclasses import replace as dc_replace
 
-    from knowledge.registry import save_registry
+    from services.knowledge.registry import save_registry
 
     service = await _started(tmp_path)
     try:

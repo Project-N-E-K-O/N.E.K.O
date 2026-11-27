@@ -4,9 +4,9 @@ import io
 
 import pytest
 
-from knowledge.chunking import derive_chunks
-from knowledge.importing.documents import SourceError, SourceLimits, parse_source
-from knowledge.models import KnowledgeEntry
+from services.knowledge.chunking import derive_chunks
+from services.knowledge.importing.documents import SourceError, SourceLimits, parse_source
+from services.knowledge.models import KnowledgeEntry
 from tests.unit.test_document_parser import _pptx_bytes, _xlsx_bytes
 from tests.knowledge_archive_fixtures import make_archive
 from tests.unit.test_knowledge_importing_documents import _pdf_with_text

@@ -35,6 +35,21 @@ Memory Server /internal/knowledge/*
 
 ## Module ownership
 
+The source package is `services/knowledge/` (`services.knowledge`). Its parent
+`services/__init__.py` remains free of eager domain imports: using the core does
+not initialize memory or a server. The Memory Server owns its HTTP adapter and
+injects the shared encoder. Main and other services continue to reach it over
+HTTP. The layering gate retains an independent logical `knowledge` node,
+including absolute, relative and literal dynamic imports, so the nested path
+does not grant Main-side access or allow knowledge to import memory.
+
+This is a source relocation only. Runtime data stays at
+`ConfigManager.knowledge_dir`, and the HTTP paths and product ZIP schema stay
+the same. The two historical corpus directories and their licenses move with
+the source and retain their wheel/sdist exclusions. Nuitka's Unix, Windows and
+Linux-only steps explicitly include `services.knowledge`. Local packaging
+scripts kept outside the repository must update the old package flag too.
+
 `KnowledgeService` is the runtime and transaction coordinator, not a second
 store. Its public API remains the entry point used by the Memory Server router.
 The workflows below are composed once per service and keep an explicit reference
@@ -42,13 +57,13 @@ to that owner; they do not clone its registry, model, locks, queues or snapshots
 
 | Module | Responsibility | Ownership boundary |
 | --- | --- | --- |
-| `knowledge/service.py` | Startup/recovery, source/import/export admission, removal, policy writes, registry/SQLite commit and rollback, management reads | Owns the shared write lock, registry and vector publication, model state, worker pools, query embedding admission, query leases and background task lifetimes |
-| `knowledge/querying.py` — `QueryEngine` | Tool lookup/sample and passive turn context, candidate filtering, fusion and rendering | Uses the service's query lease and current snapshots; thresholds and query budgets live here |
-| `knowledge/indexing.py` — `VectorIndexer` | Background batches and duty pauses, retained archive seeds and vector refresh orchestration | Scheduling constants live here; the service publishes matrix/key pairs, registers the single refresh task, validates model compatibility and coordinates transactional replanning/capacity |
-| `knowledge/exports.py` — `ExportManager` | Export format and frozen job identity, snapshot validation, publication, download and explicit export deletion | Submits jobs to runtime-owned admission/queueing; publication keeps the original cancellation gate, persistence and reference accounting |
-| `knowledge/jobs.py` | Shared job record, states and detached-task result consumption | No scheduler or persistent state; `ImportJob` remains importable from the service |
-| `knowledge/pack_files.py` | Bounded canonical-pack reads, file identity and verified history copies | Callers retain path selection, locking and retention decisions |
-| `knowledge/importing/commit_policy.py` | Pure construction of the next pack registry record, including disclosure defaults and retained user choices | Receives the checked pack/job, previous record and time; performs no IO, admission or publication |
+| `services/knowledge/service.py` | Startup/recovery, source/import/export admission, removal, policy writes, registry/SQLite commit and rollback, management reads | Owns the shared write lock, registry and vector publication, model state, worker pools, query embedding admission, query leases and background task lifetimes |
+| `services/knowledge/querying.py` — `QueryEngine` | Tool lookup/sample and passive turn context, candidate filtering, fusion and rendering | Uses the service's query lease and current snapshots; thresholds and query budgets live here |
+| `services/knowledge/indexing.py` — `VectorIndexer` | Background batches and duty pauses, retained archive seeds and vector refresh orchestration | Scheduling constants live here; the service publishes matrix/key pairs, registers the single refresh task, validates model compatibility and coordinates transactional replanning/capacity |
+| `services/knowledge/exports.py` — `ExportManager` | Export format and frozen job identity, snapshot validation, publication, download and explicit export deletion | Submits jobs to runtime-owned admission/queueing; publication keeps the original cancellation gate, persistence and reference accounting |
+| `services/knowledge/jobs.py` | Shared job record, states and detached-task result consumption | No scheduler or persistent state; `ImportJob` remains importable from the service |
+| `services/knowledge/pack_files.py` | Bounded canonical-pack reads, file identity and verified history copies | Callers retain path selection, locking and retention decisions |
+| `services/knowledge/importing/commit_policy.py` | Pure construction of the next pack registry record, including disclosure defaults and retained user choices | Receives the checked pack/job, previous record and time; performs no IO, admission or publication |
 
 Import, source removal and startup recovery deliberately remain together where
 they coordinate one registry/SQLite transaction. Splitting these writes into
@@ -171,7 +186,7 @@ The plugin server (`plugin/server/routes/knowledge_market.py`) does only the mar
 
 The subscription's lifecycle after that belongs to the Memory Server, which owns the data: activation, a failure at commit, removal.
 
-- **Metadata** (`knowledge/subscriptions.py`): provider (`plugin-market`), package id, remote id, pack id, version, channel, artifact SHA-256 and material type, stored in the pack's registry record. The Memory Server installs the artifact only if its SHA-256, pack id and material type match.
+- **Metadata** (`services/knowledge/subscriptions.py`): provider (`plugin-market`), package id, remote id, pack id, version, channel, artifact SHA-256 and material type, stored in the pack's registry record. The Memory Server installs the artifact only if its SHA-256, pack id and material type match.
 - **Identity rules**: a pack is local or subscribed for good (neither overwrites the other); a subscribed pack keeps its provider, package id, remote id and material type; one market package installs as one pack. Checked when the import is admitted and again under the write lock when it commits.
 - **v1 has no prebuilt vectors**: the artifact is raw text; vectors are backfilled locally like any import. Index artifacts a descriptor lists are ignored.
 - **Repeated applies**: an apply carrying exactly the metadata of an import already queued or building is answered with that import, so the plugin server can resend an apply whose answer was lost.
@@ -184,7 +199,7 @@ The subscription's lifecycle after that belongs to the Memory Server, which owns
 Before a text reply (typed, or transcribed by the independent ASR), Main asks the Memory Server for material related to what the user just said and shows it to that reply's requests. Realtime voice, greetings, proactive turns, agent callbacks, games and visits do not run it; there the model has only its tools.
 
 - **Interface** (`main_logic/core/turn_context.py`, `main_logic/turn_context.py`): every provider starts as soon as the turn's words are known and is collected right before the reply is sent, under one shared budget (`TURN_CONTEXT_BUDGET_SECONDS`, 1 s) counted from the start. A provider not back by then is dropped. A turn superseded meanwhile (a newer message rotated the speech id, the session changed, the voice route left Core) drops what came back.
-- **Knowledge and corpus** (`POST /internal/knowledge/turn_context`, `knowledge/passive.py`): only packs whose own switch is on take part, under the global switch. Per material type, at most two cards, each within 400 tokens: a card the message names (title, alias or recognition phrase; names under two CJK characters or three letters only as the whole message); a top keyword candidate whose cosine clears the dual bar; or the single best vector match, above a higher bar and leading the next match. A keyword match alone never qualifies. The service keeps no session state: Main sends the cards the session still carries as `exclude_card_ids`.
+- **Knowledge and corpus** (`POST /internal/knowledge/turn_context`, `services/knowledge/passive.py`): only packs whose own switch is on take part, under the global switch. Per material type, at most two cards, each within 400 tokens: a card the message names (title, alias or recognition phrase; names under two CJK characters or three letters only as the whole message); a top keyword candidate whose cosine clears the dual bar; or the single best vector match, above a higher bar and leading the next match. A keyword match alone never qualifies. The service keeps no session state: Main sends the cards the session still carries as `exclude_card_ids`.
 - **Memories** (`POST /internal/memory/{name}/turn_context`, `memory/turn_context.py`): the pool is what the system prompt does not already hold (facts minus those written this session, archived facts, reflections and persona entries the render leaves out of its budget), private scope only. At most two: a shared rare term, keywords and meaning agreeing, or up to two clear vector leaders; without vectors, a very high keyword bar. Switched by the conversation setting `autoMemoryRecallEnabled` (on by default).
 - **Calibration** (`utils/semantic_calibration.py`): vector bars are never fixed cosines, since the embedding model and its width change with the machine. Small-talk probe sentences (`TURN_CONTEXT_CALIBRATION_PROBES`) are embedded once per model; a bar sits a margin above what small talk scores against the material, never below the matching tool's own threshold. Until the calibration exists, only name, rare-term and keyword evidence applies.
 - **Where it goes** (`main_logic/omni_offline_client/_turn_context.py`): two user-role messages after the user's message, never in history, memory, chat records or the plugin bus. The turn block (corpus, memories) rides that turn's requests only. The knowledge block stays beside the history, spliced back after its user message in every later request of the session, so the request prefix grows turn by turn and prompt caches keep hitting; it is kept only once the provider answered its turn, goes when the session is renewed or its message leaves the history, and the oldest is dropped past `TURN_CONTEXT_RESIDENT_KNOWLEDGE_MAX_TOKENS`. A card still carried is not sent again.

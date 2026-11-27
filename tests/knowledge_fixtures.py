@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import knowledge.service as service_module
-from knowledge import indexing as index_module
+import services.knowledge.service as service_module
+from services.knowledge import indexing as index_module
 
 
 def _pack(pack_id: str = "demo-memes", *, material_type: str = "knowledge", entries=None) -> dict:

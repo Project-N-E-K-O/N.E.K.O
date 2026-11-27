@@ -1,16 +1,16 @@
 """Replan refusals belong to the registry checked after acquiring the lock."""
 
 # Index scheduling hooks follow VectorIndexer; shared runtime state stays on the service.
-from knowledge import indexing as index_module
+from services.knowledge import indexing as index_module
 import asyncio
 from dataclasses import replace
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import KnowledgePackError, decode_pack_bytes
-from knowledge.service import KnowledgeService
-from knowledge.store import count_pack_chunks
+from services.knowledge import service as module
+from services.knowledge.models import KnowledgePackError, decode_pack_bytes
+from services.knowledge.service import KnowledgeService
+from services.knowledge.store import count_pack_chunks
 from tests.unit.test_knowledge_vector_backfill_recovery import TokenProvider
 from tests.knowledge_helpers import _stop_automatic_indexer
 from tests.knowledge_fixtures import _import, _pack, _raw

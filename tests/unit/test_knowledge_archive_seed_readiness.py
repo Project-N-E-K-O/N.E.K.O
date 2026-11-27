@@ -7,8 +7,8 @@ import struct
 
 import pytest
 
-from knowledge import archive
-from knowledge.service import KnowledgeService
+from services.knowledge import archive
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _PackageEmbedder, make_archive, specification
 from tests.knowledge_fixtures import _finished, _manual_index
 from utils.knowledge_package import canonical_json

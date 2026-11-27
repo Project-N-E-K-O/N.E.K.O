@@ -47,7 +47,7 @@ def _large_archive(path):
 
 
 async def test_production_guard_allows_a_valid_large_zip_but_keeps_the_global_cap(tmp_path, monkeypatch):
-    from knowledge.service import KnowledgeService
+    from services.knowledge.service import KnowledgeService
 
     service = KnowledgeService(tmp_path / 'knowledge')
     await service.start()
@@ -80,7 +80,7 @@ async def test_production_guard_allows_a_valid_large_zip_but_keeps_the_global_ca
 @pytest.mark.parametrize('failure,status', [(BodyTooLarge, 413), (ClientDisconnect, 400)])
 async def test_partial_multipart_files_close_when_the_bounded_stream_aborts(tmp_path, monkeypatch, failure, status):
     from starlette.requests import Request
-    from knowledge.service import KnowledgeService
+    from services.knowledge.service import KnowledgeService
 
     service = KnowledgeService(tmp_path / 'knowledge')
     await service.start()
@@ -105,7 +105,7 @@ async def test_partial_multipart_files_close_when_the_bounded_stream_aborts(tmp_
 
 
 async def test_cancelled_preview_keeps_its_spool_until_the_parser_releases_it(tmp_path, monkeypatch):
-    from knowledge.service import KnowledgeService
+    from services.knowledge.service import KnowledgeService
 
     service = KnowledgeService(tmp_path / 'knowledge')
     await service.start()
@@ -140,7 +140,7 @@ async def test_cancelled_preview_keeps_its_spool_until_the_parser_releases_it(tm
 
 
 async def test_source_commit_confirmation_is_typed_and_forwarded(tmp_path, monkeypatch):
-    from knowledge.service import KnowledgeService
+    from services.knowledge.service import KnowledgeService
 
     service = KnowledgeService(tmp_path / 'knowledge')
     await service.start()
@@ -164,7 +164,7 @@ async def test_source_commit_confirmation_is_typed_and_forwarded(tmp_path, monke
 
 
 async def test_preview_passes_a_temporary_path_and_reclaims_it(tmp_path, monkeypatch):
-    from knowledge.service import KnowledgeService
+    from services.knowledge.service import KnowledgeService
 
     service = KnowledgeService(tmp_path / 'knowledge')
     await service.start()

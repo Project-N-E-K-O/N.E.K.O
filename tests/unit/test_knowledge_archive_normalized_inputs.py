@@ -6,10 +6,10 @@ import struct
 
 import pytest
 
-from knowledge.archive import read_archive
-from knowledge.chunking import derive_chunks
-from knowledge.models import canonical_pack_bytes, pack_sha256, parse_pack
-from knowledge.store import KnowledgeStore
+from services.knowledge.archive import read_archive
+from services.knowledge.chunking import derive_chunks
+from services.knowledge.models import canonical_pack_bytes, pack_sha256, parse_pack
+from services.knowledge.store import KnowledgeStore
 from tests.knowledge_archive_fixtures import make_archive, specification
 from utils.knowledge_package import canonical_json, validate_package
 

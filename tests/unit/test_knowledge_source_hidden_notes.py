@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from knowledge.importing.documents import SourceLimits, parse_source
+from services.knowledge.importing.documents import SourceLimits, parse_source
 from utils.document_parser import parse_document
 
 

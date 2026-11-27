@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_helpers import ObservedLock
 from tests.knowledge_fixtures import _finished, _pack
 

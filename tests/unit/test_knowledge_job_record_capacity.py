@@ -7,8 +7,8 @@ import uuid
 
 import pytest
 
-from knowledge.models import MAX_ENTRIES_PER_PACK
-from knowledge.service import MAX_JOB_RECORD_BYTES, KnowledgeService
+from services.knowledge.models import MAX_ENTRIES_PER_PACK
+from services.knowledge.service import MAX_JOB_RECORD_BYTES, KnowledgeService
 
 
 pytestmark = pytest.mark.unit

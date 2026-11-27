@@ -6,9 +6,9 @@ import threading
 
 import pytest
 
-from knowledge import archive, service as module
-from knowledge.models import KnowledgePackError
-from knowledge.service import KnowledgeService
+from services.knowledge import archive, service as module
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_fixtures import _finished, _import, _manual_index, _pack
 from tests.knowledge_archive_fixtures import _prepare_export_vectors, make_archive
 

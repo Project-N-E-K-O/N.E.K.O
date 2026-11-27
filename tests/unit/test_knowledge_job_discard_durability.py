@@ -10,9 +10,9 @@ import pytest
 from fastapi import FastAPI
 
 from app.memory_server import knowledge_routes
-from knowledge import service as module
-from knowledge.models import KnowledgePackError, pack_sha256
-from knowledge.service import ImportJob, KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.models import KnowledgePackError, pack_sha256
+from services.knowledge.service import ImportJob, KnowledgeService
 from tests.knowledge_fixtures import _pack
 
 

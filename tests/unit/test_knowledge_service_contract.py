@@ -12,9 +12,9 @@ import logging
 
 import pytest
 
-from knowledge.registry import load_registry
-from knowledge.service import KnowledgeService
-import knowledge.service as service_module
+from services.knowledge.registry import load_registry
+from services.knowledge.service import KnowledgeService
+import services.knowledge.service as service_module
 from tests.knowledge_fixtures import _import, _pack, _raw, _started
 
 pytestmark = pytest.mark.unit
@@ -149,7 +149,7 @@ async def test_pack_enabled_filters_tool_query_and_passive_context_without_losin
 
 async def test_private_exception_message_and_cause_never_reach_logs_or_api(tmp_path, monkeypatch):
     from app.memory_server import knowledge_routes
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     service = KnowledgeService(tmp_path)
     await service.start()

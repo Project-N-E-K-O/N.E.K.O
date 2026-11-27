@@ -11,9 +11,9 @@ import sqlite3
 
 import pytest
 
-from knowledge import indexing as index_module
-from knowledge.registry import load_registry
-import knowledge.service as service_module
+from services.knowledge import indexing as index_module
+from services.knowledge.registry import load_registry
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import FakeEmbedder, _entries, _import, _pack, _started, fast_indexer  # noqa: F401
 

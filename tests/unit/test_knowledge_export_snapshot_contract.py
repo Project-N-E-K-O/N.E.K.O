@@ -14,8 +14,8 @@ import zipfile
 
 import pytest
 
-from knowledge.models import KnowledgePackError
-from knowledge.service import KnowledgeService
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _PackageEmbedder, _prepare_export_vectors
 from tests.knowledge_fixtures import _finished, _import, _manual_index, _pack
 
@@ -70,7 +70,7 @@ async def test_export_rejects_changed_pack_bytes_before_decoding(tmp_path, chang
 
 async def test_export_decodes_the_same_bytes_it_checked(tmp_path, monkeypatch):
     """A disk replacement after the bounded read cannot change this snapshot."""
-    from knowledge import exports as module
+    from services.knowledge import exports as module
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -169,7 +169,7 @@ async def test_incomplete_export_fails_without_losing_a_committed_text_import(tm
 @pytest.mark.parametrize("format_version", [1, True, 2.0, "2", None])
 async def test_service_refuses_retired_or_invalid_export_formats_before_queueing(tmp_path, format_version):
     """Direct callers cannot recover the retired text-only export path."""
-    from knowledge.models import KnowledgePackError
+    from services.knowledge.models import KnowledgePackError
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -186,9 +186,9 @@ async def test_service_refuses_retired_or_invalid_export_formats_before_queueing
 
 async def test_retired_persisted_export_cannot_resume_or_retry_as_another_format(tmp_path):
     """A retained v1 task stays inspectable but cannot create a new artifact."""
-    from knowledge.models import KnowledgePackError
-    from knowledge.registry import utc_now
-    from knowledge.service import ImportJob
+    from services.knowledge.models import KnowledgePackError
+    from services.knowledge.registry import utc_now
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -217,7 +217,7 @@ async def test_retired_persisted_export_cannot_resume_or_retry_as_another_format
 @pytest.mark.parametrize("phase", ["sync", "replace"])
 async def test_export_cancel_is_exclusive_with_artifact_publication(tmp_path, monkeypatch, phase):
     """Exercise both sides of the gate with the real queued export worker."""
-    from knowledge import archive
+    from services.knowledge import archive
 
     service = KnowledgeService(tmp_path)
     await service.start()

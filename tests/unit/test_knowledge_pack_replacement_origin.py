@@ -5,8 +5,8 @@ import zipfile
 
 import pytest
 
-from knowledge.registry import load_registry
-from knowledge.service import KnowledgeService
+from services.knowledge.registry import load_registry
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import make_archive
 from tests.knowledge_fixtures import _finished, _import, _pack, _raw
 

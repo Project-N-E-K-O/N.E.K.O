@@ -4,7 +4,7 @@ import io
 
 import pytest
 
-from knowledge.importing.documents import SourceError, SourceLimits, parse_source
+from services.knowledge.importing.documents import SourceError, SourceLimits, parse_source
 from tests.unit.test_knowledge_importing_documents import _pdf_with_text
 from utils import document_parser
 

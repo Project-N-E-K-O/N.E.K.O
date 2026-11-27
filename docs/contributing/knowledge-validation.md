@@ -6,6 +6,12 @@ API key, running application or remote Market account. Run from the checkout
 being tested with its existing Python environment; worktrees borrowing an
 environment should set `UV_PROJECT_ENVIRONMENT` to that environment first.
 
+The domain implementation is `services/knowledge/`; the tests import
+`services.knowledge` without initializing its Memory Server host. The source
+location does not change `ConfigManager.knowledge_dir`, the HTTP paths or ZIP
+schema. `test_knowledge_package_layout.py` additionally checks wheel/sdist,
+the three Nuitka entrypoints and the lightweight import in a fresh process.
+
 ## Resources and isolation
 
 Set `NEKO_REAL_EMBEDDING_ROOT` to an existing model root containing:

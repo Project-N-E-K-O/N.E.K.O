@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _prepare_export_vectors
 from tests.knowledge_fixtures import _finished, _import, _pack
 
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize("restart", [False, True])
 async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restart):
-    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+    from services.knowledge.service import MAX_TRACKED_JOBS, ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -51,7 +51,7 @@ async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restar
 
 
 async def test_a_real_export_from_a_full_window_keeps_the_oldest_failed_import_retryable(tmp_path):
-    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+    from services.knowledge.service import MAX_TRACKED_JOBS, ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -74,7 +74,7 @@ async def test_a_real_export_from_a_full_window_keeps_the_oldest_failed_import_r
 
 
 async def test_retained_exports_do_not_crowd_out_recent_failed_imports(tmp_path):
-    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+    from services.knowledge.service import MAX_TRACKED_JOBS, ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()

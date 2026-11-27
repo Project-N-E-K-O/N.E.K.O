@@ -956,7 +956,7 @@ class KnowledgeService:
         return result
 
     def _identity_conflict(self, pack_id: str, subscription: KnowledgeSubscription | None) -> bool:
-        """Whether installing this would break the rules in ``knowledge.subscriptions``."""
+        """Whether installing this would break the rules in ``services.knowledge.subscriptions``."""
         installed = {key: record.subscription for key, record in self._registry.packs.items()}
         if identity_conflict(pack_id, subscription, installed):
             return True

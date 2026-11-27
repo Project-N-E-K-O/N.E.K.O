@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from knowledge.chunking import derive_chunks, _fit_windows
-from knowledge.importing import documents
-from knowledge.importing.projection import project_pack
-from knowledge.importing.sources import SourceStore
-from knowledge.models import KnowledgeEntry
+from services.knowledge.chunking import derive_chunks, _fit_windows
+from services.knowledge.importing import documents
+from services.knowledge.importing.projection import project_pack
+from services.knowledge.importing.sources import SourceStore
+from services.knowledge.models import KnowledgeEntry
 from utils import document_parser as office
 
 pytestmark = pytest.mark.unit_fast
@@ -130,7 +130,7 @@ def test_hiding_pack_does_not_require_readable_sidecar_but_retaining_does(tmp_pa
 
 
 def test_hiding_valid_sidecar_does_not_swallow_write_failure(tmp_path,monkeypatch):
-    from knowledge.importing import sources
+    from services.knowledge.importing import sources
     store = SourceStore(tmp_path)
     preview = store.preview('notes.txt',b'complete body')
     store.retain_preview(preview['preview_id'],preview['sha256'])
@@ -145,7 +145,7 @@ def test_hiding_valid_sidecar_does_not_swallow_write_failure(tmp_path,monkeypatc
 
 
 def test_retry_repairs_manifest_after_frozen_version_was_written(tmp_path,monkeypatch):
-    from knowledge.importing import sources
+    from services.knowledge.importing import sources
     store = SourceStore(tmp_path)
     preview = store.preview('notes.txt',b'complete body')
     write = sources.atomic_write_json
@@ -184,7 +184,7 @@ def test_source_spool_keeps_the_exact_original_bytes(tmp_path):
 
 
 def test_source_spool_read_is_bounded_by_the_document_limit(tmp_path, monkeypatch):
-    from knowledge.importing import sources
+    from services.knowledge.importing import sources
 
     monkeypatch.setattr(sources, 'SourceLimits', lambda: documents.SourceLimits(max_document_bytes=16))
     spool = tmp_path / 'request-spool'
@@ -216,7 +216,7 @@ def test_many_located_paragraphs_have_readable_preview_and_version_records(tmp_p
 
 
 def test_unreadable_sidecar_size_is_rejected_before_original_publication(tmp_path, monkeypatch):
-    from knowledge.importing import sources
+    from services.knowledge.importing import sources
 
     monkeypatch.setattr(sources, 'SIDECAR_MAX_BYTES', 10)
     store = SourceStore(tmp_path)

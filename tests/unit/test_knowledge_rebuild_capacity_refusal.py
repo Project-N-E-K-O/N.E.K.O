@@ -6,11 +6,11 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import decode_pack_bytes
-from knowledge.service import KnowledgeService
-from knowledge.store import count_pack_chunks
-from knowledge.archive import read_archive
+from services.knowledge import service as module
+from services.knowledge.models import decode_pack_bytes
+from services.knowledge.service import KnowledgeService
+from services.knowledge.store import count_pack_chunks
+from services.knowledge.archive import read_archive
 from tests.knowledge_archive_fixtures import make_archive, specification
 from tests.knowledge_helpers import _stop_automatic_indexer
 from tests.knowledge_fixtures import FakeEmbedder, _finished, _import, _pack, _raw
@@ -249,7 +249,7 @@ async def test_startup_rebuild_order_cannot_bypass_the_total_budget(tmp_path, mo
     """A growing pack planned first must already see the rows a later refused pack keeps."""
     from dataclasses import replace
 
-    from knowledge.registry import load_registry, save_registry
+    from services.knowledge.registry import load_registry, save_registry
 
     root = tmp_path / "library"
     service = KnowledgeService(root, embedder=FakeEmbedder())

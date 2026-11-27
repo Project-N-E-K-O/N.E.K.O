@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _PackageEmbedder, make_archive, specification
 from tests.knowledge_fixtures import _finished, _import, _manual_index, _pack
 
@@ -72,7 +72,7 @@ async def test_portable_vectors_survive_export_and_deleted_index_without_encodin
 
 
 async def test_new_tokenizer_replans_complete_inputs_before_any_encoding(tmp_path, monkeypatch):
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     class SmallInputs(_PackageEmbedder):
         def __init__(self):
@@ -98,12 +98,12 @@ async def test_new_tokenizer_replans_complete_inputs_before_any_encoding(tmp_pat
         embedder = SmallInputs()
         service.embedder = embedder
         # Only the scheduling pause moves; token planning still uses service state.
-        from knowledge import indexing
+        from services.knowledge import indexing
         monkeypatch.setattr(indexing, "_batch_pause", lambda _: 0)
         assert await service._indexer._index_round() > 0
         assert any("TAILMARK" in text for text in embedder.inputs)
         assert service._store.pending_chunks(model_id=embedder.model_id(), pack_ids=[next(iter(service._registry.packs))], limit=100) == []
-        from knowledge.retrieval import RankedHit
+        from services.knowledge.retrieval import RankedHit
 
         pack_id = next(iter(service._registry.packs))
         await service.set_pack_enabled(pack_id, True)

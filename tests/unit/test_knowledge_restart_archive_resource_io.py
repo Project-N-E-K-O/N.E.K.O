@@ -8,9 +8,9 @@ import uuid
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import KnowledgePackError
-from knowledge.service import KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import make_archive, specification
 from tests.knowledge_fixtures import FakeEmbedder, _import, _manual_index, _pack
 
@@ -160,7 +160,7 @@ async def test_retention_cleanup_failure_keeps_the_original_error(tmp_path, monk
 
 
 async def test_failure_before_stage_creation_keeps_an_existing_stage(tmp_path, monkeypatch):
-    from knowledge import archive
+    from services.knowledge import archive
 
     path = make_archive(tmp_path / "input.zip")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()

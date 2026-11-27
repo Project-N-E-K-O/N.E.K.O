@@ -12,8 +12,8 @@ import threading
 
 import pytest
 
-from knowledge.models import KnowledgePackError
-from knowledge.service import KnowledgeService
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _prepare_export_vectors
 from tests.knowledge_fixtures import _finished, _import, _pack
 
@@ -54,8 +54,8 @@ async def test_delete_export_removes_its_record_and_zip_without_losing_the_libra
 async def test_delete_export_keeps_zip_referenced_by_library_or_retained_tasks(tmp_path, owner):
     """Even a disk-only recovery task protects its immutable input archive."""
     from dataclasses import replace
-    from knowledge.service import ImportJob
-    from knowledge.registry import save_registry, utc_now
+    from services.knowledge.service import ImportJob
+    from services.knowledge.registry import save_registry, utc_now
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -151,7 +151,7 @@ async def test_export_delete_cannot_be_revived_by_a_late_worker_flush(tmp_path, 
 
 async def test_export_delete_waits_until_archive_import_owns_its_recovery_reference(tmp_path, monkeypatch):
     """Deletion cannot unlink between retaining a ZIP and admitting its import."""
-    from knowledge import service as module
+    from services.knowledge import service as module
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -195,9 +195,9 @@ async def test_export_delete_waits_until_archive_import_owns_its_recovery_refere
 @pytest.mark.parametrize("case", ["invalid_id", "missing", "import", "queued", "failed", "no_result", "invalid_artifact"])
 async def test_delete_export_refuses_anything_except_a_completed_output(tmp_path, case):
     """Untrusted identifiers and ordinary import tasks cannot delete files."""
-    from knowledge.models import KnowledgePackError
-    from knowledge.registry import utc_now
-    from knowledge.service import ImportJob
+    from services.knowledge.models import KnowledgePackError
+    from services.knowledge.registry import utc_now
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()

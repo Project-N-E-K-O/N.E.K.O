@@ -100,7 +100,7 @@ def test_symbolic_link_member_is_not_a_data_file(tmp_path):
 @pytest.mark.parametrize("target_dim,quantization,seeds", [(32, "int8", 1), (64, "int8", 1), (128, "int8", 0), (64, "fp32", 0)])
 def test_archive_installs_only_real_compatible_prefixes(tmp_path, target_dim, quantization, seeds):
     """Low-memory consumers borrow a prefix; incompatible widths never get zeros."""
-    from knowledge.archive import read_archive
+    from services.knowledge.archive import read_archive
 
     source = make_archive(tmp_path / "source.zip")
     result = read_archive(source, expected_spec=specification(target_dim, quantization))
@@ -116,7 +116,7 @@ def test_archive_installs_only_real_compatible_prefixes(tmp_path, target_dim, qu
 
 def test_export_reuses_existing_packed_vectors_in_one_complete_archive(tmp_path):
     """The only export preserves text and vectors in the validated v2 contract."""
-    from knowledge.archive import export_archive
+    from services.knowledge.archive import export_archive
 
     source = make_archive(tmp_path / "source.zip")
     checked = package.validate_package(source)
@@ -143,7 +143,7 @@ def test_export_reuses_existing_packed_vectors_in_one_complete_archive(tmp_path)
 @pytest.mark.parametrize("name", ["My notes", "日本語の資料", '../CON.txt:*?\r\n', "CON.txt", "資料" * 200, "..."])
 def test_export_filename_is_portable_without_losing_unicode(name):
     """Readable download names cannot become paths or Windows device names."""
-    from knowledge.archive import export_filename
+    from services.knowledge.archive import export_filename
 
     filename = export_filename(name, created_at="2026-11-19T07:30:42Z")
     assert filename.endswith(package.PACKAGE_SUFFIX)
@@ -156,8 +156,8 @@ def test_export_filename_is_portable_without_losing_unicode(name):
 
 
 def test_incomplete_vectors_do_not_publish_a_v2_archive(tmp_path):
-    from knowledge.archive import export_archive
-    from knowledge.models import KnowledgePackError
+    from services.knowledge.archive import export_archive
+    from services.knowledge.models import KnowledgePackError
 
     checked = package.validate_package(make_archive(tmp_path / "source.zip"))
     output = tmp_path / "artifacts"
@@ -168,9 +168,9 @@ def test_incomplete_vectors_do_not_publish_a_v2_archive(tmp_path):
 
 def test_repeated_source_text_accepts_real_token_fitted_chunks(tmp_path):
     """A repeated excerpt may also occur inside the preceding overlap window."""
-    from knowledge.archive import export_archive
-    from knowledge.chunking import derive_chunks
-    from knowledge.models import parse_pack
+    from services.knowledge.archive import export_archive
+    from services.knowledge.chunking import derive_chunks
+    from services.knowledge.models import parse_pack
 
     checked = package.validate_package(make_archive(tmp_path / "source.zip"))
     payload = checked.pack
@@ -187,7 +187,7 @@ def test_repeated_source_text_accepts_real_token_fitted_chunks(tmp_path):
 
 def test_export_refuses_publication_when_final_task_gate_is_cancelled(tmp_path):
     """The owner may accept cancellation while staged bytes are being synced."""
-    from knowledge.archive import export_archive
+    from services.knowledge.archive import export_archive
 
     checked = package.validate_package(make_archive(tmp_path / "source.zip"))
     with zipfile.ZipFile(tmp_path / "source.zip") as archive:

@@ -4,9 +4,9 @@ import sqlite3
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import canonical_pack_bytes, decode_pack_bytes, pack_sha256
-from knowledge.service import KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.models import canonical_pack_bytes, decode_pack_bytes, pack_sha256
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_helpers import _stop_automatic_indexer
 from tests.knowledge_fixtures import _finished, _import, _pack, _raw
 

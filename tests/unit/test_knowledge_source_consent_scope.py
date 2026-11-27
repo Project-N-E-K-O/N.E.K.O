@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.memory_server import knowledge_routes
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.unit.test_knowledge_source_removal_retry_consent import _document
 from tests.knowledge_fixtures import _finished
 

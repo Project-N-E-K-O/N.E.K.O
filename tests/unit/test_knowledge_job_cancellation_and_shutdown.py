@@ -12,9 +12,9 @@ import threading
 
 import pytest
 
-from knowledge.models import parse_pack
-from knowledge.registry import load_registry
-import knowledge.service as service_module
+from services.knowledge.models import parse_pack
+from services.knowledge.registry import load_registry
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import (
     FakeEmbedder,
@@ -68,7 +68,7 @@ async def test_cancel_succeeds_when_its_record_write_fails(tmp_path, monkeypatch
 
 
 def test_cancel_inside_the_write_transaction_rolls_back(tmp_path):
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()
@@ -163,7 +163,7 @@ async def test_undeletable_staged_file_does_not_stop_the_job_runner(tmp_path, mo
 
 
 def test_cancel_after_the_last_entry_still_rolls_back(tmp_path):
-    from knowledge.store import KnowledgeStore
+    from services.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()

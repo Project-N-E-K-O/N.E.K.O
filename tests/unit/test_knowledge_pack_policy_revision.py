@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI
 
 from app.memory_server import knowledge_routes
-from knowledge import service as module
-from knowledge.service import KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_fixtures import _import, _pack
 
 

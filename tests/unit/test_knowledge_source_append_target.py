@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from knowledge.models import KnowledgePackError
-from knowledge.service import KnowledgeService
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_fixtures import _finished
 
 

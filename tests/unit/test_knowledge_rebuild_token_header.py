@@ -5,10 +5,10 @@ exercised end to end."""
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import decode_pack_bytes
-from knowledge.service import KnowledgeService
-from knowledge.store import count_pack_chunks
+from services.knowledge import service as module
+from services.knowledge.models import decode_pack_bytes
+from services.knowledge.service import KnowledgeService
+from services.knowledge.store import count_pack_chunks
 from tests.knowledge_archive_fixtures import specification
 from tests.unit.test_knowledge_rebuild_capacity_refusal import _rows
 from tests.knowledge_helpers import _stop_automatic_indexer

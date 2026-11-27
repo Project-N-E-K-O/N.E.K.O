@@ -11,8 +11,8 @@ import sqlite3
 
 import pytest
 
-from knowledge.models import parse_pack
-import knowledge.service as service_module
+from services.knowledge.models import parse_pack
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import (
     FakeEmbedder,

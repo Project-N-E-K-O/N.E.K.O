@@ -12,8 +12,8 @@ import threading
 
 import pytest
 
-from knowledge import querying as query_module
-import knowledge.service as service_module
+from services.knowledge import querying as query_module
+import services.knowledge.service as service_module
 # pytest resolves this explicitly imported fixture by argument name.
 from tests.knowledge_fixtures import FakeEmbedder, _import, _pack, _started, fast_indexer  # noqa: F401
 

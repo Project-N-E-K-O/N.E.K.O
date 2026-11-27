@@ -2,7 +2,7 @@
 
 import pytest
 
-from knowledge.service import KnowledgeService
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_fixtures import _import, _manual_index, _pack
 
 

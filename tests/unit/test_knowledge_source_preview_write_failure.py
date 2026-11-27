@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from knowledge.importing import sources
+from services.knowledge.importing import sources
 
 
 pytestmark = pytest.mark.unit

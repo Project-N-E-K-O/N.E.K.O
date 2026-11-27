@@ -7,10 +7,10 @@ import zipfile
 
 import pytest
 
-from knowledge import service as module
-from knowledge.models import decode_pack_bytes
-from knowledge.registry import KnowledgeRegistryError
-from knowledge.service import KnowledgeService
+from services.knowledge import service as module
+from services.knowledge.models import decode_pack_bytes
+from services.knowledge.registry import KnowledgeRegistryError
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import specification
 from tests.unit.test_knowledge_rebuild_capacity_refusal import ArchiveProvider, _archive, _installed, _rows
 from tests.knowledge_helpers import _stop_automatic_indexer

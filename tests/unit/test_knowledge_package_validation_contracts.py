@@ -7,9 +7,9 @@ import struct
 
 import pytest
 
-from knowledge.models import KnowledgeSource, parse_pack
-from knowledge.registry import KnowledgeRegistryError, PackRecord, load_registry
-from knowledge.store import KnowledgeStore
+from services.knowledge.models import KnowledgeSource, parse_pack
+from services.knowledge.registry import KnowledgeRegistryError, PackRecord, load_registry
+from services.knowledge.store import KnowledgeStore
 from tests.knowledge_archive_fixtures import make_archive, specification
 from utils.knowledge_package import PackageError, _source_is_covered, canonical_json, validate_package
 

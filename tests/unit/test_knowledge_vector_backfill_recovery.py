@@ -1,18 +1,18 @@
 """Exercise recovery and row identity across deferred knowledge backfill."""
 
 # Index scheduling hooks follow VectorIndexer; shared runtime state stays on the service.
-from knowledge import indexing as index_module
+from services.knowledge import indexing as index_module
 import asyncio
 import struct
 
 import pytest
 
-from knowledge import service as module
-from knowledge.archive import export_archive
-from knowledge.chunking import derive_chunks
-from knowledge.models import KnowledgePackError, decode_pack_bytes, parse_pack
-from knowledge.service import KnowledgeService
-from knowledge.store import count_pack_chunks
+from services.knowledge import service as module
+from services.knowledge.archive import export_archive
+from services.knowledge.chunking import derive_chunks
+from services.knowledge.models import KnowledgePackError, decode_pack_bytes, parse_pack
+from services.knowledge.service import KnowledgeService
+from services.knowledge.store import count_pack_chunks
 from tests.knowledge_archive_fixtures import make_archive, specification
 from tests.unit.test_knowledge_archive_chunk_reuse import _archive
 from tests.knowledge_helpers import _stop_automatic_indexer

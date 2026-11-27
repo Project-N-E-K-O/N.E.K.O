@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from knowledge import archive, service as module
-from knowledge.models import KnowledgePackError, pack_sha256
-from knowledge.service import KnowledgeService
+from services.knowledge import archive, service as module
+from services.knowledge.models import KnowledgePackError, pack_sha256
+from services.knowledge.service import KnowledgeService
 from tests.knowledge_archive_fixtures import _prepare_export_vectors, make_archive, specification
 from tests.unit.test_knowledge_subscriptions import _subscription
 from tests.knowledge_fixtures import FakeEmbedder, _finished, _import, _manual_index, _pack
@@ -242,7 +242,7 @@ async def test_discarding_a_job_deletes_only_its_own_frozen_retry_input(tmp_path
 
 
 async def test_retry_whose_frozen_input_was_discarded_is_not_retryable(tmp_path):
-    from knowledge.service import ImportJob
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
@@ -494,7 +494,7 @@ async def test_damaged_retained_archive_is_not_reread_until_the_file_changes(tmp
 
 @pytest.mark.parametrize("broken", [False, True])
 async def test_restart_does_not_report_an_unrepaired_broken_pack_as_a_successful_import(tmp_path, broken):
-    from knowledge.service import ImportJob
+    from services.knowledge.service import ImportJob
 
     service = KnowledgeService(tmp_path)
     await service.start()
