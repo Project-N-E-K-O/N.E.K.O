@@ -415,6 +415,7 @@ class _Cues:
             cls._loaded = {
                 "generic": _patterns(texts.GENERIC_WORD_PATTERNS),
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
+                "stop_words": _patterns(texts.UNDER_WAY_STOP_WORD_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
             }
         return cls._loaded[name]
@@ -755,6 +756,58 @@ def _kin(one: Commission, other: Commission) -> bool:
     )
 
 
+def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
+    """Whether the sentence shares a word with what tells each of these items apart.
+
+    What each is (its title and the words it was asked with), its project,
+    the familiar on it or that handed it on, its plugin, what it asks as the
+    list shows it (``_asked``), and the same of its members. Of the sentence,
+    words every request has (``orchestrator.content_tokens``) and words a
+    stop says without naming anything (stop, all, the work in progress:
+    ``UNDER_WAY_STOP_WORD_PATTERNS``) are left out. Each item must share a
+    word: one the model picked beside one the sentence names is not named
+    (owner's automatic review). Read where the list was cut only: a stop the
+    model says is named, of items whose words the sentence does not share,
+    is asked about (``read_under_way``).
+    """
+    from nekopower.host.orchestrator import content_tokens
+
+    said = content_tokens(strip_cues("stop_words", request.match_text))
+    if not said:
+        return False
+    plugins = {str(plugin.get("id") or ""): plugin for plugin in request.plugins}
+
+    def words(item: Commission) -> list[str]:
+        # (A plugin's id as it is and in words: "weather_lookup" is said
+        # either way. Greptile, third round.)
+        plugin_id = item.plugin_id or ""
+        found = [commission_text(item), item.project or "", plugin_id, re.sub(r"[_.\-]+", " ", plugin_id)]
+        found += [request.familiars.get(session or "", "") for session in (item.session_id, item.handed_by)]
+        plugin = plugins.get(item.plugin_id or "") or {}
+        found.append(str(plugin.get("name") or ""))
+        keywords = plugin.get("keywords")
+        if isinstance(keywords, list):
+            found += [str(keyword) for keyword in keywords]
+        if item.question():
+            # As the list shows it (``_asked``): the command or path a request
+            # for approval asks about, each question one put together asks
+            # and the answers they offer, a report's details (Greptile, first
+            # round: "stop the npm install one"). Unquoted first: a line break
+            # quoted is "\n", which would join the word after it (CodeRabbit,
+            # second round).
+            found.append(json.loads(_asked(item)[1]))
+        return found
+
+    for item in items:
+        texts = words(item)
+        for member in request.children:
+            if member.parent_id == item.id:
+                texts += words(member)
+        if not said & content_tokens(" ".join(text for text in texts if text)):
+            return False
+    return True
+
+
 def _numbers(value: Any, count: int) -> list[int]:
     """Return the item numbers a reading names, in range and once each."""
     seen: list[int] = []
@@ -1032,7 +1085,9 @@ class LexicalDecisionModel:
         question still waiting, and said to be so (the third value): her
         receipt tells her. A stop, or a sentence that is about one of several
         items, that names none of them while several are under way asks
-        which instead.
+        which instead. So does a stop of all that names less than all of
+        her work under way, and, where the list was cut, a stop whose words
+        share none with what it names (``_words_name``).
         """
         from config.nekopower_settings import UNDER_WAY_READ_SECONDS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_UNDER_WAY_PROMPT, build_under_way_request
@@ -1204,13 +1259,30 @@ class LexicalDecisionModel:
                 # list may have cut, and counted so: one shown of several is
                 # not taken for the one meant.
                 return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
-            if hidden and (scope == "all" or (len(stopped) > 1 and scope not in ("project", "these"))):
-                # All of it, or a stop of several that does not say how much,
-                # while some of her work was left out of the list: it may mean
-                # those as well, which were not shown. Which, the user is asked,
-                # among all (for "all", though one item was named).
-                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
+            if hidden and shown_stopped and not _words_name(request, shown_stopped):
+                # Named, the model says, while the list was cut, and the words
+                # say nothing of what it picked (of one of them, if several):
+                # no word of the sentence, beyond the stopping, the "all" and
+                # the work under way, is in what it is, its project, familiar
+                # or plugin. The
+                # model has read "cancel what is under way" as the items it
+                # saw at work, and those alone (measured: it leaves out what
+                # waits for the user), with the rest not shown: one was stopped
+                # ("these") or asked about with its project's ("project"), and
+                # the rest went on. Which, the user is asked, among all.
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            if (scope == "all" and set(stopped) != set(everything)) or (
+                hidden and len(stopped) > 1 and scope not in ("project", "these")
+            ):
+                # All of it, said of less than all her work under way (some of
+                # it left out of the list, or what waits for the user left out
+                # of a whole one: "cancel all the ongoing work" read as the
+                # items at work, measured), or a stop of several that does not
+                # say how much while some of her work was left out of the list:
+                # it may mean the rest as well. Which, the user is asked, among
+                # all (for "all", though one item was named).
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
             if kin and scope != "these":
                 # A project's or a familiar's work is stopped while more of it
