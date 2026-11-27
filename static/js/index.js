@@ -74,8 +74,99 @@ function loadVRMPathsConfig() {
 // 同步设置默认值（不阻塞页面加载）
 loadVRMPathsConfig();
 
+function validPageSwitchRevision(value) {
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function latestPageSwitchRevision() {
+    return Math.max(validPageSwitchRevision(window.lanlan_config?.switch_revision),
+        validPageSwitchRevision(window.appState?._latestCatgirlSwitchRevision));
+}
+
+// Stamp checks happen before any model/DOM writes. If a live switch already owns
+// the runtime, use its existing pending/rollback path instead of racing its model load.
+function handoffPageSnapshotToSwitch(name, revision) {
+    const state = window.appState;
+    if (revision && name && typeof window.handleCatgirlSwitch === 'function'
+        && (state?.isSwitchingCatgirl
+            || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
+            || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }))) {
+        return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
+            switchRevision: revision
+        }));
+    }
+    return null;
+}
+
+// Leave time for the backend's bounded wait on an in-progress rename of the
+// current role (30s); the rest of the UI keeps its separate startup deadline.
+const MODEL_SNAPSHOT_TIMEOUT_MS = 32000;
+const MODEL_SNAPSHOT_RETRY_DELAYS = [600, 1200, 1800, 2400, 3000, 3600];
+const MODEL_BOOT_RETIRED = Symbol('model boot retired');
+
+async function readPageSnapshot(url, { timeoutMs = 0, retired = null } = {}) {
+    const controller = timeoutMs && typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const read = async () => {
+        const resp = await fetch(url, { cache: 'no-store', ...(controller ? { signal: controller.signal } : {}) });
+        if (resp.ok === false) {
+            const error = new Error('Snapshot HTTP ' + resp.status);
+            error.status = resp.status;
+            throw error;
+        }
+        return resp.json();
+    };
+    if (!timeoutMs) return read();
+    let timer;
+    try {
+        const contenders = [read(), new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                controller?.abort();
+                reject(new Error('Snapshot deadline exceeded'));
+            }, timeoutMs);
+        })];
+        if (retired) contenders.push(retired.then(() => {
+            controller?.abort();
+            throw MODEL_BOOT_RETIRED;
+        }));
+        return await Promise.race(contenders);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function waitForModelRetry(delay, retired) {
+    let timer;
+    return Promise.race([new Promise(resolve => {
+        timer = setTimeout(resolve, delay);
+    }), retired]).finally(() => clearTimeout(timer));
+}
+
+// The original pageConfigReady promise remains pending across a small retry
+// budget. All local renderers continue to consume that one validated snapshot.
+async function finishModelBootstrap(expected) {
+    for (let attempt = 0; attempt <= MODEL_SNAPSHOT_RETRY_DELAYS.length; attempt++) {
+        if (window.__nekoPageModelConfigPending !== expected) return false;
+        expected.retryable = false;
+        const loaded = await loadPageConfig({ modelBoot: expected });
+        if (loaded || window.__nekoPageModelConfigPending !== expected) return loaded;
+        // A real stamped receipt can take over a failed/stalled boot, including
+        // during retry. It cannot take over a healthy first read by name alone.
+        expected.failed = true;
+        const receipt = expected.receipt;
+        if (receipt) {
+            expected.receipt = null;
+            Promise.resolve(window.handleCatgirlSwitch(expected.name, receipt.oldCatgirl, {
+                switchRevision: receipt.switchRevision,
+            })).catch(error => console.warn('[主页] 角色配置恢复失败:', error));
+        }
+        if (!expected.retryable || attempt === MODEL_SNAPSHOT_RETRY_DELAYS.length) return false;
+        await waitForModelRetry(MODEL_SNAPSHOT_RETRY_DELAYS[attempt], expected.retired);
+    }
+    return false;
+}
+
 // 异步获取页面配置
-async function loadPageConfig() {
+async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
     try {
         // 优先从 URL 获取 lanlan_name
         const urlParams = new URLSearchParams(window.location.search);
@@ -94,14 +185,36 @@ async function loadPageConfig() {
             ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
             : '/api/config/page_config';
 
-        const response = await fetch(apiUrl, {
-            cache: 'no-store',
-        });
-        const data = await response.json();
+        const data = await readPageSnapshot(apiUrl, modelBoot
+            ? { timeoutMs: MODEL_SNAPSHOT_TIMEOUT_MS, retired: modelBoot.retired }
+            : { timeoutMs: bounded ? 1500 : 0 });
+        if (modelBoot && window.__nekoPageModelConfigPending !== modelBoot) return false;
 
         if (data.success) {
-            // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
-            lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+            // Check before applying any part of the snapshot, including paths, DOM and boot side effects.
+            const switchRevision = validPageSwitchRevision(data.switch_revision);
+            const expected = window.__nekoPageModelConfigPending;
+            // Explicit named previews are intentionally outside current-character
+            // ordering when the backend returns revision 0. This is true both for
+            // the initial pinned bootstrap and later reloadPageConfig() reads.
+            const explicitPreview = !!lanlanNameFromUrl && switchRevision === 0;
+            if (!expected?.pinned && !explicitPreview && switchRevision < latestPageSwitchRevision()) {
+                if (modelBoot) modelBoot.retryable = true;
+                return false;
+            }
+            if (expected && (
+                !data.lanlan_name || typeof data.model_type !== 'string' || !data.model_type.trim()
+                || typeof data.model_path !== 'string'
+                || (expected.pinned
+                    ? data.lanlan_name !== expected.name
+                    : switchRevision < expected.revision
+                        || (switchRevision === expected.revision && data.lanlan_name !== expected.name))
+            )) return false;
+            const name = lanlanNameFromUrl || data.lanlan_name || "";
+            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision);
+            if (liveSwitch) return (await liveSwitch) === true;
+            lanlan_config.lanlan_name = name;
+            lanlan_config.switch_revision = switchRevision;
             const modelPath = data.model_path || "";
             // 使用API返回的model_type，并转换为小写以防后端/旧数据大小写不一致
             const modelType = (data.model_type || 'live2d').toLowerCase();
@@ -126,6 +239,11 @@ async function loadPageConfig() {
             window.master_nickname = lanlan_config.master_nickname;
             window.master_display_name = lanlan_config.master_display_name;
             window.lanlan_config = lanlan_config;
+            if (expected) {
+                window.cubism4Model = cubism4Model = "";
+                window.vrmModel = vrmModel = "";
+                window.mmdModel = "";
+            }
             // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
             if (modelType === 'pngtuber') {
                 cubism4Model = "";
@@ -221,22 +339,21 @@ async function loadPageConfig() {
             // 动态设置页面标题
             document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
+            if (expected) window.__nekoPageModelConfigPending = null;
             return true;
-        } else {
-            console.error('获取页面配置失败:', data.error);
-            // 使用默认值
-            lanlan_config.lanlan_name = "";
-            lanlan_config.lighting = null;
-            cubism4Model = "";
-            vrmModel = "";
-            window.lanlan_config = lanlan_config;
-            window.cubism4Model = "";
-            window.vrmModel = "";
-            return false;
         }
+        if (modelBoot) modelBoot.retryable = true;
+        console.error('获取页面配置失败:', data.error);
     } catch (error) {
+        if (error === MODEL_BOOT_RETIRED || (modelBoot && window.__nekoPageModelConfigPending !== modelBoot)) return false;
+        if (modelBoot) {
+            const status = error?.status;
+            modelBoot.retryable = !status || status === 408 || status === 429 || status >= 500;
+        }
         console.error('加载页面配置时出错:', error);
-        // 使用默认值
+    }
+    // A failed read cannot invalidate a switch or a prior successful bootstrap.
+    if (!lanlan_config.lanlan_name && !latestPageSwitchRevision()) {
         lanlan_config.lanlan_name = "";
         lanlan_config.lighting = null;
         cubism4Model = "";
@@ -244,13 +361,16 @@ async function loadPageConfig() {
         window.lanlan_config = lanlan_config;
         window.cubism4Model = "";
         window.vrmModel = "";
-        return false;
     }
+    return false;
 }
 
 // 暴露给模型初始化层做"模型路径缺失"时的有界自愈重取（live2d-init.js scheduleLive2DConfigRetry）。
 // 重新拉取 page_config 并刷新 window.cubism4Model / window.vrmModel 等全局，再由调用方重试初始化。
-window.reloadPageConfig = loadPageConfig;
+window.reloadPageConfig = options => {
+    const modelBoot = window.__nekoPageModelConfigPending;
+    return modelBoot?.inFlight || loadPageConfig(options);
+};
 
 let resolvePageConfigReady = null;
 window.pageConfigReady = new Promise(function (resolve) {
@@ -269,7 +389,7 @@ function resolvePageConfig(result) {
 }
 
 function startMultiWindowPageConfigLoad() {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
         var settled = false;
         var emptyConfigRetryTimer = null;
         function requestInjectedConfig(delay) {
@@ -287,7 +407,32 @@ function startMultiWindowPageConfigLoad() {
                 }
             }, typeof delay === 'number' ? delay : 0);
         }
-        function applyInjectedConfig(detail) {
+        async function loadMatchingPageConfig(name, revision, pinned = false) {
+            if (!pinned && revision && revision < latestPageSwitchRevision()) return false;
+            // An early live receipt may already have committed this precise
+            // identity while desktop IPC was pairing its metadata. Do not
+            // replace established model ownership with a new boot attempt.
+            if (window.appCharacter?.hasCommittedPageModel?.(name, revision)) return true;
+            let retire;
+            const retired = new Promise(resolve => { retire = resolve; });
+            const expected = { name, revision, pinned, failed: false, retired, retire };
+            window.__nekoPageModelConfigPending = expected;
+            // Identity is useful to the chat/socket layer, but is not model readiness.
+            // Leave the existing full fetch in charge of boot; app.js already
+            // bounds how long the rest of the UI waits for pageConfigReady.
+            if (!window.lanlan_config?.lanlan_name && !latestPageSwitchRevision() && !window.appState?.isSwitchingCatgirl) {
+                lanlan_config.lanlan_name = name;
+                lanlan_config.switch_revision = revision;
+                document.title = name + ' Terminal - Project N.E.K.O.';
+            }
+            expected.inFlight = finishModelBootstrap(expected);
+            try {
+                return await expected.inFlight;
+            } finally {
+                expected.inFlight = null;
+            }
+        }
+        async function applyInjectedConfig(detail) {
             if (settled) {
                 return;
             }
@@ -302,6 +447,42 @@ function startMultiWindowPageConfigLoad() {
                 emptyConfigRetryTimer = null;
             }
             window.removeEventListener('neko:config-injected', handler);
+            const explicitName = new URLSearchParams(window.location.search).get('lanlan_name');
+            if (explicitName && explicitName !== d.lanlan_name) {
+                resolve(await loadMatchingPageConfig(explicitName, 0, true));
+                return;
+            }
+            let switchRevision = validPageSwitchRevision(d.switch_revision);
+            if (!switchRevision) {
+                // Legacy desktop IPC includes the name but not its commit order. Pair it with
+                // the small current-character snapshot; never borrow another character's revision.
+                try {
+                    const current = await readPageSnapshot('/api/characters/current_catgirl', { timeoutMs: 1500 });
+                    if (current.current_catgirl === d.lanlan_name) {
+                        switchRevision = validPageSwitchRevision(current.switch_revision);
+                    } else if (current.current_catgirl && !explicitName) {
+                        resolve(await loadMatchingPageConfig(current.current_catgirl, validPageSwitchRevision(current.switch_revision)));
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[主页] Could not verify injected character revision:', error);
+                }
+            }
+            if (switchRevision < latestPageSwitchRevision()) {
+                resolve(false);
+                return;
+            }
+            if (!/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '')) {
+                // IPC conveys chat display data, not model URLs needed by the local renderers.
+                resolve(await loadMatchingPageConfig(d.lanlan_name, switchRevision, !!explicitName));
+                return;
+            }
+            const liveSwitch = handoffPageSnapshotToSwitch(d.lanlan_name, switchRevision);
+            if (liveSwitch) {
+                resolve((await liveSwitch) === true);
+                return;
+            }
+            lanlan_config.switch_revision = switchRevision;
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
@@ -324,7 +505,7 @@ function startMultiWindowPageConfigLoad() {
             // appChatAvatar 可能尚未加载（脚本顺序靠后），先暂存到全局变量
             if (d.avatarDataUrl) {
                 if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
-                    window.appChatAvatar.setExternalAvatar(d.avatarDataUrl, d.avatarModelType || '');
+                    await window.appChatAvatar.setExternalAvatar(d.avatarDataUrl, d.avatarModelType || '');
                 } else {
                     window.__nekoPendingAvatar = { dataUrl: d.avatarDataUrl, modelType: d.avatarModelType || '' };
                 }
@@ -335,11 +516,11 @@ function startMultiWindowPageConfigLoad() {
         }
         // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
         var handler = function (event) {
-            applyInjectedConfig((event && event.detail) || {});
+            applyInjectedConfig((event && event.detail) || {}).catch(reject);
         };
         window.addEventListener('neko:config-injected', handler);
         if (window.__nekoInjectedConfig && Object.prototype.hasOwnProperty.call(window.__nekoInjectedConfig, 'lanlan_name')) {
-            applyInjectedConfig(window.__nekoInjectedConfig);
+            applyInjectedConfig(window.__nekoInjectedConfig).catch(reject);
             return;
         }
         requestInjectedConfig(0);
