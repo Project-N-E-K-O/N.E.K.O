@@ -1785,7 +1785,7 @@ test('pause/resume re-arms only the remaining explicit return deadline', async t
     m.pauseRendering();
     advance(500);
     m.resumeRendering();
-    assert.equal(m.layeredAnimationStart, start);
+    assert.equal(m.layeredAnimationStart, start + 200);
     advance(599);
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 2);
@@ -1840,8 +1840,12 @@ test('pause/resume without an explicit deadline keeps natural completion semanti
     m.reviewedPlaybackTick(1000);
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 2);
-    advance(2100);
-    m.reviewedPlaybackTick(2100);
+    advance(2699);
+    m.reviewedPlaybackTick(2699);
+    await flushReviewed();
+    assert.equal(m.layeredStateIndex, 2);
+    advance(2700);
+    m.reviewedPlaybackTick(2700);
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 0);
 });
@@ -2063,4 +2067,96 @@ test('accepting queued work does not cancel ordinary retry backoff', async t => 
     m.reviewedPlaybackTick(2350);
     await flushReviewed();
     assert.equal(m.layeredStateIndex, 4);
+});
+
+
+for (const index of [0, 2]) test(`touch zoom preserves tracked state ${index} and its return deadline`, async t => {
+    const {manager:m, advance} = timedReviewedFixture();
+    t.after(() => m.clearLayeredTimers());
+    if (index) { m.requestReviewedState(index, {returnToDefaultAfterMs:500}); await flushReviewed(); }
+    const playback=m._trackedPlayback, start=m.layeredAnimationStart, deadline=m._reviewedReturnDeadline;
+    m.setModelDraggingState=()=>{};
+    m.restoreStateImage=()=>{throw Error('tracked zoom must not restore/restart')};
+    m.restartLayeredAnimationLoop=()=>{throw Error('tracked zoom must not rewind')};
+    let saved=0;
+    m.snapModelIntoScreen=async()=>{};m.saveOrStageCurrentConfig=async()=>saved++;
+    m.isDragCompletionCurrent=()=>true;
+    for(const changed of [false,true]) {
+        m._touchZoomState={changed};await m.endTouchZoom();
+        assert.equal(m._trackedPlayback,playback);assert.equal(m.layeredAnimationStart,start);
+        assert.equal(m._reviewedReturnDeadline,deadline);
+    }
+    assert.equal(saved,1);
+    if(index) {advance(600);await flushReviewed();assert.equal(m.layeredStateIndex,0);}
+});
+
+test('untracked touch zoom retains legacy restore behavior', async () => {
+    const {manager:m}=fixture();m._trackedPlayback=null;
+    let restored=0,restarted=0;
+    m.setModelDraggingState=()=>{};m.updateLockIconPosition=()=>{};
+    m.restoreStateImage=()=>restored++;m.restartLayeredAnimationLoop=()=>restarted++;
+    m._touchZoomState={changed:false};await m.endTouchZoom();
+    assert.equal(restored,1);assert.equal(restarted,1);
+});
+
+test('cache pressure retains the displayed body and its matching mouth plate', async () => {
+    const {manager:m,images,context}=fixture();
+    const p=m._trackedPlayback;p.data.speech_mouth_patches=true;
+    p.data.frames.forEach((f,i)=>f.mouth_patch={image:`plates/${i}.png`});
+    const body=p.cache.get(0), plate={name:'displayed-mouth'};p.mouthPatches.set('plates/0.png',plate);
+    for(let i=1;i<15;i++) {
+        m.requestTrackedFrame(i);images.at(-2).onload();images.at(-1).onload();
+        await new Promise(resolve=>setImmediate(resolve));
+    }
+    assert.equal(p.cache.size,12);assert.equal(p.cache.get(0),body);
+    assert.equal(p.mouthPatches.get('plates/0.png'),plate);
+    const drawn=[];context.drawImage=(image)=>drawn.push(image);
+    const ctx=new Proxy({drawImage:(image)=>drawn.push(image)},{get:(o,k)=>o[k]||(()=>{})});
+    m.drawTrackedPlayback(ctx,1900);
+    assert.ok(drawn.includes(body),'slow next frame keeps the displayed body');
+});
+
+test('renderTarget snapshots do not advance state, fetch frames, change mouth clocks or draw main canvas', () => {
+    const {manager:m,context}=fixture();
+    m.isLayeredActive=()=>true;m.canvasElement={getContext:()=>{throw Error('main canvas touched')}};
+    m.layeredMetadata={canvas:{width:720,height:960}};
+    m.reviewedPlaybackTick=()=>{throw Error('snapshot advanced action')};
+    m.requestTrackedFrame=()=>{throw Error('snapshot loaded frames')};
+    const transition={at:10,snapshot:{}};m._reviewedTransition=transition;
+    const p=m._trackedPlayback;p.lastDraw=100;p.openness=.3;
+    m.drawLayeredState('idle',9999,{canvas:{width:720,height:960,getContext:()=>context},scaleX:1,scaleY:1});
+    assert.equal(p.lastIndex,0);assert.equal(p.lastDraw,100);assert.equal(p.openness,.3);
+    assert.equal(m._reviewedTransition,transition);
+});
+
+for(const order of ['pause-hide-resume-show','hide-pause-show-resume']) test(`overlapping ${order} freezes the body only once`, async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const first=order.startsWith('pause')?'pauseRendering':'hide';
+    const second=first==='hide'?'pauseRendering':'hide';
+    advance(300);m[first]();advance(500);m[second]();
+    advance(900);m[first==='hide'?'show':'resumeRendering']();
+    advance(1300);m[second==='hide'?'show':'resumeRendering']();
+    assert.equal(m.layeredAnimationStart,1100);
+    assert.equal(m._reviewedBodyFrozenAt,null);
+});
+
+test('pause keeps legacy model timeline behavior unchanged', () => {
+    const {manager:m,advance}=fixture();m.isLayeredActive=()=>false;
+    m.container={style:{display:'block'},classList:{contains:()=>false}};
+    m.layeredAnimationStart=100;advance(300);m.pauseRendering();advance(900);m.resumeRendering();
+    assert.equal(m.layeredAnimationStart,100);
+});
+
+
+for(const explicit of [false,true]) test(`paused queue survives and hands off at ${explicit?'explicit deadline':'natural completion'}`, async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2,explicit?{returnToDefaultAfterMs:500}:{});await flushReviewed();
+    m.requestReviewedState(3);const queued=m._reviewedQueued;assert.ok(queued);
+    advance(300);m.pauseRendering();m.pauseRendering();advance(900);
+    assert.equal(m._reviewedQueued,queued);m.resumeRendering();await flushReviewed();
+    if(!explicit) {
+        assert.equal(m.layeredStateIndex,2);m._trackedPlayback.lastIndex=1;
+        advance(2700);m.reviewedPlaybackTick(2700);await flushReviewed();
+    }
+    assert.equal(m.layeredStateIndex,3);assert.equal(m._reviewedQueued,null);
 });

@@ -57,7 +57,7 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
     with tempfile.TemporaryDirectory(prefix="yui-pack-") as temp:
         stage = Path(temp)
 
-        def copy_asset(raw, relative):
+        def copy_asset(raw, relative, *, png=False):
             raw = unquote(raw)
             prefix = "/static/pngtuber/yui-chibi/"
             if raw.startswith(prefix):
@@ -66,6 +66,10 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
             origin.relative_to(source)
             if not origin.is_file():
                 raise ValueError(f"Missing source asset: {raw}")
+            if png:
+                with origin.open("rb") as stream:
+                    if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+                        raise ValueError("Reviewed mouth patch must contain PNG data")
             dest = stage / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(origin, dest)
@@ -89,8 +93,10 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
                 )
                 patch = frame.get("mouth_patch")
                 if patch:
+                    if Path(unquote(patch["image"])).suffix.lower() != ".png":
+                        raise ValueError("Reviewed mouth patch must be PNG")
                     patch["image"] = copy_asset(
-                        patch["image"], f"clips/{name}/mouths/{index:04}.png"
+                        patch["image"], f"clips/{name}/mouths/{index:04}.png", png=True
                     )
         metadata["tracked_animation"] = metadata["tracked_animations"]["0"]
         first = metadata["tracked_animation"]["frames"][0]["image"]

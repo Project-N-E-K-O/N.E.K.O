@@ -420,9 +420,25 @@
             this.layeredBlinking = false;
         }
 
+        freezeReviewedBodyClock() {
+            if (this.hasReviewedActions() && this._reviewedBodyFrozenAt == null) {
+                this._reviewedBodyFrozenAt = performance.now();
+            }
+        }
+
+        thawReviewedBodyClock() {
+            if (this._reviewedBodyFrozenAt == null || this._renderingPaused || this._reviewedHidden) return;
+            this.layeredAnimationStart += Math.max(0, performance.now() - this._reviewedBodyFrozenAt);
+            this._reviewedBodyFrozenAt = null;
+        }
+
         pauseRendering() {
+            this.freezeReviewedBodyClock();
             this._renderingPaused = true;
+            const queued = this.hasReviewedActions() ? this._reviewedQueued : null;
             this.cancelReviewedRequests();
+            // Keep accepted queued work; in-flight decodes are still invalidated.
+            this._reviewedQueued = queued;
             this.clearLayeredTimers();
             if (this.speakingMouthTimer) {
                 clearTimeout(this.speakingMouthTimer);
@@ -454,6 +470,7 @@
         resumeRendering() {
             if (!this._renderingPaused) return;
             this._renderingPaused = false;
+            this.thawReviewedBodyClock();
             const container = this.container || document.getElementById(this.containerId);
             if (!container || container.style.display === 'none' ||
                 (container.classList && container.classList.contains('hidden'))) {
@@ -1449,6 +1466,7 @@
                 this._reviewedReturnAfterMs = null;
                 this._reviewedLast = null;
                 this._reviewedHiddenAt = null;
+                this._reviewedBodyFrozenAt = null;
             }
         }
 
@@ -1770,11 +1788,11 @@
             }
         }
 
-        drawReviewedTransition(ctx, timestamp) {
+        drawReviewedTransition(ctx, timestamp, snapshot = false) {
             const transition = this._reviewedTransition;
             if (!transition || !this.hasReviewedActions()) return;
             const mix = (timestamp - transition.at) / 80;
-            if (mix >= 1) { this._reviewedTransition = null; return; }
+            if (mix >= 1) { if (!snapshot) this._reviewedTransition = null; return; }
             ctx.save(); ctx.globalAlpha = Math.max(0, 1 - mix);
             ctx.drawImage(transition.snapshot, 0, 0); ctx.restore();
         }
@@ -1906,7 +1924,7 @@
                 playback.cache.set(index, image);
                 if (mouthPatch) playback.mouthPatches.set(patch.image, mouthPatch);
                 while (playback.cache.size > 12) {
-                    const evicted = playback.cache.keys().next().value;
+                    const evicted = [...playback.cache.keys()].find(key => key !== playback.lastIndex);
                     playback.cache.delete(evicted);
                     const oldPatch = playback.data.frames[evicted].mouth_patch;
                     if (oldPatch && ![...playback.cache.keys()].some(key => playback.data.frames[key].mouth_patch?.image === oldPatch.image)) {
@@ -2121,14 +2139,15 @@
             ctx.restore();
         }
 
-        drawTrackedPlayback(ctx, timestamp) {
-            this.reviewedPlaybackTick(timestamp);
+        drawTrackedPlayback(ctx, timestamp, snapshot = false) {
+            if (!snapshot) this.reviewedPlaybackTick(timestamp);
             const playback = this._trackedPlayback;
             const data = playback.data;
             const elapsed = Math.max(0, timestamp - (this.layeredAnimationStart || timestamp));
-            const selection = this.trackedLoopSelection(data, elapsed);
+            const selection = snapshot ? { index: playback.lastIndex, blendIndex: null, mix: 0 }
+                : this.trackedLoopSelection(data, elapsed);
             const index = selection.index;
-            this.requestTrackedFrame(index);
+            if (!snapshot) this.requestTrackedFrame(index);
             if (selection.blendIndex !== null) this.requestTrackedFrame(selection.blendIndex);
             // Decode contiguous upcoming samples. Fixed millisecond jumps can skip
             // the very next frame at 24 fps and repeatedly stall on an uncached frame.
@@ -2139,13 +2158,13 @@
             const phase = data.playback === 'once' ? Math.min(elapsed, data.duration_ms - 0.001)
                 : start + overlap + elapsed % (end - start - overlap);
             let aheadMs = data.frames[index].time_ms + data.frames[index].duration_ms - phase + 0.001;
-            for (let step = 0; step < 5; step++) {
+            for (let step = 0; !snapshot && step < 5; step++) {
                 const ahead = this.trackedLoopSelection(data, elapsed + aheadMs);
                 this.requestTrackedFrame(ahead.index);
                 if (ahead.blendIndex !== null) this.requestTrackedFrame(ahead.blendIndex);
                 aheadMs += data.frames[ahead.index].duration_ms;
             }
-            if (playback.cache.has(index)) playback.lastIndex = index;
+            if (!snapshot && playback.cache.has(index)) playback.lastIndex = index;
             const image = playback.cache.get(playback.lastIndex) || this.layeredImages.get(0);
             const frame = data.frames[playback.cache.has(playback.lastIndex) ? playback.lastIndex : playback.initialIndex];
             if (!image) return false;
@@ -2159,12 +2178,12 @@
                 return true;
             }
             const dt = Math.min(80, Math.max(0, timestamp - (playback.lastDraw || timestamp)));
-            playback.lastDraw = timestamp;
+            if (!snapshot) playback.lastDraw = timestamp;
             const target = this.isSpeaking && !(data.mouth_renderer === 'viseme_v1' && this._trackedViseme === 'closed')
                 ? (this.lipSyncFrame ? this.lipSyncMouthOpen : (this.speakingMouthOpen ? 0.7 : 0))
                 : 0;
             const tau = target > playback.openness ? 42 : 78;
-            playback.openness += (Math.max(0, Math.min(1, target)) - playback.openness) * (1 - Math.exp(-dt / tau));
+            if (!snapshot) playback.openness += (Math.max(0, Math.min(1, target)) - playback.openness) * (1 - Math.exp(-dt / tau));
             const amount = playback.openness;
             const padding = Number(this.layeredCanvasPadding) || 0;
             const blendImage = selection.blendIndex === null ? null : playback.cache.get(selection.blendIndex);
@@ -2179,7 +2198,7 @@
                 ctx.drawImage(image, 0, 0);
                 this.drawTrackedMouth(ctx, image, frame, amount);
                 ctx.restore();
-                this.drawReviewedTransition(ctx, timestamp);
+                this.drawReviewedTransition(ctx, timestamp, snapshot);
                 return true;
             }
             const scratch = playback.mixCanvas || (playback.mixCanvas = document.createElement('canvas'));
@@ -3340,7 +3359,7 @@
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
-            if (this._trackedPlayback) return this.drawTrackedPlayback(ctx, timestamp);
+            if (this._trackedPlayback) return this.drawTrackedPlayback(ctx, timestamp, Boolean(renderTarget));
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             if (this.isLayeredPlusModel()) {
                 return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);
@@ -4645,8 +4664,10 @@
             this._touchZoomState = null;
             this.resetLayeredDragVelocity();
             this.setModelDraggingState(false);
-            this.restoreStateImage();
-            this.restartLayeredAnimationLoop();
+            if (!this._trackedPlayback) {
+                this.restoreStateImage();
+                this.restartLayeredAnimationLoop();
+            }
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
             }
@@ -5825,11 +5846,11 @@
             const preserveReviewed = this.hasReviewedActions() && this._reviewedHiddenAt != null;
             if (preserveReviewed) {
                 const hiddenMs = performance.now() - this._reviewedHiddenAt;
-                this.layeredAnimationStart += hiddenMs;
                 if (this._reviewedReturnDeadline != null) this._reviewedReturnDeadline += hiddenMs;
             }
             this._reviewedHiddenAt = null;
             this._reviewedHidden = false;
+            this.thawReviewedBodyClock();
             this.ensureContainer();
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
@@ -5855,6 +5876,7 @@
         }
 
         hide() {
+            this.freezeReviewedBodyClock();
             if (!this._reviewedHidden && this.hasReviewedActions()) this._reviewedHiddenAt = performance.now();
             this._reviewedHidden = true;
             this.cancelReviewedRequests();

@@ -100,6 +100,13 @@ async def test_get_pngtuber_models_lists_builtin_and_user_packages(monkeypatch, 
     )
     monkeypatch.setattr(pngtuber_router, "get_config_manager", lambda: config_manager)
 
+    # A partially removed installer backup can still contain a valid model.json.
+    for parent in (builtin_dir.parent, user_root):
+        for name in (".yui-chibi.backup", ".yui-chibi.123.tmp"):
+            hidden = parent / name
+            hidden.mkdir()
+            (hidden / "model.json").write_text(json.dumps(model_template), encoding="utf-8")
+
     response = await pngtuber_router.get_pngtuber_models()
     body = json.loads(response.body.decode("utf-8"))
 

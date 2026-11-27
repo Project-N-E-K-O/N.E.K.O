@@ -673,11 +673,26 @@
     }
 
     let reviewedInputAt = 0;
+    let reviewedInputBroadcastAt = -Infinity;
+    let reviewedInputBroadcastTimer = null;
     function recordReviewedInputActivity(fromPeer = false) {
         reviewedInputAt = Date.now();
         const manager = window.pngtuberManager;
         if (manager?.hasReviewedActions?.()) manager._reviewedIdleSince = null;
-        if (!fromPeer) _proactiveBroadcast('reviewed_input_activity');
+        if (fromPeer) return;
+        const broadcast = () => {
+            reviewedInputBroadcastTimer = null;
+            reviewedInputBroadcastAt = Date.now();
+            _proactiveBroadcast('reviewed_input_activity');
+        };
+        const remaining = 1000 - (Date.now() - reviewedInputBroadcastAt);
+        if (remaining <= 0) {
+            if (reviewedInputBroadcastTimer !== null) clearTimeout(reviewedInputBroadcastTimer);
+            broadcast();
+        } else if (reviewedInputBroadcastTimer === null) {
+            // Keep a trailing notification so the owner observes the end of a burst.
+            reviewedInputBroadcastTimer = setTimeout(broadcast, remaining);
+        }
     }
 
     document.addEventListener('focusin', function (event) {

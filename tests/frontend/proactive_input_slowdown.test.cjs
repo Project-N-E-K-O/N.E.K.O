@@ -419,3 +419,24 @@ test('chat-follower input reaches the reviewed owner while proactive chat is off
     assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt, clock.now);
     assert.equal(pet.appState.proactiveChatTimer, null);
 });
+
+
+test('reviewed typing broadcasts at most once a second with a trailing peer notification', () => {
+    channels.length=0;queue.length=0;clock.now=3_000_000;
+    const pet=createWindow('/'),chat=createWindow('/chat');flush();
+    pet.appState.proactiveChatEnabled=chat.appState.proactiveChatEnabled=false;
+    let broadcasts=0;
+    const original=FakeBroadcastChannel.prototype.postMessage;
+    FakeBroadcastChannel.prototype.postMessage=function(data){if(data.type==='reviewed_input_activity') broadcasts++;original.call(this,data)};
+    try {
+        for(let i=0;i<10;i++) {clock.now=3_000_000+i*90;chat.emit('input',chat.input);}
+        flush();assert.equal(broadcasts,1);
+        assert.equal(chat.window.getReviewedPNGTuberActivity().inputAt,3_000_810,'local activity updates on every key');
+        clock.now=3_001_000;
+        for(const [id,timer] of [...chat.timers]) if(timer.due<=clock.now){chat.timers.delete(id);timer.fn();}
+        flush();assert.equal(broadcasts,2);
+        assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,3_001_000,'owner receives the trailing activity');
+        clock.now=3_001_050;chat.emit('input',chat.input);flush();assert.equal(broadcasts,2);
+        assert.equal(chat.window.getReviewedPNGTuberActivity().inputAt,clock.now);
+    } finally {FakeBroadcastChannel.prototype.postMessage=original;}
+});

@@ -335,7 +335,7 @@ async def get_pngtuber_models():
             if not root.is_dir():
                 continue
             for package_dir in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-                if not package_dir.is_dir() or not (package_dir / "model.json").exists():
+                if package_dir.name.startswith(".") or not package_dir.is_dir() or not (package_dir / "model.json").exists():
                     continue
                 try:
                     model_json = await asyncio.to_thread(_read_model_json, package_dir)

@@ -1,4 +1,5 @@
 """Small real-package fixtures and publication fault injection for YUI builds."""
+import base64
 import hashlib
 import json
 import os
@@ -11,11 +12,13 @@ from scripts import pngtuber_publish as publish
 from scripts import unpack_builtin_pngtuber as unpack
 
 
+PNG_PLATE = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
 def source(tmp_path):
     root = tmp_path / "source"
     root.mkdir()
     (root / "body.png").write_bytes(b"body")
-    (root / "plate.png").write_bytes(b"plate")
+    (root / "plate.png").write_bytes(PNG_PLATE)
     frame = {"time_ms": 0, "duration_ms": 100, "image": "body.png", "x": 1, "y": 2,
              "mouth_patch": {"image": "plate.png"}}
     track = {"duration_ms": 100, "playback": "loop", "mouth_crop": [0, 0, 2, 2], "frames": [frame]}
@@ -44,7 +47,7 @@ def test_build_and_unpack_roundtrip_keeps_images_and_other_models(tmp_path):
     entry = pack.build(src, dest)
     target = unpack.unpack_model(entry, dest, tmp_path / "runtime")
     assert (target / "clips/idle/frames/0000.png").read_bytes() == b"body"
-    assert (target / "clips/idle/mouths/0000.png").read_bytes() == b"plate"
+    assert (target / "clips/idle/mouths/0000.png").read_bytes() == PNG_PLATE
     assert json.loads((dest / "manifest.json").read_text())["models"][0] == {"folder": "other", "untouched": True}
     assert snapshot(src) == before
     again = pack.build(src, dest)
@@ -331,3 +334,26 @@ def test_build_removes_authoring_notes_without_modifying_the_mother_source(tmp_p
     assert "_authoring" not in json.loads((target / "model.json").read_text())
     assert "_authoring" not in json.loads((dest / "yui-chibi-source/model.json").read_text())
     assert json.loads(path.read_text())["_authoring"] == model["_authoring"]
+
+
+@pytest.mark.parametrize("extension", ["webp", "jpg", "gif"])
+def test_non_png_mouth_patch_rejected_before_publication(tmp_path, extension):
+    src, dest = source(tmp_path), packs(tmp_path)
+    metadata_path = src / "metadata.actions.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["tracked_animations"]["0"]["frames"][0]["mouth_patch"]["image"] = f"plate.{extension}"
+    (src / f"plate.{extension}").write_bytes(b"not png")
+    metadata_path.write_text(json.dumps(metadata))
+    before = snapshot(dest)
+    with pytest.raises(ValueError, match="mouth patch must be PNG"):
+        pack.build(src, dest)
+    assert snapshot(dest) == before
+
+
+def test_disguised_non_png_patch_rejected_without_publishing(tmp_path):
+    src, dest = source(tmp_path), packs(tmp_path)
+    (src / "plate.png").write_bytes(b"RIFF webp data")
+    before = snapshot(dest)
+    with pytest.raises(ValueError, match="must contain PNG data"):
+        pack.build(src, dest)
+    assert snapshot(dest) == before

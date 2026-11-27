@@ -9,6 +9,7 @@
 - 每次加载或从其他动作返回时随机选择一个待机，之后循环同一段，不在两段之间自动轮换。
 - 主动搭话关闭、当前页面为主页面且无忙碌状态时，空闲 30 秒随机触发闲暇动作；开启主动搭话后停止闲暇触发。
 - 串门动作只响应当前访问中真实的 guest departed/ended 事件，不响应恢复、邀请或接待方事件。
+- 双指缩放不重启动画；生成快照不推进动作或改变主画布。暂停时冻结动作进度并保留排队动作，显式返回期限仍按原时间计算；隐藏时同时冻结动作与返回期限。
 - 缩放范围 0.15–0.75。新行为通过 `reviewed_actions.version === 1` 按模型启用，其他 PNGTuber 和 Live2D 保留原逻辑。
 
 ## 构建与校验
@@ -21,7 +22,7 @@
 python scripts/pack_yui_chibi.py --source-dir PATH_TO_APPROVED_UNPACKED_MODEL
 ```
 
-输入目录必须包含完整 `model.json`、`metadata.actions.json` 及其引用的 WebP／PNG 身体帧与 PNG 嘴型贴片。支持旧的 `/static/pngtuber/yui-chibi/` 路径及本包的相对路径。脚本保留 PNG／WebP 后缀并按字节复制身体帧与嘴型贴片，不重新压缩、不修改时序或嘴型几何；保留已有的 idle.png 和 assets/idle-first.png 兼容入口。缺少 PNG 入口且首帧为 WebP 时，仅将首帧无损解码保存为 PNG 入口；固定 ZIP 条目顺序、时间和权限。作者基准图及动作定义保存在源码目录，不重复塞进运行包。
+输入目录必须包含完整 `model.json`、`metadata.actions.json` 及其引用的 WebP／PNG 身体帧与 PNG 嘴型贴片。支持旧的 `/static/pngtuber/yui-chibi/` 路径及本包的相对路径。脚本保留 PNG／WebP 后缀并按字节复制身体帧与嘴型贴片，不重新压缩、不修改时序或嘴型几何；保留已有的 idle.png 和 assets/idle-first.png 兼容入口。缺少 PNG 入口且首帧为 WebP 时，仅将首帧无损解码保存为 PNG 入口；固定 ZIP 条目顺序、时间和权限。动作定义保存在源码目录；制作基准图另行归档，不包含在仓库或运行包中。
 
 分包目标为每包 64 MiB 解压大小、最多 600 个文件。解包器仍对每包执行原有 250 MiB、1000 文件和单文件 50 MiB 限制，另外限制总包数 32、总文件数 10000、总解压大小 2 GiB。此支持仅用于内置包，不改用户上传限制。
 
