@@ -552,6 +552,7 @@ async function initVRMModel() {
         }
 
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
+        const configuredPathAtSelection = window.vrmModel;
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {
             const rawValue = window.vrmModel;
@@ -668,6 +669,13 @@ async function initVRMModel() {
         await startupManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
         if (!await ownsStartupAfterSwitchSettlement()) return;
 
+        // A path save need not advance the character-switch revision. If a full
+        // snapshot changed it during Three.js initialization, retry from fresh
+        // config after finally releases the startup lock; never start the old asset.
+        if (window.vrmModel !== configuredPathAtSelection) {
+            Promise.resolve().then(initVRMModel);
+            return;
+        }
         // 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(targetModelPath);
 

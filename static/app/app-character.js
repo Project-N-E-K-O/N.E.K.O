@@ -480,10 +480,8 @@
 
         // forceReload bypasses same-name dedupe, never backend commit order.
         if (switchRevision) {
-            const pageRevision = Number.isSafeInteger(window.lanlan_config?.switch_revision)
-                && window.lanlan_config.switch_revision > 0
-                ? window.lanlan_config.switch_revision
-                : 0;
+            const observed = window.getPageSwitchRevision?.() ?? window.lanlan_config?.switch_revision;
+            const pageRevision = Number.isSafeInteger(observed) && observed > 0 ? observed : 0;
             const stateRevision = Number.isSafeInteger(S._latestCatgirlSwitchRevision)
                 ? S._latestCatgirlSwitchRevision
                 : 0;
@@ -2187,11 +2185,17 @@
             rolledBackPngtuberName = null;
             const mountedType = configuredRenderer(window.lanlan_config);
             const mounted = getMountedRenderer(mountedType);
+            // Publish the mounted path at the actual commit, never from a retired startup.
+            if (mountedType === 'mmd' && mounted && window.mmdManager.currentModel?.url) {
+                window.mmdModel = window.mmdManager.currentModel.url;
+            }
             committedRenderer = mounted
                 ? { name: newCatgirl, revision: switchRevision || 0, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }
                 : null;
             const bootstrap = window.__nekoPageModelConfigPending;
-            if (bootstrap && (bootstrap.name === newCatgirl
+            const queued = S._pendingCatgirlSwitch;
+            const canRetireBoot = !queued || (queued.newCatgirl === newCatgirl && !(queued.switchRevision > switchRevision));
+            if (bootstrap && canRetireBoot && (bootstrap.name === newCatgirl
                 || (!bootstrap.pinned && switchRevision && switchRevision >= bootstrap.revision))) {
                 window.__nekoPageModelConfigPending = null;
                 bootstrap.retire?.();

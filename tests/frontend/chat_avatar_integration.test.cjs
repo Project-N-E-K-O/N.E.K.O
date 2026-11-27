@@ -1632,6 +1632,10 @@ test('queued page-model handoff waits for the central switch result without a co
     h.window.appState._pendingCatgirlSwitch = null;
     h.window.appState._latestCatgirlSwitchRevision = 82;
     h.window.lanlan_config = { lanlan_name: 'B', switch_revision: 82, model_type: 'live2d' };
+    // Model the central commit point, not just the incoming identity watermark.
+    const boot = h.window.__nekoPageModelConfigPending;
+    h.window.__nekoPageModelConfigPending = null;
+    boot.retire();
     const settle = [...h.timers.entries()].find(([, timer]) => timer.delay === 50);
     assert.ok(settle);
     h.timers.delete(settle[0]); settle[1].callback();
@@ -2203,16 +2207,16 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
     assert.ok(bSettingsReads >= 2, 'recovery must re-read B settings rather than reuse the disposed startup instance');
 });
 
-test('stale MMD startup preserves a newer committed same-name manager', async () => {
+for (const refresh of [false, true]) test('stale MMD startup respects the latest same-name path (HTTP refresh: ' + refresh + ')', async () => {
     const h = harness(), firstSettings = deferred(), settingsStarted = deferred();
-    const oldPath = '/static/mmd/B/old.pmx', newPath = '/static/mmd/B/new.pmx';
+    const oldPath = '/static/mmd/B/old.pmx', newPath = '/static/mmd/B/new.pmx', savedPath = '/static/mmd/B/saved.pmx';
     const model = path => desktopAvatarConfig('B', 'mmd', path === oldPath ? 82 : 83, path);
     let currentPath = oldPath, settingsReads = 0;
     const startup = startDesktopAvatarBootstrap(
         h,
         { lanlan_name: 'B', switch_revision: 82, model_type: 'live3d', live3d_sub_type: 'mmd' },
         async url => {
-            if (String(url).startsWith('/api/config/page_config')) return { json: async () => model(oldPath) };
+            if (String(url).startsWith('/api/config/page_config')) return { json: async () => model(currentPath) };
             if (url.endsWith('/B/mmd_settings')) {
                 settingsReads++;
                 if (settingsReads === 1) {
@@ -2238,20 +2242,26 @@ test('stale MMD startup preserves a newer committed same-name manager', async ()
     assert.equal(committedManager?.currentModel?.url, newPath);
     assert.equal(h.window.lanlan_config.switch_revision, 83);
 
+    if (refresh) {
+        // Saving avatar.mmd.model_path does not advance the character-switch revision.
+        currentPath = savedPath;
+        assert.equal(await h.window.reloadPageConfig(), true);
+        assert.equal(h.window.mmdModel, savedPath);
+        assert.equal(h.window.lanlan_config.switch_revision, 83);
+    }
     firstSettings.resolve();
     for (let turn = 0; turn < 12; turn++) await new Promise(setImmediate);
-    assert.equal(h.window.mmdManager, committedManager, 'stale startup must not dispose the newer committed manager');
-    assert.equal(committedManager._isDisposed, false);
-    assert.equal(committedManager.currentModel.url, newPath);
-    assert.equal(h.window.mmdModel, newPath, 'legacy path cache follows the committed manager instead of reviving the stale path');
+    if (refresh) {
+        assert.equal(h.window.mmdManager.currentModel?.url, savedPath);
+        assert.equal(h.window.mmdModel, savedPath);
+        assert.deepEqual(startup.loads, [newPath, savedPath]);
+    } else {
+        assert.equal(h.window.mmdManager, committedManager);
+        assert.equal(committedManager._isDisposed, false);
+        assert.equal(committedManager.currentModel.url, newPath);
+        assert.equal(h.window.mmdModel, newPath);
+    }
     assert.ok(!startup.loads.includes(oldPath));
-});
-
-test('MMD and VRM startups keep synchronous ownership guards at the final load/confirm boundary', () => {
-    const mmd = fs.readFileSync(path.join(root, 'static/mmd/mmd-init.js'), 'utf8');
-    const vrm = fs.readFileSync(path.join(root, 'static/vrm/vrm-init.js'), 'utf8');
-    assert.match(mmd, /const resolvedPath = [^\n]+;\s*if \(!stillOwnsStartup\(\)\) return;\s*window\.MMDLoadingOverlay\.update/);
-    assert.match(vrm, /confirmRestoredRenderer\?\.\(startupName, 'vrm', startupManager\.currentModel\?\.vrm\)/);
 });
 
 test('same-name MMD path refresh retires the old startup and loads only the new path', async () => {
@@ -2400,6 +2410,9 @@ test('VRM startup waits for an in-flight switch to settle and resumes when takeo
             return { ok: true, json: async () => ({}) };
         }
     );
+    const restored = [];
+    const confirm = h.window.appCharacter.confirmRestoredRenderer;
+    h.window.appCharacter.confirmRestoredRenderer = (...args) => { restored.push(args); return confirm(...args); };
     assert.equal(await startup.ready, true);
     await metadataStarted.promise;
 
@@ -2426,6 +2439,8 @@ test('VRM startup waits for an in-flight switch to settle and resumes when takeo
         await new Promise(setImmediate);
     }
     assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0][2], h.window.vrmManager.currentModel.vrm, 'compare the actual mounted VRM object');
     assert.ok(startup.loads.includes(pathA), 'failed takeover leaves A current, so its VRM startup must resume');
 });
 
@@ -2887,3 +2902,151 @@ test('retired websocket still forwards stamped character-switch control frames',
     assert.deepEqual(forwarded, [['C', 'B', 77]]);
 });
 
+
+
+test('pinned preview keeps committed receipt ordering across a revision-zero projection', async () => {
+    const h = harness(), w = h.window, calls = avatarCalls(h), originalFetch = h.context.fetch;
+    h.context.URLSearchParams = URLSearchParams;
+    w.location.pathname = '/web_chat_compact'; w.location.search = '?lanlan_name=A';
+    // Cold HTTP learns the authoritative high-water before app-character is loaded.
+    let revision = 902;
+    h.context.fetch = async (url, options) => String(url).startsWith('/api/config/page_config')
+        ? { json: async () => desktopAvatarConfig('A', 'live2d', revision, '/A.model3.json') }
+        : originalFetch(url, options);
+    h.load('static/js/index.js');
+    assert.equal(await w.reloadPageConfig(), true);
+    revision = 0;
+    assert.equal(await w.reloadPageConfig(), true);
+    assert.equal(w.lanlan_config.switch_revision, 0);
+    h.load('static/app/app-character.js');
+    const deliver = loadSwitchRelay(h);
+    const receipt = revision => deliver({ data: { action: 'catgirl_switched', new_catgirl: 'B', old_catgirl: 'A',
+        switch_revision: revision, timestamp: 2000 } });
+    await receipt(901);
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, [], 'a late delivery predating 902 must not start an attempt');
+    assert.equal(w.lanlan_config.lanlan_name, 'A');
+    await receipt(903);
+    await new Promise(setImmediate);
+    assert.equal(calls[0]?.[0], 'begin', 'a genuine later receipt is still actionable');
+});
+
+
+for (const [priorCommits, latest] of [[false, 'D'], [true, 'D'], [true, 'C']]) {
+    test('queued page-model handoff recovers after replay rollback (prior committed: ' + priorCommits + ', latest: ' + latest + ')', async () => {
+        const h = harness(), calls = avatarCalls(h), entered = deferred(), firstConfig = deferred(), firstSwitch = deferred();
+        const path = '/static/vrm/' + latest + '-84.vrm', model = desktopAvatarConfig(latest, 'vrm', 84, path);
+        let pageReads = 0, switchReads = 0;
+        const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+            if (String(url).startsWith('/api/config/page_config')) {
+                if (++pageReads === 1) { entered.resolve(); await firstConfig.promise; }
+                return { ok: true, json: async () => model };
+            }
+            if (url === '/api/characters') {
+                if (++switchReads === 1) {
+                    await firstSwitch.promise;
+                    if (priorCommits) {
+                        const c = desktopAvatarConfig('C', 'vrm', 83, '/static/vrm/C.vrm');
+                        return { ok: true, json: async () => ({ '猫娘': { C: { ...c, vrm: c.model_path } } }) };
+                    }
+                }
+                if (switchReads <= 2) return { ok: false, status: 503, json: async () => ({}) };
+                return { ok: true, json: async () => ({ '猫娘': { [latest]: { ...model, vrm: path } } }) };
+            }
+            return { ok: true, json: async () => ({}) };
+        });
+        await entered.promise;
+        const prior = h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 });
+        await new Promise(setImmediate);
+        assert.equal(switchReads, 1);
+        firstConfig.resolve(); await new Promise(setImmediate);
+        assert.equal(h.window.appState._pendingCatgirlSwitch?.newCatgirl, latest);
+        assert.equal([...h.timers.values()].some(t => t.delay === 600), false);
+        firstSwitch.resolve(); await prior; await new Promise(setImmediate);
+        assert.deepEqual(calls.map(c => c[0]), ['begin', priorCommits ? 'commit' : 'rollback', 'begin', 'rollback']);
+        assert.equal(h.window.appState.isSwitchingCatgirl, false);
+        // The production handoff observes settlement on its 50ms wait tick.
+        const observation = [...h.timers.entries()].find(([, t]) => t.delay === 50);
+        if (observation) {
+            h.timers.delete(observation[0]); observation[1].callback(); await new Promise(setImmediate);
+        }
+        assert.ok([...h.timers.values()].some(t => t.delay === 600), 'a failed replay must return ownership to the bounded bootstrap retry');
+        await advanceModelBootTimer(h, 600);
+        await startup.ready; await startup.vrmBoot; await new Promise(setImmediate);
+        assert.equal(pageReads, 2);
+        assert.equal(h.window.__nekoPageModelConfigPending, null);
+        assert.equal(h.window.lanlan_config.lanlan_name, latest);
+        assert.deepEqual(startup.loads, priorCommits ? ['/static/vrm/C.vrm', path] : [path]);
+    });
+}
+
+
+for (const succeeds of [false, true]) test('MMD startup rechecks immediately before load: takeover success=' + succeeds, async () => {
+    const h = harness(), entered = deferred(), release = deferred(), releaseSwitch = deferred();
+    const path = '/static/mmd/A.pmx', other = '/static/mmd/C.pmx';
+    let armed = false, switching, collided = false;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', switch_revision: 82 }, async url => {
+        if (String(url).startsWith('/api/config/page_config')) return { json: async () => desktopAvatarConfig('A', 'mmd', 82, path) };
+        if (url.endsWith('/A/mmd_settings')) { entered.resolve(); await release.promise; return {ok: false}; }
+        if (url === '/api/characters') {
+            await releaseSwitch.promise;
+            if (!succeeds) return {ok: false};
+            return {ok: true, json: async () => ({ '猫娘': { C: {model_type: 'mmd', mmd: other} } })};
+        }
+        return {ok: true, json: async () => ({})};
+    }, false, { mmdLoadModel({url}) { if (url === path && h.window.appState.isSwitchingCatgirl) collided = true; } });
+    await startup.ready; await entered.promise;
+    // Interleave a real incoming switch between the async ownership helper and its caller.
+    Object.defineProperty(h.window, 'mmdModel', {configurable: true, get() {
+        if (armed) { armed = false; queueMicrotask(() => { switching = h.window.handleCatgirlSwitch('C', 'A', {switchRevision: 83}); }); }
+        return path;
+    }, set() {}});
+    armed = true; release.resolve(); await new Promise(setImmediate);
+    assert.ok(switching);
+    releaseSwitch.resolve(); assert.equal(await switching, succeeds);
+    const settle=[...h.timers.entries()].find(([,t])=>t.delay===50);
+    if (settle) {h.timers.delete(settle[0]);settle[1].callback();await new Promise(setImmediate);}
+    assert.deepEqual(startup.loads, [succeeds ? other : path], 'rollback must still resume the old current model');
+    assert.equal(collided, false, 'a cold load must not start while the switch owns the renderer');
+});
+
+test('a VRM path refreshed during Three.js startup loads only the fresh asset at the same revision', async () => {
+    const h = harness(), entered = deferred(), resume = deferred();
+    const first = '/static/vrm/B-old.vrm', fresh = '/static/vrm/B-fresh.vrm';
+    let path = first;
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'B', switch_revision: 82 }, async url => {
+        if (String(url).startsWith('/api/config/page_config')) return { json: async () => desktopAvatarConfig('B', 'vrm', 82, path) };
+        return { ok: true, json: async () => ({}) };
+    });
+    h.window.vrmManager.initThreeJS = async () => { entered.resolve(); await resume.promise; };
+    await startup.ready; await entered.promise;
+    path = fresh;
+    assert.equal(await h.window.reloadPageConfig(), true);
+    assert.equal(h.window.vrmModel, fresh);
+    resume.resolve(); await startup.vrmBoot; await new Promise(setImmediate);
+    assert.deepEqual(startup.loads, [fresh]);
+    assert.equal(h.window.vrmManager.currentModel.url, fresh);
+});
+
+for (const takeover of [false, true]) test('late VRM load confirms only its own mounted model (takeover: ' + takeover + ')', async () => {
+    const h = harness(), entered = deferred(), resume = deferred(), restored = [];
+    const a = '/static/vrm/A.vrm', b = '/static/vrm/B.vrm';
+    const startup = startDesktopAvatarBootstrap(h, { lanlan_name: 'A', switch_revision: 82 }, async url => {
+        if (String(url).startsWith('/api/config/page_config')) return { json: async () => desktopAvatarConfig('A', 'vrm', 82, a) };
+        return { ok: true, json: async () => url === '/api/characters' ? {'猫娘': {B: {model_type: 'vrm', vrm: b}}} : {} };
+    });
+    const w = h.window, manager = w.vrmManager;
+    const load = manager._loadModelInternal;
+    manager._loadModelInternal = async function (url, options, token) {
+        if (url === a) { entered.resolve(); await resume.promise; }
+        return load.call(this, url, options, token);
+    };
+    const confirm = w.appCharacter.confirmRestoredRenderer;
+    w.appCharacter.confirmRestoredRenderer = (...args) => {restored.push(args); return confirm(...args);};
+    await startup.ready; await entered.promise;
+    if (takeover) assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 83}), true);
+    resume.resolve(); await startup.vrmBoot;
+    assert.equal(manager.currentModel.url, takeover ? b : a);
+    assert.equal(restored.length, takeover ? 0 : 1);
+    if (!takeover) assert.equal(restored[0][2], manager.currentModel.vrm);
+});

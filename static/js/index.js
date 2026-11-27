@@ -106,16 +106,20 @@ function latestPageSwitchRevision() {
     return pageSwitchRevisionHighWater;
 }
 
+// A named preview can publish revision zero without erasing an earlier committed receipt.
+window.getPageSwitchRevision = latestPageSwitchRevision;
+
 // Stamp checks happen before any model/DOM writes. If a live switch already owns
 // the runtime, use its existing pending/rollback path instead of racing its model load.
-function handoffPageSnapshotToSwitch(name, revision) {
+function handoffPageSnapshotToSwitch(name, revision, retryHandoff) {
     const state = window.appState;
+    const recover = !!retryHandoff && retryHandoff.name === name && revision >= retryHandoff.revision;
     if (revision && name && typeof window.handleCatgirlSwitch === 'function'
-        && (state?.isSwitchingCatgirl
+        && (recover || state?.isSwitchingCatgirl
             || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
             || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }))) {
         return Promise.resolve(window.handleCatgirlSwitch(name, window.lanlan_config?.lanlan_name || '', {
-            switchRevision: revision
+            switchRevision: revision, ...(recover ? { forceReload: true } : {})
         })).then(applied => {
             const pending = state?._pendingCatgirlSwitch;
             const queued = applied !== true && pending?.newCatgirl === name
@@ -152,7 +156,9 @@ async function waitForQueuedPageHandoff(name, revision, expected) {
             // the queued intent has failed.
             await Promise.resolve();
             if (!window.appState?.isSwitchingCatgirl && !queuedPageSwitchMatches(name, revision)) {
-                return pageSwitchIntentApplied(name, revision);
+                // A received stamp (and even a rolled-back name) is not a commit.
+                // A successful central attempt retires this matching bootstrap owner.
+                return window.__nekoPageModelConfigPending !== expected && pageSwitchIntentApplied(name, revision);
             }
         }
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -212,7 +218,8 @@ async function finishModelBootstrap(expected) {
         const loaded = await loadPageConfig({ modelBoot: expected });
         if (loaded || window.__nekoPageModelConfigPending !== expected) return loaded;
         if (expected.handoffQueued) {
-            const applied = await waitForQueuedPageHandoff(expected.name, expected.revision, expected);
+            const { name, revision } = expected.handoffQueued;
+            const applied = await waitForQueuedPageHandoff(name, revision, expected);
             expected.handoffQueued = false;
             if (applied) {
                 if (window.__nekoPageModelConfigPending === expected) {
@@ -222,6 +229,7 @@ async function finishModelBootstrap(expected) {
                 return true;
             }
             if (window.__nekoPageModelConfigPending !== expected) return false;
+            expected.retryHandoff = { name, revision };
             expected.retryable = true;
         }
         // A real stamped receipt can take over a failed/stalled boot, including
@@ -298,12 +306,12 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             // Decide takeover against ordering evidence that existed before this
             // read. The first authoritative HTTP bootstrap must not turn itself
             // into a live switch merely by publishing its own revision early.
-            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision);
+            const liveSwitch = handoffPageSnapshotToSwitch(name, switchRevision, modelBoot?.retryHandoff);
             if (liveSwitch) {
                 const outcome = await liveSwitch;
                 if (outcome.applied) return true;
                 if (modelBoot) {
-                    modelBoot.handoffQueued = outcome.queued;
+                    modelBoot.handoffQueued = outcome.queued ? { name, revision: switchRevision } : null;
                     modelBoot.retryable = !outcome.queued;
                 }
                 return false;
