@@ -7806,6 +7806,20 @@ class TaskAgentManager(TreeWork):
         if ruled is not None:
             self._permissions.release_grant(ruled[1].grant_id)
 
+    async def _web_search_off_reason(self, commission_id: str) -> str:
+        """Return why web search is refused while the plugins are off, with how to ask the user to turn them on if it may."""
+        base = "web search is not available: plugins are switched off"
+        if (
+            self._gateway is not None
+            and self._gateway.can_enable_for(commission_id)
+            and not await self._permissions.forbidden("plugin_entry")
+        ):
+            return (
+                f"{base}. If this task needs plugins, call capability_call with name \"enable_capability\" "
+                'and arguments {"capability": "plugins"} to ask the user to turn them on.'
+            )
+        return base
+
     async def _search_permission(self, commission: Commission) -> PermissionDecision:
         """Decide whether the task agent may send this batch of web queries.
 
@@ -7813,7 +7827,7 @@ class TaskAgentManager(TreeWork):
         ``plugin_entry`` permission apply as they do through the gateway.
         """
         if not self._registry.plugins_enabled():
-            return PermissionDecision(False, "web search is not available: plugins are switched off")
+            return PermissionDecision(False, await self._web_search_off_reason(commission.id))
         return await self._permissions.check(
             commission.id,
             "plugin_entry",
@@ -7922,7 +7936,7 @@ class TaskAgentManager(TreeWork):
             decision = await self._search_permission(commission)
         refusal = decision.reason
         if not self._registry.plugins_enabled():
-            refusal = "web search is not available: plugins are switched off"
+            refusal = refusal if (not decision.allow and refusal) else await self._web_search_off_reason(commission.id)
         elif decision.allow and not self._permissions.grant_active(decision.grant_id):
             refusal = DENIED_BY_SETTINGS
         if refusal is not None:

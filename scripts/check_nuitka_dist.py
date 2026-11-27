@@ -30,10 +30,10 @@ packaging into Electron.
 - Built-in plugins that lost their ``plugin.toml`` (means the plugin scanner
   will produce zero plugins at runtime).
 
-- A pinned dependency-installer uv that cannot download the CPython patch
-  release this build is frozen from (packaged dependency sync would fail).
-  This is the one check that needs the network; it is skipped when uv is
-  not on PATH.
+- A pinned plugin-tools uv that cannot download the CPython patch release
+  this build is frozen from (packaged plugin tool preparation would fail).
+  This is the one check that needs the network; it is skipped with a warning
+  when uv is not on PATH or the pinned uv or its list cannot be fetched.
 
 ## What it does NOT do
 
@@ -267,15 +267,46 @@ def _check_plugin_stage(dist_root: Path, stage_root: Path) -> list[str]:
     return issues
 
 
-def _check_package_tools_python() -> list[str]:
+def _plugin_tool_check_skipped(reason: str) -> list[str]:
+    # Fetching the pinned uv or its list needs PyPI; a transient outage must not
+    # fail an otherwise good build. Only a list without this patch release fails.
+    print(f"[WARN] {reason}; skipped the plugin-tools Python check", file=sys.stderr)
+    return []
+
+
+def _pypi_lacks_uv_release(version: str) -> bool:
+    """True only when PyPI answers that this uv release does not exist."""
+    import http.client
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/uv/{version}/json", timeout=30):
+            return False
+    except urllib.error.HTTPError as exc:
+        with exc:
+            if exc.code != 404:
+                return False
+            # A proxy's own 404 page is not PyPI saying the release is missing.
+            try:
+                body = json.loads(exc.read(4096))
+            except (OSError, ValueError, http.client.HTTPException):
+                return False
+            return isinstance(body, dict) and body.get("message") == "Not Found"
+    except (OSError, ValueError, http.client.HTTPException):
+        return False  # Unreachable: the caller only warns.
+
+
+def _check_plugin_tool_python() -> list[str]:
     """The pinned uv must be able to download this build's exact CPython.
 
-    A packaged server prepares dependency installs with a pinned uv and the
+    A packaged server prepares its plugin tools with a pinned uv and the
     CPython patch release it runs on (see
-    plugin/server/infrastructure/python_package_tools.py). uv carries its list
+    plugin/server/infrastructure/plugin_tool_runtime.py). uv carries its list
     of downloadable Pythons inside each release, while the build's Python patch
     floats with setup-python; when the build picks up a patch the pinned uv does
-    not know, every packaged dependency sync would fail. Run with the build
+    not know, every packaged plugin tool preparation would fail. Run with the build
     interpreter, which is the one the dist is frozen from.
     """
     import json
@@ -286,14 +317,14 @@ def _check_package_tools_python() -> list[str]:
     repository_root = Path(__file__).resolve().parents[1]
     if str(repository_root) not in sys.path:
         sys.path.insert(0, str(repository_root))
-    from plugin.server.infrastructure.python_package_tools import (
+    from plugin.server.infrastructure.plugin_tool_runtime import (
         packaged_python_request,
         pinned_uv_version,
     )
 
     uv = shutil.which("uv")
     if uv is None:
-        print("[WARN] uv not found on PATH; skipped the dependency-installer Python check", file=sys.stderr)
+        print("[WARN] uv not found on PATH; skipped the plugin-tools Python check", file=sys.stderr)
         return []
     version = pinned_uv_version()
     request = packaged_python_request()
@@ -308,16 +339,23 @@ def _check_package_tools_python() -> list[str]:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return [f"could not run uv {version} to list Python downloads: {exc}"]
+        return _plugin_tool_check_skipped(f"could not run uv {version} to list Python downloads: {exc}")
     if result.returncode:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
-        return [f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"]
+        if _pypi_lacks_uv_release(version):
+            return [
+                f"pinned uv {version} is not published on PyPI; packaged plugin tool preparation "
+                "would fail. Fix PINNED_UV_VERSION in plugin_tool_runtime.py."
+            ]
+        return _plugin_tool_check_skipped(
+            f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"
+        )
     try:
         downloads = json.loads(result.stdout)
     except ValueError:
         downloads = None
     if not isinstance(downloads, list):
-        return [f"uv {version} printed an unreadable Python download list"]
+        return _plugin_tool_check_skipped(f"uv {version} printed an unreadable Python download list")
     current = ".".join(str(part) for part in sys.version_info[:3])
     if not any(
         isinstance(item, dict)
@@ -326,8 +364,8 @@ def _check_package_tools_python() -> list[str]:
         for item in downloads
     ):
         return [
-            f"pinned uv {version} cannot download {request}; packaged dependency sync "
-            "would fail. Raise _UV_VERSION in python_package_tools.py to a uv release "
+            f"pinned uv {version} cannot download {request}; packaged plugin tool "
+            "preparation would fail. Raise PINNED_UV_VERSION in plugin_tool_runtime.py to a uv release "
             "that lists this Python patch (or pin the build's Python patch)."
         ]
     return []
@@ -365,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     issues.extend(_check_plugin_tomls(dist_root))
     if args.plugin_stage is not None:
         issues.extend(_check_plugin_stage(dist_root, args.plugin_stage.resolve()))
-    issues.extend(_check_package_tools_python())
+    issues.extend(_check_plugin_tool_python())
 
     if issues:
         print(f"[FAIL] Nuitka dist verification failed for {dist_root}:", file=sys.stderr)

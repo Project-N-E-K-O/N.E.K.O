@@ -36,6 +36,10 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
   status (a ``Ledger.subscribe`` listener), for a display of the tasks;
 * ``on_builtin_activity`` - told when a commission begins and stops occupying
   the desktop or the browser (``leases.py``), for the banner that shows it;
+* ``capability_enabler`` - turns on the browser, the keyboard and mouse or the
+  plugins when a task agent that found one switched off asked the user to and
+  was allowed (``CapabilityEnabler`` of ``gateway.py``); without it a task agent
+  is not told it may ask;
 * ``send_report`` - delivers an outbox row to the main server. Without it
   reports are stored and wait. Reports an earlier run left unsent go out
   from the first call that does work.
@@ -161,6 +165,7 @@ class NekoPowerHost:
         dsh_runtime_factory: Any = None,
         conversation: Any = None,
         model_slots: Any = None,
+        capability_enabler: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
         # What she and the user said lately, from which a commission that
@@ -221,6 +226,7 @@ class NekoPowerHost:
             permissions=self.permissions,
             ledger=self.ledger,
             leases=self.leases,
+            capability_enabler=capability_enabler,
         )
         self.task_agents = TaskAgentManager(
             ledger=self.ledger,

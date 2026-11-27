@@ -378,7 +378,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 
-            async def _bg_plugin_enable():
+            async def _bg_plugin_enable() -> tuple[bool, str]:
                 _ln = lanlan_name
 
                 def _owns_generation() -> bool:
@@ -398,24 +398,24 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         logger.info(
                             "[Agent] UserPlugin enable deferred until the master switch is ON"
                         )
-                        return
+                        return False, "NekoPower is switched off"
 
                     started = await _ensure_plugin_lifecycle_started(
                         should_start=_may_start_generation
                     )
                     if not _owns_generation():
-                        return
+                        return False, "plugin state changed while starting"
                     if not Modules.analyzer_enabled:
-                        return
+                        return False, "NekoPower is switched off"
                     if not started:
                         _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
-                        return
+                        return False, "the plugin server failed to start"
 
                     registry = await _check_user_plugin_registry_readiness()
                     if not _owns_generation():
-                        return
+                        return False, "plugin state changed while starting"
 
                     registry_status = registry.get("status")
                     if registry_status == "empty":
@@ -427,12 +427,14 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                         )
                         await _ensure_plugin_lifecycle_stopped(should_stop=_owns_generation)
+                        return False, "no plugins are installed or enabled"
                     elif registry_status == "ready":
                         _set_capability("user_plugin", True, "")
                         logger.info(
                             "[Agent] UserPlugin lifecycle ready (%d plugins)",
                             registry.get("plugin_count", 0),
                         )
+                        return True, ""
                     else:
                         # A slow or temporarily unreachable registry is not an
                         # authoritative empty registry.  Preserve the user's ON
@@ -447,20 +449,24 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                             registry.get("last_error", "unknown"),
                         )
+                        return False, "the plugin server did not respond in time"
                 except Exception as exc:
                     if _owns_generation():
                         _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.error("[Agent] Background plugin enable failed: %s", exc)
+                    return False, "starting the plugin server failed"
                 finally:
                     if _owns_generation():
                         _bump_state_revision()
                         await _emit_agent_status_update(lanlan_name=_ln)
 
             _bg = asyncio.create_task(_bg_plugin_enable())
+            Modules.user_plugin_enable_task = _bg
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:  # Disabling UserPlugin — non-blocking
+            Modules.user_plugin_enable_task = None
             _put_switch_off("user_plugin_enabled")
             _set_capability("user_plugin", True, "")
 

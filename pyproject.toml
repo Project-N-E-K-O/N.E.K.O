@@ -267,7 +267,7 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    # tests/frontend and plugin/tests/e2e drive a Chromium through Playwright.
+    # tests/frontend drives a Chromium through Playwright.
     # The application itself does not: its browser tools talk to a browser the
     # user already has installed, so this stays a test-only dependency.
     "playwright>=1.58.0",

@@ -517,6 +517,9 @@ const messages: PowerMessages = {
       mcp_server: '用 MCP 服务',
       usage_limit: '超过用量上限后继续',
       browser_reopen: '重新打开浏览器',
+      enable_browser: '开启浏览器控制',
+      enable_keyboard_mouse: '开启键鼠控制',
+      enable_plugins: '开启用户插件',
       session_action: '对别的使魔做事',
     },
     facts: {

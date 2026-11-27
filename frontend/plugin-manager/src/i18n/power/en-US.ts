@@ -524,6 +524,9 @@ const messages = {
       mcp_server: 'Use an MCP server',
       usage_limit: 'Go on past the usage limit',
       browser_reopen: 'Open the browser again',
+      enable_browser: 'Turn on browser control',
+      enable_keyboard_mouse: 'Turn on keyboard and mouse control',
+      enable_plugins: 'Turn on user plugins',
       session_action: 'Act on another familiar',
     },
     facts: {

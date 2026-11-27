@@ -337,7 +337,9 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #   both       -- "timeout" (no usable answer: none from the host within
 #                 ``request_timeout``, or none from main_server after the
 #                 request was sent, or one that is not a JSON object; the
-#                 outcome on main_server is unknown).
+#                 outcome on main_server is unknown; for a register whose
+#                 answer the host lost, the host first tries to withdraw it
+#                 by its registration id).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
 #                 the same name used up the budget, or the calling entry's
