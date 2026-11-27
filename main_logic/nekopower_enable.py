@@ -153,9 +153,12 @@ def answer(
     text: str = "",
     now: Optional[float] = None,
 ) -> str:
-    """Take the user's answer to the card ``question_id``: ACCEPTED, DECLINED, WORDS or STALE."""
+    """Take the user's answer to the card ``question_id``: ACCEPTED, DECLINED, WORDS or STALE.
+
+    The id must be the card's own: an answer that names no card answers none.
+    """
     state = _state(lanlan_name)
-    if state.card is None or (question_id and question_id != state.card.question_id):
+    if state.card is None or question_id != state.card.question_id:
         return STALE
     if choice == "yes":
         outcome = ACCEPTED

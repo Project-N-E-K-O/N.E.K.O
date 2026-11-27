@@ -55,10 +55,12 @@ from config.prompts.prompts_nekopower_enable import (
     ENABLE_NEKOPOWER_TOOL_DESCRIPTION,
     ENABLE_NEKOPOWER_TOOL_NAME,
     ENABLE_REPORT_ACCEPTED,
+    ENABLE_REPORT_ACCEPTED_NOT_RENEWED,
     ENABLE_REPORT_DECLINED,
     ENABLE_REPORT_DECLINED_COOLDOWN,
     ENABLE_REPORT_EXPIRED,
     ENABLE_REPORT_FAILED,
+    ENABLE_REPORT_NOTE,
     ENABLE_REPORT_WORDS,
     ENABLE_REMOTE,
     ENABLE_UNAVAILABLE,
@@ -480,8 +482,12 @@ class ToolCallingMixin:
             return {"output": _loc(ENABLE_WAITING, lang), "is_error": True}
         try:
             await websocket.send_json(nekopower_enable.card_frame(self.lanlan_name))
-        except Exception as e:
+        except BaseException as e:
+            # Taken down whatever stopped the sending, a cancelled tool call too (the user
+            # speaking over her): a card left up with no expiry would block her for good.
             nekopower_enable.withdraw(self.lanlan_name, question_id)
+            if not isinstance(e, Exception):
+                raise
             logger.warning("[%s] enable_nekopower: card not sent: %s", self.lanlan_name, type(e).__name__)
             return {"output": _loc(ENABLE_UNAVAILABLE, lang), "is_error": True}
         self._fire_task(self._expire_enable_nekopower_card(question_id))
@@ -494,8 +500,9 @@ class ToolCallingMixin:
             return
         try:
             await websocket.send_json(nekopower_enable.closed_frame(self.lanlan_name, question_id))
-        except Exception:
-            pass
+        except Exception as e:
+            # The page is gone: it reads the cards that wait when it comes back (/api/agent/questions).
+            logger.debug("[%s] enable_nekopower: card not taken down on the page: %s", self.lanlan_name, type(e).__name__)
 
     async def _expire_enable_nekopower_card(self, question_id: str) -> None:
         await asyncio.sleep(nekopower_enable.CARD_SECONDS)
@@ -504,10 +511,12 @@ class ToolCallingMixin:
         await self._close_enable_nekopower_card(question_id)
         self._report_enable_nekopower(_loc(ENABLE_REPORT_EXPIRED, self._enable_nekopower_lang()))
 
-    def _report_enable_nekopower(self, text: str) -> None:
-        self.submit_proactive_callback(
-            nekopower_enable.report(self.lanlan_name, text, lang=self._enable_nekopower_lang())
-        )
+    def _report_enable_nekopower(self, text: str, note: str = "") -> None:
+        """Hand her a report; what the user typed beside a click (``note``) goes with it."""
+        lang = self._enable_nekopower_lang()
+        if (note or "").strip():
+            text = text + _loc(ENABLE_REPORT_NOTE, lang).format(text=note.strip())
+        self.submit_proactive_callback(nekopower_enable.report(self.lanlan_name, text, lang=lang))
 
     async def answer_enable_nekopower_card(self, question_id: str, *, choice: str = "", text: str = "") -> str:
         """The user answered the card.
@@ -522,21 +531,23 @@ class ToolCallingMixin:
         if outcome == nekopower_enable.DECLINED:
             # The second "no" in a row: she is told she may not ask again for a while.
             cooled = nekopower_enable.cooling_down(self.lanlan_name)
-            self._report_enable_nekopower(_loc(ENABLE_REPORT_DECLINED_COOLDOWN if cooled else ENABLE_REPORT_DECLINED, lang))
+            self._report_enable_nekopower(
+                _loc(ENABLE_REPORT_DECLINED_COOLDOWN if cooled else ENABLE_REPORT_DECLINED, lang), note=text,
+            )
         elif outcome == nekopower_enable.WORDS:
             self._report_enable_nekopower(_loc(ENABLE_REPORT_WORDS, lang).format(text=(text or "").strip()))
         return outcome
 
-    async def after_nekopower_enabled(self, failure: str = "") -> None:
+    async def after_nekopower_enabled(self, failure: str = "", *, note: str = "") -> None:
         """After a "yes": renew the session so it opens with NekoPower on, then tell her (owner, 2026-11-27).
 
         ``failure`` says why switching it on failed (a key of ``ENABLE_FAILURE_REASONS``);
-        empty when it came on.
+        empty when it came on. ``note``: what the user typed beside the click.
         """
         lang = self._enable_nekopower_lang()
         if failure:
             reason = _loc(ENABLE_FAILURE_REASONS.get(failure) or ENABLE_FAILURE_REASONS["unknown"], lang)
-            self._report_enable_nekopower(_loc(ENABLE_REPORT_FAILED, lang).format(reason=reason))
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_FAILED, lang).format(reason=reason), note=note)
             return
         try:
             renewed = await self.renew_session_now()
@@ -545,9 +556,11 @@ class ToolCallingMixin:
             logger.warning("[%s] enable_nekopower: session not renewed: %s", self.lanlan_name, type(e).__name__)
         if not renewed:
             # The tools reached the live session all the same (update_agent_flags), save on
-            # Gemini Live; only the opening still says NekoPower is off.
+            # Gemini Live, which takes them at connect: she is told to look before she acts.
             logger.info("[%s] enable_nekopower: reporting without a renewed session", self.lanlan_name)
-        self._report_enable_nekopower(_loc(ENABLE_REPORT_ACCEPTED, lang))
+        self._report_enable_nekopower(
+            _loc(ENABLE_REPORT_ACCEPTED if renewed else ENABLE_REPORT_ACCEPTED_NOT_RENEWED, lang), note=note,
+        )
 
     async def _post_to_task_system(self, path: str, body: dict) -> tuple[dict | None, bool]:
         """POST one request of a task tool to the agent process.

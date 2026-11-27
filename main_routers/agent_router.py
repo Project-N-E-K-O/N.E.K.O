@@ -757,16 +757,17 @@ async def _answer_enable_nekopower_card(task_id: str, payload: dict):
     not_taken = JSONResponse({"success": False, "detail": {"code": "not_taken"}}, status_code=409)
     if mgr is None or not isinstance(payload, dict):
         return not_taken
+    text = str(payload.get("text") or payload.get("note") or "")
     outcome = await mgr.answer_enable_nekopower_card(
         str(payload.get("question_id") or ""),
         choice=str(payload.get("choice") or ""),
-        text=str(payload.get("text") or payload.get("note") or ""),
+        text=text,
     )
     if outcome == nekopower_enable.STALE:
         return not_taken
     if outcome == nekopower_enable.ACCEPTED:
         failure = await _switch_nekopower_on(mgr, lanlan)
-        mgr._fire_task(mgr.after_nekopower_enabled(failure))
+        mgr._fire_task(mgr.after_nekopower_enabled(failure, note=text))
     return {"success": True, "outcome": outcome}
 
 

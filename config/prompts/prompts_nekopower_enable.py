@@ -142,6 +142,29 @@ ENABLE_REPORT_ACCEPTED = {
     "es": "El usuario aceptó y NekoPower está activado; ya tienes las herramientas de tareas: sigue con lo que pidió el usuario.",
     "pt": "O usuário concordou e o NekoPower está ativado; você já tem as ferramentas de tarefas: continue com o que o usuário pediu.",
 }
+# The session could not be renewed in time (renew_session_now): the task tools may be
+# there (they are synced to the live session) or not yet (Gemini Live takes them at connect).
+ENABLE_REPORT_ACCEPTED_NOT_RENEWED = {
+    "zh": "用户同意了，喵能力已经打开，但会话还没来得及换新：手上有任务工具就接着办刚才的事；没有的话告诉对方喵能力已经打开，稍等一下再办。",
+    "zh-TW": "使用者同意了，喵能力已經打開，但會話還沒來得及換新：手上有任務工具就接著辦剛才的事；沒有的話告訴對方喵能力已經打開，稍等一下再辦。",
+    "en": "The user agreed and NekoPower is on, but the session has not been renewed yet: if you have the task tools, carry on with what the user asked; if not, tell them NekoPower is on and it takes a moment before you can do it.",
+    "ja": "ユーザーが許可し、にゃんパワーはオンになりましたが、セッションの切り替えがまだです。タスクツールがあればさっきの用件を続けてください。なければ、にゃんパワーはオンになったので少し待ってほしいと伝えてください。",
+    "ko": "사용자가 허락해서 냥파워가 켜졌지만 세션이 아직 새로 바뀌지 않았습니다. 작업 도구가 있으면 방금 부탁받은 일을 이어서 하고, 없으면 냥파워는 켜졌으니 조금만 기다려 달라고 말하세요.",
+    "ru": "Пользователь согласился, NekoPower включён, но сессия ещё не обновилась: если у вас есть инструменты задач, продолжайте то, о чём просил пользователь; если нет, скажите, что NekoPower включён и нужно немного подождать.",
+    "es": "El usuario aceptó y NekoPower está activado, pero la sesión aún no se ha renovado: si tienes las herramientas de tareas, sigue con lo que pidió el usuario; si no, dile que NekoPower ya está activado y que hace falta esperar un momento.",
+    "pt": "O usuário concordou e o NekoPower está ativado, mas a sessão ainda não foi renovada: se você tem as ferramentas de tarefas, continue com o que o usuário pediu; se não, diga que o NekoPower já está ativado e que é preciso esperar um pouco.",
+}
+# What the user typed beside a click on "yes" or "no" ({text}), added to the report.
+ENABLE_REPORT_NOTE = {
+    "zh": "用户还补了一句：「{text}」。",
+    "zh-TW": "使用者還補了一句：「{text}」。",
+    "en": "The user also wrote: \"{text}\".",
+    "ja": "ユーザーは「{text}」とも書きました。",
+    "ko": "사용자가 \"{text}\"라고도 썼습니다.",
+    "ru": "Пользователь также написал: «{text}».",
+    "es": "El usuario también escribió: «{text}».",
+    "pt": "O usuário também escreveu: \"{text}\".",
+}
 ENABLE_REPORT_DECLINED = {
     "zh": "用户没同意打开喵能力；照实告诉对方现在办不到。",
     "zh-TW": "使用者沒同意打開喵能力；照實告訴對方現在辦不到。",

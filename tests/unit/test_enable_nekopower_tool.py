@@ -15,6 +15,7 @@ with the session, the page and the agent process stood in for.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 
@@ -31,10 +32,12 @@ from config.prompts.prompts_nekopower_enable import (
     ENABLE_NEKOPOWER_TOOL_DESCRIPTION,
     ENABLE_NEKOPOWER_TOOL_NAME,
     ENABLE_REPORT_ACCEPTED,
+    ENABLE_REPORT_ACCEPTED_NOT_RENEWED,
     ENABLE_REPORT_DECLINED,
     ENABLE_REPORT_DECLINED_COOLDOWN,
     ENABLE_REPORT_EXPIRED,
     ENABLE_REPORT_FAILED,
+    ENABLE_REPORT_NOTE,
     ENABLE_REPORT_WORDS,
     ENABLE_REMOTE,
     ENABLE_UNAVAILABLE,
@@ -42,10 +45,10 @@ from config.prompts.prompts_nekopower_enable import (
 )
 from main_logic import nekopower_enable
 from main_logic.core.lifecycle import LifecycleMixin
-import main_logic.core.tool_calling as tool_calling_module
 from main_logic.core.tool_calling import ToolCallingMixin
 from main_logic.tool_calling import ToolDefinition, ToolRegistry
 import main_routers.agent_router as agent_router
+import main_routers.websocket_router as websocket_router
 
 pytestmark = pytest.mark.unit
 
@@ -141,6 +144,9 @@ def test_how_long_she_still_has_to_wait_is_counted_in_whole_minutes():
 def test_an_answer_to_another_card_or_with_nothing_in_it_is_stale():
     _, card = _ask()
     assert _answer("enable-other", "yes") == nekopower_enable.STALE
+    # Naming no card is answering none (CodeRabbit on #4155): a "yes" without the card's id
+    # does not switch NekoPower on.
+    assert _answer("", "yes") == nekopower_enable.STALE
     assert _answer(card) == nekopower_enable.STALE
     assert nekopower_enable.waiting_card(NAME) == card
     assert _answer(card, "yes") == nekopower_enable.ACCEPTED
@@ -262,7 +268,9 @@ def test_calling_it_puts_the_card_up_and_returns_at_once():
 def test_it_fails_at_once_when_it_may_not_ask_and_says_why(case, monkeypatch):
     page = _Page(fail=case == "page gone")
     manager = _session(page=None if case == "no page" else page, master_on=case == "already on")
-    monkeypatch.setattr(tool_calling_module, "is_remote_backend_deployment", lambda: case == "remote")
+    monkeypatch.setattr(
+        "main_logic.core.tool_calling.is_remote_backend_deployment", lambda: case == "remote",
+    )
     if case == "waiting":
         _ask()
     if case == "cooling_down":
@@ -284,6 +292,21 @@ def test_it_fails_at_once_when_it_may_not_ask_and_says_why(case, monkeypatch):
     assert manager.fired == []
     if case == "page gone":
         assert nekopower_enable.waiting_card(NAME) is None
+
+
+class _CancelledPage(_Page):
+    async def send_json(self, frame):
+        raise asyncio.CancelledError()
+
+
+def test_a_tool_call_cancelled_while_the_card_is_sent_leaves_no_card_up():
+    # The user speaking over her cancels the tool call (CodeRabbit on #4155): the card is
+    # taken down and the cancellation goes on, or she could never ask again.
+    manager = _session(page=_CancelledPage())
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager._handle_enable_nekopower_call({}))
+    assert nekopower_enable.waiting_card(NAME) is None
+    assert _ask()[0] == nekopower_enable.ASKED
 
 
 def test_a_card_nobody_answers_is_withdrawn_and_she_is_told(monkeypatch):
@@ -365,7 +388,31 @@ def test_after_yes_the_session_is_renewed_and_then_she_is_told(renewed):
     manager.renew_session_now = renew
     manager.submit_proactive_callback = lambda report: order.append(report["summary"])
     asyncio.run(manager.after_nekopower_enabled(""))
-    assert order == ["renew", ENABLE_REPORT_ACCEPTED["zh"]]
+    # Not renewed in time: the task tools may not be there yet (Gemini Live takes them at connect).
+    assert order == ["renew", (ENABLE_REPORT_ACCEPTED if renewed else ENABLE_REPORT_ACCEPTED_NOT_RENEWED)["zh"]]
+
+
+@pytest.mark.parametrize("failure", ["", "refused"])
+def test_what_the_user_typed_beside_yes_goes_with_the_report(failure):
+    manager = _session(page=_Page())
+
+    async def renew():
+        return True
+
+    manager.renew_session_now = renew
+    asyncio.run(manager.after_nekopower_enabled(failure, note=" 只开浏览器那项 "))
+    summary = manager.reports[-1]["summary"]
+    assert summary.endswith(ENABLE_REPORT_NOTE["zh"].format(text="只开浏览器那项"))
+
+
+def test_what_the_user_typed_beside_no_goes_with_the_report():
+    manager = _session(page=_Page())
+    asyncio.run(manager._handle_enable_nekopower_call({}))
+    _close_fired(manager)
+    asyncio.run(manager.answer_enable_nekopower_card(nekopower_enable.waiting_card(NAME), choice="no", text="现在不方便"))
+    assert manager.reports[-1]["summary"] == (
+        ENABLE_REPORT_DECLINED["zh"] + ENABLE_REPORT_NOTE["zh"].format(text="现在不方便")
+    )
 
 
 @pytest.mark.parametrize("failure", ["unreachable", "refused", "unknown", "something else"])
@@ -486,8 +533,8 @@ class _Manager:
         self.answers.append((question_id, choice, text))
         return self.outcome
 
-    async def after_nekopower_enabled(self, failure=""):
-        return failure
+    async def after_nekopower_enabled(self, failure="", *, note=""):
+        return failure, note
 
     def _fire_task(self, coro):
         self.fired.append(coro)
@@ -520,7 +567,19 @@ def test_the_answer_route_takes_a_yes_here_and_switches_nekopower_on(monkeypatch
     assert manager.answers == [("enable-1", "yes", "")]
     assert switched == [NAME]
     assert len(manager.fired) == 1
-    assert asyncio.run(manager.fired.pop()) == ""
+    handed_on = asyncio.run(manager.fired.pop())
+    assert handed_on == ("", "")
+
+
+def test_the_answer_route_hands_on_what_was_typed_beside_yes(monkeypatch):
+    manager = _Manager(nekopower_enable.ACCEPTED)
+    _route_with(monkeypatch, manager)
+    asyncio.run(agent_router.proxy_commission_answer(
+        nekopower_enable.task_id_for(NAME), {"question_id": "enable-1", "choice": "yes", "text": "只开浏览器"},
+    ))
+    assert manager.answers == [("enable-1", "yes", "只开浏览器")]
+    handed_on = asyncio.run(manager.fired.pop())
+    assert handed_on == ("", "只开浏览器")
 
 
 def test_a_yes_that_could_not_switch_it_on_hands_on_why(monkeypatch):
@@ -529,7 +588,8 @@ def test_a_yes_that_could_not_switch_it_on_hands_on_why(monkeypatch):
     asyncio.run(agent_router.proxy_commission_answer(
         nekopower_enable.task_id_for(NAME), {"question_id": "enable-1", "choice": "yes"},
     ))
-    assert asyncio.run(manager.fired.pop()) == "unreachable"
+    handed_on = asyncio.run(manager.fired.pop())
+    assert handed_on == ("unreachable", "")
 
 
 class _Unconfirmed:
@@ -611,3 +671,26 @@ def test_the_rules_hold_what_the_owner_set():
     assert nekopower_enable.COOLDOWN_SECONDS == 5 * 60
     assert nekopower_enable.CARD_SECONDS == 2 * 60
     assert os.path.basename(nekopower_enable.__file__) == "nekopower_enable.py"
+
+
+# ---- a page that (re)connects ------------------------------------------------------------
+
+
+def test_a_page_that_connects_gets_the_waiting_card_whatever_the_agent_process_says():
+    # Greptile on #4155: a page reloaded while the agent process is down cannot read the
+    # question list; the card lives in the main server, which sends it on connecting.
+    page = _Page()
+    asyncio.run(websocket_router._show_waiting_enable_card(page, NAME))
+    assert page.frames == []
+    _ask()
+    asyncio.run(websocket_router._show_waiting_enable_card(page, NAME))
+    assert page.frames == [nekopower_enable.card_frame(NAME)]
+    # A page already gone is no error.
+    asyncio.run(websocket_router._show_waiting_enable_card(_Page(fail=True), NAME))
+
+
+def test_the_card_is_sent_as_soon_as_the_page_is_the_session_s():
+    source = inspect.getsource(websocket_router)
+    attach = source.index("    mgr.websocket = websocket\n")
+    shown = source.index("    await _show_waiting_enable_card(websocket, lanlan_name)\n")
+    assert attach < shown < attach + 300

@@ -41,6 +41,7 @@ import time
 from utils.conversation_settings_constants import (
     normalize_independent_asr_provider_preference_handshake,
 )
+from main_logic import nekopower_enable
 from utils.logger_config import get_module_logger
 from utils.chat_avatar_connections import register_chat_avatar_connection, unregister_chat_avatar_connection
 from utils.language_utils import is_supported_language_code, normalize_language_code
@@ -139,6 +140,21 @@ def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
 
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
+
+
+async def _show_waiting_enable_card(websocket, lanlan_name: str) -> None:
+    """Show again the enable_nekopower card that waits, on a page that has just (re)connected.
+
+    The card lives in this process, not the agent process: the page gets it whether
+    or not the agent process's question list (/api/agent/questions) can be read.
+    """
+    enable_card = nekopower_enable.card_frame(lanlan_name)
+    if enable_card is None:
+        return
+    try:
+        await websocket.send_json(enable_card)
+    except Exception as e:
+        logger.debug("[%s] enable_nekopower card not sent on connect: %s", lanlan_name, type(e).__name__)
 
 # Lock for session management
 _lock = asyncio.Lock()
@@ -702,6 +718,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
+    await _show_waiting_enable_card(websocket, lanlan_name)
 
     # Engagement-deferred voice-input claim. Claiming the manager-wide voice
     # connection identity at accept time would let a second socket for the
