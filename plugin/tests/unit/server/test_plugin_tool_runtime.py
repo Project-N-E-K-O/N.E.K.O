@@ -35,6 +35,7 @@ class FakeHTTPError(Exception):
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     tools = tmp_path / "app-docs" / "plugin-runtime" / "tools"
     monkeypatch.setattr(module, "tools_root", lambda: tools)
+    monkeypatch.setattr(module, "_known_tools_root", lambda: tools)
     monkeypatch.setattr(module, "_is_packaged", lambda: True)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: [])
     monkeypatch.setattr(module, "_POLL_SECONDS", 0.01)
@@ -169,11 +170,17 @@ class FakeUv:
                 return subprocess.CompletedProcess(cmd, 1, "", "error: no download for this platform")
             self.installed = True
             Path(self.python).parent.mkdir(parents=True, exist_ok=True)
-            Path(self.python).write_bytes(b"")
+            _write_executable(Path(self.python), b"#!python")
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == self.python:
             return subprocess.CompletedProcess(cmd, 0, self.identity, "")
         raise AssertionError(f"unexpected command {cmd}")
+
+
+def _write_executable(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o755)
 
 
 def _prepare(runner, **kwargs) -> module.ToolRuntime:
@@ -270,7 +277,7 @@ def test_stale_record_is_not_ready(root, monkeypatch):
     Path(uv.python).unlink()
     assert module.read_tool_runtime_status().state == "missing"
     record = json.loads((root / "python.json").read_text(encoding="utf-8"))
-    Path(uv.python).write_bytes(b"")
+    _write_executable(Path(uv.python), b"#!python")
     record["python_version"] = [3, 0, 0]
     (root / "python.json").write_text(json.dumps(record), encoding="utf-8")
     assert module.read_tool_runtime_status().state == "missing"
@@ -473,12 +480,12 @@ def test_two_threads_preparing_together_download_once(root, monkeypatch):
     pypi = FakePyPI(gate=gate).install(monkeypatch)
     uv = FakeUv(root)
     results: list[module.ToolRuntime] = []
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def worker():
         try:
             results.append(_prepare(uv))
-        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+        except Exception as exc:  # noqa: BLE001 - surfaced by the assertion below
             errors.append(exc)
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
@@ -530,7 +537,7 @@ def test_damaged_cached_uv_is_downloaded_again(root, monkeypatch):
     pypi = FakePyPI().install(monkeypatch)
     cached = module.cached_uv_path()
     cached.parent.mkdir(parents=True)
-    cached.write_bytes(b"damaged")
+    _write_executable(cached, b"damaged")
     uv = FakeUv(root)
 
     def runner(cmd, **kwargs):
@@ -547,7 +554,7 @@ def test_intact_cached_uv_is_reused(root, monkeypatch):
     pypi = FakePyPI().install(monkeypatch)
     cached = module.cached_uv_path()
     cached.parent.mkdir(parents=True)
-    cached.write_bytes(b"cached")
+    _write_executable(cached, b"cached")
     assert _prepare(FakeUv(root)).uv == str(cached)
     assert pypi.wheel_downloads == 0
 
@@ -748,13 +755,22 @@ async def test_async_wrapper_cancels_the_worker(root, monkeypatch):
     pypi = FakePyPI(gate=gate).install(monkeypatch)
     monkeypatch.setattr(module, "_run_command", FakeUv(root))
     task = asyncio.ensure_future(module.ensure_tool_runtime(timeout=60))
-    while pypi.wheel_downloads == 0:
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    gate.set()
+    try:
+        limit = time.monotonic() + 10
+        while pypi.wheel_downloads == 0:
+            if task.done():
+                task.result()  # Surfaces why it ended before downloading.
+                pytest.fail("preparation finished without downloading")
+            assert time.monotonic() < limit, "the wheel download never started"
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        gate.set()
+    limit = time.monotonic() + 10
     while module._flight.locked():
+        assert time.monotonic() < limit, "the worker thread never finished"
         await asyncio.sleep(0.01)
     assert module.read_tool_runtime_status().state == "missing"
     assert not module.cached_uv_path().exists()
@@ -766,3 +782,111 @@ async def test_async_wrapper_returns_the_prepared_runtime(root, monkeypatch):
     monkeypatch.setattr(module, "_run_command", uv)
     result = await module.ensure_tool_runtime(timeout=60)
     assert result.python == uv.python
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups
+
+
+def test_status_read_never_creates_the_config_manager(tmp_path, monkeypatch):
+    # The real resolution path: constructing ConfigManager probes and creates
+    # app-data directories, so a status read must not be the one to do it.
+    import utils.config_manager as config_manager
+
+    monkeypatch.setattr(config_manager, "_config_manager", None)
+    monkeypatch.setattr(module, "_is_packaged", lambda: True)
+    monkeypatch.setattr(module, "_last_error", None)
+    monkeypatch.setattr(module, "_progress", None)
+    monkeypatch.setattr(module, "_background", None)
+    assert module.read_tool_runtime_status().state == "missing"
+    assert config_manager._config_manager is None
+    monkeypatch.setattr(
+        config_manager, "_config_manager", SimpleNamespace(app_docs_dir=str(tmp_path / "docs")),
+    )
+    assert module._known_tools_root() == tmp_path / "docs" / "plugin-runtime" / "tools"
+    assert module.read_tool_runtime_status().state == "missing"
+    assert not (tmp_path / "docs").exists()
+
+
+@pytest.mark.parametrize("damage", ["empty", "not_executable"])
+@pytest.mark.parametrize("tool", ["uv", "python"])
+def test_damaged_tool_after_preparation_is_not_ready_and_is_repaired(root, monkeypatch, damage, tool):
+    if damage == "not_executable" and sys.platform == "win32":
+        pytest.skip("Windows has no executable bit")
+    pypi = FakePyPI().install(monkeypatch)
+    uv = FakeUv(root)
+    first = _prepare(uv)
+    target = Path(first.uv if tool == "uv" else first.python)
+    if damage == "empty":
+        target.write_bytes(b"")
+    else:
+        target.chmod(0o644)
+    assert module.read_tool_runtime_status().state == "missing"
+    if tool == "python":
+        target.unlink()
+        uv.installed = False
+    repaired = _prepare(uv)
+    assert module.read_tool_runtime_status().state == "ready"
+    assert pypi.wheel_downloads == (2 if tool == "uv" else 1)
+    assert module._usable_executable(repaired.uv) and module._usable_executable(repaired.python)
+
+
+def test_cancel_before_starting_a_retry_clears_the_earlier_failure(root, monkeypatch):
+    FakePyPI(digest="0" * 64).install(monkeypatch)
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    canceled = threading.Event()
+    canceled.set()
+    _expect_failure(_no_runner, "canceled", cancel=canceled)
+    assert module.read_tool_runtime_status().state == "missing"
+
+
+def test_unstarted_attempt_leaves_an_active_preparation_alone(root, monkeypatch):
+    earlier = module.ToolRuntimeError("checksum_mismatch", "earlier")
+    progress = module.ProgressEvent("downloading_uv", 5, 10)
+    monkeypatch.setattr(module, "_last_error", earlier)
+    monkeypatch.setattr(module, "_progress", progress)
+    canceled = threading.Event()
+    canceled.set()
+    with module._flight:
+        _expect_failure(_no_runner, "canceled", cancel=canceled)
+        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() - 1)
+        status = module.read_tool_runtime_status()
+        assert (status.state, status.progress) == ("preparing", progress)
+    assert module._last_error is earlier
+    assert not module._flight.locked()
+
+
+def test_background_start_after_the_deadline_reports_timeout(root, monkeypatch):
+    module.start_tool_runtime_preparation(timeout=0)
+    module._background[0].join(10)
+    status = module.read_tool_runtime_status()
+    assert (status.state, status.error_code) == ("failed", "timeout")
+
+
+def test_network_error_at_the_deadline_is_a_timeout_without_fallback(root, monkeypatch):
+    from tests.fake_clock import patch_module_clock
+
+    clock = [100.0]
+    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
+    pypi = FakePyPI().install(monkeypatch)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+
+    def stalled(_chunk):
+        clock[0] = 200.0
+        raise FakeHTTPError("read timed out")
+
+    pypi.on_chunk = stalled
+    uv = FakeUv(root, versions={"/new/uv": "99.0.0"})
+    _expect_failure(uv, "timeout", deadline=150.0)
+    assert uv.calls == []
+
+
+def test_network_error_within_the_deadline_still_falls_back(root, monkeypatch):
+    pypi = FakePyPI().install(monkeypatch)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+
+    def broken(_chunk):
+        raise FakeHTTPError("connection reset")
+
+    pypi.on_chunk = broken
+    assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"

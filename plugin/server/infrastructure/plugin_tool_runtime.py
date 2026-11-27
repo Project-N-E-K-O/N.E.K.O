@@ -132,7 +132,8 @@ class CommandRunner(Protocol):
     def __call__(
         self, cmd: list[str], *, label: str, env: dict[str, str],
         cancel: threading.Event, deadline: float,
-    ) -> subprocess.CompletedProcess[str]: ...
+    ) -> subprocess.CompletedProcess[str]:
+        """Run ``cmd`` to completion, raising ToolRuntimeError on cancel or deadline."""
 
 
 # ---------------------------------------------------------------------------
@@ -143,16 +144,32 @@ def _is_packaged() -> bool:
     return bool(getattr(sys, "frozen", False) or "__compiled__" in globals())
 
 
-def tools_root() -> Path:
-    from utils.config_manager import get_config_manager
-
+def _root_under(app_docs_dir: str | os.PathLike[str]) -> Path:
     # plugin-runtime/ is registered as regenerable in utils/storage/migration.py:
     # a storage migration leaves it behind and the tools are prepared again.
     # That is required, not just cheaper: the uv-managed CPython under python/
     # contains symlinks, which a migration copying files would fail on.
-    # migrate=False: resolving a path must not run the config data migrations,
-    # so status reads stay free of writes in a process that has not run them.
-    return Path(get_config_manager(migrate=False).app_docs_dir) / "plugin-runtime" / "tools"
+    return Path(app_docs_dir) / "plugin-runtime" / "tools"
+
+
+def tools_root() -> Path:
+    """The tools root; creates the config manager if this process has none yet."""
+    from utils.config_manager import get_config_manager
+
+    # migrate=False: resolving a path must not run the config data migrations.
+    return _root_under(get_config_manager(migrate=False).app_docs_dir)
+
+
+def _known_tools_root() -> Path | None:
+    """The tools root without creating the config manager, which writes to disk.
+
+    None before anything in this process has set up the app-data root; nothing
+    can have been prepared by this process then, and status reads say missing.
+    """
+    from utils.config_manager import peek_config_manager
+
+    manager = peek_config_manager()
+    return None if manager is None else _root_under(manager.app_docs_dir)
 
 
 def python_install_dir() -> Path:
@@ -164,8 +181,8 @@ def tool_envs_dir() -> Path:
     return tools_root() / "envs"
 
 
-def _python_record_path() -> Path:
-    return tools_root() / "python.json"
+def _python_record_path(root: Path | None = None) -> Path:
+    return (tools_root() if root is None else root) / "python.json"
 
 
 def _python_architecture(platform_tag: str, machine: str | None = None) -> str:
@@ -221,7 +238,7 @@ def _with_utf8(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def tool_runtime_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+def tool_runtime_env(base: Mapping[str, str] | None = None, *, root: Path | None = None) -> dict[str, str]:
     """Environment for packaged tool child processes.
 
     Based on ``git_env()`` (``os.environ`` without git's repository-locating
@@ -234,7 +251,7 @@ def tool_runtime_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     for name, value in source.items():
         if not name.startswith("UV_"):
             env[name] = value
-    env["UV_PYTHON_INSTALL_DIR"] = str(python_install_dir())
+    env["UV_PYTHON_INSTALL_DIR"] = str(python_install_dir() if root is None else root / "python")
     return _with_utf8(env)
 
 
@@ -256,10 +273,20 @@ def _source_uv() -> str | None:
 # Read-only state
 
 
-def _prepared_runtime() -> ToolRuntime | None:
-    """The recorded interpreter and uv when they still fit this host. Reads only."""
+def _usable_executable(path: str) -> bool:
+    """Exists, is not empty and, on POSIX, may be executed. No child process."""
     try:
-        record = json.loads(_python_record_path().read_text(encoding="utf-8"))
+        if not Path(path).is_file() or Path(path).stat().st_size == 0:
+            return False
+    except OSError:
+        return False
+    return sys.platform == "win32" or os.access(path, os.X_OK)
+
+
+def _prepared_tools(root: Path) -> tuple[str, str] | None:
+    """(python, uv) as recorded, when they still fit this host. Reads only."""
+    try:
+        record = json.loads(_python_record_path(root).read_text(encoding="utf-8"))
         python = record["executable"]
         uv = record["uv"]
         if (
@@ -269,13 +296,30 @@ def _prepared_runtime() -> ToolRuntime | None:
             and Version(record["uv_version"]) >= Version(PINNED_UV_VERSION)
             and isinstance(python, str)
             and isinstance(uv, str)
-            and Path(python).is_file()
-            and Path(uv).is_file()
+            and _usable_executable(python)
+            and _usable_executable(uv)
         ):
-            return ToolRuntime(python, uv, tool_runtime_env(), tools_root(), True)
+            return python, uv
     except (OSError, ValueError, KeyError, TypeError, InvalidVersion):
-        pass
+        # Missing, unreadable or outdated record: the tools need preparing.
+        return None
     return None
+
+
+def _prepared_runtime() -> ToolRuntime | None:
+    root = tools_root()
+    tools = _prepared_tools(root)
+    if tools is None:
+        return None
+    return ToolRuntime(tools[0], tools[1], tool_runtime_env(root=root), root, True)
+
+
+def _prepared_status() -> RuntimeStatus | None:
+    root = _known_tools_root()
+    tools = None if root is None else _prepared_tools(root)
+    if tools is None:
+        return None
+    return RuntimeStatus("ready", True, PINNED_UV_VERSION, python=tools[0], uv=tools[1])
 
 
 _flight = threading.Lock()
@@ -298,9 +342,9 @@ def read_tool_runtime_status() -> RuntimeStatus:
             "unsupported", True, PINNED_UV_VERSION, error_code="unsupported_platform",
             error_detail=f"Plugin tools are not available on {sys.platform}",
         )
-    prepared = _prepared_runtime()
-    if prepared is not None:
-        return RuntimeStatus("ready", True, PINNED_UV_VERSION, python=prepared.python, uv=prepared.uv)
+    ready = _prepared_status()
+    if ready is not None:
+        return ready
     with _state_lock:
         progress = _progress
         error = _last_error
@@ -308,9 +352,9 @@ def read_tool_runtime_status() -> RuntimeStatus:
     if busy:
         return RuntimeStatus("preparing", True, PINNED_UV_VERSION, progress=progress)
     # A preparation may have finished between the first check and the snapshot.
-    prepared = _prepared_runtime()
-    if prepared is not None:
-        return RuntimeStatus("ready", True, PINNED_UV_VERSION, python=prepared.python, uv=prepared.uv)
+    ready = _prepared_status()
+    if ready is not None:
+        return ready
     if error is not None:
         return RuntimeStatus(
             "failed", True, PINNED_UV_VERSION, error_code=error.code, error_detail=error.detail,
@@ -409,6 +453,12 @@ def _download_uv(
     except ToolRuntimeError:
         raise
     except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+        # A network timeout at the deadline is the task's timeout, not a
+        # download failure that should fall back to another uv.
+        try:
+            _check(cancel, deadline)
+        except ToolRuntimeError as stopped:
+            raise stopped from exc
         raise ToolRuntimeError(
             "download_failed", f"Could not download uv {PINNED_UV_VERSION}: {type(exc).__name__}: {exc}",
         ) from exc
@@ -619,7 +669,7 @@ def _ensure_uv(
             return system
     cached = cached_uv_path()
     if cached.is_file():
-        if _uv_version(str(cached), run_command, env, cancel, deadline) is not None:
+        if _usable_executable(str(cached)) and _uv_version(str(cached), run_command, env, cancel, deadline):
             return str(cached), PINNED_UV_VERSION
         # Damaged (or stripped of its executable bit): download it again.
         cached.unlink()
@@ -698,6 +748,22 @@ def _record_outcome(error: ToolRuntimeError | None) -> None:
         _last_error = None if error is not None and error.code == "canceled" else error
 
 
+def _record_unstarted(error: ToolRuntimeError) -> None:
+    """Record an attempt that stopped before it took the in-process flight.
+
+    Only when no other preparation is under way: that one reports its own
+    progress and outcome, and an unstarted attempt must not overwrite them.
+    """
+    global _last_error
+    if error.code == "busy":
+        return
+    with _state_lock:
+        other_background = _background is not None and _background[0] is not threading.current_thread()
+        if _flight.locked() or (other_background and _background[0].is_alive()):
+            return
+        _last_error = None if error.code == "canceled" else error
+
+
 # ---------------------------------------------------------------------------
 # Public preparation API
 
@@ -724,13 +790,17 @@ def prepare_tool_runtime(
         return _source_runtime()
     if sys.platform not in _SUPPORTED_PLATFORMS:
         raise ToolRuntimeError("unsupported_platform", f"Plugin tools are not available on {sys.platform}")
-    _check(cancel, deadline)
-    prepared = _prepared_runtime()
-    if prepared is not None:
-        return prepared
+    try:
+        _check(cancel, deadline)
+        prepared = _prepared_runtime()
+        if prepared is not None:
+            return prepared
+        _acquire_flight(cancel, deadline, wait=wait_for_lock)
+    except ToolRuntimeError as exc:
+        _record_unstarted(exc)
+        raise
     runner = _run_command if run_command is None else run_command
     report = _Reporter(progress)
-    _acquire_flight(cancel, deadline, wait=wait_for_lock)
     outcome: ToolRuntimeError | None = None
     try:
         report(ProgressEvent("waiting"))
@@ -781,7 +851,8 @@ def _background_main(cancel: threading.Event, deadline: float) -> None:
     try:
         prepare_tool_runtime(cancel=cancel, deadline=deadline)
     except ToolRuntimeError:
-        pass  # Recorded for read_tool_runtime_status().
+        # prepare_tool_runtime() already recorded it for read_tool_runtime_status().
+        return
 
 
 def start_tool_runtime_preparation(*, timeout: float = _DEFAULT_BACKGROUND_TIMEOUT) -> RuntimeStatus:

@@ -277,6 +277,15 @@ def get_config_manager(app_name=None, *, migrate=True):
     return _config_manager
 
 
+def peek_config_manager():
+    """The config manager if this process already created it, else None.
+
+    Never creates one: constructing it probes and creates the app-data
+    directories, which read-only callers must not do.
+    """
+    return _config_manager
+
+
 # Convenience functions
 def get_config_path(filename):
     """Get the config file path"""
