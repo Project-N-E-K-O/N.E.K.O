@@ -1,6 +1,7 @@
 import {
   isActiveKnowledgeJob,
   type KnowledgeDiagnosticQuery,
+  type KnowledgeEntry,
   type KnowledgePackJob,
   type KnowledgeVectorState,
 } from '@/api/knowledge'
@@ -107,4 +108,9 @@ export function nextKnowledgePollDelay(options: {
   if (options.serviceStarting) return KNOWLEDGE_STARTING_POLL_MS
   if (options.backgroundProgress && options.showsVectorProgress) return KNOWLEDGE_VECTOR_POLL_MS
   return null
+}
+
+/** One tuple identity for catalog rows and pending writes; titles may contain delimiters. */
+export function knowledgeEntryKey(row: Pick<KnowledgeEntry, 'pack_id' | 'title'>): string {
+  return JSON.stringify([row.pack_id, row.title])
 }
