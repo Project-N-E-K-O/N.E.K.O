@@ -521,6 +521,18 @@ class ToolCallingMixin:
             text = text + _loc(ENABLE_REPORT_NOTE, lang).format(text=note.strip())
         self.submit_proactive_callback(nekopower_enable.report(self.lanlan_name, text, lang=lang))
 
+    def _renew_for_nekopower_on(self) -> "asyncio.Task":
+        """The one renewal for NekoPower coming on: the panel switch and the card share it.
+
+        ``update_agent_flags`` starts it as the master switch comes on mid-session;
+        ``after_nekopower_enabled`` waits for the same one instead of renewing again.
+        """
+        task = getattr(self, "_nekopower_renewal", None)
+        if task is None or task.done():
+            task = self._fire_task(self.renew_session_now())
+            self._nekopower_renewal = task
+        return task
+
     async def answer_enable_nekopower_card(self, question_id: str, *, choice: str = "", text: str = "") -> str:
         """The user answered the card.
 
@@ -558,7 +570,7 @@ class ToolCallingMixin:
             self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
             return
         try:
-            renewed = await self.renew_session_now()
+            renewed = await self._renew_for_nekopower_on()
         except Exception as e:
             renewed = False
             logger.warning("[%s] enable_nekopower: session not renewed: %s", self.lanlan_name, type(e).__name__)

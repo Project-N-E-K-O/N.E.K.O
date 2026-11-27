@@ -46,6 +46,7 @@ from config.prompts.prompts_nekopower_enable import (
 )
 from main_logic import nekopower_enable
 from main_logic.core.lifecycle import LifecycleMixin
+from main_logic.core.proactive import ProactiveMixin
 from main_logic.core.tool_calling import ToolCallingMixin
 from main_logic.tool_calling import ToolDefinition, ToolRegistry
 import main_routers.agent_router as agent_router
@@ -387,6 +388,7 @@ def test_after_yes_the_session_is_renewed_and_then_she_is_told(renewed):
         return renewed
 
     manager.renew_session_now = renew
+    manager._fire_task = asyncio.ensure_future  # renewals run for real here
     manager.submit_proactive_callback = lambda report: order.append(report["summary"])
     asyncio.run(manager.after_nekopower_enabled(""))
     # Not renewed in time: the task tools may not be there yet (Gemini Live takes them at connect).
@@ -401,6 +403,7 @@ def test_what_the_user_typed_beside_yes_goes_with_the_report(failure):
         return True
 
     manager.renew_session_now = renew
+    manager._fire_task = asyncio.ensure_future  # renewals run for real here
     asyncio.run(manager.after_nekopower_enabled(failure, note=" 只开浏览器那项 "))
     summary = manager.reports[-1]["summary"]
     assert summary.endswith(ENABLE_REPORT_NOTE["zh"].format(text="只开浏览器那项"))
@@ -427,6 +430,7 @@ def test_switched_off_again_on_the_panel_meanwhile_she_is_not_told_it_is_on():
         return True
 
     manager.renew_session_now = renew
+    manager._fire_task = asyncio.ensure_future  # renewals run for real here
     asyncio.run(manager.after_nekopower_enabled("", note="好"))
     assert [report["summary"] for report in manager.reports] == [
         ENABLE_REPORT_OFF_AGAIN["zh"] + ENABLE_REPORT_NOTE["zh"].format(text="好"),
@@ -444,6 +448,7 @@ def test_switched_off_on_the_panel_while_the_session_is_renewed_she_is_not_told_
         return True
 
     manager.renew_session_now = renew
+    manager._fire_task = asyncio.ensure_future  # renewals run for real here
     asyncio.run(manager.after_nekopower_enabled(""))
     assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_OFF_AGAIN["zh"]]
 
@@ -727,3 +732,80 @@ def test_the_card_is_sent_as_soon_as_the_page_is_the_session_s():
     attach = source.index("    mgr.websocket = websocket\n")
     shown = source.index("    await _show_waiting_enable_card(websocket, lanlan_name)\n")
     assert attach < shown < attach + 300
+
+
+# ---- switched on mid-session: the session is renewed (owner, 2026-11-27) -------------------
+
+
+
+class _Flagged(ProactiveMixin, ToolCallingMixin):
+    """What update_agent_flags reads and calls of the session manager."""
+
+
+def _flagged(*, session_up=True, master_on=False):
+    manager = object.__new__(_Flagged)
+    manager.lanlan_name = NAME
+    manager.user_language = "zh"
+    manager.tool_registry = ToolRegistry()
+    manager.agent_flags = {
+        "agent_enabled": master_on, "computer_use_enabled": False,
+        "browser_use_enabled": False, "user_plugin_enabled": False,
+    }
+    manager._is_agent_enabled = lambda: False
+    manager.session = object() if session_up else None
+    manager.is_active = session_up
+    manager.websocket = None
+    manager.renewals = []
+    manager.reports = []
+    manager.submit_proactive_callback = manager.reports.append
+
+    async def renew():
+        manager.renewals.append(True)
+        await asyncio.sleep(0)
+        return True
+
+    async def sync_tools():
+        return None
+
+    manager.renew_session_now = renew
+    manager._sync_tools_to_active_session = sync_tools
+    return manager
+
+
+def _update(manager, flags):
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        manager.update_agent_flags(flags)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+
+def test_switched_on_from_the_panel_mid_session_the_session_is_renewed():
+    manager = _flagged()
+    _update(manager, {"agent_enabled": True, "user_plugin_enabled": True})
+    assert manager.renewals == [True]
+
+
+@pytest.mark.parametrize("case", ["already on", "no session", "a capability only"])
+def test_no_renewal_otherwise(case):
+    manager = _flagged(session_up=case != "no session", master_on=case == "already on")
+    flags = {"user_plugin_enabled": True} if case == "a capability only" else {"agent_enabled": True}
+    _update(manager, flags)
+    assert manager.renewals == []
+
+
+def test_the_card_and_the_switch_share_one_renewal():
+    # The main server writes the session's switches before the agent process takes the
+    # command (_switch_nekopower_on): the renewal is under way when the card's report waits.
+    manager = _flagged()
+
+    async def run():
+        manager._fire_task = asyncio.ensure_future
+        manager.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+        await manager.after_nekopower_enabled("")
+
+    asyncio.run(run())
+    assert manager.renewals == [True]
+    assert [report["summary"] for report in manager.reports] == [ENABLE_REPORT_ACCEPTED["zh"]]

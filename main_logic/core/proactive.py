@@ -213,6 +213,7 @@ class ProactiveMixin:
 
     # Called by main service to update Agent-mode switches.
     def update_agent_flags(self, flags: dict):
+        was_on = bool((getattr(self, "agent_flags", None) or {}).get('agent_enabled', False))
         try:
             for k in [
                 'agent_enabled',
@@ -234,6 +235,14 @@ class ProactiveMixin:
                 self._fire_task(self._sync_tools_to_active_session())
         except Exception:
             logger.debug("[%s] task tools not re-registered after a flag update", self.lanlan_name, exc_info=True)
+        # Switched on while a session is up (the panel, or the enable_nekopower card): that
+        # session opened with NekoPower off and says so, and Gemini Live fixes its tools at
+        # connect. It is renewed (owner, 2026-11-27).
+        try:
+            if not was_on and self.agent_flags.get('agent_enabled') and self.session is not None and self.is_active:
+                self._renew_for_nekopower_on()
+        except Exception:
+            logger.debug("[%s] session not renewed after NekoPower came on", self.lanlan_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Voice-chat proactive text trigger (dedicated path)
