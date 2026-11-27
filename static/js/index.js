@@ -215,21 +215,28 @@ function pageSwitchIntentApplied(name, revision) {
         );
 }
 
-async function waitForQueuedPageHandoff(name, revision, expected) {
+function retirePageModelBootstrap(expected) {
+    if (expected && window.__nekoPageModelConfigPending === expected) {
+        window.__nekoPageModelConfigPending = null;
+        expected.retire?.();
+    }
+}
+
+async function waitForQueuedPageHandoff(name, revision, expected, pinnedPreview = expected?.pinned && revision === 0) {
     const deadline = Date.now() + 46000;
+    const hasSwitchWork = () => window.appState?.isSwitchingCatgirl
+        || (pinnedPreview ? !!window.appState?._pendingCatgirlSwitch : queuedPageSwitchMatches(name, revision));
     while (Date.now() < deadline) {
-        if (window.__nekoPageModelConfigPending !== expected) {
+        if (!pinnedPreview && window.__nekoPageModelConfigPending !== expected) {
             return pageSwitchIntentApplied(name, revision);
         }
-        if (!window.appState?.isSwitchingCatgirl && !queuedPageSwitchMatches(name, revision)) {
-            // The previous attempt schedules pending replay in a microtask after
-            // clearing its latch. Let that replay claim ownership before deciding
-            // the queued intent has failed.
+        if (!hasSwitchWork()) {
+            // A replay claims the latch in a microtask. A pinned preview must
+            // check the mounted owner after it, even when its bootstrap retired.
             await Promise.resolve();
-            if (!window.appState?.isSwitchingCatgirl && !queuedPageSwitchMatches(name, revision)) {
-                // A received stamp (and even a rolled-back name) is not a commit.
-                // A successful central attempt retires this matching bootstrap owner.
-                return window.__nekoPageModelConfigPending !== expected && pageSwitchIntentApplied(name, revision);
+            if (!hasSwitchWork()) {
+                return (pinnedPreview || window.__nekoPageModelConfigPending !== expected)
+                    && pageSwitchIntentApplied(name, revision);
             }
         }
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -294,10 +301,7 @@ async function finishModelBootstrap(expected) {
             expected.handoffQueued = false;
             if (applied) {
                 if (expected.pinned) publishPinnedPreviewRevision(name, revision);
-                if (window.__nekoPageModelConfigPending === expected) {
-                    window.__nekoPageModelConfigPending = null;
-                    expected.retire?.();
-                }
+                retirePageModelBootstrap(expected);
                 return true;
             }
             if (window.__nekoPageModelConfigPending !== expected) return false;
@@ -383,7 +387,14 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
             if (liveSwitch) {
                 const outcome = await liveSwitch;
                 if (outcome.applied) {
-                    if (explicitPreview) publishPinnedPreviewRevision(name, switchRevision);
+                    if (explicitPreview) {
+                        const ownsPreview = await waitForQueuedPageHandoff(name, switchRevision, modelBoot, true);
+                        if (!ownsPreview || !pageSwitchIntentApplied(name, switchRevision)) {
+                            retirePageModelBootstrap(modelBoot);
+                            return false;
+                        }
+                        publishPinnedPreviewRevision(name, switchRevision);
+                    }
                     return true;
                 }
                 if (modelBoot) {
@@ -646,6 +657,7 @@ function startMultiWindowPageConfigLoad() {
                 return loaded;
             } finally {
                 expected.inFlight = null;
+                retirePageModelBootstrap(expected);
             }
         }
         async function applyInjectedConfig(detail) {

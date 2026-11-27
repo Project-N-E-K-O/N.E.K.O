@@ -4330,3 +4330,101 @@ for (const [configured, actual] of [
     assert.deepEqual(loads,[b,actual]);
     assert.equal(w.vrmManager.currentModel.url,actual);
 });
+
+for (const [label, replayA, failC] of [
+    ['C succeeds after direct A/0', false, false],
+    ['C fails after direct A/0', false, true],
+    ['C succeeds after replayed A/0', true, false],
+]) {
+    test('review 3daa terminal pinned boot follows actual successor: ' + label, {timeout: 5000}, async () => {
+        const h = setupReviewWindow('/A'), w = h.window;
+        const a='/static/vrm/A.vrm', b='/static/vrm/B.vrm', c='/static/vrm/C.vrm', d='/static/vrm/D.vrm';
+        const aEntered=deferred(), aRelease=deferred();
+        let hit=0, nextRoleHold=null;
+        h.context.fetch=async url=>{
+            if(String(url).startsWith('/api/config/page_config')){
+                hit++;
+                assert.equal(new URL(String(url),'https://example.test').searchParams.get('lanlan_name'),'A');
+                return {ok:true,json:async()=>desktopAvatarConfig('A','vrm',0,a)};
+            }
+            if(url==='/api/characters'){
+                const hold=nextRoleHold; nextRoleHold=null;
+                if(hold){hold.entered.resolve();await hold.release.promise;if(hold.fail)return {ok:false,status:503};}
+                return {ok:true,json:async()=>({'猫娘':Object.fromEntries([['A',a],['B',b],['C',c],['D',d]]
+                    .map(([name,path])=>[name,{...desktopAvatarConfig(name,'vrm',0,path),vrm:path}]))})};
+            }
+            return {ok:true,json:async()=>({})};
+        };
+        const loads=reviewFbAttachVrm(h);
+        const actualLoad=w.vrmManager._loadModelInternal;
+        w.vrmManager._loadModelInternal=async function(url,...args){
+            if(url===a){aEntered.resolve();await aRelease.promise;}
+            return actualLoad.call(this,url,...args);
+        };
+        assert.equal(await w.handleCatgirlSwitch('B','',{switchRevision:82}),true);
+        let switchingD, holdD;
+        if(replayA){
+            holdD={entered:deferred(),release:deferred()};nextRoleHold=holdD;
+            switchingD=w.handleCatgirlSwitch('D','B',{switchRevision:83});
+            await holdD.entered.promise;
+        }
+        const start=w.startPageConfigLoad();
+        let settled='pending';
+        start.then(result=>{settled=result;});
+        if(replayA){
+            for(let i=0;i<24&&!w.__nekoPageModelConfigPending?.handoffQueued;i++)await new Promise(setImmediate);
+            assert.equal(w.__nekoPageModelConfigPending?.handoffQueued?.revision,0);
+            holdD.release.resolve();await switchingD;
+        }
+        await aEntered.promise;
+        const holdC={entered:deferred(),release:deferred(),fail:failC};
+        nextRoleHold=holdC;
+        assert.equal(await w.handleCatgirlSwitch('C','A',{switchRevision:84}),false);
+        assert.equal(w.appState._pendingCatgirlSwitch?.switchRevision,84);
+        aRelease.resolve();await holdC.entered.promise;
+        await new Promise(setImmediate);
+        const early=settled;
+        holdC.release.resolve();
+        for(let i=0;i<32&&(settled==='pending'||w.appState.isSwitchingCatgirl);i++){
+            await new Promise(setImmediate);
+            if([...h.timers.values()].some(timer=>timer.delay===50))await advanceModelBootTimer(h,50);
+        }
+        assert.equal(early,'pending','do not declare A ready before actual successor settles');
+        assert.equal(settled,failC,'successful C supersedes A; early C failure keeps the proven A mount');
+        assert.equal(w.lanlan_config.lanlan_name,failC?'A':'C');
+        assert.equal(w.lanlan_config.switch_revision,failC?0:84);
+        assert.equal(w.vrmManager.currentModel.url,failC?a:c);
+        assert.deepEqual(loads,[b,...(replayA?[d]:[]),a,...(failC?[]:[c])]);
+        assert.equal(w.getPageSwitchRevision(),84,'unversioned local output must not lower the ordering watermark');
+        assert.equal(w.__nekoPageModelConfigPending,null,'a terminal boot may no longer own the gate');
+        assert.equal(w.__nekoPageModelConfigFailed??null,null,'being superseded is not a bootstrap failure');
+        assert.equal(hit,1,'do not refetch or replay a finished named request over the successor');
+    });
+}
+
+for(const [path,source,avatarLate] of [
+    ['/chat','cached',false],['/chat/','event',true],
+    ['/chat_full','cached',true],['/chat_full/','event',false],
+]) test('review 3daa ordinary cold IPC chat portrait is memory-only: '+path, {timeout:5000}, async ()=>{
+    const h=setupReviewWindow(path),w=h.window;
+    const image=portraitInitNodes(h), saved=[], requests=[];
+    const picture='data:image/png;base64,cG9ydHJhaXQ=';
+    const incoming={lanlan_name:'B',switch_revision:83,model_type:'vrm',avatarModelType:'vrm',avatarDataUrl:picture};
+    h.context.localStorage={getItem(){return null;},setItem(key){saved.push(key);}};
+    h.context.fetch=async (url,options)=>{requests.push([String(url),options?.method||'GET']);return {ok:true,json:async()=>({})};};
+    if(source==='cached')w.__nekoInjectedConfig=incoming;
+    h.load('static/js/index.js');
+    if(!avatarLate)h.load('static/app/app-chat-avatar.js');
+    const startup=w.startPageConfigLoad();
+    if(source==='event'){
+        await new Promise(setImmediate);
+        w.dispatchEvent(new h.context.CustomEvent('neko:config-injected',{detail:incoming}));
+    }
+    assert.equal(await startup,true);
+    if(avatarLate)h.load('static/app/app-chat-avatar.js');
+    assert.equal(w.lanlan_config.lanlan_name,'B');
+    assert.equal(w.appChatAvatar.getExternalAvatar()?.dataUrl,picture);
+    assert.equal(image.src,picture);
+    assert.deepEqual(saved,[]);
+    assert.ok(!requests.some(([p,method])=>p.startsWith('/api/model')||method==='POST'));
+});

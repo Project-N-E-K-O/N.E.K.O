@@ -1867,7 +1867,8 @@
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
                 capturedAt: Date.now(),
-                displayOnly,
+                // Bootstrap and live relays both feed standalone chat followers.
+                displayOnly: displayOnly || isCardDropIdentityFollowerWindow(),
             };
             publishPreview(cachedPreview);
         }

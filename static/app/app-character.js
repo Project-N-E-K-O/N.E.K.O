@@ -2214,7 +2214,12 @@
                 : null;
             const bootstrap = window.__nekoPageModelConfigPending;
             const queued = S._pendingCatgirlSwitch;
-            const canRetireBoot = !queued || (queued.newCatgirl === newCatgirl && !(queued.switchRevision > switchRevision));
+            // A mounted pinned preview has finished boot even if a different
+            // role is queued. Readiness waits separately for that successor.
+            const finishedPinnedPreview = !switchRevision && mounted && bootstrap?.pinned
+                && bootstrap.name === newCatgirl && queued?.newCatgirl !== newCatgirl;
+            const canRetireBoot = finishedPinnedPreview || !queued
+                || (queued.newCatgirl === newCatgirl && !(queued.switchRevision > switchRevision));
             if (bootstrap && canRetireBoot
                 && (!bootstrap.revision || !switchRevision || switchRevision >= bootstrap.revision)
                 && (bootstrap.name === newCatgirl || (!bootstrap.pinned && switchRevision))) {
