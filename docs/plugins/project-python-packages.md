@@ -103,8 +103,11 @@ preparing, failed or unsupported).
 
 In a packaged build, installer children run with the layer's environment:
 inherited `UV_*` variables and variables that redirect Python (`PYTHONPATH`,
-`VIRTUAL_ENV` and the like) are removed, so an index or mirror set through
-`UV_*` variables does not apply there. The desktop build checks (in
+`VIRTUAL_ENV` and the like) are removed. The package install itself
+(`uv pip install`) gets the user's package index settings back
+(`UV_INDEX_URL`, `UV_EXTRA_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX`), so a
+PyPI mirror set that way still applies; preparing uv and Python never sees
+them. The desktop build checks (in
 `scripts/check_nuitka_dist.py`) that the pinned uv can download the build's
 Python patch release. The tools live under `plugin-runtime/` in the
 application data root, which storage migration treats as regenerable.

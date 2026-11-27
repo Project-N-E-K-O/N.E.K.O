@@ -671,3 +671,49 @@ def test_installer_children_get_the_runtime_environment_only(record, monkeypatch
     assert replaced.stdout.split() == ["None", "1"]
     inherited = packages._command(task, probe, label="probe")
     assert inherited.stdout.split() == ["https://inherited.example/simple", "1"]
+
+
+@pytest.mark.asyncio
+async def test_packaged_install_keeps_the_users_index_but_preparation_does_not(record, monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setenv("UV_INDEX_URL", "https://mirror.example/simple")
+    monkeypatch.setenv("UV_EXTRA_INDEX_URL", "https://extra.example/simple")
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://default.example/simple")
+    monkeypatch.setenv("UV_INDEX", "named=https://named.example/simple")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_MIRROR", "https://python.example/")
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "foreign-cache"))
+    # What the shared layer hands its own preparation commands and the runtime.
+    prepared_env = tool_runtime.tool_runtime_env(dict(os.environ), root=tmp_path / "tools")
+    for name in ("UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_PYTHON_INSTALL_MIRROR"):
+        assert name not in prepared_env
+    monkeypatch.setattr(packages, "prepare_tool_runtime", fake_runtime("managed-python", "managed-uv", prepared_env))
+    seen = []
+    monkeypatch.setattr(packages, "_command", lambda task, argv, *, label, env=None: seen.append(env))
+
+    def sync(directory, **kwargs):
+        kwargs["installer_runner"](["managed-uv", "pip", "install"], label="uv pip install")
+        return 0
+
+    monkeypatch.setattr(packages, "sync_vendor", sync)
+    from plugin.server.application.plugins.registry_service import PluginRegistryService
+
+    async def refresh(_self, _plugin_id):
+        return {}
+
+    monkeypatch.setattr(PluginRegistryService, "refresh_plugin", refresh)
+    monkeypatch.setattr(packages, "check_python_packages", lambda directory: {
+        "revision": "r", "installed": [], "issues": [],
+    })
+    before = packages.read_packages(record.project_id)
+    before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
+    result = await finish(await packages.start_task(record.project_id, "sync", before["revision"]))
+    assert result["status"] == "succeeded", result
+    env = seen[0]
+    assert env["UV_INDEX_URL"] == "https://mirror.example/simple"
+    assert env["UV_EXTRA_INDEX_URL"] == "https://extra.example/simple"
+    assert env["UV_DEFAULT_INDEX"] == "https://default.example/simple"
+    assert env["UV_INDEX"] == "named=https://named.example/simple"
+    # Everything else the layer dropped stays dropped, and its own settings stay.
+    assert "UV_PYTHON_INSTALL_MIRROR" not in env and "UV_CACHE_DIR" not in env
+    assert env["UV_PYTHON_INSTALL_DIR"] == prepared_env["UV_PYTHON_INSTALL_DIR"]

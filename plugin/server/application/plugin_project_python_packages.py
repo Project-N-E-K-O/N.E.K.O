@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -417,13 +418,32 @@ def _tool_progress(task: _Task, event: ProgressEvent) -> None:
         _log(task, f"Preparing plugin tools: {event.phase}")
 
 
+# Package index settings a user sets to reach PyPI through a mirror. The tool
+# layer drops every inherited UV_* variable; only the dependency install itself
+# gets these back, never the steps that prepare uv and Python.
+_INSTALL_INDEX_VARS = frozenset({"UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"})
+
+
+def _install_env(runtime_env: dict[str, str], *, packaged: bool) -> dict[str, str]:
+    """Installer environment: the runtime's, plus the user's index settings when packaged."""
+    if not packaged:
+        return runtime_env  # A source runtime already keeps the developer's UV_* settings.
+    env = dict(runtime_env)
+    for name, value in os.environ.items():
+        # Case-insensitive, as Windows treats environment names.
+        if name.upper() in _INSTALL_INDEX_VARS:
+            env[name] = value
+    return env
+
+
 def _installer_options(task: _Task) -> dict:
     """uv and Python from the shared plugin tool layer.
 
     Source checkouts get the host interpreter and the developer's uv (pip
     when there is none); packaged servers get the prepared uv and managed
     CPython, downloaded on first use. Installer children run with the
-    layer's environment as is. Raises ToolRuntimeError.
+    layer's environment, plus the user's package index settings in a
+    packaged build (see _install_env). Raises ToolRuntimeError.
     """
     try:
         runtime = prepare_tool_runtime(
@@ -433,12 +453,13 @@ def _installer_options(task: _Task) -> dict:
     finally:
         with _lock:
             task.tool_progress = None
+    env = _install_env(runtime.env, packaged=runtime.packaged)
     return {
         "python": runtime.python,
         "uv_executable": runtime.uv,
         # A packaged build has no pip of its own to fall back to.
         "allow_pip_fallback": not runtime.packaged,
-        "installer_runner": lambda argv, **kwargs: _command(task, argv, env=runtime.env, **kwargs),
+        "installer_runner": lambda argv, **kwargs: _command(task, argv, env=env, **kwargs),
     }
 
 
