@@ -1069,7 +1069,7 @@ def test_model_cat_transition_contract_is_present():
         "modelDisplayReady = await showCurrentModel({ isCurrent: isCurrentReturn, prepareModelForm: true });",
         "if (modelDisplayReady === false) {",
         "                return;",
-        "await window._nekoModelReturnEnterPromise;",
+        "await ensureModelReturnFormReady(returnEnterSequence);",
     )
     return_handler_start = source.index("const handleReturnClick = async (event) => {")
     return_handler_full_block = source[

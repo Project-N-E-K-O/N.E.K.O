@@ -7,6 +7,7 @@ const source = fs.readFileSync(path.resolve(__dirname, '../../static/app/app-ui/
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(enabled = true) {
+    const elements = new Map();
     let prepare;
     const ready = new Promise(resolve => { prepare = resolve; });
     const targets = [];
@@ -16,7 +17,8 @@ function harness(enabled = true) {
         nekoPetPowerSave: { isEnabled: () => enabled, prepareFormChange(target) { targets.push(target); return ready; } },
     };
     const context = {
-        window, document: { querySelectorAll: () => [], createElement() { assert.fail('power-save form changes must not allocate a GIF overlay'); } },
+        window, document: { getElementById: id => elements.get(id) || null,
+            querySelectorAll: () => [], createElement() { assert.fail('power-save form changes must not allocate a GIF overlay'); } },
         console, setTimeout, clearTimeout, requestAnimationFrame() { assert.fail('no entrance animation RAF'); },
         Image: class { constructor() { assert.fail('power-save mode must not decode the transition GIF'); } },
     };
@@ -27,12 +29,14 @@ function harness(enabled = true) {
     function element(type) {
         const attributes = new Map();
         const classes = new Set();
-        return { id: type + '-container', isConnected: true,
-            classList: { add: name => classes.add(name), remove: name => classes.delete(name) },
+        const el = { id: type + '-container', isConnected: true,
+            classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
             setAttribute: (name, value) => attributes.set(name, value),
             getAttribute: name => attributes.get(name), removeAttribute: name => attributes.delete(name),
             style: { removeProperty(name) { delete this[name]; } },
         };
+        elements.set(el.id, el);
+        return el;
     }
     return { I, window, element, targets, prepare };
 }
@@ -49,6 +53,21 @@ test('animation policy uses the enabled setting even after the physical crop has
 });
 
 for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    test(`${type}: an early display return still hides and prepares the model exactly once`, async () => {
+        const h = harness();
+        const model = h.element(type);
+        const sequence = h.I.modelReturnEnterSequence;
+        const ready = h.I.ensureModelReturnFormReady(sequence);
+        assert.deepEqual(h.targets, ['model']);
+        assert.equal(model.getAttribute('data-neko-model-form-pending'), 'true');
+        assert.equal(model.style.opacity, '0');
+        h.prepare(true);
+        await ready;
+        assert.equal(model.getAttribute('data-neko-model-form-pending'), undefined);
+        await h.I.ensureModelReturnFormReady(sequence);
+        assert.deepEqual(h.targets, ['model'], 'a completed entrance must not prepare a second time');
+    });
+
     test(`${type}: a missing return rect still prepares an instant form`, async () => {
         const h = harness();
         const model = h.element(type);
@@ -147,3 +166,50 @@ test('an instant cleanup callback failure releases the transition token', async 
     assert.equal(result.completed, true);
     assert.equal(h.I.isNekoModelCatTransitionActive(), false);
 });
+
+test('instant cat-to-model cleanup restores the return container visibility property', async () => {
+    const h = harness();
+    const cat = h.element('cat');
+    await h.I.playNekoModelCatTransition({ direction: 'cat-to-model', container: cat });
+    assert.equal(cat.style.visibility, undefined);
+    assert.equal(h.I.isNekoModelCatTransitionActive(), false);
+});
+
+test('return preparation ignores inactive model containers hidden by stylesheets', async () => {
+    const h = harness();
+    const inactive = h.element('pngtuber');
+    const model = h.element('live2d');
+    h.window.getComputedStyle = el => ({ display: el === inactive ? 'none' : 'block', visibility: 'visible' });
+    const ready = h.I.ensureModelReturnFormReady(h.I.modelReturnEnterSequence);
+    assert.equal(inactive.getAttribute('data-neko-model-form-pending'), undefined);
+    assert.equal(model.getAttribute('data-neko-model-form-pending'), 'true');
+    h.prepare(true);
+    await ready;
+});
+
+for (const throws of [true, false]) {
+    test(`the canonical return prepares its model after ${throws ? 'display failure' : 'an early display return'}`, async () => {
+        const h = harness();
+        const model = h.element('live2d');
+        let fallbackOptions;
+        h.I.showCurrentModel = async () => {
+            if (throws) throw new Error('character config unavailable');
+        };
+        h.I.showLive2d = options => { fallbackOptions = options; };
+        const surface = fs.readFileSync(path.resolve(__dirname, '../../static/app/app-ui/surface-floating-controls.js'), 'utf8');
+        const from = surface.indexOf('// 使用 showCurrentModel() 做最终裁决');
+        const to = surface.indexOf('await I.settleReturnedModelBounds(', from);
+        assert.ok(from >= 0 && to > from);
+        const display = vm.runInNewContext('(async () => {' + surface.slice(from, to) + '})', {
+            I: h.I, window: h.window, isCurrentReturn: () => true, console: { error() {} },
+        });
+        const ready = display();
+        await flush();
+        if (throws) assert.equal(fallbackOptions.prepareModelForm, true);
+        assert.deepEqual(h.targets, ['model']);
+        assert.equal(model.style.opacity, '0');
+        h.prepare(true);
+        await ready;
+        assert.equal(model.getAttribute('data-neko-model-form-pending'), undefined);
+    });
+}

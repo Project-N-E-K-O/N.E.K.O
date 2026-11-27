@@ -27,6 +27,7 @@
     let idleReturnBallDesktopDragStatePending = null;
     I.pendingPngtuberReturnConfig = null;
     I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 3000;
+    I.modelReturnEnterSequence = 0;
 
     I.shouldAnimateModelCatTransition = function shouldAnimateModelCatTransition() {
         const bridge = window.nekoPetPowerSave;
@@ -58,6 +59,27 @@
         }
     };
 
+    I.ensureModelReturnFormReady = async function ensureModelReturnFormReady(sequence) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        // 显示入口可能提前返回；已经完成的准备不能因为 promise 已清理而重发。
+        if (!window._nekoModelReturnEnterPromise && I.modelReturnEnterSequence === sequence) {
+            const containerId = ['pngtuber-container', 'mmd-container', 'vrm-container', 'live2d-container']
+                .find(id => {
+                    const container = document.getElementById(id);
+                    if (!isModelContainerActive(id) || container.classList.contains('minimized')
+                        || container.style.visibility === 'hidden') return false;
+                    const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(container) : null;
+                    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+                });
+            if (containerId) {
+                I.playModelReturnEnter(document.getElementById(containerId), null);
+            } else {
+                await I.prepareModelCatForm('model');
+            }
+        }
+        if (window._nekoModelReturnEnterPromise) await window._nekoModelReturnEnterPromise;
+    };
+
     function resolveModelReturnEnter(reason) {
         const container = window._nekoModelReturnEnterContainer;
         if (container && typeof container.removeAttribute === 'function') container.removeAttribute('data-neko-model-form-pending');
@@ -82,6 +104,7 @@
 
     function startModelReturnEnterWait(container) {
         resolveModelReturnEnter('replaced');
+        I.modelReturnEnterSequence += 1;
         let resolveWait = null;
         const promise = new Promise(resolve => {
             resolveWait = resolve;
@@ -984,7 +1007,12 @@
                     }
                 }
                 return { completed: true, direction, animationSkipped: true };
-            }).finally(() => I.releaseNekoModelCatTransition(token));
+            }).finally(() => {
+                if (container && direction === 'cat-to-model' && isNekoModelCatTransitionTokenCurrent(token)) {
+                    container.style.removeProperty('visibility');
+                }
+                I.releaseNekoModelCatTransition(token);
+            });
         }
         const rect = normalizeNekoTransitionRect(anchorRect, container, coverRect);
         const src = buildNekoModelCatTransitionAssetUrl(token);

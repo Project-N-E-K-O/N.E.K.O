@@ -2541,6 +2541,11 @@ class UniversalTutorialManager {
         if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
             return;
         }
+        const pendingContainer = document.getElementById('live2d-container');
+        if (pendingContainer && typeof pendingContainer.getAttribute === 'function'
+            && pendingContainer.getAttribute('data-neko-model-form-pending') === 'true') {
+            return;
+        }
         const preservePreparingOpacity = options && options.preservePreparingOpacity === true;
         const preserveOpacity = options && options.preserveOpacity === true;
         if (document.body && document.body.classList) {

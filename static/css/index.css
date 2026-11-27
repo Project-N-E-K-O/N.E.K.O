@@ -459,7 +459,10 @@ button * {
 }
 
 /* 省算力形态切换：窗口坐标准备完成前不显示新模型，子 canvas 不播放回归淡入。 */
-[data-neko-model-form-pending="true"] {
+html body #live2d-container[data-neko-model-form-pending="true"],
+html body #vrm-container[data-neko-model-form-pending="true"],
+html body #mmd-container[data-neko-model-form-pending="true"],
+html body #pngtuber-container[data-neko-model-form-pending="true"] {
     opacity: 0 !important;
     transition: none !important;
     transform: none !important;

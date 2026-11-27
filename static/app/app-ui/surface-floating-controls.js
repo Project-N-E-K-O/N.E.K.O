@@ -2321,20 +2321,21 @@
                 : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
+            const returnEnterSequence = I.modelReturnEnterSequence;
             let modelDisplayReady = true;
             try {
                 modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn, prepareModelForm: true });
             } catch (error) {
                 if (!isCurrentReturn()) return;
                 console.error('[App] showCurrentModel 失败:', error);
-                I.showLive2d();
+                I.showLive2d({ prepareModelForm: true });
             }
             if (!isCurrentReturn()) return;
             if (modelDisplayReady === false) {
                 return;
             }
-            if (!I.shouldAnimateModelCatTransition() && window._nekoModelReturnEnterPromise) {
-                await window._nekoModelReturnEnterPromise;
+            if (!I.shouldAnimateModelCatTransition()) {
+                await I.ensureModelReturnFormReady(returnEnterSequence);
                 if (!isCurrentReturn()) return;
             }
 
