@@ -11,7 +11,23 @@ A small read-only index over the call-audit entries (see ``call_audit``):
 Entries recorded since the index was created arrive through the audit
 observer; older ones are read once from the audit files on the first query.
 Only identifiers, times and outcomes are kept, plus the target host of
-network uses; nothing else from the entries.
+network uses and, for the per-plugin audit list, the reported target summary
+of a ``system_use`` (already reduced by the plugin process, e.g. a redacted
+path or a program name); nothing else from the entries.
+
+The audit files rotate, and entries can be lost on the way to them, so the
+last uses are also kept in a small summary file next to them
+(``usage_summary.json``, see ``SUMMARY_FILE``): per plugin and permission the
+last use and the last one not refused (time, outcome, origin), the first use
+seen, plus since when uses are covered and, per plugin, when entries were last
+lost. It is read before the audit files and saved from time to time
+(``start_summary_saver``) and at shutdown. A missing or unreadable summary
+leaves the audit files as the only source, as before.
+
+Lost entries (``note_loss``): what the plugin process could not send or the
+host did not take (``system_use_lost``), and what the host's audit could not
+write (call_audit's drop observer). Within the last 30 days they make
+"unused" unknown for the plugin's ``system.*`` rows (see ``lost_since``).
 """
 
 from __future__ import annotations
@@ -24,6 +40,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Iterable
 
 from plugin.logging_config import get_logger
 from plugin.sdk.shared.permissions.catalog import normalize_permission
@@ -54,6 +71,19 @@ _FILE_NAME = "call_audit.jsonl"
 # use is audited, including allowed host-side uses outside any call; older
 # entries may lack those, so history only counts from the oldest such entry.
 COVERAGE_START = "usage_coverage_start"
+SYSTEM_USE_LOST = "system_use_lost"
+# Uses kept per plugin and permission for the audit list (newest).
+AUDIT_KEPT = 100
+SUMMARY_FILE = "usage_summary.json"
+SUMMARY_SCHEMA = 1
+SUMMARY_SAVE_SECONDS = 60.0
+_SUMMARY_MAX_BYTES = 8 * 1024 * 1024
+# Flags shown in the audit list (fixed vocabulary; others are dropped).
+AUDIT_FLAGS = frozenset({
+    "unattributed", "plugin_thread", "loopback", "possible_laundering", "consent_unavailable",
+})
+_OUTCOMES = frozenset({"allowed", "would_block", "blocked"})
+_INVALID = "<invalid>"
 
 # A network target as the plugin process reports it: "name(address):port",
 # "address:port" or a bare name / address (a long name may be cut with "…").
@@ -88,6 +118,26 @@ class Use:
     # Whether this use is also counted by its call's allow_summary.
     summarized: bool = False
     count: int = 1
+    # For the audit list only: the operation (audit event or RPC operation),
+    # the reported target summary, attribution flags and the handler a
+    # plugin_thread use was started in.
+    operation: str | None = None
+    subject: str | None = None
+    flags: tuple[str, ...] = ()
+    handler: str | None = None
+
+    def audit_dict(self) -> dict:
+        return {
+            "at": self.at.isoformat(),
+            "permission": self.permission,
+            "operation": self.operation,
+            "target": self.subject,
+            "outcome": self.outcome,
+            "origin_kind": self.origin_kind,
+            "count": self.count,
+            "flags": list(self.flags),
+            "handler": self.handler,
+        }
 
     def to_dict(self) -> dict:
         return {
@@ -123,6 +173,51 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _operation(value: object) -> str | None:
+    # Host-written identifiers (call_audit sanitises what plugins send); a
+    # value of any other shape (e.g. from an edited file) is dropped.
+    if isinstance(value, str) and 0 < len(value) <= 128 and value != _INVALID and value.isprintable():
+        return value
+    return None
+
+
+def _subject(permission: str, target: object) -> str | None:
+    """The audit list's target: the network host, or the target the process
+    reported (a redacted path, a program name), as written to the audit."""
+    if permission == NETWORK_CONNECT:
+        return network_host(target)
+    if not isinstance(target, str) or not target or target == _INVALID or len(target) > 200:
+        return None
+    return target if target.isprintable() else None
+
+
+def _flags(flags: Iterable) -> tuple[str, ...]:
+    kept = [flag for flag in flags if isinstance(flag, str) and flag in AUDIT_FLAGS]
+    return tuple(sorted(set(kept))) if len(kept) > 1 else tuple(kept)
+
+
+def _audit_order(use: Use) -> tuple:
+    # Newest first; ties in a fixed order, so pages do not shuffle them.
+    return (use.at, use.permission, use.operation or "", use.subject or "", use.outcome, use.count)
+
+
+def _summary_use(plugin_id: str, permission: str, value: object) -> Use | None:
+    """One last use read back from the summary file."""
+    if not isinstance(value, dict):
+        return None
+    at = _parse_time(value.get("at"))
+    outcome = value.get("outcome")
+    if at is None or outcome not in _OUTCOMES:
+        return None
+    return Use(at, plugin_id, permission, outcome, _text(value.get("origin_kind")))
+
+
+def _summary_dict(use: Use | None) -> dict | None:
+    if use is None:
+        return None
+    return {"at": use.at.isoformat(), "outcome": use.outcome, "origin_kind": use.origin_kind}
+
+
 class UsageIndex:
     def __init__(self, *, now=None, directory=None) -> None:
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -144,6 +239,17 @@ class UsageIndex:
         self._refused: dict[tuple[str, str], list[tuple[datetime, int, datetime]]] = {}
         self._recent: dict[str, list[Use]] = {}
         self._origins: OrderedDict[str, str] = OrderedDict()
+        # (plugin, permission) -> uses for the audit list (bounded, see AUDIT_KEPT)
+        self._audit: dict[tuple[str, str], list[Use]] = {}
+        self._first: dict[tuple[str, str], datetime] = {}
+        # plugin -> when entries of it were last lost
+        self._lost: dict[str, datetime] = {}
+        # Whether the summary file has fallen behind the index.
+        self._dirty = False
+        self._save_lock = threading.Lock()
+        # Whether the summary file was read (False: missing or unusable).
+        self.summary_loaded = False
+        self._summary_read = False  # tried already
 
     # ------------------------------------------------------------------
     # Feeding
@@ -169,6 +275,12 @@ class UsageIndex:
             if kind == COVERAGE_START:
                 if self._since is None or at < self._since:
                     self._since = at
+                    self._dirty = True
+                return
+            if kind == SYSTEM_USE_LOST:
+                plugin_id = _text(entry.get("plugin"))
+                if plugin_id:
+                    self._note_loss_locked(plugin_id, at)
                 return
             if kind == "forward":
                 call_id, origin = _text(entry.get("call_id")), _text(entry.get("origin_kind"))
@@ -189,7 +301,8 @@ class UsageIndex:
             for name, count in counts.items():
                 permission = normalize_permission(name)
                 if permission and isinstance(count, int) and not isinstance(count, bool) and count > 0:
-                    yield Use(at, plugin_id, permission, OUTCOME_ALLOWED, origin, count=count)
+                    yield Use(at, plugin_id, permission, OUTCOME_ALLOWED, origin, count=count,
+                              operation="call")
             return
         if kind not in ("decision", "system_use"):
             return
@@ -210,6 +323,10 @@ class UsageIndex:
             blocked_by = blocked_by or (plugin_id,)
         yield Use(
             at, plugin_id, permission, outcome, origin, target,
+            operation=_operation(entry.get("operation")),
+            subject=_subject(permission, entry.get("target")) if kind == "system_use" else None,
+            flags=(shown := _flags(flags)),
+            handler=_operation(entry.get("handler")) if "plugin_thread" in shown else None,
             blocked_by=blocked_by,
             # An allowed decision inside a call is also counted by the call's
             # summary, except a possible laundering one (the gate does not
@@ -222,12 +339,42 @@ class UsageIndex:
             ),
         )
 
+    def _note_loss_locked(self, plugin_id: str, at: datetime) -> None:
+        lost = self._lost.get(plugin_id)
+        if lost is None or at > lost:
+            self._lost[plugin_id] = at
+            self._dirty = True
+
+    def note_loss(self, plugin_id: object, at: datetime | None = None) -> None:
+        """Entries of ``plugin_id`` were lost (not written to the audit). Never raises."""
+        try:
+            if _text(plugin_id):
+                with self._lock:
+                    self._note_loss_locked(plugin_id, at or self._now())
+        except Exception:
+            pass
+
+    def note_dropped(self, entry: object) -> None:
+        """call_audit's drop observer: ``entry`` was not written to the file."""
+        if not isinstance(entry, dict):
+            return
+        kind = entry.get("kind")
+        if kind in ("decision", "system_use", SYSTEM_USE_LOST):
+            self.note_loss(entry.get("plugin"))
+        elif kind == "allow_summary":
+            self.note_loss(entry.get("target"))
+
     def _index(self, use: Use) -> None:
         # Caller holds self._lock.
         key = (use.plugin_id, use.permission)
         last = self._last.get(key)
         if last is None or use.at >= last.at:
             self._last[key] = use
+            self._dirty = True
+        first = self._first.get(key)
+        if first is None or use.at < first:
+            self._first[key] = use.at
+            self._dirty = True
         if use.outcome != OUTCOME_BLOCKED:
             last = self._last_effective.get(key)
             if last is None or use.at >= last.at:
@@ -262,27 +409,38 @@ class UsageIndex:
         if len(recent) > RECENT_LIMIT * 2:
             recent.sort(key=lambda item: item.at, reverse=True)
             del recent[RECENT_LIMIT:]
+        listed = self._audit.setdefault(key, [])
+        listed.append(use)
+        if len(listed) > AUDIT_KEPT * 2:
+            listed.sort(key=lambda item: item.at, reverse=True)
+            del listed[AUDIT_KEPT:]
 
-    def _files(self) -> list[str]:
+    def _audit_directory(self) -> tuple[str, int]:
         directory = self._directory
         if directory is None:
             from plugin.server.application.plugins.call_audit import BACKUP_COUNT, audit_directory
 
-            directory = str(audit_directory())
-            backups = BACKUP_COUNT
-        else:
-            backups = 9
-        base = os.path.join(str(directory), _FILE_NAME)
+            return str(audit_directory()), BACKUP_COUNT
+        return str(directory), 9
+
+    def _files(self) -> list[str]:
+        directory, backups = self._audit_directory()
+        base = os.path.join(directory, _FILE_NAME)
         # Oldest first.
         return [f"{base}.{index}" for index in range(backups, 0, -1)] + [base]
 
+    def _summary_path(self) -> str:
+        return os.path.join(self._audit_directory()[0], SUMMARY_FILE)
+
     def ensure_seeded(self) -> None:
-        """Read the audit entries written before the index existed, once."""
+        """Read the summary and the audit entries written before the index
+        existed, once."""
         if self._seeded:
             return
         with self._seed_lock:
             if self._seeded:
                 return
+            self._ensure_summary_locked()
             try:
                 paths = self._files()
             except Exception as exc:
@@ -291,6 +449,126 @@ class UsageIndex:
             for path in paths:
                 self._seed_file(path)
             self._seeded = True
+
+    # ------------------------------------------------------------------
+    # Summary file
+    # ------------------------------------------------------------------
+
+    def _ensure_summary_locked(self) -> None:
+        # Caller holds self._seed_lock.
+        if not self._summary_read:
+            self._summary_read = True
+            self._load_summary()
+
+    def _load_summary(self) -> None:
+        """Merge the summary file into the index; any problem leaves the
+        index to the audit files alone (logged by error type)."""
+        try:
+            path = self._summary_path()
+            with open(path, "rb") as stream:
+                raw = stream.read(_SUMMARY_MAX_BYTES + 1)
+            if len(raw) > _SUMMARY_MAX_BYTES:
+                raise ValueError("summary too large")
+            document = json.loads(raw.decode("utf-8"))
+            plugins = document.get("plugins") if isinstance(document, dict) else None
+            if document.get("schema_version") != SUMMARY_SCHEMA or not isinstance(plugins, dict):
+                raise ValueError("unknown summary format")
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.warning("permission usage: summary not read, using the audit files only: error={}",
+                           type(exc).__name__)
+            return
+        try:
+            self._merge_summary(document, plugins)
+        except Exception as exc:
+            logger.warning("permission usage: summary partly read: error={}", type(exc).__name__)
+        self.summary_loaded = True
+
+    def _merge_summary(self, document: dict, plugins: dict) -> None:
+        since = _parse_time(document.get("covered_since"))
+        with self._lock:
+            if since is not None and (self._since is None or since < self._since):
+                self._since = since
+            for plugin_id, record in plugins.items():
+                if not _text(plugin_id) or not isinstance(record, dict):
+                    continue
+                lost = _parse_time(record.get("lost_at"))
+                if lost is not None:
+                    self._note_loss_locked(plugin_id, lost)
+                permissions = record.get("permissions")
+                if not isinstance(permissions, dict):
+                    continue
+                for name, item in permissions.items():
+                    permission = normalize_permission(name)
+                    if not permission or not isinstance(item, dict):
+                        continue
+                    key = (plugin_id, permission)
+                    last = _summary_use(plugin_id, permission, item.get("last"))
+                    if last is None:
+                        continue
+                    if key not in self._last or last.at > self._last[key].at:
+                        self._last[key] = last
+                    effective = _summary_use(plugin_id, permission, item.get("last_effective"))
+                    if effective is not None and effective.outcome != OUTCOME_BLOCKED and (
+                        key not in self._last_effective or effective.at > self._last_effective[key].at
+                    ):
+                        self._last_effective[key] = effective
+                    first = _parse_time(item.get("first_at")) or last.at
+                    if key not in self._first or first < self._first[key]:
+                        self._first[key] = first
+
+    def summary(self) -> dict:
+        """The summary document as it would be saved now."""
+        with self._lock:
+            plugins: dict[str, dict] = {}
+            for (plugin_id, permission), last in self._last.items():
+                record = plugins.setdefault(plugin_id, {"lost_at": None, "permissions": {}})
+                first = self._first.get((plugin_id, permission), last.at)
+                record["permissions"][permission] = {
+                    "last": _summary_dict(last),
+                    "last_effective": _summary_dict(self._last_effective.get((plugin_id, permission))),
+                    "first_at": first.isoformat(),
+                }
+            # Losses older than the 30-day window no longer matter.
+            oldest = self._now() - timedelta(days=DAYS_KEPT)
+            for plugin_id, lost in self._lost.items():
+                if lost >= oldest:
+                    plugins.setdefault(plugin_id, {"lost_at": None, "permissions": {}})["lost_at"] = lost.isoformat()
+            return {
+                "schema_version": SUMMARY_SCHEMA,
+                "covered_since": self._since.isoformat() if self._since else None,
+                "plugins": plugins,
+            }
+
+    def save_summary(self, *, force: bool = False) -> bool:
+        """Write the summary file if it fell behind (or ``force``). Merges the
+        old summary first, so nothing in it is dropped (the audit files are
+        not read for this: they are still there for the next start).
+        Returns whether a file was written. Never raises."""
+        try:
+            with self._seed_lock:
+                self._ensure_summary_locked()
+            with self._save_lock:
+                with self._lock:
+                    if not (self._dirty or force):
+                        return False
+                    self._dirty = False
+                document = self.summary()
+                try:
+                    from utils.file_utils import atomic_write_json
+
+                    path = self._summary_path()
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    atomic_write_json(path, document, indent=None)
+                except Exception:
+                    with self._lock:
+                        self._dirty = True  # try again next time
+                    raise
+                return True
+        except Exception as exc:
+            logger.warning("permission usage: summary not saved: error={}", type(exc).__name__)
+            return False
 
     def _seed_file(self, path: str) -> None:
         try:
@@ -338,6 +616,47 @@ class UsageIndex:
         with self._lock:
             return self._last_effective.get((plugin_id, permission))
 
+    def first_use(self, plugin_id: str, permission: str) -> datetime | None:
+        self.ensure_seeded()
+        with self._lock:
+            return self._first.get((plugin_id, permission))
+
+    def lost_since(self, plugin_id: str, cutoff: datetime) -> bool:
+        """Whether entries of ``plugin_id`` were lost after ``cutoff``."""
+        self.ensure_seeded()
+        with self._lock:
+            lost = self._lost.get(plugin_id)
+        return lost is not None and lost > cutoff
+
+    def lost_at(self, plugin_id: str) -> datetime | None:
+        self.ensure_seeded()
+        with self._lock:
+            return self._lost.get(plugin_id)
+
+    def audit(
+        self,
+        plugin_id: str,
+        *,
+        permission: str | None = None,
+        outcome: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[Use], int]:
+        """Uses of ``plugin_id`` newest first, optionally of one permission /
+        outcome: ``limit`` of them from ``offset`` on, and how many match in
+        all. Only the newest AUDIT_KEPT per permission are kept."""
+        self.ensure_seeded()
+        with self._lock:
+            uses = [
+                use
+                for (owner, name), listed in self._audit.items()
+                if owner == plugin_id and (permission is None or name == permission)
+                for use in sorted(listed, key=_audit_order, reverse=True)[:AUDIT_KEPT]
+            ]
+        uses = [use for use in uses if outcome is None or use.outcome == outcome]
+        uses.sort(key=_audit_order, reverse=True)
+        return uses[offset:offset + limit], len(uses)
+
     def count(self, plugin_id: str, permission: str, days: int) -> int:
         """Recorded uses (not refused) on the last ``days`` days, today included."""
         self.ensure_seeded()
@@ -369,12 +688,17 @@ class UsageIndex:
         with self._lock:
             self._refused.pop((plugin_id, permission), None)
 
+    def has_refused(self, plugin_id: str, permission: str) -> bool:
+        self.ensure_seeded()
+        with self._lock:
+            return bool(self._refused.get((plugin_id, permission)))
+
     def refused_uses(self, after=None) -> dict[tuple[str, str], tuple[datetime, int, bool]]:
         """``(plugin, permission) -> (last time, count, count is a lower bound)``
         of uses judged not allowed because that plugin lacked the permission.
         ``after(plugin, permission)``: count only the refusals later than the
         time it returns. A merged batch that spans that time is left out, so
-        the count can be short (down to 0): the third value is then True."""
+        the count can be short (down to 1): the third value is then True."""
         self.ensure_seeded()
         with self._lock:
             refused = {key: list(batches) for key, batches in self._refused.items()}
@@ -387,8 +711,9 @@ class UsageIndex:
                 out[key] = (kept[-1][0], sum(count for _at, count in kept), bool(spanning))
             elif spanning:
                 # Every refusal after the cut-off was merged across it: still
-                # listed, with a count of at least 0.
-                out[key] = (spanning[-1], 0, True)
+                # listed. The batch's last refusal is itself after the
+                # cut-off, so the count is at least 1.
+                out[key] = (spanning[-1], 1, True)
         return out
 
     def recent(self, permissions, limit: int = RECENT_LIMIT) -> list[Use]:
@@ -415,6 +740,39 @@ def install() -> None:
     from plugin.server.application.plugins import call_audit
 
     call_audit.add_observer(usage_index.observe)
+    call_audit.add_drop_observer(usage_index.note_dropped)
+
+
+_saver: tuple[threading.Thread, threading.Event] | None = None
+_saver_lock = threading.Lock()
+
+
+def start_summary_saver(interval: float = SUMMARY_SAVE_SECONDS) -> None:
+    """Save ``usage_index``'s summary every ``interval`` seconds when it fell
+    behind (host start; idempotent)."""
+    global _saver
+    with _saver_lock:
+        if _saver is not None and _saver[0].is_alive():
+            return
+        stop = threading.Event()
+
+        def run() -> None:
+            while not stop.wait(interval):
+                usage_index.save_summary()
+
+        thread = threading.Thread(target=run, name="neko-usage-summary", daemon=True)
+        thread.start()
+        _saver = (thread, stop)
+
+
+def stop_summary_saver() -> None:
+    """Stop the saver and save what is left (host shutdown). Never raises."""
+    global _saver
+    with _saver_lock:
+        saver, _saver = _saver, None
+    if saver is not None:
+        saver[1].set()
+    usage_index.save_summary()
 
 
 install()

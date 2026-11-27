@@ -62,7 +62,7 @@ from plugin.server.application.plugins.permission_service import (
     permission_record,
     record_states,
 )
-from plugin.server.application.plugins.permission_usage import UsageIndex, usage_index
+from plugin.server.application.plugins.permission_usage import AUDIT_KEPT, UsageIndex, usage_index
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_ANYTIME,
@@ -82,8 +82,10 @@ MANIFEST_CACHED = "cached"  # an operation held the lock: the copy read last
 MANIFEST_UNAVAILABLE = "unavailable"
 # Read, but not a manifest the host can use (not a regular file, over the
 # size limit, not valid TOML): no usable declaration, so the views infer from
-# the scan as for an invalid ``[permissions]`` table, but "any time", which
-# needs the declaration, is refused.
+# the scan as for an invalid ``[permissions]`` table (the pending list's
+# ``inferred`` items), but "any time", which needs the declaration, is
+# refused (422 PLUGIN_MANIFEST_UNUSABLE): such items can be granted "while in
+# use" only, which the rows' ``anytime_allowed: false`` tells the UI.
 MANIFEST_UNUSABLE = "unusable"
 MANIFEST_UNAVAILABLE_CODE = "PLUGIN_MANIFEST_UNAVAILABLE"
 MANIFEST_UNUSABLE_CODE = "PLUGIN_MANIFEST_UNUSABLE"
@@ -381,7 +383,29 @@ def _reconcile(declared: bool, found: bool, status: object) -> str | None:
     return None
 
 
+def _anytime_allowed(manifest_status: str, declarations, permission: str) -> bool | None:
+    """Whether "any time" may be chosen when granting ``permission`` (the
+    rule ``check_condition_allowed`` enforces); None while the manifest could
+    not be read. A required permission covers background use (it has no
+    ``background`` key of its own); an asked one only with
+    ``background = true``; with no declaration at all the item is inferred
+    from the scan and may be granted any time. An unusable manifest allows
+    "while in use" only."""
+    if manifest_status == MANIFEST_UNAVAILABLE:
+        return None
+    if manifest_status == MANIFEST_UNUSABLE:
+        return False
+    if declarations.status != "declared":
+        return True
+    item = declarations.items.get(permission)
+    return item is not None and (item.level == "require" or bool(item.background))
+
+
 def _declaration(inputs: _PluginInputs, permission: str) -> dict | None:
+    """What the manifest declares, as written: ``background`` is the
+    manifest's own key, so it is false for a required permission, which
+    covers background use anyway (the row's ``anytime_allowed`` says what
+    may be chosen)."""
     item = inputs.declarations.items.get(permission)
     if item is None:
         return None
@@ -396,7 +420,13 @@ def _declaration(inputs: _PluginInputs, permission: str) -> dict | None:
 
 def _unused(index: UsageIndex, inputs: _PluginInputs, permission: str, status: str, entry: dict, now: datetime):
     """``True`` / ``False`` for a granted permission whose uses are audited
-    when the audit history covers the whole period; ``None`` otherwise."""
+    when the audit history covers the whole period; ``None`` otherwise.
+
+    A ``system.*`` use is reported by the plugin process, and reports can be
+    lost (its queue full, a send failing, a batch over the host's limit, the
+    audit unable to write): if any of the plugin's entries were lost in the
+    period, "unused" is not known for those rows (``None``). A ``False`` is
+    kept: a lost entry can hide a use, never invent one."""
     if status != "granted" or permission not in USAGE_AUDITED_PERMISSIONS:
         return None
     if not index.covers_days(UNUSED_DAYS):
@@ -406,7 +436,11 @@ def _unused(index: UsageIndex, inputs: _PluginInputs, permission: str, status: s
     if decided is not None and decided > cutoff:
         return False
     last = index.last_effective_use(inputs.plugin_id, permission)
-    return last is None or last.at < cutoff
+    if last is not None and last.at >= cutoff:
+        return False
+    if permission.startswith("system.") and index.lost_since(inputs.plugin_id, cutoff):
+        return None
+    return True
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -450,6 +484,8 @@ def _rows(inputs: _PluginInputs, index: UsageIndex, checks_off: bool, now: datet
                 "state": resolved.status,
                 "condition": entry.get("condition") if granted else None,
                 "condition_basis": CONDITION_BASIS,
+                # Whether "any time" may be chosen for it (None: unknown now).
+                "anytime_allowed": _anytime_allowed(inputs.manifest_status, inputs.declarations, permission),
                 "legacy_any": granted and entry.get("legacy_any") is True,
                 "enforced": resolved.enforced,
                 # False: uses of this permission are not recorded, so a
@@ -851,6 +887,50 @@ def privacy_group(group_id: str, *, index: UsageIndex = usage_index) -> dict:
     }
 
 
+AUDIT_PAGE_DEFAULT = 50
+AUDIT_PAGE_MAX = 100
+
+
+def plugin_audit(
+    plugin_id: str,
+    *,
+    permission: str | None = None,
+    outcome: str | None = None,
+    offset: int = 0,
+    limit: int = AUDIT_PAGE_DEFAULT,
+    index: UsageIndex | None = None,
+) -> dict:
+    """One plugin's recorded uses, newest first, for the panel and the
+    privacy page (also for a plugin no longer installed).
+
+    Each item: time, permission, operation (the audit event or RPC operation;
+    ``call`` for uses counted per call), target summary (network: the host
+    name; files: the redacted path the audit holds; programs: the program
+    name; else None), outcome, origin, count, attribution flags and the
+    handler a background thread was started in. Nothing else of the audit
+    entry. Only the newest ``AUDIT_KEPT`` per permission are kept; pages are
+    by offset, so one may repeat an item that newer uses pushed down."""
+    index = usage_index if index is None else index
+    limit = max(1, min(int(limit), AUDIT_PAGE_MAX))
+    offset = max(0, int(offset))
+    uses, total = index.audit(plugin_id, permission=permission, outcome=outcome, offset=offset, limit=limit)
+    lost = index.lost_at(plugin_id)
+    return {
+        "plugin_id": plugin_id,
+        "permission": permission,
+        "outcome": outcome,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "next_offset": offset + len(uses) if offset + len(uses) < total else None,
+        "kept_per_permission": AUDIT_KEPT,
+        "history": _history(index),
+        # When entries of this plugin were last lost (within 31 days), else None.
+        "lost_at": lost.isoformat() if lost is not None else None,
+        "items": [use.audit_dict() for use in uses],
+    }
+
+
 def check_refusable(permission: str, state_value: str) -> None:
     """Sending content to N.E.K.O is disclosure only: it is approved or left
     undecided, never refused (a stored refusal would still read undecided)."""
@@ -871,7 +951,10 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
     no declaration (no manifest file, no or an invalid ``[permissions]``
     table, as in the pending list): the item is then inferred from the scan.
     A manifest that could not be read now (503) or is not usable (422) is
-    refused: what it declares is not known.
+    refused: what it declares is not known. So an item the pending list
+    infers for a plugin whose manifest is unusable can be granted "while in
+    use" only. Same rule as the panel rows' ``anytime_allowed``
+    (``_anytime_allowed``).
     """
     if state_value != "granted" or condition != CONDITION_ANYTIME:
         return
@@ -898,18 +981,19 @@ def check_condition_allowed(plugin_id: str, permission: str, state_value: str, c
             details={"plugin_id": plugin_id, "retryable": False},
         )
     declarations, _issues = parse_permission_declarations(manifest)
-    if declarations.status != "declared":
-        return
-    item = declarations.items.get(permission)
-    # A required permission covers background use (it has no ``background``
-    # key); an asked one only with ``background = true``.
-    if item is None or not (item.level == "require" or item.background):
+    if not _anytime_allowed(status, declarations, permission):
         raise ServerDomainError(
             "PERMISSION_BACKGROUND_NOT_DECLARED",
             "The plugin does not declare background use of this permission",
             422,
             details={"plugin_id": plugin_id, "permission": permission},
         )
+
+
+def has_refused(plugin_id: str, permission: str) -> bool:
+    """Whether refusals of ``permission`` by ``plugin_id`` are held (the
+    pending list may show them)."""
+    return usage_index.has_refused(plugin_id, permission)
 
 
 def forget_refused(plugin_id: str, permission: str) -> None:
