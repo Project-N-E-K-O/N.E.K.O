@@ -882,4 +882,30 @@ describe('KnowledgeManager job polling', () => {
     await flush()
     expect(api.entries.mock.calls.length).toBeGreaterThan(before)
   })
+
+  it('reloads the open catalog when a source change is already active on return', async () => {
+    api.packs.mockResolvedValue({ ok: true, packs: [{ ...pack(), sources_managed: true }] })
+    let finishRemoval!: (value: object) => void
+    api.removeSource.mockReturnValue(new Promise(resolve => { finishRemoval = resolve }))
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    await mount()
+    await openTab('packs')
+    const manage = [...document.querySelectorAll<HTMLButtonElement>('button')].find(row => row.textContent?.trim() === enUS.knowledge.managePack)
+    expect(manage).toBeTruthy()
+    manage!.click()
+    await flush()
+    const remove = [...document.querySelectorAll<HTMLButtonElement>('.el-drawer button')]
+      .find(row => row.textContent?.trim() === enUS.knowledge.remove)
+    expect(remove).toBeTruthy()
+    remove!.click()
+    await flush()
+    expect(api.removeSource).toHaveBeenCalledTimes(1)
+    // The user moves to the catalog while the removal is still in flight and
+    // reads the rows from before it.
+    await openTab('catalog')
+    const before = api.entries.mock.calls.length
+    finishRemoval({ ok: true, pack_id: 'imp.test', job_id: 'source-removed', state: 'active', entries_total: 0, chunks_total: 0 })
+    await flush()
+    expect(api.entries.mock.calls.length).toBeGreaterThan(before)
+  })
 })

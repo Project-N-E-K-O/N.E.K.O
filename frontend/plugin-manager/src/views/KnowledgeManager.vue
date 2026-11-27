@@ -998,6 +998,11 @@ function sourceCommitted(response?: KnowledgeImportResponse) {
   if (disposed) return
   if (response) registerImportJob(response, 'import_commit')
   refreshAfterMutation()
+  // A source change can finish inside the request (e.g. removing the last
+  // source) and be admitted as `active`; no later job transition would then
+  // reload a catalog the user opened meanwhile. loadEntries() supersedes any
+  // catalog read that predates the change.
+  if (response?.state === 'active' && !response.unchanged && activeTab.value === 'catalog') void loadEntries()
 }
 
 async function loadEntries(reset = false) {

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, markRaw, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
-import ElementPlus, { ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import enUS from '@/i18n/locales/en-US'
 import { KnowledgeApiError, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
 
@@ -55,7 +55,14 @@ beforeEach(() => {
   api.deleteExport.mockResolvedValue({ ok: true, artifact_retained: false })
   api.publish.mockResolvedValue({ ok: true, share: { id: 10 } })
 })
-afterEach(() => { cleanup?.(); cleanup = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(async () => {
+  // ElMessage toasts outlive the app and auto-close after 3s; left alone, that
+  // leave transition can fire after happy-dom is torn down and surface as an
+  // unhandled `requestAnimationFrame is not defined` that fails the run.
+  ElMessage.closeAll()
+  await flushDialogTransition()
+  cleanup?.(); cleanup = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals(); vi.restoreAllMocks()
+})
 
 describe('pack documents, versions and publication', () => {
   it.each([null, { pack_id: 'imp.other', source: { name: 'Other' }, sources_managed: true } as KnowledgePack])('does not delete a document after the confirmation target changes (%s)', async nextPack => {
