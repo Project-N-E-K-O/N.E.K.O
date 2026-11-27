@@ -458,8 +458,13 @@ async def test_remote_deletion_reuses_crud_and_recovers_a_valid_local_selection(
     assert len(config.data["猫娘"]) == 1
     if selection != "other":
         socket.send_text.assert_awaited_once()
-        assert json.loads(socket.send_text.call_args.args[0]) == {"type": "catgirl_switched",
-            "old_catgirl": old_name, "new_catgirl": config.data["当前猫娘"]}
+        current = json.loads((await crud.get_current_catgirl()).body)
+        assert 0 < current["switch_revision"] <= 2**53 - 1
+        assert current["current_catgirl"] == config.data["当前猫娘"]
+        assert json.loads(socket.send_text.call_args.args[0]) == {
+            "type": "catgirl_switched", "old_catgirl": old_name,
+            "new_catgirl": current["current_catgirl"], "switch_revision": current["switch_revision"],
+        }
     else:
         socket.send_text.assert_not_awaited()
     assert guard.await_count >= 2
