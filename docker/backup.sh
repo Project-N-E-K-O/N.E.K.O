@@ -115,6 +115,7 @@ plugins.lock.json
 live2d
 vrm
 mmd
+model_workshop
 pngtuber
 emote_templates
 avatar_tools
