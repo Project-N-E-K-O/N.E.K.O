@@ -565,7 +565,10 @@ returns what `main_server` answered:
 | `cleanup` | `None`, or the unregister result of the cleanup after a failed register (below). | — |
 
 `error` codes: `rejected` (register: no role accepted, e.g. the name is
-owned by another source), `partial_failure` (unregister: some roles
+owned by another source), `plugin_stopped` (register: the plugin was
+stopped while the register was in flight; whatever `main_server` may have
+stored is withdrawn by its registration id on a best-effort basis, and if
+that fails it may remain until the plugin's next cleanup), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (the request could not reach
 `main_server`; nothing was applied), `main_server_error`
 (HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none
@@ -593,7 +596,8 @@ Local state follows `ok`, so the plugin and the host agree:
 - A failed register is not always a no-op on `main_server`: it stores the
   tool before syncing it to each role and keeps it if every role's sync
   fails, and a `timeout` says nothing about what was applied. So after a
-  register fails with `rejected`, `timeout` or `host_unavailable`, the SDK
+  register fails with `rejected`, `timeout`, `host_unavailable` or
+  `plugin_stopped` (the host's own withdrawal may have failed), the SDK
   sends one unregister for that name, in order with the name's other
   async calls, and reports it in `cleanup` (it may add up to 15 s to the
   call). Other errors mean nothing was stored, so `cleanup` stays `None`.

@@ -484,6 +484,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 | `cleanup` | `None`，或注册失败后清理用的那次注销的结果（见下） | — |
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
+`plugin_stopped`（注册：请求还在途中时插件被停止了；`main_server` 可能已存下的那条注册会按注册 id 尽力撤回，撤回失败时可能残留到该插件下一次清理）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
 `main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
 `main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，或者入口的剩余时间在发出前就用完了，这次来不及发出；什么都没发，`cleanup` 为 `None`。补发的注销因为入口时间用完而没发出时，`cleanup` 里也是 `busy`。注销或 `cleanup` 已经发出的请求用掉了预算、剩下的不够再删它们报告的过期注册（见下文）时也是 `busy`：那次删除没有发出，这个注册仍列在 `refused_roles` 里）、`not_registered`（注销：插件本地没有这个名字的记录，
@@ -494,8 +495,8 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 - `register_llm_tool_async` 先装好 handler 再问 host（`main_server` 一登记模型就可能调用），
   `ok` 为假或调用被取消时回滚，之后同名可以再注册。
 - 注册失败不一定代表 `main_server` 上什么都没发生：它先存下工具再逐个 role 同步，所有 role 同步都
-  失败时工具仍然留着；`timeout` 也说明不了到底生效没有。所以注册以 `rejected`、`timeout` 或
-  `host_unavailable` 失败后，SDK 会对这个名字补发一次注销，和这个名字的其他 async 调用按顺序排队，
+  失败时工具仍然留着；`timeout` 也说明不了到底生效没有。所以注册以 `rejected`、`timeout`、
+  `host_unavailable` 或 `plugin_stopped`（host 自己的撤回可能失败）失败后，SDK 会对这个名字补发一次注销，和这个名字的其他 async 调用按顺序排队，
   结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
   `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
   `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；

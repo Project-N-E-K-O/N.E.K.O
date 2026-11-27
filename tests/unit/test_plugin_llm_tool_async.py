@@ -18,6 +18,7 @@ No real HTTP, no real plugin process, no real main_server.
 from __future__ import annotations
 
 import asyncio
+import types
 import logging
 import queue
 import sys
@@ -237,6 +238,8 @@ async def test_failed_register_cleans_up_what_main_server_may_have_stored():
     TimeoutError("late"),
     {"ok": False, "error": "timeout", "message": "ReadTimeout: x"},
     {"ok": False, "error": "host_unavailable"},
+    # The host's own withdrawal after a plugin stop may have failed.
+    {"ok": False, "error": "plugin_stopped"},
     RuntimeError("Plugin context is closed"),
 ])
 async def test_register_failures_that_may_have_stored_are_cleaned_up(first):
@@ -1791,8 +1794,10 @@ def registry(monkeypatch):
     from plugin.server.messaging import llm_tool_registry
 
     llm_tool_registry._plugin_tools.pop(PLUGIN_ID, None)
+    llm_tool_registry._stop_generations.pop(PLUGIN_ID, None)
     yield llm_tool_registry
     llm_tool_registry._plugin_tools.pop(PLUGIN_ID, None)
+    llm_tool_registry._stop_generations.pop(PLUGIN_ID, None)
 
 
 def _use_main_server(monkeypatch, registry, server: _FakeMainServer) -> _FakeMainServer:
@@ -2340,7 +2345,9 @@ async def test_end_to_end_register_then_unregister(monkeypatch, registry):
 @pytest.mark.asyncio
 async def test_end_to_end_host_timeout_rolls_back_both_sides(monkeypatch, registry):
     """main_server stores the tool, then hangs syncing it past the budget.
-    The SDK times out, rolls back, and its cleanup removes the stored copy."""
+    The SDK times out and rolls back; the stored copy is removed, either by
+    the host (its cancelled register withdraws the registration it sent) or
+    by the SDK's cleanup, whichever reaches main_server first."""
     plugin, ctx = _make_plugin()
     dispatcher = _wire_rpc(ctx)
     remote: set[str] = set()
@@ -2367,7 +2374,7 @@ async def test_end_to_end_host_timeout_rolls_back_both_sides(monkeypatch, regist
         assert result["error"] == "timeout"
         assert plugin.list_llm_tools() == []
         assert result["cleanup"] is not None
-        assert result["cleanup"]["ok"] is True and result["cleanup"]["removed"] is True
+        assert result["cleanup"]["ok"] is True
         assert remote == set()
         # The host gave up too; it never recorded the tool.
         await asyncio.sleep(0.05)
@@ -2391,6 +2398,9 @@ async def test_end_to_end_cleanup_after_the_entry_deadline_is_busy_not_timeout(m
     class _Hangs(_FakeMainServer):
         async def post(self, url, json=None, **_):
             self.posts.append((url, json))
+            if url.endswith("/unregister"):
+                return _FakeResp({"ok": True, "removed": True, "affected_roles": ["Lanlan"],
+                                  "failed_roles": [], "refused_roles": []})
             await asyncio.sleep(5.0)
             return _FakeResp({"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []})
 
@@ -2401,7 +2411,10 @@ async def test_end_to_end_cleanup_after_the_entry_deadline_is_busy_not_timeout(m
         assert result["ok"] is False and result["error"] == "timeout"
         assert result["cleanup"]["ok"] is False and result["cleanup"]["error"] == "busy"
         await asyncio.sleep(0.05)
-        assert [url.rsplit("/", 1)[-1] for url, _ in server.posts] == ["register"]
+        # No SDK cleanup was sent; the one unregister is the host withdrawing
+        # the registration its cancelled register had sent.
+        assert [url.rsplit("/", 1)[-1] for url, _ in server.posts] == ["register", "unregister"]
+        assert server.posts[1][1]["expected_registration_id"] == server.posts[0][1]["registration_id"]
         assert plugin.list_llm_tools() == []
     finally:
         await dispatcher.close()
@@ -2527,6 +2540,8 @@ async def test_host_name_lock_is_released_when_the_call_is_cancelled(monkeypatch
     held = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
     await server.unregister_arrived.wait()
     held.cancel()
+    # Lets the retry the cancelled unregister sends be answered.
+    server.release_unregister.set()
     with pytest.raises(asyncio.CancelledError):
         await held
     assert registry._name_locks == {}
@@ -2537,3 +2552,403 @@ async def test_host_name_lock_is_released_when_the_call_is_cancelled(monkeypatch
     assert result["ok"] is True
     assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
     assert registry._name_locks == {}
+
+
+# ---------------------------------------------------------------------------
+# Host: registers / unregisters interrupted by plugin stop or cancellation
+# ---------------------------------------------------------------------------
+
+
+async def _until_name_has_waiters(registry, count: int, name: str = "tool_a") -> None:
+    """Yield until ``count`` calls hold or wait for the name lock."""
+    for _ in range(1000):
+        entry = registry._name_locks.get((PLUGIN_ID, name))
+        if entry is not None and entry[1] >= count:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"name lock never reached {count} holders/waiters")
+
+
+class _HeldMainServer:
+    """main_server that holds the first request of each kind listed in
+    ``hold`` until ``release`` is set. Register echoes the registration id
+    it was sent; unregister removes (or raises ``unregister_exc``)."""
+
+    def __init__(self, hold=("register",)):
+        self.posts: list[tuple[str, dict]] = []
+        self.hold = set(hold)
+        self.arrived = {op: asyncio.Event() for op in ("register", "unregister", "clear")}
+        self.release = asyncio.Event()
+        self.unregister_exc: BaseException | None = None
+
+    def ops(self) -> list[str]:
+        return [op for op, _ in self.posts]
+
+    async def post(self, url, json=None, **_):
+        op = url.rsplit("/", 1)[-1]
+        self.posts.append((op, json))
+        self.arrived[op].set()
+        if op in self.hold:
+            self.hold.discard(op)
+            await self.release.wait()
+        if op == "register":
+            return _FakeResp({"ok": True, "registration_id": json["registration_id"],
+                              "affected_roles": ["Lanlan"], "failed_roles": []})
+        if op == "unregister":
+            if self.unregister_exc is not None:
+                raise self.unregister_exc
+            return _FakeResp(dict(_CLEANED))
+        return _FakeResp({"ok": True, "removed": 1})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["request", "notification"])
+async def test_register_in_flight_when_the_plugin_stops_is_withdrawn(monkeypatch, registry, path):
+    """Item 6 of #3994: the plugin is stopped (its tools cleared) while a
+    register is at main_server. When the register's answer arrives, the
+    stored registration is removed again by its id and nothing is tracked."""
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    if path == "request":
+        call = handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST))
+    else:  # the @llm_tool / sync path: no registration id from the SDK
+        call = Comm._handle_llm_tool_register(
+            _notification_handler_owner(), dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID),
+        )
+    in_flight = asyncio.create_task(call)
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    result = await asyncio.wait_for(in_flight, timeout=2.0)
+
+    if path == "request":
+        assert result["ok"] is False and result["error"] == "plugin_stopped"
+        # Withdrawn: the register's roles are not reported as affected.
+        assert result["affected_roles"] == [] and "was withdrawn" in result["message"]
+    assert server.ops() == ["register", "clear", "unregister"]
+    sent_id = server.posts[0][1]["registration_id"]
+    assert sent_id  # generated by the host when the SDK sent none
+    assert server.posts[2][1]["expected_registration_id"] == sent_id
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_register_after_the_stop_whose_withdrawal_fails_says_so(monkeypatch, registry):
+    import httpx
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    server.unregister_exc = httpx.ConnectError("refused")
+    in_flight = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST)))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    result = await asyncio.wait_for(in_flight, timeout=2.0)
+
+    assert result["ok"] is False and result["error"] == "plugin_stopped"
+    assert "could not be confirmed" in result["message"]
+    # Not withdrawn: the roles that may still hold the tool are reported.
+    assert result["affected_roles"] == ["Lanlan"]
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+async def test_register_waiting_for_its_name_when_the_plugin_stops_is_not_sent(monkeypatch, registry):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    await _seed_tracking(registry)
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
+    held = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    queued = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST)))
+    await _until_name_has_waiters(registry, 2)  # the register waits for the name lock
+
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    await held
+    result = await asyncio.wait_for(queued, timeout=2.0)
+
+    assert result["ok"] is False and result["error"] == "plugin_stopped"
+    assert server.ops() == ["unregister", "clear"]
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+async def test_startup_llm_tool_registers_are_not_taken_for_a_stopped_plugin(monkeypatch, registry):
+    """A restart: the previous stop cleared the plugin's tools, then the new
+    process registers its ``@llm_tool`` tools during startup (notification
+    path, before the host counts the plugin as running). Those registers
+    started after the stop, so they are kept, even while the host does not
+    yet list the plugin as running."""
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+    from plugin.server.application.plugins.lifecycle_service import plugin_is_running_sync
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    await registry.clear_plugin_tools(PLUGIN_ID)  # the stop before the restart
+    assert not plugin_is_running_sync(PLUGIN_ID)
+
+    starting = asyncio.create_task(Comm._handle_llm_tool_register(
+        _notification_handler_owner(), dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID),
+    ))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    server.release.set()
+    await asyncio.wait_for(starting, timeout=2.0)
+
+    assert server.ops() == ["clear", "register"]
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"]["registration_id"] == server.posts[1][1]["registration_id"]
+
+
+@pytest.mark.asyncio
+async def test_register_cancelled_after_it_was_sent_is_withdrawn(monkeypatch, registry):
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["register", "unregister"]
+    assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_register_cancelled_and_not_withdrawn_stays_tracked(monkeypatch, registry):
+    """The withdrawal fails too: main_server may hold the tool, so the host
+    keeps it tracked (model calls stay routable; unregister / stop clean it)."""
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    server.unregister_exc = httpx.ReadTimeout("no answer")
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["register", "unregister"]
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 12.0, "registration_id": "reg-1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked_id", ["reg-1", "reg-0"])
+async def test_unregister_cancelled_after_it_was_sent_is_retried(monkeypatch, registry, tracked_id):
+    """The retry drops tracking only of the registration it targets: a
+    tracked other registration of the name (``reg-0``) is kept."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 12.0, "registration_id": tracked_id}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
+    task = asyncio.create_task(handle_llm_tool_unregister(
+        _rpc_ctx(), dict(_UNREGISTER_REQUEST, expected_registration_id="reg-1"),
+    ))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["unregister", "unregister"]
+    assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a") is (tracked_id == "reg-0")
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_unregister_cancelled_and_retry_failed_keeps_tracking(monkeypatch, registry):
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 12.0, "registration_id": "reg-1"}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
+    task = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    server.unregister_exc = httpx.ReadTimeout("no answer")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["unregister", "unregister"]
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked_id", ["reg-1", None])
+async def test_unfiltered_unregister_cancelled_after_sending_retries_only_by_id(monkeypatch, registry, tracked_id):
+    """A bounded retry may still run at main_server after the name lock is
+    released; unfiltered it could remove a later registration of the name.
+    So it targets the tracked registration, and is skipped without one."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
+
+    entry = {"timeout_seconds": 12.0, **({"registration_id": tracked_id} if tracked_id else {})}
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = entry
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("unregister",)))
+    task = asyncio.create_task(handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST)))
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert "expected_registration_id" not in server.posts[0][1]  # the caller's unfiltered request
+    if tracked_id:
+        assert server.ops() == ["unregister", "unregister"]
+        assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+        assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    else:
+        assert server.ops() == ["unregister"]
+        assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+    assert registry._name_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_finishes_under_the_name_lock_despite_a_second_cancel(monkeypatch, registry):
+    """The withdrawal runs to its end even if the caller is cancelled again,
+    and a later register of the same name waits for it (per-name lock)."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer(hold=("register", "unregister")))
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    await asyncio.wait_for(server.arrived["unregister"].wait(), timeout=2.0)  # the withdrawal is held at main_server
+    task.cancel()
+    later = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-2")))
+    await _until_name_has_waiters(registry, 2)
+    for _ in range(10):  # the later register stays queued while the withdrawal runs
+        await asyncio.sleep(0)
+    assert server.ops() == ["register", "unregister"]  # the later register waits for the name
+    assert not task.done()
+
+    server.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+    assert (await asyncio.wait_for(later, timeout=2.0))["ok"] is True
+    assert server.ops() == ["register", "unregister", "register"]
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"]["registration_id"] == "reg-2"
+
+
+@pytest.mark.asyncio
+async def test_failed_withdrawal_keeps_an_earlier_registration_tracked(monkeypatch, registry):
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    server.unregister_exc = httpx.ReadTimeout("no answer")
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_keeps_tracking_of_an_earlier_registration_of_the_name(monkeypatch, registry):
+    """Tracking is per name, not per role: withdrawing a cancelled register
+    (role B) must not drop the entry of the registration main_server still
+    holds for role A."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+    server = _use_main_server(monkeypatch, registry, _HeldMainServer())
+    task = asyncio.create_task(handle_llm_tool_register(
+        _rpc_ctx(), dict(_REGISTER_REQUEST, role="RoleB", registration_id="reg-1"),
+    ))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert server.ops() == ["register", "unregister"]  # the withdrawal succeeded
+    assert server.posts[1][1]["expected_registration_id"] == "reg-1"
+    assert registry._plugin_tools[PLUGIN_ID]["tool_a"] == {"timeout_seconds": 5.0, "registration_id": "reg-0"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["rejected", "server_error"])
+async def test_failed_register_after_the_plugin_stops_is_withdrawn(monkeypatch, registry, answer):
+    """main_server records the tool before syncing roles, so ``ok: false``
+    (every role's sync failed) may still leave it stored; any other failure
+    after the stop is withdrawn too (harmless when nothing was stored), and
+    reported as ``plugin_stopped``."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    class _FailsAfterStoring(_HeldMainServer):
+        async def post(self, url, json=None, **kw):
+            if url.endswith("/register"):
+                self.posts.append(("register", json))
+                self.arrived["register"].set()
+                await self.release.wait()
+                if answer == "server_error":
+                    return _FakeResp({"detail": "boom"}, status_code=500)
+                return _FakeResp({"ok": False, "registration_id": json["registration_id"], "affected_roles": [],
+                                  "failed_roles": [{"role": "Lanlan", "error": "sync failed"}]})
+            return await super().post(url, json=json, **kw)
+
+    server = _use_main_server(monkeypatch, registry, _FailsAfterStoring())
+    task = asyncio.create_task(handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id="reg-1")))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    result = await asyncio.wait_for(task, timeout=2.0)
+
+    assert result["ok"] is False and result["error"] == "plugin_stopped"
+    assert server.ops() == ["register", "clear", "unregister"]
+    assert server.posts[2][1]["expected_registration_id"] == "reg-1"
+    assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+async def test_notification_register_failing_after_the_stop_logs_no_traceback(monkeypatch, registry):
+    from plugin.core.communication import PluginCommunicationResourceManager as Comm
+
+    class _Rejects(_HeldMainServer):
+        async def post(self, url, json=None, **kw):
+            if url.endswith("/register"):
+                self.posts.append(("register", json))
+                self.arrived["register"].set()
+                await self.release.wait()
+                return _FakeResp({"ok": False, "affected_roles": [], "failed_roles": []})
+            return await super().post(url, json=json, **kw)
+
+    server = _use_main_server(monkeypatch, registry, _Rejects())
+    owner = _notification_handler_owner()
+    calls: list[str] = []
+    owner.logger = types.SimpleNamespace(
+        info=lambda *a, **k: calls.append("info") or logged.append(a),
+        warning=lambda *a, **k: calls.append("warning"),
+        exception=lambda *a, **k: calls.append("exception"),
+    )
+    logged: list[tuple] = []
+    task = asyncio.create_task(Comm._handle_llm_tool_register(
+        owner, dict(_REGISTER_REQUEST, type="LLM_TOOL_REGISTER", plugin_id=PLUGIN_ID),
+    ))
+    await asyncio.wait_for(server.arrived["register"].wait(), timeout=2.0)
+    await registry.clear_plugin_tools(PLUGIN_ID)
+    server.release.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert calls == ["info"]
+    assert any("was withdrawn" in str(arg) for arg in logged[0])  # the outcome is logged
+    assert server.ops() == ["register", "clear", "unregister"]
