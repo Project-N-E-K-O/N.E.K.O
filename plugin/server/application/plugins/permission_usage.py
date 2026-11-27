@@ -236,10 +236,11 @@ class UsageIndex:
         # Oldest coverage start the summary file holds: last uses are
         # complete from the earlier of the two (they outlive the files).
         self._summary_since: datetime | None = None
-        # An audit file could not be read (in full) this run: neither start
-        # can be vouched for, so both read as unknown (the summary still
-        # saves the starts it knows).
-        self._audit_incomplete = False
+        # Latest start of a run whose audit files could not all be read
+        # (kept in the summary as ``gap_at``): uses before it may be missing
+        # for good (the unread file can rotate away), uses since were all
+        # seen live. Both coverage starts are never earlier than it.
+        self._gap_at: datetime | None = None
         self._last: dict[tuple[str, str], Use] = {}
         # Last use that was not refused.
         self._last_effective: dict[tuple[str, str], Use] = {}
@@ -457,11 +458,14 @@ class UsageIndex:
             except Exception as exc:
                 logger.warning("permission usage: audit files unavailable: error={}", type(exc).__name__)
                 paths = None
-            if paths is None:
-                self._audit_incomplete = True
+            complete = paths is not None
             for path in paths or ():
-                if not self._seed_file(path):
-                    self._audit_incomplete = True
+                complete = self._seed_file(path) and complete
+            if not complete:
+                with self._lock:
+                    if self._gap_at is None or self._created > self._gap_at:
+                        self._gap_at = self._created
+                        self._dirty = True
             # Not read again in this run (a file read in part would count
             # twice, and the files may have rotated since); the next start
             # reads them again.
@@ -530,6 +534,9 @@ class UsageIndex:
         with self._lock:
             if since is not None and (self._summary_since is None or since < self._summary_since):
                 self._summary_since = since
+            gap = _parse_time(document.get("gap_at"))
+            if gap is not None and (self._gap_at is None or gap > self._gap_at):
+                self._gap_at = gap
             for plugin_id, record in plugins.items():
                 if not _text(plugin_id) or not isinstance(record, dict):
                     continue
@@ -579,12 +586,19 @@ class UsageIndex:
             return {
                 "schema_version": SUMMARY_SCHEMA,
                 "covered_since": since.isoformat() if since else None,
+                "gap_at": self._gap_at.isoformat() if self._gap_at else None,
                 "plugins": plugins,
             }
 
     def _last_use_since_locked(self) -> datetime | None:
         known = [since for since in (self._since, self._summary_since) if since is not None]
         return min(known, default=None)
+
+    def _after_gap(self, since: datetime | None) -> datetime | None:
+        # Caller holds self._lock.
+        if since is None or self._gap_at is None:
+            return since
+        return max(since, self._gap_at)
 
     def save_summary(self, *, force: bool = False) -> bool:
         """Write the summary file if it fell behind (or ``force``). Merges the
@@ -662,10 +676,11 @@ class UsageIndex:
 
     def last_use_since(self) -> datetime | None:
         """Since when last uses (``last_use``, ``last_effective_use``) are
-        complete: the oldest coverage start in the audit or the summary."""
+        complete: the oldest coverage start in the audit or the summary,
+        never earlier than ``gap_at`` (see ``history_since``)."""
         self.ensure_seeded()
         with self._lock:
-            return None if self._audit_incomplete else self._last_use_since_locked()
+            return self._after_gap(self._last_use_since_locked())
 
     def last_use_covers_days(self, days: int) -> bool:
         since = self.last_use_since()
@@ -676,10 +691,11 @@ class UsageIndex:
         still in the audit files (or recorded since); None when there is
         none. Counts (``count``), recent records and the audit list are
         complete from then on; last uses can reach further back
-        (``last_use_since``). None also while an audit file could not be read."""
+        (``last_use_since``). Never earlier than a run whose audit files
+        could not all be read (``gap_at``)."""
         self.ensure_seeded()
         with self._lock:
-            return None if self._audit_incomplete else self._since
+            return self._after_gap(self._since)
 
     def covers_days(self, days: int) -> bool:
         since = self.history_since()
