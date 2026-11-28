@@ -509,3 +509,172 @@ async def test_a_socket_the_system_gave_up_on_is_a_connection_that_broke_and_not
     with pytest.raises(CdpClosed, match="the connection to the browser broke: TimeoutError"):
         await connection.send("Page.enable", timeout=30.0)
     assert connection.closed
+
+
+# ---------------------------------------------------------------------------
+# PipeTransport (--remote-debugging-pipe)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial_buffer() -> None:
+    import os
+    import sys
+    import threading
+    from nekopower.builtin.browser.cdp import PipeTransport
+
+    if sys.platform == "win32":
+        import ctypes
+        import ctypes.wintypes as wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreatePipe.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.CreatePipe.restype = wintypes.BOOL
+        kernel32.ReadFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        kernel32.ReadFile.restype = wintypes.BOOL
+        kernel32.WriteFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        kernel32.WriteFile.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        c_r, p_w = wintypes.HANDLE(), wintypes.HANDLE()
+        p_r, c_w = wintypes.HANDLE(), wintypes.HANDLE()
+        assert kernel32.CreatePipe(ctypes.byref(c_r), ctypes.byref(p_w), None, 0)
+        assert kernel32.CreatePipe(ctypes.byref(p_r), ctypes.byref(c_w), None, 0)
+        read_h, write_h = p_r.value, p_w.value
+
+        def child_read() -> bytes:
+            buf = ctypes.create_string_buffer(4096)
+            n = wintypes.DWORD()
+            if not kernel32.ReadFile(c_r.value, buf, 4096, ctypes.byref(n), None) or n.value == 0:
+                return b""
+            return buf.raw[: n.value]
+
+        def child_write(data: bytes) -> None:
+            n = wintypes.DWORD()
+            kernel32.WriteFile(c_w.value, data, len(data), ctypes.byref(n), None)
+
+        def child_close() -> None:
+            kernel32.CloseHandle(c_r.value)
+            kernel32.CloseHandle(c_w.value)
+    else:
+        c_r_fd, write_h = os.pipe()
+        read_h, c_w_fd = os.pipe()
+
+        def child_read() -> bytes:
+            return os.read(c_r_fd, 4096)
+
+        def child_write(data: bytes) -> None:
+            os.write(c_w_fd, data)
+
+        def child_close() -> None:
+            os.close(c_r_fd)
+            os.close(c_w_fd)
+
+    seen_events: list[str] = []
+
+    def fake_browser() -> None:
+        buf = bytearray()
+        try:
+            while True:
+                chunk = child_read()
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while (nul := buf.find(0)) != -1:
+                    raw = bytes(buf[:nul])
+                    del buf[: nul + 1]
+                    msg = json.loads(raw.decode("utf-8"))
+                    reply = json.dumps(
+                        {"id": msg["id"], "result": {"echo": msg["method"], "params": msg.get("params", {})}}
+                    ).encode("utf-8") + b"\x00"
+                    child_write(reply)
+        finally:
+            child_close()
+
+    worker = threading.Thread(target=fake_browser, daemon=True)
+    worker.start()
+    initial = json.dumps({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "T0"}}}).encode("utf-8") + b"\x00"
+    transport = PipeTransport(read_h, write_h, initial_buffer=initial)
+    conn = await CdpConnection.connect_pipe(transport)
+    conn.on_event(lambda method, _params, _sid: seen_events.append(method))
+    try:
+        assert await conn.send("Browser.getVersion") == {"echo": "Browser.getVersion", "params": {}}
+        assert await conn.send("Input.insertText", {"text": "猫 café"}) == {
+            "echo": "Input.insertText",
+            "params": {"text": "猫 café"},
+        }
+        await _until(lambda: seen_events == ["Target.targetCreated"], "initial buffered event")
+    finally:
+        await conn.close()
+        worker.join(timeout=3.0)
+    assert conn.closed
+    assert not worker.is_alive()
+
+
+def test_pipe_transport_close_interrupts_blocked_write_without_deadlock(monkeypatch: Any) -> None:
+    import ctypes
+    import threading
+    import time
+    from nekopower.builtin.browser import cdp as cdp_module
+    from nekopower.builtin.browser.cdp import PipeTransport
+
+    entered_write = threading.Event()
+    cancelled = threading.Event()
+    write_errors: list[BaseException] = []
+
+    class _FakeKernel32:
+        def WriteFile(self, handle: Any, buf: Any, length: Any, written: Any, overlapped: Any) -> int:
+            del handle, buf, length, written, overlapped
+            entered_write.set()
+            cancelled.wait(timeout=5.0)
+            return 0  # Aborted by CancelIoEx
+
+        def CancelIoEx(self, handle: Any, overlapped: Any) -> int:
+            del handle, overlapped
+            cancelled.set()
+            return 1
+
+        def CloseHandle(self, handle: Any) -> int:
+            del handle
+            return 1
+
+    monkeypatch.setattr(cdp_module, "_win32_pipe_api", lambda: _FakeKernel32())
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 995, raising=False)
+    transport = PipeTransport(101, 102, is_win32_handle=True)
+
+    def blocked_writer() -> None:
+        try:
+            transport.write_sync(b"large-payload\x00")
+        except BaseException as exc:
+            write_errors.append(exc)
+
+    writer = threading.Thread(target=blocked_writer, daemon=True)
+    writer.start()
+    assert entered_write.wait(timeout=2.0)
+
+    started = time.monotonic()
+    transport.close_sync()
+    elapsed = time.monotonic() - started
+    writer.join(timeout=2.0)
+
+    assert elapsed < 1.0
+    assert cancelled.is_set()
+    assert not writer.is_alive()
+    assert write_errors and isinstance(write_errors[0], BrokenPipeError)

@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from nekopower.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
@@ -120,12 +121,20 @@ def _text(arguments: dict[str, Any], name: str) -> str:
 
 
 class BrowserTools:
-    """Carries out the calls of the browser tools, one at a time."""
+    """Carries out browser tool calls: serialized per owner, parallel across distinct owners."""
+
+    supports_owner = True
 
     def __init__(self, session: BrowserSession | None = None) -> None:
         self._session = session or BrowserSession()
-        self._lock = asyncio.Lock()
-        self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[BuiltinOutcome]]] = {
+        # Gate coordinating concurrent owner calls with exclusive ``aclose`` lifecycle operations.
+        self._gate_cond = asyncio.Condition()
+        self._active_calls = 0
+        self._closing = False
+        self._start_lock = asyncio.Lock()
+        self._owner_locks: dict[str | None, asyncio.Lock] = {}
+        self._owner_refs: dict[str | None, int] = {}
+        self._handlers: dict[str, Callable[[dict[str, Any], str | None], Awaitable[BuiltinOutcome]]] = {
             "navigate_page": self._navigate_page,
             "take_snapshot": self._take_snapshot,
             "click": self._click,
@@ -141,7 +150,62 @@ class BrowserTools:
             "close_page": self._close_page,
             "wait_for": self._wait_for,
             "handle_dialog": self._handle_dialog,
+            "upload_file": self._upload_file,
+            "drag": self._drag,
         }
+
+    def _owner_lock(self, owner: str | None) -> asyncio.Lock:
+        lock = self._owner_locks.get(owner)
+        if lock is None:
+            lock = self._owner_locks[owner] = asyncio.Lock()
+        return lock
+
+    @contextlib.asynccontextmanager
+    async def _hold_owner_lock(self, owner: str | None) -> AsyncIterator[None]:
+        lock = self._owner_lock(owner)
+        self._owner_refs[owner] = self._owner_refs.get(owner, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            remaining = self._owner_refs.get(owner, 1) - 1
+            if remaining <= 0:
+                self._owner_refs.pop(owner, None)
+                if owner is not None and self._owner_locks.get(owner) is lock:
+                    self._owner_locks.pop(owner, None)
+            else:
+                self._owner_refs[owner] = remaining
+
+    @contextlib.asynccontextmanager
+    async def _enter_call(self) -> AsyncIterator[None]:
+        async with self._gate_cond:
+            await self._gate_cond.wait_for(lambda: not self._closing)
+            self._active_calls += 1
+        try:
+            yield
+        finally:
+            async with self._gate_cond:
+                self._active_calls -= 1
+                if self._active_calls == 0:
+                    self._gate_cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def _enter_close(self) -> AsyncIterator[None]:
+        async with self._gate_cond:
+            await self._gate_cond.wait_for(lambda: not self._closing)
+            self._closing = True
+            try:
+                await self._gate_cond.wait_for(lambda: self._active_calls == 0)
+            except BaseException:
+                self._closing = False
+                self._gate_cond.notify_all()
+                raise
+        try:
+            yield
+        finally:
+            async with self._gate_cond:
+                self._closing = False
+                self._gate_cond.notify_all()
 
     @property
     def session(self) -> BrowserSession:
@@ -154,55 +218,66 @@ class BrowserTools:
         *,
         refused: Callable[[], str | None] | None = None,
         reopen_agreement: int | None = None,
+        owner: str | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call and return its answer; failures come back as text for the model.
 
-        ``refused`` is asked once the call's turn has come and returns why
-        it is not to be carried out after all, or None. ``reopen_agreement``
-        is the user's agreement to this call opening a browser they closed
-        (``reopen_agreed``); without it such a browser stays closed.
+        Calls with the same ``owner`` run sequentially; calls with different
+        ``owner`` values run concurrently on isolated tabs.
         """
         handler = self._handlers.get(tool_name[len(TOOL_PREFIX) :] if tool_name.startswith(TOOL_PREFIX) else "")
         if handler is None:
             return BuiltinOutcome(False, f"unknown tool {tool_name}")
-        async with self._lock:
-            why = refused() if refused is not None else None
-            if why:
-                return BuiltinOutcome(False, why)
-            if self._session.closed_by_user and not self._session.use_reopen_agreement(reopen_agreement):
-                # The host asks the user before a call gets here; this one
-                # came without their agreement (the browser was closed after
-                # the host looked, or the agreement is another call's).
-                return BuiltinOutcome(False, CLOSED_BY_USER)
-            try:
-                await self._session.start()
-                outcome = await handler(arguments)
-                await self._session.refresh_window()
-                return outcome
-            except BrowserError as exc:
-                return BuiltinOutcome(False, str(exc))
-            except CdpClosed:
-                if self._session.closed_by_user:
-                    return BuiltinOutcome(False, CLOSED_BY_USER)
-                return BuiltinOutcome(False, "The browser was closed. Call the tool again to start it anew.")
-            except CdpTimeout as exc:
-                return BuiltinOutcome(False, f"The browser did not answer in time ({exc}). The page may be busy; try again.")
-            except CdpError as exc:
-                return BuiltinOutcome(False, f"The browser refused the action: {exc.message}")
-            finally:
-                # However the call ended, stopped included: what it held of
-                # the page is let go of (see ``OBJECT_GROUP``). Under the
-                # lock, so that the next call's handles are not among them.
-                # (What the call was let do for the user's agreement is over
-                # first: nothing is awaited before that, so a call that is
-                # stopped once more while it lets go still ends it.)
-                self._session.reopening_over()
-                await self._session.release_handles()
+        async with self._hold_owner_lock(owner):
+            async with self._enter_call():
+                try:
+                    async with self._start_lock:
+                        why = refused() if refused is not None else None
+                        if why:
+                            return BuiltinOutcome(False, why)
+                        if self._session.closed_by_user and not self._session.use_reopen_agreement(reopen_agreement):
+                            # The host asks the user before a call gets here; this one
+                            # came without their agreement (the browser was closed after
+                            # the host looked, or the agreement is another call's).
+                            return BuiltinOutcome(False, CLOSED_BY_USER)
+                        try:
+                            await self._session.start()
+                            if not (
+                                tool_name in (TOOL_PREFIX + "new_page", TOOL_PREFIX + "list_pages") and owner is not None
+                            ):
+                                await self._session.ensure_owner_page(owner)
+                        finally:
+                            self._session.reopening_over()
+                    outcome = await handler(arguments, owner)
+                    await self._session.refresh_window(owner)
+                    return outcome
+                except BrowserError as exc:
+                    return BuiltinOutcome(False, str(exc))
+                except CdpClosed:
+                    if self._session.closed_by_user:
+                        return BuiltinOutcome(False, CLOSED_BY_USER)
+                    return BuiltinOutcome(False, "The browser was closed. Call the tool again to start it anew.")
+                except CdpTimeout as exc:
+                    return BuiltinOutcome(False, f"The browser did not answer in time ({exc}). The page may be busy; try again.")
+                except CdpError as exc:
+                    return BuiltinOutcome(False, f"The browser refused the action: {exc.message}")
+                finally:
+                    # However the call ended, stopped included: what it held of
+                    # its page is let go of (see ``OBJECT_GROUP``).
+                    self._session.reopening_over()
+                    if owner is None:
+                        await self._session.release_handles()
+                    else:
+                        await self._session.release_handles(owner=owner)
 
-    async def released(self) -> None:
-        """Another commission may use the browser next: the uids handed out so far stop working."""
-        async with self._lock:
-            self._session.forget_snapshots()
+    async def released(self, *, owner: str | None = None) -> None:
+        """A commission let go of the browser: invalidate its uids and free its tabs for reuse."""
+        if owner is None:
+            async with self._enter_close():
+                self._session.release_owner(None)
+            return
+        async with self._hold_owner_lock(owner):
+            self._session.release_owner(owner, clear_unowned=self._owner_refs.get(None, 0) == 0)
 
     def window(self) -> dict[str, Any] | None:
         return self._session.window()
@@ -217,7 +292,7 @@ class BrowserTools:
         told to give up.
         """
         if keep_window:
-            async with self._lock:
+            async with self._enter_close():
                 if not self._session.shows_a_window:
                     await self._session.close()
             return
@@ -227,7 +302,7 @@ class BrowserTools:
         # A call that is starting the browser holds the tools until it is up:
         # it is told to give up, so that closing does not wait that long.
         self._session.stop_starting()
-        async with self._lock:
+        async with self._enter_close():
             await self._session.close()
 
     def kill(self) -> None:
@@ -260,11 +335,11 @@ class BrowserTools:
 
     # -- building answers --------------------------------------------------
 
-    def _pages_section(self) -> str:
+    def _pages_section(self, owner: str | None = None) -> str:
         from config.nekopower_settings import BROWSER_PAGE_URL_MAX_TOKENS
 
-        selected = self._session.current()
-        pages = self._session.pages()
+        selected = self._session.current(owner)
+        pages = self._session.pages(owner)
         # The first ones and the selected one; a browser the user is using may have dozens open.
         shown = [page for index, page in enumerate(pages) if index < PAGES_LISTED or page is selected]
         lines = ["## Pages"]
@@ -324,6 +399,7 @@ class BrowserTools:
         verbose: bool = False,
         images: tuple[BuiltinImage, ...] = (),
         acted: bool | None = None,
+        owner: str | None = None,
     ) -> BuiltinOutcome:
         """Put an answer together. ``acted``: something was done to the page (by default, when ``lines`` say so)."""
         acted = bool(lines) if acted is None else acted
@@ -332,10 +408,10 @@ class BrowserTools:
             parts.append(self._session.dialog_notice(page))
             snapshot = False  # The page answers nothing while the dialog is open.
         if pages:
-            parts.append(self._pages_section())
+            parts.append(self._pages_section(owner))
         if snapshot and page is not None:
             try:
-                taken = await self._session.take_snapshot(page, verbose=verbose)
+                taken = await self._session.take_snapshot(page, verbose=verbose, owner=owner)
             except (BrowserError, CdpError, CdpTimeout) as exc:
                 if not acted:
                     raise
@@ -366,11 +442,19 @@ class BrowserTools:
         # The notes that come with a snapshot (where it was cut, what is not listed) take about this much.
         return min(BROWSER_SNAPSHOT_MAX_TOKENS, max(200, GATEWAY_RESULT_MAX_TOKENS - used - 200))
 
-    async def _after(self, page: Page, done: str, arguments: dict[str, Any], navigations: int, pages: int) -> BuiltinOutcome:
+    async def _after(
+        self,
+        page: Page,
+        done: str,
+        arguments: dict[str, Any],
+        navigations: int,
+        pages: int,
+        owner: str | None = None,
+    ) -> BuiltinOutcome:
         """Answer an action: with a snapshot when asked for one, or when the page became another document."""
         if not self._session.is_open(page):
             # A button that closes its own window (a sign-in or consent popup).
-            return await self._answer(None, [done, "The page it was on has closed."], pages=True)
+            return await self._answer(None, [done, "The page it was on has closed."], pages=True, owner=owner)
         lines = [done]
         moved = page.navigations != navigations
         if moved and not arguments.get("includeSnapshot"):
@@ -379,21 +463,22 @@ class BrowserTools:
             page,
             lines,
             snapshot=bool(arguments.get("includeSnapshot")) or moved,
-            pages=len(self._session.pages()) != pages,
+            pages=len(self._session.pages(owner)) != pages,
+            owner=owner,
         )
 
     # -- the tools -----------------------------------------------------------
 
-    async def _navigate_page(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _navigate_page(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         kind = arguments.get("type") or ("url" if arguments.get("url") else None)
         if kind is None:
             raise BrowserError("Either URL or a type is required.")
         done = await self._session.navigate(page, str(kind), arguments.get("url"), _seconds(arguments))
-        return await self._answer(page, [done], snapshot=True, pages=True)
+        return await self._answer(page, [done], snapshot=True, pages=True, owner=owner)
 
-    async def _take_snapshot(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _take_snapshot(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         offset = arguments.get("offset")
         return await self._answer(
             page,
@@ -401,12 +486,13 @@ class BrowserTools:
             snapshot=True,
             offset=int(offset) if isinstance(offset, (int, float)) and not isinstance(offset, bool) else 0,
             verbose=arguments.get("verbose") is True,
+            owner=owner,
         )
 
-    async def _click(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _click(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         uid = _text(arguments, "uid")
-        before, pages = page.navigations, len(self._session.pages())
+        before, pages = page.navigations, len(self._session.pages(owner))
         double = arguments.get("dblClick") is True
         clicks = await self._session.click(page, uid, double=double)
         if clicks >= (2 if double else 1):
@@ -418,25 +504,25 @@ class BrowserTools:
         else:
             # Said outright: read as clicked, what the click was for would be taken for done.
             done = f"The {'double click' if double else 'click'} on the element {_NOT_COMPLETED}"
-        return await self._after(page, done, arguments, before, pages)
+        return await self._after(page, done, arguments, before, pages, owner)
 
-    async def _hover(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
-        before, pages = page.navigations, len(self._session.pages())
+    async def _hover(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
+        before, pages = page.navigations, len(self._session.pages(owner))
         await self._session.hover(page, _text(arguments, "uid"))
-        return await self._after(page, "Successfully hovered over the element", arguments, before, pages)
+        return await self._after(page, "Successfully hovered over the element", arguments, before, pages, owner)
 
-    async def _fill(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _fill(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         value = arguments.get("value")
         if not isinstance(value, str):
             raise BrowserError("value is required")
-        before, pages = page.navigations, len(self._session.pages())
+        before, pages = page.navigations, len(self._session.pages(owner))
         await self._session.fill_many(page, [(_text(arguments, "uid"), value)])
-        return await self._after(page, "Successfully filled out the element", arguments, before, pages)
+        return await self._after(page, "Successfully filled out the element", arguments, before, pages, owner)
 
-    async def _fill_form(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _fill_form(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         elements = arguments.get("elements")
         if not isinstance(elements, list) or not elements:
             raise BrowserError("elements is required: a list of {uid, value}")
@@ -445,18 +531,18 @@ class BrowserTools:
             if not isinstance(item, dict) or not isinstance(item.get("uid"), str) or not isinstance(item.get("value"), str):
                 raise BrowserError("every element needs a uid and a value, both text")
             wanted.append((item["uid"], item["value"]))
-        before, pages = page.navigations, len(self._session.pages())
+        before, pages = page.navigations, len(self._session.pages(owner))
         await self._session.fill_many(page, wanted)
-        return await self._after(page, "Successfully filled out the form", arguments, before, pages)
+        return await self._after(page, "Successfully filled out the form", arguments, before, pages, owner)
 
-    async def _type_text(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _type_text(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         text = arguments.get("text")
         if not isinstance(text, str):
             raise BrowserError("text is required")
         submit = arguments.get("submitKey")
         wanted = submit if isinstance(submit, str) and submit else None
-        before, pages = page.navigations, len(self._session.pages())
+        before, pages = page.navigations, len(self._session.pages(owner))
         pressed = await self._session.type_text(page, text, wanted)
         if wanted is None:
             done = "Typed text"
@@ -466,22 +552,22 @@ class BrowserTools:
             # Said outright: read as "typed and sent", a form that was only
             # typed into would be taken for one that was submitted.
             done = f"Typed text. {wanted} {_NOT_PRESSED}"
-        return await self._after(page, done, arguments, before, pages)
+        return await self._after(page, done, arguments, before, pages, owner)
 
-    async def _press_key(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _press_key(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         key = _text(arguments, "key")
-        before, pages = page.navigations, len(self._session.pages())
+        before, pages = page.navigations, len(self._session.pages(owner))
         if await self._session.press_key(page, key):
             done = f"Successfully pressed key: {key}"
         else:
             done = f"{key} {_NOT_PRESSED}"
-        return await self._after(page, done, arguments, before, pages)
+        return await self._after(page, done, arguments, before, pages, owner)
 
-    async def _take_screenshot(self, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _take_screenshot(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
         from nekopower.builtin.desktop import fit_jpeg
 
-        page = self._session.selected()
+        page = self._session.selected(owner)
         uid = arguments.get("uid")
         full_page = arguments.get("fullPage") is True
         raw = await self._session.screenshot(page, uid=uid if isinstance(uid, str) and uid else None, full_page=full_page)
@@ -493,31 +579,36 @@ class BrowserTools:
         else:
             what = "Took a screenshot of the current page's viewport."
         image = BuiltinImage(base64.b64encode(encoded).decode("ascii"), "image/jpeg")
-        return await self._answer(page, [what], images=(image,))
+        return await self._answer(page, [what], images=(image,), owner=owner)
 
-    async def _list_pages(self, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _list_pages(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
         del arguments
-        return await self._answer(self._session.current(), [], pages=True)
+        return await self._answer(self._session.current(owner), [], pages=True, owner=owner)
 
-    async def _select_page(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = await self._session.select_page(arguments.get("pageId"), bring_to_front=arguments.get("bringToFront") is True)
-        return await self._answer(page, [], snapshot=True, pages=True)
+    async def _select_page(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = await self._session.select_page(
+            arguments.get("pageId"), bring_to_front=arguments.get("bringToFront") is True, owner=owner
+        )
+        return await self._answer(page, [], snapshot=True, pages=True, owner=owner)
 
-    async def _new_page(self, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _new_page(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
         page = await self._session.new_page(
-            _text(arguments, "url"), background=arguments.get("background") is True, timeout=_seconds(arguments)
+            _text(arguments, "url"),
+            background=arguments.get("background") is True,
+            timeout=_seconds(arguments),
+            owner=owner,
         )
         # The tab is open whether or not its page can be read.
-        return await self._answer(page, [], snapshot=True, pages=True, acted=True)
+        return await self._answer(page, [], snapshot=True, pages=True, acted=True, owner=owner)
 
-    async def _close_page(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        await self._session.close_page(arguments.get("pageId"))
-        return await self._answer(self._session.current(), [], pages=True)
+    async def _close_page(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        await self._session.close_page(arguments.get("pageId"), owner=owner)
+        return await self._answer(self._session.current(owner), [], pages=True, owner=owner)
 
-    async def _wait_for(self, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _wait_for(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
         import json
 
-        page = self._session.selected()
+        page = self._session.selected(owner)
         texts = arguments.get("text")
         if isinstance(texts, str):
             texts = [texts]
@@ -525,14 +616,30 @@ class BrowserTools:
             raise BrowserError("text is required: a non-empty list of texts")
         await self._session.wait_for(page, texts, _seconds(arguments))
         return await self._answer(
-            page, [f"Element matching one of {json.dumps(texts, ensure_ascii=False)} found."], snapshot=True
+            page, [f"Element matching one of {json.dumps(texts, ensure_ascii=False)} found."], snapshot=True, owner=owner
         )
 
-    async def _handle_dialog(self, arguments: dict[str, Any]) -> BuiltinOutcome:
-        page = self._session.selected()
+    async def _handle_dialog(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
         action = arguments.get("action")
         if action not in ("accept", "dismiss"):
             raise BrowserError("action must be accept or dismiss")
         prompt = arguments.get("promptText")
         done = await self._session.handle_dialog(page, action == "accept", prompt if isinstance(prompt, str) else None)
-        return await self._answer(page, [done])
+        return await self._answer(page, [done], owner=owner)
+
+    async def _upload_file(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
+        uid = _text(arguments, "uid")
+        file_path = _text(arguments, "filePath")
+        before, pages = page.navigations, len(self._session.pages(owner))
+        await self._session.upload_file(page, uid, file_path)
+        return await self._after(page, f"File uploaded from {file_path}.", arguments, before, pages, owner)
+
+    async def _drag(self, arguments: dict[str, Any], owner: str | None = None) -> BuiltinOutcome:
+        page = self._session.selected(owner)
+        from_uid = _text(arguments, "from_uid")
+        to_uid = _text(arguments, "to_uid")
+        before, pages = page.navigations, len(self._session.pages(owner))
+        await self._session.drag(page, from_uid, to_uid)
+        return await self._after(page, "Successfully dragged an element", arguments, before, pages, owner)

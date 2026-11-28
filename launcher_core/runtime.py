@@ -1610,10 +1610,13 @@ def run_agent_server(
         # Agent Server needs no wait; notify readiness immediately.
         ready_event.set()
 
+        from config.nekopower_settings import AGENT_CONNECTION_DRAIN_SECONDS
+
         config = uvicorn.Config(
             app=agent_server.app,
             host="127.0.0.1",
             port=TOOL_SERVER_PORT,
+            timeout_graceful_shutdown=AGENT_CONNECTION_DRAIN_SECONDS,
             log_level="error",
             **uvicorn_proxy_options(),
         )
