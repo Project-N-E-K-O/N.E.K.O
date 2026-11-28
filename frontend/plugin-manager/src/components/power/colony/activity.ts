@@ -104,8 +104,8 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
       case 'landing_conflict': put(cats, id, busyWithAnother(entry) ? undefined : 'resolving'); break
       case 'not_landed': put(cats, id, busyWithAnother(entry) ? undefined : 'unlanded'); break
       case 'landing_held': put(cats, id, busyWithAnother(entry) ? undefined : 'held'); break
-      // The user decided on it, maybe long after: of one at another commission by then, that one says how it stands.
-      case 'landed': case 'tree_discarded': case 'tree_kept':
+      // The user decided on it, or it expired, maybe long after: of one at another commission by then, that one says how it stands.
+      case 'landed': case 'tree_discarded': case 'tree_kept': case 'tree_expired':
         if (!busyWithAnother(entry)) {
           const cat = put(cats, id)
           if (cat && ['resolving', 'held', 'unlanded'].includes(cat.look)) cat.look = atWork.has(id ?? '') ? 'working' : 'idle'

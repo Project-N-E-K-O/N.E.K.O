@@ -515,6 +515,8 @@ class SpaceKeeper:
         hold_files: Callable[[str], bool] | None = None,
         release_files: Callable[[str], None] | None = None,
         forget_dsh_session: Callable[[Path], bool] | None = None,
+        reap_work_dirs: Callable[[float, dict[str, Any]], Any] | None = None,
+        reap_worktrees: Callable[[float, dict[str, Any]], Any] | None = None,
         clock: Callable[[], float] = time.time,
         review_delay: float | None = None,
     ) -> None:
@@ -527,6 +529,8 @@ class SpaceKeeper:
         self._hold_files = hold_files
         self._release_files = release_files
         self._forget_dsh_session = forget_dsh_session
+        self._reap_work_dirs = reap_work_dirs
+        self._reap_worktrees = reap_worktrees
         self._clock = clock
         self._review_delay = review_delay
         # From when on commissions are looked after: the first round of
@@ -1221,7 +1225,7 @@ class SpaceKeeper:
                 logger.warning("what the task agent space keeps about its upkeep cannot be written; no tidying this time")
                 return False
             self._last_upkeep = now
-            for name, step in (
+            steps: list[tuple[str, Callable[[], Any]]] = [
                 # First, and with no model: what is archived and reviewed
                 # after it reads indexes that no longer list what expired.
                 ("call audit", lambda: self._ledger.run(lambda conn: call_audit.reclaim(conn, now))),
@@ -1229,9 +1233,14 @@ class SpaceKeeper:
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
                 ("old sessions", lambda: self._clean_sessions(now, state)),
-                # Last: it looks over what the steps before left.
-                ("entries", lambda: self._consolidate(now, state)),
-            ):
+            ]
+            if self._reap_work_dirs is not None:
+                steps.append(("old work dirs", lambda: self._reap_work_dirs(now, state)))
+            if self._reap_worktrees is not None:
+                steps.append(("old worktrees", lambda: self._reap_worktrees(now, state)))
+            # Last: it looks over what the steps before left.
+            steps.append(("entries", lambda: self._consolidate(now, state)))
+            for name, step in steps:
                 try:
                     await step()
                 except asyncio.CancelledError:
@@ -1887,3 +1896,102 @@ class SpaceKeeper:
             await self._space.write_state(
                 sessions_cleaned_until=reached, sessions_cleaned_id=reached_id, sessions_to_retry=still
             )
+
+    async def clean_expired_sessions_now(self) -> dict[str, Any]:
+        """Immediately clean transcripts and outputs of sessions older than ``SPACE_TRANSCRIPT_KEPT_SECONDS``.
+
+        Invoked when the user explicitly requests cleanup from the storage
+        panel, bypassing the two-reading clock-jump delay. Working directories
+        are untouched.
+        """
+        from config.nekopower_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+        from nekopower.host.storage import measure_dir
+
+        if self._session_dir_of is None:
+            return {"cleaned": 0, "freed_bytes": 0, "skipped": 0}
+        until = self._clock() - SPACE_TRANSCRIPT_KEPT_SECONDS
+        cleaned = skipped = freed = 0
+        after, after_id = 0.0, ""
+        while not self._closed:
+            found = await self._ledger.run(
+                lambda conn, a=after, aid=after_id: [
+                    (str(row["id"]), float(row["last_active_at"]))
+                    for row in self._closed_long_ago(conn, a, aid, until)
+                ]
+            )
+            if not found:
+                break
+            for session_id, _last_active_at in found:
+                session = await self._ledger.get_session(session_id)
+                est = 0
+                if session is not None:
+                    directory = Path(await asyncio.to_thread(self._session_dir_of, session))
+                    est = await asyncio.to_thread(self._record_bytes, directory, measure_dir)
+                outcome = await self._clean_one(session_id, until)
+                if outcome == _REMOVED:
+                    cleaned += 1
+                    freed += est
+                elif outcome in (_NOT_REMOVED, _SKIPPED):
+                    skipped += 1
+            if len(found) < _CLEAN_BATCH:
+                break
+            after_id, after = found[-1]
+        return {"cleaned": cleaned, "freed_bytes": freed, "skipped": skipped}
+
+    @staticmethod
+    def _record_bytes(directory: Path, measure_fn: Any) -> int:
+        total = 0
+        for name in (TRANSCRIPT_NAME, SYSTEM_SNAPSHOT_NAME):
+            path = directory / name
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += int(path.stat().st_size)
+            except OSError:
+                pass
+        outputs = directory / _OUTPUTS_NAME
+        if outputs.is_dir() and not outputs.is_symlink():
+            total += measure_fn(outputs, time.monotonic() + 0.25).bytes
+        return total
+
+    async def clean_inactive_outputs_now(self) -> dict[str, Any]:
+        """Remove spilled tool output caches (``outputs/``) of inactive sessions, keeping transcripts and ``work/``."""
+        from nekopower.host.storage import remove_dir_safely
+        from utils.asyncio_executor import to_thread_through_cancellation
+
+        if self._session_dir_of is None:
+            return {"cleaned": 0, "freed_bytes": 0, "skipped": 0}
+        cleaned = skipped = freed = 0
+        rows = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
+        for row in rows:
+            if self._closed:
+                break
+            session = row.session
+            if session.status in ("running", "waiting", "compacting"):
+                continue
+            if self._hold_files is not None and not self._hold_files(session.id):
+                continue
+            try:
+                if await self._ledger.select(session_id=session.id, statuses=ACTIVE_STATUSES, limit=1):
+                    continue
+                if any(copy.status != "cleared" for copy in await self._ledger.forks_of(session.id)):
+                    continue
+                directory = Path(await asyncio.to_thread(self._session_dir_of, session))
+                if directory.name != session.id or directory.parent.name != "sessions":
+                    continue
+                outputs = directory / _OUTPUTS_NAME
+                if not await asyncio.to_thread(lambda p=outputs: p.is_dir() and not p.is_symlink()):
+                    continue
+                try:
+                    removed, item_freed = await to_thread_through_cancellation(remove_dir_safely, outputs, directory)
+                except ValueError:
+                    skipped += 1
+                    continue
+                if removed:
+                    cleaned += 1
+                    freed += item_freed
+                else:
+                    skipped += 1
+            finally:
+                if self._release_files is not None:
+                    self._release_files(session.id)
+        return {"cleaned": cleaned, "freed_bytes": freed, "skipped": skipped}

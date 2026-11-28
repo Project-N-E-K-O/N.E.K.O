@@ -415,6 +415,113 @@ def build_console_router(
             raise _refuse(500, "open_failed") from None
         return {"success": True}
 
+    # -- disk space management --------------------------------------------
+
+    @router.get("/storage")
+    async def get_storage() -> dict[str, Any]:
+        """Return the disk space breakdown, cleanable items, and automatic cleanup settings."""
+        host = await get_host()
+        return {"success": True, **(await host.storage_overview())}
+
+    @router.post("/storage/settings")
+    async def set_storage_settings(payload: dict[str, Any]) -> dict[str, Any]:
+        """Update automatic cleanup switches and retention days for working folders and worktrees."""
+        payload = payload or {}
+        given: dict[str, Any] = {}
+        for flag_name in ("auto_clean_work_dirs", "auto_clean_worktrees"):
+            if flag_name in payload:
+                value = payload[flag_name]
+                if not isinstance(value, bool):
+                    raise _refuse(400, "bad_flag", field=flag_name)
+                given[flag_name] = value
+        for days_name in ("work_dir_kept_days", "worktree_kept_days"):
+            if days_name in payload:
+                value = payload[days_name]
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise _refuse(400, "bad_number", field=days_name)
+                given[days_name] = value
+        if not given:
+            raise _refuse(400, "nothing_to_change")
+        host = await get_host()
+        try:
+            updated = await host.set_storage_settings(**given)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, code if code in ("bad_flag", "out_of_range") else "out_of_range") from None
+        except OSError as exc:
+            logger.warning("storage settings could not be saved: %s", type(exc).__name__)
+            raise _refuse(409, "storage_not_saved") from None
+        return {"success": True, "settings": updated}
+
+    @router.post("/storage/work-dirs/clean")
+    async def clean_storage_work_dirs(payload: dict[str, Any]) -> dict[str, Any]:
+        """Remove selected host-owned working directories, skipping any that are in use."""
+        ids = (payload or {}).get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(x, str) and x for x in ids):
+            raise _refuse(400, "bad_ids")
+        host = await get_host()
+        try:
+            result = await host.clean_work_dirs(ids)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, code if code in ("bad_ids", "bad_work_dir") else "bad_work_dir") from None
+        return {"success": True, **result}
+
+    @router.post("/storage/worktrees/clean")
+    async def clean_storage_worktrees(payload: dict[str, Any]) -> dict[str, Any]:
+        """Discard selected left-over worktrees, retry previously discarded ones, or remove orphans."""
+        ids = (payload or {}).get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(x, str) and x for x in ids):
+            raise _refuse(400, "bad_ids")
+        host = await get_host()
+        try:
+            result = await host.clean_worktrees(ids)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, "bad_ids" if code == "bad_ids" else "bad_worktree") from None
+        return {"success": True, **result}
+
+    @router.post("/storage/transcripts/clean")
+    async def clean_storage_transcripts(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Clean expired session transcripts or inactive tool output caches right away."""
+        mode = (payload or {}).get("mode", "expired")
+        if mode not in ("expired", "outputs"):
+            raise _refuse(400, "bad_mode")
+        host = await get_host()
+        result = await host.clean_transcripts(mode)
+        return {"success": True, **result}
+
+    @router.post("/storage/open")
+    async def open_storage_item(payload: dict[str, Any]) -> dict[str, Any]:
+        """Show a validated host directory, working folder, or worktree in the system file manager."""
+        payload = payload or {}
+        kind = payload.get("kind")
+        item_id = payload.get("id")
+        if kind not in ("place", "work_dir", "worktree"):
+            raise _refuse(400, "bad_kind")
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise _refuse(400, "bad_name")
+        host = await get_host()
+        try:
+            path = await host.resolve_storage_open_path(kind, item_id)
+        except FileNotFoundError:
+            raise _refuse(404, "place_missing") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code == "no_worktree":
+                raise _refuse(404, code) from None
+            known = ("bad_place", "bad_work_dir", "bad_kind", "bad_name")
+            raise _refuse(400, code if code in known else "bad_name") from None
+        opener = open_directory
+        if opener is None:
+            from utils.native_directory import open_directory as opener
+        try:
+            await asyncio.to_thread(opener, path)
+        except Exception as exc:  # noqa: BLE001 - NativeDirectoryError, with its own code
+            logger.warning("showing a storage directory failed (exc_type=%s)", type(exc).__name__)
+            raise _refuse(500, "open_failed") from None
+        return {"success": True}
+
     # -- the task agent space ---------------------------------------------
     #
     # ``project`` names a project, none of it the space all projects share;

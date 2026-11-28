@@ -380,7 +380,7 @@ async def test_the_places_are_listed_with_what_they_hold_and_only_they_are_opene
     (space / "AGENTS.md").write_text("123", encoding="utf-8")
 
     places = {place["key"]: place for place in (await client.get("/console/places", headers=HEADERS)).json()["places"]}
-    assert list(places) == ["task_agents", "space", "dsh", "browser_profile"]
+    assert list(places) == ["task_agents", "worktrees", "space", "dsh", "browser_profile"]
     assert places["space"] == {"key": "space", "path": str(space), "exists": True, "bytes": 8, "bytes_whole": True}
     assert places["dsh"]["exists"] is False and places["dsh"]["bytes"] is None
 
@@ -393,6 +393,88 @@ async def test_the_places_are_listed_with_what_they_hold_and_only_they_are_opene
         refused = await client.post("/console/places/open", headers=HEADERS, json={"key": key})
         assert refused.status_code == 400 and refused.json()["detail"]["code"] == "bad_place"
     assert opened == [space]
+
+
+async def test_storage_routes_report_inventory_update_policy_open_and_clean(console):
+    client, host, opened = console
+
+    # Requires CSRF token like every other console route.
+    denied = await client.get("/console/storage")
+    assert denied.status_code == 403 and denied.json()["detail"]["code"] == "forbidden"
+
+    # Populate one idle session work/ dir and one orphan worktree dir.
+    sess = await host.ledger.create_session(name="clean-me", lanlan_name="Lan", project="_daily")
+    await host.ledger.update_session(sess.id, status="idle")
+    work_dir = host.paths.work_dir(sess.id, "_daily")
+    work_dir.mkdir(parents=True)
+    (work_dir / "temp.bin").write_bytes(b"a" * 256)
+    orphan_wt = host.paths.worktree_dir("orph9999")
+    orphan_wt.mkdir(parents=True)
+    (orphan_wt / "blob.bin").write_bytes(b"b" * 512)
+
+    overview = (await client.get("/console/storage", headers=HEADERS)).json()
+    assert overview["success"] is True
+    assert overview["total_bytes"] >= 768
+    assert overview["reclaimable_bytes"] >= 768
+    assert any(item["id"] == f"session:_daily/{sess.id}" for item in overview["work_dirs"])
+    assert any(item["id"] == "orph9999" for item in overview["worktrees"])
+
+    # Settings validation and update.
+    for payload, code in (
+        ({}, "nothing_to_change"),
+        ({"auto_clean_work_dirs": "yes"}, "bad_flag"),
+        ({"work_dir_kept_days": True}, "bad_number"),
+        ({"work_dir_kept_days": "10"}, "bad_number"),
+        ({"work_dir_kept_days": 0}, "out_of_range"),
+        ({"worktree_kept_days": 400}, "out_of_range"),
+    ):
+        bad = await client.post("/console/storage/settings", headers=HEADERS, json=payload)
+        assert bad.status_code == 400 and bad.json()["detail"]["code"] == code
+
+    saved = (await client.post(
+        "/console/storage/settings",
+        headers=HEADERS,
+        json={"auto_clean_work_dirs": False, "worktree_kept_days": 21},
+    )).json()
+    assert saved["success"] is True
+    assert saved["settings"]["auto_clean_work_dirs"] is False
+    assert saved["settings"]["worktree_kept_days"] == 21
+
+    # Open by validated id works for work_dir and worktree; rejects bad kinds/traversal.
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "work_dir", "id": f"session:_daily/{sess.id}"}
+    )).json() == {"success": True}
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "worktree", "id": "orph9999"}
+    )).json() == {"success": True}
+    assert opened == [work_dir, orphan_wt]
+
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "unknown", "id": "x"}
+    )).status_code == 400
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "work_dir", "id": "session:../x/y"}
+    )).status_code == 400
+
+    # Clean work_dir, worktree, and transcripts endpoints + validation.
+    assert (await client.post("/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": []})).status_code == 400
+    assert (await client.post("/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": ["bad"]})).status_code == 400
+    wd_clean = (await client.post(
+        "/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": [f"session:_daily/{sess.id}"]}
+    )).json()
+    assert wd_clean == {"success": True, "cleaned": [f"session:_daily/{sess.id}"], "freed_bytes": 256, "failed": []}
+    assert not work_dir.exists()
+
+    assert (await client.post("/console/storage/worktrees/clean", headers=HEADERS, json={"ids": ["../bad"]})).status_code == 400
+    wt_clean = (await client.post(
+        "/console/storage/worktrees/clean", headers=HEADERS, json={"ids": ["orph9999"]}
+    )).json()
+    assert wt_clean["success"] is True and wt_clean["cleaned"] == ["orph9999"]
+    assert not orphan_wt.exists()
+
+    assert (await client.post("/console/storage/transcripts/clean", headers=HEADERS, json={"mode": "bogus"})).status_code == 400
+    tr_clean = (await client.post("/console/storage/transcripts/clean", headers=HEADERS, json={"mode": "expired"})).json()
+    assert tr_clean == {"success": True, "cleaned": 0, "freed_bytes": 0, "skipped": 0}
 
 
 def test_the_sizes_stop_being_added_up_when_their_time_is_over(tmp_path, monkeypatch):
