@@ -2699,6 +2699,7 @@ async def test_round9_subdir_gone_with_existing_worktree_uses_repo_root(
             repo_root=str(repo),
             path=str(handle.path),
             workdir=str(handle.workdir),
+            token=handle.token,
             state="kept",
         )
         await host.ledger.run(
@@ -2965,11 +2966,14 @@ async def test_round12_partial_clean_and_lifecycle_guards(tmp_path: Path, monkey
             repo_root=str(repo_root),
             path=str(wt_fb),
             workdir=str(wt_fb / "sub"),
+            token="tok-nocache01",
             state="kept",
         )
         row_fb = await host.ledger.get_tree("nocache01")
         assert row_fb is not None
-        fake_handle = Worktree(id="nocache01", repo_root=repo_root, path=wt_fb, subpath="", start="abc")
+        fake_handle = Worktree(
+            id="nocache01", repo_root=repo_root, path=wt_fb, subpath="", start="abc", token="tok-nocache01"
+        )
 
         async def open_only_root(pdir: Any, _wt: Any) -> Worktree:
             if Path(pdir) == repo_root:
@@ -3121,6 +3125,9 @@ async def test_round12_forget_gone_aborts_if_different_dir_reappears(tmp_path: P
     import subprocess
     from nekopower.host import worktrees as wt_mod
     from nekopower.host.worktrees import WorktreeError
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
 
     empty_cfg = tmp_path / "empty_gitconfig"
     empty_cfg.write_text("", encoding="utf-8")
@@ -3342,3 +3349,204 @@ async def test_round14_expiry_cancellation_recovery_and_edge_guards(tmp_path: Pa
         assert (await host2.ledger.get_tree("abtexp01")) is not None
     finally:
         await host2.shutdown()
+
+
+async def test_round15_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify Round 15 fixes: _measure onerror, skip_corrupt archives, iterative remove_dir_safely,
+    storage.json RecursionError, task_agents link guard, repo_root token check, concurrent archive
+    revive vs cleanup coordination, and reconcile_trees pending-marker clearing under _trees_in_hand.
+    """
+    import asyncio
+    import os
+    from app.agent_server.api_console import _measure
+    from nekopower.host.storage import StorageSettingsStore, remove_dir_safely
+    from nekopower.host.worktrees import Worktree, WorktreeError
+
+    # 1. _measure() marks whole=False on os.walk traversal errors while preserving counted bytes.
+    walk_root = tmp_path / "walk_err"
+    walk_root.mkdir()
+    (walk_root / "ok.bin").write_bytes(b"x" * 77)
+    real_walk = os.walk
+
+    def walk_with_error(top: Any, **kwargs: Any):
+        onerror = kwargs.get("onerror")
+        if onerror is not None:
+            onerror(PermissionError("denied"))
+        yield from real_walk(top, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "walk", walk_with_error)
+        [(size, whole)] = _measure([walk_root], 5.0)
+    assert size == 77
+    assert whole is False
+
+    # 2. remove_dir_safely() deletes nested directory trees iteratively without RecursionError.
+    from nekopower.host.storage import _fs
+
+    deep_root = tmp_path / "deep_root"
+    deep_target = deep_root / "work"
+    cur = deep_target
+    for i in range(60):
+        cur = cur / f"d{i}"
+    os.makedirs(_fs(cur), exist_ok=True)
+    with open(_fs(cur / "leaf.bin"), "wb") as f:
+        f.write(b"y" * 25)
+    removed, freed = remove_dir_safely(deep_target, deep_root)
+    assert removed is True
+    assert freed == 25
+    assert not deep_target.exists()
+
+    # 3. StorageSettingsStore fails closed on RecursionError (deeply nested JSON) without caching or overwriting.
+    deep_settings_path = tmp_path / "deep_storage.json"
+    deep_settings_path.write_text("[" * 2000 + "]" * 2000, encoding="utf-8")
+    store = StorageSettingsStore(deep_settings_path)
+    vals = await store.get()
+    assert vals["auto_clean_work_dirs"] is False
+    assert vals["auto_clean_worktrees"] is False
+    with pytest.raises(OSError, match="unreadable"):
+        await store.put(auto_clean_work_dirs=True)
+    assert deep_settings_path.read_text(encoding="utf-8").startswith("[[")
+    deep_settings_path.write_text('{"auto_clean_work_dirs": true, "work_dir_kept_days": 10}', encoding="utf-8")
+    recovered = await store.get()
+    assert recovered["auto_clean_work_dirs"] is True
+    assert recovered["work_dir_kept_days"] == 10
+
+    host = make_host(tmp_path)
+    try:
+        # 4. _archived_projects(skip_corrupt=True) skips invalid JSON archive records while preserving
+        #    missing-file archive dirs and keeping legacy list_projects() placeholder behavior intact.
+        corrupt_arch = host.paths.space().archived_dir("2025", "bad_json_arch")
+        corrupt_arch.mkdir(parents=True)
+        (corrupt_arch / "project.json").write_text("{not valid json", encoding="utf-8")
+        nofile_arch = host.paths.space().archived_dir("2025", "nofile_arch")
+        nofile_arch.mkdir(parents=True)
+
+        checked_list, ok = await host.space.list_projects_checked(include_archived=True)
+        assert ok is True
+        checked_names = {p.name for p in checked_list}
+        assert "bad_json_arch" not in checked_names
+        assert "nofile_arch" in checked_names
+
+        legacy_list = await host.space.list_projects(include_archived=True)
+        legacy_names = {p.name for p in legacy_list}
+        assert "bad_json_arch" in legacy_names
+        assert "nofile_arch" in legacy_names
+
+        # 5. _handle_for_cleanup() rejects repo_root fallback when ledger token is empty or mismatched.
+        r_root = tmp_path / "tok_repo"
+        r_sub = r_root / "sub"
+        r_root.mkdir()
+        wt_tok = host.paths.worktree_dir("tokchk01")
+        wt_tok.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="tokchk01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="tokproj",
+            project_dir=str(r_sub),
+            repo_root=str(r_root),
+            path=str(wt_tok),
+            workdir=str(wt_tok / "sub"),
+            token="expected-token",
+            state="kept",
+        )
+        row_tok = await host.ledger.get_tree("tokchk01")
+        assert row_tok is not None
+
+        async def open_wrong_tok(pdir: Any, _wt: Any) -> Worktree:
+            if Path(pdir) == r_root:
+                return Worktree(
+                    id="tokchk01", repo_root=r_root, path=wt_tok, subpath="", start="abc", token="other-token"
+                )
+            raise WorktreeError("subdir missing")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", open_wrong_tok)
+            assert await host.task_agents._handle_for_cleanup(row_tok) is None
+
+        await host.ledger.update_tree("tokchk01", token="")
+        row_empty_tok = await host.ledger.get_tree("tokchk01")
+        assert row_empty_tok is not None
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", open_wrong_tok)
+            assert await host.task_agents._handle_for_cleanup(row_empty_tok) is None
+
+        # 6. Concurrent archive revival waits while target workdir is held for cleanup and never races deletion.
+        sess = await host.ledger.create_session(name="rev-s", lanlan_name="Lan", project="revproj")
+        target_work = host.paths.work_dir(sess.id, "revproj")
+        target_work.mkdir(parents=True)
+        (target_work / "keep.txt").write_text("important", encoding="utf-8")
+        await host.space.touch_project("revproj", workdir=str(target_work), count=False)
+        assert await host.space.archive_project("revproj") is not None
+
+        hold_key = host.task_agents.hold_workdir(target_work)
+        assert hold_key is not None
+        revive_task = asyncio.create_task(host.space.open_project("revproj"))
+        await asyncio.sleep(0.05)
+        assert not revive_task.done()
+        assert not host.paths.space().project_dir("revproj").exists()
+        host.task_agents.release_workdir(hold_key)
+        revived = await asyncio.wait_for(revive_task, timeout=2.0)
+        assert revived is not None
+        assert host.paths.space().project_dir("revproj").is_dir()
+
+        # Once revived, cleaning target_work must refuse as in_use and keep files intact.
+        res_clean = await host.clean_work_dirs([f"session:revproj/{sess.id}"])
+        assert res_clean["cleaned"] == []
+        assert res_clean["failed"] == [{"id": f"session:revproj/{sess.id}", "code": "in_use"}]
+        assert (target_work / "keep.txt").read_text(encoding="utf-8") == "important"
+
+        # 7. _reconcile_trees_now() clears pending_expired_trees while holding _trees_in_hand,
+        #    never wiping a fresh "expiring" marker written after release.
+        wt_rec2 = host.paths.worktree_dir("recrace1")
+        wt_rec2.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="recrace1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="tokproj",
+            project_dir=str(r_root),
+            repo_root=str(r_root),
+            path=str(wt_rec2),
+            workdir=str(wt_rec2),
+            token="tok-rec",
+            state="kept",
+        )
+        await host.task_agents._record_pending_expired_tree("recrace1", "expiring")
+        await host.task_agents._record_pending_expired_tree("stale_gone_id", "removed")
+
+        cleared_while_held: list[bool] = []
+        orig_clear = host.task_agents._clear_pending_expired_trees
+
+        async def spy_clear(tree_ids: Any, *, expected: Any = None) -> None:
+            if "recrace1" in tree_ids:
+                cleared_while_held.append("recrace1" in host.task_agents._trees_in_hand)
+            await orig_clear(tree_ids, expected=expected)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_clear_pending_expired_trees", spy_clear)
+            await host.task_agents._reconcile_trees_now()
+        assert cleared_while_held == [True]
+        remaining_pending = await host.task_agents._read_pending_expired_trees()
+        assert "recrace1" not in remaining_pending
+        assert "stale_gone_id" not in remaining_pending
+
+        # 8. resolve_open_path("place", "task_agents") rejects symlinked task_agents directory.
+        ta_dir = host.paths.root() / "task_agents"
+        ext_dir = tmp_path / "external_ta"
+        ext_dir.mkdir()
+        if ta_dir.exists():
+            import shutil
+
+            shutil.rmtree(ta_dir)
+        try:
+            ta_dir.symlink_to(ext_dir, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            with pytest.raises(ValueError, match="bad_place"):
+                await host.resolve_storage_open_path("place", "task_agents")
+    finally:
+        await host.shutdown()

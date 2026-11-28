@@ -260,6 +260,10 @@ class NekoPowerHost:
         # asked, where the user set a number of their own (``usage_limit.py``).
         self.usage_limit_store = UsageLimitStore(self.paths.usage_limit_json)
         self.task_agents.usage_limit_of = self.usage_limit_store.get
+        self.space.set_workdir_guard(
+            self.task_agents.is_workdir_clearing,
+            self.task_agents.wait_workdir_clear,
+        )
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that
         # does work, never at startup.

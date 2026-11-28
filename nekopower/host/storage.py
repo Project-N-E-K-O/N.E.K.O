@@ -290,17 +290,35 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
     freed = 0
     failed = False
 
-    def _delete_tree(directory: Path) -> None:
-        nonlocal freed, failed
+    stack: list[tuple[Path, bool]] = [(target, False)]
+    while stack:
+        directory, visited = stack.pop()
         fs_dir = _fs(directory)
+        if visited:
+            try:
+                os.rmdir(fs_dir)
+            except FileNotFoundError:
+                # Directory already removed concurrently.
+                pass
+            except OSError:
+                _clear_readonly(fs_dir)
+                try:
+                    os.rmdir(fs_dir)
+                except FileNotFoundError:
+                    # Directory disappeared while clearing read-only bit.
+                    pass
+                except OSError:
+                    failed = True
+            continue
         try:
             with os.scandir(fs_dir) as entries:
                 items = list(entries)
         except FileNotFoundError:
-            return
+            continue
         except OSError:
             failed = True
-            return
+            continue
+        stack.append((directory, True))
         for entry in items:
             child = directory / entry.name
             fs_child = _fs(child)
@@ -327,7 +345,7 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                     failed = True
                 continue
             if stat.S_ISDIR(st.st_mode):
-                _delete_tree(child)
+                stack.append((child, False))
             else:
                 size = int(st.st_size)
                 try:
@@ -346,22 +364,7 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                         pass
                     except OSError:
                         failed = True
-        try:
-            os.rmdir(fs_dir)
-        except FileNotFoundError:
-            # Directory already removed concurrently.
-            pass
-        except OSError:
-            _clear_readonly(fs_dir)
-            try:
-                os.rmdir(fs_dir)
-            except FileNotFoundError:
-                # Directory disappeared while clearing read-only bit.
-                pass
-            except OSError:
-                failed = True
 
-    _delete_tree(target)
     still_there = os.path.lexists(_fs(target))
     return (not still_there and not failed), freed
 
@@ -466,7 +469,7 @@ class StorageSettingsStore:
             raw = json.loads(self._path().read_text(encoding="utf-8"))
         except FileNotFoundError:
             return found, True
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             logger.warning(
                 "storage settings cannot be read (%s); automatic cleanup disabled until readable",
                 type(exc).__name__,
@@ -682,7 +685,7 @@ class StorageManager:
     # -- references & busy checks -----------------------------------------
 
     async def _read_projects_checked(
-        self, *, include_archived: bool
+        self, *, include_archived: bool, under_write_lock: bool = False
     ) -> tuple[dict[str, Any], set[str] | None, bool]:
         """Read projects while verifying active directory enumeration and every ``project.json``.
 
@@ -706,18 +709,26 @@ class StorageManager:
                 return "error"
             return "dir" if stat.S_ISDIR(st.st_mode) else "error"
 
+        list_checked = getattr(self._space, "list_projects_checked", None)
         root_state = await asyncio.to_thread(_check_space_root)
-        if root_state == "missing":
+        if root_state == "missing" and not (under_write_lock and callable(list_checked)):
             return projects_by_name, active_project_workdirs, True
-        if root_state != "dir":
+        if root_state not in ("dir", "missing"):
             logger.warning("task agent space root is unreadable; failing closed for storage cleanup")
             return projects_by_name, None, False
 
         projects_readable = True
-        list_checked = getattr(self._space, "list_projects_checked", None)
         if callable(list_checked):
             try:
-                listed, projects_readable = await list_checked(include_archived=include_archived)
+                if under_write_lock:
+                    try:
+                        listed, projects_readable = await list_checked(
+                            include_archived=include_archived, under_write_lock=True
+                        )
+                    except TypeError:
+                        listed, projects_readable = await list_checked(include_archived=include_archived)
+                else:
+                    listed, projects_readable = await list_checked(include_archived=include_archived)
             except OSError:
                 logger.warning("listing projects for storage check failed", exc_info=True)
                 return projects_by_name, None, False
@@ -949,6 +960,7 @@ class StorageManager:
         *,
         exclude_session_id: str | None = None,
         exclude_session_ids: set[str] | frozenset[str] = frozenset(),
+        synchronize_projects: bool = False,
     ) -> tuple[set[str], set[str], set[str] | None]:
         """Return ``(active_session_ids, live_workdirs, active_project_workdirs)``.
 
@@ -997,7 +1009,9 @@ class StorageManager:
         for starting_wd in getattr(self._task_agents, "_starting_workdirs", {}).values():
             if starting_wd:
                 live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
-        _projects, active_project_workdirs, _readable = await self._read_projects_checked(include_archived=False)
+        _projects, active_project_workdirs, _readable = await self._read_projects_checked(
+            include_archived=False, under_write_lock=synchronize_projects
+        )
         return active_sessions, live_workdirs, active_project_workdirs
 
     # -- overview ---------------------------------------------------------
@@ -1362,9 +1376,19 @@ class StorageManager:
 
                     proj_record = projects_by_name.get(proj_name)
                     proj_work = proj_path / _WORK_NAME
-                    proj_work_is_dir = proj_work.is_dir() and not _is_reparse_link(proj_work)
+                    try:
+                        proj_work_is_dir = proj_work.is_dir() and not _is_reparse_link(proj_work)
+                    except OSError:
+                        proj_work_is_dir = False
+                        work_dirs_whole = False
                     sessions_dir = proj_path / "sessions"
-                    sessions_is_dir = sessions_dir.is_dir() and not _is_reparse_link(sessions_dir)
+                    try:
+                        sessions_is_dir = sessions_dir.is_dir() and not _is_reparse_link(sessions_dir)
+                    except OSError:
+                        sessions_is_dir = False
+                        work_dirs_whole = False
+                        transcript_whole = False
+                        ta_other_whole = False
                     proj_skip: set[str] = set()
                     if proj_work_is_dir:
                         proj_skip.add(_WORK_NAME)
@@ -1436,6 +1460,11 @@ class StorageManager:
                         continue
 
                     for sess_entry in sess_list:
+                        if time.monotonic() > deadline:
+                            work_dirs_whole = False
+                            transcript_whole = False
+                            ta_other_whole = False
+                            break
                         sess_id = sess_entry.name
                         sess_path = sessions_dir / sess_id
                         if _is_reparse_link(sess_path):
@@ -1470,7 +1499,11 @@ class StorageManager:
 
                         # Measure session work/ directory if present
                         work_path = sess_path / _WORK_NAME
-                        work_is_dir = work_path.is_dir() and not _is_reparse_link(work_path)
+                        try:
+                            work_is_dir = work_path.is_dir() and not _is_reparse_link(work_path)
+                        except OSError:
+                            work_is_dir = False
+                            work_dirs_whole = False
                         if work_is_dir:
                             stats = measure_dir(work_path, item_deadline())
                             work_dirs_whole = work_dirs_whole and stats.whole
@@ -1552,7 +1585,12 @@ class StorageManager:
                                 # Missing or unreadable optional record file is skipped.
                                 pass
                         out_dir = sess_path / _OUTPUTS_NAME
-                        if out_dir.is_dir() and not _is_reparse_link(out_dir):
+                        try:
+                            out_is_dir = out_dir.is_dir() and not _is_reparse_link(out_dir)
+                        except OSError:
+                            out_is_dir = False
+                            transcript_whole = False
+                        if out_is_dir:
                             ostats = measure_dir(out_dir, item_deadline())
                             transcript_whole = transcript_whole and ostats.whole
                             sess_outputs_bytes = ostats.bytes
@@ -1826,7 +1864,7 @@ class StorageManager:
             path = next((Path(place["path"]) for place in self._places() if place["key"] == item_id), None)
             if path is None:
                 raise ValueError("bad_place")
-            if item_id == "worktrees":
+            if item_id in ("worktrees", "task_agents"):
                 safety = await asyncio.to_thread(_classify_path_safety, path, self._paths.root())
                 if safety == "missing":
                     raise FileNotFoundError("place_missing")
@@ -1963,7 +2001,8 @@ class StorageManager:
                     if await self._project_busy(project) is not None:
                         return "in_use", 0
                     _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
-                        exclude_session_ids=frozenset(held_sids)
+                        exclude_session_ids=frozenset(held_sids),
+                        synchronize_projects=skip_project_referenced,
                     )
                     if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
                         return "in_use", 0
@@ -2035,7 +2074,8 @@ class StorageManager:
                         if until is not None and copy.status != "cleared" and copy.last_active_at > until:
                             return "recent", 0
             _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
-                exclude_session_ids=frozenset(held_sids)
+                exclude_session_ids=frozenset(held_sids),
+                synchronize_projects=skip_project_referenced,
             )
             if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
                 return "in_use", 0

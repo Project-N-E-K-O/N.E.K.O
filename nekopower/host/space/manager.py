@@ -155,6 +155,8 @@ class TaskAgentSpace(StorageMixin, ProjectsMixin, TidyMixin):
         self._clock = clock
         self._outside_readable = outside_readable
         self._lock: asyncio.Lock | None = None
+        self._workdir_clearing: Callable[[str], bool] | None = None
+        self._wait_workdir_clear: Callable[[str], Awaitable[None]] | None = None
         # How many notes each commission has added with ``note_lesson``,
         # and how many of its notes are on their way to be written; by the
         # commission she gave (its task agents' count with its own). Kept
@@ -181,6 +183,15 @@ class TaskAgentSpace(StorageMixin, ProjectsMixin, TidyMixin):
         # write; put right by a later round, by what the entry is then
         # (``settle_tidied``).
         self._relines: dict[tuple[str | None, str], _LineToPut] = {}
+
+    def set_workdir_guard(
+        self,
+        is_clearing: Callable[[str], bool] | None,
+        wait_clear: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        """Register callbacks coordinating project restoration with working-directory cleanup."""
+        self._workdir_clearing = is_clearing
+        self._wait_workdir_clear = wait_clear
 
     async def _evidence_before(
         self, raw: Any, bases: Iterable[str | os.PathLike[str]], *, looked_at: int | None = None

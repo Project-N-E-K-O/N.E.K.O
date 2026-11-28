@@ -506,6 +506,12 @@ class TreeWork:
         except (WorktreeError, ValueError, OSError) as exc:
             logger.info("worktree %s on record could not be opened via repo_root: %s", row.id, exc)
             return None
+        if not row.token or handle.token != row.token:
+            logger.warning(
+                "worktree %s opened via repo_root failed ledger token verification; leaving on record",
+                row.id,
+            )
+            return None
         return handle
 
     async def _workdir_referenced_actively(
@@ -2594,7 +2600,12 @@ class TreeWork:
                 logger.debug("could not persist pending expiry state for worktree %s", tree_id, exc_info=True)
                 return False
 
-    async def _clear_pending_expired_trees(self, tree_ids: tuple[str, ...] | set[str]) -> None:
+    async def _clear_pending_expired_trees(
+        self,
+        tree_ids: tuple[str, ...] | set[str],
+        *,
+        expected: dict[str, str] | None = None,
+    ) -> None:
         """Remove settled worktree ids from persisted pending expiry state under ``_pending_expiry_lock``."""
         space = getattr(self, "_space", None)
         if not tree_ids or space is None or not hasattr(space, "write_state"):
@@ -2605,6 +2616,8 @@ class TreeWork:
                 changed = False
                 for tid in tree_ids:
                     if tid in current:
+                        if expected is not None and current[tid] != expected.get(tid):
+                            continue
                         del current[tid]
                         changed = True
                 if changed:
@@ -2765,7 +2778,6 @@ class TreeWork:
         homes: dict[str, tuple[str, str | None]] = {}
         pending_expired = await self._read_pending_expired_trees()
         seen_tree_ids: set[str] = set()
-        settled_pending: set[str] = set()
         for row in await self._ledger.trees():
             seen_tree_ids.add(row.id)
             homes.setdefault(os.path.normcase(os.path.normpath(row.project_dir)), (row.project_dir, row.project))
@@ -2776,13 +2788,18 @@ class TreeWork:
                 # before any deletion (even if the directory appeared gone moments earlier).
                 if row.reason == "expired":
                     if row.id in pending_expired:
+                        self._trees_in_hand.add(row.id)
                         try:
-                            await self._cancel_expired_commission(row, pending_expired[row.id])
-                            settled_pending.add(row.id)
+                            live_marker = (await self._read_pending_expired_trees()).get(row.id)
+                            if live_marker is not None:
+                                await self._cancel_expired_commission(row, live_marker)
+                                await self._clear_pending_expired_trees((row.id,), expected={row.id: live_marker})
                         except asyncio.CancelledError:
                             raise
                         except Exception:  # noqa: BLE001 - retry on next restart/upkeep
                             logger.warning("pending expiry commission settlement failed for %s", row.id, exc_info=True)
+                        finally:
+                            self._trees_in_hand.discard(row.id)
                     kept.append(row.id)
                     continue
                 # The user discarded it: finish removal now.
@@ -2795,14 +2812,18 @@ class TreeWork:
             if row.id in pending_expired and row.state in TREE_STATES_LEFT:
                 self._trees_in_hand.add(row.id)
                 try:
-                    marker = pending_expired[row.id]
+                    marker = (await self._read_pending_expired_trees()).get(row.id)
+                    if marker is None:
+                        kept.append(row.id)
+                        continue
                     gone = await self._tree_is_gone(row)
                     if marker == "expiring" and not gone:
                         # Interrupted before deletion completed (aborted freshness check or
-                        # partial removal): clear the transient intent and keep the row intact
-                        # so intact worktrees stay landable and partial ones retry via upkeep
-                        # rather than dropping the row without settling any blocked commission.
-                        settled_pending.add(row.id)
+                        # partial removal): clear the transient intent while still holding
+                        # _trees_in_hand so no concurrent expiry attempt can race with clearing,
+                        # and keep the row intact so intact worktrees stay landable and partial
+                        # ones retry via upkeep.
+                        await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
                         kept.append(row.id)
                         continue
                     outcome_kind = "removed" if marker == "expiring" else marker
@@ -2822,7 +2843,7 @@ class TreeWork:
                     await self._settle_expired_tree(
                         row, outcome_kind, removed=(gone and outcome_kind == "removed")
                     )
-                    settled_pending.add(row.id)
+                    await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
                     if outcome_kind == "deferred":
                         kept.append(row.id)
                     else:
@@ -2870,9 +2891,29 @@ class TreeWork:
                     kept.append(row.id)
             finally:
                 self._trees_in_hand.discard(row.id)
-        stale_pending = {tid for tid in pending_expired if tid not in seen_tree_ids} | settled_pending
-        if stale_pending:
-            await self._clear_pending_expired_trees(stale_pending)
+        stale_candidates = {
+            tid
+            for tid in pending_expired
+            if tid not in seen_tree_ids
+            and tid not in self._trees_in_hand
+            and tid not in self._trees_mine
+            and tid not in self._tree_of.values()
+        }
+        if stale_candidates:
+            live_tree_ids = {row.id for row in await self._ledger.trees()}
+            stale_pending = {
+                tid
+                for tid in stale_candidates
+                if tid not in live_tree_ids
+                and tid not in self._trees_in_hand
+                and tid not in self._trees_mine
+                and tid not in self._tree_of.values()
+            }
+            if stale_pending:
+                await self._clear_pending_expired_trees(
+                    stale_pending,
+                    expected={tid: pending_expired[tid] for tid in stale_pending},
+                )
         if self._space is not None:
             try:
                 for project in await self._space.list_projects(include_archived=False):

@@ -274,6 +274,7 @@ class TaskAgentManager(
         # working directories already claimed by starting/running commissions
         # so directory cleanup and ``_start`` cannot overlap on the same path.
         self._clearing_workdirs: dict[str, asyncio.Event] = {}
+        self._clearing_workdirs_snapshot: tuple[str, ...] = ()
         self._starting_workdirs: dict[str, str] = {}
         # Commissions whose next start has its first model request counted
         # already: counted before they were woken, so that one whose quota

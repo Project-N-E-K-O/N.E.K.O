@@ -117,8 +117,13 @@ def _measure(paths: list[Path | None], budget: float) -> list[tuple[int | None, 
             measured.append((None, True))
             continue
         total, whole = 0, True
+
+        def _on_walk_error(_exc: OSError) -> None:
+            nonlocal whole
+            whole = False
+
         try:
-            for directory, _names, files in os.walk(path):
+            for directory, _names, files in os.walk(path, onerror=_on_walk_error):
                 if time.monotonic() > deadline:
                     whole = False
                     break
@@ -395,7 +400,7 @@ def build_console_router(
             host_root = host_paths.root() if host_paths is not None and callable(getattr(host_paths, "root", None)) else None
             for place in places:
                 p = Path(place["path"])
-                if place["key"] == "worktrees":
+                if place["key"] in ("worktrees", "task_agents"):
                     allowed = host_root if host_root is not None else p.parent
                     if _classify_path_safety(p, allowed) != "ok":
                         targets.append(None)
@@ -423,7 +428,7 @@ def build_console_router(
         path = next((Path(place["path"]) for place in host.places() if place["key"] == key), None)
         if path is None:
             raise _refuse(400, "bad_place")
-        if key == "worktrees":
+        if key in ("worktrees", "task_agents"):
             resolve_open = getattr(host, "resolve_storage_open_path", None)
             if callable(resolve_open):
                 try:

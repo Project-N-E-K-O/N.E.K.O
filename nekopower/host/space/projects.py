@@ -39,6 +39,7 @@ from .models import (
     DESCRIPTION_AUTHORS,
     Project,
     _LeftAside,
+    _WorkdirClearing,
 )
 from .markdown import _one_line, _plain_lines, _date, normalize_name, name_occurs, _index_line
 from .fs import _is_project
@@ -164,8 +165,11 @@ class ProjectsMixin:
                 continue
             for item in directories:
                 if skip_corrupt:
+                    data, ok = self._project_data(item)
+                    if not ok:
+                        continue
                     try:
-                        projects.append(self._project_from(item, archive_year=year.name))
+                        projects.append(self._project_of(data, item, year.name))
                     except (OSError, ValueError, TypeError, OverflowError):
                         continue
                 else:
@@ -218,7 +222,9 @@ class ProjectsMixin:
 
         return await self._read(work)
 
-    async def list_projects_checked(self, *, include_archived: bool = True) -> tuple[list[Project], bool]:
+    async def list_projects_checked(
+        self, *, include_archived: bool = True, under_write_lock: bool = False
+    ) -> tuple[list[Project], bool]:
         """Return projects and whether active directory enumeration and every active record succeeded."""
 
         def work() -> tuple[list[Project], bool]:
@@ -254,6 +260,8 @@ class ProjectsMixin:
                 projects.extend(self._archived_projects(skip_corrupt=True))
             return projects, readable
 
+        if under_write_lock:
+            return await self._write(work)
         return await self._read(work)
 
     async def get_project(self, name: str) -> Project | None:
@@ -350,6 +358,9 @@ class ProjectsMixin:
         project, known = self._project_to_change(directory)
         if not known:
             project = Project(name=name, created_at=now)
+        effective_new_wd = None if project.workdir else workdir
+        if effective_new_wd and self._workdir_clearing is not None and self._workdir_clearing(effective_new_wd):
+            raise _WorkdirClearing(effective_new_wd)
         given = "" if project.description else _space_facade._cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
         project = replace(
             project,
@@ -418,6 +429,8 @@ class ProjectsMixin:
 
     def _restore(self, project: Project) -> Project:
         """Move an archived project back among the projects."""
+        if project.workdir and self._workdir_clearing is not None and self._workdir_clearing(project.workdir):
+            raise _WorkdirClearing(project.workdir)
         paths = self._paths()
         source = self._directory_of(project)
         target = paths.project_dir(project.name)

@@ -604,13 +604,35 @@ class DelegationMixin:
         if any(self._dirs_overlap(norm, active) for active in self._starting_workdirs.values()):
             return None
         self._clearing_workdirs[norm] = asyncio.Event()
+        self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs)
         return norm
 
     def release_workdir(self, key: str) -> None:
         """Release a working-directory hold claimed via ``hold_workdir``."""
         ev = self._clearing_workdirs.pop(key, None)
+        self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs)
         if ev is not None:
             ev.set()
+
+    def is_workdir_clearing(self, workdir: Any) -> bool:
+        """Thread-safely report whether an overlapping directory is currently held for removal."""
+        snapshot = self._clearing_workdirs_snapshot
+        if not snapshot:
+            return False
+        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        return any(self._dirs_overlap(norm, held) for held in snapshot)
+
+    async def wait_workdir_clear(self, workdir: Any) -> None:
+        """Wait until no cleanup holds a directory overlapping ``workdir``."""
+        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        while True:
+            ev = next(
+                (event for held, event in self._clearing_workdirs.items() if self._dirs_overlap(norm, held)),
+                None,
+            )
+            if ev is None:
+                return
+            await ev.wait()
 
     async def _claim_workdir_for_start(self, commission_id: str, workdir: Any) -> bool:
         """Claim ``workdir`` for a starting commission, waiting if an overlapping directory is being cleared."""
