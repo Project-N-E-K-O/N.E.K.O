@@ -467,12 +467,23 @@ def test_no_bundled_plugin_ships_a_dotted_directory_besides_github() -> None:
     )
 
 
+_LISTED_URL = (
+    "https://releases.astral.sh/github/python-build-standalone/releases/download/20260101/cpython.tar.gz"
+)
+
+
 @pytest.mark.parametrize(
-    ("listed_version", "expect_issue"),
-    [(".".join(map(str, sys.version_info[:3])), False), ("3.0.0", True)],
+    ("listed_version", "url", "expect_issue"),
+    [
+        (".".join(map(str, sys.version_info[:3])), _LISTED_URL, False),
+        ("3.0.0", _LISTED_URL, True),
+        # A host the runtime cannot map to GitHub would bypass the download routes.
+        (".".join(map(str, sys.version_info[:3])), "https://example.com/cpython.tar.gz", True),
+        (".".join(map(str, sys.version_info[:3])), None, True),
+    ],
 )
 def test_dist_check_requires_pinned_uv_to_list_build_python(
-    monkeypatch: pytest.MonkeyPatch, listed_version: str, expect_issue: bool,
+    monkeypatch: pytest.MonkeyPatch, listed_version: str, url: str | None, expect_issue: bool,
 ) -> None:
     from plugin.server.infrastructure import plugin_tool_runtime as tools
 
@@ -480,7 +491,7 @@ def test_dist_check_requires_pinned_uv_to_list_build_python(
 
     def run(command, **kwargs):
         calls.append(command)
-        payload = [{"implementation": "cpython", "version": listed_version}]
+        payload = [{"implementation": "cpython", "version": listed_version, "url": url}]
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
@@ -491,6 +502,7 @@ def test_dist_check_requires_pinned_uv_to_list_build_python(
     assert bool(issues) is expect_issue
     assert calls and f"uv=={tools.pinned_uv_version()}" in calls[0]
     assert tools.packaged_python_request() in calls[0]
+    assert "--show-urls" in calls[0]
 
 
 def test_dist_check_skips_python_download_check_without_uv(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -535,7 +547,7 @@ def test_dist_check_fails_when_the_pinned_uv_is_not_on_pypi(monkeypatch: pytest.
     )
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     issues = _check_plugin_tool_python()
-    assert len(issues) == 1 and "not published on PyPI" in issues[0]
+    assert len(issues) == 1 and "not published" in issues[0]
 
 
 @pytest.mark.parametrize("failure", ["unreachable", "server_error", "proxy_404", "empty_404"])

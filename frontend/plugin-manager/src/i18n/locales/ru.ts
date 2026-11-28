@@ -576,7 +576,7 @@ export default {
   },
   mirrorSource: {
     title: 'Источник зеркала',
-    description: 'Выберите способ загрузки пакетов GitHub Release из Plugin Market.',
+    description: 'Выберите способ загрузки пакетов Plugin Market и инструментов плагинов (uv и Python) из GitHub Release.',
     close: 'Закрыть источник зеркала',
     proxyOptional: 'GitHub Proxy (необязательно)',
     direct: 'GitHub напрямую',
@@ -587,7 +587,7 @@ export default {
     resetHistory: 'Выбрать источники заново при следующей установке',
     resetSuccess: 'История очищена; следующая установка выберет источники заново.',
     resetFailed: 'Не удалось очистить недавнюю историю загрузок.',
-    notice: 'Проксируются только ссылки загрузки плагинов github.com; пакет всё равно проверяется SHA-256 из Market.',
+    notice: 'Проксируются только ссылки загрузки GitHub Release с github.com; пакеты плагинов всё равно проверяются SHA-256 из Market, uv — закреплённым в приложении SHA-256, а Python — средствами uv по встроенному в него SHA-256.',
     preferenceNotice: 'Настройки действуют на будущие задачи. Ход загрузки показывает используемые маршруты.',
     saveFailed: 'Не удалось сохранить настройки загрузки. Повторите попытку.',
     actualSources: 'Источник загрузки: {sources}',
