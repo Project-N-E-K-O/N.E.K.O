@@ -270,7 +270,10 @@ async def test_probe_git_version_floor(repo: Path, manager: WorktreeManager, mon
 async def test_probe_not_a_repository(tmp_path: Path, manager: WorktreeManager) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
-    found = await manager.probe(plain)
+    # Non-git directories qualify for copy-based working copies by default, and refuse when git-only.
+    copy_probe = await manager.probe(plain)
+    assert copy_probe.usable and copy_probe.kind == "copy" and copy_probe.repo_root is None
+    found = await manager.probe(plain, allow_non_git=False)
     assert found.reason == NOT_A_REPOSITORY and "in no git repository" in found.detail
     assert (await manager.probe(tmp_path / "missing")).reason == NOT_A_REPOSITORY
 
@@ -296,7 +299,8 @@ async def test_probe_a_bare_repository_of_its_own(tmp_path: Path, manager: Workt
     assert (await manager.probe(bare)).reason == BARE_REPOSITORY
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert (await manager.probe(plain)).reason == NOT_A_REPOSITORY
+    assert (await manager.probe(plain, allow_non_git=False)).reason == NOT_A_REPOSITORY
+    assert (await manager.probe(plain)).kind == "copy"
 
 
 async def test_probe_beyond_the_search_in_a_repository_is_not_bare(
@@ -307,7 +311,8 @@ async def test_probe_beyond_the_search_in_a_repository_is_not_bare(
     deep = repo / "a" / "b" / "c"
     deep.mkdir(parents=True)
     monkeypatch.setattr(host_settings, "REPO_ROOT_SEARCH_MAX_LEVELS", 1)  # git finds it, the search does not
-    assert (await manager.probe(deep)).reason == NOT_A_REPOSITORY
+    assert (await manager.probe(deep, allow_non_git=False)).reason == NOT_A_REPOSITORY
+    assert (await manager.probe(deep)).reason != BARE_REPOSITORY
 
 
 async def test_probe_git_failed(tmp_path: Path, manager: WorktreeManager) -> None:
@@ -408,9 +413,13 @@ async def test_probe_sparse_checkout(repo: Path, manager: WorktreeManager) -> No
 async def test_unusable_directory_is_refused(tmp_path: Path, manager: WorktreeManager, base: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
+    git_only = WorktreeManager(allow_non_git=False)
     with pytest.raises(WorktreeUnavailable) as raised:
-        await manager.create(plain, base / "w1")
+        await git_only.create(plain, base / "w1")
     assert raised.value.reason == NOT_A_REPOSITORY
+    with pytest.raises(WorktreeUnavailable) as raised_ref:
+        await manager.create(plain, base / "w2", FromRef("main"))
+    assert raised_ref.value.reason == NOT_A_REPOSITORY
     with pytest.raises(WorktreeUnavailable):
         await manager.snapshot(plain)
 

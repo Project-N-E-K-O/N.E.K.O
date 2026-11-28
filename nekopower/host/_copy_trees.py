@@ -1,0 +1,1230 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Directory-link helpers, 3-way text merge, and non-git working copy storage.
+
+Synchronous filesystem and merge helpers used by ``nekopower.host.worktrees``
+inside worker threads. Keeps all non-git working copy metadata outside the
+user's project directory (under ``<copies_base>/.nekopower-copies/<id>/``),
+never mutates the project directory except during an atomic landing with full
+backup/restore, and always unlinks directory junctions/symlinks before any
+recursive deletion so a project's dependency directories are never deleted.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import difflib
+import hashlib
+import json
+import os
+import shutil
+import stat
+import sys
+import uuid
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+COPY_META_DIR = ".nekopower-copies"
+_META_FILE = "meta.json"
+_BASE_MANIFEST_FILE = "base_manifest.json"
+_BLOBS_DIR = "blobs"
+_PENDING_DIR = "pending"
+_CHUNK_BYTES = 256 * 1024
+_BINARY_PROBE_BYTES = 8000
+
+
+class CopyTooLarge(Exception):
+    """Raised when a non-git project directory exceeds copy limits."""
+
+
+# -- path & link helpers ------------------------------------------------------
+
+
+def fs_path(path: Path | str) -> str:
+    """Return ``path`` in a form Windows opens past 260 characters; unchanged elsewhere."""
+    text = os.path.abspath(str(path))
+    if sys.platform != "win32" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def same_path(left: Path | str, right: Path | str) -> bool:
+    """Return whether two paths normalize to the same absolute path."""
+    return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+
+def relative_posix(path: Path, root: Path) -> str | None:
+    """Return ``path`` relative to ``root`` with ``/`` separators, ``""`` for equal, or None if outside."""
+    try:
+        rel = os.path.relpath(path, root)
+    except ValueError:
+        return None
+    if rel == ".":
+        return ""
+    rel = rel.replace(os.sep, "/")
+    if rel == ".." or rel.startswith("../"):
+        return None
+    return rel
+
+
+def is_dir_link(path: Path | str) -> bool:
+    """Return whether ``path`` is a symbolic link or a Windows directory junction/symlink reparse point."""
+    raw = fs_path(path)
+    if os.path.islink(raw):
+        return True
+    if sys.platform != "win32":
+        return False
+    try:
+        info = os.lstat(raw)
+    except OSError:
+        return False
+    reparse_attr = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if not (getattr(info, "st_file_attributes", 0) & reparse_attr):
+        return False
+    tag = getattr(info, "st_reparse_tag", 0)
+    mount_point = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+    symlink_tag = getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)
+    return tag in (mount_point, symlink_tag)
+
+
+def make_dir_link(source: Path, destination: Path) -> None:
+    """Create a directory link from ``destination`` to ``source`` (junction on Windows, symlink on POSIX)."""
+    src = os.path.abspath(os.path.realpath(str(source)))
+    dst = os.path.abspath(str(destination))
+    if sys.platform == "win32":
+        import _winapi  # type: ignore[import-not-found]
+
+        # CreateJunction prepends \??\ internally; never pass a \\?\ extended prefix to it.
+        _winapi.CreateJunction(src, dst)
+        return
+    os.symlink(src, dst, target_is_directory=True)
+
+
+def remove_dir_link(path: Path | str) -> None:
+    """Remove a single directory symlink or Windows junction without touching its target."""
+    raw = fs_path(path)
+    if os.path.islink(raw):
+        os.unlink(raw)
+        return
+    if is_dir_link(path):
+        os.rmdir(raw)
+
+
+def unlink_dependencies(root: Path, links: Iterable[str]) -> list[str]:
+    """Unlink recorded dependency directory links under ``root`` without touching their targets.
+
+    Returns the relative paths that could not be unlinked.
+    """
+    failed: list[str] = []
+    ordered = sorted(set(links), key=lambda item: item.count("/"), reverse=True)
+    for rel in ordered:
+        candidate = root / rel
+        if not os.path.lexists(fs_path(candidate)):
+            continue
+        if not is_dir_link(candidate):
+            # User or agent replaced it with a real directory/file: do not special-case unlink.
+            continue
+        try:
+            remove_dir_link(candidate)
+        except OSError:
+            failed.append(rel)
+    return failed
+
+
+def remove_tree_safe(path: Path | str) -> None:
+    """Remove ``path`` recursively, unlinking every directory junction/symlink first so targets are never touched."""
+    raw = fs_path(path)
+    if not os.path.lexists(raw):
+        return
+    if is_dir_link(path):
+        remove_dir_link(path)
+        return
+    if os.path.isfile(raw) or os.path.islink(raw):
+        try:
+            os.chmod(raw, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        os.unlink(raw)
+        return
+
+    # Unlink nested junctions/symlinks top-down before rmtree ever traverses them.
+    for current, dirs, _files in os.walk(raw, topdown=True, followlinks=False):
+        for name in list(dirs):
+            full = os.path.join(current, name)
+            if is_dir_link(full):
+                dirs.remove(name)
+                remove_dir_link(full)
+
+    def clear_read_only(function: Any, failed: str, _info: Any) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(failed, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            function(failed)
+
+    shutil.rmtree(raw, onerror=clear_read_only)
+
+
+def link_dependency_paths(
+    source_root: Path,
+    dest_root: Path,
+    candidates: Iterable[str],
+    *,
+    limit: int,
+) -> tuple[str, ...]:
+    """Link existing dependency directories from ``source_root`` into ``dest_root`` (best effort per entry)."""
+    linked: list[str] = []
+    seen: set[str] = set()
+    for raw in sorted(candidates):
+        rel = raw.strip().strip("/")
+        if not rel or rel in seen or len(linked) >= limit:
+            continue
+        seen.add(rel)
+        src = source_root / rel
+        dst = dest_root / rel
+        try:
+            if not os.path.isdir(fs_path(src)):
+                continue
+            # Ensure resolved target is an actual directory (not a broken link).
+            real_src = Path(os.path.realpath(str(src)))
+            if not real_src.is_dir():
+                continue
+            # Do not link if destination already exists (tracked file/dir) or parent is missing/escaping.
+            if os.path.lexists(fs_path(dst)):
+                continue
+            if not dst.parent.is_dir() or is_dir_link(dst.parent):
+                continue
+            if relative_posix(Path(os.path.realpath(str(dst.parent))), Path(os.path.realpath(str(dest_root)))) is None:
+                continue
+            make_dir_link(real_src, dst)
+        except OSError:
+            continue
+        linked.append(rel)
+    return tuple(linked)
+
+
+def active_links(root: Path, recorded: Iterable[str]) -> tuple[str, ...]:
+    """Return those of ``recorded`` that still exist as directory links under ``root``."""
+    return tuple(rel for rel in recorded if is_dir_link(root / rel))
+
+
+# -- 3-way text merge ---------------------------------------------------------
+
+
+def is_binary_bytes(data: bytes) -> bool:
+    """Return whether ``data`` looks binary (contains a NUL byte in its prefix, matching git's heuristic)."""
+    return b"\x00" in data[:_BINARY_PROBE_BYTES]
+
+
+def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, int | None]:
+    """Return ``(added_lines, deleted_lines)`` between ``old`` and ``new``, or ``(None, None)`` for binary data."""
+    old_bytes = old or b""
+    new_bytes = new or b""
+    if is_binary_bytes(old_bytes) or is_binary_bytes(new_bytes):
+        return None, None
+    old_lines = old_bytes.splitlines()
+    new_lines = new_bytes.splitlines()
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    added = 0
+    deleted = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            deleted += i2 - i1
+        if tag in ("replace", "insert"):
+            added += j2 - j1
+    return added, deleted
+
+
+@dataclass(frozen=True)
+class _Hunk:
+    start: int
+    end: int
+    lines: tuple[bytes, ...]
+
+
+def _diff_hunks(base: list[bytes], side: list[bytes]) -> list[_Hunk]:
+    matcher = difflib.SequenceMatcher(None, base, side, autojunk=False)
+    hunks: list[_Hunk] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            hunks.append(_Hunk(i1, i2, tuple(side[j1:j2])))
+    return hunks
+
+
+def _reconstruct_region(base: list[bytes], hunks: list[_Hunk], region_start: int, region_end: int) -> list[bytes]:
+    out: list[bytes] = []
+    pos = region_start
+    for hunk in hunks:
+        if hunk.start > pos:
+            out.extend(base[pos : hunk.start])
+        out.extend(hunk.lines)
+        pos = hunk.end
+    if pos < region_end:
+        out.extend(base[pos:region_end])
+    return out
+
+
+def _hunks_overlap(a: _Hunk, b: _Hunk) -> bool:
+    # Two zero-length insertions at the exact same base offset overlap.
+    if a.start == a.end and b.start == b.end:
+        return a.start == b.start
+    if a.start == a.end:
+        return b.start <= a.start <= b.end
+    if b.start == b.end:
+        return a.start <= b.start <= a.end
+    return a.start < b.end and b.start < a.end
+
+
+def _ensure_trailing_nl(chunks: list[bytes]) -> list[bytes]:
+    if not chunks:
+        return []
+    if chunks[-1].endswith((b"\n", b"\r")):
+        return chunks
+    return [*chunks[:-1], chunks[-1] + b"\n"]
+
+
+def merge3_bytes(
+    base: bytes | None,
+    current: bytes | None,
+    worktree: bytes | None,
+    *,
+    current_label: bytes = b"project",
+    worktree_label: bytes = b"worktree",
+) -> tuple[bytes | None, bool]:
+    """Perform a 3-way merge of ``(base, current, worktree)`` bytes.
+
+    Returns ``(merged_bytes_or_None_for_delete, has_conflict)``.
+    Binary files or modify/delete clashes return ``has_conflict=True``; for
+    text files with overlapping divergent edits, standard conflict markers
+    (``<<<<<<<``, ``=======``, ``>>>>>>>``) are embedded.
+    """
+    if worktree == base:
+        return current, False
+    if current == base:
+        return worktree, False
+    if current == worktree:
+        return current, False
+
+    # Deletion / creation clashes.
+    if current is None or worktree is None:
+        # One side deleted (or never had) what the other side modified/added.
+        keep = current if current is not None else worktree
+        return keep, True
+    if base is None:
+        # Both sides independently added different content at the same path.
+        if is_binary_bytes(current) or is_binary_bytes(worktree):
+            return current, True
+        base_lines: list[bytes] = []
+    else:
+        if is_binary_bytes(base) or is_binary_bytes(current) or is_binary_bytes(worktree):
+            return current, True
+        base_lines = base.splitlines(keepends=True)
+
+    curr_lines = current.splitlines(keepends=True)
+    wt_lines = worktree.splitlines(keepends=True)
+    curr_hunks = _diff_hunks(base_lines, curr_lines)
+    wt_hunks = _diff_hunks(base_lines, wt_lines)
+
+    out: list[bytes] = []
+    has_conflict = False
+    ci = 0
+    wi = 0
+    pos = 0
+
+    while ci < len(curr_hunks) or wi < len(wt_hunks):
+        if ci < len(curr_hunks) and wi < len(wt_hunks):
+            ch = curr_hunks[ci]
+            wh = wt_hunks[wi]
+            if not _hunks_overlap(ch, wh):
+                if (ch.start, ch.end) < (wh.start, wh.end):
+                    if ch.start > pos:
+                        out.extend(base_lines[pos : ch.start])
+                    out.extend(ch.lines)
+                    pos = ch.end
+                    ci += 1
+                    continue
+                if wh.start > pos:
+                    out.extend(base_lines[pos : wh.start])
+                out.extend(wh.lines)
+                pos = wh.end
+                wi += 1
+                continue
+
+            # Expand region to capture all transitively overlapping hunks.
+            reg_start = min(ch.start, wh.start)
+            reg_end = max(ch.end, wh.end)
+            c_group = [ch]
+            w_group = [wh]
+            ci += 1
+            wi += 1
+            changed = True
+            while changed:
+                changed = False
+                while ci < len(curr_hunks) and (
+                    curr_hunks[ci].start < reg_end
+                    or (curr_hunks[ci].start == curr_hunks[ci].end == reg_end)
+                ):
+                    c_group.append(curr_hunks[ci])
+                    reg_end = max(reg_end, curr_hunks[ci].end)
+                    ci += 1
+                    changed = True
+                while wi < len(wt_hunks) and (
+                    wt_hunks[wi].start < reg_end
+                    or (wt_hunks[wi].start == wt_hunks[wi].end == reg_end)
+                ):
+                    w_group.append(wt_hunks[wi])
+                    reg_end = max(reg_end, wt_hunks[wi].end)
+                    wi += 1
+                    changed = True
+
+            if reg_start > pos:
+                out.extend(base_lines[pos:reg_start])
+            c_chunk = _reconstruct_region(base_lines, c_group, reg_start, reg_end)
+            w_chunk = _reconstruct_region(base_lines, w_group, reg_start, reg_end)
+            if c_chunk == w_chunk:
+                out.extend(c_chunk)
+            else:
+                has_conflict = True
+                out.append(b"<<<<<<< " + current_label + b"\n")
+                out.extend(_ensure_trailing_nl(c_chunk))
+                out.append(b"=======\n")
+                out.extend(_ensure_trailing_nl(w_chunk))
+                out.append(b">>>>>>> " + worktree_label + b"\n")
+            pos = reg_end
+        elif ci < len(curr_hunks):
+            ch = curr_hunks[ci]
+            if ch.start > pos:
+                out.extend(base_lines[pos : ch.start])
+            out.extend(ch.lines)
+            pos = ch.end
+            ci += 1
+        else:
+            wh = wt_hunks[wi]
+            if wh.start > pos:
+                out.extend(base_lines[pos : wh.start])
+            out.extend(wh.lines)
+            pos = wh.end
+            wi += 1
+
+    if pos < len(base_lines):
+        out.extend(base_lines[pos:])
+    return b"".join(out), has_conflict
+
+
+# -- non-git working copy storage & scanning ----------------------------------
+
+
+@dataclass(frozen=True)
+class CopyScan:
+    """Files, skipped items, dependency dirs, and totals found under a directory."""
+
+    files: dict[str, dict[str, Any]]
+    skipped: tuple[str, ...]
+    dependency_dirs: tuple[str, ...]
+    total_bytes: int
+    digest: str
+
+
+def copy_meta_root(base_dir: Path) -> Path:
+    """Return the hidden metadata root for non-git copies inside ``base_dir``."""
+    return base_dir / COPY_META_DIR
+
+
+def copy_meta_dir(copy_path: Path) -> Path:
+    """Return the metadata directory for the non-git copy at ``copy_path``."""
+    return copy_meta_root(copy_path.parent) / copy_path.name
+
+
+def _hash_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest_digest(files: Mapping[str, Mapping[str, Any]]) -> str:
+    """Return a deterministic SHA-256 digest of a file manifest."""
+    normalized = []
+    for name in sorted(files):
+        entry = files[name]
+        kind = entry.get("kind", "file")
+        if kind == "symlink":
+            normalized.append((name, "symlink", str(entry.get("target", ""))))
+        else:
+            exec_bit = bool(int(entry.get("mode", 0)) & stat.S_IXUSR) if sys.platform != "win32" else False
+            normalized.append((name, "file", str(entry.get("sha256", "")), exec_bit))
+    raw = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def scan_copy_directory(
+    root: Path,
+    *,
+    dependency_dirs: Iterable[str],
+    max_file_bytes: int,
+    max_files: int | None = None,
+    max_total_bytes: int | None = None,
+    active_dep_links: Iterable[str] = (),
+    include_large: Iterable[str] = (),
+    hash_files: bool = True,
+) -> CopyScan:
+    """Walk ``root`` and catalog its files, skipped items, and linkable dependency directories."""
+    dep_names = frozenset(dependency_dirs)
+    active_set = frozenset(active_dep_links)
+    keep_large = frozenset(include_large)
+    top = fs_path(root)
+    files: dict[str, dict[str, Any]] = {}
+    skipped: list[str] = []
+    found_deps: list[str] = []
+    total_bytes = 0
+
+    for current, dirs, filenames in os.walk(top, topdown=True, followlinks=False):
+        dirs.sort()
+        filenames.sort()
+        rel_dir = os.path.relpath(current, top)
+        prefix = "" if rel_dir == "." else rel_dir.replace(os.sep, "/") + "/"
+
+        for dname in list(dirs):
+            rel = f"{prefix}{dname}"
+            full = os.path.join(current, dname)
+            if rel in active_set and is_dir_link(full):
+                dirs.remove(dname)
+                continue
+            if dname in dep_names:
+                dirs.remove(dname)
+                if not is_dir_link(full):
+                    found_deps.append(rel)
+                elif os.path.isdir(full):
+                    # Existing valid directory link in source project: link its resolved target too.
+                    found_deps.append(rel)
+                continue
+            if os.path.lexists(os.path.join(full, ".git")):
+                dirs.remove(dname)
+                skipped.append(rel + "/")
+                continue
+            if is_dir_link(full):
+                dirs.remove(dname)
+                if os.path.islink(full):
+                    files[rel] = {"kind": "symlink", "target": os.readlink(full)}
+                else:
+                    skipped.append(rel + "/")
+                continue
+
+        for fname in filenames:
+            rel = f"{prefix}{fname}"
+            full = os.path.join(current, fname)
+            if os.path.islink(full):
+                files[rel] = {"kind": "symlink", "target": os.readlink(full)}
+                if max_files is not None and len(files) > max_files:
+                    raise CopyTooLarge(f"{root} has more than {max_files} files")
+                continue
+            try:
+                info = os.lstat(full)
+            except OSError:
+                continue
+            if info.st_size > max_file_bytes and rel not in keep_large:
+                skipped.append(rel)
+                continue
+            total_bytes += info.st_size
+            if max_total_bytes is not None and total_bytes > max_total_bytes:
+                raise CopyTooLarge(f"{root} exceeds {max_total_bytes} bytes of copyable files")
+            digest = _hash_file(full) if hash_files else ""
+            files[rel] = {
+                "kind": "file",
+                "sha256": digest,
+                "size": info.st_size,
+                "mode": stat.S_IMODE(info.st_mode),
+            }
+            if max_files is not None and len(files) > max_files:
+                raise CopyTooLarge(f"{root} has more than {max_files} files")
+
+    return CopyScan(
+        files=files,
+        skipped=tuple(sorted(skipped)),
+        dependency_dirs=tuple(sorted(found_deps)),
+        total_bytes=total_bytes,
+        digest=manifest_digest(files) if hash_files else "",
+    )
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    data = json.dumps(payload, indent=1, sort_keys=True).encode("utf-8")
+    with open(fs_path(tmp), "wb") as handle:
+        handle.write(data)
+    os.replace(fs_path(tmp), fs_path(path))
+
+
+def _store_blob_file(src: Path, sha: str, blobs_dir: Path) -> None:
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    dst = blobs_dir / sha
+    if os.path.isfile(fs_path(dst)):
+        return
+    tmp = blobs_dir / f".{sha}.{uuid.uuid4().hex}.tmp"
+    shutil.copyfile(fs_path(src), fs_path(tmp))
+    try:
+        os.replace(fs_path(tmp), fs_path(dst))
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(fs_path(tmp))
+        if not os.path.isfile(fs_path(dst)):
+            raise
+
+
+def _store_blob_bytes(data: bytes, blobs_dir: Path) -> str:
+    sha = hashlib.sha256(data).hexdigest()
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    dst = blobs_dir / sha
+    if not os.path.isfile(fs_path(dst)):
+        tmp = blobs_dir / f".{sha}.{uuid.uuid4().hex}.tmp"
+        with open(fs_path(tmp), "wb") as handle:
+            handle.write(data)
+        try:
+            os.replace(fs_path(tmp), fs_path(dst))
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(fs_path(tmp))
+            if not os.path.isfile(fs_path(dst)):
+                raise
+    return sha
+
+
+def _read_blob(blobs_dir: Path, sha: str) -> bytes:
+    with open(fs_path(blobs_dir / sha), "rb") as handle:
+        return handle.read()
+
+
+def _gc_blobs(blobs_dir: Path, keep: set[str]) -> None:
+    if not blobs_dir.is_dir():
+        return
+    for entry in list(blobs_dir.iterdir()):
+        if entry.name not in keep:
+            with contextlib.suppress(OSError):
+                os.unlink(fs_path(entry))
+
+
+def read_copy_meta(copy_path: Path) -> dict[str, Any] | None:
+    """Read ``meta.json`` for a non-git copy at ``copy_path``, or return None."""
+    meta_file = copy_meta_dir(copy_path) / _META_FILE
+    try:
+        raw = json.loads(Path(meta_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("kind") != "copy":
+        return None
+    return raw
+
+
+def read_base_manifest(copy_path: Path) -> dict[str, Any] | None:
+    """Read ``base_manifest.json`` for a non-git copy at ``copy_path``, or return None."""
+    manifest_file = copy_meta_dir(copy_path) / _BASE_MANIFEST_FILE
+    try:
+        raw = json.loads(Path(manifest_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) and isinstance(raw.get("files"), dict) else None
+
+
+def populate_copy(
+    project_dir: Path,
+    target: Path,
+    *,
+    token: str,
+    dependency_dirs: tuple[str, ...],
+    max_file_bytes: int,
+    max_files: int,
+    max_total_bytes: int,
+    link_dependencies: bool,
+    link_max: int,
+    identity: dict[str, int] | None,
+) -> tuple[str, tuple[str, ...], CopyScan]:
+    """Copy ``project_dir`` into ``target``, store its baseline blobs/metadata, and link dependency dirs."""
+    scan = scan_copy_directory(
+        project_dir,
+        dependency_dirs=dependency_dirs,
+        max_file_bytes=max_file_bytes,
+        max_files=max_files,
+        max_total_bytes=max_total_bytes,
+        hash_files=True,
+    )
+    meta_dir = copy_meta_dir(target)
+    blobs_dir = meta_dir / _BLOBS_DIR
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy all manifest entries into target and record baseline blobs.
+    for rel, entry in sorted(scan.files.items()):
+        src = project_dir / rel
+        dst = target / rel
+        os.makedirs(fs_path(dst.parent), exist_ok=True)
+        if entry["kind"] == "symlink":
+            os.symlink(entry["target"], fs_path(dst))
+            continue
+        shutil.copy2(fs_path(src), fs_path(dst), follow_symlinks=False)
+        _store_blob_file(dst, entry["sha256"], blobs_dir)
+
+    linked: tuple[str, ...] = ()
+    if link_dependencies and scan.dependency_dirs:
+        # Ensure parent dirs exist for nested dependency directories (e.g. frontend/app/node_modules)
+        # only when the parent directory existed in the project and has copied files (or create if project has it).
+        for rel in scan.dependency_dirs:
+            parent = (target / rel).parent
+            if not os.path.lexists(fs_path(parent)):
+                # Only link nested deps if their parent exists in the copied tree.
+                if (project_dir / rel).parent.is_dir():
+                    os.makedirs(fs_path(parent), exist_ok=True)
+        linked = link_dependency_paths(project_dir, target, scan.dependency_dirs, limit=link_max)
+
+    _atomic_write_json(
+        meta_dir / _BASE_MANIFEST_FILE,
+        {"digest": scan.digest, "files": scan.files, "skipped": list(scan.skipped)},
+    )
+    meta_payload: dict[str, Any] = {
+        "version": 1,
+        "kind": "copy",
+        "id": target.name,
+        "project_dir": os.path.abspath(str(project_dir)),
+        "path": os.path.abspath(str(target)),
+        "token": token,
+        "start": scan.digest,
+        "links": list(linked),
+    }
+    if identity:
+        meta_payload["identity"] = identity
+    try:
+        st = os.stat(fs_path(target))
+        if st.st_ino:
+            meta_payload["stat"] = {"dev": st.st_dev, "ino": st.st_ino}
+    except OSError:
+        pass
+    _atomic_write_json(meta_dir / _META_FILE, meta_payload)
+    return scan.digest, linked, scan
+
+
+def copy_has_changes(
+    copy_path: Path,
+    *,
+    dependency_dirs: tuple[str, ...],
+    max_file_bytes: int,
+) -> bool:
+    """Return whether a non-git working copy differs from its stored baseline."""
+    if not copy_path.is_dir():
+        return False
+    meta = read_copy_meta(copy_path)
+    base = read_base_manifest(copy_path)
+    if meta is None or base is None:
+        return True
+    links = active_links(copy_path, meta.get("links") or ())
+    base_files = base.get("files") or {}
+    now = scan_copy_directory(
+        copy_path,
+        dependency_dirs=dependency_dirs,
+        max_file_bytes=max_file_bytes,
+        active_dep_links=links,
+        include_large=base_files.keys(),
+        hash_files=True,
+    )
+    # Files skipped in the copy that were not already skipped at creation count as changes.
+    base_skipped = set(base.get("skipped") or ())
+    new_skipped = [name for name in now.skipped if name not in base_skipped]
+    return bool(new_skipped) or now.digest != str(base.get("digest") or "")
+
+
+def _parents(rel: str) -> list[str]:
+    parts = rel.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def _path_type_conflicts(paths: Iterable[str]) -> set[str]:
+    """Return paths that clash because one path is a strict prefix (directory) of another (file)."""
+    path_set = set(paths)
+    clashed: set[str] = set()
+    for rel in path_set:
+        for up in _parents(rel):
+            if up in path_set:
+                clashed.add(rel)
+                clashed.add(up)
+    return clashed
+
+
+def _read_entry_bytes(root: Path, entry: Mapping[str, Any] | None, rel: str, blobs_dir: Path | None = None) -> bytes | None:
+    if entry is None:
+        return None
+    if entry.get("kind") == "symlink":
+        return None
+    if blobs_dir is not None:
+        return _read_blob(blobs_dir, str(entry["sha256"]))
+    with open(fs_path(root / rel), "rb") as handle:
+        return handle.read()
+
+
+def compute_copy_merge(
+    project_dir: Path,
+    copy_path: Path,
+    *,
+    dependency_dirs: tuple[str, ...],
+    max_file_bytes: int,
+) -> dict[str, Any]:
+    """Compute a 3-way merge of ``(base, current_project, copy_result)`` without touching ``project_dir``."""
+    meta = read_copy_meta(copy_path)
+    base = read_base_manifest(copy_path)
+    if meta is None or base is None:
+        return {"status": "failed", "detail": f"{copy_path} has no working-copy baseline metadata"}
+
+    meta_dir = copy_meta_dir(copy_path)
+    blobs_dir = meta_dir / _BLOBS_DIR
+    base_files: dict[str, dict[str, Any]] = dict(base.get("files") or {})
+    base_digest = str(base.get("digest") or "")
+    links = active_links(copy_path, meta.get("links") or ())
+
+    result_scan = scan_copy_directory(
+        copy_path,
+        dependency_dirs=dependency_dirs,
+        max_file_bytes=max_file_bytes,
+        active_dep_links=links,
+        include_large=base_files.keys(),
+        hash_files=True,
+    )
+    current_scan = scan_copy_directory(
+        project_dir,
+        dependency_dirs=dependency_dirs,
+        max_file_bytes=max_file_bytes,
+        include_large=base_files.keys(),
+        hash_files=True,
+    )
+
+    all_paths = sorted(set(base_files) | set(current_scan.files) | set(result_scan.files))
+    merged_entries: dict[str, dict[str, Any]] = {}
+    merged_contents: dict[str, bytes] = {}
+    conflicts: set[str] = set()
+    changes: list[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]] = []
+
+    for rel in all_paths:
+        b_ent = base_files.get(rel)
+        c_ent = current_scan.files.get(rel)
+        w_ent = result_scan.files.get(rel)
+
+        # Fast-path equality using manifest entries (kind + sha256/target + executable bit).
+        def _same_entry(left: Mapping[str, Any] | None, right: Mapping[str, Any] | None) -> bool:
+            if left is None or right is None:
+                return left is right
+            if left.get("kind") != right.get("kind"):
+                return False
+            if left.get("kind") == "symlink":
+                return left.get("target") == right.get("target")
+            if left.get("sha256") != right.get("sha256"):
+                return False
+            if sys.platform != "win32":
+                return bool(int(left.get("mode", 0)) & stat.S_IXUSR) == bool(int(right.get("mode", 0)) & stat.S_IXUSR)
+            return True
+
+        if _same_entry(w_ent, b_ent):
+            if c_ent is not None:
+                merged_entries[rel] = dict(c_ent)
+            continue
+
+        if _same_entry(c_ent, b_ent):
+            if w_ent is None:
+                # Clean deletion.
+                if c_ent is not None:
+                    old_b = _read_entry_bytes(project_dir, c_ent, rel)
+                    added, deleted = line_diff_counts(old_b, b"") if c_ent.get("kind") != "symlink" else (None, None)
+                    changes.append((rel, "deleted", added, deleted))
+            else:
+                merged_entries[rel] = dict(w_ent)
+                if w_ent.get("kind") != "symlink":
+                    new_b = _read_entry_bytes(copy_path, w_ent, rel)
+                    assert new_b is not None
+                    merged_contents[rel] = new_b
+                    old_b = _read_entry_bytes(project_dir, c_ent, rel) if c_ent is not None else b""
+                    added, deleted = line_diff_counts(old_b, new_b)
+                else:
+                    added, deleted = None, None
+                status: Literal["added", "modified", "deleted"] = "added" if c_ent is None else "modified"
+                changes.append((rel, status, added, deleted))
+            continue
+
+        if _same_entry(c_ent, w_ent):
+            if c_ent is not None:
+                merged_entries[rel] = dict(c_ent)
+            continue
+
+        # Divergent changes on both sides.
+        if (
+            (b_ent is not None and b_ent.get("kind") == "symlink")
+            or (c_ent is not None and c_ent.get("kind") == "symlink")
+            or (w_ent is not None and w_ent.get("kind") == "symlink")
+        ):
+            conflicts.add(rel)
+            if c_ent is not None:
+                merged_entries[rel] = dict(c_ent)
+            continue
+
+        b_bytes = _read_entry_bytes(project_dir, b_ent, rel, blobs_dir=blobs_dir) if b_ent is not None else None
+        c_bytes = _read_entry_bytes(project_dir, c_ent, rel) if c_ent is not None else None
+        w_bytes = _read_entry_bytes(copy_path, w_ent, rel) if w_ent is not None else None
+        merged_b, clashed = merge3_bytes(b_bytes, c_bytes, w_bytes)
+        if clashed:
+            conflicts.add(rel)
+        if merged_b is not None:
+            sha = hashlib.sha256(merged_b).hexdigest()
+            mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
+            merged_entries[rel] = {"kind": "file", "sha256": sha, "size": len(merged_b), "mode": mode}
+            merged_contents[rel] = merged_b
+            if not clashed:
+                old_b = c_bytes if c_bytes is not None else b""
+                added, deleted = line_diff_counts(old_b, merged_b)
+                changes.append((rel, "added" if c_ent is None else "modified", added, deleted))
+
+    # File vs directory clashes across paths.
+    type_clashes = _path_type_conflicts(merged_entries.keys())
+    if type_clashes:
+        conflicts.update(type_clashes)
+
+    base_skipped = set(base.get("skipped") or ())
+    new_skipped = tuple(sorted(name for name in result_scan.skipped if name not in base_skipped))
+
+    if conflicts:
+        merge_id = uuid.uuid4().hex
+        pending_dir = meta_dir / _PENDING_DIR / merge_id
+        pending_blobs = pending_dir / _BLOBS_DIR
+        pending_blobs.mkdir(parents=True, exist_ok=True)
+        # Store current project's blobs so prepare_conflicts can advance baseline cleanly.
+        for rel, entry in current_scan.files.items():
+            if entry.get("kind") == "file":
+                _store_blob_file(project_dir / rel, entry["sha256"], pending_blobs)
+        # Store merged file contents (with conflict markers where applicable).
+        merged_manifest_entries: dict[str, dict[str, Any]] = {}
+        for rel, entry in merged_entries.items():
+            if rel in merged_contents:
+                sha = _store_blob_bytes(merged_contents[rel], pending_blobs)
+                merged_manifest_entries[rel] = {**entry, "sha256": sha, "size": len(merged_contents[rel])}
+            elif entry.get("kind") == "file":
+                # Ensure blob exists in pending_blobs (from current or copy).
+                src = project_dir / rel if rel in current_scan.files and current_scan.files[rel].get("sha256") == entry["sha256"] else copy_path / rel
+                if os.path.isfile(fs_path(src)):
+                    _store_blob_file(src, entry["sha256"], pending_blobs)
+                elif os.path.isfile(fs_path(blobs_dir / entry["sha256"])):
+                    _store_blob_file(blobs_dir / entry["sha256"], entry["sha256"], pending_blobs)
+                merged_manifest_entries[rel] = dict(entry)
+            else:
+                merged_manifest_entries[rel] = dict(entry)
+        _atomic_write_json(
+            pending_dir / "pending.json",
+            {
+                "base": base_digest,
+                "current": current_scan.digest,
+                "current_files": current_scan.files,
+                "current_skipped": list(current_scan.skipped),
+                "result": result_scan.digest,
+                "result_files": result_scan.files,
+                "merged_files": merged_manifest_entries,
+                "conflicts": sorted(conflicts),
+            },
+        )
+        return {
+            "status": "conflict",
+            "conflicts": tuple(sorted(conflicts)),
+            "skipped": new_skipped,
+            "base": base_digest,
+            "current": current_scan.digest,
+            "result": result_scan.digest,
+            "result_tree": result_scan.digest,
+            "merged_tree": merge_id,
+        }
+
+    return {
+        "status": "ready" if changes else "unchanged",
+        "changes": tuple(changes),
+        "merged_entries": merged_entries,
+        "merged_contents": merged_contents,
+        "skipped": new_skipped,
+        "base": base_digest,
+        "current": current_scan.digest,
+        "result": result_scan.digest,
+        "result_tree": result_scan.digest,
+        "merged_tree": manifest_digest(merged_entries),
+        "result_scan": result_scan,
+    }
+
+
+def apply_copy_changes(
+    project_dir: Path,
+    changes: Iterable[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]],
+    merged_entries: Mapping[str, Mapping[str, Any]],
+    merged_contents: Mapping[str, bytes],
+) -> None:
+    """Write merged file changes into ``project_dir``."""
+    deletes = [rel for rel, kind, _a, _d in changes if kind == "deleted"]
+    writes = [(rel, kind) for rel, kind, _a, _d in changes if kind != "deleted"]
+
+    for rel in deletes:
+        target = fs_path(project_dir / rel)
+        if os.path.islink(target) or os.path.isfile(target):
+            os.remove(target)
+        # Prune newly emptied directories inside project_dir.
+        parent = (project_dir / rel).parent
+        while parent != project_dir and relative_posix(parent, project_dir):
+            try:
+                os.rmdir(fs_path(parent))
+            except OSError:
+                break
+            parent = parent.parent
+
+    for rel, _kind in writes:
+        entry = merged_entries[rel]
+        target_path = project_dir / rel
+        target = fs_path(target_path)
+        os.makedirs(fs_path(target_path.parent), exist_ok=True)
+        if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
+            if os.path.isdir(target) and not is_dir_link(target_path):
+                # Only remove an empty directory; never wipe a non-empty user directory.
+                os.rmdir(target)
+            elif is_dir_link(target_path):
+                remove_dir_link(target_path)
+            else:
+                os.remove(target)
+        if entry.get("kind") == "symlink":
+            os.symlink(str(entry["target"]), target)
+            continue
+        data = merged_contents[rel]
+        with open(target, "wb") as handle:
+            handle.write(data)
+        if sys.platform != "win32" and "mode" in entry:
+            with contextlib.suppress(OSError):
+                os.chmod(target, int(entry["mode"]))
+
+
+def verify_copy_changes(
+    project_dir: Path,
+    changes: Iterable[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]],
+    merged_entries: Mapping[str, Mapping[str, Any]],
+    merged_contents: Mapping[str, bytes],
+) -> bool:
+    """Verify every changed file in ``project_dir`` reads back as merged."""
+    for rel, kind, _a, _d in changes:
+        target = fs_path(project_dir / rel)
+        if kind == "deleted":
+            if os.path.islink(target) or os.path.isfile(target):
+                return False
+            continue
+        entry = merged_entries[rel]
+        if entry.get("kind") == "symlink":
+            if not os.path.islink(target) or os.readlink(target) != entry["target"]:
+                return False
+            continue
+        if not os.path.isfile(target) or os.path.islink(target):
+            return False
+        try:
+            with open(target, "rb") as handle:
+                actual = handle.read()
+        except OSError:
+            return False
+        if actual != merged_contents[rel]:
+            return False
+    return True
+
+
+def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
+    """Update a non-git copy's stored baseline to ``new_scan`` and prune unreferenced blobs."""
+    meta = read_copy_meta(copy_path)
+    if meta is None:
+        return
+    meta_dir = copy_meta_dir(copy_path)
+    blobs_dir = meta_dir / _BLOBS_DIR
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    keep: set[str] = set()
+    for rel, entry in new_scan.files.items():
+        if entry.get("kind") == "file":
+            sha = str(entry["sha256"])
+            keep.add(sha)
+            src = copy_path / rel
+            if os.path.isfile(fs_path(src)):
+                _store_blob_file(src, sha, blobs_dir)
+    _atomic_write_json(
+        meta_dir / _BASE_MANIFEST_FILE,
+        {"digest": new_scan.digest, "files": new_scan.files, "skipped": list(new_scan.skipped)},
+    )
+    meta["start"] = new_scan.digest
+    _atomic_write_json(meta_dir / _META_FILE, meta)
+    _gc_blobs(blobs_dir, keep)
+    pending_root = meta_dir / _PENDING_DIR
+    if pending_root.is_dir():
+        remove_tree_safe(pending_root)
+
+
+def prepare_copy_conflicts_sync(
+    copy_path: Path,
+    *,
+    expected_base: str,
+    expected_result: str,
+    merge_id: str,
+    dependency_dirs: tuple[str, ...],
+    max_file_bytes: int,
+) -> tuple[str, list[str]]:
+    """Write conflict-marked files into ``copy_path`` and advance its baseline to the project snapshot.
+
+    Returns ``(new_start_digest, conflicts)``. Raises ``ValueError`` if stale or unsafe.
+    """
+    meta = read_copy_meta(copy_path)
+    base = read_base_manifest(copy_path)
+    if meta is None or base is None:
+        raise ValueError(f"{copy_path} has no working-copy baseline metadata")
+    if str(meta.get("start") or "") != expected_base:
+        raise ValueError("the worktree landed or was prepared since this merge was tried; merge again")
+    meta_dir = copy_meta_dir(copy_path)
+    pending_dir = meta_dir / _PENDING_DIR / merge_id
+    pending_file = pending_dir / "pending.json"
+    try:
+        pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("the conflict snapshot is no longer available; merge again") from exc
+
+    links = active_links(copy_path, meta.get("links") or ())
+    base_files = base.get("files") or {}
+    now = scan_copy_directory(
+        copy_path,
+        dependency_dirs=dependency_dirs,
+        max_file_bytes=max_file_bytes,
+        active_dep_links=links,
+        include_large=base_files.keys(),
+        hash_files=True,
+    )
+    if now.digest != expected_result:
+        raise ValueError("the worktree changed after the merge was tried; merge again")
+
+    pending_blobs = pending_dir / _BLOBS_DIR
+    merged_files: dict[str, dict[str, Any]] = pending["merged_files"]
+    held = set(now.files)
+    # Check that writing new files will not clobber skipped files or nested repos in the copy.
+    skipped_set = {name.rstrip("/") for name in now.skipped}
+    for rel in sorted(set(merged_files) - held):
+        if rel in skipped_set or any(up in skipped_set for up in _parents(rel)):
+            raise ValueError(f"preparing would overwrite skipped path in the working copy: {rel}")
+
+    # Remove files deleted by the merge.
+    for rel in sorted(held - set(merged_files)):
+        target = fs_path(copy_path / rel)
+        if os.path.islink(target) or os.path.isfile(target):
+            os.remove(target)
+
+    # Write merged / conflict-marked files into the copy.
+    merged_keys = set(merged_files)
+    for rel, entry in sorted(merged_files.items()):
+        if any(other.startswith(rel + "/") for other in merged_keys):
+            continue
+        target_path = copy_path / rel
+        target = fs_path(target_path)
+        os.makedirs(fs_path(target_path.parent), exist_ok=True)
+        if entry.get("kind") == "symlink":
+            if os.path.lexists(target):
+                if os.path.isdir(target) and not is_dir_link(target_path):
+                    os.rmdir(target)
+                elif is_dir_link(target_path):
+                    remove_dir_link(target_path)
+                else:
+                    os.remove(target)
+            os.symlink(str(entry["target"]), target)
+            continue
+        blob = pending_blobs / str(entry["sha256"])
+        if not os.path.isfile(fs_path(blob)):
+            continue
+        if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
+            if os.path.isdir(target) and not is_dir_link(target_path):
+                # Only remove an empty directory; never wipe a non-empty user directory.
+                os.rmdir(target)
+            elif is_dir_link(target_path):
+                remove_dir_link(target_path)
+            else:
+                os.remove(target)
+        shutil.copyfile(fs_path(blob), target)
+        if sys.platform != "win32" and "mode" in entry:
+            with contextlib.suppress(OSError):
+                os.chmod(target, int(entry["mode"]))
+
+    # Advance baseline to current project snapshot (copies blobs from pending_blobs into blobs/).
+    blobs_dir = meta_dir / _BLOBS_DIR
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    current_files: dict[str, dict[str, Any]] = pending["current_files"]
+    keep: set[str] = set()
+    for _rel, entry in current_files.items():
+        if entry.get("kind") == "file":
+            sha = str(entry["sha256"])
+            keep.add(sha)
+            src_blob = pending_blobs / sha
+            if os.path.isfile(fs_path(src_blob)):
+                _store_blob_file(src_blob, sha, blobs_dir)
+    new_start = str(pending["current"])
+    _atomic_write_json(
+        meta_dir / _BASE_MANIFEST_FILE,
+        {"digest": new_start, "files": current_files, "skipped": list(pending.get("current_skipped") or ())},
+    )
+    meta["start"] = new_start
+    _atomic_write_json(meta_dir / _META_FILE, meta)
+    _gc_blobs(blobs_dir, keep)
+    remove_tree_safe(pending_dir)
+    return new_start, list(pending.get("conflicts") or ())
+
+
+def list_copy_metas_for_project(project_dir: Path, base_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
+    """Return ``(worktree_id, copy_path, meta)`` for non-git copies under ``base_dir`` belonging to ``project_dir``."""
+    meta_root = copy_meta_root(base_dir)
+    if not meta_root.is_dir():
+        return []
+    found: list[tuple[str, Path, dict[str, Any]]] = []
+    for entry in sorted(meta_root.iterdir(), key=lambda item: item.name):
+        if not entry.is_dir():
+            continue
+        meta_file = entry / _META_FILE
+        try:
+            raw = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict) or raw.get("kind") != "copy":
+            continue
+        recorded_project = raw.get("project_dir")
+        if isinstance(recorded_project, str) and same_path(recorded_project, project_dir):
+            found.append((entry.name, base_dir / entry.name, raw))
+    return found
+
+
+def copy_matches_identity(
+    copy_path: Path,
+    meta: Mapping[str, Any],
+    now_identity: Mapping[str, int] | None,
+) -> Literal["ours", "theirs", "unknown"]:
+    """Return whether ``copy_path`` is the directory recorded in ``meta``."""
+    if not os.path.lexists(fs_path(copy_path)):
+        return "ours"
+    noted = meta.get("identity")
+    keys = {"dev", "ino", "birth"}
+    if isinstance(noted, dict) and keys <= set(noted) and now_identity is not None:
+        return "ours" if all(noted[key] == now_identity[key] for key in keys) else "theirs"
+    # Fallback where Python does not expose birth time (e.g. Linux < 3.12): match (dev, ino).
+    noted_stat = meta.get("stat")
+    if isinstance(noted_stat, dict) and {"dev", "ino"} <= set(noted_stat):
+        try:
+            st = os.stat(fs_path(copy_path))
+        except OSError:
+            return "unknown"
+        if st.st_ino:
+            return "ours" if (st.st_dev == noted_stat["dev"] and st.st_ino == noted_stat["ino"]) else "theirs"
+    return "unknown"

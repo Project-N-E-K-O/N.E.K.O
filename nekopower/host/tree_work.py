@@ -203,11 +203,13 @@ def _remove_empty(path: Path) -> None:
 
 def _remove_entry(entry: Path) -> None:
     """Remove a file, a link, or a directory with all in it; what cannot be removed (it is in use) is left."""
+    from nekopower.host._copy_trees import is_dir_link, remove_dir_link, remove_tree_safe
+
     try:
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry, True)
-            if os.path.lexists(entry):
-                os.rmdir(entry)  # a junction, which is not gone into, or a directory left empty
+        if is_dir_link(entry):
+            remove_dir_link(entry)
+        elif entry.is_dir() and not entry.is_symlink():
+            remove_tree_safe(entry)
         else:
             entry.unlink()
     except OSError:
@@ -469,32 +471,40 @@ class TreeWork:
         return handle
 
     async def _repository_gone(self, row: Tree) -> bool:
-        """Whether the repository a worktree was made from is not there any more (its directory went, or is no repository now).
+        """Whether the repository or project directory a worktree was made from is not there any more.
 
-        Git will not open the worktree again then, however often it is
-        asked: what is left of it is a directory of the host's own.
+        Git will not open a git worktree again once its directory or ``.git``
+        is gone: what is left of it is a directory of the host's own.
         """
         from nekopower.host.worktrees import NOT_A_REPOSITORY
 
         if not await asyncio.to_thread(Path(row.project_dir).is_dir):
             return True
         try:
-            return (await self.worktrees.probe(row.project_dir)).reason == NOT_A_REPOSITORY
+            probed = await self.worktrees.probe(row.project_dir)
+            if probed.reason == NOT_A_REPOSITORY:
+                return True
+            if getattr(probed, "kind", "git") == "copy":
+                # If the tree on disk was a git worktree (holds a .git file), its repository is gone.
+                return await asyncio.to_thread(lambda: (Path(row.path) / ".git").is_file())
+            return False
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - not known: taken for one that is there
             return False
 
     async def _remove_what_is_left(self, row: Tree) -> bool | None:
-        """Remove the directory of a worktree git no longer knows (its repository is gone).
+        """Remove the directory of a worktree git no longer knows (its repository or project is gone).
 
         Returns whether it went; None for a directory that is not the
         worktree's any more, which is left where it is. Only one that
         still says it is that worktree is removed (the ``.git`` file git
-        put into it names it, and the repository it is of), or one with
-        nothing in it: another directory put in its place since is not
-        what the user discarded.
+        put into it names it, and the repository it is of; or its non-git
+        copy metadata names it), or one with nothing in it: another
+        directory put in its place since is not what the user discarded.
         """
+        from nekopower.host import _copy_trees
+
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
         def remove() -> bool:
@@ -509,6 +519,20 @@ class TreeWork:
                 # just then): nothing is lost with an empty directory, whoever made it. One that
                 # still cannot be removed stays on record as one to remove.
                 _remove_empty(path)
+                meta_dir = _copy_trees.copy_meta_dir(path)
+                if meta_dir.exists():
+                    with contextlib.suppress(OSError):
+                        _copy_trees.remove_tree_safe(meta_dir)
+                return True
+            meta = _copy_trees.read_copy_meta(path)
+            if meta is not None and meta.get("id") == row.id and _same_dir(str(meta.get("project_dir") or ""), row.project_dir):
+                try:
+                    _copy_trees.unlink_dependencies(path, meta.get("links") or ())
+                    _copy_trees.remove_tree_safe(path)
+                    if not path.exists():
+                        _copy_trees.remove_tree_safe(_copy_trees.copy_meta_dir(path))
+                except OSError:
+                    pass
                 return True
             if not _says_it_is(path, row.id, row.repo_root):
                 return False
@@ -768,18 +792,22 @@ class TreeWork:
             else:
                 self._tree_of.pop(commission_id, None)
 
-    async def _make_tree(self, commission: Commission, kept: Session, home: str) -> tuple[Tree | None, str, str]:
+    async def _make_tree(
+        self, commission: Commission, kept: Session, home: str, *, start: Any = None
+    ) -> tuple[Tree | None, str, str]:
         """Make a worktree of ``home`` for a commission; returns its row, or None with why none was made."""
         while self._trees_looking and not self._closed:
             await asyncio.sleep(_POLL_SECONDS)
         # (Nothing is awaited between the look above and this.)
         self._trees_making += 1
         try:
-            return await self._make_tree_now(commission, kept, home)
+            return await self._make_tree_now(commission, kept, home, start=start)
         finally:
             self._trees_making -= 1
 
-    async def _make_tree_now(self, commission: Commission, kept: Session, home: str) -> tuple[Tree | None, str, str]:
+    async def _make_tree_now(
+        self, commission: Commission, kept: Session, home: str, *, start: Any = None
+    ) -> tuple[Tree | None, str, str]:
         from config import nekopower_settings as settings
         from nekopower.host.paths import worktree_name
         from nekopower.host.worktrees import WorktreeError
@@ -826,7 +854,7 @@ class TreeWork:
                 await self._ledger.drop_tree(row.id)
                 self._trees_mine.discard(row.id)
                 return None, "moved", "the project was given another directory meanwhile"
-            handle = await self.worktrees.create(home, path)
+            handle = await (self.worktrees.create(home, path, start) if start is not None else self.worktrees.create(home, path))
         except (WorktreeError, ValueError, OSError) as exc:
             await self._ledger.drop_tree(row.id)
             self._trees_mine.discard(row.id)
@@ -903,7 +931,13 @@ class TreeWork:
         row = await self._ledger.get_tree(tree_id) if tree_id else None
         if row is None:
             return ""
-        parts = [texts.TASK_AGENT_IN_TREE.format(tree=row.workdir, project=row.project_dir)]
+        handle = self._tree_handles.get(row.id)
+        template = texts.TASK_AGENT_IN_COPY if getattr(handle, "kind", "git") == "copy" else texts.TASK_AGENT_IN_TREE
+        opening = template.format(tree=row.workdir, project=row.project_dir)
+        linked = getattr(handle, "linked_dependencies", ()) or ()
+        if linked:
+            opening += texts.TASK_AGENT_TREE_LINKED_DEPS.format(deps=", ".join(linked))
+        parts = [opening]
         if row.session_id:
             for other in await self._ledger.trees(session_id=row.session_id, states=sorted(TREE_STATES_LEFT)):
                 if other.id == row.id or not other.commission_id:
@@ -1181,7 +1215,7 @@ class TreeWork:
         await self._ledger.update_tree(row.id, was=("landing",), state="active")
         return "again"
 
-    async def _merge_or_markers(self, row: Tree, handle: Any, *, unless: Any = None) -> Any:
+    async def _merge_or_markers(self, row: Tree, handle: Any, *, unless: Any = None, landing: Any = None) -> Any:
         """Merge a worktree back (``_merge_back``), unless files that clashed in it still hold conflict markers.
 
         A task agent that was sent back to merge what clashed and says
@@ -1197,7 +1231,7 @@ class TreeWork:
             if left:
                 # (More said to it while the files were read is seen where this is acted on, ``_landed_or_not``.)
                 return MergeResult("conflict", conflicts=left, detail=_MARKERS_LEFT)
-        return await self._merge_back(row, handle, unless=unless)
+        return await self._merge_back(row, handle, unless=unless, landing=landing)
 
     async def _send_back(self, commission_id: str, row: Tree, findings: str) -> None:
         """Send a task agent back to its work with what an inspector found, framed as no word of the user's."""
@@ -1325,30 +1359,37 @@ class TreeWork:
             if project and self._quiet.get(project) is quiet:
                 del self._quiet[project]
 
-    async def _merge_back(self, row: Tree, handle: Any, *, unless: Any = None) -> Any:
-        """Merge what a worktree holds into its project's directory; returns what came of it, None when ``unless`` said not to.
+    async def _merge_back(self, row: Tree, handle: Any, *, unless: Any = None, landing: Any = None) -> Any:
+        """Merge what a worktree holds into its project's directory (or deliver via ``landing``); returns None when ``unless`` said not to.
 
         One landing at a time in a directory, with nothing else
-        changing files there meanwhile (``_quiet_in``). Whoever is at
-        work in that directory is told what was merged before it goes on.
+        changing files there meanwhile (``_quiet_in``) when writing working
+        files. Whoever is at work in that directory is told what was merged
+        before it goes on.
         """
-        from nekopower.host.worktrees import MergeResult
+        from nekopower.host.worktrees import MergeResult, WorkingFiles
 
+        touches_working_files = landing is None or isinstance(landing, WorkingFiles)
         key = os.path.normcase(os.path.normpath(row.project_dir))
         lock = self._landing_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            async with self._quiet_in(row.project):
+            quiet_cm = self._quiet_in(row.project) if touches_working_files else contextlib.nullcontext()
+            async with quiet_cm:
                 if unless is not None and unless():
                     return None
                 try:
-                    result = await self.worktrees.merge_back(handle)
+                    result = await (
+                        self.worktrees.merge_back(handle, landing)
+                        if landing is not None
+                        else self.worktrees.merge_back(handle)
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - told as a landing that failed
                     notes = "; ".join(getattr(exc, "__notes__", ()) or ())
                     logger.warning("merging worktree %s back failed: %s", row.id, exc)
                     result = MergeResult("failed", detail=f"{exc}{'; ' + notes if notes else ''}")
-                if result.status == "landed":
+                if result.status == "landed" and touches_working_files:
                     try:
                         await self._tell_beside(row, result)
                     except asyncio.CancelledError:
@@ -1406,7 +1447,17 @@ class TreeWork:
                 # when that run is over.
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
-            told, shown = self._landed_texts(row, commission.lang, files, more, outside, result.skipped)
+            told, shown = self._landed_texts(
+                row,
+                commission.lang,
+                files,
+                more,
+                outside,
+                result.skipped,
+                branch=getattr(result, "branch", ""),
+                commit=getattr(result, "commit", ""),
+                pr_url=getattr(result, "pr_url", ""),
+            )
             text = "\n\n".join(part for part in (done.text, told) if part)
             # Done first, and its worktree seen to after: what the user says to it while its
             # directory goes is a new commission's, and no run begins in it. Not done under a
@@ -1511,7 +1562,7 @@ class TreeWork:
         from config import nekopower_settings as settings
 
         files, more = files_of(result.files, settings.TREE_FILES_LISTED)
-        return {
+        payload: dict[str, Any] = {
             "tree": row.id, "files": files, "more": more, "lines_added": result.lines_added,
             "lines_deleted": result.lines_deleted,
             # Not carried over, being too large or a repository of their own: still in the worktree.
@@ -1519,9 +1570,30 @@ class TreeWork:
             # Changed outside the project's directory, elsewhere in its repository.
             "outside": outside[: settings.TREE_FILES_LISTED],
         }
+        if getattr(result, "branch", ""):
+            payload["branch"] = result.branch
+        if getattr(result, "commit", ""):
+            payload["commit"] = result.commit
+        if getattr(result, "remote", ""):
+            payload["remote"] = result.remote
+        if getattr(result, "pr_url", ""):
+            payload["pr_url"] = result.pr_url
+        if getattr(result, "pr_number", None) is not None:
+            payload["pr_number"] = result.pr_number
+        return payload
 
     def _landed_texts(
-        self, row: Tree, lang: str | None, files: list[dict[str, Any]], more: int, outside: list[str], skipped: Any
+        self,
+        row: Tree,
+        lang: str | None,
+        files: list[dict[str, Any]],
+        more: int,
+        outside: list[str],
+        skipped: Any,
+        *,
+        branch: str = "",
+        commit: str = "",
+        pr_url: str = "",
     ) -> tuple[str, str]:
         """Return what is told of a landing after the result of its commission: to a model, and to the user in the language of the dialogue.
 
@@ -1539,11 +1611,18 @@ class TreeWork:
         words = _texts(texts.TREE_LANDED_TEXTS, lang or "en")
         told = shown = ""
         if files:
-            told = texts.TREE_LANDED.format(
-                project=row.project_dir, files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS)
-            )
+            rendered_files = files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS)
             listed = ", ".join(str(item["path"]) for item in files) + (words["more"].format(more=more) if more else "")
-            shown = words["landed"].format(files=listed)
+            if pr_url:
+                told = texts.TREE_LANDED_PR.format(branch=branch, pr_url=pr_url, files=rendered_files)
+                shown = words["pr"].format(branch=branch, pr_url=pr_url, files=listed)
+            elif branch:
+                short_commit = commit[:10] if commit else ""
+                told = texts.TREE_LANDED_BRANCH.format(branch=branch, commit=short_commit, files=rendered_files)
+                shown = words["branch"].format(branch=branch, commit=short_commit, files=listed)
+            else:
+                told = texts.TREE_LANDED.format(project=row.project_dir, files=rendered_files)
+                shown = words["landed"].format(files=listed)
         if outside:
             told += texts.TREE_LANDED_OUTSIDE.format(files=names_text(outside, most, third))
             shown += words["outside"].format(files=", ".join(outside[:most]))
@@ -1814,7 +1893,7 @@ class TreeWork:
             self._trees_in_hand.discard(tree_id)
             self._decided_for.pop(tree_id, None)
 
-    async def land_tree(self, tree_id: str) -> dict[str, Any]:
+    async def land_tree(self, tree_id: str, *, landing: Any = None) -> dict[str, Any]:
         """Land a worktree the user decides on, as the user asks: once more, or for the first time where the user is asked first.
 
         Merged by the host; no model is asked. Returns ``{"status",
@@ -1856,7 +1935,7 @@ class TreeWork:
                         raise ValueError("busy")
                     if moved:
                         raise ValueError("moved")
-                result = await self._merge_or_markers(row, handle)
+                result = await self._merge_or_markers(row, handle, landing=landing)
             except BaseException:
                 await asyncio.shield(self._ledger.update_tree(row.id, state=was.state, rounds=was.rounds, checks=was.checks))
                 raise
@@ -1885,6 +1964,16 @@ class TreeWork:
         answer: dict[str, Any] = {
             "status": result.status, "files": [], "more": 0, "conflicts": [], "resolving": False, "detail": result.detail,
         }
+        if getattr(result, "branch", ""):
+            answer["branch"] = result.branch
+        if getattr(result, "commit", ""):
+            answer["commit"] = result.commit
+        if getattr(result, "remote", ""):
+            answer["remote"] = result.remote
+        if getattr(result, "pr_url", ""):
+            answer["pr_url"] = result.pr_url
+        if getattr(result, "pr_number", None) is not None:
+            answer["pr_number"] = result.pr_number
         if result.status in ("landed", "unchanged"):
             files, more = files_of(result.files, settings.TREE_FILES_LISTED)
             outside = outside_of(result.files, getattr(handle, "subpath", ""))
@@ -1904,11 +1993,22 @@ class TreeWork:
             # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
             commission = await self._ledger.get(row.commission_id) if row.commission_id else None
             if commission is not None and commission.status == "blocked" and self._stuck_over(row, commission):
-                text = (
-                    texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
-                    if files
-                    else texts.TREE_LANDED_LATER_NOTHING
-                )
+                if getattr(result, "pr_url", "") and files:
+                    text = texts.TREE_LANDED_PR.format(
+                        branch=result.branch,
+                        pr_url=result.pr_url,
+                        files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
+                    )
+                elif getattr(result, "branch", "") and files:
+                    text = texts.TREE_LANDED_BRANCH.format(
+                        branch=result.branch,
+                        commit=(result.commit or "")[:10],
+                        files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
+                    )
+                elif files:
+                    text = texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
+                else:
+                    text = texts.TREE_LANDED_LATER_NOTHING
                 moved = await self._ledger.transition(
                     commission.id, "working", reason="the user had what it changed landed", only_from=("blocked",)
                 )
@@ -2252,13 +2352,25 @@ class TreeWork:
         from utils.tokenize import truncate_to_tokens
 
         what = "\n".join(part for part in (commission.title, commission.dispatch_text) if part)
+        handle = self._tree_handles.get(row.id)
+        linked = getattr(handle, "linked_dependencies", ()) or ()
+        linked_note = texts.TREE_CHECK_LINKED_DEPS.format(deps=", ".join(linked)) if linked else ""
+        if getattr(handle, "kind", "git") == "copy":
+            check_brief = texts.TREE_COPY_CHECK_BRIEF.format(
+                project=row.project_dir,
+                linked=linked_note,
+                what=truncate_to_tokens(what, settings.INSPECTION_BRIEF_MAX_TOKENS),
+            )
+        else:
+            check_brief = texts.TREE_CHECK_BRIEF.format(
+                linked=linked_note,
+                what=truncate_to_tokens(what, settings.INSPECTION_BRIEF_MAX_TOKENS),
+            )
         try:
             child, _created = await self._ledger.create(
                 lanlan_name=commission.lanlan_name,
                 title=texts.TREE_CHECK_TITLE.format(title=commission.title),
-                dispatch_text=texts.TREE_CHECK_BRIEF.format(
-                    what=truncate_to_tokens(what, settings.INSPECTION_BRIEF_MAX_TOKENS)
-                ),
+                dispatch_text=check_brief,
                 user_text=commission.user_text,
                 source="task_agent",
                 route="task_agent",

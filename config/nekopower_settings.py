@@ -1023,6 +1023,40 @@ be gone after it and every process it started were killed. Its lock on the
 repository is held meanwhile, so this is short; past it the process is left
 behind and the host goes on."""
 
+WORKTREE_PR_TIMEOUT_SECONDS = 120.0
+"""How long remote git operations (fetching a remote default branch, pushing a
+delivery branch) and pull-request creation (``gh pr create``) may take before
+they are timed out."""
+
+WORKTREE_DEPENDENCY_LINK_ENABLED = True
+"""Whether a newly created worktree or non-git working copy links ignored
+dependency directories (``WORKTREE_DEPENDENCY_DIRS``) from the project
+directory so checks and inspectors can run without reinstalling dependencies."""
+
+WORKTREE_DEPENDENCY_DIRS: tuple[str, ...] = (
+    "node_modules",
+    ".venv",
+    "venv",
+    ".conda",
+    "vendor",
+)
+"""Directory names treated as installed dependencies eligible to be linked into
+a working copy (Windows junctions / POSIX symlinks). In git repositories only
+git-ignored directories of these names are linked; tracked directories are left
+alone. Mutable build/test caches and secret files are intentionally excluded."""
+
+WORKTREE_DEPENDENCY_LINK_MAX = 64
+"""Maximum number of dependency directories linked into a single working copy."""
+
+WORKTREE_COPY_MAX_FILES = 20_000
+"""Maximum number of copyable files in a non-git project directory before
+copy-based parallel working copies are refused."""
+
+WORKTREE_COPY_MAX_BYTES = 512 * 1024 * 1024
+"""Maximum total size of copyable files (excluding linked dependency
+directories and files over ``WORKTREE_UNTRACKED_MAX_BYTES``) in a non-git
+project directory before copy-based parallel working copies are refused."""
+
 # ---------------------------------------------------------------------------
 # Sessions writing to one another, and being woken
 # ---------------------------------------------------------------------------

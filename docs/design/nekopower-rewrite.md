@@ -3417,3 +3417,44 @@ CodeRabbit 在 17.17 那个 PR（#4119）的第 6 轮指出两处叫停没收干
    - 一个成员停不下、关不掉，不耽误其余成员和老大自己（拿掉它留着的东西、关它的会话），最后把第一个错抛出去；查它开的成员时台账读不出来，老大自己也照样收尾、再抛错；在办的成员在查到以后、写「已取消」之前刚好办完的（写入被拒），不关它的会话（owner 自动评审第 1 轮）（CodeRabbit 第 1 轮：上一条把已取消的成员也算进来以后，一个早先单独叫停、一直关不掉的成员，会让第一次叫停老大时就关不上老大；以前是一个成员关失败就停在那里）。
    - Esc（`/builtin/stop`）逐组叫停，一组停不下（比如已取消、使魔关不掉还占着键鼠组）只记日志、不算停下，不耽误后面的组；回答的格式不变（owner 自动评审第 1 轮：上面这条让再叫停也会抛错，原来这里一组抛错整个请求就是 500、后面的组都不停，而且只要它一直关不掉，每次按 Esc 都这样）。看板的「停止」照旧把错报出来。
    - 实测（测试用的运行时）：成员的会话关失败一次时，看板报错，两件都是「已取消」，老大的会话照样关掉（以前留着没关的是老大：成员的错误在关老大之前就抛出来了）；成员的委托取消以后很快自己退出；再叫停老大一次，不再报错。
+
+### 17.19 落地说明（工作副本：远端默认分支起点、分支 / PR 交付、依赖链接与非 git 目录并行写）
+
+补齐 17.8 留下的四块缺口：远端默认分支起点（`RemoteDefaultBranch`）、分支提交与 PR 交付（`BranchCommit` / `PullRequest`）、被忽略依赖目录链接进工作副本，以及非 git 目录下的隔离副本并行写。纯本地实现在 `nekopower/host/_copy_trees.py`（目录链接、纯 Python 三方文本合并、非 git 副本元数据与原子回滚），主入口仍在 `nekopower/host/worktrees.py`，宿主与控制台接线在 `nekopower/host/tree_work.py`、`nekopower/host/service.py` 和 `app/agent_server/api_console.py`。不增加任何模型请求。
+
+**1. 远端默认分支起点（`RemoteDefaultBranch`）**
+
+- `Start` 新增子类 `RemoteDefaultBranch(remote="origin", branch=None, fetch=True)`；`WorktreeManager.remote_default_branch(...)` 可单独查询远端默认分支。
+- 发现顺序：`fetch=True` 时先 `git ls-remote --symref -- <remote> HEAD` 读 `ref: refs/heads/<branch>`（失败或仅查本地时回退 `refs/remotes/<remote>/HEAD`）。
+- 拉取用隔离临时引用：`git fetch --no-tags --no-write-fetch-head --refmap= --quiet -- <remote> +refs/heads/<branch>:refs/nekopower/fetch/<随机>`，解析出提交后在 `finally` 中删除临时引用——不改用户本地 `refs/remotes/*`、分支、索引和工作区；同样过子模块、内容过滤器和合并驱动检查。
+
+**2. 分支提交与 PR 交付（`BranchCommit`、`PullRequest`）**
+
+- `Landing` 新增 `BranchCommit(branch="", message="", remote=None, base_branch=None)` 与 `PullRequest(title="", body="", branch="", base_branch=None, remote="origin", draft=True, commit_message="", create_pr=None)`，接口为 `WorktreeManager.merge_back(handle, landing)`，返回扩展后的 `MergeResult`（新增 `branch` / `commit` / `remote` / `pr_url` / `pr_number`）。
+- 安全约束：校验分支名（`git check-ref-format --branch`），拒绝 `main` / `master`、仓库默认分支、任一 worktree 已检出的分支，以及非本工作副本创建的既有分支（在 git worktree admin 目录下 `nekopower-delivery.json` 记录本副本曾交付过的分支和 PR 信息）。
+- 续推与合并：同一工作副本再次交付到自己建过的分支时，若分支尖端等于当前起点则直接提交推进，若分支另有新提交则走无工作区 `git merge-tree --write-tree --merge-base` 三方合并；有冲突直接返回 `conflict`，不触碰用户工作区。
+- 推送与回滚：配置 `remote` 时执行 `git push --no-verify -- <remote> <ref>:<ref>`（绝不 force push）；推送失败则按 CAS 回滚刚更新的本地分支引用。
+- PR 创建：默认草稿 PR（`draft=True`），先委托 `BranchCommit` 提交并推送；若传入可注入回调 `create_pr(PRRequest) -> PRInfo` 则走回调，否则调用 `gh pr create --body-file -`（超时 `WORKTREE_PR_TIMEOUT_SECONDS = 120` 秒，解析输出中的 PR URL 与编号）。对已有 PR 的后续推送直接复用已记录的 PR，不重复建 PR；上次推送成功但 PR 接口失败时，再次调用可跳过提交直接重试建 PR。
+- 宿主与路由：`TreeWork.land_tree`、`NekoPowerHost.land_worktree` 接收可选 `landing`；交付到分支 / PR 时跳过 `_quiet_in` 与 `_tell_beside`（不写项目工作文件）。`POST /console/worktrees/{tree_id}/land` 接收可选 JSON 体 `{"strategy": "working_files" | "branch" | "pr", ...}`（非法参数回 `400 bad_landing`；无请求体时与既有行为完全一致）。
+
+**3. 依赖目录链接（`WORKTREE_DEPENDENCY_*`）**
+
+- 配置项在 `config/nekopower_settings.py`：`WORKTREE_DEPENDENCY_LINK_ENABLED = True`、`WORKTREE_DEPENDENCY_DIRS = ("node_modules", ".venv", "venv", ".conda", "vendor")`、`WORKTREE_DEPENDENCY_LINK_MAX = 64`。
+- 发现方式：git 仓库用 `git ls-files -z --others --ignored --exclude-standard --directory --no-empty-directory` 一次找出根级和 monorepo 子目录下的被忽略依赖目录（受版本控制的如已跟踪 `vendor/` 不会被误链）；非 git 副本在扫描目录树时匹配同名目录并直接跳过不复制。
+- 链接机制：Windows 使用标准库 `_winapi.CreateJunction`（无需管理员或开发者模式，路径不带 `\\?\` 前缀以免生成坏联接点）；POSIX 使用 `os.symlink(..., target_is_directory=True)`。实际建出的链接列表写入副本元数据（git 侧 `nekopower-links.json`，非 git 侧 `meta.json`），带在 `Worktree.linked_dependencies` 上。
+- 快照与冲突隔离：拍快照（`_snapshot`）自动忽略已链接的依赖目录（Windows 上被 `.gitignore` 忽略的联接点不传重复 exclude pathspec；POSIX 上对带尾斜杠规则未忽略的符号链接通过 `:(exclude,literal,top)` 排除）；`prepare_conflicts` 先摘除链接再检出冲突树，结束后再重建链接。
+- 安全删除：`remove_tree_safe` 先自顶向下遍历并仅摘除所有目录联接 / 符号链接（Windows 检查 `IO_REPARSE_TAG_MOUNT_POINT` / `IO_REPARSE_TAG_SYMLINK`，忽略云盘重解析点），确认摘除后再 `shutil.rmtree`，保证删除副本时绝不删除项目目录中的真实依赖。
+- 提示词同步：有实际链接的依赖时，在开工提示（`TASK_AGENT_TREE_LINKED_DEPS`）和监工猫验收简报（`TREE_CHECK_LINKED_DEPS`）中附一句已只读链接的目录名；无链接时不附加（不引入多余的 `"node_modules"` 字样）。
+
+**4. 非 git 目录并行写（`kind="copy"`）**
+
+- `WorktreeManager(allow_non_git=True)`（默认开启，`probe(..., allow_non_git=False)` 可按需关闭）：对非 git 普通目录、`git` 缺失或版本过旧时的非 git 目录，探测返回 `usable=True, kind="copy", repo_root=None`（`families.in_git` 按 `repo_root is not None` 判断，行为不变）；空/不存在目录、超过上限（`WORKTREE_COPY_MAX_FILES = 20_000` 或 `WORKTREE_COPY_MAX_BYTES = 512 MiB`）返回 `directory_too_large` 不可用；裸仓库和 `.git` 内部目录仍明确拒绝。
+- 存储与隔离：元数据、基线快照和备份全部放在副本目录同级 `<copies_base>/.nekopower-copies/<id>/` 下，**不往用户项目目录写入任何元数据文件**；创建时忽略 `.git`、已链接的依赖目录和单文件超过 20 MiB 的大文件。
+- 合回与冲突：`merge_back`（仅支持 `WorkingFiles`；`BranchCommit` / `PullRequest` 及 `FromRef` / `RemoteDefaultBranch` 对非 git 目录明确拒绝）对文本文件做纯 Python diff3 三方合并，二进制文件按内容字节比对；冲突时项目目录零修改，返回 `conflict`，`prepare_conflicts` 将 `<<<<<<< project` / `=======` / `>>>>>>> worktree` 冲突标记写入副本供使魔解决；应用前先备份原文件，写入后逐文件读回校验，任一步失败或被取消则原样回滚；替换空目录时仅用 `os.rmdir`，绝不误删非空用户目录。
+- 生命周期：支持 `open`、`has_changes`、`remove`（校验目录身份 `(dev, ino, birth)`，Linux 无创建时间时回退 `(dev, ino)`）、`reconcile` 以及 `TreeWork` 下的并行成员、组队与监工猫验收（`TASK_AGENT_IN_COPY` / `TREE_COPY_CHECK_BRIEF`）。
+
+**已知边界**
+
+- 链接进副本的依赖目录与项目目录共享同一份磁盘内容：副本里只读运行检查（pytest / eslint / tsc）不受影响，但若在副本里执行 `npm install` / `pip install` 会直接改到项目目录的依赖；提示词已明确告知只读勿改。
+- 非 git 副本的基线快照存副本目录旁 `.nekopower-copies/<id>/baseline/`，大项目会多占一份文本基线磁盘空间，且受 `WORKTREE_COPY_MAX_FILES`（20,000）与 `WORKTREE_COPY_MAX_BYTES`（512 MiB）限制，超限退回单写者排队。
+- `PullRequest` 未传 `create_pr` 回调时依赖本机已安装并登录 `gh` CLI；未安装或未登录时返回 `failed` 并在 `detail` 中说明原因（分支已推送后重试不会重复提交）。

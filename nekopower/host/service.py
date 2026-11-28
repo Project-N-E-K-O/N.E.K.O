@@ -1641,10 +1641,12 @@ class NekoPowerHost:
         self._first_use()
         return await self.task_agents.trees_view(project=project, lanlan_name=lanlan_name)
 
-    async def land_worktree(self, tree_id: str) -> dict[str, Any]:
-        """Merge what a git worktree holds into its project's directory, as the user asks; see ``TreeWork.land_tree``."""
+    async def land_worktree(self, tree_id: str, *, landing: Any = None) -> dict[str, Any]:
+        """Merge what a git worktree holds into its project's directory (or deliver via ``landing``), as the user asks; see ``TreeWork.land_tree``."""
         self._first_use()
-        return await self.task_agents.land_tree(tree_id)
+        if landing is None:
+            return await self.task_agents.land_tree(tree_id)
+        return await self.task_agents.land_tree(tree_id, landing=landing)
 
     async def discard_worktree(self, tree_id: str) -> dict[str, Any]:
         """Remove a git worktree with what it holds, as the user asks; see ``TreeWork.discard_tree``."""

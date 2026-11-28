@@ -43,7 +43,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -1000,11 +1000,63 @@ def build_console_router(
         return {"success": True, "worktrees": await host.worktrees(project)}
 
     @router.post("/worktrees/{tree_id}/land")
-    async def land_worktree(tree_id: str) -> dict[str, Any]:
-        """Merge what a worktree holds into its project's directory: once more, or for the first time where the user is asked first."""
+    async def land_worktree(tree_id: str, payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+        """Land what a worktree holds: working files by default, or onto a branch / pull request when requested."""
+        landing: Any = None
+        if payload:
+            strategy = payload.get("strategy", "working_files")
+            if strategy in (None, "", "working_files"):
+                landing = None
+            elif strategy == "branch":
+                from nekopower.host.worktrees import BranchCommit
+
+                branch = payload.get("branch", "")
+                message = payload.get("message", "")
+                remote = payload.get("remote")
+                base_branch = payload.get("base_branch")
+                if (
+                    not isinstance(branch, str)
+                    or not isinstance(message, str)
+                    or (remote is not None and not isinstance(remote, str))
+                    or (base_branch is not None and not isinstance(base_branch, str))
+                ):
+                    raise _refuse(400, "bad_landing")
+                landing = BranchCommit(branch=branch, message=message, remote=remote, base_branch=base_branch)
+            elif strategy == "pr":
+                from nekopower.host.worktrees import PullRequest
+
+                title = payload.get("title", "")
+                body = payload.get("body", "")
+                branch = payload.get("branch", "")
+                base_branch = payload.get("base_branch")
+                remote = payload.get("remote", "origin")
+                draft = payload.get("draft", True)
+                commit_message = payload.get("commit_message", "")
+                if (
+                    not isinstance(title, str)
+                    or not title.strip()
+                    or not isinstance(body, str)
+                    or not isinstance(branch, str)
+                    or (base_branch is not None and not isinstance(base_branch, str))
+                    or not isinstance(remote, str)
+                    or not isinstance(draft, bool)
+                    or not isinstance(commit_message, str)
+                ):
+                    raise _refuse(400, "bad_landing")
+                landing = PullRequest(
+                    title=title,
+                    body=body,
+                    branch=branch,
+                    base_branch=base_branch,
+                    remote=remote,
+                    draft=draft,
+                    commit_message=commit_message,
+                )
+            else:
+                raise _refuse(400, "bad_landing")
         host = await get_host()
         try:
-            landed = await host.land_worktree(tree_id)
+            landed = await (host.land_worktree(tree_id, landing=landing) if landing is not None else host.land_worktree(tree_id))
         except (LookupError, ValueError) as exc:
             raise tree_refused(exc) from None
         return {"success": True, **landed}
