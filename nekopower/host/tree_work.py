@@ -2622,7 +2622,7 @@ class TreeWork:
         return {str(k): str(v) for k, v in raw.items() if isinstance(k, str) and v in valid}
 
     async def _record_pending_expired_tree(
-        self, tree_id: str, outcome_kind: str, *, raise_on_error: bool = False
+        self, tree_id: str, outcome_kind: str, *, raise_on_error: bool = True
     ) -> bool:
         """Persist a pending expiry intent or outcome in space state under ``_pending_expiry_lock``."""
         space = getattr(self, "_space", None)
@@ -2652,7 +2652,7 @@ class TreeWork:
             return
         async with self._pending_expiry_lock:
             try:
-                current = await self._read_pending_expired_trees()
+                current = await self._read_pending_expired_trees(raise_on_error=True)
                 changed = False
                 for tid in tree_ids:
                     if tid in current:

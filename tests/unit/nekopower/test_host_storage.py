@@ -3689,5 +3689,18 @@ async def test_round16_codex_and_greptile_fixes(tmp_path: Path, monkeypatch: pyt
         assert ov_over["transcripts"]["expired_count"] >= 2
         assert ov_over["transcripts"]["outputs_count"] >= 2
         assert ov_over["transcripts"]["bytes_whole"] is False
+
+        # 3. _record_pending_expired_tree() uses strict reads by default so read failures never overwrite existing markers.
+        assert await host.task_agents._record_pending_expired_tree("keep_other", "expiring") is True
+
+        async def fail_read_state() -> dict[str, Any]:
+            raise OSError("transient read error")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.space, "read_state", fail_read_state)
+            assert await host.task_agents._record_pending_expired_tree("new_tree", "removed") is False
+        persisted = await host.task_agents._read_pending_expired_trees()
+        assert persisted.get("keep_other") == "expiring"
+        assert "new_tree" not in persisted
     finally:
         await host.shutdown()

@@ -2313,7 +2313,10 @@ class StorageManager:
     @staticmethod
     def _find_session_work_dirs(projects_root: Path) -> list[tuple[str, str]]:
         """Blocking: list ``(project, session_id)`` pairs whose ``work/`` directory exists."""
-        if not projects_root.is_dir() or _is_reparse_link(projects_root):
+        try:
+            if not projects_root.is_dir() or _is_reparse_link(projects_root):
+                return []
+        except OSError:
             return []
         found: list[tuple[str, str]] = []
         try:
@@ -2330,7 +2333,10 @@ class StorageManager:
                     except (OSError, ValueError):
                         continue
                     sessions_dir = proj_path / "sessions"
-                    if not sessions_dir.is_dir() or _is_reparse_link(sessions_dir):
+                    try:
+                        if not sessions_dir.is_dir() or _is_reparse_link(sessions_dir):
+                            continue
+                    except OSError:
                         continue
                     try:
                         with os.scandir(_fs(sessions_dir)) as sess_entries:
@@ -2346,8 +2352,11 @@ class StorageManager:
                                 except (OSError, ValueError):
                                     continue
                                 work_path = sess_path / _WORK_NAME
-                                if work_path.is_dir() and not _is_reparse_link(work_path):
-                                    found.append((proj_name, sess_id))
+                                try:
+                                    if work_path.is_dir() and not _is_reparse_link(work_path):
+                                        found.append((proj_name, sess_id))
+                                except OSError:
+                                    continue
                     except OSError:
                         continue
         except OSError:
