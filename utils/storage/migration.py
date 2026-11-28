@@ -135,6 +135,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "pngtuber",
     "emote_templates",
     "watch_together",
+    # Theme Studio: the palette, the user's theme library, uploaded chat
+    # backgrounds and the time-of-day schedule. User data, moved as a whole.
+    "theme_studio",
     # Downloaded models (RapidOCR runtimes, memory embedding models): moved
     # so they keep working at the new root without downloading them again.
     "runtimes",

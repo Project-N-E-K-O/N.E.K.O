@@ -33,6 +33,9 @@
     {% if not card_maker_embed %}
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <!-- 主题工坊（本体内置）：界面主题加载器。只读 /api/theme_studio/theme.json。 -->
+    {% if theme_loader_css_version is defined %}<link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>{% endif %}
     <script src="/static/theme-manager.js"></script>
     <script src="/static/js/window_controls.js" defer></script>
     {% endif %}

@@ -49,7 +49,7 @@ from app.monitor_auth import (
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
@@ -104,6 +104,9 @@ def _viewer_static_assets_ctx():
             continue
     version = f"{APP_VERSION}-{latest_mtime or 0}"
     _STATIC_ASSET_VERSION_CACHE = (now, version)
+    # No theme loader versions here on purpose: the monitor process does not
+    # serve /api/theme_studio, so templates skip the Theme Studio loader when
+    # ``theme_loader_css_version`` is absent from the context.
     return {"static_asset_version": version}
 
 
@@ -187,8 +190,13 @@ def _mount_model_roots(target_app, workshop_path, user_mod_path):
 _mount_model_roots(app, get_default_workshop_folder(), _config_manager.get_workshop_path())
 
 @app.get("/subtitle")
-async def get_subtitle():
-    return FileResponse(get_resource_path('templates/subtitle.html'))
+async def get_subtitle(request: Request):
+    # subtitle.html carries Jinja markup (the main server renders it), so it must
+    # be rendered here too instead of being sent raw.
+    return templates.TemplateResponse(request, "templates/subtitle.html", {
+        "request": request,
+        **_viewer_static_assets_ctx(),
+    })
 
 @app.get("/api/config/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):

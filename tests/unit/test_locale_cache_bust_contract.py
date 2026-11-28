@@ -66,6 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-28-nekopower-no-capability-removed",
+        "2026-11-26-theme-studio-ask-badge-merge",
         "2026-11-27-knowledge-nekopower-hints-merge",
         "2026-11-26-knowledge-audio-message-merge",
         "2026-11-26-nekopower-half-on-hints",
@@ -77,13 +79,20 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-25-sync-channel-status",
         "2026-11-25-chat-audio-message-glue",
         "2026-11-25-chat-audio-ui-main-merge",
+        "2026-11-25-theme-studio-bailian-merge",
+        "2026-11-25-theme-studio-backup-skipped-images",
+        "2026-11-25-theme-studio-panel-i18n",
+        "2026-11-25-theme-studio-subscriptions-merge",
+        "2026-11-25-theme-studio-chat-audio-merge",
+        "2026-11-26-theme-studio-audio-glue-merge",
+        "2026-11-26-theme-studio-devkit-port",
+        "2026-11-26-compact-ball-ask-badge",
+        "2026-11-25-chat-audio-message-glue",
         "2026-11-25-chat-audio-ui-only",
         "2026-11-25-bailian-api-host",
         "2026-11-25-chat-audio-main-merge-2",
         "2026-11-25-chat-audio-main-merge",
-        "2026-11-25-subscriptions-panel",
         "2026-11-16-chat-audio-expired",
-        "2026-11-25-qwen-token-plan-tts-main-merge",
         "2026-11-15-chat-audio-independent-asr",
         "2026-11-15-chat-audio-main-rebase-4",
         "2026-11-15-chat-audio-main-rebase-3",
@@ -92,6 +101,10 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-14-chat-audio-theater-nekoclaw-manual-unavailable",
         "2026-11-15-chat-audio-main-rebase-1",
         "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
+        "2026-11-25-subscriptions-panel",
+        "2026-11-25-theme-studio-main-merge",
+        "2026-11-25-qwen-token-plan-tts-main-merge",
+        "2026-11-24-theme-studio-menu",
         "2026-11-25-knowledge-subscriptions-merge",
         "2026-11-25-knowledge-qwen-main-merge",
         "2026-11-24-knowledge-emote-theater-merge",
@@ -698,7 +711,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "4b01574784489f9509b58a6d0f067d2805b6e5841aa31725c0581e284937f3f0"
+LOCALE_KEY_SIGNATURE = "3b8510311c2f2ea56ada0901a2e4ccdcf160df6cd78330343547189c56806080"
 
 
 _BUMP_INSTRUCTIONS = (

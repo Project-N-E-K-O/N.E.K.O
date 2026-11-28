@@ -179,6 +179,9 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     "config/characters",
     "config/changelog",
     "config/surveys",
+    # Theme Studio built-in presets (JSON + preview images), bundled via
+    # --include-data-dir=theme_studio/presets.
+    "theme_studio/presets",
     "data/tiktoken_cache",
     "data/embedding_models",
     # Not all of docs/ — the build packs exactly one subtree

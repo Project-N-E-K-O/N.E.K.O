@@ -3,6 +3,10 @@
 <title>Watch together</title>
 <link rel="stylesheet" href="/static/game/games/watch-together/watch-together.css?v={{ static_asset_version }}">
 <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+    {% if theme_loader_css_version is defined %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
+    {% endif %}
 </head><body>
 <main class="wt">
 <header class="topbar">

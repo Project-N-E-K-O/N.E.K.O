@@ -160,6 +160,7 @@ packages = [
   # Includes services.knowledge; legacy corpora remain excluded below.
   "services",
   "steamworks",
+  "theme_studio",
   "utils",
 ]
 exclude = [
@@ -194,6 +195,7 @@ include = [
   # Includes services.knowledge; legacy corpora remain excluded below.
   "services",
   "steamworks",
+  "theme_studio",
   "utils",
   "static",
   "templates",

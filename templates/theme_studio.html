@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title data-i18n="themeStudio.page.title">主题工坊 - Project N.E.K.O.</title>
+  <meta name="nts-panel-version" content="1.0.6">
+  <!-- i18next loader (shared host i18n: data-i18n* attributes + window.t) -->
+  <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+  <!-- Shared async dialogs (showPrompt): window.prompt() is not available in Electron. -->
+  <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+  <link rel="stylesheet" href="/static/theme-studio/style.css?v={{ static_asset_version }}">
+  <link rel="stylesheet" href="/static/theme-studio/materials.css?v={{ static_asset_version }}">
+  <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+  <!-- Host panel shell: dark mode follows data-theme (written by theme-manager.js), not the system prefers-color-scheme;
+       theme_studio_shell.css must come after style.css -- it reskins the studio with the host palette. -->
+  <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+  <link rel="stylesheet" href="/static/css/theme_studio_shell.css?v={{ static_asset_version }}">
+  <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+  <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body class="theme-studio-page">
+  <div class="container">
+    <div class="container-header page-title-bar">
+      <div class="header-title-group">
+        <h2 data-text="主题工坊" data-i18n="themeStudio.page.header.title">主题工坊</h2>
+        <!-- Keep the version in sync in three places: asset metadata in theme_studio/service.py, the panel meta tag, and here -->
+        <span class="header-version version-tag" id="panel-version">本体内置 v1.0.6</span>
+      </div>
+      <div class="header-right">
+        <div class="meta-pills" aria-label="调色板信息" data-i18n-aria="themeStudio.page.header.paletteInfoAria">
+          <span class="pill" id="meta-name">默认</span>
+          <span class="pill" id="meta-updated">—</span>
+        </div>
+        <div class="neko-window-controls">
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+            <span class="neko-window-pin-icon" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+            <span class="neko-window-minimize-icon" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+            <span class="neko-window-maximize-icon" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="neko-window-control-btn close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+            <img src="/static/icons/close_button.png" alt="" draggable="false">
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="container-content">
+      <div class="app">
+
+    <!-- v0.4.18: first-use hint. Hidden by default; app.js decides via localStorage whether to show it,
+         so after "Got it" it doesn't flash in and then disappear. -->
+    <p class="panel-hint" id="restart-hint" hidden>
+      <span class="panel-hint-text" data-i18n="themeStudio.page.restartHint.text">第一次使用（或刚更新过本体）请重启一次 N.E.K.O 窗口 —— 主题才会在聊天界面里生效。</span>
+      <button type="button" class="panel-hint-close" id="restart-hint-close" data-i18n="themeStudio.page.restartHint.dismiss">知道了，不再提示</button>
+    </p>
+
+    <section class="toolbar" aria-label="工具栏" data-i18n-aria="themeStudio.page.toolbar.aria">
+      <div class="mode-switch" role="tablist" aria-label="明暗模式" data-i18n-aria="themeStudio.page.toolbar.modeAria">
+        <button type="button" class="mode-btn is-active" id="mode-light" data-mode="light" role="tab" aria-selected="true" aria-controls="groups" data-i18n="themeStudio.page.toolbar.light">亮色</button>
+        <button type="button" class="mode-btn" id="mode-dark" data-mode="dark" role="tab" aria-selected="false" aria-controls="groups" data-i18n="themeStudio.page.toolbar.dark">暗色</button>
+      </div>
+
+      <div class="search-field">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M7 1a6 6 0 1 1-3.67 10.75l-1.9 1.9a1 1 0 0 1-1.42-1.41l1.9-1.9A6 6 0 0 1 7 1Zm0 1.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z"/></svg>
+        <input type="search" id="row-search" placeholder="搜索变量、中文名或说明…" data-i18n-placeholder="themeStudio.page.toolbar.searchPlaceholder" autocomplete="off" spellcheck="false" aria-label="搜索变量" data-i18n-aria="themeStudio.page.toolbar.searchAria">
+        <button type="button" class="search-clear" id="search-clear" aria-label="清空搜索" title="清空搜索" data-i18n-aria="themeStudio.page.toolbar.searchClear" data-i18n-title="themeStudio.page.toolbar.searchClear" hidden></button>
+      </div>
+
+      <label class="check-field" title="只显示本次会话里改过或清空过的变量（含另一组）" data-i18n-title="themeStudio.page.toolbar.onlyDirtyTitle">
+        <input type="checkbox" id="only-dirty">
+        <span data-i18n="themeStudio.page.toolbar.onlyDirty">只看改动</span>
+      </label>
+
+      <button type="button" class="btn btn-ghost btn-sm catalog-collapse" id="btn-toggle-groups" aria-controls="groups" title="展开或收起所有变量分组（状态会记住）" data-i18n-title="themeStudio.page.toolbar.toggleGroupsTitle">全部收起</button>
+
+      <span class="toolbar-sep" aria-hidden="true"></span>
+
+      <label class="name-field">
+        <span data-i18n="themeStudio.page.toolbar.themeName">主题名</span>
+        <input type="text" id="theme-name" maxlength="60" placeholder="默认" data-i18n-placeholder="themeStudio.page.toolbar.themeNamePlaceholder" autocomplete="off">
+      </label>
+
+      <label class="switch" title="关闭后加载器不会向应用注入任何样式" data-i18n-title="themeStudio.page.toolbar.enabledTitle">
+        <input type="checkbox" id="theme-enabled" checked>
+        <span class="switch-track" aria-hidden="true"></span>
+        <span data-i18n="themeStudio.page.toolbar.enabled">启用</span>
+      </label>
+
+      <button type="button" class="btn btn-ghost btn-sm row-icon-btn" id="btn-undo" title="撤销上一次改动（Ctrl+Z）" aria-label="撤销" data-i18n-aria="themeStudio.page.toolbar.undo" disabled>↶</button>
+      <button type="button" class="btn btn-ghost btn-sm row-icon-btn" id="btn-redo" title="重做（Ctrl+Shift+Z / Ctrl+Y）" aria-label="重做" data-i18n-aria="themeStudio.page.toolbar.redo" disabled>↷</button>
+
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-revert-mode" title="丢弃本组尚未应用的改动" data-i18n-title="themeStudio.page.toolbar.revertModeTitle" data-i18n="themeStudio.page.toolbar.revertMode">还原本组</button>
+    </section>
+
+    <div class="layout">
+      <section class="editor-column" aria-label="变量编辑器" data-i18n-aria="themeStudio.page.editor.aria">
+        <div class="notice" id="notice" role="status" hidden>
+          <span class="notice-text" id="notice-text"></span>
+          <button type="button" class="notice-action" id="notice-action" hidden></button>
+          <button type="button" class="notice-close" id="notice-close" aria-label="关闭提示" data-i18n-aria="themeStudio.page.editor.closeNotice"></button>
+        </div>
+        <div id="materials-root"></div>
+
+      <div id="groups"></div>
+        <p class="no-match" id="no-match" hidden data-i18n="themeStudio.page.editor.noMatch">没有匹配的变量。换个关键词，或关掉「只看改动」。</p>
+        <p class="empty-hint" id="empty-hint">
+          所有行都留空时表示「使用 N.E.K.O 原生外观」，此状态下应用侧不会注入任何样式，视觉零变化。
+        </p>
+      </section>
+
+      <aside class="preview-column" aria-label="预览" data-i18n-aria="themeStudio.page.preview.aria">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.preview.title">实时预览</span>
+            <span class="pill pill-mini" id="preview-mode">亮色</span>
+          </div>
+          <div class="preview" id="preview">
+            <div class="pv-topbar" id="pv-topbar">
+              <span class="pv-dot" aria-hidden="true"></span>
+              <span class="pv-title">N.E.K.O</span>
+            </div>
+            <div class="pv-body" id="pv-body">
+              <div class="pv-line pv-line-user">
+                <div class="pv-bubble" id="pv-user"><div data-i18n="themeStudio.page.preview.userMessage">今晚想聊点什么？</div></div>
+              </div>
+              <div class="pv-line pv-line-ai">
+                <div class="pv-avatar" aria-hidden="true" data-i18n="themeStudio.page.preview.avatar">猫</div>
+                <div class="pv-bubble" id="pv-ai">
+                  <div data-i18n="themeStudio.page.preview.aiMessage">我正在听～要不要试试新的配色？</div>
+                  <div class="pv-link" id="pv-link" data-i18n="themeStudio.page.preview.link">这是一个链接</div>
+                </div>
+              </div>
+              <div class="pv-chip" id="pv-chip" data-i18n="themeStudio.page.preview.chip">推荐 chip</div>
+            </div>
+            <div class="pv-input-area" id="pv-input-area">
+              <div class="pv-input" id="pv-input" data-i18n="themeStudio.page.preview.inputPlaceholder">说点什么…</div>
+              <button type="button" class="pv-send" id="pv-send" tabindex="-1" aria-hidden="true" data-i18n="themeStudio.page.preview.send">发送</button>
+            </div>
+            <div class="pv-compare" id="pv-compare" hidden>
+              <div class="pv-compare-head">
+                <span data-i18n="themeStudio.page.preview.compareCurrent">当前</span>
+                <span class="pv-compare-arrow" aria-hidden="true">→</span>
+                <span data-i18n="themeStudio.page.preview.compareRehearsal">预演</span>
+              </div>
+              <div class="pv-compare-rows" id="pv-compare-rows"></div>
+            </div>
+          </div>
+          <p class="card-foot" data-i18n="themeStudio.page.preview.foot">预览用内联样式模拟本面板的编辑状态，实际效果以应用窗口为准。</p>
+        </div>
+
+        <section class="card health-card" aria-label="运行状态" data-i18n-aria="themeStudio.page.health.title">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.health.title">运行状态</span>
+            <button type="button" class="icon-btn" id="btn-health-refresh" aria-label="重新读取运行状态" title="重新读取" data-i18n-aria="themeStudio.page.health.refreshAria" data-i18n-title="themeStudio.page.health.refreshTitle">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5a5.5 5.5 0 0 1 4.9 3H11a.75.75 0 0 0 0 1.5h3.25A.75.75 0 0 0 15 6.25V3a.75.75 0 0 0-1.5 0v1.1A7 7 0 0 0 1.06 7.2a.75.75 0 1 0 1.49.2A5.5 5.5 0 0 1 8 2.5Zm6.45 6.1a.75.75 0 0 1 .59.87A7 7 0 0 1 2.5 11.9V13a.75.75 0 0 1-1.5 0v-3.25a.75.75 0 0 1 .75-.75H5a.75.75 0 0 1 0 1.5H3.6a5.5 5.5 0 0 0 9.98-2.31.75.75 0 0 1 .87-.59Z"/></svg>
+            </button>
+          </div>
+          <p class="health-line" id="health-state">正在读取…</p>
+          <ul class="health-list" id="health-list" role="list"></ul>
+          <div class="health-actions">
+            <button type="button" class="btn btn-sm" id="btn-status-copy" title="复制主题数据所在的目录，方便排查" data-i18n-title="themeStudio.page.health.copyDirTitle" data-i18n="themeStudio.page.health.copyDir">复制数据目录</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-help-open" title="查看常见问题" data-i18n-title="themeStudio.page.health.helpTitle" data-i18n="themeStudio.page.health.help">为什么没生效？</button>
+          </div>
+          <p class="card-foot"><span data-i18n="themeStudio.page.health.foot1">主题变量由聊天窗口里的加载器应用，这里能看到它最近一次上报的诊断。数据目录里放着 </span><code>theme.json</code><span data-i18n="themeStudio.page.health.foot2">（当前主题）、</span><code>themes/</code><span data-i18n="themeStudio.page.health.foot3">（主题仓库）与 </span><code>backgrounds/</code><span data-i18n="themeStudio.page.health.foot4">（背景图）。</span></p>
+        </section>
+
+        <section class="card audit-card" aria-label="可读性自检" data-i18n-aria="themeStudio.page.audit.title">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.audit.title">可读性自检</span>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-audit-fix" title="把所有低于阈值的文字色自动调到刚好达标（只填值，点「应用」才生效）" data-i18n-title="themeStudio.page.audit.fixAllTitle" data-i18n="themeStudio.page.audit.fixAll">全部自动修正</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-audit" title="按 WCAG 阈值重新扫一遍当前配色" data-i18n-title="themeStudio.page.audit.recheckTitle" data-i18n="themeStudio.page.audit.recheck">重新检查</button>
+          </div>
+          <ul class="audit-list" id="audit-list" role="list"></ul>
+          <p class="audit-summary" id="audit-summary" role="status" aria-live="polite" aria-atomic="true">正在检查配色对比度…</p>
+          <p class="card-foot" data-i18n="themeStudio.page.audit.foot">按 WCAG 2.1：正文需 ≥ 4.5:1，次要文字 / 占位符 / chip / 链接需 ≥ 3.0:1。点击条目跳到对应变量行；「自动修正」只填建议值，不会直接应用。</p>
+        </section>
+
+        <section class="card library-card" aria-label="主题仓库" data-i18n-aria="themeStudio.page.library.title">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.library.title">主题仓库</span>
+            <input type="search" class="lib-search" id="lib-search" placeholder="搜主题名 / 描述 / 标签" data-i18n-placeholder="themeStudio.page.library.searchPlaceholder" autocomplete="off" spellcheck="false" aria-label="搜索主题名、描述或标签" data-i18n-aria="themeStudio.page.library.searchAria">
+            <div class="card-tools">
+              <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-shuffle" title="随机换一套内置主题，不满意再点一次" data-i18n-title="themeStudio.page.library.shuffleTitle" data-i18n="themeStudio.page.library.shuffle">换个心情</button>
+              <button type="button" class="icon-btn" id="btn-lib-refresh" aria-label="刷新仓库列表" title="刷新列表" data-i18n-aria="themeStudio.page.library.refreshAria" data-i18n-title="themeStudio.page.library.refreshTitle">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5a5.5 5.5 0 0 1 4.9 3H11a.75.75 0 0 0 0 1.5h3.25A.75.75 0 0 0 15 6.25V3a.75.75 0 0 0-1.5 0v1.1A7 7 0 0 0 1.06 7.2a.75.75 0 1 0 1.49.2A5.5 5.5 0 0 1 8 2.5Zm6.45 6.1a.75.75 0 0 1 .59.87A7 7 0 0 1 2.5 11.9V13a.75.75 0 0 1-1.5 0v-3.25a.75.75 0 0 1 .75-.75H5a.75.75 0 0 1 0 1.5H3.6a5.5 5.5 0 0 0 9.98-2.31.75.75 0 0 1 .87-.59Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="lib-save-row">
+            <textarea id="lib-name" rows="1" maxlength="60" placeholder="保存为…（留空用当前名称）" data-i18n-placeholder="themeStudio.page.library.saveNamePlaceholder" aria-label="仓库条目名称" data-i18n-aria="themeStudio.page.library.saveNameAria"></textarea>
+            <button type="button" class="btn btn-sm" id="btn-lib-save" title="把当前调色板存成「自定义」主题" data-i18n-title="themeStudio.page.library.saveTitle" data-i18n="themeStudio.page.library.save">保存</button>
+          </div>
+          <div class="lib-save-note">
+            <textarea id="lib-note" rows="1" maxlength="120" placeholder="一句话简介（可留空）：这套主题想表达什么？分享时会一起带走" data-i18n-placeholder="themeStudio.page.library.notePlaceholder" aria-label="主题简介（会随分享包一起导出）" data-i18n-aria="themeStudio.page.library.noteAria"></textarea>
+          </div>
+          <div class="lib-actions-row" role="group" aria-label="主题库操作" data-i18n-aria="themeStudio.page.library.actionsAria">
+            <button type="button" class="btn btn-sm" id="btn-lib-import" title="导入别人分享的 .zip 主题包或 .json 主题文件，存进「自定义」" data-i18n-title="themeStudio.page.library.importTitle" data-i18n="themeStudio.page.library.import">导入</button>
+            <input type="file" id="lib-file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept=".zip,.theme,.json,application/zip,application/json">
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-backup" title="把「自定义」里的全部主题打包成一个 zip 存到桌面；换电脑或重装后整套拿回来" data-i18n-title="themeStudio.page.library.backupTitle" data-i18n="themeStudio.page.library.backup">备份全部</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-restore" title="从「备份全部」导出的 zip 里恢复主题库（只新增，不覆盖已有主题）" data-i18n-title="themeStudio.page.library.restoreTitle" data-i18n="themeStudio.page.library.restore">恢复备份</button>
+            <input type="file" id="lib-backup-file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept=".zip,application/zip">
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-wallpaper" title="选一张壁纸，按它的主色自动生成一整套亮色/暗色配色（只填到面板，点「应用」才生效）" data-i18n-title="themeStudio.page.library.wallpaperTitle" data-i18n="themeStudio.page.library.wallpaper">壁纸配色</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-variants" title="在当前配色基础上换一种气质：更暖 / 更冷 / 更亮 / 更深（可 Ctrl+Z 撤销）" data-i18n-title="themeStudio.page.library.variantsTitle" data-i18n="themeStudio.page.library.variants">变体</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-random-tweak" title="在当前配色基础上随机做一点小幅度的色相 / 饱和度 / 明度调整（可 Ctrl+Z 撤销）" data-i18n-title="themeStudio.page.library.randomTweakTitle" data-i18n="themeStudio.page.library.randomTweak">随机微调</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-lib-select" aria-pressed="false" title="勾选多个自定义主题一起删除（会移进回收站）" data-i18n-title="themeStudio.page.library.selectTitle" data-i18n="themeStudio.page.library.select">多选</button>
+            <button type="button" class="btn btn-sm btn-danger" id="btn-lib-delete-selected" hidden data-i18n="themeStudio.page.library.deleteSelected">删除所选</button>
+            <input type="file" id="wallpaper-file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept="image/png,image/jpeg,image/webp,image/gif">
+          </div>
+          <div class="lib-family-tabs" id="lib-family-tabs" role="group" aria-label="按风格族筛选主题" data-i18n-aria="themeStudio.page.library.familyAria" hidden></div>
+          <div class="lib-filters" id="lib-filters" role="toolbar" aria-label="按标签筛选主题" data-i18n-aria="themeStudio.page.library.tagsAria" hidden></div>
+          <ul class="lib-list" id="lib-list" role="list"></ul>
+          <p class="lib-empty" id="lib-empty">仓库还是空的。调好配色后点「保存」存成自己的主题；别人分享的 .zip / .json 用「导入」收进来，之后随时切回来，也能「分享」成 zip 发给别人。</p>
+          <p class="card-foot"><span data-i18n="themeStudio.page.library.foot1">「分享」导出的 zip 里带 </span><code>theme.json</code><span data-i18n="themeStudio.page.library.foot2"> 和用到的背景图片，别人用「导入」就能一次拿走全套配色；只发 </span><code>theme.json</code><span data-i18n="themeStudio.page.library.foot3"> 单文件也能导入。收藏（☆）会排在「全部」最前面，分类里的「收藏」「自定义」可以只找自己关心的那几套。</span><br><span data-i18n="themeStudio.page.library.foot4">「备份全部」把「自定义」里的所有主题打成一个 zip（含背景图），换电脑或重装后用「恢复备份」选它即可 —— 只新增、不覆盖。</span></p>
+        </section>
+
+
+        <section class="card quick-card" aria-label="快捷调校" data-i18n-aria="themeStudio.page.quick.title">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.quick.title">快捷调校</span>
+          </div>
+          <div class="quick-row">
+            <span class="quick-label" data-i18n="themeStudio.page.quick.glow">光效强度</span>
+            <div class="quick-btns" role="group" aria-label="光效强度" data-i18n-aria="themeStudio.page.quick.glow">
+              <button type="button" class="btn btn-mini quick-btn" id="btn-glow-low" aria-pressed="false" data-i18n="themeStudio.page.quick.glowLow">低</button>
+              <button type="button" class="btn btn-mini quick-btn" id="btn-glow-medium" aria-pressed="false" data-i18n="themeStudio.page.quick.glowMedium">中</button>
+              <button type="button" class="btn btn-mini quick-btn" id="btn-glow-high" aria-pressed="false" data-i18n="themeStudio.page.quick.glowHigh">高</button>
+            </div>
+          </div>
+          <div class="quick-row">
+            <span class="quick-label" data-i18n="themeStudio.page.quick.font">字体</span>
+            <div class="quick-btns" role="group" aria-label="字体预设" data-i18n-aria="themeStudio.page.quick.fontAria">
+              <button type="button" class="btn btn-mini quick-btn" id="btn-font-system" aria-pressed="false" data-i18n="themeStudio.page.quick.fontSystem">系统默认</button>
+              <button type="button" class="btn btn-mini quick-btn" id="btn-font-sans" aria-pressed="false" data-i18n="themeStudio.page.quick.fontSans">无衬线</button>
+              <button type="button" class="btn btn-mini quick-btn" id="btn-font-mono" aria-pressed="false" data-i18n="themeStudio.page.quick.fontMono">等宽</button>
+            </div>
+          </div>
+          <p class="card-foot" data-i18n="themeStudio.page.quick.foot">这两组是「一键铺开」：只把一组变量填进编辑区，点「应用」才写进服务器；不满意按 Ctrl+Z 一步退回。</p>
+        </section>
+        <section class="card schedule-card" aria-label="按时段自动换主题" data-i18n-aria="themeStudio.page.schedule.title">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.schedule.title">按时段自动换主题</span>
+            <label class="switch schedule-switch">
+              <input type="checkbox" id="schedule-enabled">
+              <span class="switch-track" aria-hidden="true"></span>
+              <span data-i18n="themeStudio.page.schedule.enabled">启用</span>
+            </label>
+            <button type="button" class="btn btn-sm" id="btn-schedule-save" title="保存工作日与周末的时段选择；已启用时会立刻按当前时段换一次">保存</button>
+          </div>
+          <div class="schedule-rows" id="schedule-rows"></div>
+          <label class="schedule-weekend-toggle">
+            <input type="checkbox" id="schedule-weekend">
+            <span data-i18n="themeStudio.page.schedule.weekendToggle">周末（周六 / 周日）用另一套</span>
+          </label>
+          <div class="schedule-rows schedule-rows-weekend" id="schedule-rows-weekend" hidden></div>
+          <p class="schedule-now" id="schedule-now" role="status" aria-live="polite">正在读取…</p>
+          <p class="card-foot"><span data-i18n="themeStudio.page.schedule.foot1">到点由插件改写当前主题，所有窗口 1~2 秒内自动跟着变，不用重开应用。时段按</span><strong data-i18n="themeStudio.page.schedule.footLocalTime">本地时间</strong><span data-i18n="themeStudio.page.schedule.foot2">划分；某时段不选就保持当时正在用的主题不动。勾上「周末用另一套」可以让周六周日和平时不一样（不勾 = 沿用工作日那张表）。</span></p>
+        </section>
+        <section class="card changes-card" id="changes-card" aria-label="待应用的改动" data-i18n-aria="themeStudio.page.changes.title" hidden>
+          <div class="card-head">
+            <span class="card-title"><span data-i18n="themeStudio.page.changes.title">待应用的改动</span> <span class="changes-count" id="changes-count"></span></span>
+            <button type="button" class="btn btn-mini" id="btn-revert-all" title="把下面这些改动全部撤销（服务器上的配色不动）" data-i18n-title="themeStudio.page.changes.revertAllTitle" data-i18n="themeStudio.page.changes.revertAll">全部撤销</button>
+          </div>
+          <ul class="changes-list" id="changes-list"></ul>
+          <p class="card-foot" data-i18n="themeStudio.page.changes.foot">这些改动只在本面板里；点上面的「应用」才会写进服务器。单条「撤销」只回退这一行。</p>
+        </section>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title" data-i18n="themeStudio.page.dump.title">当前调色板</span>
+            <button type="button" class="btn btn-mini" id="btn-ai-prompt" title="把当前配色整理成一段提示词，复制给任意 AI 让它继续改" aria-label="复制给 AI 的提示词" data-i18n-title="themeStudio.page.dump.aiPromptTitle" data-i18n-aria="themeStudio.page.dump.aiPromptAria">AI</button>
+            <button type="button" class="btn btn-mini" id="btn-css-snippet" title="把当前配色导出成 CSS 变量片段" aria-label="导出 CSS 变量片段" data-i18n-title="themeStudio.page.dump.cssSnippetTitle" data-i18n-aria="themeStudio.page.dump.cssSnippetAria">CSS</button>
+            <button type="button" class="icon-btn" id="btn-toggle-dump" aria-expanded="true" aria-controls="dump-body" aria-label="折叠或展开调色板 JSON" data-i18n-aria="themeStudio.page.dump.toggleAria" title="折叠 / 展开 JSON">▾</button>
+            <button type="button" class="icon-btn" id="btn-copy-dump" aria-label="复制调色板 JSON" title="复制 JSON" data-i18n-aria="themeStudio.page.dump.copyAria" data-i18n-title="themeStudio.page.dump.copyTitle">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5 1a1 1 0 0 0-1 1v1H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1a1 1 0 0 0 1-1V4.6a1 1 0 0 0-.3-.7l-2.6-2.6a1 1 0 0 0-.7-.3H5Zm5.5 1.9L12.1 4.5H10.5V2.9ZM4 4h3a1 1 0 0 1 1 1v1h1a1 1 0 0 1 1 1v7H4V4Z"/></svg>
+            </button>
+          </div>
+          <div id="dump-body">
+            <pre class="dump" id="dump">{}</pre>
+            <p class="card-foot" id="dump-foot">服务器上已保存的值 + 本面板未应用的改动。</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="app-footer" aria-label="操作" data-i18n-aria="themeStudio.page.footer.aria">
+      <div class="footer-left">
+        <button type="button" class="btn btn-primary" id="btn-apply" data-busy="false">应用</button>
+        <button type="button" class="btn btn-danger" id="btn-reset" title="恢复内置默认主题，清空所有自定义颜色" data-i18n-title="themeStudio.page.footer.resetTitle" data-i18n="themeStudio.page.footer.reset">重置</button>
+        <span class="footer-sep" aria-hidden="true"></span>
+        <button type="button" class="btn" id="btn-export" data-i18n="themeStudio.page.footer.export">导出</button>
+        <button type="button" class="btn btn-ghost" id="btn-share-card" title="把已保存的当前主题生成一张 PNG 预览图并下载" data-i18n-title="themeStudio.page.footer.shareCardTitle" data-i18n="themeStudio.page.footer.shareCard">下载预览图</button>
+        <button type="button" class="btn" id="btn-import" data-i18n="themeStudio.page.footer.import">导入</button>
+        <button type="button" class="btn btn-ghost" id="btn-reload" data-i18n="themeStudio.page.footer.reload">重新读取</button>
+      </div>
+      <div class="footer-right">
+        <span class="footer-hint"><kbd>Ctrl</kbd><kbd>↵</kbd> <span data-i18n="themeStudio.page.footer.applyHint">应用</span></span>
+        <span class="footer-status" id="status" role="status" aria-live="polite">就绪</span>
+      </div>
+    </footer>
+      </div><!-- /.app -->
+    </div><!-- /.container-content -->
+  </div><!-- /.container -->
+
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-hint" hidden>
+    <div class="modal-panel" id="modal-panel">
+      <div class="modal-head">
+        <span id="modal-title">导入主题</span>
+        <button type="button" class="modal-close" id="modal-close" aria-label="关闭" data-i18n-aria="common.close">×</button>
+      </div>
+      <p class="modal-hint" id="modal-hint">粘贴调色板 JSON 文本。导入为整体替换，非法条目会被后端丢弃。</p>
+      <div class="modal-fields" id="modal-fields" style="display:none">
+        <label class="modal-field"><span data-i18n="themeStudio.page.modal.name">名称</span>
+          <input type="text" id="meta-name-field" maxlength="60" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="modal-field"><span data-i18n="themeStudio.page.modal.note">备注</span>
+          <input type="text" id="meta-note" maxlength="120" autocomplete="off" placeholder="一句话介绍这套配色，留空则清掉" data-i18n-placeholder="themeStudio.page.modal.notePlaceholder">
+        </label>
+        <label class="modal-field"><span data-i18n="themeStudio.page.modal.tags">标签</span>
+          <input type="text" id="meta-tags" maxlength="60" autocomplete="off" placeholder="用逗号分隔，最多 4 个（每个 12 字）" data-i18n-placeholder="themeStudio.page.modal.tagsPlaceholder">
+        </label>
+      </div>
+      <textarea id="modal-text" spellcheck="false" aria-label="调色板 JSON" data-i18n-aria="themeStudio.page.modal.textAria"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="modal-cancel" data-i18n="themeStudio.page.modal.cancel">取消</button>
+        <button type="button" class="btn btn-primary" id="modal-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/theme-studio/app.js?v={{ static_asset_version }}"></script>
+  <script src="/static/theme-studio/materials.js?v={{ static_asset_version }}"></script>
+</body>
+</html>

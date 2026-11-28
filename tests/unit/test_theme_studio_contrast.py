@@ -1,0 +1,180 @@
+"""Readability floors (WCAG contrast) for the built-in theme presets.
+
+A badly tuned palette never raises an error or drops a frame; the only symptom
+is a user quietly switching back to the default theme. ``theme_studio/contrast.py``
+defines the text/surface pairs (``PAIRS``, plus ``TEXT_GRADIENT_PAIRS`` for
+``--nts-text-gradient``), each composited the way the chat window paints it,
+and this module turns "every preset x light/dark x every pair" into a
+regression check that every change has to pass.
+
+When a pair fails, the usual cause is a text colour that was not adjusted
+together with its background: fix the text key in
+``theme_studio/presets/<id>.json`` (and its ``<id>-material.json`` twin). For
+a ``text-gradient-*`` row, adjust the gradient's colour stops (every stop must
+read on every bubble), or drop the gradient from that mode.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import pathlib
+
+import pytest
+
+from theme_studio import contrast
+
+PRESETS = pathlib.Path(__file__).resolve().parents[2] / "theme_studio" / "presets"
+
+
+def test_presets_dir_exists():
+    assert PRESETS.is_dir(), f"preset directory not found: {PRESETS}"
+    assert len(list(PRESETS.glob("*.json"))) >= 100
+
+
+def test_all_presets_meet_contrast_floors():
+    """Every preset, in both modes, passes every pair (``PAIRS`` and ``TEXT_GRADIENT_PAIRS``)."""
+    themes, fails, pair_checks = contrast.audit_dir(str(PRESETS))
+    assert pair_checks > 3000, f"too few pair checks ({pair_checks}); presets may not have loaded"
+    if fails:
+        details = "\n".join(
+            f"  {theme_id} [{mode}] {row['pair']}: {row['ratio']:.2f} < {row['floor']:.1f} ({row['fg']} / {row['bg']})"
+            for theme_id, mode, row in sorted(fails, key=lambda it: it[2]["ratio"])[:20]
+        )
+        pytest.fail(f"{len(fails)} failing pairs out of {pair_checks}:\n{details}")
+
+
+def test_audit_can_actually_fail():
+    """The floor has teeth: a link colour close to its surface must be reported."""
+    file_path = PRESETS / "arctic-glass-material.json"
+    doc = json.loads(file_path.read_text(encoding="utf-8-sig"))
+    broken = copy.deepcopy(doc)
+    broken.setdefault("vars", {})["--nts-link"] = "#eef2f4"
+
+    fails, pair_checks = contrast.failing([("broken", broken)])
+    assert pair_checks > 0
+    link_fails = [row for _, _, row in fails if row["pair"] == "link"]
+    assert link_fails, "a link colour close to its surface was not reported"
+    assert link_fails[0]["ratio"] < 1.5
+
+    # The original file must still pass, so the check is not just "already broken".
+    ok_fails, _ = contrast.failing([("original", doc)])
+    assert not [row for _, _, row in ok_fails if row["pair"] == "link"]
+
+
+def test_bubble_gradient_paints_above_bubble_colour():
+    """An opaque bubble gradient decides the surface, not the bubble colour below it."""
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#000000",
+        "--nts-user-bubble-gradient": "linear-gradient(135deg, #ffffff 0%, #ffffff 100%)",
+    }
+    assert contrast.resolve_surface(vars_map, contrast.USER_BUBBLE, "--nts-user-bubble-bg")[:3] == (255, 255, 255)
+
+
+def test_glass_tint_replaces_bubble_colour():
+    """``--nts-bubble-glass-tint`` replaces the bubble colour instead of stacking on it."""
+    vars_map = {
+        "--nts-chat-bg": "#000000",
+        "--nts-ai-bubble-bg": "#ffffff",
+        "--nts-bubble-glass-tint": "rgba(255, 255, 255, 0.2)",
+    }
+    surface = contrast.resolve_surface(vars_map, contrast.AI_BUBBLE, "--nts-ai-bubble-bg")
+    assert surface[:3] == (51, 51, 51)
+
+
+def test_compact_history_bubbles_ignore_the_glass_tint():
+    """Compact chat history keeps the plain bubble colour, so it is checked separately."""
+    vars_map = {
+        "--nts-chat-bg": "#000000",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-bubble-glass-tint": "rgba(0, 0, 0, 0.5)",
+    }
+    surface = contrast.resolve_surface(
+        vars_map, contrast.COMPACT_USER_BUBBLE, "--nts-user-bubble-bg"
+    )
+    assert surface[:3] == (255, 255, 255)
+
+
+def test_recommendation_text_is_checked_on_the_compact_prompt():
+    """``--nts-rec-text`` only lands on the compact prompt, whose host background is fixed."""
+    rows = {label: (bg_key, kind) for label, _, bg_key, kind, _ in contrast.PAIRS}
+    assert rows["recommendation-text"] == (None, contrast.COMPACT_PROMPT)
+    dark_text = {"--nts-rec-text": "#2D3033"}
+    light_text = {"--nts-rec-text": "#ffffff"}
+    by_pair = lambda vars_map, mode: {  # noqa: E731
+        row["pair"]: row for row in contrast.audit_vars(vars_map, mode) if not row.get("skip")
+    }
+    assert not by_pair(dark_text, "dark")["recommendation-text"]["ok"]
+    assert by_pair(light_text, "dark")["recommendation-text"]["ok"]
+    assert not by_pair(light_text, "light")["recommendation-text"]["ok"]
+
+
+def test_full_chat_recommendation_card_is_checked_with_the_host_text():
+    """``--nts-rec-bg`` paints the full-chat card, whose text stays the host's colour."""
+    rows = {label: (fg_key, bg_key) for label, fg_key, bg_key, _, _ in contrast.PAIRS}
+    assert rows["recommendation-card"] == (None, "--nts-rec-bg")
+    light_card = {"--nts-chat-bg": "#0f1a22", "--nts-rec-bg": "rgba(255, 255, 255, 0.55)"}
+    row = next(r for r in contrast.audit_vars(light_card, "dark") if r["pair"] == "recommendation-card")
+    assert not row["ok"], "light host text on a light card in dark mode must be reported"
+
+
+def test_every_preset_recommendation_text_reads_on_the_compact_prompt():
+    themes = contrast.themes_from_dir(str(PRESETS))
+    fails, _ = contrast.failing(themes)
+    bad = [(t, m, r["ratio"]) for t, m, r in fails if r["pair"] == "recommendation-text"]
+    assert not bad, bad
+
+
+def test_pale_text_gradient_stop_on_a_light_bubble_is_reported():
+    """``--nts-text-gradient`` replaces the text fill, so each stop must read on the bubble."""
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-ai-bubble-bg": "#ffffff",
+        # The solid text colours pass; only the gradient's pale stop does not.
+        "--nts-user-bubble-text": "#222222",
+        "--nts-ai-bubble-text": "#222222",
+        "--nts-text-gradient": "linear-gradient(120deg, #1f3a5f 0%, #cfe8ff 100%)",
+    }
+    rows = {row["pair"]: row for row in contrast.audit_vars(vars_map, "light") if not row.get("skip")}
+    assert rows["user-bubble"]["ok"] and rows["ai-bubble"]["ok"]
+    for label in ("text-gradient-user", "text-gradient-ai",
+                  "text-gradient-compact-user", "text-gradient-compact-ai"):
+        row = rows[label]
+        assert not row["ok"], f"{label}: a pale gradient stop on a white bubble was not reported"
+        assert row["fg"] == "--nts-text-gradient"
+        # The worst stop decides: the pale one, not the mean of both stops.
+        assert row["ratio"] < 1.5
+
+    vars_map["--nts-text-gradient"] = "linear-gradient(120deg, #1f3a5f 0%, #3b2a6b 100%)"
+    rows = {row["pair"]: row for row in contrast.audit_vars(vars_map, "light") if not row.get("skip")}
+    assert rows["text-gradient-user"]["ok"] and rows["text-gradient-ai"]["ok"]
+
+
+def test_text_gradient_pairs_are_skipped_without_the_variable():
+    vars_map = {
+        "--nts-chat-bg": "#ffffff",
+        "--nts-user-bubble-bg": "#ffffff",
+        "--nts-ai-bubble-bg": "#ffffff",
+        "--nts-tool-bubble-bg": "#ffffff",
+        "--nts-chip-bg": "#ffffff",
+    }
+    labels = {label for label, _, _, _ in contrast.TEXT_GRADIENT_PAIRS}
+    rows = [row for row in contrast.audit_vars(vars_map, "light") if row["pair"] in labels]
+    assert len(rows) == len(labels)
+    assert all(row.get("skip") for row in rows)
+
+
+def test_contrast_extremes():
+    white, black = (255, 255, 255, 1.0), (0, 0, 0, 1.0)
+    assert contrast.contrast(black, white) == pytest.approx(21.0, abs=0.02)
+    assert contrast.contrast(white, white) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_parse_color_formats():
+    assert contrast.parse_color("#4089B3") == (64, 137, 179, 1.0)
+    assert contrast.parse_color("#abc") == (170, 187, 204, 1.0)
+    assert contrast.parse_color("rgba(64, 137, 179, 0.5)") == (64, 137, 179, 0.5)
+    assert contrast.parse_color("none") is None
+    assert contrast.parse_color("not a colour") is None

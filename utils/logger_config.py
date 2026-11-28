@@ -967,6 +967,8 @@ MAIN_SERVER_SUPPRESSED_ENDPOINTS = [
     "/api/agent/computer_use/availability",
     "/api/agent/mcp/availability",
     "/api/steam/update-playtime",
+    # Theme Studio loader polls the palette every 1.5 s from every window.
+    "/api/theme_studio/theme.json",
     # OAuth callbacks carry short-lived code/state in the query string.  The
     # route handles them, but the raw request target must never reach access logs.
     "/oauth/callback",

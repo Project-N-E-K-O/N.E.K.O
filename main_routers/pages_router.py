@@ -41,6 +41,7 @@ from .visit_router.local_guard import require_visit_enabled
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_THEME_STUDIO_LOADER_DIR = _PROJECT_ROOT / "static" / "theme-studio" / "loader"
 _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
     path
     for pattern in ("**/*.js", "**/*.json")
@@ -93,6 +94,13 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/css/window_controls.css",
     _PROJECT_ROOT / "static/js/window_controls.js",
+    # 主题工坊外壳样式：模板扫描表在进程启动时就固定了，新加的样式表必须显式登记，
+    # 否则改完 CSS 浏览器还按旧的 ?v= 拿缓存副本。
+    _PROJECT_ROOT / "static/css/theme_studio_shell.css",
+    _PROJECT_ROOT / "static/theme-studio/style.css",
+    _PROJECT_ROOT / "static/theme-studio/materials.css",
+    _PROJECT_ROOT / "static/theme-studio/app.js",
+    _PROJECT_ROOT / "static/theme-studio/materials.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
@@ -185,6 +193,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
+# (computed_at, static_asset_version it was built for, template ctx)
+_theme_loader_ctx_cache: tuple[float, str, dict] = (0.0, "", {})
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
@@ -222,13 +232,24 @@ def _static_assets_ctx() -> dict:
     global _static_asset_version_cache
     now = time.monotonic()
     cached_at, cached_version = _static_asset_version_cache
-    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
-        return {"static_asset_version": cached_version}
+    if now - cached_at >= _STATIC_ASSET_CACHE_TTL:
+        latest_mtime = _latest_asset_mtime(_YUI_GUIDE_ASSET_VERSION_PATHS)
+        cached_version = f"{APP_VERSION}-{latest_mtime or 0}"
+        _static_asset_version_cache = (now, cached_version)
 
-    latest_mtime = _latest_asset_mtime(_YUI_GUIDE_ASSET_VERSION_PATHS)
-    version = f"{APP_VERSION}-{latest_mtime or 0}"
-    _static_asset_version_cache = (now, version)
-    return {"static_asset_version": version}
+    ctx = {"static_asset_version": cached_version}
+    # 主题工坊加载器两件套：URL 里要带磁盘指纹，否则浏览器侧加载器每 15 秒就得把
+    # 158KB 的样式表整份下载回来，才判断得出「页面里的是不是旧的」（见 assets.py）。
+    # 与上面的版本号共用同一个 TTL，避免每次渲染页面都 stat 磁盘。
+    global _theme_loader_ctx_cache
+    loader_at, loader_base, loader_ctx = _theme_loader_ctx_cache
+    if loader_base != cached_version or now - loader_at >= _STATIC_ASSET_CACHE_TTL:
+        from theme_studio.assets import loader_versions
+
+        loader_ctx = loader_versions(_THEME_STUDIO_LOADER_DIR, cached_version)
+        _theme_loader_ctx_cache = (now, cached_version, loader_ctx)
+    ctx.update(loader_ctx)
+    return ctx
 
 
 def _latest_asset_mtime(paths) -> int:
@@ -563,7 +584,12 @@ async def get_web_chat_compact_page(request: Request):
 async def get_subtitle_page(request: Request):
     """Standalone subtitle window page."""
     templates = get_templates()
-    return templates.TemplateResponse(request, "templates/subtitle.html", {"request": request})
+    # 字幕窗同样加载主题工坊的加载器，必须拿到 ?v= 指纹：缺了版本号时加载器读不到
+    # 样式表哈希，会每 15s 重新下一遍 158KB 的 CSS（字幕窗常驻，代价最明显）。
+    return templates.TemplateResponse(request, "templates/subtitle.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/agenthud", response_class=HTMLResponse)
@@ -622,8 +648,26 @@ async def get_jukebox_manager_page(request: Request):
 async def get_toast_page(request: Request):
     """Standalone toast notification window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse(request, "templates/toast.html", {"request": request})
+    # 同上：toast 窗是常驻窗口，缺 ?v= 指纹会让加载器反复整包下载 CSS。
+    return templates.TemplateResponse(request, "templates/toast.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
+
+
+@router.get("/theme_studio", response_class=HTMLResponse)
+async def get_theme_studio_page(request: Request):
+    """Theme Studio panel (built-in feature page).
+
+    In the plugin era this page ran on the plugin server port 48916 inside a
+    cross-origin iframe; it is now an ordinary same-origin host page.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/theme_studio.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/{lanlan_name}", response_class=HTMLResponse)

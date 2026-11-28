@@ -15,6 +15,10 @@
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/theater_market.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
+    {% if theme_loader_css_version is defined %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
+    {% endif %}
 </head>
 <body>
     {% set market_entry = 'market' in request.query_params %}

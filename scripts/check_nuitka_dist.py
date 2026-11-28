@@ -67,6 +67,11 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     # Localized character seed directory config/characters/<locale>.json (PR #1282). --include-package=config
     # bundles only .py files and omits this directory; verify at least one locale JSON is present or character seeds fall back to the wrong language for non-default users.
     ("config/characters", "*.json"),
+    # Theme Studio built-in presets (JSON + preview images) are data files that
+    # --include-package=theme_studio does not bundle; without them the panel shows
+    # no built-in themes and /api/theme_studio/presets/* 404s.
+    ("theme_studio/presets", "*.json"),
+    ("theme_studio/presets/images", None),
     ("static", None),
     # Vendored MMD libraries must ship with their upstream license notices.
     ("static/libs", "three-mmd.module.js"),

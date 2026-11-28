@@ -130,12 +130,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # the theater runtime and not shipped in the desktop bundle. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
-# and sits at the top of the stack.
+# and sits at the top of the stack. ``theme_studio`` is the built-in theme
+# editor service: it only reads ``utils`` and is used by main_routers / app.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
-    (2, {"knowledge", "memory", "main_logic", "services"}),
+    (2, {"knowledge", "memory", "main_logic", "services", "theme_studio"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
     (5, {"nekopower"}),
@@ -199,6 +200,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "services",
             "main_routers",
             "plugin",
+            "theme_studio",
         )
     ),
     # The built-in tools (keyboard and mouse, browser) drive the desktop and
@@ -215,6 +217,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "services",
             "main_routers",
             "plugin",
+            "theme_studio",
         )
     ),
     # The NekoPower host (task brain, task agents, gateway) reaches plugins over
@@ -232,6 +235,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             ("main_routers", "the NekoPower host reaches the main dialogue through its outbox only"),
             ("services", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
             ("steamworks", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
+            ("theme_studio", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
         )
     ),
 ]

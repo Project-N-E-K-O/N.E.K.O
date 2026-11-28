@@ -8,6 +8,10 @@
 <script id="soccer-runtime-config" type="application/json">{{ {"vrm_defaults": vrm_defaults} | tojson }}</script>
 <link rel="stylesheet" href="/static/game/games/soccer/soccer-demo.css?v={{ static_asset_version }}">
 
+    {% if theme_loader_css_version is defined %}
+    <link rel="stylesheet" href="/static/theme-studio/loader/neko-theme-studio.css?v={{ theme_loader_css_version }}">
+    <script src="/static/theme-studio/loader/neko-theme-studio.js?v={{ theme_loader_js_version }}" defer></script>
+    {% endif %}
 </head>
 <body>
 <canvas id="game"></canvas>

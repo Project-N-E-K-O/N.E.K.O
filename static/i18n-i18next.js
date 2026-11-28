@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 删去喵能力面板已不再使用的 agent.status.noCapability 文案，刷新语言包缓存。
-    const LOCALE_VERSION = '2026-11-28-nekopower-no-capability-removed';
+    // 主题工坊内置文案与主线最新语言包合并后刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-28-theme-studio-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

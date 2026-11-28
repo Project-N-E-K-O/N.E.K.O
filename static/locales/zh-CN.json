@@ -4271,6 +4271,7 @@
             "characterManage": "角色管理",
             "voiceClone": "声音克隆",
             "memoryBrowser": "记忆浏览",
+            "themeStudio": "主题工坊",
             "memoryManage": "记忆管理",
             "characterSettings": "角色设置",
             "live2dManage": "Live2D管理",
@@ -7980,5 +7981,1446 @@
         "keepLocal": "保留本机选择",
         "failed": "模型未能加载，已保留原来的选择。",
         "retry": "重试"
+    },
+    "themeStudio": {
+        "backupSkippedImages": "有 {{count}} 张背景图读取失败、没有打进备份，恢复后这些主题会缺背景图。",
+        "core": {
+            "request": {
+                "timeout": "请求超时（{{seconds}}s）",
+                "failed": "操作失败"
+            },
+            "typeLabel": {
+                "color": "色",
+                "length": "尺寸",
+                "blur": "模糊",
+                "number": "数值",
+                "font": "字体",
+                "shadow": "阴影",
+                "image": "图片",
+                "switch": "开关",
+                "select": "方式",
+                "time": "节奏",
+                "ratio": "行高",
+                "filter": "模糊链",
+                "gradient": "渐变"
+            },
+            "audit": {
+                "pair": {
+                    "bodyChat": "正文 / 聊天背景",
+                    "bodyTopbar": "正文 / 顶栏",
+                    "bodyInput": "正文 / 输入框",
+                    "bodyGlass": "正文 / 面板玻璃",
+                    "bodyAiBubble": "正文 / AI 气泡",
+                    "userBubbleText": "用户气泡文字",
+                    "sendText": "发送键文字",
+                    "subTextChat": "次要文字 / 聊天背景",
+                    "placeholder": "placeholder",
+                    "chipText": "chip 文字",
+                    "linkChat": "链接 / 聊天背景"
+                },
+                "fixedOne": "「{{name}}」调到 {{hex}}（{{ratio}}:1），点「应用」生效",
+                "fixNone": "没有能自动修正的项：这组底色和文字太接近，需要手动改背景色",
+                "fixedSomeStuck": "已填好 {{fixed}} 项修正值，{{stuck}} 项自动调不动；点「应用」生效",
+                "fixedAll": "已填好 {{fixed}} 项修正值；点「应用」生效",
+                "incomplete": "颜色没配全，暂时无法判断",
+                "groupFail": "{{bad}} / {{total}} 项低于阈值",
+                "groupPass": "{{total}} 项全部达标",
+                "need": "需 ≥ {{need}}",
+                "jumpDark": "点击跳到 {{key}}（暗色）",
+                "jumpLight": "点击跳到 {{key}}（亮色）",
+                "fixButton": "自动修正",
+                "fixButtonTitle": "按背景亮度自动调出一个达标颜色（只填值，不直接应用）",
+                "fixFailed": "这一组自动调不到 {{need}}:1，需要改背景色",
+                "light": "亮色",
+                "dark": "暗色",
+                "nothingToCompare": "还没有可比较的颜色：先给「聊天背景」「正文」等基础变量配值。",
+                "summaryPass": "两组共 {{total}} 项全部达到 WCAG 阈值（正文 4.5、次要 3.0）。",
+                "summaryFail": "有 {{bad}} 项低于阈值，点条目可跳到对应变量。"
+            },
+            "undo": {
+                "nothingToUndo": "没有可撤销的改动了",
+                "undone": "已撤销上一步",
+                "nothingToRedo": "没有可重做的改动了",
+                "redone": "已重做",
+                "undoTitle": "撤销上一次改动（还能撤销 {{count}} 步）",
+                "undoTitleEmpty": "没有可撤销的改动",
+                "redoTitle": "重做（还能重做 {{count}} 步）",
+                "redoTitleEmpty": "没有可重做的改动"
+            },
+            "validate": {
+                "badBlur": "模糊只接受 px/rem/em/pt（可写 18px 或 blur(18px)）",
+                "badValue": "该值不合法，请改成合法值或点「清空」"
+            }
+        },
+        "catalog": {
+            "groups": {
+                "chatBubbles": "聊天气泡",
+                "chatWindow": "聊天窗口",
+                "composer": "输入区",
+                "panels": "面板 / 弹窗 / 菜单",
+                "recommendations": "推荐 / 系统 chip",
+                "global": "全局",
+                "nonColor": "非颜色项",
+                "panelGlow": "面板光效 / 玻璃拟态",
+                "liquidGlass": "液态玻璃 / 渐变",
+                "glassTexture": "液态玻璃质感"
+            },
+            "vars": {
+                "bubble-veil": {
+                    "native": "开",
+                    "label": "聊天背景虚化",
+                    "hint": "气泡上那层「白纱 + 背景模糊」的总开关。关掉后气泡底完全透明、背景模糊归零，聊天背景图与底色会完整透出来（对比度更高，适合铺了背景图之后觉得画面发灰/看不清的情况）；打开则回到 N.E.K.O 原生观感。底层是 0-1 乘子，同时作用于白纱不透明度与模糊半径。"
+                },
+                "user-bubble-bg": {
+                    "label": "用户气泡背景"
+                },
+                "user-bubble-text": {
+                    "label": "用户气泡文字"
+                },
+                "user-bubble-border": {
+                    "label": "用户气泡描边"
+                },
+                "ai-bubble-bg": {
+                    "label": "AI 气泡背景"
+                },
+                "ai-bubble-text": {
+                    "label": "AI 气泡文字"
+                },
+                "ai-bubble-border": {
+                    "label": "AI 气泡描边"
+                },
+                "code-bg": {
+                    "label": "代码块背景",
+                    "hint": "行内代码与代码块的底色（.message-markdown-inline-code / .message-markdown-pre）；代码块本体原生没有底色，只有行内代码有；留空即保持原生配色"
+                },
+                "code-text": {
+                    "label": "代码块文字",
+                    "hint": "行内代码与代码块的文字色；原生行内代码 #22324d、代码块 #1f2c42（暗色两者都是 #c0cce0）；留空即保持原生配色"
+                },
+                "image-bg": {
+                    "label": "图片块背景",
+                    "hint": "消息里图片包裹层 .message-block-image 的底色，垫在图片下方；留空即保持原生（透明，只有图片本身透明或加载失败时才看得见）"
+                },
+                "tool-bubble-bg": {
+                    "label": "工具/系统气泡背景",
+                    "hint": "工具气泡与系统气泡共用的底色（.message-bubble-tool / .message-bubble-system）；原生工具气泡是渐变、系统气泡是半透明灰（亮 rgba(131,148,175,0.14) / 暗 rgba(80,90,110,0.2)），填写后两者会被拉平成同一个纯色；留空即保持原生"
+                },
+                "tool-bubble-text": {
+                    "label": "工具/系统气泡文字",
+                    "hint": "工具气泡与系统气泡的文字色；原生工具 #2b3a50、系统 #607086（暗色 #b8bcc4 / #9aa0ac）；留空即保持原生配色"
+                },
+                "status-bg": {
+                    "label": "状态块背景",
+                    "hint": "消息状态块的底色（.message-block-status 的 info / success / warning / error 四种 tone 共用这一个变量）；原生四种 tone 各不相同（亮 success rgba(48,161,100,0.12)、warning rgba(235,168,52,0.16)、error rgba(223,91,91,0.14)），填写后四种 tone 会被拉平成同一个颜色；留空即保持原生"
+                },
+                "status-text": {
+                    "label": "状态块文字",
+                    "hint": "消息状态块的文字色（四种 tone 共用这一个变量）；原生四种 tone 各不相同（亮 success #236845、warning #9a6008、error #a63a3a；暗色 #5ec790 / #e8b44a / #e07070），填写后四种 tone 会被拉平成同一个颜色；留空即保持原生"
+                },
+                "chat-bg": {
+                    "label": "聊天窗口背景",
+                    "hint": "紧凑胶囊形态下那条胶囊的底色由它决定（背板不再抢它）。展开后还影响 #react-chat-window-root 与 .chat-window。留空即保持原生"
+                },
+                "chat-panel-bg": {
+                    "label": "聊天背板背景",
+                    "hint": "消息列表背后那块底板的颜色：紧凑态涂 .compact-export-history-scroll，展开/全屏态涂 .message-list 与 .chat-body。留空即保持原生（透明）"
+                },
+                "chat-bg-image": {
+                    "label": "聊天背景图片",
+                    "hint": "给消息列表那块底板铺一张图片：设置后图片优先于「聊天背板背景」的纯色（纯色仍在图片下方兜底，图片透明处会透出来）。支持 png/jpg/webp/gif，单张上限 4 MB。合法值只有 none 或 url(\"…/backgrounds/<文件>\")。留空即回原生（无图片）"
+                },
+                "chat-bg-image-brightness": {
+                    "label": "背景图亮度",
+                    "hint": "把「聊天背景图片」整体压暗，避免图片跟正文抢视线。取值 0-1：1 = 原图亮度，0.6 = 压暗四成，0 = 全黑。只往下压、不会变亮（实现方式是一层黑色蒙版盖在图片上，正文完全不受影响——不是给容器加 filter，那样会把气泡和文字一起调暗）。只在设了「聊天背景图片」时生效；留空即保持原图"
+                },
+                "chat-bg-fit": {
+                    "label": "背景图适应方式",
+                    "options": {
+                        "cover": "铺满（可能裁切）",
+                        "contain": "整图可见（留底色）"
+                    },
+                    "hint": "背景图怎么填进聊天区：铺满 = cover，图片铺满整块、比例不对时上下或左右会被裁掉（原生行为，多数壁纸适合）；整图可见 = contain，整张图缩到能看见全部、两侧或上下留出底色。只影响背景图，不动其他元素。留空即铺满"
+                },
+                "chat-bg-position": {
+                    "label": "背景图位置",
+                    "options": {
+                        "center": "居中",
+                        "top": "顶部对齐",
+                        "bottom": "底部对齐",
+                        "left": "左侧对齐",
+                        "right": "右侧对齐"
+                    },
+                    "hint": "背景图放在聊天区的哪个位置：只在图片比例和容器不一致（或选了「整图可见」）时看得出来。居中 = 原生行为；顶部/底部对齐适合「画面主体在上/下半部」的壁纸。留空即居中"
+                },
+                "chat-bg-repeat": {
+                    "label": "背景图平铺",
+                    "options": {
+                        "no-repeat": "不平铺（单张）",
+                        "repeat": "双向平铺",
+                        "repeat-x": "横向平铺",
+                        "repeat-y": "纵向平铺"
+                    },
+                    "hint": "壁纸是否重复铺满：照片类壁纸保持「不平铺」（原生行为）；细纹理、格纹、图案类图片选平铺可以铺满整块而不被拉伸。平铺时「适应方式」不生效（每格按原尺寸重复）。留空即不平铺"
+                },
+                "corner-style": {
+                    "label": "圆角风格",
+                    "options": {
+                        "round": "普通圆角",
+                        "continuous": "连续曲率（iOS 风格）"
+                    },
+                    "hint": "圆角的几何形状：普通圆角 = 圆弧（原生行为）；连续曲率 = 超椭圆，转角没有「突然变直」的那一下，Apple 的设备圆角就是这种。需要较新的渲染内核（Chrome 139+ 的 corner-shape）；不支持时这条不生效、其它设置照常，也不会报错。留空即普通圆角"
+                },
+                "chat-top-fade": {
+                    "label": "顶部渐隐",
+                    "hint": "聊天记录最上边那条渐隐，也就是背景图顶部那层「雾」的来源。取值 0-1：1 = 应用原生（顶部 28px 由透明渐入，图片顶部跟着淡出），0 = 渐隐彻底取消、图片顶边清晰，中间值线性过渡。注意关掉后滚到顶部的消息会硬切、不再淡出"
+                },
+                "chat-panel-radius": {
+                    "label": "聊天背板圆角",
+                    "hint": "消息列表那块底板的圆角，与「聊天背板背景」配套。用的是独立变量——「通用圆角」会连带改圆按钮和输入框，这里只圆背板。留空即保持原生直角"
+                },
+                "topbar-bg": {
+                    "label": "顶栏背景"
+                },
+                "topbar-text": {
+                    "label": "顶栏文字"
+                },
+                "chat-blur": {
+                    "label": "毛玻璃模糊",
+                    "hint": "CSS 消费方是 backdrop-filter，因此必须写成 blur(18px) 形式；只填 18px 后端会自动补成 blur(18px)；单位只接受 px/rem/em/pt（不支持 % / vh / vw）"
+                },
+                "chat-opacity": {
+                    "label": "聊天面不透明度",
+                    "hint": "取值 0-1。走桥接写成 --neko-chat-opacity-factor —— N.E.K.O 自带的透明度乘子：它乘的是各聊天表面底色的 alpha（原生写法形如 rgba(255,255,255,calc(.91 * 该系数))），所以是整体缩放聊天面板/窗口的透明度，不改任何单个颜色。留空即保持原生（系数 1 = 100%）。注意此项曾因应用侧加载器没有 number 值类型而静默丢弃、面板却报成功，现已修复"
+                },
+                "input-bg": {
+                    "label": "输入区背景"
+                },
+                "input-text": {
+                    "label": "输入文字"
+                },
+                "input-border": {
+                    "label": "输入区描边"
+                },
+                "input-placeholder": {
+                    "label": "占位文字"
+                },
+                "button-bg": {
+                    "label": "工具按钮背景"
+                },
+                "button-text": {
+                    "label": "工具按钮文字"
+                },
+                "button-hover-bg": {
+                    "label": "工具按钮悬停",
+                    "hint": "只在鼠标悬停工具按钮时生效（.composer-tool-btn:hover），不影响按钮静止态（那由「工具按钮背景」管）；留空即保持原生悬停色（亮 #44b7fe1a / 暗 #44b7fe26）"
+                },
+                "send-bg": {
+                    "label": "发送按钮背景"
+                },
+                "send-text": {
+                    "label": "发送按钮文字"
+                },
+                "panel-bg": {
+                    "label": "面板背景",
+                    "hint": "作用于输入区面板（.composer-panel）与悬浮任务面板（#agent-task-hud）；紧凑胶囊态下面板本身被应用压成透明，此时看「聊天背景」"
+                },
+                "panel-text": {
+                    "label": "面板文字",
+                    "hint": "作用于悬浮任务面板、访问条等面板面的文字；输入框里的文字请用「输入文字」。紧凑胶囊的文字颜色不跟这里走（避免改面板文字时连胶囊文字一起变色）"
+                },
+                "panel-border": {
+                    "label": "面板描边"
+                },
+                "popover-bg": {
+                    "label": "弹出菜单背景"
+                },
+                "popover-text": {
+                    "label": "弹出菜单文字"
+                },
+                "popover-border": {
+                    "label": "弹出菜单描边"
+                },
+                "modal-bg": {
+                    "label": "弹窗背景"
+                },
+                "modal-text": {
+                    "label": "弹窗文字"
+                },
+                "accent-bg": {
+                    "label": "插件页强调底纹",
+                    "hint": "走桥接：写 #agent-plugin-content / #agent-plugin-views 上的 --neko-popup-accent-bg，即插件面板标签页的悬停底色与选中底色（#agent-content-tabs button:hover / [aria-selected=\"true\"]）；留空即保持原生（面板自身兜底亮 rgba(42,123,196,.08) / 选中 .10，模式变量亮 rgba(42,123,196,0.05) / 暗 rgba(58,159,216,0.1)）"
+                },
+                "panel-text-sub": {
+                    "label": "面板次级文字",
+                    "hint": "走桥接：写 #agent-plugin-content / #agent-plugin-views 上的 --neko-popup-text-sub，消费方是插件面板顶部的标签页文字与关闭按钮（#agent-content-tabs button / #agent-plugin-close）；留空即保持原生（面板自身还有一层兜底 #667582，亮 #666666 / 暗 #b0b0b0）"
+                },
+                "overlay-bg": {
+                    "label": "弹窗遮罩背景",
+                    "hint": "弹窗背后的整屏遮罩 .modal-overlay 底色；原生亮色模式基本不铺遮罩（常见组件给的 rgba(0,0,0,0.5) 只在个别弹窗生效），暗色是 rgba(0,0,0,0.65)；小剧场/串门这两类透明窗弹窗自带 transparent !important，不受此项影响；留空即保持原生"
+                },
+                "rec-bg": {
+                    "label": "推荐条背景"
+                },
+                "rec-text": {
+                    "label": "推荐条文字"
+                },
+                "rec-border": {
+                    "label": "推荐条描边",
+                    "hint": "只在 .proactive-recommendation-card 上生效；留空即保持原生描边（亮 rgba(108,151,174,0.18) / 暗 rgb(65,84,95)）"
+                },
+                "chip-bg": {
+                    "label": "chip 背景"
+                },
+                "chip-text": {
+                    "label": "chip 文字"
+                },
+                "text-gradient": {
+                    "label": "文字渐变",
+                    "hint": "把聊天正文的文字填充换成一条渐变（如 linear-gradient(135deg, #6ee7ff 0%, #a78bfa 100%)）。只作用于消息文本块，不影响气泡底色；代码块与行内代码会自动保持实色，避免「字看不见」。注意：开了以后「气泡文字色」对正文不再生效（文字由渐变填充），且浅色渐变在浅背景上可能看不清 —— 建议选深浅两端跨度大的颜色。留空即纯色文字"
+                },
+                "accent": {
+                    "label": "主色调"
+                },
+                "link": {
+                    "label": "链接色"
+                },
+                "highlight": {
+                    "label": "选中高亮"
+                },
+                "scrollbar-thumb": {
+                    "label": "滚动条滑块"
+                },
+                "scrollbar-track": {
+                    "label": "滚动条轨道"
+                },
+                "radius": {
+                    "label": "通用圆角（按钮/输入面板）",
+                    "hint": "原生值各组件不同（顶栏 0 / 卡片 12px / 按钮 10px），留空即完全保持原生"
+                },
+                "bubble-radius": {
+                    "label": "聊天气泡圆角",
+                    "hint": "只影响气泡本体；留空即保持原生（用户气泡 16px/8px 不对称圆角）"
+                },
+                "shell-radius": {
+                    "label": "聊天窗外壳圆角",
+                    "hint": "只影响聊天窗口外壳 #react-chat-window-shell；留空即保持原生"
+                },
+                "card-radius": {
+                    "label": "插件卡片圆角",
+                    "hint": "只影响 .agent-plugin-view 卡片；留空即保持原生"
+                },
+                "modal-radius": {
+                    "label": "弹窗圆角",
+                    "hint": "只影响 .modal-dialog 对话框；留空即保持原生"
+                },
+                "popover-radius": {
+                    "label": "浮层圆角",
+                    "hint": "只影响 .composer-overflow-popover 等弹出层；留空即保持原生"
+                },
+                "rec-radius": {
+                    "label": "推荐卡圆角",
+                    "hint": "只影响推荐类气泡卡片；留空即保持原生"
+                },
+                "font-family": {
+                    "label": "字体族"
+                },
+                "font-size": {
+                    "label": "基础字号",
+                    "hint": "消息正文的字号，纯文本与 Markdown 两种消息都会跟着变（如 1rem / 17px）；留空即保持原生"
+                },
+                "line-height": {
+                    "label": "行高",
+                    "hint": "聊天气泡里文字的行距，写成无单位倍数（1.55 = 1.55 倍字号）。1.3 偏紧凑、1.55 接近原生、1.8 很松。它是倍数而不是 px，所以改「基础字号」时行距会跟着缩放，不会出现字变大行距没变、两行粘在一起。留空即保持原生"
+                },
+                "shadow": {
+                    "label": "阴影",
+                    "hint": "如 0 2px 4px rgba(0,0,0,0.1)；作用在 7 个卡片面上（用户/AI 气泡、输入面板、两个浮层、弹窗、推荐卡），会整体替换这些面原有的阴影；留空即保持原生阴影"
+                },
+                "panel-glow-color": {
+                    "label": "光晕颜色",
+                    "hint": "外发光、四角高光、边缘内侧渐变三者共用的颜色。任意 CSS 颜色都行（#7ff / dodgerblue / rgb(120,200,255)）。改这里，三处会一起变色"
+                },
+                "panel-glow-strength": {
+                    "label": "发光强度",
+                    "hint": "0-1 乘子，同时缩放外发光的扩散范围、模糊半径与颜色浓度。0 = 完全无光，1 = 用满「光晕尺寸」。留空即保持原生（无光）"
+                },
+                "panel-glow-size": {
+                    "label": "光晕尺寸",
+                    "hint": "外发光的基础半径（扩散 1 倍、模糊 0.42 倍）。内侧边缘渐变的宽度也按它算。24px 是柔和的起步值，压到 40px 以上会明显晕开"
+                },
+                "panel-glow-pulse": {
+                    "label": "呼吸幅度",
+                    "hint": "发光强度的呼吸幅度，0-1：0 = 恒定不呼吸，0.5 = 亮度在 100%~50% 之间起伏，1 = 完全暗到亮。留空或 0 都不会挂动画（省一层合成）"
+                },
+                "panel-glow-speed": {
+                    "label": "呼吸节奏",
+                    "hint": "一次呼吸的时长，写 3.2s / 800ms 都行；只填数字按秒算（3 会补成 3s）。上限 60s。数越小越急，5s 以上是慢速呼吸。只在「呼吸幅度」大于 0 时才有意义"
+                },
+                "panel-border-color": {
+                    "label": "描边颜色",
+                    "hint": "面板边缘那圈半透明描边。想做出玻璃高光感，用白色系带透明度（rgba(255,255,255,.55)）；想做出彩色霓虹边，填高饱和色"
+                },
+                "panel-border-width": {
+                    "label": "描边粗细",
+                    "hint": "边缘描边的宽度。1px 是细高光，2-3px 以上会有明显「玻璃边框」感；留空即不画描边"
+                },
+                "panel-corner-glow": {
+                    "label": "四角高光",
+                    "hint": "0-1 乘子，控制四个角上那四团径向高光的浓度。玻璃拟态里最容易出「立体感」的一项；0 = 关闭，1 = 最亮"
+                },
+                "panel-edge-gradient": {
+                    "label": "边缘内侧渐变",
+                    "hint": "0-1 乘子，控制从边缘往内柔和衰减的那层亮光（inset 阴影），配合外发光能做出「面板自己在发亮」的效果。0 = 关闭"
+                },
+                "panel-sheen": {
+                    "label": "玻璃反射高光",
+                    "hint": "0-1 乘子，控制从左上斜下来那条高光带（模拟玻璃反光）。0.3-0.5 比较自然，1 会明显发白"
+                },
+                "panel-inner-glow": {
+                    "label": "内阴影",
+                    "hint": "0-1 乘子，控制面板内侧一圈淡淡的下沉阴影，让面板看起来「厚」。0 = 关闭"
+                },
+                "panel-glass-tint": {
+                    "label": "玻璃底色",
+                    "hint": "半透明玻璃底色，铺在「聊天背板背景」之上、背景图之下。想做出磨砂玻璃，填 rgba(255,255,255,.14) 这类带透明度的亮色（暗色主题用 rgba(20,30,45,.35)）"
+                },
+                "panel-glass-blur": {
+                    "label": "玻璃磨砂",
+                    "hint": "把「聊天背景图片」本身糊掉（只糊图片，正文不受影响 —— 走的是夹在图片与文字之间的负层）。写 blur(18px) 或只写 18px（后端自动补成 blur(18px)）；单位只接受 px/rem/em/pt"
+                },
+                "glass-filter": {
+                    "label": "界面玻璃模糊",
+                    "hint": "顶栏、输入框外壳、浮层这些「玻璃面」背后的模糊程度，直接写 backdrop-filter 的链，例如 blur(20px) saturate(150%)。最多 4 段、同名滤镜不能重复，blur 封顶 40px、其余百分比封顶 400%。留空 = 不生效，这些面保持原生观感"
+                },
+                "glass-tint": {
+                    "label": "界面玻璃底色",
+                    "hint": "玻璃面上的半透明底色，和上面的模糊是配套的：想做出磨砂玻璃就填 rgba(255,255,255,0.55) 这类带透明度的颜色。留空 = 不生效，底色跟原生走"
+                },
+                "glass-highlight": {
+                    "label": "玻璃高光描边",
+                    "hint": "玻璃面那圈高光描边，填白色带透明度就有玻璃边缘反光的味道。留空 = 不生效，不画这圈高光"
+                },
+                "bubble-glass-filter": {
+                    "label": "气泡玻璃模糊",
+                    "hint": "用户/AI 气泡自身背景的模糊程度，通常比界面玻璃更轻一点，例如 blur(12px) saturate(140%)。留空 = 不生效，气泡保持原生半透明"
+                },
+                "bubble-glass-tint": {
+                    "label": "气泡玻璃底色",
+                    "hint": "气泡的半透明底色；想让气泡有玻璃质感就填 rgba(255,255,255,0.18) 这类很淡的颜色。留空 = 不生效，气泡底色跟原生走"
+                },
+                "chat-gradient": {
+                    "label": "聊天区渐变",
+                    "hint": "整个聊天区（消息列表、聊天主体）的背景渐变，必须写成 linear-gradient(...) 或 radial-gradient(...)，2-4 个停止点、每个停止点都要带百分比。留空 = 不生效，用原生背景"
+                },
+                "panel-gradient": {
+                    "label": "面板渐变",
+                    "hint": "聊天背板/导出历史面板那层背景渐变，格式和上面一样，会盖在背板纯色之上。留空 = 不生效，面板保持原生底色"
+                },
+                "user-bubble-gradient": {
+                    "label": "用户气泡渐变",
+                    "hint": "只给用户气泡单独铺渐变背景，用「角度 + 起止色」快组一键生成最省事。留空 = 不生效（默认就不配置），气泡仍用用户气泡背景那个纯色"
+                },
+                "ai-bubble-gradient": {
+                    "label": "AI 气泡渐变",
+                    "hint": "只给 AI 气泡铺渐变背景。留空 = 不生效（默认不配置），AI 气泡仍用 AI 气泡背景的纯色"
+                },
+                "glass-rim": {
+                    "label": "玻璃边缘反光",
+                    "hint": "玻璃边缘反射光：沿面板/气泡/输入框边缘画一圈像镜面切边的亮线。配合低的玻璃底色 alpha 与界面玻璃模糊，这圈越亮「玻璃厚度」越明显；留空 = 不画"
+                },
+                "glass-sheen": {
+                    "label": "表面掠光强度",
+                    "hint": "表面掠光强度 0–1：0 = 完全不动，0.3–0.7 会有一条高光带缓缓扫过玻璃面（需要界面/气泡玻璃模糊已配置才看得见）；留空 = 不生效"
+                },
+                "glass-noise": {
+                    "label": "雾面颗粒",
+                    "hint": "雾面颗粒 0–1：0 = 光滑，0.1–0.25 有轻微磨砂质地（配合玻璃底色 alpha 与模糊即可透视背后内容、又有磨砂颗粒感）；留空 = 不生效"
+                },
+                "glass-lens": {
+                    "label": "边缘透镜亮环",
+                    "hint": "边缘透镜亮环 0–1：0 = 不画，0.5–0.8 在玻璃边缘叠一圈向内弯的亮环 + 内侧柔光，模拟 Apple 液态玻璃边缘把光「折」进来的折射感；留空 = 不生效"
+                },
+                "glass-thickness": {
+                    "label": "玻璃厚度",
+                    "hint": "玻璃厚度 0–1：上缘 1px 高光 + 下缘 1px 暗边 + 四边半亮 + 外投影，越大越像一块有厚度的实体玻璃；留空 = 不生效"
+                },
+                "glass-specular": {
+                    "label": "镜面高光",
+                    "hint": "镜面高光 0–1：0.6–0.8 时玻璃表面有一团柔和反光，会跟着鼠标指针移动（苹果液态玻璃最好认的特征）；触摸设备停在左上；留空 = 不生效"
+                },
+                "ambient-glow": {
+                    "label": "指针光源",
+                    "hint": "指针光源 0–1：0.4–0.7 时玻璃表面会跟着鼠标出现一片柔光（光源在动，玻璃的反光也跟着动，比单点镜面更像「真实光照」）；留空 = 不生效"
+                },
+                "glass-dispersion": {
+                    "label": "边缘分光色散",
+                    "hint": "边缘分光 0–1：0.3–0.55 时玻璃边缘出现暖色（左上）与冷色（右下）两条细亮线，模拟折射把光分成不同颜色；留空 = 不生效"
+                },
+                "glass-caustic": {
+                    "label": "流动焦散",
+                    "hint": "流动焦散 0–1：0.3–0.6 时玻璃后面有一团柔光缓慢胀缩，像水面的光透过玻璃在晃；与「表面掠光」方向、节奏都不同；留空 = 不生效"
+                }
+            }
+        },
+        "editor": {
+            "group": {
+                "ariaLabel": "{{group}} 分组（点击展开/收起）",
+                "changedCount": "{{count}} 项已改",
+                "totalCount": "{{count}} 项"
+            },
+            "groups": {
+                "expandAll": "全部展开",
+                "collapseAll": "全部收起"
+            },
+            "row": {
+                "nativeValue": "原生 {{value}}",
+                "emptyIsNative": "留空 = 原生",
+                "nativeSyntax": "原生写法：{{value}}",
+                "alreadyNative": "该行本来就是原生值",
+                "editReverted": "已撤销本行改动",
+                "nativeValueTitle": "原生值：{{value}}",
+                "noUniformNative": "该变量没有统一的原生值",
+                "clear": "清空",
+                "clearTitle": "清空该行 = 回退到 N.E.K.O 原生值",
+                "clearAria": "清空 {{label}}",
+                "copyTitle": "复制这一行的值（可以粘贴到别的行，甚至另一组亮/暗）",
+                "copyAria": "复制 {{label}}",
+                "pasteTitle": "把上次复制（或剪贴板里）的值粘贴到这一行",
+                "pasteAria": "粘贴到 {{label}}",
+                "stateCleared": "已清空",
+                "stateChanged": "已改",
+                "copyEmpty": "这一行现在是空的（原生值），没有可复制的值",
+                "copied": "已复制「{{label}}」的值：{{value}}",
+                "pasteEmpty": "剪贴板里没有可粘贴的内容（也可以先点某一行的复制按钮）",
+                "pasteRejected": "「{{label}}」不接受这个值：{{value}}",
+                "pasted": "已粘贴到「{{label}}」"
+            },
+            "preview": {
+                "filterTitle": "预览：{{value}}（只对预览条背后的斜纹生效）",
+                "filterNone": "当前没有可预览的滤镜链（留空 = 不生效）",
+                "gradientTitle": "预览：{{value}}",
+                "gradientNone": "当前没有可预览的渐变（留空 = 不生效）",
+                "filterHost": "滤镜预览：背后的斜纹会被当前模糊链处理",
+                "gradientHost": "渐变预览",
+                "modeDark": "暗色",
+                "modeLight": "亮色",
+                "hoverSuffix": " · 预演「{{name}}」"
+            },
+            "switch": {
+                "label": "开关",
+                "nativeTitle": "原生观感 = 打开",
+                "nativeOn": "原生 开"
+            },
+            "color": {
+                "swatchAria": "{{label}} 色板",
+                "valueAria": "{{label}} 颜色值",
+                "opacityAria": "{{label}} 不透明度",
+                "alphaLabel": "透明",
+                "alphaNoColor": "当前值没有颜色成分（transparent / inherit / 空）；先填一个颜色再调不透明度",
+                "alphaTransparent": "当前值没有颜色成分（transparent）；先填一个颜色再调不透明度",
+                "alphaReuse": "拖动不透明度会沿用上一次的颜色"
+            },
+            "image": {
+                "fileAria": "{{label}} 选择图片文件",
+                "pick": "选择图片",
+                "pickAria": "选择{{label}}",
+                "clear": "清除",
+                "clearAria": "清除{{label}}",
+                "hint": "图片会盖在背景色之上",
+                "readFailed": "读取图片失败",
+                "readFailedDetail": "读取图片失败：{{reason}}",
+                "uploading": "正在上传背景图片…",
+                "noUrl": "后端没有返回图片地址",
+                "selected": "已选择背景图片",
+                "uploadFailedDetail": "背景图片上传失败：{{reason}}",
+                "uploadFailed": "背景图片上传失败",
+                "current": "当前背景图片",
+                "none": "未设置背景图片（跟随原生）"
+            },
+            "gradient": {
+                "angleAria": "{{label}} 渐变角度",
+                "fromAria": "{{label}} 起始色",
+                "toAria": "{{label}} 结束色",
+                "generate": "生成",
+                "generateTitle": "按角度与起止色生成 linear-gradient 并写入输入框",
+                "generateAria": "生成{{label}}",
+                "angle": "角度"
+            },
+            "freshness": {
+                "reloading": "面板界面已更新到 v{{remote}}（当前页还是 v{{local}}），正在重新加载…"
+            },
+            "compare": {
+                "chatBg": "聊天背景",
+                "panelBg": "背板底色",
+                "userBubble": "用户气泡",
+                "aiBubble": "AI 气泡",
+                "bubbleText": "气泡文字",
+                "accent": "主色调",
+                "shellRadius": "外壳圆角",
+                "chatBlur": "毛玻璃模糊",
+                "same": "这套主题在这几项上和当前配色一致，只有细节不同 —— 直接看上面的预览即可。"
+            },
+            "value": {
+                "empty": "（空）"
+            },
+            "aiPrompt": {
+                "title": "# N.E.K.O 主题：{{name}}",
+                "intro1": "你是一个配色设计师。下面是我当前用的主题（N.E.K.O 聊天窗口的 CSS 变量），",
+                "intro2": "请在此基础上做改进，并把**完整**结果按同样的两段结构输出，方便我直接粘贴回面板。",
+                "rulesHeading": "硬约束：",
+                "rule1": "1. 只能使用下面出现过的变量名，不要新增不存在的变量，也不要删除它们；",
+                "rule2": "2. 颜色用 #rrggbb / rgba() / transparent；长度带 px；模糊写成 blur(18px) 这种形式；",
+                "rule3": "3. 亮色组写在 vars 里，暗色组写在 dark_vars 里，两组都要给全；",
+                "rule4": "4. 正文与背景对比度至少 4.5:1，次要文字至少 3:1（这套面板有对比度自检）；",
+                "rule5": "5. 只输出一个 {{fence}}json 代码块，内容为 {\"name\": \"...\", \"vars\": {...}, \"dark_vars\": {...}}。",
+                "changesHeading": "我这次改过的 {{count}} 项（可以重点看这些）：",
+                "changeLine": "- {{mode}} {{label}}：{{before}} → {{after}}",
+                "currentPalette": "当前配色：",
+                "modalTitle": "给 AI 的提示词 · {{name}}",
+                "modalHint": "复制后贴给任意 AI（ChatGPT / Claude / 本地模型都行）。它按变量契约改完，你把返回的 JSON 贴回「导入」即可。"
+            },
+            "dump": {
+                "expand": "展开 JSON",
+                "collapse": "折叠 JSON",
+                "saved": "已保存：亮色 {{light}} 项 / 暗色 {{dark}} 项",
+                "pending": "；另有 {{count}} 项改动尚未应用 —— 上面的 JSON 已经按改动后的样子生成（复制出去就是改完的效果），点「应用」才会写进服务器。",
+                "noPending": "；没有未应用的改动。"
+            },
+            "meta": {
+                "defaultName": "默认"
+            },
+            "changes": {
+                "reverted": "已撤销「{{label}}」的改动",
+                "revertAllConfirm": "要撤销全部 {{count}} 项未应用的改动吗？撤销后无法恢复。",
+                "revertedAllNotice": "已撤销 {{count}} 项未应用的改动（服务器上的配色没动）。",
+                "revertedAll": "已撤销全部改动",
+                "undo": "撤销",
+                "undoAria": "撤销「{{label}}」的改动"
+            },
+            "apply": {
+                "withCount": "应用（{{count}} 项改动）",
+                "label": "应用"
+            }
+        },
+        "actions": {
+            "modeHint": {
+                "lightOnly": "注意：本次只改了「亮色」组 —— 应用若正处在暗色模式，外观不会变（两组各管各的）。",
+                "darkOnly": "注意：本次只改了「暗色」组 —— 应用若正处在亮色模式，外观不会变（两组各管各的）。"
+            },
+            "savedModeHint": {
+                "lightOnly": "当前只有「亮色」组有自定义项（暗色模式仍是原生外观）。",
+                "darkOnly": "当前只有「暗色」组有自定义项（亮色模式仍是原生外观）。"
+            },
+            "paletteHint": {
+                "notLoaded": "尚未读取到调色板；面板仍可编辑，点「应用」会重试读取。",
+                "empty": "当前调色板为空：所有组件都使用 N.E.K.O 原生外观。任意一行填值并应用，即刻生效。",
+                "saved": "已保存 {{total}} 项（亮色 {{light}} / 暗色 {{dark}}）。留空的行保持原生外观；两组各管各的，只配一组时另一模式不会变。"
+            },
+            "apply": {
+                "invalidNotice": "有 {{count}} 行输入不合法（红框），已阻止应用。\n请把红框里的值改成合法值，或点该行「清空」。",
+                "invalidShort": "有非法输入，未应用",
+                "noChangesNotice": "没有可应用的改动（当前 0 项变量改动，名称/启用未变，也没有红框非法输入）。\n改值会在输入时立即记入面板，不必等控件失焦；如果确实改过，可能是刚才用「还原本组」撤销了。",
+                "noChanges": "没有改动可应用",
+                "busy": "正在应用…",
+                "partLight": "亮色 {{count}} 项",
+                "partDark": "暗色 {{count}} 项",
+                "partEnabled": "已启用主题",
+                "partDisabled": "已停用主题",
+                "partName": "主题名「{{name}}」",
+                "partMaterials": "高级材质",
+                "noVarChanges": "无变量改动",
+                "readbackFailedNote": "已写入，但回读失败，面板仍标记为「未同步」（改动标记已保留），请点「重新读取」。",
+                "partialNotice": "已应用（{{counts}}），但后端拒绝了 {{rejected}} 条，已把它们的原值放回面板便于就地修正：\n",
+                "partialToastRestored": "已应用（{{count}} 条被拒绝，已回填）",
+                "partialToast": "已应用（{{count}} 条被拒绝）",
+                "doneNotice": "已应用并写入 theme.json：{{counts}}",
+                "doneShort": "已应用 {{counts}}",
+                "statusPendingFix": "（{{count}} 条待修正）",
+                "failedNotice": "应用失败：{{error}}",
+                "failed": "应用失败"
+            },
+            "readbackFailedSuffix": "（回读失败）",
+            "reset": {
+                "confirm": "确定恢复内置默认主题？当前所有自定义颜色都会被清除。",
+                "busy": "正在重置…",
+                "done": "已恢复默认主题。",
+                "doneReadbackFailed": "已恢复默认主题。\n回读失败，面板显示可能不是最新值，请点「重新读取」。",
+                "doneShort": "已重置",
+                "failedNotice": "重置失败：{{error}}",
+                "failed": "重置失败"
+            },
+            "export": {
+                "noFileContent": "后端没有返回文件内容",
+                "downloadedWithImages": "已下载：{{filename}}\n（{{kb}} KB，含 {{images}} 张背景图）",
+                "downloaded": "已下载：{{filename}}\n（{{kb}} KB）",
+                "pendingConfirm": "有 {{count}} 项未应用的改动。\n导出的 JSON 来自磁盘上已保存的 theme.json（不含这些未应用改动）。继续导出？",
+                "busy": "正在导出…",
+                "hintPending": "下面是已保存到 theme.json 的调色板 JSON（不含 {{count}} 项未应用改动），可复制保存或分享。",
+                "hint": "下面是当前调色板的 JSON 文本，可复制保存或分享。",
+                "doneDownloadedPending": "已导出并下载（不含未应用改动）",
+                "doneDownloaded": "已导出并下载",
+                "downloadFailed": "下载文件失败（{{error}}），下面是 JSON 文本，可手动复制。",
+                "doneNoFile": "已导出（未写出文件）",
+                "title": "导出主题",
+                "failedNotice": "导出失败：{{error}}",
+                "failed": "导出失败"
+            },
+            "shareCard": {
+                "pendingConfirm": "有 {{count}} 项未应用的改动。\n预览图按已保存的主题生成（不含这些改动）。继续下载？",
+                "busy": "正在生成预览图…",
+                "done": "预览图已下载",
+                "failedNotice": "生成预览图失败：{{error}}",
+                "failed": "生成预览图失败"
+            },
+            "import": {
+                "title": "导入主题",
+                "hint": "粘贴调色板 JSON 文本。导入为整体替换；非法条目会被后端丢弃。",
+                "empty": "请先粘贴内容",
+                "tooLong": "导入内容过长（{{length}} 字符，上限 {{max}} 字符）。请删掉不必要的内容后重试。",
+                "failed": "导入失败",
+                "failedTooLong": "导入失败：内容过长",
+                "textKept": "粘贴内容已保留，可修改后重试。",
+                "busy": "正在导入…",
+                "partialNotice": "已导入，但后端拒绝了 {{count}} 条：\n",
+                "partialToast": "已导入（部分条目被拒绝）",
+                "partialStatus": "已导入（{{count}} 条被拒绝）",
+                "partialStatusReadbackFailed": "已导入（{{count}} 条被拒绝，回读失败）",
+                "doneNotice": "已导入并写入 theme.json。",
+                "done": "已导入",
+                "failedNotice": "导入失败：{{error}}"
+            },
+            "readbackFailedNote": "已写入，但回读失败，面板显示可能不是最新值，请点「重新读取」。",
+            "readbackFailedHint": "回读失败，面板显示可能不是最新值，请点「重新读取」。"
+        },
+        "library": {
+            "family": {
+                "glassy": "液态玻璃",
+                "gradient": "渐变",
+                "dark": "暗色",
+                "light": "浅色",
+                "texture": "纸感",
+                "minimal": "极简",
+                "custom": "自定义",
+                "other": "其他",
+                "favorites": "收藏"
+            },
+            "empty": "仓库还是空的。调好配色后点「保存」存成自己的主题；别人分享的 .zip / .json 用「导入」收进来，之后随时切回来，也能「分享」成 zip 发给别人。",
+            "item": {
+                "untitled": "未命名",
+                "builtin": "内置",
+                "noTime": "未记录时间",
+                "counts": "亮 {{light}} / 暗 {{dark}} 项",
+                "hasImage": "含背景图",
+                "noMaterialTitle": "这套主题不带高级材质；应用后会关闭高级材质（你手调的参数会保留）",
+                "noMaterial": "无材质",
+                "materialFallback": "材质",
+                "materialTitle": "自带高级材质：{{material}}",
+                "materialOffByDefault": "（主题里默认未启用）",
+                "materialChip": "材质 · {{material}}",
+                "noNote": "没有简介 · 点「编辑」写一句，分享时会一起带走",
+                "noNoteTitle": "简介会显示在卡片上，也会写进分享包的 theme.json",
+                "tagTitle": "只看「{{tag}}」主题",
+                "favOn": "★ 已收藏",
+                "favOff": "☆ 收藏",
+                "unfavAria": "取消收藏 {{name}}",
+                "favAria": "收藏 {{name}}",
+                "unfavTitle": "取消收藏",
+                "favTitle": "收藏（进「收藏」分类，并在「全部」里置顶）",
+                "edit": "编辑",
+                "editTitle": "改名称 / 备注 / 标签（id 不变，收藏和排程照旧认它）",
+                "editAria": "编辑主题信息 {{name}}",
+                "apply": "应用",
+                "applyAria": "应用主题 {{name}}",
+                "share": "分享",
+                "shareTitle": "导出成 zip（含背景图片）",
+                "shareAria": "分享主题 {{name}}",
+                "jsonTitle": "复制成纯文本 JSON（贴给对方，对方在「导入」里粘贴即可）",
+                "jsonAria": "复制主题 JSON {{name}}",
+                "delete": "删除",
+                "deleteAria": "删除主题 {{name}}"
+            },
+            "filter": {
+                "all": "全部"
+            },
+            "emptyState": {
+                "query": "没有匹配「{{query}}」的主题，换个词试试，或点「全部」清空筛选。",
+                "favorites": "还没有收藏任何主题：点主题卡片下方的「☆ 收藏」按钮就能收藏，收藏会排在「全部」最前面。",
+                "custom": "还没有自定义主题：「导入包」可以导入别人分享的 .zip / .json；调好配色点「保存」也会存到这里。",
+                "tag": "没有「{{tag}}」标签的主题，点「全部」看所有。",
+                "family": "这个风格族下还没有主题，试试别的族或「全部」。"
+            },
+            "loadFailed": "仓库读取失败：{{error}}",
+            "shuffle": {
+                "none": "还没有可随机的内置主题",
+                "picked": "换个心情：{{name}}"
+            },
+            "save": {
+                "busy": "正在保存到仓库…",
+                "currentTheme": "当前主题",
+                "doneWithNote": "已保存「{{name}}」到自定义（简介已写入，分享时一起带走）",
+                "done": "已保存「{{name}}」到自定义",
+                "doneStatus": "已保存到自定义主题",
+                "failedNotice": "保存到仓库失败：{{error}}",
+                "failed": "保存失败",
+                "failedStatus": "保存到仓库失败"
+            },
+            "apply": {
+                "busy": "正在切换主题…",
+                "thisTheme": "该主题",
+                "materialOff": "，已关闭高级材质（这套主题不带材质）",
+                "materialSwitched": "，材质已换成主题自带的那套",
+                "materialLocked": "，材质已锁定（保留你手调的设置）",
+                "switched": "已切换到「{{name}}」",
+                "doneStatus": "已切换主题",
+                "failedNotice": "切换主题失败：{{error}}",
+                "failed": "切换失败",
+                "failedStatus": "切换主题失败"
+            },
+            "share": {
+                "busy": "正在打包…",
+                "noContent": "后端没有返回包内容",
+                "doneWithImages": "已导出 {{filename}}（含 {{images}} 张图）",
+                "done": "已导出 {{filename}}",
+                "doneStatus": "已导出分享包",
+                "failedNotice": "导出分享包失败：{{error}}",
+                "failedStatus": "导出分享包失败"
+            },
+            "json": {
+                "busy": "正在生成主题 JSON…",
+                "noContent": "后端没有返回 JSON 内容",
+                "hint": "这是「{{name}}」的纯文本主题（亮 {{light}} / 暗 {{dark}} 项）。贴给别人以后，对方在「导入」里粘贴就能用。",
+                "imagesStripped": "注意：这套主题引用了 {{count}} 张背景图，图片没法放进文本，已从 JSON 里摘掉（对方会得到纯色背景）。要连图片一起分享请用「分享」导出 zip。",
+                "title": "主题 JSON · {{name}}",
+                "doneStatus": "已生成主题 JSON，点「复制并关闭」即可复制",
+                "failedNotice": "生成主题 JSON 失败：{{error}}",
+                "failed": "生成失败",
+                "failedStatus": "生成主题 JSON 失败"
+            },
+            "meta": {
+                "title": "编辑主题信息 · {{name}}",
+                "hint": "只改名称、备注和标签。条目 id 不变 —— 收藏和「按时段自动换主题」里选的都是它，改名不会让它们失效。",
+                "nameRequired": "名称不能为空",
+                "saving": "保存中…",
+                "unchanged": "没有变化，已保持原样",
+                "updated": "已更新「{{name}}」",
+                "updatedStatus": "主题信息已更新",
+                "failedNotice": "修改主题信息失败：{{error}}",
+                "failed": "修改失败，看看左侧提示"
+            },
+            "delete": {
+                "confirmButton": "确认删除",
+                "scheduledNotice": "「{{name}}」正被自动换主题使用（{{slots}}）。删掉之后这些时段会保持当时正在用的主题，不会自动换。",
+                "clickAgainScheduled": "再点一次「确认删除」才会删掉（它正被自动换主题使用）",
+                "batchCount": "删除所选（{{count}}）",
+                "batchConfirm": "把选中的 {{count}} 个主题移进回收站？之后可以在「运行状态」的回收站里恢复。",
+                "batchPartial": "已将 {{deleted}} 个主题移入回收站，{{failed}} 个没删掉：{{error}}",
+                "batchDone": "已将 {{count}} 个主题移入回收站，可在「运行状态」的回收站里恢复。",
+                "batchSelectAria": "选择主题 {{name}}",
+                "batchTooMany": "一次最多删除 {{limit}} 个（回收站只保留最近 {{limit}} 个），请少选一些。",
+                "clickAgain": "再点一次「确认删除」才会删掉",
+                "busy": "正在删除…",
+                "done": "已删除",
+                "doneStatus": "已删除仓库条目",
+                "failedNotice": "删除失败：{{error}}",
+                "failed": "删除失败"
+            },
+            "trash": {
+                "deleted": "已将「{{name}}」移入回收站。",
+                "undoDelete": "撤销删除",
+                "title": "回收站",
+                "count": "{{count}} / {{limit}} 项 · {{size}}",
+                "view": "查看",
+                "empty": "清空",
+                "scheduleUses": "曾用于 {{count}} 个自动换主题时段",
+                "restore": "恢复",
+                "close": "关闭",
+                "hint": "删除的主题会先放在这里，最多保留最近 {{limit}} 套，可恢复或永久删除。恢复时只会重新占用仍然空着的时段。",
+                "emptyList": "回收站是空的",
+                "restoring": "正在恢复…",
+                "restored": "已恢复「{{name}}」。",
+                "restoredWithSchedule": "已恢复「{{name}}」和 {{count}} 个自动换主题时段。",
+                "restoreFailed": "无法恢复主题：{{error}}",
+                "confirmEmpty": "永久删除回收站中的 {{count}} 项？删除后无法恢复。",
+                "emptying": "正在清空回收站…",
+                "emptied": "回收站已清空",
+                "emptyFailed": "无法清空回收站：{{error}}"
+            },
+            "file": {
+                "readFailed": "读取文件失败",
+                "readFailedNotice": "读取文件失败：{{error}}"
+            },
+            "importArchive": {
+                "busy": "正在导入分享包…",
+                "untitled": "未命名主题",
+                "doneWithImages": "已导入「{{name}}」到仓库（含 {{images}} 张背景图）",
+                "done": "已导入「{{name}}」到仓库",
+                "notApplied": "它还没有生效 —— 在列表里点「应用」才会切换过去。",
+                "doneShort": "已导入到仓库",
+                "failedNotice": "导入分享包失败：{{error}}",
+                "failedStatus": "导入分享包失败"
+            },
+            "backup": {
+                "empty": "主题仓库还是空的，没有可备份的主题",
+                "busy": "正在打包主题库…",
+                "doneTitle": "主题库已备份（{{count}} 套）",
+                "restoreHint": "换电脑或重装后，用「恢复备份」选这个 zip 就能整套拿回来（只新增、不覆盖）。",
+                "done": "已备份 {{count}} 套主题",
+                "doneStatus": "已备份主题库",
+                "failedNotice": "备份主题库失败：{{error}}",
+                "failed": "备份失败",
+                "failedStatus": "备份主题库失败"
+            },
+            "restore": {
+                "readFailedNotice": "读取备份包失败：{{error}}",
+                "busy": "正在恢复主题库…",
+                "done": "已从备份恢复 {{count}} 套主题到仓库",
+                "skippedItem": "· {{name}}：{{reason}}",
+                "skipped": "有 {{count}} 套没能恢复：",
+                "notApplied": "恢复的主题只是进了仓库，点「应用」才会切换过去。",
+                "doneShort": "已恢复 {{count}} 套主题",
+                "doneStatus": "已恢复主题库",
+                "failedNotice": "恢复主题库失败：{{error}}",
+                "failed": "恢复失败",
+                "failedStatus": "恢复主题库失败"
+            },
+            "schedule": {
+                "zone": {
+                    "morning": "早晨",
+                    "day": "白天",
+                    "evening": "傍晚",
+                    "night": "夜晚"
+                },
+                "weekend": "周末",
+                "weekday": "工作日",
+                "windowOvernight": "{{start}}–次日 {{end}}",
+                "optionNone": "（不换，保持原样）",
+                "groupBuiltin": "内置主题",
+                "groupCustom": "我的主题",
+                "missing": "{{name}}（已不存在）",
+                "saveDirty": "保存 *",
+                "save": "保存",
+                "saveDirtyTitle": "有还没保存的选择（点这里保存）",
+                "saveTitle": "保存工作日与周末的时段选择",
+                "selectAria": "{{day}}{{zone}}用哪套主题",
+                "slotLabel": "{{day}} {{zone}}",
+                "nowUnknown": "还没读到当前时段。",
+                "loading": "正在读取…",
+                "notPicked": "未选（保持原样）",
+                "nowHead": "现在是{{day}}的{{zone}}（{{hour}} 点）",
+                "nowDisabled": "；自动换主题已关闭。",
+                "nowWillSwitchWeekend": "，到点会切到「{{theme}}」（周末表）。",
+                "nowWillSwitch": "，到点会切到「{{theme}}」。",
+                "nowStale": "；有 {{count}} 个时段引用的主题已不在仓库里（重新导入那套主题或重新选一个就会恢复）。",
+                "nowNotPicked": "；这个时段还没选主题，到点不会换。",
+                "loadFailed": "读取排程失败：{{error}}",
+                "saving": "正在保存自动换主题…",
+                "savedSwitched": "已保存，并切换到「{{name}}」",
+                "savedSwitchedStatus": "自动换主题已生效",
+                "savedDisabled": "已保存（自动换主题已关闭）",
+                "savedDisabledStatus": "自动换主题已关闭",
+                "savedNoTheme": "已保存；这个时段还没选主题",
+                "savedStatus": "自动换主题已保存",
+                "saveFailedNotice": "保存自动换主题失败：{{error}}",
+                "saveFailedStatus": "保存自动换主题失败"
+            },
+            "tools": {
+                "hideTags": "收起标签",
+                "moreTags": "还有 {{count}} 个标签"
+            }
+        },
+        "sync": {
+            "blockerDirty": "面板里有 {{count}} 项还没应用的改动",
+            "blockerModal": "正在编辑弹窗内容",
+            "blockerBusy": "正在处理上一次操作",
+            "blockerUnknown": "有未完成的操作",
+            "reasonSeparator": "、",
+            "blockedNotice": "磁盘上的主题被外部改动了（可能是按时段自动换主题，或别的窗口）。\n面板里{{reasons}}，为了不覆盖你的改动，没有自动刷新。\n想现在跟上：先应用或「还原本组」清掉面板里的改动；想放弃面板改动直接跟上，就点「重新读取」。",
+            "blockedToast": "磁盘主题已变化，未自动覆盖",
+            "failureNotice": "面板已经连续 {{count}} 次读不到 theme.json，「外部改动自动跟随」暂时不可用。\n你仍然可以手动编辑；如果一直这样，点「运行状态」看看主题服务是否还正常。",
+            "failureStatus": "外部改动感知不可用",
+            "syncedToast": "已同步外部改动：{{name}}",
+            "syncedStatus": "已同步外部改动",
+            "loadedNotice": "已读取当前主题：亮色 {{light}} 项 / 暗色 {{dark}} 项",
+            "loadedStatus": "已读取 · 亮色 {{light}} / 暗色 {{dark}}",
+            "loadFailedNotice": "读取失败：{{error}}\n（后端主题服务可能没响应；面板仍可编辑，点击「应用」会重试。）",
+            "loadFailedStatus": "读取失败",
+            "reloadConfirm": "面板里有 {{count}} 项还没应用的改动。\n「重新读取」会丢弃它们（不可恢复）。继续？",
+            "reloadDiscarded": "已重新读取，丢弃了 {{count}} 项未应用的改动。"
+        },
+        "misc": {
+            "untitled": "未命名",
+            "untitledTheme": "未命名主题",
+            "revertNoneDark": "当前暗色组没有改动",
+            "revertNoneLight": "当前亮色组没有改动",
+            "revertedDark": "已还原暗色组改动",
+            "revertedLight": "已还原亮色组改动",
+            "dropMultiple": "一次只能导入一个文件，已用第一个",
+            "dropUnsupportedNotice": "只支持拖入 .zip 分享包或 .json 主题文件。",
+            "dropUnsupportedToast": "文件类型不支持",
+            "dropBusy": "正在忙，等这一步做完再拖",
+            "dropReading": "正在读取「{{name}}」…",
+            "cssBlockLight": "{{name}} · 亮色",
+            "cssBlockDark": "{{name}} · 暗色",
+            "cssHeader": "{{name}} —— 由 N.E.K.O 主题工作室导出（{{date}}）",
+            "cssEmpty": "当前调色板是空的，没有可导出的变量",
+            "variant": {
+                "warm": "更暖",
+                "cool": "更冷",
+                "bright": "更亮",
+                "deep": "更深",
+                "random": "随机微调"
+            },
+            "variantLabel": "变体 · {{label}}",
+            "variantNoColors": "当前配色里没有可调整的颜色变量",
+            "wallpaperFilled": "已填入 {{count}} 个变量（Ctrl+Z 可撤销）",
+            "wallpaperGenerated": "已按「{{label}}」生成整套配色：先看看效果，满意再点「应用」，不满意 Ctrl+Z 撤销。",
+            "wallpaperDefaultName": "壁纸",
+            "wallpaperNotImage": "请选一张图片（png / jpg / webp / gif）",
+            "wallpaperTooLarge": "图片太大了（上限 12 MB），先压缩一下再试",
+            "wallpaperReadFailed": "这张图片读不出来，换一张试试",
+            "wallpaperDecodeFailed": "这张图片解码失败，换一张试试",
+            "wallpaperNoColors": "这张图里没取到可用颜色（可能大部分是透明的）",
+            "wallpaperFailed": "生成配色失败：{{error}}",
+            "glow": {
+                "low": "低",
+                "medium": "中",
+                "high": "高"
+            },
+            "glowApplied": "光效强度已设为「{{label}}」（四项变量，Ctrl+Z 可撤销）",
+            "font": {
+                "system": "系统默认",
+                "sans": "无衬线",
+                "mono": "等宽"
+            },
+            "fontApplied": "字体已切到「{{label}}」（点「应用」才生效，Ctrl+Z 可撤销）",
+            "libraryCount": "仓库共 {{count}} 个主题",
+            "materialsLoadFailed": "材质中心没能加载（materials.js 未就绪），刷新面板可以重试。",
+            "dropOverlay": "松开即可导入主题（.zip 分享包 / .json）"
+        },
+        "health": {
+            "help": {
+                "noChange": {
+                    "title": "主题装上了但界面完全没变",
+                    "body": "按顺序试：①确认在面板里选过颜色并点了「应用」；②彻底关掉 N.E.K.O 再重开（已打开的窗口不会自己重载）；③看「应用侧上报」这一行 —— 一直没有上报，说明聊天窗口还没被打开过。"
+                },
+                "whyApply": {
+                    "title": "为什么每次改完都要点「应用」",
+                    "body": "面板上的值只是草稿，点「应用」才会写进数据目录里的 theme.json；聊天窗口每 1.5 秒读一次它，所以应用之后一般秒级生效。"
+                },
+                "lightDark": {
+                    "title": "亮色 / 暗色是两套独立配色",
+                    "body": "面板顶部的「亮色 / 暗色」互相独立。只改了暗色组时，本体处在亮色模式下当然看不到变化。"
+                },
+                "storage": {
+                    "title": "主题数据存在哪",
+                    "body": "点这张卡片上的「复制数据目录」：theme.json（当前主题）、themes/（主题仓库）、backgrounds/（背景图）、schedule.json（按时段自动换主题）、diagnostics.json（加载器上报）。"
+                },
+                "migrate": {
+                    "title": "换机器 / 重装怎么办",
+                    "body": "面板底部可以「导出」分享包（zip，含背景图）。新机器上导入即可；整个主题仓库也能一次导出，不用一棵树一棵树地存。"
+                },
+                "background": {
+                    "title": "背景图为什么没显示",
+                    "body": "背景图由本体后端从数据目录的 backgrounds/ 提供。上传后如果面板预览正常、聊天窗口却没变，先确认「应用侧上报」里没有报错、当前主题是启用状态。"
+                },
+                "modalTitle": "主题没生效？",
+                "modalHint": "这是主题工坊最常见的问题清单。改完关掉 N.E.K.O 再重开，通常就能看到变化。"
+            },
+            "stateNoService": "读取失败：拿不到主题服务状态",
+            "key": {
+                "dataDir": "数据目录",
+                "currentTheme": "当前主题",
+                "vars": "配色变量",
+                "library": "主题仓库",
+                "backgrounds": "背景图",
+                "loader": "加载器资源",
+                "report": "应用侧上报",
+                "loaderState": "加载器状态",
+                "loaderError": "加载器报错",
+                "windowMismatch": "窗口对不上",
+                "styleMissing": "样式未生效",
+                "windowLagging": "窗口滞后一拍"
+            },
+            "unknown": "未知",
+            "themeEnabled": "{{name}}（启用中）",
+            "themeDisabled": "出厂默认配色（主题「{{name}}」已停用，打开启用开关再点「应用」）",
+            "varsEmpty": "还是出厂空主题 —— 选好颜色点「应用」才会生效",
+            "varsCount": "亮色 {{light}} 项 · 暗色 {{dark}} 项",
+            "libraryCount": "{{custom}} 套自定义 · {{builtin}} 套内置",
+            "backgroundCount": "{{count}} 张",
+            "loaderMissing": "读不到 static/theme-studio/loader/ 下的两件套",
+            "unknownPage": "未知页面",
+            "reportStats": " · nts 变量 {{vars}} · 样式规则 {{rules}}",
+            "loaderDisabled": "上报说主题是停用的 —— 打开面板的启用开关再点「应用」",
+            "windowMismatch": "上报的窗口 {{page}} 一个变量都没应用 —— 那个窗口还是默认外观，刷新它试试",
+            "styleMissing": "上报说注入了 {{count}} 个变量，但样式规则数为 0 —— 注入的 <style> 已被清理",
+            "windowLagging": "theme.json 已经是空主题，窗口上报的还是上一次的 {{count}} 个变量 —— 1.5 秒内会自己跟上",
+            "noReport": "还没有收到上报 —— 打开一次聊天窗口后就会有",
+            "keyLabel": "{{key}}：",
+            "stateOk": "一切正常：主题已经生效",
+            "stateWarn": "主题服务正常，但有几处需要注意",
+            "stateBad": "有问题：主题可能没有生效",
+            "refreshedToast": "运行状态已刷新",
+            "stateLoadFailed": "读取失败：{{error}}",
+            "verifyMismatch": "主题已写进 theme.json，但窗口那边还没应用上 —— 看「运行状态」卡片里的「窗口对不上 / 样式未生效」，刷新那个窗口或重启应用即可。",
+            "dataDirMissing": "还没有读到数据目录",
+            "dataDirCopied": "数据目录已复制",
+            "dataDirNotice": "数据目录：{{path}}"
+        },
+        "modal": {
+            "copyAndClose": "复制并关闭",
+            "save": "保存",
+            "ok": "确定",
+            "copied": "已复制到剪贴板",
+            "copyFailedSelected": "复制失败，文本已选中 —— 按 Ctrl+C 手动复制",
+            "dumpCopied": "调色板 JSON 已复制",
+            "copyFailedManual": "复制失败，请手动选择文本",
+            "cssTitle": "CSS 变量片段 · {{name}}",
+            "cssCurrentPalette": "当前配色",
+            "cssHint": "这段 CSS 可以直接贴到别处使用：亮色在 :root，暗色在 :root[data-theme=\"dark\"]。变量名就是面板里那一列，颜色值已经按当前改动算好（不需要先「应用」）。"
+        },
+        "guide": {
+            "focusHint": "键盘焦点被 N.E.K.O 主窗口占着：先点一下主窗口（比如聊天输入框），再回来就能输入"
+        },
+        "materials": {
+            "mode": {
+                "dark": "暗色",
+                "light": "亮色"
+            },
+            "error": {
+                "panelNotReady": "面板接口尚未就绪",
+                "backendDown": "后端插件可能未启动",
+                "specFailed": "参数表读取失败：{{error}}"
+            },
+            "preview": {
+                "compileFailed": "预览编译失败：{{error}}",
+                "varCount": "{{count}} 个变量",
+                "metaLine": " · 预设 {{preset}} · 画质 {{quality}} · {{mode}}",
+                "readabilityWarn": "玻璃基底不透明度 {{percent}}%，压在上面的文字容易看不清 —— 调低「透明度」或「染色浓度」可恢复对比度（当前设置仍然可用，只是观感偏实）。",
+                "bgLight": "背景：浅色",
+                "bgDark": "背景：深色",
+                "title": "实时预览 · {{mode}}",
+                "off": "材质未启用",
+                "compareTitle": "右半屏显示参数默认值下的原始材质，拖滑块时能直接对比调整前后",
+                "compare": "对比原始",
+                "bgTitle": "切换预览壁纸深浅：浅色壁纸看浅色场景是否看得清，深色壁纸看白玻璃反光",
+                "original": "原始",
+                "current": "当前",
+                "compiling": "正在编译预览…"
+            },
+            "nav": {
+                "overview": "总览",
+                "base": "基础材质",
+                "dye": "玻璃染色",
+                "light": "光线反射",
+                "refract": "折射色散",
+                "liquid": "液态动态",
+                "surface": "表面细节",
+                "anim": "动画交互",
+                "components": "组件材质",
+                "presets": "预设与画质"
+            },
+            "group": {
+                "baseSurface": "基础面",
+                "dye": "玻璃染色",
+                "edge": "边缘光",
+                "inner": "内部高光",
+                "ambient": "环境反射",
+                "dynamic": "动态光照",
+                "refract": "折射",
+                "dispersion": "色散",
+                "liquid": "液态动态",
+                "noise": "噪点",
+                "radius": "圆角",
+                "border": "边框",
+                "shadow": "阴影",
+                "switches": "开关",
+                "durations": "时长",
+                "feedback": "交互反馈"
+            },
+            "row": {
+                "clearDarkTitle": "清除这一项的暗色覆盖，回到亮色",
+                "clearDark": "暗色 ✕",
+                "on": "开启",
+                "off": "关闭"
+            },
+            "toast": {
+                "badColor": "颜色格式不支持：{{value}}（用 #rrggbb 或 rgb()/rgba()）",
+                "presetClearedDark": "切换预设会清空暗色覆盖：已清除 {{count}} 项（预设是整套替换）。",
+                "presetNameEmpty": "先给预设起个名字。",
+                "presetNameTaken": "「{{name}}」和内置预设重名了，换一个。",
+                "presetSaved": "已存为「{{name}}」，点「应用材质」写入磁盘。",
+                "presetDeleted": "已删除自定义预设「{{name}}」。",
+                "presetDeleteFailed": "删除预设失败：{{error}}",
+                "presetNameExists": "已经有名为「{{name}}」的预设了。",
+                "presetDuplicated": "已复制为「{{name}}」。",
+                "presetRenamed": "已改名为「{{name}}」。",
+                "presetRenameFailed": "操作预设失败：{{error}}",
+                "compResetAll": "所有组件已回到继承全局",
+                "followOn": "材质将跟随主题切换",
+                "followOff": "材质已锁定：切换主题时保留当前设置",
+                "reverted": "已丢弃材质改动",
+                "darkCleared": "已清除 {{count}} 项暗色覆盖，全部回到亮色"
+            },
+            "search": {
+                "found": "找到 {{count}} 项（跨全部界面），清空搜索回到当前界面。",
+                "none": "没有匹配「{{query}}」的参数。"
+            },
+            "hint": {
+                "darkGlass": "暗色主题下玻璃底会自动压暗（保留你的染色倾向）：宿主的暗色文字是浅色，白底会看不清，所以暗色模式下看到的是深色玻璃。",
+                "lightDark": "亮色与暗色分别调：暗色只保存与亮色不同的值，未覆盖项自动继承亮色。"
+            },
+            "overview": {
+                "status": "当前状态",
+                "advanced": "高级材质",
+                "enabled": "已启用",
+                "disabled": "未启用",
+                "preset": "材质预设",
+                "quality": "性能模式",
+                "darkOverrides": "暗色覆盖",
+                "itemCount": "{{count}} 项",
+                "components": "组件自定义",
+                "paramTotal": "参数总数",
+                "quickPresets": "快捷预设",
+                "limits": "能力边界",
+                "limitsHint": "高级材质只作用于颜色、模糊、折射、光照、圆角、边框与阴影：不改 display/position/尺寸/溢出/z-index，因此不会破坏布局；文本对比度由面板的「可读性自检」兜底。关闭插件或关掉这里的开关后，应用侧会整体撤掉材质层，回到原始主题。",
+                "fallbackHint": "不支持 backdrop-filter 的环境（旧内核 / 硬件加速被禁用）会自动降级为纯色半透明，不会出现半渲染的毛玻璃。"
+            },
+            "preset": {
+                "customDesc": "自定义预设 · 点击整套套用"
+            },
+            "presetDesc": {
+                "clear": "清透玻璃，弱染色",
+                "frosted": "磨砂雾面，常规阅读",
+                "liquid": "苹果液态玻璃：大圆角、高饱和、顶部镜面亮线与内折射",
+                "smoke": "烟熏暗调，低饱和",
+                "soft": "柔和低对比，长时使用",
+                "prism": "棱镜色散，强边缘光"
+            },
+            "presets": {
+                "builtin": "材质预设",
+                "builtinHint": "预设是整套参数替换：切换后五节参数会整体重置为该预设的值，不会残留上一个预设的调校。",
+                "mine": "我的预设",
+                "delete": "删除",
+                "mineEmpty": "还没有自定义预设。把参数调到满意后，在下面起个名存起来（会随「应用材质」写进 theme.json）。",
+                "rename": "改名",
+                "duplicate": "复制",
+                "renamePrompt": "把「{{name}}」改名为：",
+                "duplicatePrompt": "复制「{{name}}」为：",
+                "copySuffix": "副本",
+                "namePlaceholder": "给当前这套材质起个名（≤40 字）",
+                "save": "存为预设",
+                "mineHint": "删除自定义预设会立即写盘（不依赖「应用材质」）；保存则跟随「应用材质」一起提交，导出/分享包里也会带上。",
+                "quality": "性能模式",
+                "qualityHint": "省电：模糊减半、关闭折射/动态/噪点/追光；高品质：加强边缘光与环境反射；极致：全部效果满配。",
+                "reset": "重置",
+                "resetDefaults": "恢复默认材质参数"
+            },
+            "qualityDesc": {
+                "saver": "省电优先，效果减半",
+                "balanced": "均衡，默认档",
+                "high": "高品质，光效加强",
+                "ultra": "极致，全部效果满配"
+            },
+            "comp": {
+                "inherit": "继承全局",
+                "preset": "套用预设",
+                "custom": "自定义",
+                "presetNote": "取「{{preset}}」的透明度 / 模糊 / 圆角 / 边框 / 阴影",
+                "inheritNote": "跟随全局材质，不产生专属变量",
+                "hint": "组件级材质只影响对应组件：选「继承全局」时不产生任何专属变量，绝不会覆盖全局设置。",
+                "customCount": "已自定义 {{count}} 个组件",
+                "allInherit": "全部组件跟随全局",
+                "resetAll": "全部继承全局",
+                "scopeHint": "组件级只覆盖透明度 / 模糊 / 圆角 / 边框 / 阴影五项，颜色仍走全局，避免局部配色跳脱。",
+                "stripHint": "缩略块直接吃组件变量：选「继承全局」时回退全局值，选「自定义」时立刻变化（只示意颜色 / 圆角 / 模糊 / 边框 / 阴影）。"
+            },
+            "head": {
+                "dirty": "材质改动 {{count}} 项待应用",
+                "clearDarkCount": "清除暗色覆盖（{{count}}）",
+                "title": "高级材质",
+                "searchPlaceholder": "搜索参数（如 色散 / 圆角 / blur）",
+                "clearDark": "清除暗色覆盖",
+                "enable": "启用",
+                "followTitle": "打开时，切换主题会用主题自带的材质替换当前设置；关掉则保留你手调的这套材质",
+                "follow": "跟随主题",
+                "modeTitle": "分别编辑亮色与暗色材质",
+                "qualityTitle": "性能模式",
+                "revert": "回到已保存",
+                "masterOff": "主题总开关（面板上方的「启用主题」）已关闭 —— 高级材质暂时不会生效。"
+            },
+            "sample": {
+                "tag": "友",
+                "message": "玻璃材质实时预览",
+                "button": "普通按钮",
+                "dialogTitle": "弹窗标题",
+                "dialogBody": "弹窗内容会吃「弹窗」这一组件的材质。"
+            }
+        },
+        "page": {
+            "title": "主题工坊 - Project N.E.K.O.",
+            "header": {
+                "title": "主题工坊",
+                "paletteInfoAria": "调色板信息"
+            },
+            "restartHint": {
+                "text": "第一次使用（或刚更新过本体）请重启一次 N.E.K.O 窗口 —— 主题才会在聊天界面里生效。",
+                "dismiss": "知道了，不再提示"
+            },
+            "toolbar": {
+                "aria": "工具栏",
+                "modeAria": "明暗模式",
+                "light": "亮色",
+                "dark": "暗色",
+                "searchPlaceholder": "搜索变量、中文名或说明…",
+                "searchAria": "搜索变量",
+                "searchClear": "清空搜索",
+                "onlyDirtyTitle": "只显示本次会话里改过或清空过的变量（含另一组）",
+                "onlyDirty": "只看改动",
+                "toggleGroupsTitle": "展开或收起所有变量分组（状态会记住）",
+                "themeName": "主题名",
+                "themeNamePlaceholder": "默认",
+                "enabledTitle": "关闭后加载器不会向应用注入任何样式",
+                "enabled": "启用",
+                "undo": "撤销",
+                "redo": "重做",
+                "revertModeTitle": "丢弃本组尚未应用的改动",
+                "revertMode": "还原本组"
+            },
+            "editor": {
+                "aria": "变量编辑器",
+                "closeNotice": "关闭提示",
+                "noMatch": "没有匹配的变量。换个关键词，或关掉「只看改动」。"
+            },
+            "preview": {
+                "aria": "预览",
+                "title": "实时预览",
+                "userMessage": "今晚想聊点什么？",
+                "avatar": "猫",
+                "aiMessage": "我正在听～要不要试试新的配色？",
+                "link": "这是一个链接",
+                "chip": "推荐 chip",
+                "inputPlaceholder": "说点什么…",
+                "send": "发送",
+                "compareCurrent": "当前",
+                "compareRehearsal": "预演",
+                "foot": "预览用内联样式模拟本面板的编辑状态，实际效果以应用窗口为准。"
+            },
+            "health": {
+                "title": "运行状态",
+                "refreshAria": "重新读取运行状态",
+                "refreshTitle": "重新读取",
+                "copyDirTitle": "复制主题数据所在的目录，方便排查",
+                "copyDir": "复制数据目录",
+                "helpTitle": "查看常见问题",
+                "help": "为什么没生效？",
+                "foot1": "主题变量由聊天窗口里的加载器应用，这里能看到它最近一次上报的诊断。数据目录里放着 ",
+                "foot2": "（当前主题）、",
+                "foot3": "（主题仓库）与 ",
+                "foot4": "（背景图）。"
+            },
+            "audit": {
+                "title": "可读性自检",
+                "fixAllTitle": "把所有低于阈值的文字色自动调到刚好达标（只填值，点「应用」才生效）",
+                "fixAll": "全部自动修正",
+                "recheckTitle": "按 WCAG 阈值重新扫一遍当前配色",
+                "recheck": "重新检查",
+                "foot": "按 WCAG 2.1：正文需 ≥ 4.5:1，次要文字 / 占位符 / chip / 链接需 ≥ 3.0:1。点击条目跳到对应变量行；「自动修正」只填建议值，不会直接应用。"
+            },
+            "library": {
+                "title": "主题仓库",
+                "searchPlaceholder": "搜主题名 / 描述 / 标签",
+                "searchAria": "搜索主题名、描述或标签",
+                "shuffleTitle": "随机换一套内置主题，不满意再点一次",
+                "shuffle": "换个心情",
+                "refreshAria": "刷新仓库列表",
+                "refreshTitle": "刷新列表",
+                "saveNamePlaceholder": "保存为…（留空用当前名称）",
+                "saveNameAria": "仓库条目名称",
+                "saveTitle": "把当前调色板存成「自定义」主题",
+                "save": "保存",
+                "notePlaceholder": "一句话简介（可留空）：这套主题想表达什么？分享时会一起带走",
+                "noteAria": "主题简介（会随分享包一起导出）",
+                "actionsAria": "主题库操作",
+                "importTitle": "导入别人分享的 .zip 主题包或 .json 主题文件，存进「自定义」",
+                "import": "导入",
+                "backupTitle": "把「自定义」里的全部主题打包成一个 zip 存到桌面；换电脑或重装后整套拿回来",
+                "backup": "备份全部",
+                "restoreTitle": "从「备份全部」导出的 zip 里恢复主题库（只新增，不覆盖已有主题）",
+                "restore": "恢复备份",
+                "wallpaperTitle": "选一张壁纸，按它的主色自动生成一整套亮色/暗色配色（只填到面板，点「应用」才生效）",
+                "wallpaper": "壁纸配色",
+                "variantsTitle": "在当前配色基础上换一种气质：更暖 / 更冷 / 更亮 / 更深（可 Ctrl+Z 撤销）",
+                "randomTweak": "随机微调",
+                "randomTweakTitle": "在当前配色基础上随机做一点小幅度的色相 / 饱和度 / 明度调整（可 Ctrl+Z 撤销）",
+                "select": "多选",
+                "selectTitle": "勾选多个自定义主题一起删除（会移进回收站）",
+                "deleteSelected": "删除所选",
+                "variants": "变体",
+                "familyAria": "按风格族筛选主题",
+                "tagsAria": "按标签筛选主题",
+                "foot1": "「分享」导出的 zip 里带 ",
+                "foot2": " 和用到的背景图片，别人用「导入」就能一次拿走全套配色；只发 ",
+                "foot3": " 单文件也能导入。收藏（☆）会排在「全部」最前面，分类里的「收藏」「自定义」可以只找自己关心的那几套。",
+                "foot4": "「备份全部」把「自定义」里的所有主题打成一个 zip（含背景图），换电脑或重装后用「恢复备份」选它即可 —— 只新增、不覆盖。"
+            },
+            "quick": {
+                "title": "快捷调校",
+                "glow": "光效强度",
+                "glowLow": "低",
+                "glowMedium": "中",
+                "glowHigh": "高",
+                "font": "字体",
+                "fontAria": "字体预设",
+                "fontSystem": "系统默认",
+                "fontSans": "无衬线",
+                "fontMono": "等宽",
+                "foot": "这两组是「一键铺开」：只把一组变量填进编辑区，点「应用」才写进服务器；不满意按 Ctrl+Z 一步退回。"
+            },
+            "schedule": {
+                "title": "按时段自动换主题",
+                "enabled": "启用",
+                "weekendToggle": "周末（周六 / 周日）用另一套",
+                "foot1": "到点由插件改写当前主题，所有窗口 1~2 秒内自动跟着变，不用重开应用。时段按",
+                "footLocalTime": "本地时间",
+                "foot2": "划分；某时段不选就保持当时正在用的主题不动。勾上「周末用另一套」可以让周六周日和平时不一样（不勾 = 沿用工作日那张表）。"
+            },
+            "changes": {
+                "title": "待应用的改动",
+                "revertAllTitle": "把下面这些改动全部撤销（服务器上的配色不动）",
+                "revertAll": "全部撤销",
+                "foot": "这些改动只在本面板里；点上面的「应用」才会写进服务器。单条「撤销」只回退这一行。"
+            },
+            "dump": {
+                "title": "当前调色板",
+                "aiPromptTitle": "把当前配色整理成一段提示词，复制给任意 AI 让它继续改",
+                "aiPromptAria": "复制给 AI 的提示词",
+                "cssSnippetTitle": "把当前配色导出成 CSS 变量片段",
+                "cssSnippetAria": "导出 CSS 变量片段",
+                "toggleAria": "折叠或展开调色板 JSON",
+                "copyAria": "复制调色板 JSON",
+                "copyTitle": "复制 JSON"
+            },
+            "footer": {
+                "aria": "操作",
+                "resetTitle": "恢复内置默认主题，清空所有自定义颜色",
+                "reset": "重置",
+                "export": "导出",
+                "shareCard": "下载预览图",
+                "shareCardTitle": "把已保存的当前主题生成一张 PNG 预览图并下载",
+                "import": "导入",
+                "reload": "重新读取",
+                "applyHint": "应用"
+            },
+            "modal": {
+                "name": "名称",
+                "note": "备注",
+                "notePlaceholder": "一句话介绍这套配色，留空则清掉",
+                "tags": "标签",
+                "tagsPlaceholder": "用逗号分隔，最多 4 个（每个 12 字）",
+                "textAria": "调色板 JSON",
+                "cancel": "取消"
+            }
+        }
     }
 }
