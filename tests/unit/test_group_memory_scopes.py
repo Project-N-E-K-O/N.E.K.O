@@ -2365,10 +2365,13 @@ def test_persisted_fact_fields_matches_what_persist_actually_reads():
     not yet read slightly relaxes the guard without false failures."""  # noqa: DOCSTRING_CJK
     import ast
     import inspect
+    import textwrap
 
     import memory.facts as facts_module
 
-    tree = ast.parse(inspect.getsource(facts_module))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(
+        facts_module.FactStore._apersist_new_facts_locked
+    )))
     target = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
