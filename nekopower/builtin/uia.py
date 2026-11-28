@@ -460,7 +460,9 @@ class DesktopUiTree:
                     del self._snapshots[evict]
                 else:
                     del self._snapshots[oldest]
-        rendered = self.render(snap, screen_w=screen_w, screen_h=screen_h, offset=offset, max_tokens=cap)
+        rendered = self.render(
+            snap, screen_w=screen_w, screen_h=screen_h, offset=offset, max_tokens=cap, explicit=explicit
+        )
         return snap, rendered
 
     def render(
@@ -471,6 +473,7 @@ class DesktopUiTree:
         screen_h: int,
         offset: int = 0,
         max_tokens: int,
+        explicit: bool = True,
     ) -> str:
         """Render ``snap`` into bounded text with pagination notes when cut."""
         from utils.tokenize import count_tokens
@@ -491,8 +494,12 @@ class DesktopUiTree:
         page_lines = all_lines[offset:]
         # Reserve actual token overhead for header and worst-case pagination/truncation footers.
         worst_footer = (
-            f"[Showing controls {offset + 1}-{len(all_lines)} of {len(all_lines)}. "
-            f"Call ui_tree with offset={len(all_lines)} to see the rest.]"
+            (
+                f"[Showing controls {offset + 1}-{len(all_lines)} of {len(all_lines)}. "
+                f"Call ui_tree with offset={len(all_lines)} to see the rest.]"
+            )
+            if explicit
+            else f"[Showing first {len(all_lines)} of {len(all_lines)} controls. Call ui_tree to inspect the full control tree.]"
         )
         if snap.truncated_nodes > 0:
             worst_footer += (
@@ -504,10 +511,15 @@ class DesktopUiTree:
         notes: list[str] = []
         end_index = offset + shown
         if end_index < len(all_lines):
-            notes.append(
-                f"[Showing controls {offset + 1}-{end_index} of {len(all_lines)}. "
-                f"Call ui_tree with offset={end_index} to see the rest.]"
-            )
+            if explicit:
+                notes.append(
+                    f"[Showing controls {offset + 1}-{end_index} of {len(all_lines)}. "
+                    f"Call ui_tree with offset={end_index} to see the rest.]"
+                )
+            else:
+                notes.append(
+                    f"[Showing first {shown} of {len(all_lines)} controls. Call ui_tree to inspect the full control tree.]"
+                )
         elif offset > 0:
             notes.append(f"[Showing controls {offset + 1}-{end_index} of {len(all_lines)}.]")
         if snap.truncated_nodes > 0:
@@ -714,8 +726,8 @@ class WindowsUiaBackend:
         self,
         fn: Any,
         *args: Any,
-        cancel_event: threading.Event | None = None,
-        wait_timeout: float | None = None,
+        _cancel_event: threading.Event | None = None,
+        _wait_timeout: float | None = None,
         **kwargs: Any,
     ) -> Any:
         if self._worker_thread_id is not None and threading.get_ident() == self._worker_thread_id:
@@ -734,14 +746,16 @@ class WindowsUiaBackend:
         from concurrent.futures import TimeoutError as FutureTimeoutError
 
         future = executor.submit(_wrapped)
-        deadline = (time.monotonic() + wait_timeout) if wait_timeout is not None else None
+        deadline = (time.monotonic() + _wait_timeout) if _wait_timeout is not None else None
         while True:
-            if cancel_event is not None and cancel_event.is_set():
+            if _cancel_event is not None and _cancel_event.is_set():
+                future.cancel()
                 raise InterruptedError("stopped")
             slice_wait = 0.05
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    future.cancel()
                     raise TimeoutError("UI Automation worker timed out")
                 slice_wait = min(slice_wait, remaining)
             try:
@@ -829,7 +843,8 @@ class WindowsUiaBackend:
                 max_nodes=max_nodes,
                 timeout_seconds=timeout_seconds,
                 cancel_event=cancel_event,
-                wait_timeout=max(1.0, float(timeout_seconds)) + 2.0,
+                _cancel_event=cancel_event,
+                _wait_timeout=max(1.0, float(timeout_seconds)) + 2.0,
             )
         except TimeoutError as exc:
             raise UiaUnavailableError("UI Automation timed out while inspecting the window.") from exc
@@ -939,7 +954,7 @@ class WindowsUiaBackend:
     def locate(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
         try:
             return self._run_on_uia_thread(
-                self._locate_on_thread, control, wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
+                self._locate_on_thread, control, _wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
             )
         except TimeoutError:
             return None
@@ -975,7 +990,7 @@ class WindowsUiaBackend:
                     control,
                     int(px),
                     int(py),
-                    wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
+                    _wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
                 )
             )
         except TimeoutError:
@@ -1032,7 +1047,7 @@ class WindowsUiaBackend:
         try:
             return bool(
                 self._run_on_uia_thread(
-                    self._is_focused_on_thread, control, wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
+                    self._is_focused_on_thread, control, _wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
                 )
             )
         except TimeoutError:

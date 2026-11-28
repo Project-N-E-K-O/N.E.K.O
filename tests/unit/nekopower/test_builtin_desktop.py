@@ -1054,13 +1054,31 @@ def test_uid_from_explicit_ui_tree_survives_post_action_snippet_and_pagination(m
     typed = rig.act("type", {"uid": "1_1", "text": "proxy"})
     assert 'Typed 5 character(s) into control uid=1_1 (edit "Search").' in typed.text
 
-    # An intervening screenshot snippet does not clobber pagination of the explicit Settings snapshot.
+    # An intervening screenshot snippet does not suggest offset= into the explicit snapshot
+    # and does not clobber pagination of the explicit Settings snapshot.
     captures_before = len(fake.capture_calls)
-    rig.act("screenshot", {})
+    shot = rig.act("screenshot", {})
+    assert "offset=" not in shot.text
     assert len(fake.capture_calls) == captures_before + 1
     page2 = rig.act("ui_tree", {"window": "Settings", "offset": next_offset})
     assert f"Showing controls {next_offset + 1}-" in page2.text
     assert len(fake.capture_calls) == captures_before + 1
+
+
+def test_windows_uia_capture_tree_forwards_cancel_event_to_worker(monkeypatch: Any) -> None:
+    from nekopower.builtin.uia import WindowsUiaBackend
+
+    seen_cancel: list[Any] = []
+    backend = WindowsUiaBackend()
+
+    def fake_walk(**kwargs: Any) -> tuple[str, tuple[int, int, int, int], list[Any], int]:
+        seen_cancel.append(kwargs.get("cancel_event"))
+        return "Win", (0, 0, 100, 100), [], 0
+
+    monkeypatch.setattr(backend, "_capture_tree_on_thread", fake_walk)
+    cancel = threading.Event()
+    backend.capture_tree(cancel_event=cancel)
+    assert seen_cancel == [cancel]
 
 
 def test_windows_uia_is_point_visible_passes_uia_mod_tagpoint_to_element_from_point(monkeypatch: Any) -> None:
