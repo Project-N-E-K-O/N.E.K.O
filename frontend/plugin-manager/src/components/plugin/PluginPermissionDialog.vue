@@ -85,6 +85,9 @@
         </div>
         <p v-if="usedLine" class="perm-dialog__cause" data-test="dialog-cause">{{ usedLine }}</p>
         <p class="perm-dialog__line">{{ itemLine(usedRow) }}</p>
+        <p v-if="partialBlock(catalog ?? null, usedRow.permission)" class="perm-dialog__partial" data-test="dialog-partial">
+          {{ t('pluginConsent.tab.partialBlock') }}
+        </p>
         <details class="perm-dialog__when" data-test="dialog-when">
           <summary>{{ t('pluginConsent.dialogs.firstUse.when') }}</summary>
           <div class="perm-dialog__choices">
@@ -143,6 +146,7 @@ import {
   decidePermission,
   type PanelRow,
   type PendingPermissions,
+  type PermissionCatalog,
   type PermissionCondition,
   type PermissionPanel,
 } from '@/api/pluginPermissions'
@@ -156,6 +160,7 @@ import {
   formatUseTime,
   grantCondition,
   NOT_REFUSABLE,
+  partialBlock,
   validPanel,
 } from '@/utils/permissionTab'
 import {
@@ -172,6 +177,8 @@ const props = defineProps<{
   pending: PendingPermissions | null
   request: DialogRequest
   pluginName: string
+  /** The permission catalog, for "some ways of reading this cannot be blocked yet" (②). */
+  catalog?: PermissionCatalog | null
   /** Shown before a start: the footer offers to start or not. Never blocks the start. */
   start?: boolean
 }>()
@@ -361,6 +368,11 @@ function close(startNow: boolean) {
 }
 .perm-dialog__item--alert .perm-dialog__line {
   color: var(--perm-high);
+}
+.perm-dialog__partial {
+  margin: 0;
+  color: var(--perm-high);
+  font-size: 13px;
 }
 .perm-dialog__cause {
   margin: 0;

@@ -43,7 +43,7 @@ vi.mock('./PluginPermissionDialog.vue', async () => {
   const { defineComponent, h } = await import('vue')
   return {
     default: defineComponent({
-      props: ['panel', 'pending', 'request', 'pluginName', 'start'],
+      props: ['panel', 'pending', 'request', 'pluginName', 'start', 'catalog'],
       emits: ['result'],
       setup: (props, { emit }) => () => {
         dialogStub.props.push({ ...props })
@@ -361,6 +361,8 @@ describe('PluginPermissions tab', () => {
       q(root, `first-use-decide-${NET}`)!.click()
       await flush()
       expect(dialogStub.props.at(-1)!.request).toEqual({ kind: 'firstUse', permission: NET })
+      // The catalog goes along, for what cannot be blocked yet.
+      expect((dialogStub.props.at(-1)!.catalog as { privacy_groups: unknown[] }).privacy_groups).toHaveLength(2)
     })
 
     it('reads the tab again only when the dialog saved something', async () => {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import PluginPermissionDialog from './PluginPermissionDialog.vue'
-import type { PendingPermissions, PermissionPanel } from '@/api/pluginPermissions'
+import type { PendingPermissions, PermissionCatalog, PermissionPanel } from '@/api/pluginPermissions'
 import type { DialogRequest } from '@/utils/permissionDialogs'
 import { panel, row } from '@/utils/permissionTab.fixtures'
 import zhCN from '@/i18n/plugin-consent/zh-CN'
@@ -52,6 +52,7 @@ async function mount(props: {
   request: DialogRequest
   pending?: PendingPermissions | null
   start?: boolean
+  catalog?: PermissionCatalog | null
 }): Promise<Mounted> {
   const root = document.createElement('div')
   document.body.append(root)
@@ -280,6 +281,23 @@ describe('dialog ② for an item used before it was decided', () => {
     expect(q(root, 'dialog-when-anytime')).toBeNull()
     expect(q(root, 'dialog-when-in_use')).not.toBeNull()
     expect(q(root, 'dialog-when-lock')!.textContent).toContain('pluginConsent.tab.condition.lock.notDeclared')
+  })
+
+  it('says some ways of reading cannot be blocked yet, for the data the catalog marks so', async () => {
+    const catalog: PermissionCatalog = {
+      tiers: [], permissions: {}, blind_spot_tiers: {},
+      privacy_groups: [
+        { group: 'memory', permissions: [MEMORY], tier: 'high', partial_block: true },
+        { group: 'network', permissions: [NET], tier: 'high', partial_block: false },
+      ],
+    }
+    const used = await mount({ panel: firstPanel(), request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending(), catalog })
+    expect(q(used.root, 'dialog-partial')!.textContent).toContain('pluginConsent.tab.partialBlock')
+    const net = await mount({ panel: firstPanel(), request: { kind: 'firstUse', permission: NET }, catalog })
+    expect(q(net.root, 'dialog-partial')).toBeNull()
+    // Without the catalog nothing is claimed either way.
+    const none = await mount({ panel: firstPanel(), request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending() })
+    expect(q(none.root, 'dialog-partial')).toBeNull()
   })
 
   it('has nothing to ask when the item is gone', async () => {

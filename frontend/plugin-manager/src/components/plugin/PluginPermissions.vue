@@ -307,6 +307,7 @@
         :pending="pending"
         :request="dialog"
         :plugin-name="pluginName"
+        :catalog="catalog"
         @result="closeDialog"
       />
     </template>
