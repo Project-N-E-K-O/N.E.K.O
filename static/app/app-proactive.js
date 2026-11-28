@@ -418,6 +418,8 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
+                } else if (data.type === 'reviewed_input_activity') {
+                    recordReviewedInputActivity(true);
                 } else if (data.type === 'chat_input_focus_slowdown') {
                     // 其他窗口的聚焦或继续输入。只刷新本窗口的截止时间，不再向外广播。
                     _refreshChatInputSlowdown({ fromPeer: true });
@@ -670,13 +672,59 @@
         if (!(_systemQuietUntil >= until)) _systemQuietUntil = until;
     }
 
+    let reviewedInputAt = 0;
+    let reviewedInputBroadcastAt = -Infinity;
+    let reviewedInputBroadcastTimer = null;
+    function receiveReviewedInputActivity(message) {
+        if (message?.action !== 'reviewed_input_activity') return;
+        const name = window.lanlan_config?.lanlan_name || '';
+        if (message.lanlan_name && message.lanlan_name !== name) return;
+        recordReviewedInputActivity(true);
+    }
+    window.addEventListener('neko:tutorial-overlay-relay', event => receiveReviewedInputActivity(event.detail));
+    window.addEventListener('message', event => {
+        if (event.origin === window.location.origin && event.data?.__nekoTutorialOverlayRelay === true) {
+            receiveReviewedInputActivity(event.data.payload);
+        }
+    });
+    function recordReviewedInputActivity(fromPeer = false) {
+        reviewedInputAt = Date.now();
+        const manager = window.pngtuberManager;
+        if (manager?.hasReviewedActions?.()) manager._reviewedIdleSince = null;
+        if (fromPeer) return;
+        const broadcast = () => {
+            reviewedInputBroadcastTimer = null;
+            reviewedInputBroadcastAt = Date.now();
+            _proactiveBroadcast('reviewed_input_activity');
+            if (_isElectronFullChatHost(window.location?.pathname)) {
+                try {
+                    window.nekoTutorialOverlay?.relayToPet?.({
+                        action: 'reviewed_input_activity',
+                        lanlan_name: window.lanlan_config?.lanlan_name || '',
+                        timestamp: Date.now()
+                    });
+                } catch (_) { /* A closed desktop window must not interrupt typing. */ }
+            }
+        };
+        const remaining = 1000 - (Date.now() - reviewedInputBroadcastAt);
+        if (remaining <= 0) {
+            if (reviewedInputBroadcastTimer !== null) clearTimeout(reviewedInputBroadcastTimer);
+            broadcast();
+        } else if (reviewedInputBroadcastTimer === null) {
+            // Keep a trailing notification so the owner observes the end of a burst.
+            reviewedInputBroadcastTimer = setTimeout(broadcast, remaining);
+        }
+    }
+
     document.addEventListener('focusin', function (event) {
         if (!_isChatInputElement(event.target)) return;
+        recordReviewedInputActivity();
         _refreshChatInputSlowdown();
     }, true);
 
     document.addEventListener('input', function (event) {
         if (!_isChatInputElement(event.target)) return;
+        recordReviewedInputActivity();
         _refreshChatInputSlowdown();
     }, true);
 
@@ -3291,5 +3339,12 @@
 
     // ======================== module export ========================
 
+    // Read-only activity gate for opt-in reviewed PNGTuber idle performances.
+    window.getReviewedPNGTuberActivity = function () {
+        return { proactiveEnabled: !!S.proactiveChatEnabled, owner: isProactiveLeader(),
+            inputAt: reviewedInputAt,
+            busy: !!(S.gameRouteActive || isProactiveChatSuppressed() || _isAssistantSpeaking()
+                || S.isProactiveChatRunning || (Date.now() - (S.userRecentSpeechTime || 0) < 2000)) };
+    };
     window.appProactive = mod;
 })();

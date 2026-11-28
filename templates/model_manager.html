@@ -42,6 +42,7 @@
 
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
+            <div id="pngtuber-optional-models" hidden aria-live="polite"></div>
             <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save" style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
@@ -767,6 +768,7 @@
             }
         });
     </script>
+<script src="/static/js/model_manager/pngtuber-downloads.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 
 </html>

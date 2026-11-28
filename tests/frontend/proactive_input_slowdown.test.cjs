@@ -30,7 +30,7 @@ function flush() {
     while (queue.length) queue.shift()();
 }
 
-function createWindow(pathname) {
+function createWindow(pathname, {electronFull=false, relayToPet} = {}) {
     const timers = new Map();
     let nextTimer = 1;
     const listeners = { document: {}, window: {} };
@@ -57,7 +57,7 @@ function createWindow(pathname) {
     const document = {
         activeElement: null,
         hasFocus: () => true,
-        body: { classList: { contains: () => false }, getAttribute: () => null },
+        body: { classList: { contains: name => electronFull && name === 'neko-electron-runtime' }, getAttribute: name => electronFull && name === 'data-chat-host-kind' ? 'full' : null },
         addEventListener(type, fn) {
             (listeners.document[type] || (listeners.document[type] = [])).push(fn);
         },
@@ -93,6 +93,7 @@ function createWindow(pathname) {
             });
         },
         BroadcastChannel: FakeBroadcastChannel,
+        nekoTutorialOverlay: { relayToPet },
     };
     window.window = window;
     vm.createContext(window);
@@ -135,13 +136,28 @@ test('持续输入会刷新判定窗口，到期后才搭话', async () => {
     chat.emit('focusin', chat.input);
     flush();
     const focusedTimer = pet.appState.proactiveChatTimer;
-    assert.ok(pet.scheduledDelay() >= 30000, '聚焦后至少等待 30 秒再判定');
+    const initialDelay = pet.scheduledDelay();
+    assert.ok(initialDelay < 20000, '聚焦保留已排定的基础计时器');
 
-    clock.now += 20000;
+    clock.now += initialDelay;
+    await pet.fire();
+    assert.equal(pet.fetches.length, 0, '原计时器到点时仍在输入窗口内，不得发送');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+    assert.ok(Math.abs(pet.scheduledDelay() - (30000 - initialDelay)) < 1,
+        '只补足到聚焦后的30秒截止时间');
+    assert.notEqual(pet.appState.proactiveChatTimer, focusedTimer);
+
+    clock.now = 1_020_000;
+    const pendingTimer = pet.appState.proactiveChatTimer;
     chat.emit('input', chat.input);
     flush();
-    assert.notEqual(pet.appState.proactiveChatTimer, focusedTimer, '继续输入必须重新排定');
-    assert.ok(pet.scheduledDelay() >= 30000, '输入后从当前时刻再给一个完整输入窗口');
+    assert.equal(pet.appState.proactiveChatTimer, pendingTimer, '继续输入只刷新截止时间，保留计时器');
+
+    clock.now = 1_030_000;
+    await pet.fire();
+    assert.equal(pet.fetches.length, 0, '继续输入将截止时间延长到50秒，30秒时不得发送');
+    assert.equal(pet.scheduledDelay(), 20000, '只等待刷新后窗口的剩余20秒');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
 
     clock.now += pet.scheduledDelay();
     await pet.fire();
@@ -295,6 +311,7 @@ test('输入取消屏幕搭话时不消耗视觉冷却', async () => {
     flush();
     const releaseHeaders = holdMutationHeaders(pet);
     pet.window.proactiveVisionEnabled = true;
+    pet.appState.proactiveVisionEnabled = true; // 真实页面由 app-state 桥接，此处补齐模拟状态。
     pet.window.appScreen = {
         acquireOrReuseCachedStream: async () => null,
         fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),
@@ -346,6 +363,7 @@ test('CSRF 重试期间开始输入也会退还视觉冷却', async () => {
         return { ok: true, status: 200, json: async () => ({ success: false }) };
     };
     pet.window.proactiveVisionEnabled = true;
+    pet.appState.proactiveVisionEnabled = true; // 真实页面由 app-state 桥接，此处补齐模拟状态。
     pet.window.appScreen = {
         acquireOrReuseCachedStream: async () => null,
         fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),
@@ -370,4 +388,74 @@ test('CSRF 重试期间开始输入也会退还视觉冷却', async () => {
     assert.equal(pet.fetches.filter((url) => url === '/api/proactive_chat').length, 1, '重试不应再发送');
     assert.equal(pet.appState._lastProactiveChatScreenTime, 0, '重试被输入取消后也要退还视觉冷却');
     assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+});
+
+
+test('reviewed idle observes typing even with proactive chat disabled, without scheduling chat', () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    pet.appState.proactiveChatEnabled = false;
+    const manager = { hasReviewedActions: () => true, _reviewedIdleSince: 1 };
+    pet.window.pngtuberManager = manager;
+    pet.emit('input', pet.input);
+    assert.equal(manager._reviewedIdleSince, null);
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt, clock.now);
+    assert.equal(pet.appState.proactiveChatTimer, null);
+    clock.now += 30001;
+    assert.equal(pet.window.getReviewedPNGTuberActivity().busy, false);
+});
+
+
+test('chat-follower input reaches the reviewed owner while proactive chat is off', () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 2_000_000;
+    const pet = createWindow('/'), chat = createWindow('/chat');
+    pet.appState.proactiveChatEnabled = chat.appState.proactiveChatEnabled = false;
+    flush();
+    chat.emit('input', chat.input);
+    flush();
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt, clock.now);
+    assert.equal(pet.appState.proactiveChatTimer, null);
+});
+
+
+test('reviewed typing broadcasts at most once a second with a trailing peer notification', () => {
+    channels.length=0;queue.length=0;clock.now=3_000_000;
+    const pet=createWindow('/'),chat=createWindow('/chat');flush();
+    pet.appState.proactiveChatEnabled=chat.appState.proactiveChatEnabled=false;
+    let broadcasts=0;
+    const original=FakeBroadcastChannel.prototype.postMessage;
+    FakeBroadcastChannel.prototype.postMessage=function(data){if(data.type==='reviewed_input_activity') broadcasts++;original.call(this,data)};
+    try {
+        for(let i=0;i<10;i++) {clock.now=3_000_000+i*90;chat.emit('input',chat.input);}
+        flush();assert.equal(broadcasts,1);
+        assert.equal(chat.window.getReviewedPNGTuberActivity().inputAt,3_000_810,'local activity updates on every key');
+        clock.now=3_001_000;
+        for(const [id,timer] of [...chat.timers]) if(timer.due<=clock.now){chat.timers.delete(id);timer.fn();}
+        flush();assert.equal(broadcasts,2);
+        assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,3_001_000,'owner receives the trailing activity');
+        clock.now=3_001_050;chat.emit('input',chat.input);flush();assert.equal(broadcasts,2);
+        assert.equal(chat.window.getReviewedPNGTuberActivity().inputAt,clock.now);
+    } finally {FakeBroadcastChannel.prototype.postMessage=original;}
+});
+
+test('isolated Electron full chat relays throttled typing through native IPC without feedback or proactive requests', () => {
+    channels.length=0;queue.length=0;clock.now=4_000_000;
+    const pet=createWindow('/');pet.appState.proactiveChatEnabled=false;
+    const manager={hasReviewedActions:()=>true,_reviewedIdleSince:1};pet.window.pngtuberManager=manager;
+    let sends=0;const chat=createWindow('/chat_full',{electronFull:true,relayToPet:message=>{sends++;for(const fn of pet.listeners.window['neko:tutorial-overlay-relay']||[])fn({detail:message});}});
+    chat.appState.proactiveChatEnabled=false;assert.equal(channels.length,1,'full chat must not join leader BroadcastChannel');
+    chat.emit('input',chat.input);assert.equal(sends,1);assert.equal(manager._reviewedIdleSince,null);assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);
+    clock.now+=100;chat.emit('input',chat.input);assert.equal(sends,1);
+    const trailing=[...chat.timers.values()].find(timer=>timer.due===4_001_000);assert.ok(trailing);clock.now=4_001_000;trailing.fn();assert.equal(sends,2);
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);assert.equal(pet.appState.proactiveChatTimer,null);assert.equal(chat.appState.proactiveChatTimer,null);
+    const before=pet.window.getReviewedPNGTuberActivity().inputAt;clock.now+=1;
+    for(const fn of pet.listeners.window.message||[])fn({origin:'https://evil.test',data:{__nekoTutorialOverlayRelay:true,payload:{action:'reviewed_input_activity'}}});
+    for(const fn of pet.listeners.window['neko:tutorial-overlay-relay']||[])fn({detail:{action:'reviewed_input_activity',lanlan_name:'other'}});
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,before);
+    for(const fn of pet.listeners.window.message||[])fn({origin:pet.window.location.origin,data:{__nekoTutorialOverlayRelay:true,payload:{action:'reviewed_input_activity'}}});
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);assert.equal(sends,2);
 });

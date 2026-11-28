@@ -100,6 +100,8 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
+    ("static", "pngtuber-catalog.json"),
+    ("static/js/model_manager", "pngtuber-downloads.js"),
     # React chat-window build artifacts (in a gitignored directory); if missing, chat panels in index.html/chat.html return 404.
     # CSS is generated separately by sync-css.mjs and can be missing independently of iife.js, so assert both.
     ("static/react/neko-chat", "neko-chat-window.iife.js"),
@@ -403,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     issues: list[str] = []
+    if (dist_root / "static/pngtuber/yui-chibi").exists():
+        issues.append("optional YUI Chibi assets must not be bundled; use the optional resource download")
     for rel, contains in _REQUIRED_ASSETS:
         problem = _check_asset(dist_root, rel, contains)
         if problem:
