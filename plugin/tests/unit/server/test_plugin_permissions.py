@@ -1844,20 +1844,10 @@ def _denied_store(manager, **kwargs):
     return store
 
 
-@pytest.mark.parametrize(
-    "decide",
-    [
-        lambda store: store.decide("x", MEMORY_READ, "granted"),
-        lambda store: store.decide("x", MEMORY_READ, "denied"),
-        lambda store: store.clear("x", MEMORY_READ),
-        lambda store: store.clear("x", MEMORY_READ, answer=True),
-    ],
-    ids=["grant", "deny", "clear", "answer"],
-)
-def test_per_permission_decision_supersedes_the_whole_plugin_denial(manager, decide):
+def test_a_grant_supersedes_the_whole_plugin_denial(manager):
     store = _denied_store(manager)
 
-    record = decide(store)
+    record = store.decide("x", MEMORY_READ, "granted")
 
     assert record[LEGACY_DENIAL_SUPERSEDED] is True
     # The permissions the denial covers keep reading denied.
@@ -1866,6 +1856,26 @@ def test_per_permission_decision_supersedes_the_whole_plugin_denial(manager, dec
     assert permission_service.consent_decision(record).get("decision") != "denied"
     # Saved, and the legacy file is not imported again by a fresh store.
     assert PluginPermissionStore(manager).read("x") == record
+
+
+@pytest.mark.parametrize(
+    "decide",
+    [
+        lambda store: store.decide("x", MEMORY_READ, "denied"),
+        lambda store: store.decide("x", MEMORY_READ, "denied", condition="anytime"),
+        lambda store: store.clear("x", MEMORY_READ),
+        lambda store: store.clear("x", MEMORY_READ, answer=True),
+    ],
+    ids=["deny", "deny_anytime", "clear", "answer"],
+)
+def test_refusals_and_clears_keep_the_whole_plugin_denial(manager, decide):
+    store = _denied_store(manager)
+
+    record = decide(store)
+
+    assert LEGACY_DENIAL_SUPERSEDED not in record
+    assert record[LEGACY_DENIED] is True
+    assert permission_service.consent_decision(record)["decision"] == "denied"
 
 
 def test_superseded_denial_survives_a_source_change(manager):
@@ -1909,26 +1919,37 @@ def decision_flow(consent_flow, monkeypatch):
     return consent_flow
 
 
-@pytest.mark.parametrize(
-    "decide",
-    [
-        lambda pid: permission_service.decide_permission(pid, MEMORY_READ, "granted"),
-        lambda pid: permission_service.decide_permission(pid, MEMORY_READ, "denied"),
-        lambda pid: permission_service.clear_permission(pid, MEMORY_READ),
-    ],
-    ids=["grant", "deny", "clear"],
-)
-def test_per_permission_decision_lifts_the_plugin_from_denied_ids(decision_flow, decide):
+def test_a_grant_lifts_the_plugin_from_denied_ids(decision_flow):
     from plugin.server.application.plugins import consent_service
 
     decision_flow["seed"]("demo", "denied")
     assert consent_service.denied_plugin_ids(["demo"]) == {"demo"}
 
-    decide("demo")
+    permission_service.decide_permission("demo", MEMORY_READ, "granted")
 
     assert consent_service.denied_plugin_ids(["demo"]) == set()
     # The legacy entry is gone too.
     assert decision_flow["consents"].read("demo") == {}
+
+
+@pytest.mark.parametrize(
+    "decide",
+    [
+        lambda pid: permission_service.decide_permission(pid, MEMORY_READ, "denied"),
+        lambda pid: permission_service.clear_permission(pid, MEMORY_READ),
+    ],
+    ids=["deny", "clear"],
+)
+def test_refusals_and_clears_keep_the_plugin_in_denied_ids(decision_flow, decide):
+    from plugin.server.application.plugins import consent_service
+
+    decision_flow["seed"]("demo", "denied")
+    legacy = decision_flow["legacy_bytes"]()
+
+    decide("demo")
+
+    assert consent_service.denied_plugin_ids(["demo"]) == {"demo"}
+    assert decision_flow["legacy_bytes"]() == legacy
 
 
 def test_lifted_denial_does_not_come_back_on_a_fresh_import(decision_flow, monkeypatch):

@@ -3,7 +3,7 @@
 Decisions now live in the permission store, which imports this file once
 (see ``plugin_permissions``). Nothing writes decisions here any more; the
 only writes left remove entries: an uninstalled plugin's entry, and a
-plugin's denied entry once a per-permission decision replaces it (see
+plugin's denied entry once a per-permission grant replaces it (see
 ``permission_service``).
 """
 

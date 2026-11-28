@@ -839,7 +839,7 @@ def test_explicit_undecided_entries_are_no_reset(store):
     ("method", "body"),
     [("PUT", {"state": "granted"}), ("PUT", {"state": "denied"}), ("DELETE", None)],
 )
-async def test_decision_routes_lift_a_whole_plugin_denial(env, method, body):
+async def test_only_a_grant_route_lifts_a_whole_plugin_denial(env, method, body):
     from plugin.server.application.plugins import consent_service
 
     _weather(env)
@@ -849,7 +849,8 @@ async def test_decision_routes_lift_a_whole_plugin_denial(env, method, body):
     response = await _call(method, f"/plugin-permissions/plugins/weather/permissions/{MEMORY}", body)
 
     assert response.status_code == 200, response.text
-    assert consent_service.denied_plugin_ids(["weather"]) == set()
+    lifted = body == {"state": "granted"}
+    assert consent_service.denied_plugin_ids(["weather"]) == (set() if lifted else {"weather"})
     rows = {row["permission"]: row for row in response.json()["rows"]}
     # Only the decided permission changed; the rest of the denial stands.
     assert rows[CONVERSATIONS]["state"] == "denied"

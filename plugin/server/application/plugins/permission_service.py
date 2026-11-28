@@ -28,6 +28,7 @@ from plugin.sdk.shared.permissions.state import PermissionState
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
     CORRUPT,
+    STATE_GRANTED,
     UNSUPPORTED_VERSION,
     add_change_listener,
     PluginPermissionStore,
@@ -424,7 +425,7 @@ def consent_record(plugin_id: str) -> dict:
 def _forget_legacy_denial(plugin_id: str) -> None:
     """Remove a whole-plugin denial left in ``plugin_consents.json``.
 
-    A per-permission decision replaces that denial in the permission store,
+    A per-permission grant replaces that denial in the permission store,
     which imports the legacy file again whenever its own file is missing; the
     entry must not bring the denial back then. Only a ``denied`` entry is
     removed. Best effort: a failure is logged and the decision stands.
@@ -456,18 +457,15 @@ def decide_permission(
         condition=condition,
         source=current_source(plugin_id),
     )
-    _forget_legacy_denial(plugin_id)
+    if state_value == STATE_GRANTED:
+        _forget_legacy_denial(plugin_id)
     return record
 
 
 def clear_permission(plugin_id: str, permission_id: str, *, answer: bool = False) -> dict:
     """Return one permission of the plugin to undecided (``answer``: see
     ``PluginPermissionStore.clear``)."""
-    record = permission_store.clear(
-        plugin_id, permission_id, source=current_source(plugin_id), answer=answer
-    )
-    _forget_legacy_denial(plugin_id)
-    return record
+    return permission_store.clear(plugin_id, permission_id, source=current_source(plugin_id), answer=answer)
 
 
 def bind_permission_source(plugin_id: str, source: PluginSource) -> None:

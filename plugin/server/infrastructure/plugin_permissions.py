@@ -152,8 +152,8 @@ LEGACY_DENIED = "legacy_denied"
 # approved, possibly with no permission at all (e.g. an incomplete analysis);
 # it grants nothing by itself. Never set together with LEGACY_DENIED.
 LEGACY_APPROVED = "legacy_approved"
-# Set next to LEGACY_DENIED once the user decided a permission of the plugin
-# here (decide / clear): the whole-plugin decision no longer reads denied,
+# Set next to LEGACY_DENIED once the user granted a permission of the plugin
+# here (decide): the whole-plugin decision no longer reads denied,
 # while the permissions LEGACY_DENIED covers still do. Cleared with the other
 # markers by the next consent flow decision.
 LEGACY_DENIAL_SUPERSEDED = "legacy_denial_superseded"
@@ -381,22 +381,12 @@ def _mark_reset(record: dict, now: str) -> None:
 
 
 def _supersede_legacy_denial(record: dict) -> bool:
-    """Mark a whole-plugin denial as replaced by a per-permission decision;
+    """Mark a whole-plugin denial as replaced by a per-permission grant;
     returns whether the record changed."""
     if not record.get(LEGACY_DENIED) or record.get(LEGACY_DENIAL_SUPERSEDED):
         return False
     record[LEGACY_DENIAL_SUPERSEDED] = True
     return True
-
-
-def _reads_decided(record: dict, permission_id: str) -> bool:
-    """Whether ``permission_id`` reads granted or denied on ``record``."""
-    entry = (record.get("permissions") or {}).get(permission_id)
-    if isinstance(entry, dict):
-        return entry.get("state") in STATES
-    if entry is not None:
-        return True
-    return bool(record.get(LEGACY_DENIED)) and permission_id in LEGACY_IDS
 
 
 def _drop_for_source_change(record: dict) -> None:
@@ -823,8 +813,8 @@ class PluginPermissionStore:
         """Record a user decision for one permission.
 
         The decision replaces any previous one, including an imported
-        ``legacy_any`` grant, and marks a ``legacy_denied`` record
-        ``LEGACY_DENIAL_SUPERSEDED``.
+        ``legacy_any`` grant. A grant marks a ``legacy_denied`` record
+        ``LEGACY_DENIAL_SUPERSEDED``; a refusal does not.
         """
         if not plugin_id:
             raise ValueError("plugin_id is required")
@@ -849,7 +839,8 @@ class PluginPermissionStore:
                 self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
-            _supersede_legacy_denial(record)
+            if state == STATE_GRANTED:
+                _supersede_legacy_denial(record)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
@@ -885,9 +876,7 @@ class PluginPermissionStore:
         write. A changed ``source`` is applied and saved first, like in
         :meth:`decide`. An id outside the vocabulary is accepted only when the
         record already holds it (e.g. an id the vocabulary has since
-        dropped), and its entry is removed. When the permission read granted
-        or denied, a ``legacy_denied`` record is also marked
-        ``LEGACY_DENIAL_SUPERSEDED``, as in :meth:`decide`.
+        dropped), and its entry is removed.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
@@ -925,9 +914,6 @@ class PluginPermissionStore:
             now = _now()
             record.pop(GRANTS_RESET, None)
             permissions = record.setdefault("permissions", {})
-            if _reads_decided(record, known_id or permission_id):
-                # Only a clear that changes the permission supersedes.
-                _supersede_legacy_denial(record)
             if known_id is None:
                 # A source change above may have dropped it already.
                 permissions.pop(permission_id, None)
