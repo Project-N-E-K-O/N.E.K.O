@@ -6,10 +6,14 @@ import type { RouteRecordRaw } from 'vue-router'
 import { ensurePluginConsentPageMessages, i18n } from '@/i18n'
 import { watch } from 'vue'
 
-// The permission tab and privacy page words are not part of the language pack;
-// the route waits for them so the page never renders raw keys.
+// The permission tab and privacy page words are not part of the language pack.
+// The route loads them alongside its view so the page doesn't render raw keys.
+// A failed load doesn't block the view (only the permission tab of the detail
+// page needs them); the guard below retries on the next navigation.
+const CONSENT_PAGE_ROUTES = new Set(['PluginDetail', 'PrivacyOverview'])
+const loadConsentPageMessages = () => ensurePluginConsentPageMessages().catch(() => undefined)
 function withConsentPageMessages<T>(view: Promise<T>): Promise<T> {
-  return Promise.all([view, ensurePluginConsentPageMessages()]).then(([loaded]) => loaded)
+  return Promise.all([view, loadConsentPageMessages()]).then(([loaded]) => loaded)
 }
 
 const routes: RouteRecordRaw[] = [
@@ -191,6 +195,11 @@ router.beforeEach((to, from, next) => {
   }
 
   next()
+})
+
+// Already loaded: resolves at once. After a failed load: retries.
+router.beforeResolve(async (to) => {
+  if (CONSENT_PAGE_ROUTES.has(to.name as string)) await loadConsentPageMessages()
 })
 
 watch(i18n.global.locale, () => {

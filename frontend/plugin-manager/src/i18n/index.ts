@@ -81,6 +81,12 @@ let failedPersist = true
 // `pluginConsent.privacy` except its title) load with those routes, not with
 // the language pack. Once a route asked for them, every language switch loads
 // them too, so a switch never leaves the open page without its words.
+// Unlike the rest of the pack, they are merged into the applied language only,
+// so the zh-CN fallback lacks them while another language is applied; the
+// per-language key parity test in localeSplit.test.ts keeps every language
+// complete instead. A failed load never fails a language switch: the pack is
+// committed without them and the next ensurePluginConsentPageMessages() call
+// (the router retries on navigation) merges them in.
 type ConsentPageMessages = Awaited<ReturnType<typeof loadPluginConsentPageMessages>>
 let consentPagesWanted = false
 const consentPages = new Map<AppLocale, ConsentPageMessages>()
@@ -95,13 +101,12 @@ async function consentPagesFor(locale: AppLocale): Promise<ConsentPageMessages> 
 }
 
 // Builds a new dictionary: the language pack modules are never mutated.
-function withConsentPages(messages: Record<string, any>, pages: ConsentPageMessages | undefined) {
+type Dictionary = Record<string, unknown>
+function withConsentPages(messages: Dictionary, pages: ConsentPageMessages | undefined) {
   if (!pages) return messages
-  const base = (messages.pluginConsent ?? {}) as Record<string, any>
-  return {
-    ...messages,
-    pluginConsent: { ...base, ...pages, privacy: { ...base.privacy, ...pages.privacy } },
-  }
+  const base = (messages.pluginConsent ?? {}) as Dictionary
+  const privacy = { ...(base.privacy as Dictionary | undefined), ...pages.privacy }
+  return { ...messages, pluginConsent: { ...base, ...pages, privacy } }
 }
 
 /** Loads the permission tab and privacy page words for the applied language
@@ -133,7 +138,7 @@ async function applySetting(setting: LocaleSetting, persist: boolean): Promise<b
         : await loadLocaleBundle(target as Exclude<AppLocale, 'zh-CN'>)
     if (seq !== generation) return false
     if (consentPagesWanted) {
-      await consentPagesFor(target)
+      await consentPagesFor(target).catch(() => undefined)
       if (seq !== generation) return false
     }
     // One synchronous commit. No visible locale changes before BOTH app and

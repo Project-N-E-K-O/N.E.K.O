@@ -8,10 +8,9 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SUPPORTED_LOCALES,
-  ensurePluginConsentPageMessages,
   i18n,
   setLocale,
   type AppLocale,
@@ -114,8 +113,38 @@ describe('switching language', () => {
 })
 
 describe('permission tab and privacy page words', () => {
-  const t = i18n.global.t as (key: string) => string
-  const te = i18n.global.te as (key: string, locale?: string) => boolean
+  type Pages = { tab: Messages; privacy: Messages }
+  const pages = (locale: AppLocale) => piece('plugin-consent-pages', locale) as Pages
+  const title = (locale: AppLocale) =>
+    (pack(locale).pluginConsent as { privacy: { title: string } }).privacy.title
+
+  // Each case gets its own i18n module state (the flag and the cache are
+  // module-level), so cases pass alone and in any order.
+  async function freshI18n(failPages = false) {
+    vi.resetModules()
+    if (failPages) {
+      const failing = { calls: 0, fail: true }
+      vi.doMock('./pluginConsentPages', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('./pluginConsentPages')>()
+        return {
+          loadPluginConsentPageMessages: (locale: AppLocale) => {
+            failing.calls += 1
+            return failing.fail
+              ? Promise.reject(new Error('chunk failed'))
+              : actual.loadPluginConsentPageMessages(locale)
+          },
+        }
+      })
+      const mod = await import('@/i18n')
+      return { ...mod, failing }
+    }
+    vi.doUnmock('./pluginConsentPages')
+    return { ...(await import('@/i18n')), failing: null }
+  }
+  afterEach(() => {
+    vi.doUnmock('./pluginConsentPages')
+    vi.resetModules()
+  })
 
   it.each(SUPPORTED_LOCALES)('%s pack leaves them to the routes', (locale) => {
     const consent = pack(locale).pluginConsent as Messages
@@ -124,33 +153,45 @@ describe('permission tab and privacy page words', () => {
     expect(Object.keys(consent.privacy as Messages)).toEqual(['title'])
   })
 
-  // Runs in order: the first case is the only one before any route asked.
   it('are absent until a route asks, then load for the applied language', async () => {
-    await expect(setLocale('ja')).resolves.toBe(true)
-    expect(te('pluginConsent.tab.loading', 'ja')).toBe(false)
-    expect(t('pluginConsent.privacy.title')).toBe(
-      (pack('ja').pluginConsent as { privacy: { title: string } }).privacy.title,
-    )
-    await ensurePluginConsentPageMessages()
-    const pages = piece('plugin-consent-pages', 'ja') as { tab: Messages; privacy: Messages }
-    expect(t('pluginConsent.tab.loading')).toBe(pages.tab.loading)
-    expect(t('pluginConsent.privacy.subtitle')).toBe(pages.privacy.subtitle)
+    const { i18n: fresh, setLocale: set, ensurePluginConsentPageMessages: ensure } = await freshI18n()
+    const t = fresh.global.t as (key: string) => string
+    await expect(set('ja')).resolves.toBe(true)
+    expect(fresh.global.te('pluginConsent.tab.loading', 'ja')).toBe(false)
+    expect(t('pluginConsent.privacy.title')).toBe(title('ja'))
+    await ensure()
+    expect(t('pluginConsent.tab.loading')).toBe(pages('ja').tab.loading)
+    expect(t('pluginConsent.privacy.subtitle')).toBe(pages('ja').privacy.subtitle)
     // The rest of the consent words and the title are kept.
     expect(t('pluginConsent.title')).toBe((pack('ja').pluginConsent as Messages).title)
-    expect(t('pluginConsent.privacy.title')).toBe(
-      (pack('ja').pluginConsent as { privacy: { title: string } }).privacy.title,
-    )
+    expect(t('pluginConsent.privacy.title')).toBe(title('ja'))
     // The language pack module itself is not changed.
     expect((pack('ja').pluginConsent as Messages).tab).toBeUndefined()
   })
 
   it.each(SUPPORTED_LOCALES)('stay loaded when switching to %s', async (locale) => {
-    await expect(setLocale(locale)).resolves.toBe(true)
-    const pages = piece('plugin-consent-pages', locale) as { tab: Messages; privacy: Messages }
-    expect(t('pluginConsent.tab.loading')).toBe(pages.tab.loading)
-    expect(t('pluginConsent.privacy.subtitle')).toBe(pages.privacy.subtitle)
-    expect(t('pluginConsent.privacy.title')).toBe(
-      (pack(locale).pluginConsent as { privacy: { title: string } }).privacy.title,
-    )
+    const { i18n: fresh, setLocale: set, ensurePluginConsentPageMessages: ensure } = await freshI18n()
+    const t = fresh.global.t as (key: string) => string
+    const start = locale === 'en-US' ? 'ja' : 'en-US'
+    await expect(set(start)).resolves.toBe(true)
+    await ensure()
+    await expect(set(locale)).resolves.toBe(true)
+    expect(t('pluginConsent.tab.loading')).toBe(pages(locale).tab.loading)
+    expect(t('pluginConsent.privacy.subtitle')).toBe(pages(locale).privacy.subtitle)
+    expect(t('pluginConsent.privacy.title')).toBe(title(locale))
+  })
+
+  it('a failed load does not fail a language switch and is merged on the next ask', async () => {
+    const fresh = await freshI18n(true)
+    const t = fresh.i18n.global.t as (key: string) => string
+    await expect(fresh.ensurePluginConsentPageMessages()).rejects.toThrow('chunk failed')
+    await expect(fresh.setLocale('ko')).resolves.toBe(true)
+    expect(fresh.i18n.global.locale.value).toBe('ko')
+    expect(fresh.localeLoadState.error).toBeNull()
+    expect(t('pluginConsent.privacy.title')).toBe(title('ko'))
+    expect(fresh.i18n.global.te('pluginConsent.tab.loading', 'ko')).toBe(false)
+    fresh.failing!.fail = false
+    await fresh.ensurePluginConsentPageMessages()
+    expect(t('pluginConsent.tab.loading')).toBe(pages('ko').tab.loading)
   })
 })
