@@ -1718,13 +1718,21 @@ class BrowserSession:
             return
         page = self._pages.get(target_id)
         if page is None:
-            opener = self._pages.get(str(info.get("openerId") or ""))
+            opener_id = str(info.get("openerId") or "")
+            opener = self._pages.get(opener_id)
             number = self._own_pages.get(target_id)
-            own = own or number is not None or (opener is not None and opener.own)
+            own = (
+                own
+                or number is not None
+                or (opener is not None and opener.own)
+                or (bool(opener_id) and opener_id in self._own_pages)
+            )
             resolved_owner = (
                 owner
                 if owner is not None
-                else self._tab_owners.get(target_id) or (opener.owner if opener is not None else None)
+                else self._tab_owners.get(target_id)
+                or (opener.owner if opener is not None else None)
+                or (self._tab_owners.get(opener_id) if opener_id else None)
             )
             if number is None:
                 number = self._next_page_id
@@ -2336,6 +2344,8 @@ class BrowserSession:
         snapshot_id = self._next_snapshot_id
         self._next_snapshot_id += 1
         by_uid = await asyncio.to_thread(assign_uids, tree, snapshot_id, page.known_uids)
+        if page.main_frame_id != pre_main_frame or page.frame_loaders.get(pre_main_frame, "") != pre_main_loader:
+            raise BrowserError("The page navigated while taking a snapshot. Call browser_take_snapshot again.")
         page.snapshot = Snapshot(
             snapshot_id=snapshot_id, root=tree, verbose=verbose, by_uid=by_uid, unlisted_frames=unlisted[0]
         )

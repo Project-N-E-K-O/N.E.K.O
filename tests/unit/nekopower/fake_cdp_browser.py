@@ -102,6 +102,7 @@ class Element:
         on_change: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_focus: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_hover: Callable[["FakeBrowser", "FakePage"], None] | None = None,
+        on_mouse_up: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_drop: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
         oopif: bool = False,
@@ -130,6 +131,8 @@ class Element:
         self.on_focus = on_focus
         # Called when the pointer moves onto the element (the page's own ``mouseover`` handler).
         self.on_hover = on_hover
+        # Called when a mouse button is released over the element (``mouseup`` / ``pointerup``).
+        self.on_mouse_up = on_mouse_up
         # Called when an HTML5 ``drop`` event lands on the element.
         self.on_drop = on_drop
         # What lies over the element (a banner, a dialog of the page), and
@@ -1268,6 +1271,8 @@ class FakeBrowser:
                         "Page.fileChooserOpened",
                         {"mode": "selectSingle", "backendNodeId": element.opens_file_chooser.backend_id},
                     )
+                if element.on_mouse_up is not None:
+                    element.on_mouse_up(self, page)
                 if element.on_click is not None:
                     element.on_click(self, page)
         return {}

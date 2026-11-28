@@ -5353,6 +5353,7 @@ async def test_orphan_blob_worker_and_popup_receive_port_guards_before_resuming(
         parent_sid,
     )
     await _until(lambda: "blob-worker-1" in world.browser.resumed_targets and "blob-popup-1" in world.browser.resumed_targets)
+    await _until(lambda: not session._answers)
     worker_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "blob-worker-sid"]
     assert worker_cmds.index("Runtime.evaluate") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
     assert worker_cmds.index("Target.setAutoAttach") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
@@ -5362,6 +5363,46 @@ async def test_orphan_blob_worker_and_popup_receive_port_guards_before_resuming(
     assert popup_cmds.index("Runtime.evaluate") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
     assert "blob-worker-1" not in world.browser.detached_from
     assert "blob-popup-1" not in world.browser.detached_from
+
+
+async def test_popup_from_forgotten_opener_inherits_owner_from_tab_owners(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None and page_a.own is True
+    await session.navigate(page_a, "url", ORDER)
+
+    # Opener navigates to blob: and is temporarily dropped from session._pages while
+    # _tab_owners and _own_pages still record team-a's ownership.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {
+            "targetInfo": {
+                "targetId": page_a.target_id,
+                "type": "page",
+                "url": "blob:https://shop.test/temp",
+                "title": "temp",
+            }
+        },
+    )
+    assert page_a.target_id not in session._pages
+
+    world.browser._emit(
+        "Target.targetCreated",
+        {
+            "targetInfo": {
+                "targetId": "popup-from-blob",
+                "type": "page",
+                "url": TERMS,
+                "title": "Terms",
+                "openerId": page_a.target_id,
+            }
+        },
+    )
+    popup = session._pages.get("popup-from-blob")
+    assert popup is not None and popup.owner == "team-a" and popup.own is True
 
 
 async def test_orphan_auto_attached_child_is_resumed_and_detached_when_no_ports_blocked(

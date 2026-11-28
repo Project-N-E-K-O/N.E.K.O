@@ -1793,7 +1793,10 @@ async def test_named_release_clears_unowned_snapshots_without_touching_other_act
     assert still_b.success, still_b.text
 
     # Global release (owner=None) clears named owners and their snapshots too.
+    page_b = tools.session.current("team-b")
+    assert page_b is not None and page_b.snapshot is not None
     await tools.released(owner=None)
+    assert page_b.snapshot is None and page_b.snapshot_owner is None and page_b.owner is None
     assert all(page.owner is None for page in tools.session.pages())
     stale_b = await tools.call(TOOL_PREFIX + "click", {"uid": gift_uid_b}, owner="team-b")
     assert not stale_b.success and "No snapshot found" in stale_b.text
@@ -1858,7 +1861,7 @@ async def test_drag_opening_dialog_on_drop_or_mouse_release_reports_success_with
             el(
                 "region",
                 "Pointer zone",
-                on_click=lambda b, p: b.open_dialog(p, "confirm", "Confirm pointer drop?"),
+                on_mouse_up=lambda b, p: b.open_dialog(p, "confirm", "Confirm pointer drop?"),
             ),
         ),
     )
@@ -1879,3 +1882,14 @@ async def test_drag_opening_dialog_on_drop_or_mouse_release_reports_success_with
     assert res_ptr.success, res_ptr.text
     assert "Successfully dragged an element" in res_ptr.text
     assert "Confirm pointer drop?" in res_ptr.text
+
+
+async def test_list_pages_does_not_allocate_a_blank_tab_for_new_owner(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-a")).success
+    assert len(world.browser.pages) == 1
+    listed = await tools.call(TOOL_PREFIX + "list_pages", {}, owner="team-b")
+    assert listed.success, listed.text
+    assert len(world.browser.pages) == 1
+    assert "1:" not in listed.text
