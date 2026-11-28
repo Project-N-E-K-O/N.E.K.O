@@ -77,25 +77,37 @@ def _calls_with_params(tree: ast.AST) -> Iterator[tuple[ast.Call, frozenset[str]
     A parameter (a pytest fixture such as ``host``) shadows a module alias of the same name:
     ``host.task_agents`` is then the fixture's manager, not the facade module. An import of that
     name in the function's own body (``from nekopower import host``) binds it to the module again
-    there, so it is not taken as shadowed in that function.
+    from where it stands on (by source position: a patch before the import still patches the
+    fixture), so a call after it is not taken as shadowed.
     """
+    # The shadowed names, each with the source position from which an import binds it back (None: never).
+    Shadows = dict[str, "tuple[int, int] | None"]
 
-    def imported_in(body: list[ast.stmt]) -> set[str]:
-        """Names bound by imports in ``body``, not in the functions, lambdas or classes nested in it."""
-        bound: set[str] = set()
+    def imported_in(body: list[ast.stmt]) -> dict[str, tuple[int, int]]:
+        """Names bound by imports in ``body`` (not in what is nested in it), with where each is first bound."""
+        bound: dict[str, tuple[int, int]] = {}
         stack: list[ast.AST] = list(body)
         while stack:
             node = stack.pop()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
                 continue
+            names: list[str] = []
             if isinstance(node, ast.Import):
-                bound.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+                names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
-                bound.update(alias.asname or alias.name for alias in node.names)
+                names = [alias.asname or alias.name for alias in node.names]
+            for name in names:
+                # Bound once the import statement has run: from its end on.
+                at = (node.end_lineno or node.lineno, node.end_col_offset or 0)
+                bound[name] = min(bound.get(name, at), at)
             stack.extend(ast.iter_child_nodes(node))
         return bound
 
-    def visit(node: ast.AST, params: frozenset[str]) -> Iterator[tuple[ast.Call, frozenset[str]]]:
+    def shadowed_at(call: ast.Call, shadows: Shadows) -> frozenset[str]:
+        here = (call.lineno, call.col_offset)
+        return frozenset(name for name, after in shadows.items() if after is None or here < after)
+
+    def visit(node: ast.AST, params: Shadows) -> Iterator[tuple[ast.Call, frozenset[str]]]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
             names = {
@@ -117,16 +129,23 @@ def _calls_with_params(tree: ast.AST) -> Iterator[tuple[ast.Call, frozenset[str]
             for expr in outside:
                 yield from visit(expr, params)
             body = node.body if isinstance(node.body, list) else [node.body]
-            inner = frozenset((params | names) - imported_in(body))
+            imports = imported_in(body)
+            inner: Shadows = dict(params)
+            for name in names:
+                inner[name] = imports.get(name)
+            for name, at in imports.items():
+                if name in inner and name not in names:
+                    earlier = inner[name]
+                    inner[name] = at if earlier is None else min(earlier, at)
             for stmt in body:
                 yield from visit(stmt, inner)
             return
         if isinstance(node, ast.Call):
-            yield node, params
+            yield node, shadowed_at(node, params)
         for child in ast.iter_child_nodes(node):
             yield from visit(child, params)
 
-    yield from visit(tree, frozenset())
+    yield from visit(tree, {})
 
 
 def _facade_has(attr: str) -> bool:
@@ -598,13 +617,17 @@ def test_harvester_does_not_take_a_fixture_named_like_the_host_module_for_it(tmp
         "    def inner():\n"
         "        from nekopower import host\n"
         "        return host\n"
-        '    monkeypatch.setattr(host.task_agents, "_STILL_THE_FIXTURE", 0)\n',
+        '    monkeypatch.setattr(host.task_agents, "_STILL_THE_FIXTURE", 0)\n'
+        "def test_patched_before_the_import(host, monkeypatch):\n"
+        '    monkeypatch.setattr(host.task_agents, "_BEFORE_THE_IMPORT", 0, raising=False)\n'
+        "    from nekopower import host\n"
+        '    monkeypatch.setattr(host.task_agents, "_AFTER_THE_IMPORT", 0)\n',
         encoding="utf-8",
     )
     targets, _scanned = _harvest_facade_patch_targets(tmp_path, present=lambda attr: True)
     # A fixture parameter shadows the module; an import of it in the function's own body binds it
-    # back, and one in a nested function does not.
-    assert set(targets) == {"_CAUGHT_UP_SECONDS", "_IMPORTED_AGAIN"}
+    # back from there on (a patch before it is still the fixture's), and one in a nested function does not.
+    assert set(targets) == {"_CAUGHT_UP_SECONDS", "_IMPORTED_AGAIN", "_AFTER_THE_IMPORT"}
 
 
 def test_patch_routing_guard_covers_the_owner_module_helpers() -> None:
