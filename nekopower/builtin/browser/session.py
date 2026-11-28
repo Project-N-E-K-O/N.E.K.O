@@ -961,24 +961,33 @@ class BrowserSession:
             logger.debug("Target.setAutoAttach timed out on session", exc_info=True)
 
     async def _on_child_attached(
-        self, page: Page, child_session_id: str, target_info: dict[str, Any], waiting: bool
+        self,
+        page: Page | None,
+        child_session_id: str,
+        target_info: dict[str, Any],
+        waiting: bool,
+        *,
+        detach_if_unguarded: bool = False,
     ) -> None:
-        """Arm port blocking on an auto-attached cross-site iframe or worker and resume it."""
+        """Arm port blocking on an auto-attached child target (even if its parent was forgotten) and resume it."""
         connection = self._connection
         if connection is None or connection.closed:
             return
         kind = str(target_info.get("type") or "")
         target_id = str(target_info.get("targetId") or "")
+        guarded = False
         try:
             if kind == "page":
-                self._note_target(target_info, own=page.own, owner=page.owner)
-                popup_page = self._pages.get(target_id) if target_id else None
-                if popup_page is not None and popup_page.session_id is None:
-                    popup_page.session_id = child_session_id
-                    popup_page.prepared = False
-                elif popup_page is None:
-                    page.worker_sessions.add(child_session_id)
+                if page is not None:
+                    self._note_target(target_info, own=page.own, owner=page.owner)
+                    popup_page = self._pages.get(target_id) if target_id else None
+                    if popup_page is not None and popup_page.session_id is None:
+                        popup_page.session_id = child_session_id
+                        popup_page.prepared = False
+                    elif popup_page is None:
+                        page.worker_sessions.add(child_session_id)
                 if self._blocked_ports:
+                    guarded = True
                     if not self._blocked_everywhere:
                         try:
                             await connection.send(
@@ -992,13 +1001,16 @@ class BrowserSession:
                     await self._install_port_guard(connection, child_session_id, on_new_document=True, timeout=5.0)
                     await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
             elif kind == "iframe":
-                if target_id:
+                if page is not None and target_id:
                     page.child_sessions[target_id] = child_session_id
-                try:
-                    await connection.send("Page.enable", session_id=child_session_id, timeout=5.0)
-                except (CdpError, CdpTimeout):
-                    pass
+                if page is not None:
+                    try:
+                        await connection.send("Page.enable", session_id=child_session_id, timeout=5.0)
+                    except (CdpError, CdpTimeout):
+                        # Best-effort frame lifecycle hook; missing Page.enable does not block port guards.
+                        pass
                 if self._blocked_ports:
+                    guarded = True
                     if not self._blocked_everywhere:
                         try:
                             await connection.send(
@@ -1012,8 +1024,10 @@ class BrowserSession:
                     await self._install_port_guard(connection, child_session_id, on_new_document=True, timeout=5.0)
                     await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
             elif kind in ("worker", "shared_worker", "service_worker"):
-                page.worker_sessions.add(child_session_id)
+                if page is not None:
+                    page.worker_sessions.add(child_session_id)
                 if self._blocked_ports:
+                    guarded = True
                     need_js_http = False
                     if not self._blocked_everywhere and kind != "worker":
                         try:
@@ -1025,6 +1039,10 @@ class BrowserSession:
                             )
                         except (CdpError, CdpTimeout):
                             need_js_http = True
+                    elif not self._blocked_everywhere and kind == "worker":
+                        # Dedicated workers inherit parent fetch interception, but under a forgotten
+                        # parent (e.g. a blob: document) also block HTTP in JS as defense-in-depth.
+                        need_js_http = page is None
                     await self._install_port_guard(
                         connection,
                         child_session_id,
@@ -1033,11 +1051,23 @@ class BrowserSession:
                         timeout=5.0,
                     )
                     await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
+            elif page is None and self._blocked_ports:
+                guarded = True
+                await self._install_port_guard(
+                    connection,
+                    child_session_id,
+                    on_new_document=False,
+                    block_http=not self._blocked_everywhere,
+                    timeout=5.0,
+                )
+                await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
         except CdpClosed:
             return
         finally:
             if waiting and not connection.closed:
                 await self._send_quietly(connection, "Runtime.runIfWaitingForDebugger", {}, child_session_id)
+            if detach_if_unguarded and not guarded and not connection.closed:
+                await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": child_session_id}, None)
 
     async def _keep_what_was_open(self, connection: CdpConnection, infos: Iterable[dict[str, Any]]) -> None:
         """Keep what was open before this connection was there from this application's own ports, too.
@@ -1773,16 +1803,6 @@ class BrowserSession:
                 return page
         return None
 
-    async def _resume_orphan_child(
-        self, connection: CdpConnection, child_session_id: str, *, detach: bool
-    ) -> None:
-        """Resume (and detach) a paused auto-attached child whose parent page is no longer tracked."""
-        if connection.closed:
-            return
-        await self._send_quietly(connection, "Runtime.runIfWaitingForDebugger", {}, child_session_id)
-        if detach and not connection.closed:
-            await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": child_session_id}, None)
-
     def _on_event(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
         if method == "Fetch.requestPaused":
             self._answer_paused(params, session_id)
@@ -1790,30 +1810,21 @@ class BrowserSession:
         if method == "Target.attachedToTarget":
             child_sid = params.get("sessionId")
             parent_page = self._page_of_session(session_id)
-            if isinstance(child_sid, str) and child_sid:
-                if parent_page is not None:
-                    task = asyncio.ensure_future(
-                        self._on_child_attached(
-                            parent_page,
-                            child_sid,
-                            params.get("targetInfo") or {},
-                            bool(params.get("waitingForDebugger")),
-                        )
+            if isinstance(child_sid, str) and child_sid and (
+                parent_page is not None or session_id is not None or params.get("waitingForDebugger")
+            ):
+                task = asyncio.ensure_future(
+                    self._on_child_attached(
+                        parent_page,
+                        child_sid,
+                        params.get("targetInfo") or {},
+                        bool(params.get("waitingForDebugger")),
+                        detach_if_unguarded=parent_page is None and session_id is not None,
                     )
-                    self._answers.add(task)
-                    task.add_done_callback(self._answers.discard)
-                    task.add_done_callback(_drop_outcome)
-                elif params.get("waitingForDebugger"):
-                    # A forgotten tab (e.g. navigated to file:// or chrome://) may still have
-                    # auto-attach active; always resume paused child targets so they never wedge.
-                    connection = self._connection
-                    if connection is not None and not connection.closed:
-                        task = asyncio.ensure_future(
-                            self._resume_orphan_child(connection, child_sid, detach=session_id is not None)
-                        )
-                        self._answers.add(task)
-                        task.add_done_callback(self._answers.discard)
-                        task.add_done_callback(_drop_outcome)
+                )
+                self._answers.add(task)
+                task.add_done_callback(self._answers.discard)
+                task.add_done_callback(_drop_outcome)
             return
         if method in ("Target.targetCreated", "Target.targetInfoChanged"):
             self._note_target(params.get("targetInfo") or {})

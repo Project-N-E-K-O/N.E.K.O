@@ -2263,3 +2263,19 @@ def test_screen_share_required_message_exists_in_every_locale() -> None:
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         data = json.loads(_source(f"static/locales/{locale}.json"))
         assert data["agent"]["status"]["screenShareRequired"]
+
+
+def test_windows_uia_run_on_worker_propagates_timeout_error_without_spinning() -> None:
+    from nekopower.builtin.uia import WindowsUiaBackend
+
+    backend = WindowsUiaBackend()
+
+    def _boom() -> None:
+        raise TimeoutError("com call timed out")
+
+    try:
+        with pytest.raises(TimeoutError, match="com call timed out"):
+            backend._run_on_uia_thread(_boom, _wait_timeout=None)
+    finally:
+        if backend._executor is not None:
+            backend._executor.shutdown(wait=False)

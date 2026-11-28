@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PORT_FILE = "DevToolsActivePort"
 LAUNCH_TIMEOUT_SECONDS = 25.0
-PIPE_PROBE_TIMEOUT_SECONDS = 8.0
+PIPE_PROBE_TIMEOUT_SECONDS = 12.0
 CLOSE_WAIT_SECONDS = 5.0
 # Overrides the search; for a browser installed somewhere unusual.
 EXECUTABLE_ENV = "NEKO_BROWSER_PATH"

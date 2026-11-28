@@ -5293,7 +5293,7 @@ async def test_switching_to_a_different_browser_resets_tab_ownership(
     assert all(page.owner != "team-a" for page in session.pages())
 
 
-async def test_orphan_auto_attached_child_is_resumed_and_detached_when_parent_page_was_forgotten(
+async def test_orphan_blob_worker_and_popup_receive_port_guards_before_resuming(
     make_session: Any, world: BrowserWorld
 ) -> None:
     world.settings(mode="attach")
@@ -5304,8 +5304,77 @@ async def test_orphan_auto_attached_child_is_resumed_and_detached_when_parent_pa
     parent_sid = page.session_id
     assert parent_sid is not None
 
-    # Tab navigates to a local file:// URL and is forgotten from session._pages while
+    # A hostile page navigates to a blob: URL and is removed from session._pages while
     # its browser-side CDP session still has auto-attach active.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {
+            "targetInfo": {
+                "targetId": page.target_id,
+                "type": "page",
+                "url": "blob:https://evil.example/0000-1111",
+                "title": "blob",
+            }
+        },
+    )
+    assert page.target_id not in session._pages
+
+    world.browser.other_targets.append(
+        {"targetId": "blob-worker-1", "type": "worker", "url": "blob:https://evil.example/w1", "title": ""}
+    )
+    world.browser._other_sessions["blob-worker-sid"] = "blob-worker-1"
+    world.browser.other_targets.append(
+        {"targetId": "blob-popup-1", "type": "page", "url": "about:blank", "title": ""}
+    )
+    world.browser._other_sessions["blob-popup-sid"] = "blob-popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "blob-worker-sid",
+            "targetInfo": {"targetId": "blob-worker-1", "type": "worker", "url": "blob:https://evil.example/w1"},
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "blob-popup-sid",
+            "targetInfo": {
+                "targetId": "blob-popup-1",
+                "type": "page",
+                "url": "about:blank",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    await _until(lambda: "blob-worker-1" in world.browser.resumed_targets and "blob-popup-1" in world.browser.resumed_targets)
+    worker_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "blob-worker-sid"]
+    assert worker_cmds.index("Runtime.evaluate") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert worker_cmds.index("Target.setAutoAttach") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
+    popup_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "blob-popup-sid"]
+    assert popup_cmds.index("Fetch.enable") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Page.addScriptToEvaluateOnNewDocument") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Runtime.evaluate") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert "blob-worker-1" not in world.browser.detached_from
+    assert "blob-popup-1" not in world.browser.detached_from
+
+
+async def test_orphan_auto_attached_child_is_resumed_and_detached_when_no_ports_blocked(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: set())
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    parent_sid = page.session_id
+    assert parent_sid is not None
+
     world.browser._emit(
         "Target.targetInfoChanged",
         {"targetInfo": {"targetId": page.target_id, "type": "page", "url": "file:///tmp/local.html", "title": "local"}},
