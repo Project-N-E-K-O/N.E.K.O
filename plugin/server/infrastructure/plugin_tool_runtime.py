@@ -563,20 +563,20 @@ def _fetch_release_asset(url: str, directory: Path, **kwargs):
     return fetch_release_asset(url, directory, **kwargs)
 
 
-def _record_route_failure(asset) -> None:
+def _record_route_failure(source_id: str, generation: int, cancel: threading.Event, deadline: float) -> None:
     from plugin.server.infrastructure.package_fetch import record_route_failure
 
-    record_route_failure(asset)
+    record_route_failure(source_id, generation, check_stopped=lambda: _check(cancel, deadline))
 
 
 def _download_failures() -> tuple[type[BaseException], ...]:
     """What a failed download raises, as opposed to a bug in this module."""
     from plugin.server.infrastructure.package_download import PackageDownloadWriteError
-    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, PackageLoopUnavailable
+    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, PackageLoopUnavailable, RouteFailed
 
     return (
         load_httpx().HTTPError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
-        tarfile.TarError, PackageDownloadWriteError, PackageLoopUnavailable, NoRoutesLeft,
+        tarfile.TarError, PackageDownloadWriteError, PackageLoopUnavailable, NoRoutesLeft, RouteFailed,
     )
 
 
@@ -589,44 +589,86 @@ def _file_sha256(path: Path, cancel: threading.Event, deadline: float) -> str:
     return digest.hexdigest()
 
 
-def _fetch_verified(
-    url: str, directory: Path, *, expected_sha256: str, maximum_bytes: int, phase: ProgressPhase,
-    report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
-) -> Path:
-    """Download ``url`` over the market's routes and check it against a pinned digest.
+def _fetch_accepted(
+    url: str, directory: Path, *, maximum_bytes: int, phase: ProgressPhase,
+    accept: Callable[[Path], bool], report: Callable[[ProgressEvent], None],
+    cancel: threading.Event, deadline: float,
+) -> None:
+    """Download ``url`` over the market's routes until ``accept`` takes a file.
 
-    A route that serves other bytes is penalized in the shared route history
-    and skipped; the next route is tried. Only the pinned digest counts,
-    never one offered by a mirror. Raises ``checksum_mismatch`` when no
-    route is left after a mismatch.
+    ``accept(path)`` checks the file against a trusted digest and returns
+    False when its content is wrong; it owns the file once called. A file
+    that one route delivered whole and that is rejected is blamed on that
+    route: it is penalized in the shared route history and skipped. A
+    rejected file spliced from several routes (one resumed after another
+    failed) blames none of them. After any rejection the remaining routes
+    are tried one at a time, so each later file has a single source and
+    every attempt rules a route out.
+
+    The first download's failure propagates for the caller to map. Once a
+    file has been rejected, running out of routes is ``checksum_mismatch``.
     """
-    mismatched: list[str] = []
+    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, RouteFailed
+
+    excluded: list[str] = []
+    rejected: list[str] = []
     while True:
         try:
             fetched = _fetch_release_asset(
                 url, directory, maximum_bytes=maximum_bytes, deadline=deadline,
                 check_stopped=lambda: _check(cancel, deadline),
                 progress=lambda received, total: report(ProgressEvent(phase, received, total)),
-                exclude=mismatched,
+                exclude=excluded, single_route=bool(rejected),
             )
+        except RouteFailed as exc:
+            # Only raised once one at a time: the transfer has penalized it.
+            excluded.append(exc.source_id)
+            continue
         except _download_failures() as exc:
-            if not mismatched:
+            if not rejected:
                 raise
             _check(cancel, deadline)
+            last = exc if isinstance(exc, NoRoutesLeft) else f"{type(exc).__name__}: {exc}"
             raise ToolRuntimeError(
                 "checksum_mismatch",
-                f"{url.rsplit('/', 1)[-1]} failed its SHA-256 check from {', '.join(mismatched)} "
-                f"and no other route delivered it ({type(exc).__name__})",
+                f"{url.rsplit('/', 1)[-1]} failed its integrity check ({', '.join(rejected)}) "
+                f"and no other route delivered it ({last})",
             ) from exc
         try:
-            if _file_sha256(fetched.path, cancel, deadline) == expected_sha256:
-                return fetched.path
-        except BaseException:
+            if accept(fetched.path):
+                return
+        finally:
             fetched.path.unlink(missing_ok=True)
-            raise
-        fetched.path.unlink(missing_ok=True)
-        _record_route_failure(fetched)
-        mismatched.append(fetched.source_id)
+        source = fetched.single_source
+        rejected.append(source or "+".join(fetched.sources))
+        if source is not None:
+            _record_route_failure(source, fetched.generation, cancel, deadline)
+            excluded.append(source)
+        _check(cancel, deadline)
+
+
+def _fetch_verified(
+    url: str, directory: Path, *, expected_sha256: str, maximum_bytes: int, phase: ProgressPhase,
+    report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
+) -> Path:
+    """Download ``url`` over the market's routes and check it against a pinned digest.
+
+    Only the pinned digest counts, never one offered by a mirror. Returns a
+    file in ``directory`` that the caller owns.
+    """
+    verified = directory / "verified"
+
+    def accept(path: Path) -> bool:
+        if _file_sha256(path, cancel, deadline) != expected_sha256:
+            return False
+        os.replace(path, verified)
+        return True
+
+    _fetch_accepted(
+        url, directory, maximum_bytes=maximum_bytes, phase=phase, accept=accept, report=report,
+        cancel=cancel, deadline=deadline,
+    )
+    return verified
 
 
 def _download_uv(
@@ -826,6 +868,20 @@ def _python_download(
     return None
 
 
+def _rejected_python_archive(installed: subprocess.CompletedProcess[str]) -> bool:
+    """Whether uv refused the downloaded file itself, rather than failing to install it.
+
+    uv 0.13.6 extracts while hashing: a file that is not the build (an error
+    page, a truncated archive) fails extraction, and a well-formed archive
+    with other content fails the hash. Extraction failing on a local write
+    carries an OS error and is an install failure.
+    """
+    output = f"{installed.stderr}\n{installed.stdout}".lower()
+    if "hash mismatch" in output:
+        return True
+    return "failed to extract archive" in output and "os error" not in output
+
+
 def _install_downloaded_python(
     download: _PythonDownload, install: list[str],
     run: Callable[[list[str], str], subprocess.CompletedProcess[str]],
@@ -836,45 +892,43 @@ def _install_downloaded_python(
     uv reads it through a ``file://`` mirror and checks it against the
     SHA-256 built into uv (pinned with uv's own version, whose archive was
     checked against the digest pinned here); a mismatch fails the install
-    and nothing falls back to the network. A route that served such a file
-    is penalized and the next one is tried.
+    and nothing falls back to the network. A file uv rejects is handled as
+    in :func:`_fetch_accepted`: its route is penalized and another tried.
     """
     downloads = tools_root() / ".python-download"
     shutil.rmtree(downloads, ignore_errors=True)
     mirror = downloads / "mirror"
     target = mirror / download.tag / download.filename
-    mismatched: list[str] = []
-    try:
-        target.parent.mkdir(parents=True)
-        while True:
-            try:
-                fetched = _fetch_release_asset(
-                    download.url, downloads, maximum_bytes=_MAX_PYTHON_ARCHIVE_BYTES, deadline=deadline,
-                    check_stopped=lambda: _check(cancel, deadline),
-                    progress=lambda received, total: report(ProgressEvent("installing_python", received, total)),
-                    exclude=mismatched,
-                )
-            except ToolRuntimeError:
-                raise
-            except _download_failures() as exc:
-                _check(cancel, deadline)
-                code: ErrorCode = "checksum_mismatch" if mismatched else "python_install_failed"
-                raise ToolRuntimeError(
-                    code, f"Could not download {download.filename}: {type(exc).__name__}: {exc}",
-                ) from exc
-            os.replace(fetched.path, target)
+
+    def accept(path: Path) -> bool:
+        os.replace(path, target)
+        try:
             report(ProgressEvent("installing_python"))
             installed = run([*install, "--mirror", mirror.as_uri()], "Install managed Python")
             if not installed.returncode:
-                return
-            output = f"{installed.stderr}\n{installed.stdout}".lower()
-            if "hash mismatch" not in output:
+                return True
+            if not _rejected_python_archive(installed):
                 raise ToolRuntimeError(
                     "python_install_failed", f"uv could not install {download.filename}: {_tail(installed)}",
                 )
+            return False
+        finally:
             target.unlink(missing_ok=True)
-            _record_route_failure(fetched)
-            mismatched.append(fetched.source_id)
+
+    try:
+        target.parent.mkdir(parents=True)
+        try:
+            _fetch_accepted(
+                download.url, downloads, maximum_bytes=_MAX_PYTHON_ARCHIVE_BYTES, phase="installing_python",
+                accept=accept, report=report, cancel=cancel, deadline=deadline,
+            )
+        except ToolRuntimeError:
+            raise
+        except _download_failures() as exc:
+            _check(cancel, deadline)
+            raise ToolRuntimeError(
+                "python_install_failed", f"Could not download {download.filename}: {type(exc).__name__}: {exc}",
+            ) from exc
     except OSError as exc:
         raise ToolRuntimeError("python_install_failed", f"Could not stage the Python download: {exc}") from exc
     finally:

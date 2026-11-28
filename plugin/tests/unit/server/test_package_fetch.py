@@ -27,12 +27,39 @@ pytestmark = pytest.mark.plugin_unit
 
 ASSET = "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz"
 BODY = bytes(range(256)) * 64  # 16 KiB
+# Large enough that the transfer writes the first half before a route drops.
+BIG = bytes(range(256)) * 1024  # 256 KiB
+HALF = len(BIG) // 2
 MIRROR_HOSTS = {
     "gh-proxy-com": "gh-proxy.com",
     "gh-proxy-org": "gh-proxy.org",
     "cdn-gh-proxy-org": "cdn.gh-proxy.org",
     "edgeone-gh-proxy-org": "edgeone.gh-proxy.org",
 }
+
+
+class Broken(httpx.AsyncByteStream):
+    """A body that drops the connection after ``after`` bytes."""
+
+    def __init__(self, data: bytes, after: int) -> None:
+        self.data = data
+        self.after = after
+
+    async def __aiter__(self):
+        yield self.data[:self.after]
+        raise httpx.ReadError("connection dropped")
+
+
+class Slow(httpx.AsyncByteStream):
+    """A body sent in small chunks with pauses, so progress is polled meanwhile."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    async def __aiter__(self):
+        for offset in range(0, len(self.data), 1024):
+            await asyncio.sleep(0.05)
+            yield self.data[offset:offset + 1024]
 
 
 class Stalled(httpx.AsyncByteStream):
@@ -108,7 +135,7 @@ def test_direct_preference_uses_github_only(tmp_path, network):
     preferences(tmp_path, "direct")
     network.handlers["github.com"] = ok()
     asset = get(tmp_path)
-    assert asset.source_id == "github-direct"
+    assert asset.single_source == "github-direct"
     assert asset.path.read_bytes() == BODY
     assert hosts(network) == ["github.com"]
     assert str(network.requests[0].url) == ASSET
@@ -118,7 +145,7 @@ def test_specified_preference_uses_that_mirror_only(tmp_path, network):
     preferences(tmp_path, "specified", "cdn-gh-proxy-org")
     network.handlers["cdn.gh-proxy.org"] = ok()
     asset = get(tmp_path)
-    assert asset.source_id == "cdn-gh-proxy-org"
+    assert asset.single_source == "cdn-gh-proxy-org"
     assert hosts(network) == ["cdn.gh-proxy.org"]
     assert str(network.requests[0].url) == "https://cdn.gh-proxy.org/" + ASSET
 
@@ -126,7 +153,7 @@ def test_specified_preference_uses_that_mirror_only(tmp_path, network):
 def test_retired_mirror_preference_falls_back_to_the_default_mirror(tmp_path, network):
     preferences(tmp_path, "specified", "hk-gh-proxy-org")
     network.handlers["gh-proxy.com"] = ok()
-    assert get(tmp_path).source_id == "gh-proxy-com"
+    assert get(tmp_path).single_source == "gh-proxy-com"
     assert hosts(network) == ["gh-proxy.com"]
 
 
@@ -138,7 +165,7 @@ def test_auto_preference_is_the_default_and_follows_the_shared_route_history(tmp
         sources._record(sources.RouteObservation("gh-proxy-org", latency=0.05), time.time())
         sources._record(sources.RouteObservation("github-direct", latency=5.0), time.time())
     asset = get(tmp_path)
-    assert asset.source_id == "gh-proxy-org"
+    assert asset.single_source == "gh-proxy-org"
     assert hosts(network)[0] == "gh-proxy.org"
     # The transfer's own observation lands in the same history the market reads.
     assert sources._routes["gh-proxy-org"].samples == 4
@@ -153,7 +180,7 @@ def test_failing_mirror_falls_back_and_is_penalized(tmp_path, network):
         sources._record(sources.RouteObservation("gh-proxy-com", latency=0.01), time.time())
     before = sources._routes["gh-proxy-com"].failures
     asset = get(tmp_path)
-    assert asset.source_id != "gh-proxy-com"
+    assert asset.single_source != "gh-proxy-com"
     assert asset.path.read_bytes() == BODY
     assert sources._routes["gh-proxy-com"].failures > before
     assert json.loads((tmp_path / "market-download-routes.json").read_text())["routes"]["gh-proxy-com"]["failures"]
@@ -173,7 +200,7 @@ def test_recorded_route_failure_penalizes_the_route_in_the_shared_history(tmp_pa
     asset = get(tmp_path)
     assert hashlib.sha256(asset.path.read_bytes()).hexdigest() != hashlib.sha256(BODY).hexdigest()
     before = sources._routes["gh-proxy-org"].failures
-    fetch.record_route_failure(asset)
+    fetch.record_route_failure(asset.single_source, asset.generation, check_stopped=lambda: None)
     assert sources._routes["gh-proxy-org"].failures == before + 1
     assert sources.estimate_route("gh-proxy-org").latency > sources.estimate_route("gh-proxy-com").latency
 
@@ -302,3 +329,123 @@ def test_a_stopped_bound_loop_is_not_used(tmp_path, network):
 async def test_calling_from_an_event_loop_is_refused(tmp_path):
     with pytest.raises(RuntimeError, match="worker thread"):
         get(tmp_path)
+
+
+def _ranged(body: bytes):
+    def respond(request):
+        start = int(request.headers.get("range", "bytes=0-").removeprefix("bytes=").rstrip("-"))
+        if not start:
+            return httpx.Response(200, headers={"content-length": str(len(body))}, content=body)
+        return httpx.Response(206, headers={
+            "content-range": f"bytes {start}-{len(body) - 1}/{len(body)}",
+            "content-length": str(len(body) - start),
+        }, content=body[start:])
+
+    return respond
+
+
+def _drops_once(body: bytes):
+    calls: list[int] = []
+
+    def respond(_request):
+        calls.append(1)
+        stream = Broken(body, HALF) if len(calls) == 1 else Stalled()
+        return httpx.Response(200, headers={"content-length": str(len(body))}, stream=stream)
+
+    return respond
+
+
+def _rank_first(source_id: str) -> None:
+    for _ in range(3):
+        sources._record(sources.RouteObservation(source_id, latency=0.001), time.time())
+
+
+def test_a_file_resumed_on_another_route_names_both(tmp_path, network):
+    preferences(tmp_path, "auto")
+    _rank_first("gh-proxy-com")
+    network.handlers["gh-proxy.com"] = _drops_once(BIG)
+    # Only GitHub can carry the rest, and it honours Range.
+    network.handlers["github.com"] = _ranged(BIG)
+    asset = get(tmp_path)
+    assert asset.path.read_bytes() == BIG
+    assert asset.sources == ("gh-proxy-com", "github-direct")
+    assert asset.single_source is None
+    assert network.requests[-1].headers["range"] == f"bytes={HALF}-"
+
+
+def test_route_restarting_the_file_replaces_the_earlier_sources(tmp_path, network):
+    preferences(tmp_path, "auto")
+    _rank_first("gh-proxy-com")
+    network.handlers["gh-proxy.com"] = _drops_once(BIG)
+    # GitHub ignores Range and sends the whole file again.
+    network.handlers["github.com"] = ok(BIG)
+    asset = get(tmp_path)
+    assert asset.path.read_bytes() == BIG
+    assert asset.sources == ("github-direct",)
+
+
+def test_single_route_failure_names_the_route(tmp_path, network):
+    preferences(tmp_path, "auto")
+    for host in MIRROR_HOSTS.values():
+        network.handlers[host] = ok()
+    network.handlers["github.com"] = lambda _request: httpx.Response(503)
+    for _ in range(3):
+        sources._record(sources.RouteObservation("github-direct", latency=0.001), time.time())
+    with pytest.raises(fetch.RouteFailed) as raised:
+        get(tmp_path, single_route=True)
+    assert raised.value.source_id == "github-direct"
+    assert hosts(network) == ["github.com"]
+
+
+def test_single_route_does_not_wrap_a_stop(tmp_path, network):
+    preferences(tmp_path, "direct")
+    network.handlers["github.com"] = ok()
+
+    def stop():
+        raise Stop
+
+    with pytest.raises(Stop):
+        get(tmp_path, single_route=True, check_stopped=stop)
+
+
+@pytest.mark.parametrize("when", ["during", "final"])
+def test_a_raising_progress_callback_stops_the_transfer_and_leaves_no_file(tmp_path, network, when):
+    preferences(tmp_path, "direct")
+    if when == "during":
+        network.handlers["github.com"] = (
+            lambda _request: httpx.Response(200, headers={"content-length": str(len(BODY))}, stream=Slow(BODY))
+        )
+    else:
+        network.handlers["github.com"] = ok()
+
+    def progress(received, total):
+        if when == "during" or received == total:
+            raise Stop
+
+    with pytest.raises(Stop):
+        get(tmp_path, progress=progress)
+    directory = tmp_path / "downloads"
+    assert not directory.exists() or list(directory.iterdir()) == []
+
+
+def test_recording_a_failure_honours_the_stop_check(tmp_path, monkeypatch):
+    gate = threading.Event()
+    original = sources._write_snapshot
+
+    def stuck(snapshot):
+        gate.wait(10)  # A file system that does not answer.
+        original(snapshot)
+
+    monkeypatch.setattr(sources, "_write_snapshot", stuck)
+    began = time.monotonic()
+
+    def stop():
+        if time.monotonic() - began > 0.2:
+            raise Stop
+
+    try:
+        with pytest.raises(Stop):
+            fetch.record_route_failure("gh-proxy-com", sources.route_generation(), check_stopped=stop)
+        assert time.monotonic() - began < 3
+    finally:
+        gate.set()

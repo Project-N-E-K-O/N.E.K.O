@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any, TypeVar
 
+from plugin.logging_config import get_logger
 from plugin.server.infrastructure.package_download import (
     PackageDownloadDeadline,
     aclose_package_http_client,
@@ -38,8 +39,10 @@ from plugin.server.infrastructure.package_sources import (
     route_generation,
 )
 from plugin.server.infrastructure.package_transfer import download_package
+from plugin.utils.http_imports import ensure_httpx
 
 T = TypeVar("T")
+logger = get_logger("server.infrastructure.package_fetch")
 POLL_SECONDS = 0.1
 # How long a stopped caller waits for the transfer to close its responses and
 # remove its partial file. Bounded so a wedged loop cannot hold it forever.
@@ -54,14 +57,29 @@ class PackageLoopUnavailable(RuntimeError):
     """The server loop stopped before the transfer finished."""
 
 
+class RouteFailed(Exception):
+    """A ``single_route`` transfer failed; ``source_id`` names the route it used."""
+
+    def __init__(self, source_id: str, error: BaseException) -> None:
+        super().__init__(f"route {source_id} failed: {type(error).__name__}: {error}")
+        self.source_id = source_id
+        self.error = error
+
+
 @dataclass(frozen=True)
 class FetchedAsset:
     path: Path
     """A new file in the requested directory; the caller owns and removes it."""
-    source_id: str
-    """The route that delivered the last bytes."""
+    sources: tuple[str, ...]
+    """Every route whose bytes are in the file, in order. Several when a
+    transfer resumed on another route after a failure."""
     generation: int
     """The route history generation the transfer started in."""
+
+    @property
+    def single_source(self) -> str | None:
+        """The one route that delivered the whole file, or None for a spliced file."""
+        return self.sources[0] if len(self.sources) == 1 else None
 
 
 def _start_private_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
@@ -71,7 +89,10 @@ def _start_private_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
     def run() -> None:
         asyncio.set_event_loop(loop)
         loop.call_soon(ready.set)
-        loop.run_forever()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
 
     thread = threading.Thread(target=run, name="package-fetch-loop", daemon=True)
     thread.start()
@@ -79,16 +100,28 @@ def _start_private_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
     return loop, thread
 
 
-def _stop_private_loop(loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
-    try:
-        # The shared client now belongs to this loop; close it with the loop.
-        asyncio.run_coroutine_threadsafe(aclose_package_http_client(), loop).result(CLEANUP_SECONDS)
-    except Exception:
-        pass  # Best effort: the loop is discarded either way.
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join(CLEANUP_SECONDS)
-    if not thread.is_alive():
-        loop.close()
+def _stop_private_loop(loop: asyncio.AbstractEventLoop, thread: threading.Thread, wait: float) -> None:
+    """Let the private loop finish what it still runs, then stop and close it.
+
+    A transfer the caller stopped may still be cleaning up, or a route
+    history write still saving: they complete on the loop's own thread. The
+    caller waits for that for at most ``wait`` seconds.
+    """
+
+    async def drain() -> None:
+        current = asyncio.current_task()
+        remaining = [task for task in asyncio.all_tasks() if task is not current]
+        if remaining:
+            # Bounded: a cleanup that hangs must not keep the loop alive for good.
+            await asyncio.wait(remaining, timeout=CLEANUP_SECONDS)
+        try:
+            # The shared client now belongs to this loop; close it with the loop.
+            await aclose_package_http_client()
+        finally:
+            loop.stop()
+
+    asyncio.run_coroutine_threadsafe(drain(), loop)
+    thread.join(wait)
 
 
 def _supervise(
@@ -96,8 +129,13 @@ def _supervise(
     factory: Callable[[], Coroutine[Any, Any, T]],
     check_stopped: Callable[[], None],
     on_poll: Callable[[], None],
+    cleanup_seconds: float,
 ) -> T:
-    """Run ``factory()`` on ``loop`` and wait for it on this thread."""
+    """Run ``factory()`` on ``loop`` and wait for it on this thread.
+
+    When ``check_stopped`` or ``on_poll`` raises, the task is cancelled and
+    awaited for up to ``cleanup_seconds`` before the error propagates.
+    """
     finished = threading.Event()
     holder: dict[str, asyncio.Task[T]] = {}
 
@@ -118,8 +156,8 @@ def _supervise(
 
     loop.call_soon_threadsafe(start)
     while not finished.wait(POLL_SECONDS):
-        on_poll()
         try:
+            on_poll()
             check_stopped()
             if loop.is_closed() or not loop.is_running():
                 raise PackageLoopUnavailable("the server loop stopped during a package download")
@@ -130,9 +168,8 @@ def _supervise(
             except RuntimeError:
                 pass  # The loop is closed; nothing of the transfer runs any more.
             else:
-                finished.wait(CLEANUP_SECONDS)
+                finished.wait(cleanup_seconds)
             raise
-    on_poll()
     task = holder["task"]
     if task.cancelled():
         # Cancelled on the loop's side, e.g. by the server shutting down.
@@ -144,6 +181,7 @@ def _run(
     factory: Callable[[], Coroutine[Any, Any, T]],
     check_stopped: Callable[[], None],
     on_poll: Callable[[], None] = lambda: None,
+    cleanup_seconds: float = CLEANUP_SECONDS,
 ) -> T:
     loop = package_loop()
     try:
@@ -153,12 +191,12 @@ def _run(
     else:
         raise RuntimeError("package_fetch blocks; call it from a worker thread, not an event loop")
     if loop is not None:
-        return _supervise(loop, factory, check_stopped, on_poll)
+        return _supervise(loop, factory, check_stopped, on_poll, cleanup_seconds)
     private, thread = _start_private_loop()
     try:
-        return _supervise(private, factory, check_stopped, on_poll)
+        return _supervise(private, factory, check_stopped, on_poll, cleanup_seconds)
     finally:
-        _stop_private_loop(private, thread)
+        _stop_private_loop(private, thread, cleanup_seconds)
 
 
 def fetch_release_asset(
@@ -170,6 +208,7 @@ def fetch_release_asset(
     check_stopped: Callable[[], None],
     progress: Callable[[int, int | None], None],
     exclude: Collection[str] = (),
+    single_route: bool = False,
 ) -> FetchedAsset:
     """Download one GitHub release asset over the market's routes. Blocks.
 
@@ -178,7 +217,10 @@ def fetch_release_asset(
     for every chunk and on this thread while waiting; whatever it raises stops
     the transfer and propagates. ``progress`` is called on this thread.
     Routes named in ``exclude`` are skipped; :class:`NoRoutesLeft` when that
-    leaves none. Other failures are those of ``download_package``.
+    leaves none. With ``single_route`` only the best remaining route is used,
+    so a file that fails its checksum can be blamed on it, and its failure is
+    raised as :class:`RouteFailed`. Other failures are those of
+    ``download_package``.
     """
     # The preference file is read here, off the loop.
     preferences, _ = load_preferences()
@@ -193,6 +235,7 @@ def fetch_release_asset(
             progress(*current)
 
     async def fetch() -> FetchedAsset:
+        httpx = await ensure_httpx()
         generation = route_generation()
         routes = [route for route in download_candidates(url, preferences) if route[0] not in exclude]
         if not routes:
@@ -200,30 +243,63 @@ def fetch_release_asset(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PackageDownloadDeadline("Package download total deadline expired")
-        carried: list[str] = []
+        if single_route:
+            routes = routes[:1]
+        # Routes whose bytes the file holds. The transfer reports a route as
+        # it starts carrying, then its first progress gives the offset it
+        # writes from: 0 means it started the file over.
+        sources: list[str] = []
+        starting: list[str | None] = [None]
+
+        def report_route(source_id: str) -> None:
+            starting[0] = source_id
 
         def report_progress(received: int, total: int | None) -> None:
+            source_id = starting[0]
+            if source_id is not None:
+                starting[0] = None
+                if not received:
+                    sources.clear()
+                if source_id not in sources:
+                    sources.append(source_id)
             latest[0] = (received, total)
 
-        path = await download_package(
-            routes, directory, maximum_bytes=maximum_bytes, total_timeout=remaining,
-            report_progress=report_progress, report_route=carried.append, check_cancelled=check_stopped,
-        )
-        return FetchedAsset(path, carried[-1], generation)
+        try:
+            path = await download_package(
+                routes, directory, maximum_bytes=maximum_bytes, total_timeout=remaining,
+                report_progress=report_progress, report_route=report_route, check_cancelled=check_stopped,
+            )
+        except (OSError, ValueError, httpx.HTTPError) as exc:
+            # What the route did; not the deadline, and not a stop or a local
+            # write failure (those are not OSError or ValueError).
+            if single_route and not isinstance(exc, PackageDownloadDeadline):
+                raise RouteFailed(routes[0][0], exc) from exc
+            raise
+        return FetchedAsset(path, tuple(sources) or (routes[0][0],), generation)
 
-    return _run(fetch, check_stopped, relay)
+    asset = _run(fetch, check_stopped, relay)
+    try:
+        relay()
+    except BaseException:
+        # The caller never receives the file, so it is removed here.
+        asset.path.unlink(missing_ok=True)
+        raise
+    return asset
 
 
-def record_route_failure(asset: FetchedAsset) -> None:
-    """Penalize the route that delivered ``asset``, e.g. for failing its checksum. Blocks.
+def record_route_failure(source_id: str, generation: int, *, check_stopped: Callable[[], None]) -> None:
+    """Penalize one route in the shared history, e.g. for serving a file that failed its checksum.
 
-    Best effort: a failure here only loses one observation.
+    The observation counts as soon as the server loop takes it; this waits
+    only for it to be saved, and stops waiting when ``check_stopped`` raises.
+    Best effort: a failure to save only loses the observation after a restart.
     """
 
     async def commit() -> None:
-        await commit_route_observations([RouteObservation(asset.source_id, failed=True)], asset.generation)
+        await commit_route_observations([RouteObservation(source_id, failed=True)], generation)
 
     try:
-        _run(commit, lambda: None)
-    except Exception:
-        pass
+        # Saving needs no cleanup, so a stopped caller does not wait for it.
+        _run(commit, check_stopped, cleanup_seconds=0)
+    except (OSError, PackageLoopUnavailable) as exc:
+        logger.warning("could not record a failure of download route {}: {}", source_id, exc)

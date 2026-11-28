@@ -20,6 +20,8 @@ import tarfile
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 import zipfile
 
 from packaging.tags import Tag
@@ -28,7 +30,7 @@ import pytest
 
 from plugin.server.infrastructure import package_download as module_download
 from plugin.server.infrastructure import plugin_tool_runtime as module
-from plugin.server.infrastructure.package_fetch import FetchedAsset, NoRoutesLeft
+from plugin.server.infrastructure.package_fetch import FetchedAsset, NoRoutesLeft, RouteFailed
 
 
 @pytest.fixture
@@ -46,7 +48,7 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         module, "_fetch_release_asset",
         lambda *_args, **_kwargs: pytest.fail("this test must not download anything"),
     )
-    monkeypatch.setattr(module, "_record_route_failure", lambda _asset: pytest.fail("nothing to penalize"))
+    monkeypatch.setattr(module, "_record_route_failure", lambda *_args: pytest.fail("nothing to penalize"))
     return tools
 
 
@@ -77,7 +79,7 @@ def _uv_archive(target: str, binary_name: str, data: bytes = b"uv-executable") -
 class FakeRelease:
     """Serves GitHub release assets in place of the market transfer; counts downloads.
 
-    ``bodies`` maps an asset URL to the bytes each successive route delivers
+    ``bodies`` maps an asset URL to the bytes each successive attempt delivers
     (the last repeats); the uv archive is served by default. Routes are named
     ``route-0``, ``route-1``... in the order they are used.
     """
@@ -101,6 +103,11 @@ class FakeRelease:
         self.wheel_downloads = 0
         self.requests: list[tuple[str, tuple[str, ...]]] = []
         self.penalized: list[str] = []
+        self.single: list[bool] = []
+        # Routes that fail when used one at a time.
+        self.broken_routes: set[str] = set()
+        # The race delivers files spliced from the first two routes.
+        self.spliced = False
         self.on_chunk = None
 
     def pin_served_archive(self) -> None:
@@ -112,13 +119,17 @@ class FakeRelease:
         monkeypatch.setattr(module, "_uv_target", lambda: release.target)
         monkeypatch.setattr(module, "_UV_ARCHIVE_SHA256", self.pinned)
 
-        def fetch(url, directory, *, maximum_bytes, deadline, check_stopped, progress, exclude=()):
+        def fetch(url, directory, *, maximum_bytes, deadline, check_stopped, progress, exclude=(),
+                  single_route=False):
             assert deadline > 0
             release.requests.append((url, tuple(exclude)))
+            release.single.append(single_route)
             check_stopped()
             available = [f"route-{index}" for index in range(release.routes) if f"route-{index}" not in exclude]
             if not available:
                 raise NoRoutesLeft(url)
+            if single_route and available[0] in release.broken_routes:
+                raise RouteFailed(available[0], OSError("connection reset"))
             if release.fail:
                 raise OSError("connection refused")
             if url == release.uv_url:
@@ -126,7 +137,8 @@ class FakeRelease:
             if release.gate is not None:
                 release.gate.wait(5)
             bodies = release.bodies[url]
-            data = bodies[min(len(exclude), len(bodies) - 1)]
+            attempt = sum(1 for requested, _exclude in release.requests[:-1] if requested == url)
+            data = bodies[min(attempt, len(bodies) - 1)]
             if len(data) > maximum_bytes:
                 raise module_download.PackageSizeExceeded(len(data), maximum_bytes)
             directory.mkdir(parents=True, exist_ok=True)
@@ -145,10 +157,15 @@ class FakeRelease:
             except BaseException:
                 path.unlink(missing_ok=True)
                 raise
-            return FetchedAsset(path, available[0], 7)
+            spliced = release.spliced and not single_route
+            return FetchedAsset(path, tuple(available[:2]) if spliced else (available[0],), 7)
+
+        def penalize(source_id, generation, cancel, deadline):
+            assert generation == 7 and isinstance(cancel, threading.Event) and deadline > 0
+            release.penalized.append(source_id)
 
         monkeypatch.setattr(module, "_fetch_release_asset", fetch)
-        monkeypatch.setattr(module, "_record_route_failure", lambda asset: release.penalized.append(asset.source_id))
+        monkeypatch.setattr(module, "_record_route_failure", penalize)
         return self
 
 
@@ -199,9 +216,14 @@ class FakeUv:
             return subprocess.CompletedProcess(cmd, 0, self.listing, "")
         if cmd[1:3] == ["python", "install"] and "--mirror" in cmd:
             # uv reads the build from the mirror and checks the SHA-256 it carries.
-            mirror = Path(cmd[cmd.index("--mirror") + 1].removeprefix("file://"))
+            mirror = Path(url2pathname(urlparse(cmd[cmd.index("--mirror") + 1]).path))
             data = (mirror / PYTHON_TAG / PYTHON_FILE).read_bytes()
             self.mirrored.append(data)
+            if data == b"<html>":
+                return subprocess.CompletedProcess(
+                    cmd, 1, "", "error: Failed to install\n  cause: Failed to extract archive: x.tar.gz\n"
+                    "  cause: Invalid gzip header",
+                )
             if data != PYTHON_BODY:
                 return subprocess.CompletedProcess(cmd, 1, "", "error: Failed to install\n  cause: Hash mismatch for `x`")
         if cmd[1:3] == ["python", "install"]:
@@ -1330,3 +1352,53 @@ def test_network_failure_after_a_mismatch_stays_a_checksum_mismatch(root, monkey
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
     assert release.penalized == ["route-0"]
+
+
+def test_spliced_file_failing_its_checksum_blames_no_route_and_retries_one_route_at_a_time(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.spliced = True
+    release.bodies[release.uv_url] = [b"spliced from two routes", release.body]
+    _prepare(FakeUv(root))
+    assert module.cached_uv_path().read_bytes() == b"uv-executable"
+    assert release.penalized == []
+    # The whole file is fetched again, from the best route alone; none is ruled out.
+    assert release.requests[:2] == [(release.uv_url, ()), (release.uv_url, ())]
+    assert release.single[:2] == [False, True]
+
+
+def test_spliced_then_single_route_mismatches_rule_out_each_route_in_turn(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.spliced = True
+    _expect_failure(FakeUv(root), "checksum_mismatch")
+    assert release.penalized == ["route-0", "route-1"]
+    assert [exclude for _url, exclude in release.requests] == [(), (), ("route-0",), ("route-0", "route-1")]
+
+
+def test_route_failing_while_tried_alone_is_skipped(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    good = release.body
+    release.bodies[release.uv_url] = [_uv_archive(release.target, release.binary_name, b"evil"), good]
+    release.broken_routes = {"route-1"}
+    _prepare(FakeUv(root))
+    assert release.penalized == ["route-0"]
+    assert [exclude for _url, exclude in release.requests[:3]] == [(), ("route-0",), ("route-0", "route-1")]
+
+
+def test_python_file_uv_cannot_extract_is_blamed_on_its_route(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.bodies[_python_url()] = [b"<html>", PYTHON_BODY]
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [b"<html>", PYTHON_BODY]
+    assert release.penalized == ["route-0"]
+
+
+@pytest.mark.parametrize(("stderr", "rejected"), [
+    ("error: Failed to install\n  cause: Hash mismatch for `cpython`", True),
+    ("error: Failed to install\n  cause: Failed to extract archive: x\n  cause: Invalid gzip header", True),
+    ("error: Failed to extract archive: x\n  cause: No space left on device (os error 28)", False),
+    ("error: Permission denied (os error 13)", False),
+])
+def test_uv_rejecting_the_file_is_told_apart_from_a_local_failure(stderr, rejected):
+    result = subprocess.CompletedProcess([], 1, "", stderr)
+    assert module._rejected_python_archive(result) is rejected

@@ -587,7 +587,7 @@ export default {
     resetHistory: '次回のインストールで経路を再選択',
     resetSuccess: '履歴を消去しました。次回のインストールで経路を再選択します。',
     resetFailed: '最近の転送履歴を消去できませんでした。',
-    notice: 'github.com の Release ダウンロードリンクだけをプロキシします。プラグインパッケージは引き続き Market 提供の SHA-256 で、プラグインツールは組み込みの固定 SHA-256 で検証されます。',
+    notice: 'github.com の Release ダウンロードリンクだけをプロキシします。プラグインパッケージは引き続き Market 提供の SHA-256 で、uv はアプリに組み込まれた固定の SHA-256 で、Python は uv が内蔵する SHA-256 で検証されます。',
     preferenceNotice: '設定は次回以降のタスクに適用されます。進捗には実際の使用経路を表示します。',
     saveFailed: 'ダウンロード設定を保存できません。再試行してください。',
     actualSources: 'ダウンロード元：{sources}',

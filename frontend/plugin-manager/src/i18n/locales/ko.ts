@@ -587,7 +587,7 @@ export default {
     resetHistory: '다음 설치 시 경로 다시 선택',
     resetSuccess: '최근 기록을 지웠습니다. 다음 설치 시 경로를 다시 선택합니다.',
     resetFailed: '최근 전송 기록을 지우지 못했습니다.',
-    notice: 'github.com Release 다운로드 링크만 프록시하며 플러그인 패키지는 계속 Market의 SHA-256으로, 플러그인 도구는 내장된 고정 SHA-256으로 검증합니다.',
+    notice: 'github.com Release 다운로드 링크만 프록시하며 플러그인 패키지는 계속 Market의 SHA-256으로, uv는 앱에 내장된 고정 SHA-256으로, Python은 uv가 내장한 SHA-256으로 검증합니다.',
     preferenceNotice: '설정은 이후 작업에 적용됩니다. 진행률에는 실제 사용 경로가 표시됩니다.',
     saveFailed: '다운로드 설정을 저장하지 못했습니다. 다시 시도하세요.',
     actualSources: '다운로드 경로: {sources}',

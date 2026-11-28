@@ -587,7 +587,7 @@ export default {
     resetHistory: '下次安装重新选源',
     resetSuccess: '已清除短期记录，下次安装将重新选源。',
     resetFailed: '无法清除短期下载记录。',
-    notice: '仅代理 github.com 的 Release 下载链接；插件包仍按 Market 提供的 SHA-256 校验，插件工具按内置的固定 SHA-256 校验。',
+    notice: '仅代理 github.com 的 Release 下载链接；插件包仍按 Market 提供的 SHA-256 校验，uv 按应用内置的固定 SHA-256 校验，Python 由 uv 按其自带的 SHA-256 校验。',
     preferenceNotice: '设置仅影响后续任务；下方下载进度显示实际线路。',
     saveFailed: '无法保存下载设置，请重试。',
     actualSources: '实际线路：{sources}',

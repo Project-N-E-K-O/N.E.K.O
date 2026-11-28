@@ -587,7 +587,7 @@ export default {
     resetHistory: 'Choose sources again on next install',
     resetSuccess: 'Recent transfer history cleared; the next install will select sources again.',
     resetFailed: 'Could not clear the recent transfer history.',
-    notice: 'Only github.com release download links are proxied; plugin packages are still verified with the SHA-256 from Market, and plugin tools with their pinned SHA-256.',
+    notice: 'Only github.com release download links are proxied; plugin packages are still verified with the SHA-256 from Market, uv with the SHA-256 pinned in the app, and Python by uv with the SHA-256 built into it.',
     preferenceNotice: 'Settings affect future tasks. Download progress shows the routes actually in use.',
     saveFailed: 'Could not save download settings. Please retry.',
     actualSources: 'Downloading from {sources}',

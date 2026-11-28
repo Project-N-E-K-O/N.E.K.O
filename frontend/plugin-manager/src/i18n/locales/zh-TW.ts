@@ -587,7 +587,7 @@ export default {
     resetHistory: '下次安裝重新選源',
     resetSuccess: '已清除短期記錄，下次安裝將重新選源。',
     resetFailed: '無法清除短期下載記錄。',
-    notice: '僅代理 github.com 的 Release 下載連結；外掛套件仍依 Market 提供的 SHA-256 驗證，外掛工具依內建的固定 SHA-256 驗證。',
+    notice: '僅代理 github.com 的 Release 下載連結；外掛套件仍依 Market 提供的 SHA-256 驗證，uv 依應用程式內建的固定 SHA-256 驗證，Python 由 uv 依其自帶的 SHA-256 驗證。',
     preferenceNotice: '設定僅影響後續任務；下載進度顯示實際線路。',
     saveFailed: '無法儲存下載設定，請重試。',
     actualSources: '實際線路：{sources}',
