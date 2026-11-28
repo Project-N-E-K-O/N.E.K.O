@@ -32,6 +32,7 @@ import os
 import shutil
 import stat
 import sys
+import threading
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -43,6 +44,16 @@ _META_FILE = "meta.json"
 _BASE_MANIFEST_FILE = "base_manifest.json"
 _BLOBS_DIR = "blobs"
 _PENDING_DIR = "pending"
+_CONFLICTS_DIR = "conflicts"
+
+
+class CopyCancelled(RuntimeError):
+    """Raised inside a synchronous copy worker thread when cancellation is requested."""
+
+
+def _check_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CopyCancelled("copy operation cancelled")
 _CHUNK_BYTES = 256 * 1024
 _BINARY_PROBE_BYTES = 8000
 
@@ -322,16 +333,17 @@ def merge3_bytes(
     # Deletion / creation clashes.
     if current is None or worktree is None:
         # One side deleted (or never had) what the other side modified/added.
-        keep = current if current is not None else worktree
+        # Keep the worktree's version when present so preparing conflicts does not discard it.
+        keep = worktree if worktree is not None else current
         return keep, True
     if base is None:
         # Both sides independently added different content at the same path.
         if is_binary_bytes(current) or is_binary_bytes(worktree):
-            return current, True
+            return worktree, True
         base_lines: list[bytes] = []
     else:
         if is_binary_bytes(base) or is_binary_bytes(current) or is_binary_bytes(worktree):
-            return current, True
+            return worktree, True
         base_lines = base.splitlines(keepends=True)
 
     curr_lines = current.splitlines(keepends=True)
@@ -485,6 +497,7 @@ def scan_copy_directory(
     active_dep_links: Iterable[str] = (),
     include_large: Iterable[str] = (),
     hash_files: bool = True,
+    discover_dependencies: bool = True,
 ) -> CopyScan:
     """Walk ``root`` and catalog its files, skipped items, and linkable dependency directories."""
     dep_names = frozenset(dependency_dirs)
@@ -508,7 +521,7 @@ def scan_copy_directory(
             if rel in active_set and is_dir_link(full):
                 dirs.remove(dname)
                 continue
-            if dname in dep_names:
+            if discover_dependencies and dname in dep_names:
                 dirs.remove(dname)
                 if not is_dir_link(full):
                     found_deps.append(rel)
@@ -539,6 +552,10 @@ def scan_copy_directory(
             try:
                 info = os.lstat(full)
             except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                # Skip special files (named pipes/FIFOs, sockets, device nodes) so opening never stalls.
+                skipped.append(rel)
                 continue
             if info.st_size > max_file_bytes and rel not in keep_large:
                 skipped.append(rel)
@@ -656,31 +673,73 @@ def populate_copy(
     link_dependencies: bool,
     link_max: int,
     identity: dict[str, int] | None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, tuple[str, ...], CopyScan]:
     """Copy ``project_dir`` into ``target``, store its baseline blobs/metadata, and link dependency dirs."""
+    _check_cancelled(cancel_event)
     scan = scan_copy_directory(
         project_dir,
         dependency_dirs=dependency_dirs,
         max_file_bytes=max_file_bytes,
         max_files=max_files,
         max_total_bytes=max_total_bytes,
-        hash_files=True,
+        hash_files=False,
     )
+    _check_cancelled(cancel_event)
     meta_dir = copy_meta_dir(target)
     blobs_dir = meta_dir / _BLOBS_DIR
     blobs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy all manifest entries into target and record baseline blobs.
+    # Copy all manifest entries into target, then hash the copied bytes themselves
+    # so the baseline manifest and stored blobs always match what landed in the copy.
+    actual_files: dict[str, dict[str, Any]] = {}
+    actual_bytes = 0
     for rel, entry in sorted(scan.files.items()):
+        _check_cancelled(cancel_event)
         src = project_dir / rel
         dst = target / rel
         os.makedirs(fs_path(dst.parent), exist_ok=True)
         if entry["kind"] == "symlink":
-            os.symlink(entry["target"], fs_path(dst))
+            try:
+                link_target = os.readlink(fs_path(src))
+            except OSError:
+                continue
+            os.symlink(link_target, fs_path(dst))
+            actual_files[rel] = {"kind": "symlink", "target": link_target}
             continue
-        shutil.copy2(fs_path(src), fs_path(dst), follow_symlinks=False)
-        _store_blob_file(dst, entry["sha256"], blobs_dir)
+        try:
+            src_stat = os.lstat(fs_path(src))
+            if not stat.S_ISREG(src_stat.st_mode):
+                continue
+            shutil.copy2(fs_path(src), fs_path(dst), follow_symlinks=False)
+            copied_stat = os.lstat(fs_path(dst))
+            copied_sha = _hash_file(fs_path(dst))
+        except FileNotFoundError:
+            with contextlib.suppress(OSError):
+                if os.path.lexists(fs_path(dst)):
+                    os.remove(fs_path(dst))
+            continue
+        actual_bytes += copied_stat.st_size
+        if max_total_bytes is not None and actual_bytes > max_total_bytes:
+            raise CopyTooLarge(f"{project_dir} exceeds {max_total_bytes} bytes of copyable files")
+        _store_blob_file(dst, copied_sha, blobs_dir)
+        actual_files[rel] = {
+            "kind": "file",
+            "sha256": copied_sha,
+            "size": copied_stat.st_size,
+            "mode": stat.S_IMODE(copied_stat.st_mode),
+        }
 
+    actual_digest = manifest_digest(actual_files)
+    actual_scan = CopyScan(
+        files=actual_files,
+        skipped=scan.skipped,
+        dependency_dirs=scan.dependency_dirs,
+        total_bytes=actual_bytes,
+        digest=actual_digest,
+    )
+
+    _check_cancelled(cancel_event)
     linked: tuple[str, ...] = ()
     if link_dependencies and scan.dependency_dirs:
         # Ensure parent dirs exist for nested dependency directories (e.g. frontend/app/node_modules)
@@ -695,7 +754,7 @@ def populate_copy(
 
     _atomic_write_json(
         meta_dir / _BASE_MANIFEST_FILE,
-        {"digest": scan.digest, "files": scan.files, "skipped": list(scan.skipped)},
+        {"digest": actual_digest, "files": actual_files, "skipped": list(scan.skipped)},
     )
     meta_payload: dict[str, Any] = {
         "version": 1,
@@ -704,7 +763,7 @@ def populate_copy(
         "project_dir": os.path.abspath(str(project_dir)),
         "path": os.path.abspath(str(target)),
         "token": token,
-        "start": scan.digest,
+        "start": actual_digest,
         "links": list(linked),
     }
     if identity:
@@ -716,7 +775,7 @@ def populate_copy(
     except OSError:
         pass
     _atomic_write_json(meta_dir / _META_FILE, meta_payload)
-    return scan.digest, linked, scan
+    return actual_digest, linked, actual_scan
 
 
 def copy_has_changes(
@@ -741,6 +800,7 @@ def copy_has_changes(
         active_dep_links=links,
         include_large=base_files.keys(),
         hash_files=True,
+        discover_dependencies=False,
     )
     # Files skipped in the copy that were not already skipped at creation count as changes.
     base_skipped = set(base.get("skipped") or ())
@@ -751,6 +811,55 @@ def copy_has_changes(
 def _parents(rel: str) -> list[str]:
     parts = rel.split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def has_link_ancestor(root: Path, rel: str) -> bool:
+    """Return True if any ancestor directory of ``rel`` inside ``root`` is a symlink or directory junction."""
+    for up in _parents(rel):
+        candidate = root / up
+        raw = fs_path(candidate)
+        if os.path.islink(raw) or is_dir_link(candidate):
+            return True
+    return False
+
+
+def verify_project_unchanged(
+    project_dir: Path, expected_current: Mapping[str, Mapping[str, Any] | None]
+) -> list[str]:
+    """Return relative paths whose on-disk state in ``project_dir`` changed since merge calculation (or has a link ancestor)."""
+    changed: list[str] = []
+    for rel, expected in expected_current.items():
+        if has_link_ancestor(project_dir, rel):
+            changed.append(rel)
+            continue
+        target = fs_path(project_dir / rel)
+        if expected is None:
+            if os.path.lexists(target):
+                changed.append(rel)
+            continue
+        if expected.get("kind") == "symlink":
+            if not os.path.islink(target):
+                changed.append(rel)
+                continue
+            try:
+                if os.readlink(target) != expected.get("target"):
+                    changed.append(rel)
+            except OSError:
+                changed.append(rel)
+            continue
+        if not os.path.lexists(target) or os.path.islink(target):
+            changed.append(rel)
+            continue
+        try:
+            st = os.lstat(target)
+            if not stat.S_ISREG(st.st_mode) or st.st_size != int(expected.get("size", -1)):
+                changed.append(rel)
+                continue
+            if _hash_file(target) != str(expected.get("sha256", "")):
+                changed.append(rel)
+        except OSError:
+            changed.append(rel)
+    return changed
 
 
 def _path_type_conflicts(paths: Iterable[str]) -> set[str]:
@@ -802,6 +911,7 @@ def compute_copy_merge(
         active_dep_links=links,
         include_large=base_files.keys(),
         hash_files=True,
+        discover_dependencies=False,
     )
     current_scan = scan_copy_directory(
         project_dir,
@@ -815,7 +925,20 @@ def compute_copy_merge(
     merged_entries: dict[str, dict[str, Any]] = {}
     merged_contents: dict[str, bytes] = {}
     conflicts: set[str] = set()
+    conflict_versions: dict[str, dict[str, Any]] = {}
     changes: list[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]] = []
+
+    blocked_current = {name.rstrip("/") for name in current_scan.skipped} | set(current_scan.dependency_dirs)
+
+    def _collides_with_blocked(rel_path: str) -> bool:
+        if not blocked_current:
+            return False
+        if rel_path in blocked_current:
+            return True
+        if any(up in blocked_current for up in _parents(rel_path)):
+            return True
+        prefix = rel_path + "/"
+        return any(item.startswith(prefix) for item in blocked_current)
 
     for rel in all_paths:
         b_ent = base_files.get(rel)
@@ -839,6 +962,19 @@ def compute_copy_merge(
         if _same_entry(w_ent, b_ent):
             if c_ent is not None:
                 merged_entries[rel] = dict(c_ent)
+            continue
+
+        if _collides_with_blocked(rel) or has_link_ancestor(project_dir, rel):
+            # Project holds a skipped file (oversized, special file, nested repo, dependency dir)
+            # or a link/junction ancestor at or overlapping this path: never overwrite or traverse it.
+            conflicts.add(rel)
+            if w_ent is not None:
+                merged_entries[rel] = dict(w_ent)
+            conflict_versions[rel] = {
+                "project": dict(c_ent) if c_ent is not None else None,
+                "worktree": dict(w_ent) if w_ent is not None else None,
+                "project_skipped": True,
+            }
             continue
 
         if _same_entry(c_ent, b_ent):
@@ -874,8 +1010,14 @@ def compute_copy_merge(
             or (w_ent is not None and w_ent.get("kind") == "symlink")
         ):
             conflicts.add(rel)
-            if c_ent is not None:
-                merged_entries[rel] = dict(c_ent)
+            # Keep the worktree's version in place (if present) and preserve both sides in conflict metadata.
+            chosen = w_ent if w_ent is not None else c_ent
+            if chosen is not None:
+                merged_entries[rel] = dict(chosen)
+            conflict_versions[rel] = {
+                "project": dict(c_ent) if c_ent is not None else None,
+                "worktree": dict(w_ent) if w_ent is not None else None,
+            }
             continue
 
         b_bytes = _read_entry_bytes(project_dir, b_ent, rel, blobs_dir=blobs_dir) if b_ent is not None else None
@@ -884,6 +1026,17 @@ def compute_copy_merge(
         merged_b, clashed = merge3_bytes(b_bytes, c_bytes, w_bytes)
         if clashed:
             conflicts.add(rel)
+            if (
+                c_bytes is None
+                or w_bytes is None
+                or (b_bytes is not None and is_binary_bytes(b_bytes))
+                or is_binary_bytes(c_bytes)
+                or is_binary_bytes(w_bytes)
+            ):
+                conflict_versions[rel] = {
+                    "project": dict(c_ent) if c_ent is not None else None,
+                    "worktree": dict(w_ent) if w_ent is not None else None,
+                }
         if merged_b is not None:
             sha = hashlib.sha256(merged_b).hexdigest()
             mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
@@ -911,6 +1064,13 @@ def compute_copy_merge(
         for rel, entry in current_scan.files.items():
             if entry.get("kind") == "file":
                 _store_blob_file(project_dir / rel, entry["sha256"], pending_blobs)
+        # Also store worktree blobs for conflicted entries so both sides survive prepare_conflicts.
+        for rel, versions in conflict_versions.items():
+            wt_entry = versions.get("worktree")
+            if isinstance(wt_entry, dict) and wt_entry.get("kind") == "file":
+                src = copy_path / rel
+                if os.path.isfile(fs_path(src)):
+                    _store_blob_file(src, str(wt_entry["sha256"]), pending_blobs)
         # Store merged file contents (with conflict markers where applicable).
         merged_manifest_entries: dict[str, dict[str, Any]] = {}
         for rel, entry in merged_entries.items():
@@ -918,8 +1078,8 @@ def compute_copy_merge(
                 sha = _store_blob_bytes(merged_contents[rel], pending_blobs)
                 merged_manifest_entries[rel] = {**entry, "sha256": sha, "size": len(merged_contents[rel])}
             elif entry.get("kind") == "file":
-                # Ensure blob exists in pending_blobs (from current or copy).
-                src = project_dir / rel if rel in current_scan.files and current_scan.files[rel].get("sha256") == entry["sha256"] else copy_path / rel
+                # Ensure blob exists in pending_blobs (from copy or current).
+                src = copy_path / rel if rel in result_scan.files and result_scan.files[rel].get("sha256") == entry["sha256"] else project_dir / rel
                 if os.path.isfile(fs_path(src)):
                     _store_blob_file(src, entry["sha256"], pending_blobs)
                 elif os.path.isfile(fs_path(blobs_dir / entry["sha256"])):
@@ -938,6 +1098,7 @@ def compute_copy_merge(
                 "result_files": result_scan.files,
                 "merged_files": merged_manifest_entries,
                 "conflicts": sorted(conflicts),
+                "conflict_versions": conflict_versions,
             },
         )
         return {
@@ -951,11 +1112,13 @@ def compute_copy_merge(
             "merged_tree": merge_id,
         }
 
+    expected_current = {rel: current_scan.files.get(rel) for rel, _kind, _a, _d in changes}
     return {
         "status": "ready" if changes else "unchanged",
         "changes": tuple(changes),
         "merged_entries": merged_entries,
         "merged_contents": merged_contents,
+        "expected_current": expected_current,
         "skipped": new_skipped,
         "base": base_digest,
         "current": current_scan.digest,
@@ -971,12 +1134,17 @@ def apply_copy_changes(
     changes: Iterable[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]],
     merged_entries: Mapping[str, Mapping[str, Any]],
     merged_contents: Mapping[str, bytes],
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """Write merged file changes into ``project_dir``."""
     deletes = [rel for rel, kind, _a, _d in changes if kind == "deleted"]
     writes = [(rel, kind) for rel, kind, _a, _d in changes if kind != "deleted"]
 
     for rel in deletes:
+        _check_cancelled(cancel_event)
+        if has_link_ancestor(project_dir, rel):
+            raise OSError(f"refusing to delete through directory link: {rel}")
         target = fs_path(project_dir / rel)
         if os.path.islink(target) or os.path.isfile(target):
             os.remove(target)
@@ -990,10 +1158,24 @@ def apply_copy_changes(
             parent = parent.parent
 
     for rel, _kind in writes:
+        _check_cancelled(cancel_event)
+        if has_link_ancestor(project_dir, rel):
+            raise OSError(f"refusing to write through directory link: {rel}")
         entry = merged_entries[rel]
         target_path = project_dir / rel
         target = fs_path(target_path)
         os.makedirs(fs_path(target_path.parent), exist_ok=True)
+        if entry.get("kind") == "symlink":
+            if os.path.lexists(target):
+                if os.path.isdir(target) and not is_dir_link(target_path):
+                    # Only remove an empty directory; never wipe a non-empty user directory.
+                    os.rmdir(target)
+                elif is_dir_link(target_path):
+                    remove_dir_link(target_path)
+                else:
+                    os.remove(target)
+            os.symlink(str(entry["target"]), target)
+            continue
         if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
             if os.path.isdir(target) and not is_dir_link(target_path):
                 # Only remove an empty directory; never wipe a non-empty user directory.
@@ -1002,9 +1184,6 @@ def apply_copy_changes(
                 remove_dir_link(target_path)
             else:
                 os.remove(target)
-        if entry.get("kind") == "symlink":
-            os.symlink(str(entry["target"]), target)
-            continue
         data = merged_contents[rel]
         with open(target, "wb") as handle:
             handle.write(data)
@@ -1069,6 +1248,9 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
     pending_root = meta_dir / _PENDING_DIR
     if pending_root.is_dir():
         remove_tree_safe(pending_root)
+    conflicts_root = meta_dir / _CONFLICTS_DIR
+    if conflicts_root.is_dir():
+        remove_tree_safe(conflicts_root)
 
 
 def prepare_copy_conflicts_sync(
@@ -1079,11 +1261,13 @@ def prepare_copy_conflicts_sync(
     merge_id: str,
     dependency_dirs: tuple[str, ...],
     max_file_bytes: int,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, list[str]]:
     """Write conflict-marked files into ``copy_path`` and advance its baseline to the project snapshot.
 
     Returns ``(new_start_digest, conflicts)``. Raises ``ValueError`` if stale or unsafe.
     """
+    _check_cancelled(cancel_event)
     meta = read_copy_meta(copy_path)
     base = read_base_manifest(copy_path)
     if meta is None or base is None:
@@ -1107,6 +1291,7 @@ def prepare_copy_conflicts_sync(
         active_dep_links=links,
         include_large=base_files.keys(),
         hash_files=True,
+        discover_dependencies=False,
     )
     if now.digest != expected_result:
         raise ValueError("the worktree changed after the merge was tried; merge again")
@@ -1120,68 +1305,150 @@ def prepare_copy_conflicts_sync(
         if rel in skipped_set or any(up in skipped_set for up in _parents(rel)):
             raise ValueError(f"preparing would overwrite skipped path in the working copy: {rel}")
 
-    # Remove files deleted by the merge.
-    for rel in sorted(held - set(merged_files)):
-        target = fs_path(copy_path / rel)
-        if os.path.islink(target) or os.path.isfile(target):
-            os.remove(target)
-
-    # Write merged / conflict-marked files into the copy.
+    # Back up every copy path we are about to delete or overwrite so a mid-preparation failure
+    # or cancellation restores the copy untouched instead of losing agent edits.
+    to_delete = sorted(held - set(merged_files))
     merged_keys = set(merged_files)
-    for rel, entry in sorted(merged_files.items()):
-        if any(other.startswith(rel + "/") for other in merged_keys):
-            continue
-        target_path = copy_path / rel
-        target = fs_path(target_path)
-        os.makedirs(fs_path(target_path.parent), exist_ok=True)
-        if entry.get("kind") == "symlink":
-            if os.path.lexists(target):
+    to_write = [
+        (rel, entry)
+        for rel, entry in sorted(merged_files.items())
+        if not any(other.startswith(rel + "/") for other in merged_keys)
+    ]
+    prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
+    prep_backup_dir.mkdir(parents=True, exist_ok=True)
+    saved_entries: list[tuple[str, str, str | None]] = []
+    # (rel, kind: 'absent' | 'file' | 'symlink', payload: backup filename or link target)
+    touched_set = sorted(set(to_delete) | {rel for rel, _e in to_write})
+    try:
+        for idx, rel in enumerate(touched_set):
+            src_path = copy_path / rel
+            src = fs_path(src_path)
+            if not os.path.lexists(src):
+                saved_entries.append((rel, "absent", None))
+            elif os.path.islink(src):
+                saved_entries.append((rel, "symlink", os.readlink(src)))
+            elif os.path.isfile(src):
+                bak_name = f"b{idx}"
+                shutil.copy2(src, fs_path(prep_backup_dir / bak_name), follow_symlinks=False)
+                saved_entries.append((rel, "file", bak_name))
+
+        # Remove files deleted by the merge.
+        for rel in to_delete:
+            _check_cancelled(cancel_event)
+            target = fs_path(copy_path / rel)
+            if os.path.islink(target) or os.path.isfile(target):
+                os.remove(target)
+
+        # Write merged / conflict-marked files into the copy.
+        for rel, entry in to_write:
+            _check_cancelled(cancel_event)
+            target_path = copy_path / rel
+            target = fs_path(target_path)
+            os.makedirs(fs_path(target_path.parent), exist_ok=True)
+            if entry.get("kind") == "symlink":
+                if os.path.lexists(target):
+                    if os.path.isdir(target) and not is_dir_link(target_path):
+                        os.rmdir(target)
+                    elif is_dir_link(target_path):
+                        remove_dir_link(target_path)
+                    else:
+                        os.remove(target)
+                os.symlink(str(entry["target"]), target)
+                continue
+            blob = pending_blobs / str(entry["sha256"])
+            if not os.path.isfile(fs_path(blob)):
+                continue
+            if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
                 if os.path.isdir(target) and not is_dir_link(target_path):
+                    # Only remove an empty directory; never wipe a non-empty user directory.
                     os.rmdir(target)
                 elif is_dir_link(target_path):
                     remove_dir_link(target_path)
                 else:
                     os.remove(target)
-            os.symlink(str(entry["target"]), target)
-            continue
-        blob = pending_blobs / str(entry["sha256"])
-        if not os.path.isfile(fs_path(blob)):
-            continue
-        if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
-            if os.path.isdir(target) and not is_dir_link(target_path):
-                # Only remove an empty directory; never wipe a non-empty user directory.
-                os.rmdir(target)
-            elif is_dir_link(target_path):
-                remove_dir_link(target_path)
-            else:
-                os.remove(target)
-        shutil.copyfile(fs_path(blob), target)
-        if sys.platform != "win32" and "mode" in entry:
-            with contextlib.suppress(OSError):
-                os.chmod(target, int(entry["mode"]))
+            shutil.copyfile(fs_path(blob), target)
+            if sys.platform != "win32" and "mode" in entry:
+                with contextlib.suppress(OSError):
+                    os.chmod(target, int(entry["mode"]))
 
-    # Advance baseline to current project snapshot (copies blobs from pending_blobs into blobs/).
-    blobs_dir = meta_dir / _BLOBS_DIR
-    blobs_dir.mkdir(parents=True, exist_ok=True)
-    current_files: dict[str, dict[str, Any]] = pending["current_files"]
-    keep: set[str] = set()
-    for _rel, entry in current_files.items():
-        if entry.get("kind") == "file":
-            sha = str(entry["sha256"])
-            keep.add(sha)
-            src_blob = pending_blobs / sha
-            if os.path.isfile(fs_path(src_blob)):
-                _store_blob_file(src_blob, sha, blobs_dir)
-    new_start = str(pending["current"])
-    _atomic_write_json(
-        meta_dir / _BASE_MANIFEST_FILE,
-        {"digest": new_start, "files": current_files, "skipped": list(pending.get("current_skipped") or ())},
-    )
-    meta["start"] = new_start
-    _atomic_write_json(meta_dir / _META_FILE, meta)
-    _gc_blobs(blobs_dir, keep)
-    remove_tree_safe(pending_dir)
-    return new_start, list(pending.get("conflicts") or ())
+        # Advance baseline to current project snapshot and preserve both sides of binary/symlink conflicts.
+        blobs_dir = meta_dir / _BLOBS_DIR
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+        current_files: dict[str, dict[str, Any]] = pending["current_files"]
+        keep: set[str] = set()
+        for _rel, entry in current_files.items():
+            if entry.get("kind") == "file":
+                sha = str(entry["sha256"])
+                keep.add(sha)
+                src_blob = pending_blobs / sha
+                if os.path.isfile(fs_path(src_blob)):
+                    _store_blob_file(src_blob, sha, blobs_dir)
+        conflict_versions = pending.get("conflict_versions") or {}
+        if conflict_versions:
+            saved_dir = meta_dir / _CONFLICTS_DIR / merge_id
+            for side_map in conflict_versions.values():
+                if not isinstance(side_map, dict):
+                    continue
+                for side_key in ("project", "worktree"):
+                    side_entry = side_map.get(side_key)
+                    if isinstance(side_entry, dict) and side_entry.get("kind") == "file":
+                        sha = str(side_entry["sha256"])
+                        keep.add(sha)
+                        src_blob = pending_blobs / sha
+                        if os.path.isfile(fs_path(src_blob)):
+                            _store_blob_file(src_blob, sha, blobs_dir)
+            _atomic_write_json(saved_dir / "versions.json", conflict_versions)
+        new_start = str(pending["current"])
+        _atomic_write_json(
+            meta_dir / _BASE_MANIFEST_FILE,
+            {"digest": new_start, "files": current_files, "skipped": list(pending.get("current_skipped") or ())},
+        )
+        meta["start"] = new_start
+        _atomic_write_json(meta_dir / _META_FILE, meta)
+        _gc_blobs(blobs_dir, keep)
+        remove_tree_safe(pending_dir)
+        return new_start, list(pending.get("conflicts") or ())
+    except BaseException:
+        # Roll back any partial mutations to copy_path so agent edits survive intact.
+        for rel, orig_kind, payload in saved_entries:
+            dst_path = copy_path / rel
+            dst = fs_path(dst_path)
+            with contextlib.suppress(OSError):
+                if orig_kind == "absent":
+                    if os.path.islink(dst) or os.path.isfile(dst):
+                        os.remove(dst)
+                    parent = dst_path.parent
+                    while parent != copy_path and relative_posix(parent, copy_path):
+                        try:
+                            os.rmdir(fs_path(parent))
+                        except OSError:
+                            break
+                        parent = parent.parent
+                elif orig_kind == "symlink" and payload is not None:
+                    os.makedirs(fs_path(dst_path.parent), exist_ok=True)
+                    if os.path.lexists(dst):
+                        if is_dir_link(dst_path):
+                            remove_dir_link(dst_path)
+                        elif os.path.isdir(dst):
+                            os.rmdir(dst)
+                        else:
+                            os.remove(dst)
+                    os.symlink(payload, dst)
+                elif orig_kind == "file" and payload is not None:
+                    os.makedirs(fs_path(dst_path.parent), exist_ok=True)
+                    if os.path.lexists(dst) and (os.path.islink(dst) or os.path.isdir(dst)):
+                        if is_dir_link(dst_path):
+                            remove_dir_link(dst_path)
+                        elif os.path.isdir(dst):
+                            os.rmdir(dst)
+                        else:
+                            os.remove(dst)
+                    shutil.copy2(fs_path(prep_backup_dir / payload), dst, follow_symlinks=False)
+        raise
+    finally:
+        with contextlib.suppress(OSError):
+            if prep_backup_dir.exists():
+                remove_tree_safe(prep_backup_dir)
 
 
 def list_copy_metas_for_project(project_dir: Path, base_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:

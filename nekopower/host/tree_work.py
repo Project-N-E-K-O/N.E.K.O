@@ -529,6 +529,12 @@ class TreeWork:
                 return True
             meta = _copy_trees.read_copy_meta(path)
             if meta is not None and meta.get("id") == row.id and _same_dir(str(meta.get("project_dir") or ""), row.project_dir):
+                from nekopower.host.worktrees import _directory_identity
+
+                if row.token and meta.get("token") != row.token:
+                    return False
+                if _copy_trees.copy_matches_identity(path, meta, _directory_identity(path)) != "ours":
+                    return False
                 try:
                     _copy_trees.unlink_dependencies(path, meta.get("links") or ())
                     _copy_trees.remove_tree_safe(path)
@@ -1957,7 +1963,12 @@ class TreeWork:
                 await asyncio.shield(self._ledger.update_tree(row.id, state=was.state, rounds=was.rounds, checks=was.checks))
                 raise
             try:
-                return await self._landed_at_the_users_word(tree_id, row, handle, result, was.state == "kept")
+                from nekopower.host.worktrees import WorkingFiles
+
+                explicit_delivery = landing is not None and not isinstance(landing, WorkingFiles)
+                return await self._landed_at_the_users_word(
+                    tree_id, row, handle, result, was.state == "kept", explicit_delivery=explicit_delivery
+                )
             except BaseException:
                 # What follows the merge was cut off or failed: one still on record as being landed
                 # is the user's to decide on again, and does not stay so until the host starts anew.
@@ -1969,7 +1980,14 @@ class TreeWork:
                 raise
 
     async def _landed_at_the_users_word(
-        self, tree_id: str, row: Tree, handle: Any, result: Any, was_kept: bool = False
+        self,
+        tree_id: str,
+        row: Tree,
+        handle: Any,
+        result: Any,
+        was_kept: bool = False,
+        *,
+        explicit_delivery: bool = False,
     ) -> dict[str, Any]:
         """Act on what a merge the user asked for came to; returns what ``land_tree`` answers."""
         from config import nekopower_settings as settings
@@ -2051,8 +2069,11 @@ class TreeWork:
                 # that ended under it, or by a run that stopped on an error.)
                 and commission.status in ("blocked", "failed")
                 and self._stuck_over(row, commission)
-                # (Not one the user sees to personally: that one is the user's to merge.)
+                # (Not one the user sees to personally: that one is the user's to merge.
+                # Also not an explicit branch/PR delivery: sending the task agent back
+                # would trigger automatic WorkingFiles landing instead of the requested target.)
                 and not was_kept
+                and not explicit_delivery
                 and taker is not None
                 and await self._ledger.session_alive(taker)
             ):

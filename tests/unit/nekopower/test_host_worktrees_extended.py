@@ -770,3 +770,325 @@ async def test_console_land_route_supports_branch_and_rejects_bad_strategy(tmp_p
     finally:
         await client.aclose()
         await host.shutdown()
+
+
+async def test_branch_three_way_preserves_shared_files_local_to_pr_and_remote_protection(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    # Create a bare remote whose default branch is `develop` with no cached refs/remotes/devremote/HEAD.
+    dev_bare = tmp_path / "dev-bare.git"
+    _git(tmp_path, "init", "--bare", "-q", str(dev_bare))
+    _git(dev_bare, "symbolic-ref", "HEAD", "refs/heads/develop")
+    _git(repo, "remote", "add", "devremote", str(dev_bare))
+    _git(repo, "push", "-q", "devremote", "HEAD:refs/heads/develop")
+
+    origin_bare = tmp_path / "origin-bare.git"
+    _git(tmp_path, "init", "--bare", "-q", "-b", "main", str(origin_bare))
+    _git(repo, "remote", "add", "origin", str(origin_bare))
+    _git(repo, "push", "-q", "origin", "main")
+
+    manager = WorktreeManager()
+    wt = await manager.create(repo, tmp_path / "wt" / "br3way")
+
+    # 1. Default branch `develop` on a newly added remote without cached HEAD must still be protected.
+    _write(wt.path / "a.txt", "edit-1\nline2\nline3\nline4\nline5\n")
+    blocked_dev = await manager.merge_back(wt, BranchCommit(branch="develop", remote="devremote", message="bad"))
+    assert blocked_dev.status == "failed" and "protected default branch" in blocked_dev.detail
+
+    # 2. Local BranchCommit followed by PullRequest without further edits must push and open the PR.
+    local_res = await manager.merge_back(wt, BranchCommit(branch="feat/shared", message="local step"))
+    assert local_res.status == "landed" and local_res.commit
+
+    # Advance the branch externally with a new shared file (simulating a collaborator commit).
+    helper_wt = tmp_path / "ext-wt"
+    _git(repo, "worktree", "add", "-q", str(helper_wt), "feat/shared")
+    _write(helper_wt / "shared.txt", "collaborator file\n")
+    _git(helper_wt, "add", "shared.txt")
+    _git(helper_wt, "commit", "-q", "--no-gpg-sign", "-m", "add shared file")
+    _git(repo, "worktree", "remove", "--force", str(helper_wt))
+
+    # Worktree makes a second edit; 3-way merge keeps shared.txt.
+    _write(wt.path / "a.txt", "edit-2\nline2\nline3\nline4\nline5\n")
+    merged_once = await manager.merge_back(wt, BranchCommit(branch="feat/shared", message="second step"))
+    assert merged_once.status == "landed"
+    assert _git(repo, "show", "feat/shared:shared.txt") == "collaborator file\n"
+
+    # Worktree makes a third edit; shared.txt MUST still survive (not treated as deleted by baseline drift).
+    _write(wt.path / "a.txt", "edit-3\nline2\nline3\nline4\nline5\n")
+    merged_twice = await manager.merge_back(wt, BranchCommit(branch="feat/shared", message="third step"))
+    assert merged_twice.status == "landed"
+    assert _git(repo, "show", "feat/shared:shared.txt") == "collaborator file\n"
+    assert _git(repo, "show", "feat/shared:a.txt").startswith("edit-3\n")
+
+    # Now deliver the already-committed local branch as a PR without any further edits.
+    pr_requests: list[PRRequest] = []
+
+    async def fake_pr(req: PRRequest) -> PRInfo:
+        pr_requests.append(req)
+        num = 100 + len(pr_requests)
+        return PRInfo(url=f"https://github.com/org/repo/pull/{num}", number=num)
+
+    pr1 = await manager.merge_back(
+        wt,
+        PullRequest(branch="feat/shared", remote="origin", base_branch="main", title="Shared PR", create_pr=fake_pr),
+    )
+    assert pr1.status == "landed" and pr1.pr_number == 101 and len(pr_requests) == 1
+    assert _git(repo, "ls-remote", "--heads", "origin", "feat/shared").strip()
+
+    # Different base branch must not silently return PR #101.
+    _git(repo, "branch", "release", "main")
+    pr2 = await manager.merge_back(
+        wt,
+        PullRequest(branch="feat/shared", remote="origin", base_branch="release", title="Release PR", create_pr=fake_pr),
+    )
+    assert pr2.status == "landed" and pr2.pr_number == 102 and len(pr_requests) == 2
+
+    # Remote URL parsing for `gh --repo`.
+    assert WorktreeManager._github_repo_from_remote_url("git@github.com:Project-N-E-K-O/N.E.K.O.git") == "Project-N-E-K-O/N.E.K.O"
+    assert WorktreeManager._github_repo_from_remote_url("https://github.com/acme/widget.git") == "acme/widget"
+    assert WorktreeManager._github_repo_from_remote_url("https://ghe.corp.local/team/app.git") == "ghe.corp.local/team/app"
+    assert WorktreeManager._github_repo_from_remote_url(r"C:\tmp\bare.git") is None
+
+    await manager.remove(wt)
+
+
+async def test_copy_blocks_project_junction_skipped_files_and_drifted_saves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "plain"
+    outside = tmp_path / "outside"
+    _write(project / "a.txt", "alpha\n")
+    _write(outside / "secret.txt", "keep\n")
+    # Oversized file in project (lower threshold for fast testing).
+    monkeypatch.setattr(settings, "WORKTREE_UNTRACKED_MAX_BYTES", 64)
+    _write(project / "big.bin", "X" * 200)
+    # Non-dependency directory junction / symlink pointing outside project.
+    _copy_trees.make_dir_link(outside, project / "escape")
+
+    manager = WorktreeManager()
+    copy = await manager.create(project, tmp_path / "copies" / "sec1")
+
+    # 1. Agent trying to add a file at a skipped oversized path must conflict, never overwrite big.bin.
+    _write(copy.path / "big.bin", "tiny\n")
+    clash_big = await manager.merge_back(copy)
+    assert clash_big.status == "conflict" and "big.bin" in clash_big.conflicts
+    assert (project / "big.bin").read_text(encoding="utf-8") == "X" * 200
+    (copy.path / "big.bin").unlink()
+
+    # 2. Agent trying to write through project's non-dependency junction/symlink must be blocked.
+    _write(copy.path / "escape" / "pwn.txt", "boom\n")
+    clash_link = await manager.merge_back(copy)
+    assert clash_link.status == "conflict" and "escape/pwn.txt" in clash_link.conflicts
+    assert not (outside / "pwn.txt").exists()
+    shutil.rmtree(copy.path / "escape")
+
+    # Direct defense-in-depth check in apply_copy_changes as well.
+    with pytest.raises(OSError, match="directory link"):
+        _copy_trees.apply_copy_changes(
+            project,
+            [("escape/pwn.txt", "added", 1, 0)],
+            {"escape/pwn.txt": {"kind": "file", "sha256": "0", "size": 5, "mode": 0o644}},
+            {"escape/pwn.txt": b"boom\n"},
+        )
+    assert not (outside / "pwn.txt").exists()
+
+    # 3. Newly created real `vendor/custom.py` in copy (not a linked dep) IS detected and lands.
+    _write(copy.path / "vendor" / "custom.py", "print('ok')\n")
+    assert await manager.has_changes(copy) is True
+    landed_vendor = await manager.merge_back(copy)
+    assert landed_vendor.status == "landed"
+    assert (project / "vendor" / "custom.py").read_text(encoding="utf-8") == "print('ok')\n"
+
+    # 4. If user edits a.txt between compute_copy_merge and apply_copy_changes, landing fails without clobbering.
+    _write(copy.path / "a.txt", "from-agent\n")
+    orig_compute = _copy_trees.compute_copy_merge
+
+    def compute_then_user_saves(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        res = orig_compute(*args, **kwargs)
+        _write(project / "a.txt", "user-newer-save\n")
+        return res
+
+    monkeypatch.setattr(_copy_trees, "compute_copy_merge", compute_then_user_saves)
+    drifted = await manager.merge_back(copy)
+    assert drifted.status == "failed" and "changed" in drifted.detail
+    assert (project / "a.txt").read_text(encoding="utf-8") == "user-newer-save\n"
+
+    await manager.remove(copy)
+
+
+async def test_copy_binary_conflict_preserves_both_versions_and_cancel_waits_for_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stat as stat_mod
+    import threading
+
+    project = tmp_path / "plain"
+    project.mkdir(parents=True)
+    (project / "img.bin").write_bytes(b"\x00\x01base")
+    _write(project / "a.txt", "one\ntwo\n")
+
+    manager = WorktreeManager()
+    copy = await manager.create(project, tmp_path / "copies" / "bin1")
+
+    # Binary conflict: preparing conflicts must keep worktree's binary in copy AND save both versions.
+    (project / "img.bin").write_bytes(b"\x00\x02project")
+    (copy.path / "img.bin").write_bytes(b"\x00\x03worktree")
+    clash = await manager.merge_back(copy)
+    assert clash.status == "conflict" and "img.bin" in clash.conflicts
+
+    # Simulate mid-preparation failure -> copy stays intact and retry works.
+    orig_copyfile = shutil.copyfile
+    fail_once = {"done": False}
+
+    def flaky_copyfile(src: str, dst: str, *args: Any, **kwargs: Any) -> Any:
+        if not fail_once["done"] and str(dst).endswith("img.bin"):
+            fail_once["done"] = True
+            raise OSError("simulated ENOSPC")
+        return orig_copyfile(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", flaky_copyfile)
+    with pytest.raises(OSError, match="simulated ENOSPC"):
+        await manager.prepare_conflicts(copy, clash)
+    assert (copy.path / "img.bin").read_bytes() == b"\x00\x03worktree"
+
+    # Retry succeeds and preserves worktree bytes plus conflict-version metadata.
+    prepared = await manager.prepare_conflicts(copy, clash)
+    assert (prepared.path / "img.bin").read_bytes() == b"\x00\x03worktree"
+    versions_file = _copy_trees.copy_meta_dir(prepared.path) / "conflicts" / clash.merged_tree / "versions.json"
+    assert versions_file.is_file()
+    versions = json.loads(versions_file.read_text(encoding="utf-8"))
+    assert versions["img.bin"]["project"]["sha256"] != versions["img.bin"]["worktree"]["sha256"]
+
+    # Subsequent landing applies the kept worktree binary cleanly.
+    resolved = await manager.merge_back(prepared)
+    assert resolved.status == "landed"
+    assert (project / "img.bin").read_bytes() == b"\x00\x03worktree"
+
+    # Cancellation during apply_copy_changes must wait for worker exit BEFORE _restore starts.
+    _write(prepared.path / "a.txt", "updated-a\n")
+    events: list[str] = []
+    entered_apply = threading.Event()
+    orig_apply = _copy_trees.apply_copy_changes
+    orig_restore = worktrees._restore
+
+    def slow_apply(*args: Any, **kwargs: Any) -> None:
+        entered_apply.set()
+        cancel_ev = kwargs.get("cancel_event")
+        if cancel_ev is not None:
+            cancel_ev.wait(5.0)
+        events.append("apply_exit")
+        orig_apply(*args, **kwargs)
+
+    def traced_restore(*args: Any, **kwargs: Any) -> Any:
+        events.append("restore_start")
+        return orig_restore(*args, **kwargs)
+
+    monkeypatch.setattr(_copy_trees, "apply_copy_changes", slow_apply)
+    monkeypatch.setattr(worktrees, "_restore", traced_restore)
+    task = asyncio.create_task(manager.merge_back(prepared))
+    await asyncio.to_thread(entered_apply.wait, 5.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["apply_exit", "restore_start"]
+
+    # Non-regular file (FIFO) is skipped by scan_copy_directory without opening it.
+    fifo_dir = tmp_path / "fifo_proj"
+    _write(fifo_dir / "pipe.fifo", "placeholder")
+    orig_lstat = os.lstat
+
+    class _FakeStat:
+        def __init__(self, real: Any) -> None:
+            self.st_mode = stat_mod.S_IFIFO | 0o600
+            self.st_size = 0
+            self.st_dev = real.st_dev
+            self.st_ino = real.st_ino
+
+    def fake_lstat(p: Any, *args: Any, **kwargs: Any) -> Any:
+        real = orig_lstat(p, *args, **kwargs)
+        if str(p).endswith("pipe.fifo"):
+            return _FakeStat(real)
+        return real
+
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+    fifo_scan = _copy_trees.scan_copy_directory(fifo_dir, dependency_dirs=(), max_file_bytes=1024, hash_files=True)
+    assert "pipe.fifo" in fifo_scan.skipped and "pipe.fifo" not in fifo_scan.files
+
+    await manager.remove(prepared)
+
+
+async def test_tree_work_copy_cleanup_checks_identity_and_branch_conflict_keeps_target(tmp_path: Path) -> None:
+    # 1. TreeWork._remove_what_is_left refuses to delete a replacement directory with mismatched identity/token.
+    project = tmp_path / "plain_gone"
+    _write(project / "a.txt", "hello\n")
+    host = make_host(tmp_path / "data1", None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+    try:
+        wt_path = host.paths.worktree_dir("copyid1")
+        handle = await host.task_agents.worktrees.create(project, wt_path)
+        await host.ledger.add_tree(
+            id=handle.id,
+            project="Plain",
+            project_dir=str(project),
+            repo_root="",
+            path=str(handle.path),
+            workdir=str(handle.workdir),
+            token=handle.token,
+            state="unlanded",
+            reason="stopped",
+            lanlan_name="Lan",
+        )
+        # Replace the copy directory with an unrelated user directory and remove project dir.
+        _copy_trees.remove_tree_safe(handle.path)
+        _write(handle.path / "user_important.txt", "do not delete\n")
+        shutil.rmtree(project)
+        row = await host.ledger.get_tree(handle.id)
+        assert row is not None
+        removed = await host.task_agents._remove_what_is_left(row)
+        assert removed is None
+        assert (handle.path / "user_important.txt").read_text(encoding="utf-8") == "do not delete\n"
+    finally:
+        await host.shutdown()
+
+    # 2. Explicit branch landing conflict must NOT auto-wake the agent into WorkingFiles landing.
+    repo = _make_repo(tmp_path / "repo_br")
+    host2 = make_host(tmp_path / "data2", None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+    try:
+        wt_path2 = host2.paths.worktree_dir("brclash1")
+        handle2 = await host2.task_agents.worktrees.create(repo, wt_path2)
+        _write(handle2.path / "a.txt", "from-wt-1\nline2\nline3\nline4\nline5\n")
+        first = await host2.task_agents.worktrees.merge_back(handle2, BranchCommit(branch="feat/clash", message="v1"))
+        assert first.status == "landed"
+        # Advance feat/clash externally on line 1.
+        ext = tmp_path / "ext_clash"
+        _git(repo, "worktree", "add", "-q", str(ext), "feat/clash")
+        _write(ext / "a.txt", "from-branch-2\nline2\nline3\nline4\nline5\n")
+        _git(ext, "add", "a.txt")
+        _git(ext, "commit", "-q", "--no-gpg-sign", "-m", "branch edit")
+        _git(repo, "worktree", "remove", "--force", str(ext))
+
+        _write(handle2.path / "a.txt", "from-wt-2\nline2\nline3\nline4\nline5\n")
+        opened = await host2.open_session("Lan", name="Demo", workdir=str(repo))
+        session_id = opened["session_id"]
+        comm, _ = await host2.ledger.create(
+            lanlan_name="Lan", title="edit", dispatch_text="edit", user_text="edit",
+            source="task_agent", route="task_agent", session_id=session_id,
+        )
+        await host2.ledger.transition(comm.id, "working", reason="start")
+        await host2.ledger.transition(comm.id, "blocked", reason="held")
+        await host2.ledger.add_tree(
+            id=handle2.id,
+            commission_id=comm.id,
+            session_id=session_id,
+            project="Demo",
+            project_dir=str(repo),
+            repo_root=str(handle2.repo_root),
+            path=str(handle2.path),
+            workdir=str(handle2.workdir),
+            token=handle2.token,
+            state="unlanded",
+            reason="conflict",
+            lanlan_name="Lan",
+        )
+        answer = await host2.land_worktree(handle2.id, landing=BranchCommit(branch="feat/clash", message="v2"))
+        assert answer["status"] == "conflict" and answer["resolving"] is False
+        assert "a.txt" in answer["conflicts"]
+        assert (await host2.ledger.get_tree(handle2.id)).state == "unlanded"
+    finally:
+        await host2.shutdown()

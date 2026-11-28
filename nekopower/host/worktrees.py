@@ -56,6 +56,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -1788,6 +1789,9 @@ class WorktreeManager:
         if remote_name:
             try:
                 await self._ensure_remote(root, remote_name)
+                # Discover the remote's live default branch (with cached fallback) before pushing
+                # so non-main defaults (e.g. develop) cannot escape protection.
+                protected.add(await self._discover_remote_default_branch(root, remote_name, fetch=True))
             except WorktreeError as exc:
                 return MergeResult(
                     "failed",
@@ -1799,8 +1803,10 @@ class WorktreeManager:
                     branch=target_branch,
                     remote=remote_name,
                 )
+        else:
+            # Best-effort cached default-branch protection for local-only commits.
             try:
-                protected.add(await self._discover_remote_default_branch(root, remote_name, fetch=False))
+                protected.add(await self._discover_remote_default_branch(root, "origin", fetch=False))
             except WorktreeError:
                 pass
         branch_cmp = target_branch.lower() if sys.platform == "win32" else target_branch
@@ -1849,6 +1855,65 @@ class WorktreeManager:
 
         base_tree = await self._resolve_commit(root, f"{base}^{{tree}}", kind="tree")
         if result.tree == base_tree:
+            same_owned = existing_tip is not None and delivery.get("branch") == target_branch
+            needs_push = (
+                bool(remote_name)
+                and same_owned
+                and (
+                    not delivery.get("pushed")
+                    or delivery.get("remote") != remote_name
+                    or str(delivery.get("pushed_commit") or "") != existing_tip
+                )
+            )
+            if needs_push and existing_tip is not None:
+                pushed = await self._git(
+                    root,
+                    "push",
+                    "--no-verify",
+                    "--",
+                    remote_name,
+                    f"{ref_name}:{ref_name}",
+                    check=False,
+                    timeout=settings.WORKTREE_PR_TIMEOUT_SECONDS,
+                )
+                if not pushed.ok:
+                    return MergeResult(
+                        "failed",
+                        detail=_failure(f"pushing branch {target_branch} to {remote_name}", pushed.stderr),
+                        skipped=result.skipped,
+                        current=existing_tip,
+                        result=result.commit,
+                        result_tree=result.tree,
+                        merged_tree=result.tree,
+                        base=base,
+                        branch=target_branch,
+                        commit=existing_tip,
+                        remote=remote_name,
+                    )
+                updated_delivery: dict[str, Any] = {
+                    "branch": target_branch,
+                    "commit": existing_tip,
+                    "remote": remote_name,
+                    "pushed": True,
+                    "pushed_commit": existing_tip,
+                    "base_branch": str(delivery.get("base_branch") or ""),
+                    "pr_url": str(delivery.get("pr_url") or ""),
+                    "pr_number": delivery.get("pr_number"),
+                    "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
+                }
+                await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
+                return MergeResult(
+                    "landed",
+                    skipped=result.skipped,
+                    current=existing_tip,
+                    result=result.commit,
+                    result_tree=result.tree,
+                    merged_tree=result.tree,
+                    base=base,
+                    branch=target_branch,
+                    commit=existing_tip,
+                    remote=remote_name,
+                )
             return MergeResult(
                 "unchanged",
                 skipped=result.skipped,
@@ -1862,7 +1927,8 @@ class WorktreeManager:
                 remote=remote_name,
             )
 
-        if existing_tip is None or existing_tip == base:
+        did_three_way = existing_tip is not None and existing_tip != base
+        if not did_three_way:
             parent_commit = existing_tip or base
             old_tree = base_tree
             target_tree = result.tree
@@ -1924,7 +1990,9 @@ class WorktreeManager:
                 )
             existing_tree = await self._resolve_commit(root, f"{existing_tip}^{{tree}}", kind="tree")
             if merged_tree == existing_tree:
-                await self._git(root, "update-ref", _start_ref(worktree.id), existing_tip)
+                # Keep the worktree baseline at result.commit so files added on the branch
+                # outside this worktree are not seen as deleted on a later delivery.
+                await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                 return MergeResult(
                     "unchanged",
                     skipped=result.skipped,
@@ -1996,15 +2064,22 @@ class WorktreeManager:
                     **counted,
                 )
 
-        await self._git(root, "update-ref", _start_ref(worktree.id), new_commit)
+        # After a 3-way merge onto a branch that held extra changes not present in this
+        # worktree, keep the worktree's baseline at result.commit (matching its files) so a
+        # later delivery does not treat those branch-side additions as deletions.
+        next_start = result.commit if did_three_way else new_commit
+        await self._git(root, "update-ref", _start_ref(worktree.id), next_start)
         same_branch = delivery.get("branch") == target_branch
         updated_delivery: dict[str, Any] = {
             "branch": target_branch,
             "commit": new_commit,
             "remote": remote_name,
             "pushed": bool(remote_name) or (same_branch and bool(delivery.get("pushed"))),
+            "pushed_commit": new_commit if remote_name else (str(delivery.get("pushed_commit") or "") if same_branch else ""),
+            "base_branch": str(delivery.get("base_branch") or "") if same_branch else "",
             "pr_url": str(delivery.get("pr_url") or "") if same_branch else "",
             "pr_number": delivery.get("pr_number") if same_branch else None,
+            "prs": dict(delivery.get("prs") or {}) if same_branch and isinstance(delivery.get("prs"), dict) else {},
         }
         await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
         return MergeResult("landed", commit=new_commit, **counted)
@@ -2069,8 +2144,18 @@ class WorktreeManager:
         target_branch = pr.branch.strip() or f"nekopower/{worktree.id}"
         common = Path((await self._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
         delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path)
-        existing_pr_url = str(delivery.get("pr_url") or "") if delivery.get("branch") == target_branch else ""
-        existing_pr_number = delivery.get("pr_number") if delivery.get("branch") == target_branch else None
+        pr_key = f"{remote_name}\0{base_branch}"
+        saved_prs = dict(delivery.get("prs") or {}) if delivery.get("branch") == target_branch and isinstance(delivery.get("prs"), dict) else {}
+        matched_pr = saved_prs.get(pr_key) if isinstance(saved_prs.get(pr_key), dict) else None
+        if matched_pr is None and (
+            delivery.get("branch") == target_branch
+            and delivery.get("remote") == remote_name
+            and delivery.get("base_branch") == base_branch
+            and delivery.get("pr_url")
+        ):
+            matched_pr = {"url": str(delivery.get("pr_url") or ""), "number": delivery.get("pr_number")}
+        existing_pr_url = str(matched_pr.get("url") or "") if matched_pr else ""
+        existing_pr_number = matched_pr.get("number") if matched_pr else None
 
         branch_result = await self._land_on_branch(
             worktree,
@@ -2082,11 +2167,18 @@ class WorktreeManager:
         )
         if branch_result.status in ("conflict", "failed"):
             return branch_result
+        # Re-read delivery in case _land_on_branch just pushed an already-committed branch.
+        delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path)
         if branch_result.status == "unchanged":
             if existing_pr_url:
                 return replace(branch_result, pr_url=existing_pr_url, pr_number=existing_pr_number)
-            # Retry PR creation if a previous push succeeded and only PR creation failed.
-            if not (delivery.get("branch") == target_branch and delivery.get("pushed") and delivery.get("commit")):
+            # Retry PR creation if a previous push to this remote succeeded and only PR creation failed.
+            if not (
+                delivery.get("branch") == target_branch
+                and delivery.get("remote") == remote_name
+                and delivery.get("pushed")
+                and delivery.get("commit")
+            ):
                 return branch_result
             commit_sha = str(delivery["commit"])
         else:
@@ -2122,22 +2214,62 @@ class WorktreeManager:
                 detail=f"branch {branch_result.branch!r} was pushed to {remote_name!r}, but creating the pull request failed: {exc}",
             )
 
+        saved_prs[pr_key] = {"url": info.url, "number": info.number}
         updated_delivery: dict[str, Any] = {
             "branch": branch_result.branch,
             "commit": commit_sha,
             "remote": remote_name,
+            "base_branch": base_branch,
             "pushed": True,
+            "pushed_commit": commit_sha,
             "pr_url": info.url,
             "pr_number": info.number,
+            "prs": saved_prs,
         }
         await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
         return replace(branch_result, status="landed", commit=commit_sha, pr_url=info.url, pr_number=info.number)
+
+    @staticmethod
+    def _github_repo_from_remote_url(url: str) -> str | None:
+        """Parse a git remote URL into a ``gh --repo`` selector (``OWNER/REPO`` or ``HOST/OWNER/REPO``)."""
+        raw = url.strip()
+        if not raw:
+            return None
+        # SCP-like syntax: git@github.com:owner/repo.git
+        scp = re.match(r"^(?:[^@/\s]+@)?([A-Za-z0-9._-]+):([^/\s]+/[^/\s]+?)(?:\.git)?/?$", raw)
+        if scp:
+            host, path = scp.group(1), scp.group(2)
+            # Exclude Windows drive paths like C:\foo or C:/foo.
+            if len(host) == 1 and host.isalpha():
+                return None
+            return path if host.lower() == "github.com" else f"{host}/{path}"
+        # URL syntax: https://github.com/owner/repo.git or ssh://git@host/owner/repo.git
+        url_match = re.match(
+            r"^(?:https?|ssh)://(?:[^@/\s]+@)?([A-Za-z0-9._-]+)(?::\d+)?/([^/\s]+/[^/\s]+?)(?:\.git)?/?$",
+            raw,
+        )
+        if url_match:
+            host, path = url_match.group(1), url_match.group(2)
+            return path if host.lower() == "github.com" else f"{host}/{path}"
+        return None
 
     async def _create_pr_with_gh(self, gh_program: str, request: PRRequest) -> PRInfo:
         command = [
             gh_program,
             "pr",
             "create",
+        ]
+        remote_url_run = await self._git(
+            request.repo_root, "remote", "get-url", "--", request.remote, check=False
+        )
+        repo_selector = (
+            self._github_repo_from_remote_url(remote_url_run.decode())
+            if remote_url_run.ok
+            else None
+        )
+        if repo_selector:
+            command.extend(["--repo", repo_selector])
+        command.extend([
             "--head",
             request.branch,
             "--base",
@@ -2146,7 +2278,7 @@ class WorktreeManager:
             request.title,
             "--body-file",
             "-",
-        ]
+        ])
         if request.draft:
             command.append("--draft")
         extra: dict[str, object] = (
@@ -2241,22 +2373,32 @@ class WorktreeManager:
             raise asyncio.CancelledError
         existed = not claiming.result()
         token = uuid.uuid4().hex
+        stop = threading.Event()
+        populating: asyncio.Future[Any] | None = None
         try:
             identity = await asyncio.to_thread(_directory_identity, target)
-            start_digest, linked, _scan = await asyncio.to_thread(
-                _copy_trees.populate_copy,
-                project_dir,
-                target,
-                token=token,
-                dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
-                max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
-                max_files=settings.WORKTREE_COPY_MAX_FILES,
-                max_total_bytes=settings.WORKTREE_COPY_MAX_BYTES,
-                link_dependencies=link_dependencies,
-                link_max=settings.WORKTREE_DEPENDENCY_LINK_MAX,
-                identity=identity,
+            populating = asyncio.ensure_future(
+                asyncio.to_thread(
+                    _copy_trees.populate_copy,
+                    project_dir,
+                    target,
+                    token=token,
+                    dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
+                    max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
+                    max_files=settings.WORKTREE_COPY_MAX_FILES,
+                    max_total_bytes=settings.WORKTREE_COPY_MAX_BYTES,
+                    link_dependencies=link_dependencies,
+                    link_max=settings.WORKTREE_DEPENDENCY_LINK_MAX,
+                    identity=identity,
+                    cancel_event=stop,
+                )
             )
+            start_digest, linked, _scan = await populating
         except BaseException as error:
+            stop.set()
+            if populating is not None and not populating.done():
+                await _settle(populating)
+
             async def clean_copy() -> None:
                 try:
                     await asyncio.to_thread(_remove_tree, target)
@@ -2312,6 +2454,15 @@ class WorktreeManager:
             lines_deleted=sum(change.deleted or 0 for change in files),
             **common,
         )
+        expected_current = computed.get("expected_current") or {}
+        # Recheck immediately before backup so we never copy through or write through a project junction/symlink.
+        drifted_before = await asyncio.to_thread(_copy_trees.verify_project_unchanged, project_dir, expected_current)
+        if drifted_before:
+            return MergeResult(
+                "failed",
+                detail=f"project files changed or traverse a directory link before landing ({', '.join(drifted_before[:5])}); merge again",
+                **counted,
+            )
         backup = await _temporary_directory("nekopower-landing-")
         keep = False
         try:
@@ -2321,21 +2472,39 @@ class WorktreeManager:
                 )
             except OSError as error:
                 return MergeResult("failed", detail=f"the files to change could not be copied aside: {error}", **counted)
+            # Verify no affected project file changed during backup before overwriting project files.
+            drifted_after = await asyncio.to_thread(_copy_trees.verify_project_unchanged, project_dir, expected_current)
+            if drifted_after:
+                return MergeResult(
+                    "failed",
+                    detail=f"project files changed while preparing to land ({', '.join(drifted_after[:5])}); merge again",
+                    **counted,
+                )
+            stop = threading.Event()
+            applying: asyncio.Future[Any] | None = None
+            verifying: asyncio.Future[Any] | None = None
             try:
-                await asyncio.to_thread(
-                    _copy_trees.apply_copy_changes,
-                    project_dir,
-                    raw_changes,
-                    computed["merged_entries"],
-                    computed["merged_contents"],
+                applying = asyncio.ensure_future(
+                    asyncio.to_thread(
+                        _copy_trees.apply_copy_changes,
+                        project_dir,
+                        raw_changes,
+                        computed["merged_entries"],
+                        computed["merged_contents"],
+                        cancel_event=stop,
+                    )
                 )
-                ok = await asyncio.to_thread(
-                    _copy_trees.verify_copy_changes,
-                    project_dir,
-                    raw_changes,
-                    computed["merged_entries"],
-                    computed["merged_contents"],
+                await applying
+                verifying = asyncio.ensure_future(
+                    asyncio.to_thread(
+                        _copy_trees.verify_copy_changes,
+                        project_dir,
+                        raw_changes,
+                        computed["merged_entries"],
+                        computed["merged_contents"],
+                    )
                 )
+                ok = await verifying
                 if not ok:
                     detail = "the files did not read back as merged"
                 else:
@@ -2344,6 +2513,13 @@ class WorktreeManager:
                     )
                     return MergeResult("landed", **counted)
             except BaseException as error:
+                stop.set()
+                # Wait for any in-flight worker thread to exit before restoring backups
+                # so writes cannot continue after rollback or lock release.
+                if applying is not None and not applying.done():
+                    await _settle(applying)
+                if verifying is not None and not verifying.done():
+                    await _settle(verifying)
                 if isinstance(error, OSError):
                     detail = f"writing the changes failed: {error}"
                 else:
@@ -2376,8 +2552,9 @@ class WorktreeManager:
                 asyncio.get_running_loop().run_in_executor(None, _remove_tree, backup)
 
     async def _prepare_copy_conflicts(self, worktree: Worktree, conflict: MergeResult) -> Worktree:
-        try:
-            new_start, _conflicts = await asyncio.to_thread(
+        stop = threading.Event()
+        preparing = asyncio.ensure_future(
+            asyncio.to_thread(
                 _copy_trees.prepare_copy_conflicts_sync,
                 worktree.path,
                 expected_base=conflict.base,
@@ -2385,9 +2562,18 @@ class WorktreeManager:
                 merge_id=conflict.merged_tree,
                 dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
                 max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
+                cancel_event=stop,
             )
+        )
+        try:
+            new_start, _conflicts = await preparing
         except ValueError as exc:
             raise WorktreeError(str(exc)) from exc
+        except BaseException:
+            stop.set()
+            if not preparing.done():
+                await _settle(preparing)
+            raise
         return replace(worktree, start=new_start)
 
     async def _remove_copy(self, path: Path, *, token: str = "") -> None:
