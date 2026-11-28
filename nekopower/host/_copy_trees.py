@@ -48,6 +48,7 @@ _BLOBS_DIR = "blobs"
 _PENDING_DIR = "pending"
 _CONFLICTS_DIR = "conflicts"
 _ROLLBACK_INCOMPLETE_FILE = "rollback_incomplete.json"
+_LANDING_INTENT_FILE = "landing_intent.json"
 _XATTR_MISSING_ERRNOS = frozenset(
     code for code in (getattr(errno, "ENODATA", None), getattr(errno, "ENOATTR", None)) if code is not None
 )
@@ -754,16 +755,48 @@ def _gc_blobs(blobs_dir: Path, keep: set[str]) -> None:
                 os.unlink(fs_path(entry))
 
 
-def read_copy_meta(copy_path: Path) -> dict[str, Any] | None:
-    """Read ``meta.json`` for a non-git copy at ``copy_path``, or return None."""
+def read_copy_meta(copy_path: Path, *, strict: bool = False) -> dict[str, Any] | None:
+    """Read ``meta.json`` for a non-git copy at ``copy_path``, or return None.
+
+    When ``strict`` is True, missing metadata still returns None, while unreadable
+    or corrupt metadata raises ``OSError`` or ``ValueError``.
+    """
     meta_file = copy_meta_dir(copy_path) / _META_FILE
     try:
         raw = json.loads(Path(meta_file).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError):
+        if strict:
+            raise
         return None
     if not isinstance(raw, dict) or raw.get("kind") != "copy":
+        if strict:
+            raise ValueError(f"invalid working-copy metadata in {meta_file}")
         return None
     return raw
+
+
+def _read_landing_intent(meta_dir: Path) -> dict[str, Any] | None:
+    """Return the pending landing intent dict if present, a marker dict if corrupt/unreadable, or None."""
+    intent_file = meta_dir / _PENDING_DIR / _LANDING_INTENT_FILE
+    if not os.path.lexists(fs_path(intent_file)):
+        return None
+    try:
+        raw = json.loads(intent_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"status": "corrupt"}
+    return raw if isinstance(raw, dict) else {"status": "corrupt"}
+
+
+def _merged_file_mode(existing_mode: int | None, chosen_mode: int) -> int:
+    """Preserve an existing POSIX file's non-execute mode bits while applying the merged execute bit."""
+    if existing_mode is None:
+        return chosen_mode
+    if bool(chosen_mode & stat.S_IXUSR):
+        exec_mask = ((existing_mode & 0o444) >> 2) | stat.S_IXUSR
+        return existing_mode | exec_mask
+    return existing_mode & ~0o111
 
 
 def read_base_manifest(copy_path: Path) -> dict[str, Any] | None:
@@ -1129,6 +1162,21 @@ def compute_copy_merge(
     base_files: dict[str, dict[str, Any]] = dict(base.get("files") or {})
     base_digest = str(base.get("digest") or "")
     meta_start = str(meta.get("start") or "")
+    landing_intent = _read_landing_intent(meta_dir)
+    if landing_intent is not None:
+        intent_digest = str(landing_intent.get("digest") or "")
+        if intent_digest and base_digest == intent_digest and base.get("source") == "landed":
+            # Baseline publication already succeeded; allow meta.start self-heal below and clear intent.
+            if meta_start == base_digest:
+                clear_copy_landing_intent(copy_path)
+        else:
+            return {
+                "status": "failed",
+                "detail": (
+                    f"working copy {copy_path} has an unfinalized landing under {meta_dir / _PENDING_DIR}; "
+                    "recover or discard it before landing"
+                ),
+            }
     if not meta_start or meta_start != base_digest:
         if base_digest and base.get("source") == "landed":
             # Self-heal a crash between base_manifest.json and meta.json inside advance_copy_baseline.
@@ -1140,6 +1188,8 @@ def compute_copy_merge(
                     "status": "failed",
                     "detail": f"working copy {copy_path} baseline metadata repair failed: {exc}",
                 }
+            if landing_intent is not None:
+                clear_copy_landing_intent(copy_path)
         else:
             return {
                 "status": "failed",
@@ -1180,6 +1230,8 @@ def compute_copy_merge(
     changes: list[tuple[str, Literal["added", "modified", "deleted"], int | None, int | None]] = []
 
     blocked_current = {name.rstrip("/") for name in current_scan.skipped} | set(current_scan.dependency_dirs)
+    skipped_result = {name.rstrip("/") for name in result_scan.skipped}
+    copy_skipped_untouched: set[str] = set()
 
     def _collides_with_blocked(rel_path: str) -> bool:
         if not blocked_current:
@@ -1190,6 +1242,11 @@ def compute_copy_merge(
             return True
         prefix = rel_path + "/"
         return any(item.startswith(prefix) for item in blocked_current)
+
+    def _is_skipped_in_copy(rel_path: str) -> bool:
+        if not skipped_result:
+            return False
+        return rel_path in skipped_result or any(up in skipped_result for up in _parents(rel_path))
 
     for rel in all_paths:
         _check_cancelled(cancel_event)
@@ -1210,6 +1267,14 @@ def compute_copy_merge(
             if sys.platform != "win32":
                 return bool(int(left.get("mode", 0)) & stat.S_IXUSR) == bool(int(right.get("mode", 0)) & stat.S_IXUSR)
             return True
+
+        if w_ent is None and _is_skipped_in_copy(rel):
+            # The working copy skipped this path (e.g. a nested Git repo, junction, or special file)
+            # rather than deleting it: leave the project's entry untouched.
+            copy_skipped_untouched.add(rel)
+            if c_ent is not None:
+                merged_entries[rel] = dict(c_ent)
+            continue
 
         if _same_entry(w_ent, b_ent):
             if c_ent is not None:
@@ -1237,7 +1302,18 @@ def compute_copy_merge(
                     added, deleted = line_diff_counts(old_b, b"") if c_ent.get("kind") != "symlink" else (None, None)
                     changes.append((rel, "deleted", added, deleted))
             else:
-                merged_entries[rel] = dict(w_ent)
+                merged_entry = dict(w_ent)
+                if (
+                    sys.platform != "win32"
+                    and w_ent.get("kind") == "file"
+                    and c_ent is not None
+                    and c_ent.get("kind") == "file"
+                    and "mode" in c_ent
+                ):
+                    merged_entry["mode"] = _merged_file_mode(
+                        int(c_ent["mode"]), int(w_ent.get("mode", 0o644))
+                    )
+                merged_entries[rel] = merged_entry
                 if w_ent.get("kind") != "symlink":
                     new_b = _read_entry_bytes(copy_path, w_ent, rel)
                     assert new_b is not None
@@ -1312,10 +1388,15 @@ def compute_copy_merge(
                 b_exec = bool(int(b_ent.get("mode", 0)) & stat.S_IXUSR)
                 c_exec = bool(int(c_ent.get("mode", 0)) & stat.S_IXUSR)
                 w_exec = bool(int(w_ent.get("mode", 0)) & stat.S_IXUSR)
-                if w_exec == b_exec and c_exec != b_exec:
-                    mode = int(c_ent.get("mode", 0o644))
-                else:
-                    mode = int(w_ent.get("mode", 0o644))
+                chosen_mode = int(c_ent.get("mode", 0o644)) if (w_exec == b_exec and c_exec != b_exec) else int(w_ent.get("mode", 0o644))
+                mode = (
+                    _merged_file_mode(int(c_ent["mode"]), chosen_mode)
+                    if c_ent.get("kind") == "file" and "mode" in c_ent
+                    else chosen_mode
+                )
+            elif sys.platform != "win32" and c_ent is not None and c_ent.get("kind") == "file" and "mode" in c_ent:
+                chosen_mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
+                mode = _merged_file_mode(int(c_ent["mode"]), chosen_mode)
             else:
                 mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
             merged_entries[rel] = {"kind": "file", "sha256": sha, "size": len(merged_b), "mode": mode}
@@ -1339,7 +1420,7 @@ def compute_copy_merge(
         # retries never accumulate unbounded copies of project blobs on disk.
         if pending_root.is_dir():
             for old_entry in list(pending_root.iterdir()):
-                if not old_entry.name.startswith("prep-bak-"):
+                if not old_entry.name.startswith("prep-bak-") and old_entry.name != _LANDING_INTENT_FILE:
                     with contextlib.suppress(OSError):
                         remove_tree_safe(old_entry)
 
@@ -1376,6 +1457,9 @@ def compute_copy_merge(
             merged_manifest_entries: dict[str, dict[str, Any]] = {}
             for rel, entry in merged_entries.items():
                 _check_cancelled(cancel_event)
+                if rel in copy_skipped_untouched:
+                    # Never ask prepare_copy_conflicts_sync to overwrite a path skipped in the copy.
+                    continue
                 if rel in merged_contents:
                     sha = _store_bytes_if_new(merged_contents[rel])
                     merged_manifest_entries[rel] = {**entry, "sha256": sha, "size": len(merged_contents[rel])}
@@ -1511,12 +1595,18 @@ def apply_copy_changes(
                 remove_dir_link(target_path)
             else:
                 os.remove(target)
+        existing_mode: int | None = None
+        if sys.platform != "win32" and os.path.isfile(target) and not os.path.islink(target):
+            with contextlib.suppress(OSError):
+                existing_mode = stat.S_IMODE(os.lstat(target).st_mode)
         data = merged_contents[rel]
         with open(target, "wb") as handle:
             handle.write(data)
         if sys.platform != "win32" and "mode" in entry:
-            with contextlib.suppress(OSError):
-                os.chmod(target, int(entry["mode"]))
+            desired_mode = _merged_file_mode(existing_mode, int(entry["mode"]))
+            if existing_mode is None or desired_mode != existing_mode:
+                with contextlib.suppress(OSError):
+                    os.chmod(target, desired_mode)
 
 
 def verify_copy_changes(
@@ -1548,12 +1638,48 @@ def verify_copy_changes(
             return False
         if sys.platform != "win32" and "mode" in entry:
             try:
-                actual_exec = bool(os.lstat(target).st_mode & stat.S_IXUSR)
+                actual_mode = stat.S_IMODE(os.lstat(target).st_mode)
             except OSError:
                 return False
-            if actual_exec != bool(int(entry["mode"]) & stat.S_IXUSR):
+            if actual_mode != int(entry["mode"]):
                 return False
     return True
+
+
+def stage_copy_landing(copy_path: Path, new_scan: CopyScan) -> None:
+    """Persist blobs and a recoverable landing intent BEFORE mutating ``project_dir``."""
+    meta = read_copy_meta(copy_path, strict=True)
+    if meta is None:
+        raise OSError(f"{copy_path} has no working-copy metadata")
+    meta_dir = copy_meta_dir(copy_path)
+    blobs_dir = meta_dir / _BLOBS_DIR
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    for rel, entry in new_scan.files.items():
+        if entry.get("kind") == "file":
+            sha = str(entry["sha256"])
+            src = copy_path / rel
+            if os.path.isfile(fs_path(src)):
+                _store_blob_file(src, sha, blobs_dir)
+    prev_base = read_base_manifest(copy_path)
+    prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
+    _atomic_write_json(
+        meta_dir / _PENDING_DIR / _LANDING_INTENT_FILE,
+        {
+            "status": "applying",
+            "digest": new_scan.digest,
+            "files": new_scan.files,
+            "skipped": prev_skipped,
+            "source": "landed",
+        },
+    )
+
+
+def clear_copy_landing_intent(copy_path: Path) -> None:
+    """Remove the pending landing intent marker after a clean rollback or finalized baseline."""
+    intent_file = copy_meta_dir(copy_path) / _PENDING_DIR / _LANDING_INTENT_FILE
+    with contextlib.suppress(OSError):
+        if os.path.lexists(fs_path(intent_file)):
+            os.unlink(fs_path(intent_file))
 
 
 def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
@@ -1585,6 +1711,7 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
     )
     meta["start"] = new_scan.digest
     _atomic_write_json(meta_dir / _META_FILE, meta)
+    clear_copy_landing_intent(copy_path)
     _gc_blobs(blobs_dir, keep)
     pending_root = meta_dir / _PENDING_DIR
     if pending_root.is_dir():
@@ -1613,19 +1740,26 @@ def prepare_copy_conflicts_sync(
     base = read_base_manifest(copy_path)
     if meta is None or base is None:
         raise ValueError(f"{copy_path} has no working-copy baseline metadata")
-    if str(meta.get("start") or "") != expected_base:
-        raise ValueError("the worktree landed or was prepared since this merge was tried; merge again")
     meta_dir = copy_meta_dir(copy_path)
     if _has_incomplete_rollback(meta_dir):
         raise ValueError(
             f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it"
         )
+    if _read_landing_intent(meta_dir) is not None:
+        raise ValueError(
+            f"working copy {copy_path} has an unfinalized landing under {meta_dir / _PENDING_DIR}; recover or discard it"
+        )
+    base_digest = str(base.get("digest") or "")
+    if str(meta.get("start") or "") != expected_base or base_digest != expected_base:
+        raise ValueError("the worktree landed or was prepared since this merge was tried; merge again")
     pending_dir = meta_dir / _PENDING_DIR / merge_id
     pending_file = pending_dir / "pending.json"
     try:
         pending = json.loads(pending_file.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError("the conflict snapshot is no longer available; merge again") from exc
+    if str(pending.get("base") or "") != expected_base or str(pending.get("result") or "") != expected_result:
+        raise ValueError("the conflict snapshot does not match this merge; merge again")
 
     links = active_links(copy_path, meta.get("links") or ())
     base_files = base.get("files") or {}

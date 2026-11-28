@@ -3921,3 +3921,43 @@ async def test_a_member_at_work_in_the_directory_is_waited_for_until_that_run_is
     assert (workdir / "a.txt").exists() and (workdir / "b.txt").exists()
     # Over, it is one that works in a worktree: nobody waits for it in the directory any more.
     await wait_until(lambda: first not in manager._direct_now, what="its run in the directory being over")
+
+
+@pytest.mark.parametrize("pending_state", ["pending", "error", "clean"])
+async def test_clean_worktree_after_run_checks_pending_delivery_before_removal(
+    hosts, tmp_path, pending_state
+):
+    go = asyncio.Event()
+
+    async def wait_to_report() -> None:
+        await go.wait()
+
+    host, trees, _workdir, one, two, _members = await _two_members(
+        hosts,
+        tmp_path,
+        second=[[wait_to_report, *_report("which pages?", status="blocked")]],
+    )
+    checked: list[str] = []
+
+    async def fake_has_pending_delivery(worktree: Worktree) -> bool:
+        checked.append(worktree.id)
+        if pending_state == "error":
+            raise OSError("delivery metadata unreadable")
+        return pending_state == "pending"
+
+    trees.has_pending_delivery = fake_has_pending_delivery
+    go.set()
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+
+    tree_id = two.commission_id[:12]
+    assert checked == [tree_id]
+    if pending_state in {"pending", "error"}:
+        (tree,) = await host.ledger.trees()
+        assert (tree.id, tree.state, tree.reason) == (tree_id, "unlanded", "stopped")
+        assert trees.removed == [] and Path(tree.path).is_dir()
+    else:
+        assert await host.ledger.trees() == []
+        assert trees.removed == [tree_id] and not host.paths.worktree_dir(tree_id).exists()

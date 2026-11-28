@@ -1838,6 +1838,10 @@ class TreeWork:
             changed = not gone or (handle is not None and await self.worktrees.has_changes(handle))
             if handle is None and not await self._tree_is_gone(row):
                 changed = True  # there, and not to be opened this moment: kept
+            if not changed and handle is not None:
+                check_pending = getattr(self.worktrees, "has_pending_delivery", None)
+                if check_pending is not None and await check_pending(handle):
+                    changed = True
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - kept: it may hold something

@@ -1959,6 +1959,107 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
     assert clash_after_undo.status == "conflict" and "a.txt" in clash_after_undo.conflicts
     await manager.remove(cp_adv)
 
+    # 9. Turning a baseline directory into a nested Git repository in the working copy skips it
+    # instead of deleting the project's existing files (on clean landing, no-op landing, and conflict prep).
+    proj_ng = tmp_path / "nested_git_copy"
+    _write(proj_ng / "sub" / "keep.txt", "keep-in-project\n")
+    _write(proj_ng / "other.txt", "base\n")
+    cp_ng = await manager.create(proj_ng, tmp_path / "copies" / "ng1")
+    (cp_ng.path / "sub" / ".git").mkdir()
+    # No other edits: must be unchanged (never delete project/sub/keep.txt) and report sub/ skipped.
+    noop_ng = await manager.merge_back(cp_ng)
+    assert noop_ng.status == "unchanged" and "sub/" in noop_ng.skipped
+    assert (proj_ng / "sub" / "keep.txt").read_text(encoding="utf-8") == "keep-in-project\n"
+    # Unrelated conflict on other.txt: prepare_conflicts must succeed without overwriting copy/sub/.git,
+    # and resolving other.txt must land without deleting project/sub/keep.txt.
+    _write(cp_ng.path / "other.txt", "wt-other\n")
+    _write(proj_ng / "other.txt", "proj-other\n")
+    clash_ng = await manager.merge_back(cp_ng)
+    assert clash_ng.status == "conflict" and clash_ng.conflicts == ("other.txt",) and "sub/" in clash_ng.skipped
+    await manager.prepare_conflicts(cp_ng, clash_ng)
+    assert (cp_ng.path / "sub" / ".git").is_dir()
+    _write(cp_ng.path / "other.txt", "resolved-other\n")
+    landed_ng = await manager.merge_back(cp_ng)
+    assert landed_ng.status == "landed" and "sub/" in landed_ng.skipped
+    assert (proj_ng / "other.txt").read_text(encoding="utf-8") == "resolved-other\n"
+    assert (proj_ng / "sub" / "keep.txt").read_text(encoding="utf-8") == "keep-in-project\n"
+    await manager.remove(cp_ng)
+
+    # 10. Non-execute POSIX permission preservation helper + stale conflict snapshot rejection +
+    # pre-staged landing_intent blocking replay after base_manifest failure + _remove_copy preserving
+    # recovery data when meta.json is corrupt/unreadable.
+    assert _copy_trees._merged_file_mode(0o600, 0o644) == 0o600
+    assert _copy_trees._merged_file_mode(0o600, 0o755) == 0o700
+    assert _copy_trees._merged_file_mode(0o750, 0o644) == 0o640
+    assert _copy_trees._merged_file_mode(None, 0o644) == 0o644
+    if sys.platform != "win32":
+        proj_perm = tmp_path / "perm_proj"
+        _write(proj_perm / "secret.txt", "v1\n")
+        os.chmod(proj_perm / "secret.txt", 0o644)
+        cp_perm = await manager.create(proj_perm, tmp_path / "copies" / "perm1")
+        os.chmod(proj_perm / "secret.txt", 0o600)
+        _write(cp_perm.path / "secret.txt", "v2\n")
+        land_perm = await manager.merge_back(cp_perm)
+        assert land_perm.status == "landed", land_perm.detail
+        assert (os.lstat(proj_perm / "secret.txt").st_mode & 0o777) == 0o600
+        await manager.remove(cp_perm)
+
+    # Stale conflict snapshot must be rejected when base_manifest already advanced even if meta.start lagged.
+    proj_stale = tmp_path / "stale_conflict_proj"
+    _write(proj_stale / "a.txt", "base\n")
+    cp_stale = await manager.create(proj_stale, tmp_path / "copies" / "stale1")
+    _write(cp_stale.path / "a.txt", "W\n")
+    _write(proj_stale / "a.txt", "P\n")
+    old_clash = await manager.merge_back(cp_stale)
+    assert old_clash.status == "conflict"
+    # User sets project to W; merge_back advances base_manifest.json, fails on meta.json.
+    _write(proj_stale / "a.txt", "W\n")
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_only)
+        with pytest.raises(OSError, match="simulated meta write failure"):
+            await manager.merge_back(cp_stale)
+    with pytest.raises(WorktreeError, match="landed or was prepared"):
+        await manager.prepare_conflicts(cp_stale, old_clash)
+    assert (cp_stale.path / "a.txt").read_text(encoding="utf-8") == "W\n"
+    await manager.remove(cp_stale)
+
+    # If base_manifest.json write fails after project files landed, pre-staged landing_intent.json
+    # blocks retrying from replaying stale diffs over a user's subsequent undo.
+    proj_intent = tmp_path / "intent_block_proj"
+    _write(proj_intent / "a.txt", "v1\n")
+    cp_intent = await manager.create(proj_intent, tmp_path / "copies" / "intent1")
+    _write(cp_intent.path / "a.txt", "v2\n")
+
+    def fail_base_manifest(path: Path, data: bytes) -> None:
+        if path.name == "base_manifest.json":
+            raise OSError("simulated base_manifest write failure")
+        orig_awb(path, data)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "_atomic_write_bytes", fail_base_manifest)
+        with pytest.raises(OSError, match="simulated base_manifest write failure"):
+            await manager.merge_back(cp_intent)
+    assert (proj_intent / "a.txt").read_text(encoding="utf-8") == "v2\n"
+    _write(proj_intent / "a.txt", "v1\n")
+    blocked_intent = await manager.merge_back(cp_intent)
+    assert blocked_intent.status == "failed" and "unfinalized landing" in blocked_intent.detail
+    assert (proj_intent / "a.txt").read_text(encoding="utf-8") == "v1\n"
+    await manager.remove(cp_intent)
+
+    # _remove_copy must preserve copy and recovery metadata when meta.json is corrupt or unreadable.
+    proj_rm = tmp_path / "rm_corrupt_proj"
+    _write(proj_rm / "a.txt", "v1\n")
+    cp_rm = await manager.create(proj_rm, tmp_path / "copies" / "rm_corrupt1")
+    rm_meta_dir = _copy_trees.copy_meta_dir(cp_rm.path)
+    rm_meta_file = rm_meta_dir / "meta.json"
+    saved_meta_bytes = rm_meta_file.read_bytes()
+    rm_meta_file.write_text("{corrupt json", encoding="utf-8")
+    with pytest.raises(WorktreeError, match="reading working-copy metadata"):
+        await manager.remove(cp_rm)
+    assert cp_rm.path.is_dir() and (rm_meta_dir / "base_manifest.json").is_file()
+    rm_meta_file.write_bytes(saved_meta_bytes)
+    await manager.remove(cp_rm)
+
 
 @pytest.mark.skipif(REAL_GIT_TOO_OLD, reason="git missing or below minimum version")
 async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2151,3 +2252,196 @@ async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkey
     land3 = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="third-retry"))
     assert land3.status == "landed", land3.detail
     await manager.remove(wt_nd)
+
+    # 4. If PR creation succeeds but writing the final delivery note fails, retrying recovers the
+    # already-created PR without invoking PR creation a second time (both same-process callback
+    # cache and cross-process recovery via gh pr list / find_pr).
+    wt_pr_rec = await manager.create(local_nd, tmp_path / "wt" / "pr_rec1", RemoteDefaultBranch(fetch=False))
+    _write(wt_pr_rec.path / "a.txt", "pr-recover-1\nline2\nline3\nline4\nline5\n")
+    cb_create_calls = {"n": 0}
+
+    async def create_once_cb(_req: PRRequest) -> PRInfo:
+        cb_create_calls["n"] += 1
+        return PRInfo(url="https://github.com/org/repo/pull/301", number=301)
+
+    note_writes = {"n": 0}
+
+    def fail_final_pr_note(src: Any, dst: Any) -> None:
+        if str(dst).endswith("nekopower-delivery.json"):
+            note_writes["n"] += 1
+            # 1=pending_branch, 2=after push, 3=pending_pr_delivery, 4=final updated_delivery
+            if note_writes["n"] == 4:
+                raise OSError("simulated final PR note write failure")
+        orig_replace(src, dst)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", fail_final_pr_note)
+        with pytest.raises(OSError, match="simulated final PR note write failure"):
+            await manager.merge_back(
+                wt_pr_rec,
+                PullRequest(title="Recoverable PR", branch="feat/pr-rec-cb", remote="origin", base_branch="main", create_pr=create_once_cb),
+            )
+    assert cb_create_calls["n"] == 1
+    assert await manager.has_pending_delivery(wt_pr_rec) is True
+    # Same-process retry must recover PR #301 without calling create_once_cb again.
+    rec_same = await manager.merge_back(
+        wt_pr_rec,
+        PullRequest(title="Recoverable PR", branch="feat/pr-rec-cb", remote="origin", base_branch="main", create_pr=create_once_cb),
+    )
+    assert rec_same.status == "landed" and rec_same.pr_number == 301 and cb_create_calls["n"] == 1
+    assert await manager.has_pending_delivery(wt_pr_rec) is False
+    await manager.remove(wt_pr_rec)
+
+    # Cross-process recovery on the default gh CLI path (fresh WorktreeManager instance after crash):
+    # gh pr list runs before gh pr create and recovers the existing PR without calling create twice.
+    wt_pr_gh = await manager.create(local_nd, tmp_path / "wt" / "pr_rec_gh", RemoteDefaultBranch(fetch=False))
+    _write(wt_pr_gh.path / "a.txt", "pr-recover-gh\nline2\nline3\nline4\nline5\n")
+    gh_log = tmp_path / "gh_rec_calls.json"
+    gh_shim_py = tmp_path / "fake_gh_rec.py"
+    gh_shim_py.write_text(
+        "import json, pathlib, sys\n"
+        f"log = pathlib.Path({str(gh_log)!r})\n"
+        "calls = json.loads(log.read_text(encoding='utf-8')) if log.exists() else []\n"
+        "argv = sys.argv[1:]\n"
+        "calls.append(argv)\n"
+        "log.write_text(json.dumps(calls), encoding='utf-8')\n"
+        "if argv[:2] == ['pr', 'create']:\n"
+        "    if sum(1 for c in calls if c[:2] == ['pr', 'create']) > 1:\n"
+        "        sys.stderr.write('a pull request for branch already exists\\n')\n"
+        "        sys.exit(1)\n"
+        "    print('https://github.com/org/repo/pull/302')\n"
+        "elif argv[:2] == ['pr', 'list']:\n"
+        "    print(json.dumps([{'url': 'https://github.com/org/repo/pull/302', 'number': 302, 'headRefName': 'feat/pr-rec-gh', 'baseRefName': 'main', 'isCrossRepository': False}]))\n"
+        "else:\n"
+        "    sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        gh_rec_bin = tmp_path / "fake_gh_rec.cmd"
+        gh_rec_bin.write_text(f'@echo off\r\n"{sys.executable}" "{gh_shim_py}" %*\r\n', encoding="utf-8")
+    else:
+        gh_rec_bin = tmp_path / "fake_gh_rec.sh"
+        gh_rec_bin.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{gh_shim_py}" "$@"\n', encoding="utf-8")
+        os.chmod(gh_rec_bin, 0o755)
+
+    note_writes["n"] = 0
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", fail_final_pr_note)
+        with pytest.raises(OSError, match="simulated final PR note write failure"):
+            await manager.merge_back(
+                wt_pr_gh,
+                PullRequest(title="Recoverable GH PR", branch="feat/pr-rec-gh", remote="origin", base_branch="main", gh=str(gh_rec_bin)),
+            )
+    # Simulate process restart with a brand-new WorktreeManager (empty in-memory cache).
+    fresh_manager = WorktreeManager()
+    assert await fresh_manager.has_pending_delivery(wt_pr_gh) is True
+    rec_gh = await fresh_manager.merge_back(
+        wt_pr_gh,
+        PullRequest(title="Recoverable GH PR", branch="feat/pr-rec-gh", remote="origin", base_branch="main", gh=str(gh_rec_bin)),
+    )
+    assert rec_gh.status == "landed", rec_gh.detail
+    assert rec_gh.pr_number == 302 and rec_gh.pr_url == "https://github.com/org/repo/pull/302"
+    assert await fresh_manager.has_pending_delivery(wt_pr_gh) is False
+    recorded_calls = json.loads(gh_log.read_text(encoding="utf-8"))
+    assert [c[:2] for c in recorded_calls] == [["pr", "create"], ["pr", "list"]]
+    await fresh_manager.remove(wt_pr_gh)
+
+    # Cross-process recovery with custom create_pr + find_pr callback.
+    wt_pr_find = await manager.create(local_nd, tmp_path / "wt" / "pr_rec_find", RemoteDefaultBranch(fetch=False))
+    _write(wt_pr_find.path / "a.txt", "pr-recover-find\nline2\nline3\nline4\nline5\n")
+    find_create_calls = {"create": 0, "find": 0}
+
+    async def create_find_cb(_req: PRRequest) -> PRInfo:
+        find_create_calls["create"] += 1
+        return PRInfo(url="https://github.com/org/repo/pull/303", number=303)
+
+    async def lookup_pr_cb(_req: PRRequest) -> PRInfo | None:
+        find_create_calls["find"] += 1
+        return PRInfo(url="https://github.com/org/repo/pull/303", number=303)
+
+    note_writes["n"] = 0
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", fail_final_pr_note)
+        with pytest.raises(OSError, match="simulated final PR note write failure"):
+            await manager.merge_back(
+                wt_pr_find,
+                PullRequest(
+                    title="Recoverable Find PR",
+                    branch="feat/pr-rec-find",
+                    remote="origin",
+                    base_branch="main",
+                    create_pr=create_find_cb,
+                    find_pr=lookup_pr_cb,
+                ),
+            )
+    fresh_manager_2 = WorktreeManager()
+    rec_find = await fresh_manager_2.merge_back(
+        wt_pr_find,
+        PullRequest(
+            title="Recoverable Find PR",
+            branch="feat/pr-rec-find",
+            remote="origin",
+            base_branch="main",
+            create_pr=create_find_cb,
+            find_pr=lookup_pr_cb,
+        ),
+    )
+    assert rec_find.status == "landed" and rec_find.pr_number == 303
+    assert find_create_calls == {"create": 1, "find": 1}
+    await fresh_manager_2.remove(wt_pr_find)
+
+    # 5. Remote pushurl retargeting & remote branch ownership:
+    # Pushing to a remote where `feat/unowned` already exists (even as a fast-forward ancestor)
+    # must be refused; retargeting origin's pushurl from Repo A to Repo B must push to Repo B and
+    # open a fresh PR instead of returning Repo A's cached PR.
+    local_rt, bare_a, _other_rt = _make_repo_with_remote(tmp_path / "retarget_test")
+    bare_b = tmp_path / "retarget_test" / "bare_b.git"
+    _git(tmp_path / "retarget_test", "clone", "--bare", "-q", str(bare_a), str(bare_b))
+    # Pre-create `feat/unowned` on bare_a pointing to main (a fast-forward ancestor of new commits).
+    main_rt_oid = _git(local_rt, "rev-parse", "refs/heads/main").strip()
+    _git(bare_a, "update-ref", "refs/heads/feat/unowned", main_rt_oid)
+    wt_unowned = await manager.create(local_rt, tmp_path / "wt" / "rt_unowned", RemoteDefaultBranch(fetch=False))
+    _write(wt_unowned.path / "a.txt", "attempt-clobber\nline2\nline3\nline4\nline5\n")
+    refused_remote = await manager.merge_back(
+        wt_unowned, BranchCommit(branch="feat/unowned", remote="origin", message="should refuse")
+    )
+    assert refused_remote.status == "failed" and "does not belong to this worktree" in refused_remote.detail
+    assert _git(bare_a, "rev-parse", "refs/heads/feat/unowned").strip() == main_rt_oid
+    await manager.remove(wt_unowned)
+
+    wt_rt = await manager.create(local_rt, tmp_path / "wt" / "rt_retarget", RemoteDefaultBranch(fetch=False))
+    _write(wt_rt.path / "a.txt", "deliver-to-a-then-b\nline2\nline3\nline4\nline5\n")
+    rt_prs: list[str] = []
+
+    async def make_rt_pr(req: PRRequest) -> PRInfo:
+        idx = len(rt_prs) + 1
+        url = f"https://github.com/org/repo-{idx}/pull/{idx}"
+        rt_prs.append(url)
+        return PRInfo(url=url, number=idx)
+
+    pr_on_a = await manager.merge_back(
+        wt_rt, PullRequest(title="PR A", branch="feat/retarget", remote="origin", base_branch="main", create_pr=make_rt_pr)
+    )
+    assert pr_on_a.status == "landed" and pr_on_a.pr_number == 1
+    assert _git(bare_a, "rev-parse", "refs/heads/feat/retarget").strip() == pr_on_a.commit
+    # Retarget origin's pushurl to bare_b with no new file changes: must push to bare_b and open PR #2.
+    _git(local_rt, "remote", "set-url", "--push", "origin", str(bare_b))
+    pr_on_b = await manager.merge_back(
+        wt_rt, PullRequest(title="PR B", branch="feat/retarget", remote="origin", base_branch="main", create_pr=make_rt_pr)
+    )
+    assert pr_on_b.status == "landed", pr_on_b.detail
+    assert pr_on_b.pr_number == 2 and len(rt_prs) == 2
+    assert _git(bare_b, "rev-parse", "refs/heads/feat/retarget").strip() == pr_on_a.commit
+    await manager.remove(wt_rt)
+
+    # 6. _in_the_way must ignore paths under active dependency links without touching disk,
+    # while still blocking once a link is replaced with a real directory.
+    wt_inway_root = tmp_path / "inway_proj"
+    wt_inway_copy = tmp_path / "inway_wt"
+    _write(wt_inway_root / "vendor" / "config.json", "{}\n")
+    wt_inway_copy.mkdir()
+    _copy_trees.make_dir_link(wt_inway_root / "vendor", wt_inway_copy / "vendor")
+    assert worktrees._in_the_way(wt_inway_copy, ["vendor/config.json"], set(), set(), {"vendor"}) == []
+    _copy_trees.remove_dir_link(wt_inway_copy / "vendor")
+    _write(wt_inway_copy / "vendor" / "config.json", '{"real": true}\n')
+    assert worktrees._in_the_way(wt_inway_copy, ["vendor/config.json"], set(), set(), set()) == ["vendor/config.json"]
