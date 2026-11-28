@@ -1998,9 +1998,20 @@ class SpaceKeeper:
         except TypeError:
             return bool(self._hold_files(session_id))
 
+    @staticmethod
+    def _session_storage_root(directory: Path, session_id: str) -> Path | None:
+        """Return the trusted ``task_agents`` root for a session directory, or ``None`` if layout does not match."""
+        if directory.name != session_id or directory.parent.name != "sessions":
+            return None
+        projects_dir = directory.parent.parent.parent
+        ta_root = projects_dir.parent
+        if projects_dir.name == "projects" and ta_root.name == "task_agents":
+            return ta_root
+        return None
+
     async def clean_inactive_outputs_now(self) -> dict[str, Any]:
         """Remove spilled tool output caches (``outputs/``) of inactive sessions, keeping transcripts and ``work/``."""
-        from nekopower.host.storage import remove_dir_safely
+        from nekopower.host.storage import _classify_path_safety, remove_dir_safely
         from utils.asyncio_executor import to_thread_through_cancellation
 
         if self._session_dir_of is None:
@@ -2036,9 +2047,16 @@ class SpaceKeeper:
                 except (OSError, ValueError):
                     skipped += 1
                     continue
-                if pre_dir.name != pre_session.id or pre_dir.parent.name != "sessions":
+                pre_root = self._session_storage_root(pre_dir, pre_session.id)
+                if pre_root is None:
                     continue
                 pre_outputs = pre_dir / _OUTPUTS_NAME
+                pre_safety = await asyncio.to_thread(_classify_path_safety, pre_outputs, pre_root)
+                if pre_safety == "missing":
+                    continue
+                if pre_safety != "ok":
+                    skipped += 1
+                    continue
                 if not await asyncio.to_thread(lambda p=pre_outputs: p.is_dir() and not p.is_symlink()):
                     continue
 
@@ -2057,13 +2075,22 @@ class SpaceKeeper:
                     except (OSError, ValueError):
                         skipped += 1
                         continue
-                    if directory.name != session.id or directory.parent.name != "sessions":
+                    storage_root = self._session_storage_root(directory, session.id)
+                    if storage_root is None:
                         continue
                     outputs = directory / _OUTPUTS_NAME
+                    safety = await asyncio.to_thread(_classify_path_safety, outputs, storage_root)
+                    if safety == "missing":
+                        continue
+                    if safety != "ok":
+                        skipped += 1
+                        continue
                     if not await asyncio.to_thread(lambda p=outputs: p.is_dir() and not p.is_symlink()):
                         continue
                     try:
-                        removed, item_freed = await to_thread_through_cancellation(remove_dir_safely, outputs, directory)
+                        removed, item_freed = await to_thread_through_cancellation(
+                            remove_dir_safely, outputs, storage_root
+                        )
                     except ValueError:
                         skipped += 1
                         continue

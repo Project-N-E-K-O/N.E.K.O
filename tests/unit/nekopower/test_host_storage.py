@@ -1887,3 +1887,86 @@ async def test_expire_and_retry_tree_reject_linked_wt_root(tmp_path: Path):
         assert secret.read_text(encoding="utf-8") == "do not delete"
     finally:
         await host.shutdown()
+
+
+async def test_outputs_cleanup_rejects_linked_ancestors_and_gone_tree_retries_git_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Inactive output cleanup must reject symlinked project/sessions ancestors, and gone discarding trees retry git metadata."""
+    import asyncio
+    from nekopower.host.worktrees import GitError
+
+    host = make_host(tmp_path)
+    try:
+        # 1. Symlinked project directory (_daily -> external dir): clean_transcripts("outputs") must refuse it.
+        sess = await host.ledger.create_session(name="linked-out", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(sess.id, status="idle")
+        outside_proj = tmp_path / "outside_daily"
+        ext_outputs = outside_proj / "sessions" / sess.id / "outputs"
+        ext_outputs.mkdir(parents=True)
+        ext_file = ext_outputs / "keep.bin"
+        ext_file.write_bytes(b"e" * 200)
+
+        daily_dir = host.paths.root() / "task_agents" / "projects" / DEFAULT_PROJECT
+        daily_dir.parent.mkdir(parents=True, exist_ok=True)
+        assert await asyncio.to_thread(_make_dir_link, daily_dir, outside_proj)
+
+        res = await host.clean_transcripts("outputs")
+        assert res["cleaned"] == 0
+        assert res["skipped"] == 1
+        assert ext_file.read_bytes() == b"e" * 200
+
+        # 2. Data-root-moved session at a real old task_agents/projects/<p>/sessions/<id>/outputs still cleans cleanly.
+        moved_sess = await host.ledger.create_session(name="moved-out", lanlan_name="Lan", project="legacy")
+        await host.ledger.update_session(moved_sess.id, status="idle")
+        old_session_dir = tmp_path / "old_data" / "nekopower" / "task_agents" / "projects" / "legacy" / "sessions" / moved_sess.id
+        old_outputs = old_session_dir / "outputs"
+        old_outputs.mkdir(parents=True)
+        (old_outputs / "spill.txt").write_bytes(b"m" * 150)
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET session_dir = ? WHERE id = ?", (str(old_session_dir), moved_sess.id))
+        )
+        res_moved = await host.clean_transcripts("outputs")
+        assert res_moved["cleaned"] == 1
+        assert res_moved["freed_bytes"] == 150
+        assert not old_outputs.exists()
+
+        # 3. Discarding worktree whose directory is already gone retries git metadata cleanup via forget_gone()
+        #    and retains the discarding row until forget_gone() succeeds.
+        repo_dir = tmp_path / "real_repo"
+        repo_dir.mkdir()
+        gone_wt = host.paths.worktree_dir("gonemeta1")
+        await host.ledger.add_tree(
+            id="gonemeta1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="proj",
+            project_dir=str(repo_dir),
+            repo_root=str(repo_dir),
+            path=str(gone_wt),
+            workdir=str(gone_wt),
+            state="discarding",
+            reason="expired",
+        )
+        attempts = {"n": 0}
+
+        async def repo_present(_row: Any) -> bool:
+            return False
+
+        async def flaky_forget_gone(root: Any, path: Any, wt_id: str) -> None:
+            attempts["n"] += 1
+            assert wt_id == "gonemeta1"
+            if attempts["n"] == 1:
+                raise GitError(("update-ref", "--stdin"), 128, b"fatal: cannot lock ref")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_repository_gone", repo_present)
+            mp.setattr(host.task_agents.worktrees, "forget_gone", flaky_forget_gone)
+            assert await host.task_agents.retry_discarded_tree("gonemeta1") is False
+            assert (await host.ledger.get_tree("gonemeta1")) is not None
+            assert await host.task_agents.retry_discarded_tree("gonemeta1") is True
+            assert (await host.ledger.get_tree("gonemeta1")) is None
+        assert attempts["n"] == 2
+    finally:
+        await host.shutdown()

@@ -747,6 +747,17 @@ class TreeWork:
                     self._forget_tree(row)
                     await self._ledger.drop_tree(row.id)
                 return False
+        else:
+            # Directory is already gone; retry cleaning up lingering git registration and refs if repo exists.
+            repo_root = row.repo_root or row.project_dir
+            if repo_root and not await self._repository_gone(row):
+                try:
+                    await self.worktrees.forget_gone(repo_root, row.path, row.id)
+                except asyncio.CancelledError:
+                    raise
+                except (WorktreeError, OSError) as exc:
+                    logger.warning("discarded worktree %s metadata could not be cleaned up yet: %s", row.id, exc)
+                    return False
         self._forget_tree(row)
         await self._ledger.drop_tree(row.id)
         return True
@@ -2346,7 +2357,17 @@ class TreeWork:
                 self._tree_handles.pop(row.id, None)
                 self._trees_mine.discard(row.id)
             else:
-                # Directory is already gone; drop only its in-memory state and record below.
+                # Directory is already gone; drop lingering git registration/refs if repository still exists.
+                repo_root = row.repo_root or row.project_dir
+                if repo_root and not await self._repository_gone(row):
+                    try:
+                        await self.worktrees.forget_gone(repo_root, row.path, row.id)
+                    except asyncio.CancelledError:
+                        raise
+                    except (WorktreeError, OSError) as exc:
+                        logger.warning("worktree %s metadata cleanup deferred: %s", row.id, exc)
+                        removed = False
+                        outcome_kind = "deferred"
                 self._forget_tree(row)
                 self._tree_handles.pop(row.id, None)
                 self._trees_mine.discard(row.id)

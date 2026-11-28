@@ -835,6 +835,15 @@ class WorktreeManager:
                 before_delete=is_untouched,
             )
 
+    async def forget_gone(self, repo_root: Path | str, path: Path | str, worktree_id: str) -> None:
+        """Drop lingering git registration and refs for a worktree whose directory is already gone."""
+        root = await asyncio.to_thread(_absolute, Path(repo_root))
+        target = await asyncio.to_thread(_absolute, Path(path))
+        async with await self._lock(root):
+            if await asyncio.to_thread(os.path.lexists, _fs(target)):
+                raise WorktreeError(f"{target} still exists; use remove() instead of forget_gone()")
+            await self._forget(root, target, worktree_id, remove_directory=False)
+
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
     ) -> ReconcileReport:
