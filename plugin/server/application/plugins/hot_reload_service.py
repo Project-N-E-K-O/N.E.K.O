@@ -173,6 +173,18 @@ def _preflight_compile_sync(root: Path) -> str | None:
     return None
 
 
+def _project_lease_busy_sync(plugin_id: str) -> bool:
+    """Whether a workbench task holds this plugin's project lease. Any other
+    failure is left to reload_plugin, which runs the same check and reports it."""
+    from plugin.server.application.plugin_project_commands import require_plugin_project_available
+
+    try:
+        require_plugin_project_available(plugin_id)
+    except ServerDomainError as exc:
+        return exc.code == ProjectErrorCode.PLUGIN_OPERATION_BUSY
+    return False
+
+
 class PluginHotReloadService:
     """Watch plugin source directories and reload running plugins on change.
 
@@ -478,6 +490,12 @@ class PluginHotReloadService:
             self._emit_event(
                 "plugin_hot_reload_skipped", plugin_id, reason="not_running"
             )
+            return
+
+        if await asyncio.to_thread(_project_lease_busy_sync, plugin_id):
+            # A build or dependency task holds the project: reload_plugin would
+            # refuse it, so skip the preflight, log and event until it ends.
+            self._defer_busy(plugin_id)
             return
 
         # Broken edits must not kill a healthy process.

@@ -66,6 +66,7 @@ def _make_service(
     monkeypatch.setattr(module, "PLUGIN_HOT_RELOAD_INTERVAL", 0.05)
     monkeypatch.setattr(module, "PLUGIN_HOT_RELOAD_DEBOUNCE", 0.1)
     monkeypatch.setattr(module, "plugin_is_running_sync", lambda plugin_id: running)
+    monkeypatch.setattr(module, "_project_lease_busy_sync", lambda plugin_id: False)
     service = module.PluginHotReloadService(lifecycle_service=lifecycle)
     monkeypatch.setattr(
         service,
@@ -617,6 +618,43 @@ async def test_project_lease_busy_defers_and_retries_after_release(tmp_path: Pat
     assert reloads == ["demo", "demo"]
     assert "demo" not in service._pending
     assert all(event["type"] != "plugin_hot_reload_failed" for event in events)
+
+
+async def test_held_project_lease_defers_before_preflight(tmp_path: Path, monkeypatch) -> None:
+    # While a long build or dependency task holds the lease, each retry must
+    # not recompile the source, log "triggered" or emit an event.
+    class UnreachedLifecycle:
+        async def reload_plugin(self, *args, **kwargs):
+            pytest.fail("reload_plugin must not run while the lease is held")
+
+    events = []
+    monkeypatch.setattr(module, "emit_lifecycle_event", events.append)
+    service = _make_service(tmp_path, UnreachedLifecycle(), monkeypatch)
+    monkeypatch.setattr(module, "_project_lease_busy_sync", lambda plugin_id: True)
+    monkeypatch.setattr(
+        module, "_preflight_compile_sync", lambda root: pytest.fail("preflight must not run")
+    )
+    service._pending["demo"] = 0.0
+    before = time.monotonic()
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo"))
+    assert service._pending["demo"] >= before + module._BUSY_RETRY_SECONDS
+    assert events == []
+
+
+def test_lease_probe_reports_only_a_busy_project(monkeypatch) -> None:
+    from plugin.server.application import plugin_project_commands as commands
+
+    def raising(code):
+        def check(plugin_id):
+            raise ServerDomainError(code=code, message="x", status_code=409)
+        return check
+
+    monkeypatch.setattr(commands, "require_plugin_project_available", raising("PLUGIN_OPERATION_BUSY"))
+    assert module._project_lease_busy_sync("demo") is True
+    monkeypatch.setattr(commands, "require_plugin_project_available", raising("PROJECT_STORE_UNREADABLE"))
+    assert module._project_lease_busy_sync("demo") is False
+    monkeypatch.setattr(commands, "require_plugin_project_available", lambda plugin_id: None)
+    assert module._project_lease_busy_sync("demo") is False
 
 
 async def test_other_domain_errors_still_fail_the_hot_reload(tmp_path: Path, monkeypatch) -> None:

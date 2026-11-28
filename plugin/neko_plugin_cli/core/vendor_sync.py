@@ -941,17 +941,23 @@ def _vendor_target_lock(vendor_dir: Path, info: os.stat_result) -> portalocker.L
 def _hold_vendor_target_lock(
     stack: ExitStack, vendor_dir: Path, info: os.stat_result, emit: Callable[..., None],
 ) -> bool:
-    """Take the vendor/ target lock onto stack. Its holder is a sync of
-    another plugin whose vendor/ names the same directory (this plugin's own
-    syncs are excluded by the plugin lock), so say that, not "in progress"."""
+    """Take the vendor/ target lock onto stack. This plugin's own syncs are
+    excluded by the plugin lock, so a holder is another plugin's dependency
+    operation on that directory (a sync through a link to it, or, when it is
+    a plugin directory itself, that plugin's sync or save): say that, not
+    "in progress" for this plugin."""
     try:
         stack.enter_context(_vendor_target_lock(vendor_dir, info))
-    except portalocker.exceptions.LockException:
+    except portalocker.exceptions.AlreadyLocked:
         emit(
-            f"[FAIL] Another plugin whose vendor/ leads to the same directory as {vendor_dir} "
-            "is syncing its dependencies into it; retry when that sync finishes.",
+            f"[FAIL] Another plugin's dependency operation is using the directory "
+            f"{vendor_dir} leads to; retry when it finishes.",
             file=sys.stderr,
         )
+        return False
+    except portalocker.exceptions.LockException as exc:
+        # Not held by anyone: locking itself failed (e.g. unsupported here).
+        emit(f"[FAIL] Could not lock the directory {vendor_dir} leads to: {exc}", file=sys.stderr)
         return False
     return True
 

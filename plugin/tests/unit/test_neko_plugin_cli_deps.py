@@ -1399,7 +1399,7 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
     assert nested == [1]
-    assert "Another plugin whose vendor/ leads to the same directory" in capsys.readouterr().err
+    assert "Another plugin's dependency operation is using the directory" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
@@ -1489,6 +1489,39 @@ def test_in_place_refill_warns_when_the_old_contents_can_not_be_removed(tmp_path
     assert any("[WARN] Could not remove the old contents" in line for line in lines)
 
 
+def test_target_lock_failure_that_is_not_contention_says_so(tmp_path, monkeypatch):
+    # Only a held lock means another plugin's operation; a locking failure
+    # (e.g. a filesystem without locks) is reported as what it is.
+    from contextlib import ExitStack
+
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+
+    class FailingLock:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def __enter__(self):
+            raise self.exc
+
+        def __exit__(self, *args):
+            return False
+
+    for exc, expected in (
+        (deps_cmd.portalocker.exceptions.AlreadyLocked("held"), "Another plugin's dependency operation"),
+        (deps_cmd.portalocker.exceptions.LockException("no locks here"), "Could not lock the directory"),
+    ):
+        monkeypatch.setattr(deps_cmd, "_vendor_target_lock", lambda vendor_dir, info, exc=exc: FailingLock(exc))
+        lines = []
+        with ExitStack() as stack:
+            assert not deps_cmd._hold_vendor_target_lock(
+                stack, vendor, vendor.stat(), lambda *parts, **kwargs: lines.append(" ".join(map(str, parts)))
+            )
+        assert len(lines) == 1 and expected in lines[0], lines
+
+
 def test_plain_vendor_holds_the_lock_of_plugins_linking_to_it(tmp_path, monkeypatch, capsys):
     # The swap replaces the whole directory: an in-place sync through a link
     # to it must not run meanwhile, or the swap drops what it installed.
@@ -1526,7 +1559,7 @@ def test_plain_vendor_holds_the_lock_of_plugins_linking_to_it(tmp_path, monkeypa
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
     assert nested == [1]
-    assert "Another plugin whose vendor/ leads to the same directory" in capsys.readouterr().err
+    assert "Another plugin's dependency operation is using the directory" in capsys.readouterr().err
 
 
 def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch, capsys):
