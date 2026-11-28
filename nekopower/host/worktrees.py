@@ -2016,11 +2016,13 @@ class WorktreeManager:
             advance_start_to_result: bool,
         ) -> MergeResult:
             same_owned = owns_existing
+            same_branch = delivery.get("branch") == target_branch
             needs_push = (
                 bool(remote_name)
                 and same_owned
                 and (
-                    not delivery.get("pushed")
+                    not same_branch
+                    or not delivery.get("pushed")
                     or delivery.get("remote") != remote_name
                     or str(delivery.get("pushed_commit") or "") != existing_tip
                 )
@@ -2056,11 +2058,11 @@ class WorktreeManager:
                     "remote": remote_name,
                     "pushed": True,
                     "pushed_commit": existing_tip,
-                    "base_branch": str(base_branch or delivery.get("base_branch") or ""),
-                    "pr_pending": True if mark_pr_pending else bool(delivery.get("pr_pending")),
-                    "pr_url": str(delivery.get("pr_url") or ""),
-                    "pr_number": delivery.get("pr_number"),
-                    "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
+                    "base_branch": str(base_branch or (delivery.get("base_branch") if same_branch else "") or ""),
+                    "pr_pending": True if mark_pr_pending else (bool(delivery.get("pr_pending")) if same_branch else False),
+                    "pr_url": str(delivery.get("pr_url") or "") if same_branch else "",
+                    "pr_number": delivery.get("pr_number") if same_branch else None,
+                    "prs": dict(delivery.get("prs") or {}) if same_branch and isinstance(delivery.get("prs"), dict) else {},
                 }
                 await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
                 if advance_start_to_result:
@@ -2077,20 +2079,41 @@ class WorktreeManager:
                     commit=existing_tip,
                     remote=remote_name,
                 )
-            if same_owned and existing_tip is not None and delivery.get("branch") != target_branch:
+            if same_owned and existing_tip is not None and (
+                not same_branch or (mark_pr_pending and not delivery.get("pr_pending"))
+            ):
                 finalized_delivery: dict[str, Any] = {
                     "branch": target_branch,
                     "commit": existing_tip,
-                    "remote": str(delivery.get("remote") or remote_name),
-                    "pushed": bool(delivery.get("pushed")),
-                    "pushed_commit": str(delivery.get("pushed_commit") or ""),
-                    "base_branch": str(base_branch or delivery.get("base_branch") or ""),
-                    "pr_pending": True if mark_pr_pending else bool(delivery.get("pr_pending")),
-                    "pr_url": str(delivery.get("pr_url") or ""),
-                    "pr_number": delivery.get("pr_number"),
-                    "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
+                    "remote": str(delivery.get("remote") or remote_name) if same_branch else remote_name,
+                    "pushed": bool(delivery.get("pushed")) if same_branch else False,
+                    "pushed_commit": str(delivery.get("pushed_commit") or "") if same_branch else "",
+                    "base_branch": str(base_branch or (delivery.get("base_branch") if same_branch else "") or ""),
+                    "pr_pending": True if mark_pr_pending else (bool(delivery.get("pr_pending")) if same_branch else False),
+                    "pr_url": str(delivery.get("pr_url") or "") if same_branch else "",
+                    "pr_number": delivery.get("pr_number") if same_branch else None,
+                    "prs": dict(delivery.get("prs") or {}) if same_branch and isinstance(delivery.get("prs"), dict) else {},
                 }
-                await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, finalized_delivery))
+                try:
+                    await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, finalized_delivery))
+                except OSError as exc:
+                    return MergeResult(
+                        "failed",
+                        detail=(
+                            f"recording pending pull request state failed: {exc}"
+                            if mark_pr_pending
+                            else f"recording delivery state failed: {exc}"
+                        ),
+                        skipped=result.skipped,
+                        current=current_commit,
+                        result=result.commit,
+                        result_tree=result.tree,
+                        merged_tree=merged_tree_oid,
+                        base=base,
+                        branch=target_branch,
+                        commit=existing_tip,
+                        remote=remote_name,
+                    )
             if advance_start_to_result:
                 await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
             return MergeResult(

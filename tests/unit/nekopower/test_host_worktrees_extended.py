@@ -1935,6 +1935,43 @@ async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkey
         )
     assert pr_fail_note.status == "failed" and "recording pending pull request state failed" in pr_fail_note.detail
     assert pr_called["flag"] is False
+
+    # Switching from branch A (which has a PR) to branch B with a failed final note write and then
+    # locally retrying branch B must clear A's PR/push fields so a later PR on B opens a fresh PR for B.
+    pr_a = await manager.merge_back(
+        wt_first,
+        PullRequest(
+            title="PR A",
+            branch="feat/first-intent",
+            remote="origin",
+            base_branch="main",
+            create_pr=lambda _req: asyncio.sleep(0, result=PRInfo(url="https://github.com/org/repo/pull/10", number=10)),
+        ),
+    )
+    assert pr_a.status == "landed" and pr_a.pr_number == 10
+    _write(wt_first.path / "b_switch.txt", "for branch B\n")
+    first_calls["n"] = 0
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", fail_first_final_note)
+        with pytest.raises(OSError, match="simulated first final note write failure"):
+            await manager.merge_back(wt_first, BranchCommit(branch="feat/branch-b", message="switch to B"))
+    retry_b = await manager.merge_back(wt_first, BranchCommit(branch="feat/branch-b", message="retry B"))
+    assert retry_b.status in ("unchanged", "landed"), retry_b.detail
+    note_b = worktrees._noted_delivery(common_nd, wt_first.path, strict=True)
+    assert note_b.get("branch") == "feat/branch-b"
+    assert not note_b.get("pr_url") and note_b.get("pr_number") is None and note_b.get("prs") == {}
+    assert note_b.get("pushed") is False
+    seen_pr_b: list[str] = []
+
+    async def create_pr_b(req: PRRequest) -> PRInfo:
+        seen_pr_b.append(req.branch)
+        return PRInfo(url="https://github.com/org/repo/pull/20", number=20)
+
+    pr_b = await manager.merge_back(
+        wt_first,
+        PullRequest(title="PR B", branch="feat/branch-b", remote="origin", base_branch="main", create_pr=create_pr_b),
+    )
+    assert pr_b.status == "landed" and pr_b.pr_number == 20 and seen_pr_b == ["feat/branch-b"]
     await manager.remove(wt_first)
 
     # If branch OID changed externally after a failed first final note write, ownership is refused.
