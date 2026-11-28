@@ -48,7 +48,8 @@ NEUTRAL_BASELINE_TAU = 0.7
 DECISION_TIMEOUT_SECONDS = 2.5
 FIRST_TOKEN_TIMEOUT_SECONDS = 2.5
 EMOJI_CHAT_MAX_TOKENS = 16
-EMOJI_CHAT_TIMEOUT_SECONDS = 8.0
+# Inside the reaction's own wait for the emoji (REACTION_EMOJI_WAIT_SECONDS).
+EMOJI_CHAT_TIMEOUT_SECONDS = 6.0
 FIRST_TOKEN_TOP_LOGPROBS = 10
 # The opening of the JSON answer up to the emotion value.
 EMOTION_PREFILL = '{"emotion": "'
@@ -61,6 +62,9 @@ _FIRST_TOKEN_CHAT_ENDPOINTS: dict[str, frozenset[str]] = {
 # How long a computed reaction waits for the frontend to collect it.
 PENDING_REACTION_TTL_SECONDS = 60.0
 PENDING_REACTION_WAIT_SECONDS = 8.0
+# How long the model's emoji is waited for, leaving time inside that wait to
+# pick one for the emotion instead.
+REACTION_EMOJI_WAIT_SECONDS = PENDING_REACTION_WAIT_SECONDS - 1.5
 _MAX_PENDING_REACTIONS = 64
 
 

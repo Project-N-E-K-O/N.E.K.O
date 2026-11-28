@@ -461,3 +461,26 @@ def test_a_whole_answer_written_over_the_prefill_is_not_prefixed_twice(em):
 
     assert asyncio.run(_run()) == ' {"emotion": "sad", "confidence": 0.9}'
 
+
+
+def test_a_slow_model_emoji_still_leaves_one_picked_for_the_emotion(em, monkeypatch):
+    async def _decide(text, *, chat_config, config_manager):
+        return "sad", 0.95
+
+    async def _pick(text, *, chat_config):
+        await asyncio.sleep(10)
+        return "🫠"
+
+    monkeypatch.setattr(em.ed, "decide_emotion", _decide)
+    monkeypatch.setattr(em.ed, "pick_emoji", _pick)
+    monkeypatch.setattr(em.ed, "REACTION_EMOJI_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(em.ed, "PENDING_REACTION_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(em.module.random, "choice", lambda items: items[0])
+
+    async def _run():
+        resp = await _analyze_async(em, "I miss you")
+        return await em.module.emotion_reaction(_Request({"token": resp["reaction_pending"]}))
+
+    got = asyncio.run(_run())
+    assert got["reaction"] == {"emoji": em.module.MESSAGE_REACTION_EMOJIS_BY_EMOTION["sad"][0], "author": "NEKO"}
+    assert em.ed.REACTION_EMOJI_WAIT_SECONDS < em.ed.PENDING_REACTION_WAIT_SECONDS

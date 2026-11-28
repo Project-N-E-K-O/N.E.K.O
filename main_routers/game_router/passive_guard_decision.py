@@ -25,7 +25,6 @@ prompt (``runtime._run_soccer_passive_guard_ai``).
 
 from __future__ import annotations
 
-import copy
 import json
 from typing import Any, Dict, Optional
 
@@ -54,9 +53,15 @@ def _is_user_stage(data: Dict[str, Any]) -> bool:
     return str(data.get("stage")) in USER_STAGES
 
 
-def _teaching(data: Dict[str, Any]) -> bool:
-    pre = data.get("preGameContext")
-    return isinstance(pre, dict) and str(pre.get("gameStance") or "").strip().lower() == "teaching"
+def _pre_game_context(data: Dict[str, Any], route_state: Any) -> Dict[str, Any]:
+    """The request's opening context, else the one the route keeps."""
+    pre = data.get("preGameContext") or (route_state.get("preGameContext") if isinstance(route_state, dict) else None)
+    return pre if isinstance(pre, dict) else {}
+
+
+def _teaching(data: Dict[str, Any], route_state: Any = None) -> bool:
+    pre = _pre_game_context(data, route_state)
+    return str(pre.get("gameStance") or "").strip().lower() == "teaching"
 
 
 def _prompt_type(data: Dict[str, Any]) -> str:
@@ -91,9 +96,10 @@ def _compact_state(data: Dict[str, Any], route_state: Any) -> str:
     from ._shared import _normalize_short_text
     from .game_context import _build_game_context_prompt_payload, _game_context_signals_text
 
-    rs = copy.deepcopy(route_state)
-    ctx = _build_game_context_prompt_payload(rs) or {}
-    pg = data.get("preGameContext") or (rs or {}).get("preGameContext") or {}
+    # Read as it is (the chat prompt reads it the same way): the route also
+    # keeps live objects such as the context organizer's task.
+    ctx = _build_game_context_prompt_payload(route_state) or {}
+    pg = _pre_game_context(data, route_state)
     cs = data.get("currentState") or {}
     pgs = data.get("passiveGuardState") or {}
     score = cs.get("score") or {}
@@ -152,8 +158,8 @@ def _reply_to_speech(data: Dict[str, Any], route_state: Any) -> Optional[str]:
 
     raw_log = route_state.get("game_dialog_log") if isinstance(route_state, dict) else None
     log = [d for d in raw_log or [] if isinstance(d, dict)]
-    # Compared whole: two speeches that only share their first 240 characters
-    # are different speeches (the state shows the speech cut to 240).
+    # Compared whole (the game sends the whole speech): two speeches that only
+    # share their first 240 characters are different speeches.
     speech = _normalize_short_text(data.get("userSpeech") or "", max_chars=_WHOLE_SPEECH_CHARS)
     if len(log) >= 2 and log[-1].get("type") == "assistant" and log[-2].get("type") == "user":
         prev = _normalize_short_text(log[-2].get("text") or "", max_chars=_WHOLE_SPEECH_CHARS)
@@ -192,7 +198,7 @@ def _probabilities(answer: Any) -> Dict[str, float]:
     return probs
 
 
-def action_from_answer(answer: Any, data: Dict[str, Any]) -> Optional[str]:
+def action_from_answer(answer: Any, data: Dict[str, Any], route_state: Any = None) -> Optional[str]:
     """The recommended action for the ``situation`` answer at this stage, or ``None``."""
     probs = _probabilities(answer)
     if not probs:
@@ -217,7 +223,7 @@ def action_from_answer(answer: Any, data: Dict[str, Any]) -> Optional[str]:
     best = ranked[0][1]
     if best == PREPARE and _stage_number(data.get("stage")) < 8:
         return OBSERVE
-    if best == PREPARE and _teaching(data):
+    if best == PREPARE and _teaching(data, route_state):
         # A teaching game never opens the exit window (teachingNeverUsesPrompt).
         return OBSERVE
     return best
@@ -269,7 +275,7 @@ async def decide_passive_guard(
     if not answers:
         return None
     situation = answers.get("situation")
-    action = action_from_answer(situation, data)
+    action = action_from_answer(situation, data, route_state)
     if action is None:
         return None
     return {

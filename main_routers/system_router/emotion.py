@@ -20,6 +20,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
 from ._shared import _validate_local_mutation_request, logger, router
+import asyncio
 import difflib
 import json
 import math
@@ -952,13 +953,15 @@ def _respond_with_pending_reaction(text, label, confidence, lanlan_name, make_em
     response = _emotion_response(emotion, confidence, lanlan_name if reaction_eligible else None)
     if response.get("reaction") is None:
         return response, False
-    from .emotion_decision import register_pending_reaction
+    from .emotion_decision import REACTION_EMOJI_WAIT_SECONDS, register_pending_reaction
 
     author = response["reaction"]["author"]
 
     async def _reaction():
         try:
-            model_emoji = await make_emoji()
+            # Bounded inside the collector's own wait, so a slow model still
+            # leaves the emoji picked for the emotion.
+            model_emoji = await asyncio.wait_for(make_emoji(), REACTION_EMOJI_WAIT_SECONDS)
         except Exception as exc:
             logger.info("[Emotion] reaction emoji failed (%s); picking by emotion", type(exc).__name__)
             model_emoji = None

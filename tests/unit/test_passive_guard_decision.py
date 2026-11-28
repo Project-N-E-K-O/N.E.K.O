@@ -189,3 +189,26 @@ def test_her_reply_counts_only_for_the_same_whole_speech():
     # Same first 240 characters, different speech: not her reply to it.
     assert pgd._reply_to_speech({"userSpeech": head + " just give up"}, route) is None
 
+
+
+@pytest.mark.unit
+def test_a_route_keeping_a_live_task_is_read_without_copying_it():
+    from config.prompts.prompts_soccer import SOCCER_PASSIVE_GUARD_DECISION_TEXT as T
+
+    async def _run():
+        task = asyncio.ensure_future(asyncio.sleep(0))
+        await task
+        route = dict(ROUTE, _game_context_organizer_task=task)
+        return pgd.build_question({"stage": 8}, route, T)
+
+    state, qs = asyncio.run(_run())
+    assert "Not again..." in state and "situation" in qs
+
+
+@pytest.mark.unit
+def test_a_teaching_game_kept_on_the_route_never_opens_the_exit_window():
+    route = {"preGameContext": {"gameStance": "teaching"}}
+    assert pgd.action_from_answer(_answer({"giving_up": 1.0}), {"stage": 8}, route) == pgd.OBSERVE
+    # The request's own context comes first.
+    own = {"stage": 8, "preGameContext": {"gameStance": "normal"}}
+    assert pgd.action_from_answer(_answer({"giving_up": 1.0}), own, route) == pgd.PREPARE
