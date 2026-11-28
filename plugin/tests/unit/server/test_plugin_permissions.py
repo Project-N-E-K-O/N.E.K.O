@@ -2049,3 +2049,50 @@ def test_failed_store_write_leaves_the_legacy_file_alone(decision_flow):
 
     assert decision_flow["legacy_bytes"]() == legacy
     assert consent_service.denied_plugin_ids(["demo"]) == {"demo"}
+
+
+@pytest.mark.parametrize(
+    "take_back",
+    [
+        lambda pid: permission_service.decide_permission(pid, MEMORY_READ, "denied"),
+        lambda pid: permission_service.clear_permission(pid, MEMORY_READ),
+        lambda pid: permission_service.clear_permission(pid, MEMORY_READ, answer=True),
+    ],
+    ids=["deny", "clear", "answer"],
+)
+def test_taking_the_last_grant_back_restores_the_whole_plugin_denial(decision_flow, take_back):
+    from plugin.server.application.plugins import consent_service
+
+    decision_flow["seed"]("demo", "denied")
+    permission_service.decide_permission("demo", MEMORY_READ, "granted")
+    assert consent_service.denied_plugin_ids(["demo"]) == set()
+
+    take_back("demo")
+
+    record = decision_flow["permissions"].read("demo")
+    assert LEGACY_DENIAL_SUPERSEDED not in record and record[LEGACY_DENIED] is True
+    assert consent_service.denied_plugin_ids(["demo"]) == {"demo"}
+    # Granting again lifts it again.
+    permission_service.decide_permission("demo", MEMORY_READ, "granted")
+    assert consent_service.denied_plugin_ids(["demo"]) == set()
+
+
+@pytest.mark.parametrize(
+    "take_back",
+    [
+        lambda pid: permission_service.decide_permission(pid, MEMORY_READ, "denied"),
+        lambda pid: permission_service.clear_permission(pid, MEMORY_READ),
+    ],
+    ids=["deny", "clear"],
+)
+def test_taking_one_of_two_grants_back_keeps_the_denial_lifted(decision_flow, take_back):
+    from plugin.server.application.plugins import consent_service
+
+    decision_flow["seed"]("demo", "denied")
+    permission_service.decide_permission("demo", MEMORY_READ, "granted")
+    permission_service.decide_permission("demo", "system.process:spawn", "granted")
+
+    take_back("demo")
+
+    assert decision_flow["permissions"].read("demo")[LEGACY_DENIAL_SUPERSEDED] is True
+    assert consent_service.denied_plugin_ids(["demo"]) == set()

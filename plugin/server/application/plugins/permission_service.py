@@ -435,7 +435,7 @@ def _forget_legacy_denial(plugin_id: str) -> None:
     try:
         if consent_store.read(plugin_id).get("decision") == "denied":
             consent_store.delete(plugin_id)
-    except Exception as exc:
+    except (ServerDomainError, OSError) as exc:
         logger.warning(
             "legacy plugin denial not removed: plugin_id={} error={}",
             plugin_id,
