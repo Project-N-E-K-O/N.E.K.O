@@ -899,3 +899,44 @@ def test_asr_test_endpoint_maps_auth_failures(monkeypatch) -> None:
     )
     assert result["success"] is False
     assert result["error_code"] == "auth_failed"
+
+
+# --- vendor metadata for the settings page ---------------------------------
+
+
+def test_ui_metadata_lists_every_vendor_with_its_routes():
+    from main_logic.asr_client.slot import ASR_SLOT_ROUTES, ASR_SLOT_VENDORS, asr_slot_ui_metadata
+
+    entries = asr_slot_ui_metadata()
+    assert [entry["key"] for entry in entries] == list(ASR_SLOT_VENDORS)
+    for entry in entries:
+        spec = ASR_SLOT_VENDORS[entry["key"]]
+        assert entry["transports"], entry["key"]
+        for transport in entry["transports"]:
+            assert ASR_SLOT_ROUTES[(entry["key"], transport)] in ASR_PROVIDER_REGISTRY
+        assert entry["default_url"] == spec.default_url
+        assert entry["default_model"] == spec.default_model
+        assert entry["filters_models"] == spec.filters_models
+        custom = entry["key"] == "custom"
+        assert entry["url_editable"] is custom
+        assert entry["key_source"] == ("slot" if custom else "key_book")
+
+
+def test_ui_metadata_vendor_keys_are_key_book_providers():
+    """The page looks a vendor's key up in the Key Book by the vendor key."""
+    from main_logic.asr_client.slot import asr_slot_ui_metadata
+    from utils.api_config_loader import get_config
+
+    registry = get_config(force_reload=True).get("api_key_registry", {})
+    for entry in asr_slot_ui_metadata():
+        if entry["key_source"] == "key_book":
+            assert entry["key"] in registry, entry["key"]
+
+
+def test_api_providers_endpoint_serves_the_slot_vendors():
+    from main_logic.asr_client.slot import asr_slot_ui_metadata
+    from main_routers.config_router import core_config as router
+
+    result = asyncio.run(router.get_api_providers_config())
+    assert result["success"] is True
+    assert result["asr_slot_vendors"] == asr_slot_ui_metadata()

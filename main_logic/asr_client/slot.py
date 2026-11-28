@@ -343,6 +343,32 @@ def validate_asr_slot_fields(provider: object, transport: object, url: object) -
     return None
 
 
+
+def asr_slot_ui_metadata() -> list[dict]:
+    """The slot's vendor choices for the settings page, in display order.
+
+    The page builds its dropdown from this list, so the vendors, their
+    defaults and their transports have one source. A vendor's ``key`` is
+    also its Key Book provider key; ``custom`` keeps its key in the slot.
+    """
+
+    entries = []
+    for key, spec in ASR_SLOT_VENDORS.items():
+        custom = key == ASR_SLOT_CUSTOM
+        entries.append({
+            "key": key,
+            "protocol": spec.protocol,
+            "default_url": spec.default_url,
+            "default_model": spec.default_model,
+            "url_editable": custom,
+            "key_source": "slot" if custom else "key_book",
+            "filters_models": spec.filters_models,
+            "transports": sorted(
+                transport for vendor, transport in ASR_SLOT_ROUTES if vendor == key
+            ),
+        })
+    return entries
+
 __all__ = [
     "ASR_SLOT_CUSTOM",
     "ASR_SLOT_DEFAULT_TRANSPORT",
@@ -353,6 +379,7 @@ __all__ = [
     "ASR_SLOT_VENDORS",
     "AsrSlotEndpoint",
     "AsrSlotVendor",
+    "asr_slot_ui_metadata",
     "custom_asr_models_base_url",
     "is_asr_model_candidate",
     "normalize_custom_asr_url",

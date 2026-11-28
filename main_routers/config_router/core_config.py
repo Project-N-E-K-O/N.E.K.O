@@ -1160,9 +1160,12 @@ async def get_api_providers_config():
             tts_providers = []
 
         from utils.image_generation.config import PROVIDERS as image_providers
+        from main_logic.asr_client.slot import asr_slot_ui_metadata
 
         return {
             "image_providers": image_providers,
+            # Speech-recognition slot vendors; the dropdown is built from these.
+            "asr_slot_vendors": asr_slot_ui_metadata(),
             "success": True,
             "core_api_providers": core_providers,
             "assist_api_providers": assist_providers,
