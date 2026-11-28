@@ -578,7 +578,7 @@ export default {
     title: '镜像源',
     description: '选择插件市场下载 GitHub Release 包、以及插件依赖访问 PyPI 索引时使用的连接方式。',
     close: '关闭镜像源',
-    proxyOptional: '下载来源',
+    sourceMode: '下载来源',
     direct: 'GitHub 直连',
     modeDirect: '直连官方源（GitHub / PyPI）',
     auto: '自动选源与并发下载',

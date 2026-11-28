@@ -15,7 +15,7 @@
 
     <div class="mirror-source-panel__content">
       <el-form label-position="top">
-        <el-form-item :label="t('mirrorSource.proxyOptional')">
+        <el-form-item :label="t('mirrorSource.sourceMode')">
           <el-select :model-value="mode" @update:model-value="setModeFromSelect">
             <el-option :label="t('mirrorSource.modeDirect')" value="direct" />
             <el-option :label="t('mirrorSource.auto')" value="auto" />

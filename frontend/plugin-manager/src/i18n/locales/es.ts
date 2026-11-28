@@ -578,7 +578,7 @@ export default {
     title: 'Fuente espejo',
     description: 'Elige cómo Plugin Market descarga paquetes de GitHub Release y accede al índice de PyPI para las dependencias de plugins.',
     close: 'Cerrar fuente espejo',
-    proxyOptional: 'Origen de descarga',
+    sourceMode: 'Origen de descarga',
     direct: 'GitHub directo',
     modeDirect: 'Directo a las fuentes oficiales (GitHub / PyPI)',
     auto: 'Fuentes automáticas y descarga paralela',

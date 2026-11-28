@@ -578,7 +578,7 @@ export default {
     title: 'Mirror Source',
     description: 'Choose how Plugin Market downloads GitHub Release packages and reaches the PyPI index for plugin dependencies.',
     close: 'Close mirror source',
-    proxyOptional: 'Download source',
+    sourceMode: 'Download source',
     direct: 'GitHub Direct',
     modeDirect: 'Direct to official sources (GitHub / PyPI)',
     auto: 'Automatic sources and parallel download',

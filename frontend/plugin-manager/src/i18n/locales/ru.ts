@@ -578,7 +578,7 @@ export default {
     title: 'Источник зеркала',
     description: 'Выберите, как Plugin Market загружает пакеты GitHub Release и обращается к индексу PyPI для зависимостей плагинов.',
     close: 'Закрыть источник зеркала',
-    proxyOptional: 'Источник загрузки',
+    sourceMode: 'Источник загрузки',
     direct: 'GitHub напрямую',
     modeDirect: 'Напрямую из официальных источников (GitHub / PyPI)',
     auto: 'Автовыбор источников и параллельная загрузка',

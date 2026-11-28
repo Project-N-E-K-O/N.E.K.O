@@ -578,7 +578,7 @@ export default {
     title: 'ミラーソース',
     description: 'Plugin Market が GitHub Release パッケージをダウンロードするとき、およびプラグインの依存関係で PyPI インデックスにアクセスするときの接続方法を選択します。',
     close: 'ミラーソースを閉じる',
-    proxyOptional: 'ダウンロード元',
+    sourceMode: 'ダウンロード元',
     direct: 'GitHub 直結',
     modeDirect: '公式に直結（GitHub / PyPI）',
     auto: '自動選択と並列ダウンロード',

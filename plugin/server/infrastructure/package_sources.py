@@ -146,8 +146,13 @@ def _retired_route_ids() -> frozenset[str]:
     return frozenset().union(*(family.retired_ids for family in SOURCE_FAMILIES))
 
 
-def family_for(url: str) -> SourceFamily | None:
-    return next((family for family in SOURCE_FAMILIES if family.matches(url)), None)
+# Families whose files are downloaded through download_candidates. PyPI files
+# are fetched by uv, so a PyPI URL there would only skew the PyPI probes.
+DOWNLOAD_FAMILIES = (GITHUB_FAMILY,)
+
+
+def family_for(url: str, families: tuple[SourceFamily, ...] = SOURCE_FAMILIES) -> SourceFamily | None:
+    return next((family for family in families if family.matches(url)), None)
 
 
 @dataclass(frozen=True)
@@ -532,7 +537,7 @@ async def reset_transfer_history() -> None:
 
 def download_candidates(url: str, preferences: DownloadPreferences) -> list[tuple[str, str]]:
     """Routes for one package, best expected completion time first in auto mode."""
-    family = family_for(url)
+    family = family_for(url, DOWNLOAD_FAMILIES)
     if family is None:
         return [(urlparse(url).hostname or "origin", url)]
     direct = (family.direct_id, url)
@@ -590,7 +595,11 @@ async def select_pypi_index_url(preferences: DownloadPreferences | None = None) 
         return pypi_index_url(PYPI_FAMILY.direct_id)
     if preferences.mode == "specified":
         return pypi_index_url(preferences.specified_pypi_source_id)
-    await refresh_pypi_routes()
+    try:
+        await refresh_pypi_routes()
+    except Exception as exc:  # CancelledError is not an Exception and still propagates.
+        # Choosing a mirror must not fail the install: rank on what is known.
+        logger.warning("PyPI index probe could not run: {!r}", exc)
     best, _ = _rank(list(PYPI_FAMILY.sources))[0]
     return pypi_index_url(best)
 
@@ -605,7 +614,8 @@ def _pypi_probe_due(now: float) -> bool:
     # measurements are still kept for ranking.
     measured = max((stats.measured for key, _ in PYPI_FAMILY.sources
                     if (stats := _routes.get(key)) is not None), default=0.0)
-    return now - measured >= PYPI_PROBE_FRESH_SECONDS
+    # As above: a measurement stamped in the future does not stay fresh.
+    return not 0 <= now - measured < PYPI_PROBE_FRESH_SECONDS
 
 
 def _probe_lock() -> asyncio.Lock:

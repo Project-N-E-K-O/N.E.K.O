@@ -122,8 +122,16 @@ def test_each_family_uses_its_own_specified_mirror():
     )
     assert sources.download_candidates(GITHUB_URL, preferences) == [
         ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/" + GITHUB_URL)]
-    assert sources.download_candidates(SIMPLE_URL, preferences) == [
-        ("pypi-tencent", "https://mirrors.cloud.tencent.com/pypi/simple/iniconfig/")]
+    pypi = sources.PYPI_FAMILY
+    assert pypi.mirror_url(preferences.specified_for(pypi), SIMPLE_URL) == (
+        "https://mirrors.cloud.tencent.com/pypi/simple/iniconfig/")
+
+
+def test_pypi_urls_are_not_downloaded_through_mirrors():
+    # uv fetches PyPI files; routing one here would record a pypi-direct measurement.
+    for mode in ("auto", "direct", "specified"):
+        assert sources.download_candidates(SIMPLE_URL, sources.DownloadPreferences(mode=mode)) == [
+            ("pypi.org", SIMPLE_URL)]
 
 
 # -- preferences --------------------------------------------------------------------------------
@@ -343,8 +351,29 @@ def test_measurement_time_persists_and_old_or_corrupt_files_read_as_never(monkey
 
 
 def test_the_pypi_rewrite_accepts_an_explicit_default_port_and_keeps_query_and_fragment():
-    preferences = sources.DownloadPreferences(mode="specified", specified_pypi_source_id="pypi-ustc")
-    assert sources.download_candidates("https://pypi.org:443/simple/six/?format=html#top", preferences) == [
-        ("pypi-ustc", "https://mirrors.ustc.edu.cn/pypi/simple/six/?format=html#top")]
-    auto = sources.download_candidates("https://pypi.org:443/simple/six/", sources.DownloadPreferences())
-    assert len(auto) == len(sources.PYPI_INDEX_SOURCES)
+    pypi = sources.PYPI_FAMILY
+    assert pypi.mirror_url("pypi-ustc", "https://pypi.org:443/simple/six/?format=html#top") == (
+        "https://mirrors.ustc.edu.cn/pypi/simple/six/?format=html#top")
+    assert [pypi.mirror_url(key, "https://pypi.org:443/simple/six/") for key, _ in pypi.mirrors] == [
+        base + "six/" for _, base in pypi.mirrors]
+
+
+async def test_a_measurement_stamped_in_the_future_does_not_stay_fresh(index, monkeypatch):
+    now = [1_000_000.0]
+    patch_module_clock(monkeypatch, sources, time=lambda: now[0])
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    now[0] -= 3600  # clock set back an hour; measured is now in the future
+    monkeypatch.setattr(sources, "_last_pypi_probe", None)
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 10
+
+
+async def test_a_probe_that_cannot_start_still_selects_from_known_statistics(monkeypatch):
+    async def no_client():
+        raise RuntimeError("httpx unavailable")
+
+    monkeypatch.setattr(sources, "package_http_client", no_client)
+    # Old enough that a probe is due, so the failing client is reached.
+    stale = sources.time.time() - sources.PYPI_PROBE_FRESH_SECONDS - 60
+    sources._record(sources.RouteObservation("pypi-aliyun", latency=0.01), stale)
+    assert await sources.select_pypi_index_url(sources.DownloadPreferences()) == "https://mirrors.aliyun.com/pypi/simple"

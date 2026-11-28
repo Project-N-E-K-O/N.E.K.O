@@ -578,7 +578,7 @@ export default {
     title: '鏡像來源',
     description: '選擇外掛市集下載 GitHub Release 套件、以及外掛相依套件存取 PyPI 索引時使用的連線方式。',
     close: '關閉鏡像來源',
-    proxyOptional: '下載來源',
+    sourceMode: '下載來源',
     direct: 'GitHub 直連',
     modeDirect: '直連官方來源（GitHub / PyPI）',
     auto: '自動選源與並行下載',
