@@ -197,10 +197,22 @@ def _archive_parts(model: dict) -> list[dict]:
             raise ValueError("invalid built-in PNGTuber archive parts")
         if any(not isinstance(part, dict) for part in parts):
             raise ValueError("invalid archive part")
-        if model.get("archive_sha256") != parts_fingerprint(parts):
+        normalized_parts = [
+            dict(part, archive_sha256=part["archive_sha256"].lower())
+            if isinstance(part.get("archive_sha256"), str) else dict(part)
+            for part in parts
+        ]
+        if str(model.get("archive_sha256") or "").lower() not in {
+            parts_fingerprint(parts), parts_fingerprint(normalized_parts)
+        }:
             raise ValueError("archive parts fingerprint mismatch")
         if model.get("archive") != parts[0].get("archive"):
             raise ValueError("first archive does not match manifest")
+    parts = [
+        dict(part, archive_sha256=part["archive_sha256"].lower())
+        if isinstance(part.get("archive_sha256"), str) else dict(part)
+        for part in parts
+    ]
     seen = set()
     for part in parts:
         name = part.get("archive")
@@ -248,7 +260,7 @@ def _unpack_model(
     folder_name = folder_path.name
 
     parts = _archive_parts(model)
-    expected_hash = parts[0]["archive_sha256"] if model.get("archives") is None else model["archive_sha256"]
+    expected_hash = parts[0]["archive_sha256"] if model.get("archives") is None else model["archive_sha256"].lower()
 
     target_dir = output_root / folder_name
     backup_dir = output_root / f".{folder_name}.backup"

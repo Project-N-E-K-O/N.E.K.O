@@ -321,3 +321,20 @@ def test_nonportable_archive_member_is_rejected_before_install_and_keeps_old_mod
         unpack_builtin_pngtuber.unpack_model(candidate, packs_root, output)
     assert (target / "model.json").read_bytes() == previous
     assert not (output / ".yui-test.backup").exists()
+
+
+@pytest.mark.parametrize("rehash", [False, True])
+def test_multipart_uppercase_hashes_are_accepted_without_mutating_manifest(tmp_path, rehash):
+    import copy
+    packs, output = tmp_path / "packs", tmp_path / "out"
+    model = _multipart(packs)
+    for part in model["archives"]:
+        part["archive_sha256"] = part["archive_sha256"].upper()
+    if rehash:
+        model["archive_sha256"] = unpack_builtin_pngtuber.parts_fingerprint(model["archives"])
+    model["archive_sha256"] = model["archive_sha256"].upper()
+    before = copy.deepcopy(model)
+    target = unpack_builtin_pngtuber.unpack_model(model, packs, output)
+    unpack_builtin_pngtuber.unpack_model(model, packs, output)
+    assert model == before
+    assert (target / "layers/layer.png").read_bytes() == b"png"

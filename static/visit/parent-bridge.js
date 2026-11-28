@@ -1317,6 +1317,12 @@
       _onFrameMessage: onFrameMessage,
     };
 
+    win.addEventListener('pngtuber-model-loaded', function () {
+      // Read current authoritative state: a cached notification may already be stale.
+      if (state.side === 'guest' && state.visitId && ACTIVE_PHASES[state.phase] && state.away) {
+        notifyReviewedVisit('restored', state.visitId, 'guest', true);
+      }
+    });
     win.addEventListener('message', onFrameMessage);
     win.addEventListener('neko-frame-rate-changed', onFrameRateChanged);
     return bridge;

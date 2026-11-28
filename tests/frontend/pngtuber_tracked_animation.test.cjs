@@ -1106,9 +1106,10 @@ function visitBridgeFixture(throws = false) {
     const sandbox = {};
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../static/visit/parent-bridge.js'), 'utf8'), sandbox);
     const messages = [];
+    const listeners = {};
     const window = {
         location: { origin: 'http://localhost' }, performance: { now: () => 10 },
-        addEventListener() {}, dispatchEvent() {}, console: { warn() {} },
+        addEventListener(type, fn) { (listeners[type] ||= []).push(fn); }, dispatchEvent() {}, console: { warn() {} },
         setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
         pngtuberManager: { handleReviewedVisit(msg) { messages.push(msg); if (throws) throw Error('animation failed'); } }
     };
@@ -1118,7 +1119,7 @@ function visitBridgeFixture(throws = false) {
     const bridge = sandbox.NekoVisitParentBridge.createParentBridge({ window, document });
     const frame = { contentWindow: { postMessage() {} }, style: {}, remove() {} };
     Object.assign(bridge._state, { visitId: 'a', side: 'guest', phase: 'active', frame });
-    return { bridge, frame, messages, window };
+    return { bridge, frame, messages, window, listeners };
 }
 
 test('real parent normal-close fallback notifies once and completes bridge teardown', () => {
@@ -2613,4 +2614,37 @@ test('different-visit recovery invalidates an older decoding departure without r
     assert.equal(m.handleReviewedVisit({action:'ended',side:'guest',visit_id:'new'}),true);await flushReviewed();
     assert.equal(m.layeredStateIndex,6);assert.deepEqual(events,[6]);
     assert.equal(m.handleReviewedVisit({action:'ended',side:'guest',visit_id:'new'}),false);
+});
+
+for(const ended of [false,true]) test(`model readiness restores current guest ownership without resurrecting an ended visit (${ended})`, async t => {
+    const {bridge,window,listeners}=visitBridgeFixture();const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const id='a'.repeat(22);bridge._state.visitId=id;
+    window.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'token'})};
+    window.fetch=async()=>({ok:true,json:async()=>({active:true,visit_id:id,side:'guest',phase:'active'})});
+    window.pngtuberManager=null;assert.equal(await bridge.recoverAfterReload('YUI',10000),true);
+    if(ended)bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:id,side:'guest'});
+    window.pngtuberManager=m;const actions=[];m.requestReviewedState=i=>{actions.push(i);return true};
+    for(const fn of listeners['pngtuber-model-loaded'])fn();
+    assert.equal(m._reviewedVisit,ended?null:id);assert.deepEqual(actions,[]);
+    if(!ended){assert.equal(m.reviewedLeisureEligible({owner:true,busy:false,proactiveEnabled:false}),false);m.handleReviewedVisit({action:'ended',visit_id:id,side:'guest'});assert.deepEqual(actions,[6]);}
+});
+
+for(const touch of [false,true]) test(`detaching listeners cancels a stuck ${touch?'pinch':'drag'} entry and releases playback`, async t => {
+    const {manager:m,window,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    window.removeEventListener=()=>{};m.image=null;m.cancelEdgeSnapAnimation=()=>{};m.setModelDraggingState=()=>{};
+    m._dragListenersAttached=true;const gesture=touch?{changed:true}:{moved:true};
+    if(touch)m._touchZoomState=gesture;else m._dragState=gesture;
+    let finish;m.prepareReviewedEntry=()=>new Promise(resolve=>finish=resolve);m.showDragImage();assert.equal(m._reviewedPreparing,true);
+    m.detachDragListeners();assert.equal(m._reviewedPreparing,false);assert.equal(m._reviewedPreparingDrag,null);
+    finish([{image:{}}]);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+    m.prepareReviewedEntry=async()=>[{image:{}}];m.requestReviewedState(2,{returnToDefaultAfterMs:500});await flushReviewed();
+    advance(601);m.reviewedPlaybackTick(601);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+});
+
+test('loop crossfade retains reviewed state transition for live draws and snapshots', () => {
+    const {manager:m,context}=fixture();const p=m._trackedPlayback;p.data.loop={crossfade_ms:200};p.data.width=720;p.data.height=960;
+    m.layeredMetadata={canvas:{width:720,height:960}};p.data.frames.forEach((_,i)=>p.cache.set(i,{}));
+    const calls=[];m.drawReviewedTransition=(ctx,time,snapshot)=>calls.push({time,snapshot});
+    m.drawTrackedPlayback(context,1850);assert.ok(p.lastSelection.mix>0);assert.deepEqual(calls,[{time:1850,snapshot:false}]);
+    m.drawTrackedPlayback(context,99999,true);assert.deepEqual(calls.at(-1),{time:1850,snapshot:true});
 });

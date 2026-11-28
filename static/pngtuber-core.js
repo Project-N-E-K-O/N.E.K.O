@@ -348,6 +348,8 @@
             window.removeEventListener('pointerup', this._boundDragEnd);
             window.removeEventListener('pointercancel', this._boundDragEnd);
             this._dragListenersAttached = false;
+            this.releaseReviewedDrag(this._dragState);
+            this.releaseReviewedDrag(this._touchZoomState);
             this._dragState = null;
             this._dragSequence += 1;
             this.cancelEdgeSnapAnimation();
@@ -2331,6 +2333,7 @@
                 drawSample(blendImage, data.frames[selection.blendIndex], mix);
             }
             ctx.restore();
+            this.drawReviewedTransition(ctx, snapshot ? (selection.timestamp ?? timestamp) : timestamp, snapshot);
             return true;
         }
 

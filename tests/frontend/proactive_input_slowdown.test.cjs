@@ -30,7 +30,7 @@ function flush() {
     while (queue.length) queue.shift()();
 }
 
-function createWindow(pathname) {
+function createWindow(pathname, {electronFull=false, relayToPet} = {}) {
     const timers = new Map();
     let nextTimer = 1;
     const listeners = { document: {}, window: {} };
@@ -57,7 +57,7 @@ function createWindow(pathname) {
     const document = {
         activeElement: null,
         hasFocus: () => true,
-        body: { classList: { contains: () => false }, getAttribute: () => null },
+        body: { classList: { contains: name => electronFull && name === 'neko-electron-runtime' }, getAttribute: name => electronFull && name === 'data-chat-host-kind' ? 'full' : null },
         addEventListener(type, fn) {
             (listeners.document[type] || (listeners.document[type] = [])).push(fn);
         },
@@ -93,6 +93,7 @@ function createWindow(pathname) {
             });
         },
         BroadcastChannel: FakeBroadcastChannel,
+        nekoTutorialOverlay: { relayToPet },
     };
     window.window = window;
     vm.createContext(window);
@@ -439,4 +440,22 @@ test('reviewed typing broadcasts at most once a second with a trailing peer noti
         clock.now=3_001_050;chat.emit('input',chat.input);flush();assert.equal(broadcasts,2);
         assert.equal(chat.window.getReviewedPNGTuberActivity().inputAt,clock.now);
     } finally {FakeBroadcastChannel.prototype.postMessage=original;}
+});
+
+test('isolated Electron full chat relays throttled typing through native IPC without feedback or proactive requests', () => {
+    channels.length=0;queue.length=0;clock.now=4_000_000;
+    const pet=createWindow('/');pet.appState.proactiveChatEnabled=false;
+    const manager={hasReviewedActions:()=>true,_reviewedIdleSince:1};pet.window.pngtuberManager=manager;
+    let sends=0;const chat=createWindow('/chat_full',{electronFull:true,relayToPet:message=>{sends++;for(const fn of pet.listeners.window['neko:tutorial-overlay-relay']||[])fn({detail:message});}});
+    chat.appState.proactiveChatEnabled=false;assert.equal(channels.length,1,'full chat must not join leader BroadcastChannel');
+    chat.emit('input',chat.input);assert.equal(sends,1);assert.equal(manager._reviewedIdleSince,null);assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);
+    clock.now+=100;chat.emit('input',chat.input);assert.equal(sends,1);
+    const trailing=[...chat.timers.values()].find(timer=>timer.due===4_001_000);assert.ok(trailing);clock.now=4_001_000;trailing.fn();assert.equal(sends,2);
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);assert.equal(pet.appState.proactiveChatTimer,null);assert.equal(chat.appState.proactiveChatTimer,null);
+    const before=pet.window.getReviewedPNGTuberActivity().inputAt;clock.now+=1;
+    for(const fn of pet.listeners.window.message||[])fn({origin:'https://evil.test',data:{__nekoTutorialOverlayRelay:true,payload:{action:'reviewed_input_activity'}}});
+    for(const fn of pet.listeners.window['neko:tutorial-overlay-relay']||[])fn({detail:{action:'reviewed_input_activity',lanlan_name:'other'}});
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,before);
+    for(const fn of pet.listeners.window.message||[])fn({origin:pet.window.location.origin,data:{__nekoTutorialOverlayRelay:true,payload:{action:'reviewed_input_activity'}}});
+    assert.equal(pet.window.getReviewedPNGTuberActivity().inputAt,clock.now);assert.equal(sends,2);
 });
