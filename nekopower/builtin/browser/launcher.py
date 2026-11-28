@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PORT_FILE = "DevToolsActivePort"
 LAUNCH_TIMEOUT_SECONDS = 25.0
+PIPE_PROBE_TIMEOUT_SECONDS = 8.0
 CLOSE_WAIT_SECONDS = 5.0
 # Overrides the search; for a browser installed somewhere unusual.
 EXECUTABLE_ENV = "NEKO_BROWSER_PATH"
@@ -1043,7 +1044,7 @@ def _probe_pipe_ready(process: Any, transport: Any, stop: threading.Event | None
         return False
     buf = bytearray()
     kept = bytearray()
-    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    deadline = time.monotonic() + PIPE_PROBE_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():
             return False

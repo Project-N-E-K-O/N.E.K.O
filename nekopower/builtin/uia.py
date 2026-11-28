@@ -41,6 +41,8 @@ COORDINATE_MAX = 999
 DEFAULT_MAX_DEPTH = 6
 DEFAULT_MAX_NODES = 250
 DEFAULT_WALK_TIMEOUT_SECONDS = 2.5
+DEFAULT_QUERY_TIMEOUT_SECONDS = 3.0
+MAX_RETAINED_SNAPSHOTS = 4
 MAX_NAME_CHARS = 120
 MAX_VALUE_CHARS = 80
 MAX_LISTED_WINDOWS = 10
@@ -340,6 +342,8 @@ class DesktopUiTree:
         self._backend: UiaBackend = backend if backend is not None else WindowsUiaBackend()
         self._generation = 0
         self._latest: UiTreeSnapshot | None = None
+        self._latest_explicit: UiTreeSnapshot | None = None
+        self._snapshots: dict[int, UiTreeSnapshot] = {}
 
     def is_supported(self) -> bool:
         return bool(self._backend.is_supported())
@@ -349,8 +353,10 @@ class DesktopUiTree:
         return self._latest
 
     def invalidate(self) -> None:
-        """Drop any cached UI tree snapshot so stale uids cannot be reused."""
+        """Drop all cached UI tree snapshots so stale uids cannot be reused across tasks."""
         self._latest = None
+        self._latest_explicit = None
+        self._snapshots.clear()
 
     def snapshot(
         self,
@@ -364,8 +370,14 @@ class DesktopUiTree:
         max_nodes: int = DEFAULT_MAX_NODES,
         timeout_seconds: float = DEFAULT_WALK_TIMEOUT_SECONDS,
         cancel_event: threading.Event | None = None,
+        explicit: bool = True,
     ) -> tuple[UiTreeSnapshot, str]:
-        """Capture the UI control tree, store it as the latest snapshot, and render it."""
+        """Capture the UI control tree, retain it for uid resolution, and render it.
+
+        When ``explicit`` is False (best-effort post-action or screenshot snippets),
+        the newly captured controls are retained alongside recent snapshots without
+        clobbering pagination state for the most recent explicit ``ui_tree`` call.
+        """
         from config.nekopower_settings import DESKTOP_UI_TREE_MAX_TOKENS
 
         if cancel_event is not None and cancel_event.is_set():
@@ -378,14 +390,15 @@ class DesktopUiTree:
             offset = 0
         cap = DESKTOP_UI_TREE_MAX_TOKENS if max_tokens is None else max(100, int(max_tokens))
 
-        # Reuse the current snapshot when paginating with offset > 0 and matching window filter.
-        latest_match_title = (
-            (self._latest.full_window_title or self._latest.window_title) if self._latest is not None else ""
+        # Reuse the current explicit snapshot when paginating with offset > 0 and matching window filter.
+        paginate_base = self._latest_explicit if self._latest_explicit is not None else self._latest
+        base_match_title = (
+            (paginate_base.full_window_title or paginate_base.window_title) if paginate_base is not None else ""
         )
-        if offset > 0 and self._latest is not None and (
-            window is None or window.casefold() in latest_match_title.casefold()
+        if offset > 0 and paginate_base is not None and (
+            window is None or window.casefold() in base_match_title.casefold()
         ):
-            snap = self._latest
+            snap = paginate_base
         else:
             title, win_rect, raw_controls, truncated = self._backend.capture_tree(
                 window=window,
@@ -437,6 +450,16 @@ class DesktopUiTree:
                 full_window_title=full_title,
             )
             self._latest = snap
+            if explicit:
+                self._latest_explicit = snap
+            self._snapshots[generation] = snap
+            while len(self._snapshots) > MAX_RETAINED_SNAPSHOTS:
+                oldest = next(iter(self._snapshots))
+                if self._latest_explicit is not None and oldest == self._latest_explicit.generation and len(self._snapshots) > 1:
+                    evict = next(gen for gen in self._snapshots if gen != oldest)
+                    del self._snapshots[evict]
+                else:
+                    del self._snapshots[oldest]
         rendered = self.render(snap, screen_w=screen_w, screen_h=screen_h, offset=offset, max_tokens=cap)
         return snap, rendered
 
@@ -496,14 +519,18 @@ class DesktopUiTree:
         return f"{header}\n{body}"
 
     def resolve(self, uid: str, *, screen_w: int, screen_h: int) -> UiControl:
-        """Look up ``uid`` in the latest snapshot and refresh its bounding rect when possible."""
+        """Look up ``uid`` across recent snapshots and live-verify its bounding rect."""
         snap = self._latest
         if snap is None:
             raise UiaUnavailableError(
                 f"No desktop UI tree snapshot is available for uid={uid!r}. "
                 "Call computer with action ui_tree first."
             )
-        control = snap.by_uid.get(uid)
+        control: UiControl | None = None
+        for candidate in reversed(self._snapshots.values()):
+            control = candidate.by_uid.get(uid)
+            if control is not None:
+                break
         if control is None:
             raise UiaUnavailableError(
                 f"Control uid={uid!r} is not in the latest desktop UI tree (generation {snap.generation}). "
@@ -567,6 +594,13 @@ def _ensure_com_for_thread() -> tuple[Any, Any]:
     try:
         uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
         automation = comtypes.client.CreateObject(_UIA_CLSID, interface=uia_mod.IUIAutomation)
+        try:
+            # Cap COM UIA RPC transaction waits to 2s instead of Windows' 20s default.
+            auto2 = automation.QueryInterface(uia_mod.IUIAutomation2)
+            if auto2:
+                auto2.TransactionTimeout = 2000
+        except Exception:  # noqa: BLE001 - IUIAutomation2 is optional on older systems
+            pass
     except BaseException:
         if com_inited:
             try:
@@ -676,7 +710,14 @@ class WindowsUiaBackend:
         self._executor: Any = None
         self._worker_thread_id: int | None = None
 
-    def _run_on_uia_thread(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    def _run_on_uia_thread(
+        self,
+        fn: Any,
+        *args: Any,
+        cancel_event: threading.Event | None = None,
+        wait_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
         if self._worker_thread_id is not None and threading.get_ident() == self._worker_thread_id:
             return fn(*args, **kwargs)
         with self._exec_lock:
@@ -690,7 +731,23 @@ class WindowsUiaBackend:
             self._worker_thread_id = threading.get_ident()
             return fn(*args, **kwargs)
 
-        return executor.submit(_wrapped).result()
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+
+        future = executor.submit(_wrapped)
+        deadline = (time.monotonic() + wait_timeout) if wait_timeout is not None else None
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("stopped")
+            slice_wait = 0.05
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("UI Automation worker timed out")
+                slice_wait = min(slice_wait, remaining)
+            try:
+                return future.result(timeout=slice_wait)
+            except FutureTimeoutError:
+                continue
 
     def is_supported(self) -> bool:
         if platform.system().lower() != "windows":
@@ -764,14 +821,18 @@ class WindowsUiaBackend:
         timeout_seconds: float = DEFAULT_WALK_TIMEOUT_SECONDS,
         cancel_event: threading.Event | None = None,
     ) -> tuple[str, tuple[int, int, int, int], list[RawControl], int]:
-        return self._run_on_uia_thread(
-            self._capture_tree_on_thread,
-            window=window,
-            max_depth=max_depth,
-            max_nodes=max_nodes,
-            timeout_seconds=timeout_seconds,
-            cancel_event=cancel_event,
-        )
+        try:
+            return self._run_on_uia_thread(
+                self._capture_tree_on_thread,
+                window=window,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+                timeout_seconds=timeout_seconds,
+                cancel_event=cancel_event,
+                wait_timeout=max(1.0, float(timeout_seconds)) + 2.0,
+            )
+        except TimeoutError as exc:
+            raise UiaUnavailableError("UI Automation timed out while inspecting the window.") from exc
 
     def _capture_tree_on_thread(
         self,
@@ -876,7 +937,12 @@ class WindowsUiaBackend:
         return title, win_rect, collected, truncated
 
     def locate(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
-        return self._run_on_uia_thread(self._locate_on_thread, control)
+        try:
+            return self._run_on_uia_thread(
+                self._locate_on_thread, control, wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return None
 
     def _locate_on_thread(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
         if control.hwnd:
@@ -902,7 +968,18 @@ class WindowsUiaBackend:
             return None
 
     def is_point_visible(self, control: UiControl, px: int, py: int) -> bool:
-        return bool(self._run_on_uia_thread(self._is_point_visible_on_thread, control, int(px), int(py)))
+        try:
+            return bool(
+                self._run_on_uia_thread(
+                    self._is_point_visible_on_thread,
+                    control,
+                    int(px),
+                    int(py),
+                    wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
+                )
+            )
+        except TimeoutError:
+            return False
 
     def _is_point_visible_on_thread(self, control: UiControl, px: int, py: int) -> bool:
         import ctypes.wintypes as wintypes
@@ -925,8 +1002,9 @@ class WindowsUiaBackend:
             except Exception:  # noqa: BLE001
                 return False
         try:
-            _, automation = _ensure_com_for_thread()
-            hit = automation.ElementFromPoint(pt)
+            uia_mod, automation = _ensure_com_for_thread()
+            uia_point_cls = getattr(uia_mod, "tagPOINT", wintypes.POINT)
+            hit = automation.ElementFromPoint(uia_point_cls(px, py))
             if not hit:
                 return False
             if automation.CompareElements(hit, el):
@@ -951,7 +1029,14 @@ class WindowsUiaBackend:
             return False
 
     def is_focused(self, control: UiControl) -> bool:
-        return bool(self._run_on_uia_thread(self._is_focused_on_thread, control))
+        try:
+            return bool(
+                self._run_on_uia_thread(
+                    self._is_focused_on_thread, control, wait_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS
+                )
+            )
+        except TimeoutError:
+            return False
 
     def _is_focused_on_thread(self, control: UiControl) -> bool:
         el = control.element

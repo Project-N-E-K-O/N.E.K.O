@@ -1760,3 +1760,14 @@ async def test_drag_interrupted_by_dialog_reports_failure(
     assert not dragged.success
     assert "drag could complete" in dragged.text
     assert "Pause drag?" in dragged.text
+
+
+async def test_first_new_page_for_owner_does_not_leave_extra_blank_tab(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-a")).success
+    assert len(world.browser.pages) == 1
+    opened = await tools.call(TOOL_PREFIX + "new_page", {"url": TERMS}, owner="team-b")
+    assert opened.success and 'heading "Terms of sale"' in opened.text
+    # Only team-a's tab and team-b's target tab exist (no stray about:blank tab created for team-b).
+    assert len(world.browser.pages) == 2

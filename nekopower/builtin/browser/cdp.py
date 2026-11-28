@@ -232,7 +232,8 @@ class PipeTransport:
                         self._write_handle, part, len(part), ctypes.byref(written), None
                     )
                     if not ok or written.value == 0:
-                        raise BrokenPipeError(f"pipe write failed (error {ctypes.get_last_error()})")
+                        err = ctypes.get_last_error() if hasattr(ctypes, "get_last_error") else 0
+                        raise BrokenPipeError(f"pipe write failed (error {err})")
                     offset += written.value
             else:
                 import selectors

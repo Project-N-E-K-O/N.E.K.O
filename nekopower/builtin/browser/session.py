@@ -1539,9 +1539,6 @@ class BrowserSession:
                 page.snapshot = None
                 page.known_uids.clear()
                 page.owner = None
-            elif page.owner is None:
-                page.snapshot = None
-                page.known_uids.clear()
         for tid, recorded_owner in list(self._tab_owners.items()):
             if recorded_owner == owner:
                 del self._tab_owners[tid]
@@ -2759,7 +2756,9 @@ class BrowserSession:
         except CdpError:
             logger.debug("Input.setInterceptDrags is not available", exc_info=True)
         pressed = False
-        completed = False
+        html5_dropped = False
+        reached_target = False
+        released = False
         last_x, last_y = sx, sy
         try:
             try:
@@ -2794,24 +2793,25 @@ class BrowserSession:
                                     )
                                 ):
                                     last_x, last_y = ex, ey
-                                    completed = True
+                                    html5_dropped = True
                                 break
                         else:
-                            completed = True
+                            reached_target = True
             finally:
                 if pressed:
-                    async def release_drag() -> None:
-                        await self._mouse(
+                    async def release_drag() -> bool:
+                        return await self._mouse(
                             page, "mouseReleased", last_x, last_y, session_id=sid, button="left", buttons=0, clickCount=1
                         )
 
-                    await asyncio.shield(release_drag())
+                    released = await asyncio.shield(release_drag())
         finally:
             if intercepted_on:
                 try:
                     await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=5.0)
                 except (BrowserError, CdpError):
                     pass
+        completed = html5_dropped or (reached_target and released)
         if not completed:
             if page.dialog is not None:
                 raise BrowserError(

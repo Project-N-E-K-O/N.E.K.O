@@ -1029,6 +1029,75 @@ def test_uia_pagination_respects_cancel_event_full_title_and_token_budget(monkey
         tree.snapshot(1920, 1080, window="UniqueTailMarker", offset=next_offset, cancel_event=stop)
 
 
+def test_uid_from_explicit_ui_tree_survives_post_action_snippet_and_pagination(monkeypatch: Any) -> None:
+    import config.nekopower_settings as settings
+    from nekopower.builtin.uia import RawControl
+
+    fake = FakeUiaBackend(title="Settings")
+    fake.controls = [
+        RawControl("window", "Settings", 0, (0, 0, 1920, 1080)),
+        RawControl("edit", "Search", 1, (100, 100, 500, 140)),
+        RawControl("button", "Apply", 1, (600, 100, 720, 140)),
+    ] + [
+        RawControl("button", f"Extra setting {i}", 1, (100, 200 + i * 20, 400, 218 + i * 20)) for i in range(25)
+    ]
+    rig, _ = _uia_rig(monkeypatch, fake)
+    monkeypatch.setattr(settings, "DESKTOP_UI_TREE_MAX_TOKENS", 180)
+
+    first = rig.act("ui_tree", {"window": "Settings"})
+    assert "uid=1_1" in first.text and "uid=1_2" in first.text and "offset=" in first.text
+    next_offset = int(first.text.split("offset=", 1)[1].split(" ", 1)[0])
+
+    # Clicking uid=1_2 captures a best-effort post-action snippet (gen 2), but uid=1_1 from gen 1
+    # remains valid for the next step (live-verified via locate + is_point_visible).
+    rig.act("click", {"uid": "1_2"})
+    typed = rig.act("type", {"uid": "1_1", "text": "proxy"})
+    assert 'Typed 5 character(s) into control uid=1_1 (edit "Search").' in typed.text
+
+    # An intervening screenshot snippet does not clobber pagination of the explicit Settings snapshot.
+    captures_before = len(fake.capture_calls)
+    rig.act("screenshot", {})
+    assert len(fake.capture_calls) == captures_before + 1
+    page2 = rig.act("ui_tree", {"window": "Settings", "offset": next_offset})
+    assert f"Showing controls {next_offset + 1}-" in page2.text
+    assert len(fake.capture_calls) == captures_before + 1
+
+
+def test_windows_uia_is_point_visible_passes_uia_mod_tagpoint_to_element_from_point(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+    from nekopower.builtin import uia as uia_module
+    from nekopower.builtin.uia import UiControl, WindowsUiaBackend
+
+    class _FakeTagPoint:
+        def __init__(self, x: int, y: int) -> None:
+            self.x = x
+            self.y = y
+
+    seen: list[Any] = []
+    target_el = object()
+
+    class _FakeAuto:
+        ControlViewWalker = SimpleNamespace(GetParentElement=lambda el: None)
+
+        def ElementFromPoint(self, pt: Any) -> Any:  # noqa: N802
+            seen.append(pt)
+            assert isinstance(pt, _FakeTagPoint)
+            return target_el
+
+        def CompareElements(self, a: Any, b: Any) -> bool:  # noqa: N802
+            return a is b
+
+    monkeypatch.setattr(
+        uia_module,
+        "_ensure_com_for_thread",
+        lambda: (SimpleNamespace(tagPOINT=_FakeTagPoint), _FakeAuto()),
+    )
+    backend = WindowsUiaBackend()
+    ctrl = UiControl("1_1", "button", "OK", 1, (10, 10, 50, 30), (30, 20), (15, 18), element=target_el, hwnd=0)
+    assert backend.is_point_visible(ctrl, 30, 20) is True
+    assert len(seen) == 1 and (seen[0].x, seen[0].y) == (30, 20)
+
+
 def test_ui_tree_respects_cancellation(monkeypatch: Any) -> None:
     rig, _ = _uia_rig(monkeypatch)
     cancel = threading.Event()

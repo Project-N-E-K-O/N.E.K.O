@@ -766,6 +766,7 @@ class Desktop:
                 gui._h,
                 max_tokens=DESKTOP_SCREENSHOT_UI_TREE_MAX_TOKENS,
                 cancel_event=cancel_event,
+                explicit=False,
             )
             return rendered
         except InterruptedError:

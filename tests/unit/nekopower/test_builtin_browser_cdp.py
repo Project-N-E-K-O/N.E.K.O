@@ -629,6 +629,7 @@ async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial
 
 
 def test_pipe_transport_close_interrupts_blocked_write_without_deadlock(monkeypatch: Any) -> None:
+    import ctypes
     import threading
     import time
     from nekopower.builtin.browser import cdp as cdp_module
@@ -655,6 +656,7 @@ def test_pipe_transport_close_interrupts_blocked_write_without_deadlock(monkeypa
             return 1
 
     monkeypatch.setattr(cdp_module, "_win32_pipe_api", lambda: _FakeKernel32())
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 995, raising=False)
     transport = PipeTransport(101, 102, is_win32_handle=True)
 
     def blocked_writer() -> None:

@@ -242,7 +242,8 @@ class BrowserTools:
                             return BuiltinOutcome(False, CLOSED_BY_USER)
                         try:
                             await self._session.start()
-                            await self._session.ensure_owner_page(owner)
+                            if not (tool_name == TOOL_PREFIX + "new_page" and owner is not None):
+                                await self._session.ensure_owner_page(owner)
                         finally:
                             self._session.reopening_over()
                     outcome = await handler(arguments, owner)
