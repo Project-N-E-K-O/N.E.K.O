@@ -1294,6 +1294,9 @@ async def ensure_tool_runtime(
                 cancel=cancel, deadline=deadline, progress=progress, prefer_system_uv=prefer_system_uv,
             )
         except BaseException as exc:
+            # Everything is handed to the awaiting task, as concurrent.futures
+            # does: anything left uncaught would end this thread silently and
+            # leave the caller awaiting a future nothing settles.
             error = exc
         try:
             loop.call_soon_threadsafe(settle, result, error)
