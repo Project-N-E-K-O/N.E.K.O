@@ -32,7 +32,6 @@ from .pack_files import retain_revision as _retain_revision
 from .jobs import ACTIVE_JOB_STATES, TERMINAL_JOB_STATES, ImportJob, consume_task_result as _consume
 from typing import TypeVar
 
-from . import service as _svc
 
 _T = TypeVar("_T")
 
@@ -118,6 +117,7 @@ class _KnowledgeJobsMixin:
 
     def _job_capacity_reached(self) -> bool:
         """Use one admission budget for imports and exports, including reservations."""
+        from . import service as _svc
         return self._admission_count() >= _svc.MAX_PENDING_IMPORTS
 
     def _export_admission_record(self, pack_id: str) -> PackRecord:
@@ -167,6 +167,7 @@ class _KnowledgeJobsMixin:
 
     def import_busy(self) -> bool:
         """Whether a new import would be refused for lack of room right now."""
+        from . import service as _svc
         return (
             self._job_capacity_reached()
             or self._parsing >= _svc.MAX_PENDING_IMPORTS
@@ -183,6 +184,7 @@ class _KnowledgeJobsMixin:
         subscription: KnowledgeSubscription | None = None,
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from . import service as _svc
         if subscription is not None:
             # The market published these exact bytes; anything else is not
             # the artifact the subscription names.
@@ -279,6 +281,7 @@ class _KnowledgeJobsMixin:
         subscription: KnowledgeSubscription | None = None,
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from . import service as _svc
         if self._pending_chunk_reconcile:
             return {"ok": False, "reason": "knowledge_busy"}
         registry = self._registry
@@ -309,6 +312,7 @@ class _KnowledgeJobsMixin:
         # Staged files are counted from their jobs, or from the reservation of
         # an admission that has not written one yet; taken together with the
         # set of active jobs the disk scan leaves out.
+        from . import service as _svc
         active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
         staged_bytes = sum(job.staged_bytes for job in active) + sum(
             size for pack_id, size in self._admitting.items() if pack_id != pack.pack_id
@@ -407,6 +411,7 @@ class _KnowledgeJobsMixin:
         **kwargs: Any,
     ) -> _T:
         """Run an import request's thread work; its slot stays held until it ends."""
+        from . import service as _svc
         if self._parse_pool is None:
             self._parse_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=_svc.MAX_PENDING_IMPORTS, thread_name_prefix="knowledge-parse"
@@ -461,6 +466,7 @@ class _KnowledgeJobsMixin:
             self._thread_work.discard(future)
 
     def _prepare_import(self, raw: bytes, *, seed_vectors: Sequence[Mapping] = ()) -> tuple[KnowledgePack, bytes, int]:
+        from . import service as _svc
         pack = decode_pack_bytes(raw)
         return pack, _svc.canonical_pack_bytes(pack), _svc._count_admitted_chunks(pack, fit=self._chunk_fit(), seed_vectors=seed_vectors)
 
@@ -475,6 +481,7 @@ class _KnowledgeJobsMixin:
         return lambda text: bool((sizes := count([text])) and sizes[0] <= spec["max_length"])
 
     def _raw_file_intact(self, record: PackRecord) -> bool:
+        from . import service as _svc
         try:
             raw = _svc._read_bounded(self.root / PACKS_DIR / record.file_name)
             return pack_sha256(raw) == record.pack_sha256
@@ -482,6 +489,7 @@ class _KnowledgeJobsMixin:
             return False
 
     def _active_job_files(self) -> frozenset[str]:
+        from . import service as _svc
         return _svc._job_files(
             [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES], installing=None
         )
@@ -495,6 +503,7 @@ class _KnowledgeJobsMixin:
         failed, or a write interrupted before the registry commit) is kept but
         no longer startup-cleaned, so it must not consume the budget forever.
         """
+        from . import service as _svc
         record = self._registry.packs.get(replacing)
         skip = record.file_name if record is not None else None
         current = {item.file_name for item in self._registry.packs.values()}
@@ -519,6 +528,7 @@ class _KnowledgeJobsMixin:
         return total
 
     def _staging_path(self, job_id: str) -> Path:
+        from . import service as _svc
         return self.root / _svc.STAGING_DIR / f"{job_id}.json"
 
     @staticmethod
@@ -528,6 +538,7 @@ class _KnowledgeJobsMixin:
         return job.kind == "pack_export" and job.state == "active" and bool(job.result)
 
     def _remember_job(self, job: ImportJob) -> None:
+        from . import service as _svc
         self._jobs[job.job_id] = job
         # Imports and exports keep separate bounded windows from admission
         # on, so a queued export can never evict a retryable failed import.
@@ -608,6 +619,7 @@ class _KnowledgeJobsMixin:
 
     def _archive_referenced_blocking(self, artifact_id: str, records: list[dict], *, exclude_job_id: str = "") -> bool:
         """Honor current installs and retained task history under mutation/persist locks."""
+        from . import service as _svc
         def references(value):
             return (value.get("archive_sha256") == artifact_id
                     or isinstance(value.get("result"), dict) and value["result"].get("artifact_id") == artifact_id)
@@ -634,6 +646,7 @@ class _KnowledgeJobsMixin:
 
     async def retry_job(self, job_id: str) -> dict[str, Any]:
         """Retry the original frozen source selection, never today's document set."""
+        from . import service as _svc
         job = self._jobs.get(job_id)
         if job is None or job.state not in {"failed", "cancelled"}:
             raise KnowledgePackError("job_not_retryable")
@@ -665,6 +678,7 @@ class _KnowledgeJobsMixin:
         return await self.import_pack(raw, subscription=job.subscription, _options=options, _arrived_at=arrived_at)
 
     def _finish_job(self, job: ImportJob, state: str, reason: str = "") -> None:
+        from . import service as _svc
         job.state = state
         job.reason = reason
         job.updated_at = _svc.utc_now()
@@ -674,12 +688,14 @@ class _KnowledgeJobsMixin:
 
     async def _discard_staging(self, job_id: str) -> None:
         """Best effort: a staged file that cannot go now is removed at the next start."""
+        from . import service as _svc
         try:
             await self._thread(self._staging_path(job_id).unlink, missing_ok=True)
         except OSError:
             _svc.logger.warning("[Knowledge] could not delete staged file of job %s", job_id)
 
     async def _job_loop(self) -> None:
+        from . import service as _svc
         while not self._stopping:
             while not self._job_queue:
                 self._job_queued.clear()
@@ -802,6 +818,7 @@ class _KnowledgeJobsMixin:
         must still run only after pack/entry/chunk limits pass. Constants stay
         in this module so admission and commit use the same runtime limits.
         """
+        from . import service as _svc
         if chunks > _svc.MAX_CHUNKS_PER_PACK:
             raise KnowledgePackError("too_many_chunks")
         # Admission checked capacity without the lock; two imports racing
@@ -817,6 +834,7 @@ class _KnowledgeJobsMixin:
             raise KnowledgePackError("capacity_bytes")
 
     async def _commit_job(self, job: ImportJob) -> None:
+        from . import service as _svc
         if self._superseded(job):
             raise InterruptedError("cancelled")
         previous = self._registry.packs.get(job.pack_id)
@@ -913,6 +931,7 @@ class _KnowledgeJobsMixin:
             await self._persist_job(job)
 
     def _restore_index_blocking(self, pack_id: str, previous: PackRecord | None) -> None:
+        from . import service as _svc
         try:
             if previous is None:
                 self._store.delete_pack(pack_id)

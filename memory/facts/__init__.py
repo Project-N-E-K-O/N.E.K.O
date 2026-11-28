@@ -22,8 +22,15 @@ Facts are indexed in TimeIndexedMemory's FTS5 table for later retrieval.
 Split into semantic domain mixins matching ``memory/persona/`` and
 ``memory/reflection/``: persistence, forget_archive, speaker_trust,
 formatting, extraction, write_pipeline, signals, external_import,
-recheck_manual. All original top-level names are re-exported here and
-test-patched facade attributes are read late-bound by every submodule.
+recheck_manual. All original top-level names are re-exported here.
+
+Patch contract: tests monkeypatch ``memory.facts.<attr>`` directly (including
+``EXTERNAL_IMPORT_*``, ``FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS``,
+``SCOPED_HISTORY_*``, ``assert_cloudsave_writable``, ``asyncio``,
+``atomic_write_json``, ``get_config_manager``, ``get_*_prompt``,
+``get_global_language_full``, ``logger``). Submodules read all such symbols
+late-bound via ``from memory import facts as _facts_facade`` rather than
+from-importing snapshots.
 """
 # ruff: noqa: F401
 from __future__ import annotations

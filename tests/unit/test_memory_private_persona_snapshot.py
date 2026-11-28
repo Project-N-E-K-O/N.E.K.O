@@ -204,3 +204,25 @@ async def test_strict_cold_read_rejects_malformed_containers_before_migration(tm
     manager._async_sync_character_card.assert_not_awaited()
     manager.asave_persona.assert_not_awaited()
     assert path.read_text(encoding='utf-8') == contents
+
+
+def test_import_progress_route_takes_precedence_over_persona_snapshot():
+    """Ensure ``GET /internal/memory/import_progress/persona`` resolves to
+    ``get_import_progress`` rather than ``/internal/memory/{lanlan_name}/persona``."""
+    from starlette.routing import Match
+
+    from app.memory_server import routes
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/internal/memory/import_progress/persona",
+        "headers": [],
+    }
+    matched_endpoint = None
+    for route in routes.runtime.app.router.routes:
+        match, _ = route.matches(scope)
+        if match == Match.FULL:
+            matched_endpoint = getattr(route, "endpoint", None)
+            break
+    assert matched_endpoint is routes.get_import_progress

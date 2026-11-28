@@ -571,7 +571,7 @@ def _trust_response_block(parsed: dict, result, outcome) -> dict:
     | failed / lost  | —                 | retain (unchanged)   |
 
     ``false`` has to reach the plugin because at-least-once delivery of owner
-    signals depends on it: the replay ring in ``memory/facts.py`` is gated on
+    signals depends on it: the replay ring in ``memory/facts/speaker_trust.py`` is gated on
     ``observation_id``, which is a hash of one of the CURRENT request's owner
     messages — retry semantics, not time semantics. Always answering 200 and
     letting the caller pop would break that chain, and one disk hiccup would

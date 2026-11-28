@@ -30,7 +30,6 @@ from .indexing import _ReplanInputRefusal, _ReplanLimitRefusal
 from .jobs import consume_task_result as _consume
 from typing import TypeVar
 
-from . import service as _svc
 
 _T = TypeVar("_T")
 
@@ -117,6 +116,7 @@ class _KnowledgeVectorsMixin:
         the replan; a pack whose rows were replaced meanwhile (for example by
         a newly installed revision with seeded vectors) is left untouched.
         """
+        from . import service as _svc
         async def run():
             def rebuild():
                 targets = list(pack_ids)
@@ -213,6 +213,7 @@ class _KnowledgeVectorsMixin:
 
     def _reconcile_chunk_counts_blocking(self) -> None:
         """Repair a failed replan flush under the existing mutation lock."""
+        from . import service as _svc
         if not self._pending_chunk_reconcile:
             return
         counts = self._store.chunk_stats(None)
@@ -303,6 +304,7 @@ class _KnowledgeVectorsMixin:
         Releasing the slot only when that work ends keeps the number of
         running scans at ``QUERY_CONCURRENCY``, whatever the budgets.
         """
+        from . import service as _svc
         await self._query_slots.acquire()
         work: list[concurrent.futures.Future[Any]] = []
         token = _svc._QUERY_WORK.set(work)
@@ -329,6 +331,7 @@ class _KnowledgeVectorsMixin:
 
     async def _query_thread(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """Run query work in a thread that the query's slot stays tied to."""
+        from . import service as _svc
         work = _svc._QUERY_WORK.get()
         if work is None:
             return await self._thread(fn, *args, **kwargs)
@@ -366,6 +369,7 @@ class _KnowledgeVectorsMixin:
     async def list_entries(
         self, *, query: str = "", pack_id: str = "", limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
+        from . import service as _svc
         self._require_ready()
         if pack_id and not pack_id_is_valid(pack_id):
             raise _svc.KnowledgeUnavailable("invalid_request")
@@ -405,6 +409,7 @@ class _KnowledgeVectorsMixin:
         }
 
     async def get_entry(self, pack_id: str, title: str) -> dict[str, Any]:
+        from . import service as _svc
         self._require_ready()
         if not pack_id_is_valid(pack_id):
             raise _svc.KnowledgeUnavailable("invalid_request")
@@ -520,6 +525,7 @@ class _KnowledgeVectorsMixin:
         return "building"
 
     async def status(self) -> dict[str, Any]:
+        from . import service as _svc
         base: dict[str, Any] = {
             "state": self._state,
             "error_code": self._error_code,

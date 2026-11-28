@@ -25,6 +25,16 @@ URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``)
 See ``main_routers/characters_router.py`` docstring or ``.agent/rules/neko-guide.md``
 (API URLs omit trailing slashes) for the rationale; enforced by
 ``scripts/check_api_trailing_slash.py``.
+
+Patch contract: tests monkeypatch ``main_routers.memory_router.<attr>`` directly
+(including ``MAX_TOTAL_BYTES``, ``_memory_toggle_write_lock``,
+``_load_memory_toggle_enabled``, ``_parse_and_validate_browser_post``,
+``_prepare_external_import``, ``_proxy_memory_browser``,
+``_read_recent_browser_snapshot``, ``_resolve_memory_character``,
+``_validate_browser_character_or_400``, ``_write_recent_browser_payload``,
+``assert_cloudsave_writable``, ``capture_recent_generation``,
+``character_memory_exists``). Submodules read these late-bound via
+``from main_routers import memory_router as _mr``.
 """
 
 # ruff: noqa: F401

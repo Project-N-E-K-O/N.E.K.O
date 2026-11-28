@@ -96,10 +96,10 @@ def test_memory_router_route_inventory_has_expected_routes_without_trailing_slas
 
 @pytest.mark.parametrize("doc_path", MEMORY_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
 def test_memory_docs_mirrors_document_all_memory_router_routes(doc_path: Path):
-    """Assert documented routes exist in `main_routers/memory_router.py` and stay synchronized across mirrors."""
+    """Assert documented routes exist in `main_routers/memory_router/` and stay synchronized across mirrors."""
     router_routes = set(_extract_memory_router_routes())
     assert not (DOCUMENTED_MEMORY_ROUTES - router_routes), (
-        f"Baseline routes missing from memory_router.py: {sorted(DOCUMENTED_MEMORY_ROUTES - router_routes)}"
+        f"Baseline routes missing from main_routers/memory_router/: {sorted(DOCUMENTED_MEMORY_ROUTES - router_routes)}"
     )
 
     text = doc_path.read_text(encoding="utf-8")

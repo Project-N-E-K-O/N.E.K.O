@@ -283,7 +283,7 @@ class SignalsMixin:
 
         # Phase D: enable thinking for Stage-2 signal detection:
         # judge new_fact × existing_observation relations and select target_id.
-        # Existing defenses [memory/facts.py:670-708](memory/facts.py:670) already compensate
+        # Existing defenses in ``memory/facts/signals.py`` already compensate
         # for LLM hallucinations; thinking reduces target_id mismatch. Entirely background (signal extraction
         # loop), nobody waits. Raise timeout to 90s for thinking headroom.
         # Prompt-leading reasoning limits bound thinking (#3319: unconstrained qwen3.8-flash

@@ -36,6 +36,15 @@ Failure isolation: nothing here touches memory data, and every public coroutine
 turns unexpected exceptions into a result value. Background loops log and
 continue; a broken knowledge root leaves the subsystem ``unavailable`` while
 the rest of the Memory Server carries on.
+
+Patch contract: domain mixins (``_service_packs``, ``_service_jobs``,
+``_service_vectors``) resolve patchable module-level symbols (e.g.
+``KnowledgeStore``, ``MAX_*``, ``STATUS_SOURCES``, ``WRITE_LOCK_TIMEOUT_SECONDS``,
+``_read_bounded``, ``atomic_write_bytes``, ``atomic_write_json``,
+``canonical_pack_bytes``, ``logger``, ``save_registry``, ``shutil``, ``utc_now``)
+late-bound via a function-local ``from . import service as _svc`` so tests can
+monkeypatch ``services.knowledge.service.<attr>`` directly and each mixin can
+still be imported standalone without circular-import errors.
 """
 # ruff: noqa: F401
 

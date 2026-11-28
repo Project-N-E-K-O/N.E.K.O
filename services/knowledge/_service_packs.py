@@ -41,10 +41,10 @@ from .importing.projection import project_pack
 from .pack_files import retain_revision as _retain_revision
 from .jobs import ACTIVE_JOB_STATES, ImportJob, consume_task_result as _consume
 
-from . import service as _svc
 
 class _KnowledgePacksMixin:
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
+        from . import service as _svc
         async def run() -> None:
             registry = replace(self._registry, enabled=bool(enabled))
             await self._thread(_svc.save_registry, self.root, registry)
@@ -62,6 +62,7 @@ class _KnowledgePacksMixin:
         self, pack_id: str, enabled: bool, *, expected_pack_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Gate all retrieval while preserving the pack and its vector policy."""
+        from . import service as _svc
         async def run() -> tuple[PackRecord, int]:
             record = self._registry.packs.get(pack_id)
             if record is None:
@@ -84,6 +85,7 @@ class _KnowledgePacksMixin:
                 "policy_revision": {"epoch": self._policy_epoch, "counter": counter}}
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
+        from . import service as _svc
         async def run() -> PackRecord:
             record = await self._apply_record_update(pack_id, local_embedding=bool(enabled))
             if enabled:
@@ -103,6 +105,7 @@ class _KnowledgePacksMixin:
         return {"pack_id": pack_id, "local_embedding": record.local_embedding}
 
     async def set_pack_material_type(self, pack_id: str, material_type: str | None) -> dict[str, Any]:
+        from . import service as _svc
         if material_type is not None and material_type not in MATERIAL_TYPES:
             raise _svc.KnowledgeUnavailable("invalid_request")
         record = await self._update_record(pack_id, material_type_override=material_type)
@@ -113,6 +116,7 @@ class _KnowledgePacksMixin:
         }
 
     async def set_entry_disabled(self, pack_id: str, title: str, disabled: bool) -> dict[str, Any]:
+        from . import service as _svc
         async def run() -> dict[str, Any]:
             record = self._registry.packs.get(pack_id)
             if record is None:
@@ -147,6 +151,7 @@ class _KnowledgePacksMixin:
         # may be holding the lock this removal waits for); once it succeeds,
         # every import that arrived before it stands down. Imports that
         # arrived after it are left alone: they are the newer request.
+        from . import service as _svc
         if pack_id not in self._registry.packs:
             # Not installed (a first import may still be building): there is
             # nothing this removal could commit, so it must not make that
@@ -197,6 +202,7 @@ class _KnowledgePacksMixin:
         return {**result, "removed": not result.get("kept")}
 
     def _check_unsubscribe_target(self, pack_id: str, identity: tuple[str, str, str]) -> None:
+        from . import service as _svc
         record = self._registry.packs.get(pack_id)
         if record is not None and (record.subscription is None or record.subscription.identity != identity):
             raise _svc.KnowledgeUnavailable("subscription_identity_mismatch")
@@ -234,6 +240,7 @@ class _KnowledgePacksMixin:
         """
         # Last-source removal already waited for its initial selection lock;
         # taking another number here would overtake imports that arrived later.
+        from . import service as _svc
         my_seq = self._reserve_arrival() if arrived_at is None else arrived_at
         removal = (my_seq, releases)
         self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {removal}
@@ -334,6 +341,7 @@ class _KnowledgePacksMixin:
 
     def _removal_pending_over(self, job: ImportJob) -> bool:
         """Whether a removal still waiting, that arrived after this import, covers it."""
+        from . import service as _svc
         return any(
             seq > job.arrived_at and _svc._covers(releases, job.subscription)
             for seq, releases in self._pending_removals.get(job.pack_id, ())
@@ -381,6 +389,7 @@ class _KnowledgePacksMixin:
 
     def _source_pack(self, pack_id: str) -> KnowledgePack | None:
         """Read the active source projection, never an uncommitted sidecar."""
+        from . import service as _svc
         record = self._registry.packs.get(pack_id)
         if record is None:
             return None
@@ -395,6 +404,7 @@ class _KnowledgePacksMixin:
 
     def _source_documents(self, pack: KnowledgePack, pack_id: str) -> list[dict]:
         """Validate source authority before returning the exact frozen selection."""
+        from . import service as _svc
         documents = self._sources.documents(pack, pack_id)
         projection = project_pack(pack_id, pack.source.name, documents)
         expected = parse_pack(json.loads(_svc.canonical_pack_bytes(projection)))
@@ -453,6 +463,7 @@ class _KnowledgePacksMixin:
         arrived_at: int | None = None,
     ) -> dict[str, Any]:
         """Send a source projection through the one existing import runner."""
+        from . import service as _svc
         pack = await self._thread(project_pack, pack_id, name, documents)
         # v1 validation is reused before staging; no source-specific bypass of
         # entry, chunk or total pack budgets is admitted.
@@ -508,6 +519,7 @@ class _KnowledgePacksMixin:
     async def remove_source(self, pack_id: str, doc_id: str) -> dict[str, Any]:
         """Remove an active selection without deleting its original or history."""
         # Both a projection and last-source removal retain the original order.
+        from . import service as _svc
         arrived_at = self._reserve_arrival()
         async def selection() -> list[dict]:
             pack = await self._thread(self._source_pack, pack_id)
@@ -587,6 +599,7 @@ class _KnowledgePacksMixin:
         arrived_at: int, parse_work: list[concurrent.futures.Future[Any]],
     ) -> dict:
         """Validate ZIP files off-loop and keep their exact bytes for recovery."""
+        from . import service as _svc
         from .archive import read_archive
 
         async def clean_input(path, running):
