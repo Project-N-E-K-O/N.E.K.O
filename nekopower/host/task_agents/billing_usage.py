@@ -66,7 +66,7 @@ class BillingUsageMixin:
         puts the head of its requests together anew, for the preset it
         has then, and tells it of the change (``_start``). The model it
         is sent to is settled anew, by the preset it has now
-        (``_settle_model_anew``): from its next start too.
+        (``_model_as``), written with the preset: from its next start too.
 
         To a preset that can change files from one that cannot
         (``Template.changes_files``), the user is asked first as for a
@@ -145,9 +145,13 @@ class BillingUsageMixin:
             in_project = bool(kept.project) and kept.project != DEFAULT_PROJECT
             # (Not by itself: one whose preset cannot be read counts as one that changes files.)
             seat = await self.seat_of_new_member(str(kept.project), but=kept.id) if widens and in_project else ""
+        # Where it is sent from its next start, by the preset it is given: chosen before that is
+        # written and written with it, so that a start that reads its row meanwhile reads the
+        # preset and the model of one and the same.
+        model = await self._model_as(kept, preset)
         # (Its worktrees are looked for once more as it is written: one may have been made since.)
         changed, was, _on = await self._ledger.change_preset(
-            kept.id, preset, by=by, was=kept.preset, seat=seat, without_trees=reads
+            kept.id, preset, by=by, was=kept.preset, seat=seat, without_trees=reads, model=model
         )
         if changed is None:
             raise LookupError(session_id)
@@ -157,8 +161,6 @@ class BillingUsageMixin:
             # over it counts as one that writes there (``_works_in_tree``), and whoever waits
             # for it goes on waiting.
             self._direct_now.add(kept.id)
-        # Where it is sent from its next start: by the preset it has now.
-        await self._settle_model_anew(changed)
         # Whether it changes files in its project is looked at again: one that does no more is
         # waited for no longer (a run of it under way keeps what it was opened with, and is
         # looked at when it is over), and what waited for it may start.
@@ -395,29 +397,32 @@ class BillingUsageMixin:
         choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
         return choice.config
 
-    async def _settle_model_anew(self, kept: Session) -> None:
-        """Settle the model of a session whose preset was changed, by the preset it has now.
+    async def _model_as(self, kept: Session, preset: str) -> dict[str, Any]:
+        """Return which model a session is sent to as another preset, as its row says it (``Choice.columns``).
 
         As for one that is just made of that preset: its setting, else
         its default, which may be to follow the session that started it
-        or the lead of its project (``_choose_model``). Written on its
-        row in place of what it was settled on; a run under way goes on
-        with the model it was opened with, and the next start is sent to
-        this one. Where none can be told just now (the settings cannot
-        be read, no model is configured there), it stays where it was.
-        (Nothing sets the model of one session by hand yet; one that
-        was so set would keep it here.)
+        or the lead of its project (``_choose_model``). Whoever gives it
+        the preset writes this with it (``Ledger.change_preset``), in
+        place of what it was settled on; a run under way goes on with
+        the model it was opened with, and the next start is sent to this
+        one. Empty where it stays where it was: it is sent there
+        already, or none can be told just now (the settings cannot be
+        read, no model is configured there). (Nothing sets the model of
+        one session by hand yet; one that was so set would keep it
+        here.)
         """
         from nekopower.host.role_models import same_as_kept
 
         try:
-            choice = await self._choose_model(kept, record=True, depth=0)
+            choice = await self._choose_model(dataclasses.replace(kept, preset=preset), record=True, depth=0)
             if choice.ident and not same_as_kept(kept, choice):
-                await self._ledger.keep_model(kept.id, kept.preset, **choice.columns())
+                return dict(choice.columns())
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it goes on with the model it has
-            logger.warning("settling the model of session %s anew, by its new preset, failed", kept.id, exc_info=True)
+            logger.warning("choosing the model of session %s as another preset failed", kept.id, exc_info=True)
+        return {}
 
     async def settle_model(self, session: Session) -> None:
         """Settle the model of a session that was just made (``session_model``), unless it is settled.

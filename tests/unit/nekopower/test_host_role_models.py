@@ -2583,6 +2583,37 @@ async def test_a_session_given_another_preset_while_it_is_started_is_sent_to_tha
     assert (kept.preset, kept.preset_told, kept.model_name) == ("scout", "scout", "own-model")
 
 
+async def test_a_session_given_another_preset_has_that_presets_model_on_its_row_as_soon_as_it_has_the_preset(
+    hosts, tmp_path, monkeypatch
+):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert (await host.ledger.get_session(member)).model_name == "agent-model"
+    change = host.ledger.change_preset
+    read: list[tuple[str, str, str]] = []
+
+    async def changing(*args: Any, **kwargs: Any) -> Any:
+        done = await change(*args, **kwargs)
+        # What a start that is under way reads, the moment the preset is on the row.
+        kept = await host.ledger.get_session(member)
+        read.append((kept.preset, kept.model_slot, kept.model_name))
+        return done
+
+    monkeypatch.setattr(host.ledger, "change_preset", changing)
+    await host.change_duty(member, "scout")
+
+    # The preset and the model of one and the same: never the new one with the model of the old.
+    assert read == [("scout", OWN_SLOT, "own-model")]
+    # By the ledger itself, and only what says which model it is sent to.
+    with pytest.raises(ValueError, match="not the columns"):
+        await change(member, "general", by="user", model={"seat": "tree"})
+    assert (await host.ledger.get_session(member)).preset == "scout"
+
+
 async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
     manager = _manager(tmp_path, _default_slots())
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)

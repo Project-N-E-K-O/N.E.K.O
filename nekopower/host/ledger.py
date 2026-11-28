@@ -2733,7 +2733,7 @@ class Ledger:
 
     async def change_preset(
         self, session_id: str, preset: str, *, by: str, was: str | None = None, seat: str | None = None,
-        without_trees: bool = False,
+        without_trees: bool = False, model: dict[str, Any] | None = None,
     ) -> tuple[Session | None, str, str | None]:
         """Change the preset of a session and put the change on record.
 
@@ -2777,6 +2777,13 @@ class Ledger:
             raise ValueError(f"a preset is named by a short word, not {preset!r}")
         if seat is not None and seat not in SEATS:
             raise ValueError(f"unknown seat of a session {seat!r}")
+        # Which model it is sent to as that preset (the columns ``keep_model`` writes), written
+        # with the preset: whoever reads the row reads the preset and the model of one and the
+        # same, and never the one it was given with the model of the one it had.
+        sent_to = dict(model or {})
+        unknown = set(sent_to) - {*_MODEL_TEXT_COLUMNS, "model_free"}
+        if unknown:
+            raise ValueError(f"not the columns of a session's model: {sorted(unknown)}")
 
         def work(conn: sqlite3.Connection) -> tuple[Session | None, str, str | None]:
             current = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
@@ -2795,7 +2802,7 @@ class Ledger:
                     (session_id, *sorted(TREE_STATES_PENDING)),
                 ).fetchone():
                     raise ValueError("tree_not_landed")
-            changes: dict[str, Any] = {"preset": preset}
+            changes: dict[str, Any] = {"preset": preset, **sent_to}
             if seat is not None:
                 changes["seat"] = seat
             if not current.preset_told and current.session_dir:

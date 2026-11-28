@@ -54,7 +54,7 @@ class IdleCompactMixin:
         kept = await self._ledger.get_session(session_id)
         if kept is not None and kept.preset_told and kept.preset_told != kept.preset:
             # Given another preset since its task agent last started, and with it the model it
-            # is sent to from its next start (``_settle_model_anew``): what is on record is
+            # is sent to from its next start (``change_duty``): what is on record is
             # where it goes next, not where it last ran. Nothing of it goes there until the
             # user goes on with it, as below.
             return None
