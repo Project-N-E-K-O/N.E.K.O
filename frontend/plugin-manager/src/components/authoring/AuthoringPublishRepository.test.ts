@@ -67,6 +67,9 @@ describe('AuthoringPublishRepository workflow update', () => {
 
     expect(api.applyProjectWorkflows).toHaveBeenCalledWith('p1')
     expect(created).toHaveBeenCalledTimes(1)
+    // The written upgrade is no longer offered.
+    expect(container.textContent).not.toContain('UPGRADE')
+    expect(button(container, authoringEnUs.workflowApply)).toBeUndefined()
     // The failed preview is reported; the apply itself is not undone.
     expect(container.querySelector('.el-alert--error')).not.toBeNull()
   })
