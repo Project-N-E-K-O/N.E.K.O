@@ -218,6 +218,11 @@ def _host_architecture() -> str:
     )
 
 
+def host_architecture() -> str:
+    """Architecture of the running interpreter, in uv's Python download naming."""
+    return _host_architecture()
+
+
 def cached_uv_path() -> Path:
     name = "uv.exe" if sys.platform == "win32" else "uv"
     return tools_root() / "uv" / PINNED_UV_VERSION / f"{sys.platform}-{_host_architecture()}" / name

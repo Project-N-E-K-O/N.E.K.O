@@ -180,6 +180,7 @@ exclude = [
 # The authored neko-plugin skill lives outside the package tree; ship it where
 # plugin/neko_plugin_cli/templates/agent_kit.py looks for installed data.
 ".agent/skills/neko-plugin" = "plugin/neko_plugin_cli/agent_kit"
+"plugin/plugins/__init__.py" = "plugin/plugins/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -217,6 +218,11 @@ exclude = [
   "main_logic/asr_client/speaker_shadow/models/*.onnx",
   "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
+
+# The sdist excludes plugin/plugins as well; keep the package marker so a
+# wheel built from the sdist still finds the force-included file.
+[tool.hatch.build.targets.sdist.force-include]
+"plugin/plugins/__init__.py" = "plugin/plugins/__init__.py"
 
 # pyncm-async 已从 PyPI 下架（连同上游 pyncm 与 GitHub 仓库），改为本地 wheel 安装。
 # music plugin 已对该依赖做了 try/except 防御（main_routers/music_router.py），
@@ -257,6 +263,30 @@ required-environments = [
 ]
 
 [dependency-groups]
+# Standalone environment for the desktop plugin workbench. Exported from the
+# same lockfile as the host, without the desktop or repository test tooling.
+plugin-tools = [
+    "fastapi",
+    "httpx[socks]",
+    "orjson",
+    "ormsgpack",
+    "packaging",
+    # plugin.sdk.shared.core.images imports PIL; a real PluginContext probes it.
+    "pillow",
+    "portalocker",
+    "psutil",
+    "pydantic",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-randomly",
+    # pytest.ini sets timeout = 300 for plugin tests.
+    "pytest-timeout",
+    "python-dotenv",
+    "pyzmq",
+    "tiktoken",
+    "toml",
+    "tomli-w",
+]
 dev = [
     "hypothesis>=6.100",
     # Schema validation in tests of the minigame manifest and the theater's

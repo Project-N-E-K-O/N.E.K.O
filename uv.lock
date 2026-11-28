@@ -1424,6 +1424,26 @@ dev = [
 galgame = [
     { name = "rapidocr-pillow" },
 ]
+plugin-tools = [
+    { name = "fastapi" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "orjson" },
+    { name = "ormsgpack" },
+    { name = "packaging" },
+    { name = "pillow" },
+    { name = "portalocker" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-randomly" },
+    { name = "pytest-timeout" },
+    { name = "python-dotenv" },
+    { name = "pyzmq" },
+    { name = "tiktoken" },
+    { name = "toml" },
+    { name = "tomli-w" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1511,6 +1531,26 @@ dev = [
     { name = "ruff", specifier = ">=0.15.4" },
 ]
 galgame = [{ name = "rapidocr-pillow", directory = "deps/rapidocr_pillow" }]
+plugin-tools = [
+    { name = "fastapi" },
+    { name = "httpx", extras = ["socks"] },
+    { name = "orjson" },
+    { name = "ormsgpack" },
+    { name = "packaging" },
+    { name = "pillow" },
+    { name = "portalocker" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-randomly" },
+    { name = "pytest-timeout" },
+    { name = "python-dotenv" },
+    { name = "pyzmq" },
+    { name = "tiktoken" },
+    { name = "toml" },
+    { name = "tomli-w" },
+]
 
 [[package]]
 name = "nest-asyncio"

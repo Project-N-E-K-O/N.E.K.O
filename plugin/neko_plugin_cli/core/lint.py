@@ -15,8 +15,14 @@ module stays free of CLI dependencies.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+# A uv executable to run ruff with (``uv tool run``) instead of ``uvx`` on
+# PATH. Packaged N.E.K.O. builds set it to the uv they prepare, which comes
+# without a ``uvx``; elsewhere it is unset and the Market CI command is used.
+UV_EXECUTABLE_ENV = "NEKO_PLUGIN_UV"
 
 
 @dataclass(frozen=True)
@@ -47,8 +53,9 @@ def ruff_command(
     extra_excludes: tuple[str, ...] = (),
 ) -> list[str]:
     """Use the shared rules with the caller's existing file-selection policy."""
+    uv = os.environ.get(UV_EXECUTABLE_ENV)
     return [
-        "uvx",
+        *([uv, "tool", "run"] if uv else ["uvx"]),
         f"ruff=={RUFF_LINT_SPEC.version}",
         "check",
         "--ignore-noqa",

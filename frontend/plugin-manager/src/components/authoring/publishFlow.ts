@@ -20,6 +20,7 @@ import {
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState, SubmissionPhase } from '@/api/marketSubmissions'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
+import { toolEnvironmentReady, toolErrorKey } from '@/components/authoring/toolEnvironment'
 
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
 /** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
@@ -426,6 +427,8 @@ const bySeverity = (blockers: ActionBlocker[]) => [
  * Step 0. Required: git (the plugin's own repository, commits need an author),
  * uv (`uvx` runs the pinned ruff in checks and `publish`). gh is recommended:
  * it creates the repository and signs GitHub reads in; without it those are done by hand.
+ * A packaged build reports the uv its tool environment prepares; whether that
+ * is ready yet is the environment blocker's concern.
  */
 function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
   const check = (
@@ -449,21 +452,47 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
     check('gh', gh?.installed, gh?.version, false),
     check('githubAccount', gh ? gh.authenticated : undefined, gh?.login, false),
   ]
+  // Packaged builds also need the prepared tool environment before any CLI runs.
+  const environmentReady = toolchain ? toolEnvironmentBlocker(toolchain) === null : false
   const state: PublishStepState = !toolchain
     ? 'unknown'
-    : tools.some((tool) => tool.required && tool.state === 'missing')
+    : !environmentReady || tools.some((tool) => tool.required && tool.state === 'missing')
       ? 'todo'
       : 'done'
   return { state, tools }
 }
 
+function toolEnvironmentBlocker(toolchain: Toolchain): ActionBlocker | null {
+  if (toolEnvironmentReady(toolchain.tool_environment)) return null
+  switch (toolchain.tool_environment) {
+    case 'preparing':
+      return hard('toolchain', message('toolEnvironmentPreparing'))
+    case 'failed': {
+      const reason = toolErrorKey(toolchain.tool_environment_error_code)
+      return hard('toolchain', reason
+        ? message(reason)
+        : message('toolEnvironmentFailed', { error: toolchain.tool_environment_error ?? '' }))
+    }
+    case 'unavailable':
+      return hard('toolchain', message('toolEnvironmentUnavailable'))
+    default:
+      return hard('toolchain', message('toolEnvironmentMissing'))
+  }
+}
+
 /** A required tool that is missing makes every publish mode fail on the server or in the CLI. */
-function toolchainBlockers(page: ToolchainPage, mode: PublishMode): ActionBlocker[] {
+function toolchainBlockers(
+  page: ToolchainPage,
+  mode: PublishMode,
+  toolchain: Toolchain | null | undefined
+): ActionBlocker[] {
   // Notifying the Market runs no ruff, so it does not need uv.
   const needed: ToolId[] = mode === 'market_notify' ? ['git'] : ['git', 'uv']
-  return page.tools
+  const missing = page.tools
     .filter((tool) => needed.includes(tool.id) && tool.state === 'missing')
     .map((tool) => hard('toolchain', message('publishToolMissingBlocker', { tool: TOOL_NAMES[tool.id] })))
+  const environment = toolchain ? toolEnvironmentBlocker(toolchain) : null
+  return environment ? [...missing, environment] : missing
 }
 
 /** Product names, not translated. */
@@ -521,7 +550,7 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
     marketDone: !!answer || facts.marketListed === true,
   }
   const blockers = (mode: PublishMode, own: ActionBlocker[]) =>
-    bySeverity([...toolchainBlockers(tools, mode), ...own])
+    bySeverity([...toolchainBlockers(tools, mode, facts.toolchain), ...own])
   return {
     steps,
     toolchain: tools,

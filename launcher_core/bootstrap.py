@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sys
 import os
+from pathlib import Path
 
 # Preserve the historical root launcher.py path after moving this code.
 _IMPLEMENTATION_FILE = __file__
@@ -58,6 +59,19 @@ _configure_stdio_utf8()
 
 # Detect packaged execution: PyInstaller sets sys.frozen, Nuitka __compiled__.
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
+
+
+def _configure_desktop_tool_path() -> None:
+    """Include user-installed tools when a desktop launcher starts outside a shell."""
+    if not IS_FROZEN or sys.platform not in {"darwin", "linux"}:
+        return
+
+    directories = [str(Path.home() / ".local" / "bin")]
+    if sys.platform == "darwin":
+        directories.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+    paths = os.get_exec_path()
+    paths.extend(directory for directory in directories if directory not in paths and Path(directory).is_dir())
+    os.environ["PATH"] = os.pathsep.join(paths)
 
 
 def _ensure_utf8_filesystem_encoding() -> None:

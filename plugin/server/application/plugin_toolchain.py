@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import TypedDict
 
 from plugin.server.application.plugin_project_commands import cli_child_env
-from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironmentState,
+    tool_environment_status,
+)
+from plugin.server.infrastructure.plugin_tool_runtime import read_tool_runtime_status
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
@@ -47,8 +51,16 @@ class Toolchain(TypedDict):
     git: GitState
     uv: ToolState
     gh: GhState
-    # Checks, repository creation and publishing run the CLI from a N.E.K.O source checkout.
-    source_checkout: bool
+    # Checks, repository creation and publishing run the CLI through the
+    # plugin tool environment (a source checkout or a prepared packaged venv).
+    tool_environment: ToolEnvironmentState
+    tool_environment_error: str | None
+    # A shared tool layer ErrorCode, or resources_unavailable / environment_failed.
+    tool_environment_error_code: str | None
+    # While preparing: the latest progress event (phase, downloaded/total bytes).
+    tool_progress: dict | None
+    # The shared plugin tool layer's status (read_tool_runtime_status().as_dict()).
+    tools: dict
 
 
 def _run(*argv: str) -> str | None:
@@ -93,6 +105,12 @@ def _git(project_dir: Path | None) -> GitState:
 
 
 def _uv() -> ToolState:
+    tools = read_tool_runtime_status()
+    if tools.packaged:
+        # Packaged builds run the CLI with the uv the shared tool layer
+        # prepares, never one on PATH: nothing to install. Whether it is
+        # downloaded yet is part of ``tool_environment``.
+        return {"installed": True, "version": tools.uv_version}
     # ``uvx`` ships with uv; the checks call it, so it is the one that must resolve.
     if shutil.which("uv") is None or shutil.which("uvx") is None:
         return {"installed": False, "version": None}
@@ -124,11 +142,16 @@ def read_toolchain(project_dir: Path | None = None) -> Toolchain:
         git = pool.submit(_git, project_dir if project_dir and project_dir.is_dir() else None)
         uv = pool.submit(_uv)
         gh = pool.submit(_gh)
+    environment = tool_environment_status()
     return {
         "git": git.result(),
         "uv": uv.result(),
         "gh": gh.result(),
-        "source_checkout": source_repo_root() is not None,
+        "tool_environment": environment.state,
+        "tool_environment_error": environment.error,
+        "tool_environment_error_code": environment.error_code,
+        "tool_progress": environment.tool_progress,
+        "tools": environment.tools,
     }
 
 

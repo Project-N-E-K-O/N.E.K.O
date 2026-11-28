@@ -9,13 +9,18 @@
       show-icon
     />
     <div class="authoring-precheck-actions">
-      <el-button type="primary" :icon="VideoPlay" :loading="running" @click="run">
+      <el-button type="primary" :icon="VideoPlay" :loading="running" :disabled="environmentBlocked" @click="run">
         {{ t(running ? 'authoring.precheckRunning' : 'authoring.precheckRun') }}
       </el-button>
       <span class="authoring-muted authoring-small">
         {{ t('authoring.precheckCiNote') }}
       </span>
     </div>
+    <p v-if="environmentBlocked" class="authoring-muted">
+      {{
+        t(environment === 'unavailable' ? 'authoring.toolEnvironmentUnavailable' : 'authoring.toolEnvironmentNotReady')
+      }}
+    </p>
     <section v-if="report" class="authoring-precheck-env">
       <h4>{{ t('authoring.precheckEnv') }}</h4>
       <ul v-if="report.environment_issues.length">
@@ -52,21 +57,25 @@ import {
   precheckPluginProject,
   type PrecheckReport,
   type PrecheckStage,
+  type Toolchain,
 } from '@/api/pluginProjects'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { toolEnvironmentReady } from '@/components/authoring/toolEnvironment'
 
 type StageName = PrecheckStage['name']
 type StageState = 'passed' | 'failed' | 'skipped'
 
 const STAGE_ORDER: StageName[] = ['lint', 'sync', 'release-check']
 
-const props = defineProps<{ projectId: string }>()
+const props = defineProps<{ projectId: string; environment?: Toolchain['tool_environment'] }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const running = ref(false)
 const report = ref<PrecheckReport | null>(null)
 const requestFailure = useLocalizedError(describeError, 'precheckFailedToRun')
 const requestError = requestFailure.message
+// Unknown until the toolchain is read: the server refuses with a clear 503 then.
+const environmentBlocked = computed(() => !!props.environment && !toolEnvironmentReady(props.environment))
 
 interface StageView {
   name: StageName

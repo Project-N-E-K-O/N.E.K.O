@@ -115,3 +115,35 @@ def test_project_toolchain_of_an_unknown_project_is_not_found(monkeypatch):
         assert exc.status_code == 404
     else:
         raise AssertionError("an unknown project must be refused")
+
+
+def test_a_packaged_build_reports_the_prepared_uv_instead_of_path(monkeypatch):
+    # Not something to install there; tool_environment says whether it is downloaded.
+    from plugin.server.infrastructure.plugin_tool_runtime import RuntimeStatus
+
+    calls = _fake_tools(monkeypatch, set(), {})
+    statuses = {
+        "missing": RuntimeStatus("missing", True, "0.13.6"),
+        "ready": RuntimeStatus("ready", True, "0.13.6", python="/tools/python", uv="/tools/uv"),
+    }
+    for state, expected in (
+        ("missing", {"installed": True, "version": "0.13.6"}),
+        ("ready", {"installed": True, "version": "0.13.6"}),
+    ):
+        monkeypatch.setattr(toolchain, "read_tool_runtime_status", lambda state=state: statuses[state])
+        assert toolchain.read_toolchain()["uv"] == expected
+    assert not any(call[0] == "uv" for call in calls)
+
+
+def test_the_toolchain_carries_the_tool_environment_status(monkeypatch):
+    from plugin.server.application.plugin_tool_environment import ToolEnvironmentStatus
+
+    _fake_tools(monkeypatch, set(), {})
+    monkeypatch.setattr(toolchain, "tool_environment_status", lambda: ToolEnvironmentStatus(
+        "preparing", tool_progress={"phase": "checking_uv"}, tools={"state": "preparing"},
+    ))
+    result = toolchain.read_toolchain()
+    assert result["tool_environment"] == "preparing"
+    assert result["tool_progress"] == {"phase": "checking_uv"}
+    assert result["tools"] == {"state": "preparing"}
+    assert result["tool_environment_error_code"] is None

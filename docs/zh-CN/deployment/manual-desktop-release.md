@@ -9,7 +9,9 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 
 在每个目标平台主机上各执行一次 `scripts/build-desktop-release.ps1`。该脚本会为 Portable manifest 签名，将产物暂存到 `release-assets/<version>/`，但不会创建标签、GitHub Release、上传文件或请求更新服务。
 
-运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录：Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
+运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录：Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`（macOS 上是 `projectneko_server.app/Contents/MacOS/projectneko_server`）。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
+
+在同一份 N.E.K.O 源码检出中，用与 Nuitka 构建相同的 Python 执行 `uv run python scripts/build_plugin_tools.py --backend <backend-executable>`，在后端签名之前将插件工作台工具装入后端。发布脚本会先用 `scripts/check_plugin_tools.py --resources-only` 校验装入的资源，再从完整 Portable 压缩包中解出后端、以临时配置启动它，通过 HTTP 驱动插件工作台（`--check-desktop-runtime`）：准备插件工具环境、创建项目并运行发布前检查。Linux 上还会校验 AppImage 内的资源。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `

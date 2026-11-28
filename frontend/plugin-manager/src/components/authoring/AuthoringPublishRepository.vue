@@ -1,7 +1,21 @@
 <template>
   <div class="authoring-publish-repository">
+    <div>
+      <el-button :loading="updating" @click="previewWorkflows">
+        {{ t('authoring.workflowPreview') }}
+      </el-button>
+    </div>
+    <div v-if="changes">
+      <ul class="authoring-publish-notes">
+        <li v-for="change in changes" :key="change.path">{{ change.path }} · {{ change.status }}</li>
+      </ul>
+      <el-button :disabled="!canApply" :loading="updating" @click="updateWorkflows">
+        {{ t('authoring.workflowApply') }}
+      </el-button>
+    </div>
+    <el-alert v-if="workflowError" :title="workflowError" type="error" :closable="false" show-icon />
     <div v-if="canCreate" class="authoring-precheck-actions">
-      <el-button type="primary" :icon="Plus" :loading="creating" @click="createRepo">
+      <el-button type="primary" :icon="Plus" :loading="creating" :disabled="environmentBlocked" @click="createRepo">
         {{ creating ? t('authoring.publishCreatingRepo') : t('authoring.publishCreateRepo') }}
       </el-button>
     </div>
@@ -32,13 +46,20 @@
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLocalizedError } from '@/composables/useLocalizedError'
 import { Plus } from '@element-plus/icons-vue'
-import { createPluginProjectRepo } from '@/api/pluginProjects'
+import {
+  applyProjectWorkflows,
+  createPluginProjectRepo,
+  previewProjectWorkflows,
+  type ProjectWorkflowChange,
+  type Toolchain,
+} from '@/api/pluginProjects'
 import type { FlowMessage } from '@/components/authoring/publishFlow'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { toolEnvironmentReady } from '@/components/authoring/toolEnvironment'
 
 /**
  * Step 1 extras: repository creation, offered only when the project is a git
@@ -49,6 +70,7 @@ const props = defineProps<{
   projectId: string
   canCreate: boolean
   notes: FlowMessage[]
+  environment?: Toolchain['tool_environment']
 }>()
 const emit = defineEmits<{ created: [] }>()
 const { t } = useI18n()
@@ -58,10 +80,76 @@ const createdUrl = ref('')
 const manualSteps = ref<string[]>([])
 const createFailure = useLocalizedError(describeError, 'repoCreateFailed')
 const createError = createFailure.message
+const workflowFailure = useLocalizedError(describeError, 'workflowUpdateFailed')
+const workflowError = workflowFailure.message
+const changes = ref<ProjectWorkflowChange[]>()
+const updating = ref(false)
+const canApply = computed(() =>
+  changes.value?.some(change => change.status === 'ADD' || change.status === 'UPGRADE') &&
+  !changes.value.some(change => change.status === 'CONFLICT')
+)
+// Unknown until the toolchain is read: the server refuses with a clear 503 then.
+const environmentBlocked = computed(() => !!props.environment && !toolEnvironmentReady(props.environment))
 let disposed = false
 onUnmounted(() => {
   disposed = true
 })
+
+async function previewWorkflows() {
+  updating.value = true
+  workflowFailure.clear()
+  changes.value = undefined
+  try {
+    changes.value = await previewProjectWorkflows(props.projectId)
+  } catch (error) {
+    workflowFailure.set(error)
+  } finally {
+    updating.value = false
+  }
+}
+
+async function updateWorkflows() {
+  updating.value = true
+  workflowFailure.clear()
+  let applied: ProjectWorkflowChange[]
+  try {
+    applied = await applyProjectWorkflows(props.projectId)
+  } catch (error) {
+    // The server writes file by file without rolling back: a failed apply may
+    // still have changed some of them, so the parent and preview re-read.
+    workflowFailure.set(error)
+    emit('created')
+    await refreshPreview()
+    updating.value = false
+    return
+  }
+  if (applied.some(change => change.status === 'CONFLICT')) {
+    // A conflict writes nothing.
+    changes.value = applied
+    updating.value = false
+    return
+  }
+  // The files changed: refresh the parent even if the follow-up preview fails,
+  // and never keep offering the changes just written.
+  changes.value = undefined
+  emit('created')
+  try {
+    changes.value = await previewProjectWorkflows(props.projectId)
+  } catch (error) {
+    workflowFailure.set(error)
+  } finally {
+    updating.value = false
+  }
+}
+
+/** Re-read the preview after a failed apply; keep the apply's error if this fails too. */
+async function refreshPreview() {
+  try {
+    changes.value = await previewProjectWorkflows(props.projectId)
+  } catch {
+    changes.value = undefined
+  }
+}
 
 async function createRepo() {
   if (creating.value) return

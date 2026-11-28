@@ -96,7 +96,7 @@ function Get-BackendPath {
     param([Parameter(Mandatory = $true)] [string]$BuildPlatform)
     switch ($BuildPlatform) {
         'windows' { return Join-Path $ElectronPath 'bin/projectneko_server.exe' }
-        'macos' { return Join-Path $ElectronPath 'bin/projectneko_server' }
+        'macos' { return Join-Path $ElectronPath 'bin/projectneko_server.app/Contents/MacOS/projectneko_server' }
         'linux' { return Join-Path $ElectronPath 'bin/projectneko_server' }
     }
 }
@@ -178,6 +178,10 @@ if (-not (Test-Path -LiteralPath $backendPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath (Join-Path $ElectronPath 'package.json') -PathType Leaf)) {
     throw "Electron project package.json is missing under $ElectronPath."
 }
+$backendSource = Split-Path -Parent $PSScriptRoot
+$checkPluginTools = @('run', '--project', $backendSource, '--python', '3.11', '--locked', '--only-group',
+    'plugin-tools', 'python', (Join-Path $PSScriptRoot 'check_plugin_tools.py'))
+Invoke-Checked uv @checkPluginTools '--resources-only' $backendPath
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     throw 'Node.js is required.'
 }
@@ -265,6 +269,10 @@ try {
     }
     Invoke-Checked node @updateArgs
 
+    $archiveExtension = if ($buildPlatform -eq 'windows') { 'zip' } else { 'tar.gz' }
+    $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_$($target.Key).$archiveExtension"
+    Invoke-Checked uv @checkPluginTools '--check-desktop-runtime' $archive
+
     if ($buildPlatform -eq 'linux') {
         $appImages = @(Get-ChildItem -LiteralPath (Join-Path $ElectronPath 'dist') -Filter '*.AppImage' -File)
         if ($appImages.Count -ne 1) {
@@ -276,6 +284,7 @@ try {
             $appImageArgs += @('--previous', $previousAppImageManifest[0].FullName)
         }
         Invoke-Checked node @appImageArgs
+        Invoke-Checked uv @checkPluginTools '--resources-only' $appImages[0].FullName
     }
 
     Sign-PortableManifests -Directory $portableUpdateDirectory
@@ -296,7 +305,7 @@ try {
         platform = $buildPlatform
         architecture = $Architecture
         portableTarget = $target.Key
-        backend = "bin/$([System.IO.Path]::GetFileName($backendPath))"
+        backend = [System.IO.Path]::GetRelativePath($ElectronPath, $backendPath).Replace('\', '/')
         previousReleaseTag = $PreviousReleaseTag
         generatedAt = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json -Depth 3

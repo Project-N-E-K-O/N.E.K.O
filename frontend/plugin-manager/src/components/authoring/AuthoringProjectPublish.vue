@@ -55,6 +55,16 @@
         </header>
         <AuthoringPublishGuide page-id="toolchain" :params="guideParams" :open="guideOpen('toolchain')" />
         <AuthoringPublishToolchain :page="flow.toolchain" :error="toolchainError" />
+        <p v-if="toolchain" class="authoring-muted">
+          {{ toolEnvironmentText(toolchain, t) }}
+        </p>
+        <el-button
+          v-if="toolchain && ['missing', 'failed'].includes(toolchain.tool_environment)"
+          :loading="preparingEnvironment"
+          @click="prepareEnvironment"
+        >
+          {{ t('authoring.toolEnvironmentPrepare') }}
+        </el-button>
       </section>
       <section
         v-for="(step, index) in flow.steps"
@@ -104,9 +114,14 @@
           :project-id="projectId"
           :can-create="flow.canCreateRepository"
           :notes="flow.notes"
+          :environment="toolchain?.tool_environment"
           @created="load({ fresh: true })"
         />
-        <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
+        <AuthoringProjectPrecheck
+          v-else-if="step.id === 'verify'"
+          :project-id="projectId"
+          :environment="toolchain?.tool_environment"
+        />
         <AuthoringProjectSubmission
           :key="status.repository.github_repository ?? ''"
           v-else-if="step.id === 'submission'"
@@ -180,6 +195,7 @@ import {
   type PublishPageId,
   type PublishStepState,
 } from '@/components/authoring/publishFlow'
+import { toolEnvironmentText } from '@/components/authoring/toolEnvironment'
 import type { GuideParams } from '@/components/authoring/publishGuide'
 import {
   cancelPluginProjectPublishTask,
@@ -187,6 +203,7 @@ import {
   getPluginProjectPublishTask,
   getPluginToolchain,
   isMarketPublicationStatus,
+  preparePluginToolEnvironment,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
@@ -332,13 +349,69 @@ function guideOpen(id: PublishPageId) {
 const toolchain = ref<Toolchain | null>(null)
 const toolchainFailure = useLocalizedError(describeError, 'toolchainLoadFailed')
 const toolchainError = toolchainFailure.message
-async function loadToolchain() {
+/** Reads overlap (Refresh, reload, polling): only the latest one started may apply. */
+let latestToolchainRead = 0
+/**
+ * `applied`: this read set the state. `discarded`: a newer read was started
+ * (or the panel closed), so this answer was dropped. `failed`: the previous
+ * state is kept.
+ */
+async function loadToolchain(): Promise<'applied' | 'discarded' | 'failed'> {
   toolchainFailure.clear()
+  const read = ++latestToolchainRead
   try {
     const next = await getPluginToolchain(props.projectId)
-    if (!disposed) toolchain.value = next
+    if (disposed || read !== latestToolchainRead) return 'discarded'
+    toolchain.value = next
+    if (next.tool_environment === 'preparing') pollToolEnvironment()
+    return 'applied'
+  } catch (error) {
+    if (!disposed && read === latestToolchainRead) toolchainFailure.set(error)
+    return 'failed'
+  }
+}
+
+const preparingEnvironment = ref(false)
+let environmentPoll: Promise<void> | null = null
+const MAX_FAILED_ENVIRONMENT_READS = 5
+/** One shared poll loop: started by the prepare button and by any load that finds the environment preparing. */
+function pollToolEnvironment() {
+  if (environmentPoll) return
+  environmentPoll = (async () => {
+    // A failed read keeps the old state (e.g. `missing` right after the
+    // prepare request), so only a state actually read may end the loop.
+    let failedReads = 0
+    while (!disposed) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      const outcome = await loadToolchain()
+      if (outcome === 'failed') {
+        if (++failedReads >= MAX_FAILED_ENVIRONMENT_READS) return
+        continue
+      }
+      failedReads = 0
+      // A discarded read says nothing about the state: keep polling.
+      if (outcome === 'discarded') continue
+      if (disposed || toolchain.value?.tool_environment !== 'preparing') return
+    }
+  })().finally(() => {
+    environmentPoll = null
+  })
+}
+async function prepareEnvironment() {
+  preparingEnvironment.value = true
+  toolchainFailure.clear()
+  try {
+    const started = await preparePluginToolEnvironment()
+    if (started.state === 'ready' || started.state === 'source') {
+      await loadToolchain()
+      return
+    }
+    pollToolEnvironment()
+    await environmentPoll
   } catch (error) {
     if (!disposed) toolchainFailure.set(error)
+  } finally {
+    preparingEnvironment.value = false
   }
 }
 
