@@ -77,4 +77,4 @@ $env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
 uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-`scripts/check_nuitka_dist.py` 只校验成品里的 embedding 模型文件，不检查 tiktoken 缓存，也不检查编译进可执行文件的推理模块。本地构建后，请确认运行目录里的 `data/tiktoken_cache/` 至少有一个 blob（workflow 做的是同一项检查），并启动一次应用确认向量记忆能加载——只打权重不带推理后端的产物会在首次调用时把向量功能 sticky-disable，是个无声坑。
+`scripts/check_nuitka_dist.py` 只校验成品里的 `tokenizer.json` 以及 INT8 模型和它的 sidecar（不检查 FP32 文件，那由 CI 单独把关），不检查 tiktoken 缓存，也不检查编译进可执行文件的推理模块。本地构建后，请确认运行目录里的 `data/tiktoken_cache/` 至少有一个 blob（workflow 做的是同一项检查），并启动一次应用确认向量记忆能加载——只打权重不带推理后端的产物会在首次调用时把向量功能 sticky-disable，是个无声坑。
