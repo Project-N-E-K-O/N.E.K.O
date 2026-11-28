@@ -360,6 +360,19 @@ def _validate_replacement_targets(
         )
 
 
+def _needs_lock_dependencies(target_dir: Path) -> bool:
+    """Whether the new install waits for its uv.lock dependencies to be confirmed.
+
+    Then a running plugin is not restarted: the start would refuse with
+    PLUGIN_PYTHON_DEPENDENCIES_PENDING and roll a valid upgrade back before
+    the user could install them. The new version stays installed and
+    stopped; starting it offers the install.
+    """
+    from plugin.server.application.plugin_lock_dependencies import dependencies_pending
+
+    return dependencies_pending(target_dir)
+
+
 def _carry_over_locked_vendor(backup_dir: Path, target_dir: Path) -> None:
     """Keep the dependencies the host installed from uv.lock when the lock did not change.
 
@@ -502,7 +515,8 @@ async def replace_plugin(
         await asyncio.to_thread(_carry_over_locked_vendor, backup_dir, target_dir)
         stage = "invalidate_cache"
         await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
-        if was_running:
+        restarted = was_running and not await asyncio.to_thread(_needs_lock_dependencies, target_dir)
+        if restarted:
             stage = "restart"
             await _start_plugin(plugin_id)
         # New source is installed: recovery grants from an earlier failed automatic reload no longer apply. Do this after
@@ -519,7 +533,7 @@ async def replace_plugin(
                     type(exc).__name__,
                 )
         return ReplacePluginResult(
-            restarted=was_running,
+            restarted=restarted,
             rollback_status="not_needed",
             install_result=install_result,
             backup_dir=backup_dir,

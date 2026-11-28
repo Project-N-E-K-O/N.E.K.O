@@ -3584,7 +3584,6 @@ async def test_start_plugin_reports_lock_installable_dependencies_as_pending(
         encoding="utf-8",
     )
 
-    loop_thread = threading.current_thread()
     seen: dict[str, object] = {}
 
     def _fake_find_missing(requirements, *, search_paths=None):

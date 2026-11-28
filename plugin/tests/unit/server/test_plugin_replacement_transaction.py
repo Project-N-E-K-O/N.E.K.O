@@ -1329,3 +1329,68 @@ async def test_failed_carry_over_copy_leaves_no_partial_vendor(tmp_path: Path, m
 
     # No half-copied vendor/: the plugin asks for its dependencies again instead.
     assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_running_plugin_upgraded_to_a_new_lock_stays_installed_and_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+        raise AssertionError("a start would refuse with PLUGIN_PYTHON_DEPENDENCIES_PENDING and roll back")
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nversion = "2"\ndependencies = ["orjson>=3"]\n', encoding="utf-8",
+        )
+        (target / "uv.lock").write_text(_LOCK_TEXT + "# new\n", encoding="utf-8")
+        return {"installed": True}
+
+    result = await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert result.rollback_status == "not_needed"
+    assert result.restarted is False and started == []
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == NEW_PLUGIN_MANIFEST
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_running_plugin_upgraded_with_the_same_lock_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    assert started == ["demo"]
+    assert (target / "vendor" / "dependency.txt").is_file()

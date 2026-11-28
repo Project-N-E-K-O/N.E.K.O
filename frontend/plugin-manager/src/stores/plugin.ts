@@ -504,10 +504,12 @@ export const usePluginStore = defineStore('plugin', () => {
         // 忽略过期响应（仅对全量请求）
         if (!pluginId && seq !== fetchStatusSeq) return supersededStatusResult(statusTicket)
         if (pluginId) {
+          // Before the staleness check: a running that lost the race to a newer
+          // stop still ends older pending metadata (it only records a ticket).
+          noteRuntimeStatus(pluginId, response as PluginStatusData, statusTicket)
           if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return supersededStatusResult(statusTicket)
           if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
-            noteRuntimeStatus(pluginId, response as PluginStatusData, statusTicket)
             pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
           }
         } else {
@@ -515,10 +517,10 @@ export const usePluginStore = defineStore('plugin', () => {
           const incoming = statuses.plugins || {}
           const next = { ...pluginStatuses.value }
           for (const id of new Set([...Object.keys(next), ...Object.keys(incoming)])) {
+            noteRuntimeStatus(id, incoming[id], statusTicket)  // as above: before the staleness check
             if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
             if (reportedStatus(incoming[id])) {
               runtimeStatusTickets.set(id, statusTicket)
-              noteRuntimeStatus(id, incoming[id], statusTicket)
               next[id] = incoming[id]!
             } else if (!(id in incoming)) {
               runtimeStatusTickets.set(id, statusTicket)
