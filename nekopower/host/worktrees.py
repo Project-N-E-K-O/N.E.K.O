@@ -147,6 +147,10 @@ class WorktreeError(Exception):
     """A worktree operation could not be done; nothing it was about to change was changed."""
 
 
+class WorktreeRemovalIncomplete(WorktreeError):
+    """A worktree directory removal began but left files behind (e.g. held open by another process)."""
+
+
 class GitError(WorktreeError):
     """A git command failed or did not finish in time."""
 
@@ -1517,7 +1521,9 @@ class WorktreeManager:
             # Waited for to the end: the lock is not let go while it runs.
             await _to_the_end(asyncio.to_thread(_remove_tree, path))
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
-                raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
+                raise WorktreeRemovalIncomplete(
+                    f"{path} could not be removed entirely; its registration and refs are kept"
+                )
         if registered:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
         if not theirs:

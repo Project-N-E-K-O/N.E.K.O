@@ -1290,6 +1290,7 @@ class StorageManager:
                             )
                             is_cleanable_outputs = (
                                 has_outputs
+                                and session is not None
                                 and not session_active
                                 and sess_id not in uncleared_fork_sources
                             )
@@ -1651,7 +1652,9 @@ class StorageManager:
             if safety != "ok":
                 return "unsafe_path", 0
             if until is not None:
-                mtime, whole = await asyncio.to_thread(newest_mtime_of, target, 0.25)
+                from config.nekopower_settings import STORAGE_AUTO_CLEAN_SCAN_SECONDS
+
+                mtime, whole = await asyncio.to_thread(newest_mtime_of, target, STORAGE_AUTO_CLEAN_SCAN_SECONDS)
                 if not whole:
                     return "scan_incomplete", 0
                 if mtime is not None and mtime > until:
@@ -1764,6 +1767,7 @@ class StorageManager:
         if not candidates:
             return
         removed = 0
+        skipped_incomplete = 0
         for project, session_id in candidates:
             if not (await self.settings.get())["auto_clean_work_dirs"]:
                 break
@@ -1772,8 +1776,15 @@ class StorageManager:
             )
             if outcome == "cleaned":
                 removed += 1
+            elif outcome == "scan_incomplete":
+                skipped_incomplete += 1
         if removed:
             logger.info("task agent storage: automatically cleaned %d expired working director(y/ies)", removed)
+        if skipped_incomplete:
+            logger.info(
+                "task agent storage: skipped %d working director(y/ies) during upkeep due to incomplete freshness scan",
+                skipped_incomplete,
+            )
 
     @staticmethod
     def _find_session_work_dirs(projects_root: Path) -> list[tuple[str, str]]:
@@ -1838,10 +1849,13 @@ class StorageManager:
         if until is None:
             return
 
+        from config.nekopower_settings import STORAGE_AUTO_CLEAN_SCAN_SECONDS
+
         if not await asyncio.to_thread(self._paths.ledger_db().is_file):
             return
         rows = await self._ledger.trees(states=tuple(sorted(TREE_STATES_LEFT)))
         expired = 0
+        skipped_incomplete = 0
         for row in rows:
             if not (await self.settings.get())["auto_clean_worktrees"]:
                 break
@@ -1851,11 +1865,20 @@ class StorageManager:
                 outcome = await self._task_agents.expire_tree(
                     row.id,
                     until=until,
-                    check_mtime=lambda path: newest_mtime_of(path, 0.25, skip_git=True),
+                    check_mtime=lambda path, budget=STORAGE_AUTO_CLEAN_SCAN_SECONDS: newest_mtime_of(
+                        path, budget, skip_git=True
+                    ),
                 )
             except (LookupError, ValueError):
                 continue
             if outcome.get("expired"):
                 expired += 1
+            elif outcome.get("reason") == "scan_incomplete":
+                skipped_incomplete += 1
         if expired:
             logger.info("task agent storage: automatically expired %d stale worktree(s)", expired)
+        if skipped_incomplete:
+            logger.info(
+                "task agent storage: skipped %d worktree(s) during upkeep due to incomplete freshness scan",
+                skipped_incomplete,
+            )

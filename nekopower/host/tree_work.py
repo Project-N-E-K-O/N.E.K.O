@@ -2179,7 +2179,7 @@ class TreeWork:
         check_mtime: Any = None,
     ) -> dict[str, Any]:
         """Automatically remove a left-over worktree older than ``until`` if untouched since then."""
-        from nekopower.host.worktrees import WorktreeError
+        from nekopower.host.worktrees import WorktreeError, WorktreeRemovalIncomplete
 
         def evaluate_mtime(path: Path) -> str | None:
             if check_mtime is None:
@@ -2246,11 +2246,16 @@ class TreeWork:
                         proceeded = await self.worktrees.remove_if_untouched(handle, still_untouched)
                     except asyncio.CancelledError:
                         raise
-                    except (WorktreeError, OSError) as exc:
-                        logger.warning("worktree %s could not be removed during expiry: %s", row.id, exc)
+                    except WorktreeRemovalIncomplete as exc:
+                        logger.warning("worktree %s could not be removed completely during expiry: %s", row.id, exc)
                         proceeded = True
                         removed = False
                         outcome_kind = "deferred"
+                    except (WorktreeError, OSError) as exc:
+                        # Failed before deletion began (e.g. git index.lock, token mismatch, unknown identity):
+                        # leave tree record and blocked commission untouched for a future upkeep round.
+                        logger.warning("worktree %s expiry skipped before deletion: %s", row.id, exc)
+                        return {"expired": False, "reason": "not_removable"}
                     if not proceeded:
                         return {"expired": False, "reason": abort_reason[0] if abort_reason else "touched"}
                     self._forget_tree(row)
@@ -2261,10 +2266,13 @@ class TreeWork:
                         await self.worktrees.remove(handle)
                     except asyncio.CancelledError:
                         raise
-                    except (WorktreeError, OSError) as exc:
-                        logger.warning("worktree %s could not be removed during expiry: %s", row.id, exc)
+                    except WorktreeRemovalIncomplete as exc:
+                        logger.warning("worktree %s could not be removed completely during expiry: %s", row.id, exc)
                         removed = False
                         outcome_kind = "deferred"
+                    except (WorktreeError, OSError) as exc:
+                        logger.warning("worktree %s expiry skipped before deletion: %s", row.id, exc)
+                        return {"expired": False, "reason": "not_removable"}
                     self._forget_tree(row)
                     self._tree_handles.pop(row.id, None)
                     self._trees_mine.discard(row.id)

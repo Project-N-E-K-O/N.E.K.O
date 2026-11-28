@@ -1426,6 +1426,11 @@ STORAGE_ITEM_BUDGET_SECONDS = 0.25
 """Per-directory measurement budget when scanning many work directories or worktrees,
 so a single huge folder does not starve the remaining items."""
 
+STORAGE_AUTO_CLEAN_SCAN_SECONDS = 30.0
+"""Per-directory freshness scan budget during background upkeep (``reap_work_dirs``
+and ``reap_worktrees``). Runs off the request path so large folders such as
+``node_modules`` or ``.venv`` can be scanned completely before automatic cleanup."""
+
 STORAGE_MAX_ITEMS = 200
 """Most items returned per cleanable section (worktrees, working directories) in
 ``GET /console/storage``; additional items are counted in ``more``."""

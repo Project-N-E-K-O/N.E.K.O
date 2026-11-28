@@ -1240,6 +1240,14 @@ async def test_work_dir_cleanup_preserves_retained_worktree_repo_and_idle_compac
         loop = asyncio.get_running_loop()
         timer = loop.call_later(3600.0, lambda: None)
         host.task_agents._idle_timers[recent_sess.id] = timer
+        # Also attach a timer on a session with outputs/ and verify clean_transcripts("outputs") keeps both timers.
+        out_sess = await host.ledger.create_session(name="out-compact", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(out_sess.id, status="closed")
+        out_dir = host.paths.session_dir(out_sess.id, DEFAULT_PROJECT) / "outputs"
+        out_dir.mkdir(parents=True)
+        (out_dir / "spill.txt").write_bytes(b"s" * 128)
+        timer_out = loop.call_later(3600.0, lambda: None)
+        host.task_agents._idle_timers[out_sess.id] = timer_out
         try:
             outcome, _freed = await host.storage._clean_one_work_dir(
                 "session", DEFAULT_PROJECT, recent_sess.id, until=clock.now - 7 * DAY, skip_project_referenced=True
@@ -1247,8 +1255,126 @@ async def test_work_dir_cleanup_preserves_retained_worktree_repo_and_idle_compac
             assert outcome == "recent"
             assert host.task_agents._idle_timers.get(recent_sess.id) is timer
             assert not timer.cancelled()
+
+            out_res = await host.clean_transcripts("outputs")
+            assert out_res["cleaned"] == 1
+            assert not out_dir.exists()
+            assert host.task_agents._idle_timers.get(recent_sess.id) is timer and not timer.cancelled()
+            assert host.task_agents._idle_timers.get(out_sess.id) is timer_out and not timer_out.cancelled()
         finally:
             timer.cancel()
+            timer_out.cancel()
             host.task_agents._idle_timers.pop(recent_sess.id, None)
+            host.task_agents._idle_timers.pop(out_sess.id, None)
+    finally:
+        await host.shutdown()
+
+
+async def test_expire_tree_does_not_defer_pre_deletion_git_errors_and_uses_auto_clean_scan_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Pre-deletion git errors must leave tree state & commission intact; auto-clean uses STORAGE_AUTO_CLEAN_SCAN_SECONDS."""
+    from nekopower.host import storage as storage_mod
+    from nekopower.host.worktrees import GitError, Worktree
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        wt_dir = host.paths.worktree_dir("giterr01")
+        wt_dir.mkdir(parents=True)
+        (wt_dir / "change.txt").write_text("work", encoding="utf-8")
+        _set_tree_mtime(wt_dir, old_ts)
+
+        sess = await host.ledger.create_session(name="worker", lanlan_name="Lan", project="proj")
+        comm, _ = await host.ledger.create(
+            dispatch_text="fix",
+            title="fix",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            workdir=str(wt_dir),
+        )
+        await host.ledger.transition(comm.id, "working", reason="start")
+        await host.ledger.transition(comm.id, "blocked", reason="waiting")
+        await host.ledger.add_tree(
+            id="giterr01",
+            session_id=sess.id,
+            commission_id=comm.id,
+            lanlan_name="Lan",
+            project="proj",
+            project_dir=str(repo_dir),
+            repo_root=str(repo_dir),
+            path=str(wt_dir),
+            workdir=str(wt_dir),
+            state="held",
+            reason="ask",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "giterr01"))
+        )
+
+        fake_handle = Worktree(id="giterr01", repo_root=repo_dir, path=wt_dir, subpath="", start="abc123")
+
+        async def fake_handle_of(_row: Any) -> Worktree:
+            return fake_handle
+
+        async def fail_remove_if_untouched(_handle: Any, _check: Any) -> bool:
+            raise GitError(("rev-parse", "--git-common-dir"), 128, b"fatal: index.lock exists")
+
+        monkeypatch.setattr(host.task_agents, "_handle_of", fake_handle_of)
+        monkeypatch.setattr(host.task_agents.worktrees, "remove_if_untouched", fail_remove_if_untouched)
+
+        res = await host.task_agents.expire_tree(
+            "giterr01",
+            until=clock.now - 14 * DAY,
+            check_mtime=lambda path: storage_mod.newest_mtime_of(path, 30.0, skip_git=True),
+        )
+        assert res == {"expired": False, "reason": "not_removable"}
+        row_after = await host.ledger.get_tree("giterr01")
+        assert row_after is not None and row_after.state == "held"
+        comm_after = await host.ledger.get(comm.id)
+        assert comm_after is not None and comm_after.status == "blocked"
+
+        # Verify background upkeep uses STORAGE_AUTO_CLEAN_SCAN_SECONDS rather than the 0.25s UI item budget.
+        seen_budgets: list[float] = []
+        real_newest = storage_mod.newest_mtime_of
+
+        def spy_newest(path: Path, budget_seconds: float = 0.25, *, skip_git: bool = False) -> tuple[float | None, bool]:
+            seen_budgets.append(budget_seconds)
+            if budget_seconds < 1.0:
+                return old_ts, False
+            return real_newest(path, budget_seconds, skip_git=skip_git)
+
+        monkeypatch.setattr(storage_mod, "newest_mtime_of", spy_newest)
+        big_sess = await host.ledger.create_session(name="big-work", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(big_sess.id, status="idle")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, big_sess.id))
+        )
+        big_work = host.paths.work_dir(big_sess.id, DEFAULT_PROJECT)
+        big_work.mkdir(parents=True)
+        (big_work / "bundle.bin").write_bytes(b"b" * 100)
+        _set_tree_mtime(big_work, old_ts)
+
+        monkeypatch.setattr("config.nekopower_settings.STORAGE_AUTO_CLEAN_SCAN_SECONDS", 0.25)
+        out_short, _ = await host.storage._clean_one_work_dir(
+            "session", DEFAULT_PROJECT, big_sess.id, until=clock.now - 7 * DAY, skip_project_referenced=True
+        )
+        assert out_short == "scan_incomplete"
+        assert big_work.is_dir()
+
+        monkeypatch.setattr("config.nekopower_settings.STORAGE_AUTO_CLEAN_SCAN_SECONDS", 30.0)
+        out_full, freed = await host.storage._clean_one_work_dir(
+            "session", DEFAULT_PROJECT, big_sess.id, until=clock.now - 7 * DAY, skip_project_referenced=True
+        )
+        assert out_full == "cleaned"
+        assert freed == 100
+        assert not big_work.exists()
+        assert 30.0 in seen_budgets
     finally:
         await host.shutdown()

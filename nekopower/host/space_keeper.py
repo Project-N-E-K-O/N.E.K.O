@@ -1957,6 +1957,15 @@ class SpaceKeeper:
             total += measure_fn(outputs, time.monotonic() + 0.25).bytes
         return total
 
+    def _hold_files_keeping_idle_timer(self, session_id: str) -> bool:
+        """Hold ``session_id`` without cancelling idle-compaction timers when supported."""
+        if self._hold_files is None:
+            return True
+        try:
+            return bool(self._hold_files(session_id, drop_idle_timer=False))
+        except TypeError:
+            return bool(self._hold_files(session_id))
+
     async def clean_inactive_outputs_now(self) -> dict[str, Any]:
         """Remove spilled tool output caches (``outputs/``) of inactive sessions, keeping transcripts and ``work/``."""
         from nekopower.host.storage import remove_dir_safely
@@ -1985,7 +1994,23 @@ class SpaceKeeper:
                     break
                 if status in ("running", "waiting", "compacting"):
                     continue
-                if self._hold_files is not None and not self._hold_files(session_id):
+                # Cheap read-only pre-check before holding so sessions without outputs/
+                # are skipped without touching any in-memory session holds or timers.
+                pre_session = await self._ledger.get_session(session_id)
+                if pre_session is None or pre_session.status in ("running", "waiting", "compacting"):
+                    continue
+                try:
+                    pre_dir = Path(await asyncio.to_thread(self._session_dir_of, pre_session))
+                except (OSError, ValueError):
+                    skipped += 1
+                    continue
+                if pre_dir.name != pre_session.id or pre_dir.parent.name != "sessions":
+                    continue
+                pre_outputs = pre_dir / _OUTPUTS_NAME
+                if not await asyncio.to_thread(lambda p=pre_outputs: p.is_dir() and not p.is_symlink()):
+                    continue
+
+                if not self._hold_files_keeping_idle_timer(session_id):
                     continue
                 try:
                     session = await self._ledger.get_session(session_id)
