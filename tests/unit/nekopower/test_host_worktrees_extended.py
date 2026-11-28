@@ -1860,8 +1860,9 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
     assert (cp_fd.path / "clash.txt").read_text(encoding="utf-8") == "wt-clash\n"
     await manager.remove(cp_fd)
 
-    # 8. advance_copy_baseline rolls back base_manifest.json when meta.json write fails, and
-    # compute_copy_merge self-heals a landed base_manifest/meta.start desync cleanly.
+    # 8. If advance_copy_baseline fails writing meta.json after project files landed, keeping
+    # base_manifest.json (source="landed") lets compute_copy_merge self-heal meta.start without
+    # replaying the already-landed edit over a user's subsequent undo.
     proj_adv = tmp_path / "adv_rb"
     _write(proj_adv / "a.txt", "v1\n")
     cp_adv = await manager.create(proj_adv, tmp_path / "copies" / "adv1")
@@ -1871,18 +1872,20 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
         mp.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_only)
         with pytest.raises(OSError, match="simulated meta write failure"):
             await manager.merge_back(cp_adv)
-    # base_manifest was rolled back to match meta.start; retry lands cleanly and advances baseline.
-    assert _copy_trees.read_base_manifest(cp_adv.path)["digest"] == orig_meta_start  # type: ignore[index]
+    # base_manifest stays at the landed digest (not rolled back to orig_meta_start).
+    landed_digest = _copy_trees.read_base_manifest(cp_adv.path)["digest"]  # type: ignore[index]
+    assert landed_digest != orig_meta_start
+    assert _copy_trees.read_copy_meta(cp_adv.path)["start"] == orig_meta_start  # type: ignore[index]
+    # User undoes a.txt back to v1 in project_dir; retry self-heals meta.start and preserves undo.
+    _write(proj_adv / "a.txt", "v1\n")
     retry_adv = await manager.merge_back(cp_adv)
     assert retry_adv.status == "unchanged"
-    # Simulate hard crash between base_manifest (source="landed") and meta.json write -> self-heals.
-    meta_adv_file = _copy_trees.copy_meta_dir(cp_adv.path) / "meta.json"
-    meta_adv = json.loads(meta_adv_file.read_text(encoding="utf-8"))
-    meta_adv["start"] = orig_meta_start
-    _copy_trees._atomic_write_json(meta_adv_file, meta_adv)
+    assert (proj_adv / "a.txt").read_text(encoding="utf-8") == "v1\n"
+    assert _copy_trees.read_copy_meta(cp_adv.path)["start"] == landed_digest  # type: ignore[index]
+    # A genuinely new edit in the copy still lands cleanly afterwards (detecting conflict with undo).
     _write(cp_adv.path / "a.txt", "v3\n")
-    healed = await manager.merge_back(cp_adv)
-    assert healed.status == "landed" and (proj_adv / "a.txt").read_text(encoding="utf-8") == "v3\n"
+    clash_after_undo = await manager.merge_back(cp_adv)
+    assert clash_after_undo.status == "conflict" and "a.txt" in clash_after_undo.conflicts
     await manager.remove(cp_adv)
 
 

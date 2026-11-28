@@ -1573,21 +1573,18 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
             if os.path.isfile(fs_path(src)):
                 _store_blob_file(src, sha, blobs_dir)
     prev_base_file = meta_dir / _BASE_MANIFEST_FILE
-    old_base_bytes = prev_base_file.read_bytes() if prev_base_file.is_file() else None
     prev_base = read_base_manifest(copy_path)
     prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
+    # Keep the new landed baseline on disk even if updating meta.json fails afterwards:
+    # project_dir has already been committed, so restoring the old baseline would silently replay
+    # completed edits if the user undoes them. compute_copy_merge self-heals meta["start"] from
+    # a base_manifest marked source="landed".
     _atomic_write_json(
         prev_base_file,
         {"digest": new_scan.digest, "files": new_scan.files, "skipped": prev_skipped, "source": "landed"},
     )
     meta["start"] = new_scan.digest
-    try:
-        _atomic_write_json(meta_dir / _META_FILE, meta)
-    except BaseException:
-        if old_base_bytes is not None:
-            with contextlib.suppress(OSError):
-                _atomic_write_bytes(prev_base_file, old_base_bytes)
-        raise
+    _atomic_write_json(meta_dir / _META_FILE, meta)
     _gc_blobs(blobs_dir, keep)
     pending_root = meta_dir / _PENDING_DIR
     if pending_root.is_dir():
