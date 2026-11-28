@@ -71,6 +71,8 @@ class Enabler:
         self.before_commit: Any = None
         # How many times ``on_written`` was called: the switches this enabler wrote itself.
         self.written = 0
+        # What is written and yet not up (the plugins' switch on, the plugins still starting).
+        self.written_not_up: set[str] = set()
         # What the process says may not be asked for here (a screen the user must share first).
         self.blocked: set[str] = set()
 
@@ -91,7 +93,7 @@ class Enabler:
             # What the real route does at the moment it writes a switch: nothing is written.
             return False, "switched off"
         done, why = self.result.get(capability, (True, ""))
-        if done:
+        if done or capability in self.written_not_up:
             if capability == "browser":
                 self.provider.switched_off.difference_update(BROWSER_TOOLS)
             elif capability == "keyboard_mouse":
@@ -1094,3 +1096,41 @@ async def test_a_setting_turned_to_deny_while_the_registry_is_read_is_on_record(
     assert world.enabler.enable_calls == []
     [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:browser")
     assert denied.payload["reason"] == DENIED_BY_SETTINGS
+
+
+async def test_plugins_written_but_still_starting_as_the_answer_fell_are_told_as_switched_on(world):
+    # Written, and not up within the wait (``enable`` says not done): the switch is on all the same.
+    world.permissions.set_asker(Asker("once"))
+    world.enabler.result["plugins"] = (False, "the plugins are still starting; try again in a moment")
+    world.enabler.written_not_up.add("plugins")
+    grant = await _grant_for(world)
+
+    async def text_arrives_while_they_start() -> None:
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.during_enable = text_arrives_while_they_start
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _approval_stale_switched_on("plugins")
+    assert world.state["plugins"] is True and world.enabler.written == 1
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:plugins")
+    assert denied.payload["reason"] == "approval_stale_switched_on" and denied.payload["switched_on"] is True
+
+
+async def test_a_switch_written_and_then_put_off_is_not_said_to_stay_on(world):
+    world.permissions.set_asker(Asker("once"))
+    grant = await _grant_for(world)
+
+    async def off_at_the_panel_and_text_arrives() -> None:
+        world.state["plugins"] = False
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.during_enable = off_at_the_panel_and_text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
+    assert world.enabler.written == 1
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:plugins")
+    assert denied.payload["reason"] == "approval_stale" and "switched_on" not in denied.payload

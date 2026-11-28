@@ -437,7 +437,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
             if conditional_uf:
                 Modules.user_plugin_lifecycle_seq += 1
                 user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
-                _note_written()
+                if not Modules.agent_flags.get("user_plugin_enabled", False):
+                    # Only a switch this request puts from off to on: a start tried again with the
+                    # switch on already (someone else's, say, after a registry that did not answer)
+                    # is not this request's write.
+                    _note_written()
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 

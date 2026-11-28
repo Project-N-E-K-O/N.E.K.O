@@ -1638,8 +1638,10 @@ class CapabilityGateway:
                     # for it, or it was turned on meanwhile by someone else, or this call wrote it and the
                     # answer fell after the write (while the plugins were waited for). In every case it is
                     # left as it is (not turned off), nothing is recorded as turned on for the task agent
-                    # and no free call is lent; the last is told and recorded as what it is.
-                    switched_on = bool(written) and done
+                    # and no free call is lent; the last is told and recorded as what it is. Whether this
+                    # call wrote it is not whether it came up (``done``: the plugins may still be starting,
+                    # with the switch on), and it is said to stay on only while it is on.
+                    switched_on = bool(written) and await self._switch_on_now(target)
                     forbidden_now = await self._permissions.forbidden(target.permission)
                     if forbidden_now:
                         reason = DENIED_BY_SETTINGS
@@ -1677,6 +1679,17 @@ class CapabilityGateway:
                 return await self._handed_after_enable(grant, commission, target, reply, still_valid=cleared.still_valid)
         except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
             return _text(str(exc), error=True)
+
+    async def _switch_on_now(self, target: _EnableTarget) -> bool:
+        """Whether the switch of ``target`` is on as of now (the plugins' switch, or the group's tools offered)."""
+        if target.builtin_group is None:
+            return self._registry.plugins_enabled()
+        try:
+            return any(item.group == target.builtin_group for item in await self._registry.callable_by_task_agents())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - what cannot be looked at is not said to be on
+            return False
 
     async def _handed_after_enable(
         self,
