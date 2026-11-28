@@ -121,3 +121,20 @@ async def test_a_conflicting_workflow_is_never_written(app, tmp_path):
     assert response.status_code == 200, response.text
     assert _changes(response.json())[".github/workflows/release.yml"] == "CONFLICT"
     assert marker.read_text(encoding="utf-8") == _UNMANAGED
+
+
+async def test_a_preview_works_while_another_operation_holds_the_project(app, tmp_path):
+    source_dir = _scaffold(tmp_path, "flow_demo")
+    _outdated_release(source_dir, "flow_demo")
+    record = store.add_record(source_dir)
+
+    commands.claim_project(record.project_id, "precheck")
+    try:
+        async with client(app) as http:
+            preview = await http.get(f"/plugin-projects/{record.project_id}/workflows")
+            apply = await http.post(f"/plugin-projects/{record.project_id}/workflows")
+    finally:
+        commands.release_project(record.project_id)
+    assert preview.status_code == 200, preview.text
+    # Writing still waits for the running operation.
+    assert apply.status_code == 409, apply.text

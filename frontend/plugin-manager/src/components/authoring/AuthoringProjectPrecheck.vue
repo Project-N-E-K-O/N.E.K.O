@@ -58,6 +58,7 @@ import {
   type Toolchain,
 } from '@/api/pluginProjects'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { toolEnvironmentReady } from '@/components/authoring/toolEnvironment'
 
 type StageName = PrecheckStage['name']
 type StageState = 'passed' | 'failed' | 'skipped'
@@ -71,9 +72,8 @@ const running = ref(false)
 const report = ref<PrecheckReport | null>(null)
 const requestFailure = useLocalizedError(describeError, 'precheckFailedToRun')
 const requestError = requestFailure.message
-const environmentBlocked = computed(() =>
-  !!props.environment && props.environment !== 'source' && props.environment !== 'ready'
-)
+// Unknown until the toolchain is read: the server refuses with a clear 503 then.
+const environmentBlocked = computed(() => !!props.environment && !toolEnvironmentReady(props.environment))
 
 interface StageView {
   name: StageName

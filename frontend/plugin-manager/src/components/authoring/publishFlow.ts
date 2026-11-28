@@ -20,7 +20,7 @@ import {
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState, SubmissionPhase } from '@/api/marketSubmissions'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
-import { toolErrorKey } from '@/components/authoring/toolEnvironment'
+import { toolEnvironmentReady, toolErrorKey } from '@/components/authoring/toolEnvironment'
 
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
 /** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
@@ -463,10 +463,8 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
 }
 
 function toolEnvironmentBlocker(toolchain: Toolchain): ActionBlocker | null {
+  if (toolEnvironmentReady(toolchain.tool_environment)) return null
   switch (toolchain.tool_environment) {
-    case 'source':
-    case 'ready':
-      return null
     case 'preparing':
       return hard('toolchain', message('toolEnvironmentPreparing'))
     case 'failed': {

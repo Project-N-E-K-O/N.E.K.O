@@ -729,5 +729,8 @@ async def update_project_workflows(project_id: str, *, apply: bool) -> list[dict
             for change in changes
         ]
 
+    if not apply:
+        # A preview only reads .github/: no lease, so it works during a precheck.
+        return await asyncio.to_thread(update)
     with project_operation(project_id, "update-workflows"):
         return await asyncio.to_thread(update)

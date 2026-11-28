@@ -2,6 +2,10 @@
 import type { Toolchain, ToolEnvironmentProgress } from '@/api/pluginProjects'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
 
+/** Whether the CLI can run: a source checkout, or a prepared packaged environment. */
+export const toolEnvironmentReady = (state: Toolchain['tool_environment']) =>
+  state === 'source' || state === 'ready'
+
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
 const PHASE_KEYS: Record<ToolEnvironmentProgress['phase'], AuthoringMessageKey> = {

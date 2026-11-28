@@ -59,6 +59,7 @@ import {
 } from '@/api/pluginProjects'
 import type { FlowMessage } from '@/components/authoring/publishFlow'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { toolEnvironmentReady } from '@/components/authoring/toolEnvironment'
 
 /**
  * Step 1 extras: repository creation, offered only when the project is a git
@@ -87,9 +88,8 @@ const canApply = computed(() =>
   changes.value?.some(change => change.status === 'ADD' || change.status === 'UPGRADE') &&
   !changes.value.some(change => change.status === 'CONFLICT')
 )
-const environmentBlocked = computed(() =>
-  !!props.environment && props.environment !== 'source' && props.environment !== 'ready'
-)
+// Unknown until the toolchain is read: the server refuses with a clear 503 then.
+const environmentBlocked = computed(() => !!props.environment && !toolEnvironmentReady(props.environment))
 let disposed = false
 onUnmounted(() => {
   disposed = true
