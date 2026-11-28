@@ -337,16 +337,6 @@ def http_origin_key(url: str | None) -> tuple[str, str, int | None]:
     return (scheme, host, port)
 
 
-_PROXY_ENV_NAMES_LOWER: frozenset[str] = frozenset(
-    {
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
-    }
-)
-
-
 def proxy_env_fingerprint() -> tuple[str | None, ...]:
     """Snapshot proxy environment variables, preserving unset (None) vs empty string."""
     with PROXY_ENV_LOCK:
@@ -436,11 +426,14 @@ def _proxy_mount_map_from_proxies(proxy_info: dict[str, str]) -> dict[str, str |
 def snapshot_http_proxy_config() -> tuple[tuple[Any, ...], dict[str, str | None]]:
     """Atomically capture proxy pool-key fingerprint and httpx mount map from one snapshot."""
     with PROXY_ENV_LOCK:
-        env_items = sorted(
+        # Preserve raw os.environ iteration order for parsing (matching
+        # urllib.request.getproxies_environment()) and inspect all *_proxy
+        # entries before deciding whether to fall back to OS registry/sysconf.
+        env_items = [
             (name, value)
             for name, value in os.environ.items()
-            if name.lower() in _PROXY_ENV_NAMES_LOWER
-        )
+            if name.lower().endswith("_proxy")
+        ]
         has_request_method = "REQUEST_METHOD" in os.environ
     proxy_info = _proxies_from_env_items(env_items, has_request_method=has_request_method)
     if not proxy_info:
@@ -455,7 +448,7 @@ def snapshot_http_proxy_config() -> tuple[tuple[Any, ...], dict[str, str | None]
                 # Best-effort OS proxy lookup; fall back to direct connections.
                 proxy_info = {}
     mount_map = _proxy_mount_map_from_proxies(proxy_info)
-    fingerprint = (tuple(env_items), tuple(sorted(mount_map.items())))
+    fingerprint = (tuple(sorted(env_items)), tuple(sorted(mount_map.items())))
     return fingerprint, mount_map
 
 

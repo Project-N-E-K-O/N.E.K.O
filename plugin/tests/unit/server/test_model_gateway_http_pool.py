@@ -570,3 +570,41 @@ async def test_gateway_aclose_preserves_in_flight_close_on_waiter_cancel():
     allow_finish.set()
     await asyncio.wait_for(second, timeout=1.0)
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_does_not_reserve_before_send_if_cancelled_during_client_build(monkeypatch):
+    import threading
+
+    _clear_proxy_env(monkeypatch)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    gateway = ModelGatewayService()
+    orig_make = ModelGatewayService._make_pooled_client
+    reservations: list[bool] = []
+
+    def gated_make(proxy_mount_map):
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        return orig_make(proxy_mount_map)
+
+    async def before_send() -> None:
+        reservations.append(True)
+
+    monkeypatch.setattr(gateway, "_make_pooled_client", gated_make)
+    try:
+        req_task = asyncio.create_task(
+            gateway.complete(
+                _make_slot("https://cancel-before-send.example.test/v1"),
+                _request_body(),
+                before_send=before_send,
+            )
+        )
+        await asyncio.to_thread(worker_started.wait, 5.0)
+        req_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await req_task
+        assert reservations == []
+    finally:
+        release_worker.set()
+        await gateway.aclose()

@@ -52,19 +52,20 @@ SHARED_LLM_HTTP_POOL_MAX_CLIENTS: int = 16
 class _SharedPoolEntry:
     """Reference-counted pooled client entry so evicted clients drain cleanly."""
 
-    __slots__ = ("client", "borrows", "evicted")
+    __slots__ = ("client", "borrows", "evicted", "closing")
 
     def __init__(self, client: Any) -> None:
         self.client = client
         self.borrows = 0
         self.evicted = False
+        self.closing = False
 
 
 _SHARED_HTTP_POOL_CONTEXT: contextvars.ContextVar[tuple[asyncio.AbstractEventLoop, int] | None] = (
     contextvars.ContextVar("_neko_llm_shared_http_pool_context", default=None)
 )
 
-_POOL_LOCK = threading.Lock()
+_POOL_LOCK = threading.RLock()
 _http_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, _SharedPoolEntry]]" = (
     weakref.WeakKeyDictionary()
 )
@@ -249,16 +250,35 @@ def _make_release(
     loop_ref = weakref.ref(loop)
     released = False
 
-    def _release(*, defer_close: bool = False) -> asyncio.Task[None] | None:
+    def _release(
+        *,
+        defer_close: bool = False,
+        from_finalizer: bool = False,
+    ) -> asyncio.Task[None] | None:
         nonlocal released
+        if from_finalizer:
+            # GC finalizers may run during any allocation, including while the
+            # current thread holds _POOL_LOCK. Defer the release onto the event
+            # loop so GC callbacks never acquire locks synchronously.
+            target_loop = loop_ref()
+            if target_loop is None or target_loop.is_closed():
+                return None
+            try:
+                target_loop.call_soon_threadsafe(_release)
+            except RuntimeError:
+                # Loop closed between check and scheduling; nothing to drain.
+                pass
+            return None
+
         client_to_close = None
-        target_loop: asyncio.AbstractEventLoop | None = None
+        target_loop = None
         with _POOL_LOCK:
             if released:
                 return None
             released = True
             entry.borrows = max(0, entry.borrows - 1)
-            if entry.evicted and entry.borrows == 0:
+            if entry.evicted and entry.borrows == 0 and not entry.closing:
+                entry.closing = True
                 target_loop = loop_ref()
                 if target_loop is not None:
                     draining = _draining_pools.get(target_loop)
@@ -268,18 +288,18 @@ def _make_release(
                 client_to_close = entry.client
         if client_to_close is None or target_loop is None:
             return None
-        if defer_close:
-            try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
-            if running_loop is target_loop:
-                with _POOL_LOCK:
-                    pending = _pending_close_clients.get(target_loop)
-                    if pending is None or client_to_close not in pending:
-                        return None
-                    pending.discard(client_to_close)
-                return _start_tracked_close_task(target_loop, client_to_close)
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is target_loop:
+            with _POOL_LOCK:
+                pending = _pending_close_clients.get(target_loop)
+                if pending is None or client_to_close not in pending:
+                    return None
+                pending.discard(client_to_close)
+            task = _start_tracked_close_task(target_loop, client_to_close)
+            return task if defer_close else None
         _schedule_close_on_loop(target_loop, client_to_close)
         return None
 
@@ -366,10 +386,11 @@ def acquire_shared_async_http_client(
                 while len(pool) > SHARED_LLM_HTTP_POOL_MAX_CLIENTS:
                     _, evicted = pool.popitem(last=False)
                     evicted.evicted = True
-                    if evicted.borrows == 0:
+                    if evicted.borrows == 0 and not evicted.closing:
+                        evicted.closing = True
                         _register_pending_close_client_locked(loop, evicted.client)
                         evicted_idle.append(evicted.client)
-                    else:
+                    elif evicted.borrows > 0:
                         draining = _draining_pools.get(loop)
                         if draining is None:
                             draining = set()
@@ -406,9 +427,15 @@ async def aclose_shared_llm_http_clients() -> None:
         if pool:
             for entry in pool.values():
                 entry.evicted = True
-                entries.append(entry)
+                if not entry.closing:
+                    entry.closing = True
+                    entries.append(entry)
         if draining:
-            entries.extend(draining)
+            for entry in draining:
+                entry.evicted = True
+                if not entry.closing:
+                    entry.closing = True
+                    entries.append(entry)
     try:
         clients: list[Any] = []
         seen_ids: set[int] = set()

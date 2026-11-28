@@ -294,7 +294,7 @@ class ModelGatewayService:
 
         loop = asyncio.get_running_loop()
         gen = self._generations.get(loop, 0)
-        proxy_fp, proxy_mount_map = snapshot_http_proxy_config()
+        proxy_fp, proxy_mount_map = await asyncio.to_thread(snapshot_http_proxy_config)
         key = (
             http_origin_key(slot.base_url),
             slot.protocol,
@@ -459,6 +459,10 @@ class ModelGatewayService:
 
         orig_extensions = dict(request.extensions)
         request.extensions = {**orig_extensions, "trace": _track_trace}
+        if before_send is not None:
+            # Reserve quota only once the pooled client is ready and immediately
+            # before the real upstream POST, so build/drain cancellation never consumes quota.
+            await before_send()
         started = time.monotonic()
         if observation is not None:
             observation.upstream_started = True
@@ -537,6 +541,8 @@ class ModelGatewayService:
                 )
             else:
                 request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
+                if before_send is not None:
+                    await before_send()
                 if observation is not None:
                     observation.upstream_started = True
                 response = await client.send(request, stream=True, follow_redirects=False)
@@ -574,10 +580,6 @@ class ModelGatewayService:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
-        if before_send is not None:
-            # Only a validated request that is about to be sent reserves quota;
-            # locally rejected requests must not consume the shared allowance.
-            await before_send()
         try:
             async with self._request(slot, payload, headers, observation, before_send=before_send) as response:
                 result = await read_json_response(response)
@@ -611,9 +613,6 @@ class ModelGatewayService:
         can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
-        if before_send is not None:
-            # Reserve only after validation succeeded, right before the send.
-            await before_send()
         try:
             for retrying in (False, True):
                 connected = False
@@ -656,10 +655,6 @@ class ModelGatewayService:
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )
-                if before_send is not None:
-                    # The retry is a second real upstream send with the same
-                    # free credentials; it must reserve quota again or fail.
-                    await before_send()
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

@@ -716,17 +716,24 @@ class ChatOpenAI:
         import asyncio
 
         self._closed = True
-        release = getattr(self, "_borrowed_http_release", None)
-        self._borrowed_http_release = None
-        self._client.close()
-        self._client_finalizer.detach()
         if getattr(self, "_borrowed_async_http", False):
-            if release is not None:
-                close_task = release(defer_close=True)
-                if close_task is not None:
-                    await asyncio.shield(close_task)
+            release = getattr(self, "_borrowed_http_release", None)
+            self._borrowed_http_release = None
+            close_task = None
+            try:
+                self._client.close()
+            finally:
+                if release is not None:
+                    close_task = release(defer_close=True)
+            self._client_finalizer.detach()
+            if close_task is not None:
+                await asyncio.shield(close_task)
         else:
-            await self._aclient.close()
+            try:
+                await self._aclient.close()
+            finally:
+                self._client.close()
+            self._client_finalizer.detach()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""

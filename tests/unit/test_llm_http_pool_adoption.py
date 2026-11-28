@@ -650,6 +650,19 @@ async def test_shared_http_pool_preserves_empty_base_url_and_isolates_anthropic_
         oa_env_empty = await create_chat_llm_async("m", None, "k-empty", max_completion_tokens=16, timeout=10.0)
         assert str(oa_env_empty._aclient.base_url) == ""
 
+        # Anthropic base_url="" preserves main's fallback to ANTHROPIC_BASE_URL / official default,
+        # while an explicit empty ANTHROPIC_BASE_URL="" still avoids silently routing to public endpoint.
+        an_empty_arg = await create_chat_llm_async(
+            "m", "", "k-empty", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        assert str(an_empty_arg._aclient.base_url).rstrip("/") == "https://api.anthropic.com"
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anth-fallback.example.test")
+        an_empty_arg_env = await create_chat_llm_async(
+            "m", "", "k-empty", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        assert str(an_empty_arg_env._aclient.base_url).rstrip("/") == "https://anth-fallback.example.test"
+
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "")
         an_env_empty = await create_chat_llm_async(
             "m", None, "k-empty", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
@@ -667,7 +680,7 @@ async def test_shared_http_pool_preserves_empty_base_url_and_isolates_anthropic_
         )
         assert an_tok1._aclient._client is not an_tok2._aclient._client
 
-        for llm in (oa_empty, oa_env_empty, an_env_empty, an_tok1, an_tok2):
+        for llm in (oa_empty, oa_env_empty, an_empty_arg, an_empty_arg_env, an_env_empty, an_tok1, an_tok2):
             await llm.aclose()
     finally:
         await close_warm_chat_llms()
@@ -909,18 +922,65 @@ async def test_deferred_borrower_aclose_stays_tracked_when_cancelled(monkeypatch
         await close_warm_chat_llms()
 
 
-def test_snapshot_http_proxy_config_handles_mixed_case_and_shares_proxy_lock():
+def test_snapshot_http_proxy_config_handles_mixed_case_and_shares_proxy_lock(monkeypatch):
     from main_routers.config_router import proxy as proxy_router
     from utils.http import PROXY_ENV_LOCK
-    from utils.http.pool_utils import _proxies_from_env_items, _proxy_mount_map_from_proxies
+    from utils.http.pool_utils import (
+        _proxies_from_env_items,
+        _proxy_mount_map_from_proxies,
+        snapshot_http_proxy_config,
+    )
 
     assert proxy_router._PROXY_LOCK is PROXY_ENV_LOCK
 
-    proxies_mixed = _proxies_from_env_items([("Https_Proxy", "http://127.0.0.1:7890")])
-    assert proxies_mixed == {"https": "http://127.0.0.1:7890"}
-    assert _proxy_mount_map_from_proxies(proxies_mixed) == {"https://": "http://127.0.0.1:7890"}
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("Https_Proxy", "http://127.0.0.1:7890")
+    _, mount_map = snapshot_http_proxy_config()
+    assert mount_map.get("https://") == "http://127.0.0.1:7890"
+
+    monkeypatch.setenv("https_proxy", "")
+    _, cleared_map = snapshot_http_proxy_config()
+    assert "https://" not in cleared_map
+
+    # Preserve raw iteration order when duplicate spellings coexist (Linux semantics).
+    proxies_order = _proxies_from_env_items(
+        [("Https_Proxy", "http://127.0.0.1:1111"), ("HTTPS_PROXY", "http://127.0.0.1:2222")]
+    )
+    assert proxies_order == {"https": "http://127.0.0.1:2222"}
+    assert _proxy_mount_map_from_proxies(proxies_order) == {"https://": "http://127.0.0.1:2222"}
 
     proxies_cleared = _proxies_from_env_items(
         [("Https_Proxy", "http://127.0.0.1:7890"), ("https_proxy", "")]
     )
     assert proxies_cleared == {}
+
+
+@pytest.mark.asyncio
+async def test_gc_finalizer_release_while_holding_pool_lock_does_not_deadlock(monkeypatch):
+    from utils.llm_client import create_chat_llm_async, http_pool
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(http_pool, "SHARED_LLM_HTTP_POOL_MAX_CLIENTS", 1)
+
+    try:
+        llm1 = await create_chat_llm_async(
+            "m", "https://gc-lock.example.test/v1", "k1", max_completion_tokens=16, timeout=10.0
+        )
+        http1 = llm1._aclient._client
+        llm2 = await create_chat_llm_async(
+            "m", "https://gc-lock.example.test/v1", "k2", max_completion_tokens=16, timeout=10.0
+        )
+        # Simulate GC triggering llm1's finalizer while _POOL_LOCK is held on the same thread.
+        with http_pool._POOL_LOCK:
+            llm1._client_finalizer()
+            # Direct release() under _POOL_LOCK also must not block (RLock defense-in-depth).
+            llm2._borrowed_http_release()
+
+        # Once the event loop runs scheduled callbacks, evicted http1 closes cleanly.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert http1.is_closed is True
+        await llm2.aclose()
+    finally:
+        await close_warm_chat_llms()

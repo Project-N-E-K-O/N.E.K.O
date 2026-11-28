@@ -114,7 +114,7 @@ def _close_chat_openai_clients_best_effort(
         _schedule_async_openai_client_close_best_effort(aclient)
     if callable(release_borrowed):
         try:
-            release_borrowed()
+            release_borrowed(from_finalizer=True)
         except Exception:
             # Finalizer release of a borrowed shared client must never raise.
             pass
@@ -133,7 +133,7 @@ def _close_chat_clients_best_effort(
         _schedule_async_openai_client_close_best_effort(aclient)
     if callable(release_borrowed):
         try:
-            release_borrowed()
+            release_borrowed(from_finalizer=True)
         except Exception:
             # Finalizer release of a borrowed shared client must never raise.
             pass
