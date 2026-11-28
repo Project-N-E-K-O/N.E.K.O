@@ -102,7 +102,7 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.neko_plugin_cli.core.uv_lock_install import lock_install_applies
+from plugin.neko_plugin_cli.core.uv_lock_install import lock_install_applies, lock_vendor_stale
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_AUTOSTART_CONCURRENCY,
@@ -828,6 +828,15 @@ def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) 
         return Path(config_path_obj)
 
 
+def _lock_dependencies_pending(plugin_dir: Path, missing: bool) -> bool:
+    """Missing dependencies that install from uv.lock, or a lock-installed vendor/
+    made for another Python (the host was updated; its compiled wheels may not load)."""
+    try:
+        return lock_install_applies(plugin_dir) and (missing or lock_vendor_stale(plugin_dir))
+    except OSError:
+        return False
+
+
 def _registered_load_failure_error(plugin_id: str, plugin_meta: dict[str, object] | None) -> ServerDomainError | None:
     if not isinstance(plugin_meta, dict) or plugin_meta.get("runtime_load_state") != "failed":
         return None
@@ -1363,8 +1372,8 @@ class PluginLifecycleService:
                 config_path,
                 current_plugin_id,
             )
-            if unsatisfied_python_requirements and await asyncio.to_thread(
-                lock_install_applies, config_path.parent,
+            if await asyncio.to_thread(
+                _lock_dependencies_pending, config_path.parent, bool(unsatisfied_python_requirements),
             ):
                 # The package ships uv.lock instead of vendor/: the plugin
                 # manager offers to install them (plugin_lock_dependencies.py).
@@ -1372,7 +1381,10 @@ class PluginLifecycleService:
                     code="PLUGIN_PYTHON_DEPENDENCIES_PENDING",
                     message=(
                         f"Plugin '{current_plugin_id}' needs its Python dependencies installed from its uv.lock "
-                        f"first: {unsatisfied_python_requirements}"
+                        + (
+                            f"first: {unsatisfied_python_requirements}" if unsatisfied_python_requirements
+                            else "again: its vendor/ was installed for another Python or platform"
+                        )
                     ),
                     status_code=400,
                     plugin_id=current_plugin_id,

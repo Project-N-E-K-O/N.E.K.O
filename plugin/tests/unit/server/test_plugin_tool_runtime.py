@@ -244,9 +244,30 @@ def test_source_without_uv_downloads_the_pinned_uv_and_keeps_its_interpreter(roo
     status = module.read_tool_runtime_status()
     assert status.state == "source" and status.uv == result.uv
 
-    # Reused afterwards, without downloading or starting anything.
-    assert _prepare(_no_runner).uv == result.uv
-    assert asyncio.run(module.ensure_tool_runtime(timeout=5)).uv == result.uv
+    # Reused afterwards without downloading; only its version is checked.
+    again = FakeUv(root)
+    assert _prepare(again).uv == result.uv
+    assert [cmd for cmd, _env in again.calls] == [[result.uv, "--version"]]
+    assert pypi.wheel_downloads == 1
+
+
+def test_source_downloads_again_when_the_cached_uv_is_damaged(root, monkeypatch):
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: None)
+    pypi = FakePyPI().install(monkeypatch)
+    cached = module.cached_uv_path()
+    _write_executable(cached, b"garbage")
+    runner = FakeUv(root, versions={str(cached): ""})
+    # The damaged binary does not answer --version; the fresh download does.
+    original = runner.__call__
+
+    def damaged_until_replaced(cmd, **kwargs):
+        if cmd == [str(cached), "--version"] and cached.read_bytes() == b"garbage":
+            return subprocess.CompletedProcess(cmd, 1, "", "exec format error")
+        return original(cmd, **kwargs)
+
+    assert _prepare(damaged_until_replaced).uv == str(cached)
+    assert cached.read_bytes() == b"uv-executable"
     assert pypi.wheel_downloads == 1
 
 

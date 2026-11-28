@@ -1131,6 +1131,7 @@ export default {
       size: 'Tamaño'
     },
     total: '{count} paquetes, unos {size}',
+    totalPartial: '{count} paquetes; la parte conocida ocupa unos {size} y algunos tamaños se desconocen',
     sizeUnknown: 'Desconocido',
     installAndStart: 'Instalar e iniciar',
     failedTitle: 'Las dependencias no se instalaron, así que el complemento todavía no puede iniciarse.',

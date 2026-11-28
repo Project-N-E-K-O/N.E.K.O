@@ -214,7 +214,11 @@ def test_lock_changed_during_install_is_not_swapped_in(uv, plugin_dir):
     assert _leftovers(plugin_dir) == []
 
 
-def test_lock_that_does_not_cover_pyproject_is_reported(uv, plugin_dir):
+def test_lock_that_does_not_cover_pyproject_never_replaces_vendor(uv, plugin_dir):
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    lock_install.write_lock_marker(vendor, "f" * 64)
+    (vendor / "keep.txt").write_text("old", encoding="utf-8")
     uv.installed = [("anyio", "4.16.0")]
     planned = asyncio.run(_run())
 
@@ -222,6 +226,71 @@ def test_lock_that_does_not_cover_pyproject_is_reported(uv, plugin_dir):
 
     assert status["state"] == "failed"
     assert status["error_code"] == "lock_mismatch"
+    # Checked in staging, before the swap: the previous vendor/ is intact.
+    assert (vendor / "keep.txt").read_text(encoding="utf-8") == "old"
+    assert lock_install.read_lock_marker(vendor) == "f" * 64
+    assert _leftovers(plugin_dir) == []
+
+
+def test_confirming_a_ready_plan_reports_installing_right_away(uv, plugin_dir):
+    planned = asyncio.run(_run())
+
+    async def confirm():
+        returned = await deps.request_dependency_install("demo", confirm_lock_sha256=planned["lock_sha256"])
+        await deps._tasks["demo"].runner
+        return returned
+
+    # The dialog polls only while planning or installing.
+    assert asyncio.run(confirm())["state"] == "installing"
+
+
+def test_direct_url_sources_are_rejected_before_uv_fetches_anything(uv, plugin_dir):
+    original = uv.__call__
+
+    def export_with_direct_url(cmd, **kwargs):
+        if cmd[1] == "export":
+            uv.commands.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, "evil @ http://127.0.0.1:8080/admin/x.whl \\\n    --hash=sha256:" + "0" * 64 + "\n", "",
+            )
+        return original(cmd, **kwargs)
+
+    deps.run_tool_command = export_with_direct_url  # restored by monkeypatch
+    status = asyncio.run(_run())
+
+    assert status["state"] == "failed"
+    assert status["error_code"] == "unpinned_source"
+    assert [cmd[1] for cmd in uv.commands] == ["export"]  # no dry-run ever ran
+
+
+def test_vendor_installed_for_another_python_is_pending_again(uv, plugin_dir):
+    vendor = plugin_dir / "vendor"
+    dist = vendor / "orjson-3.13.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: orjson\nVersion: 3.13.0\n", encoding="utf-8")
+    lock_install.write_lock_marker(vendor, lock_install.lock_sha256(plugin_dir))
+    assert deps.dependencies_pending(plugin_dir) is False
+
+    lock_install.write_lock_marker(vendor, lock_install.lock_sha256(plugin_dir), python="cp27-plan9")
+
+    assert deps.dependencies_pending(plugin_dir) is True
+    planned = asyncio.run(_run())
+    assert asyncio.run(_run(planned["lock_sha256"]))["state"] == "completed"
+    assert deps.dependencies_pending(plugin_dir) is False
+
+
+def test_empty_vendor_dir_from_the_archive_still_installs(uv, plugin_dir):
+    (plugin_dir / "vendor").mkdir()
+
+    assert deps.dependencies_pending(plugin_dir) is True
+    planned = asyncio.run(_run())
+    assert asyncio.run(_run(planned["lock_sha256"]))["state"] == "completed"
+
+
+def test_legacy_requirements_txt_keeps_the_old_path(uv, plugin_dir):
+    (plugin_dir / "requirements.txt").write_text("orjson\n", encoding="utf-8")
+
+    assert deps.dependencies_pending(plugin_dir) is False
 
 
 def test_plugin_shipping_its_own_vendor_is_not_touched(uv, plugin_dir):

@@ -1131,6 +1131,7 @@ export default {
       size: 'Size'
     },
     total: '{count} packages, about {size}',
+    totalPartial: '{count} packages, about {size} known; some sizes are unknown',
     sizeUnknown: 'Unknown',
     installAndStart: 'Install and start',
     failedTitle: 'The dependencies were not installed, so the plugin cannot start yet.',

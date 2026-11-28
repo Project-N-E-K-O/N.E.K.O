@@ -874,11 +874,9 @@ def _prepare_source_uv(
     locks; the interpreter stays ``sys.executable``, so no Python is
     installed. A failed download falls back to a compatible uv in the usual
     install locations. The status is not recorded: a source checkout reports
-    "source" whatever happens here.
+    "source" whatever happens here. A cached uv is version-checked first (one
+    ``uv --version``), so a damaged one is downloaded again instead of reused.
     """
-    cached = _cached_source_uv()
-    if cached is not None:
-        return cached
     _acquire_flight(cancel, deadline, wait=wait)
     try:
         root = tools_root()

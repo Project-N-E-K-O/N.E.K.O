@@ -136,10 +136,13 @@ export const usePluginStore = defineStore('plugin', () => {
     const status = metadata?.status || plugin.status || StatusEnum.STOPPED
     // Registry faults cannot be learned from /plugin/status: for a plugin
     // without a host it can synthesize "stopped". Only new metadata clears them.
-    if (status === 'load_failed' || status === 'source_missing' || status === 'dependencies_pending') return status
+    if (status === 'load_failed' || status === 'source_missing') return status
     const runtime = runtimeStatus(pluginStatuses.value[plugin.id])
-    return runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
-      ? runtime : status
+    const runtimeIsNewer = runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
+    // Pending dependencies hold until a newer runtime status says it runs:
+    // installing them and starting it ends the state even before metadata refreshes.
+    if (status === 'dependencies_pending') return runtimeIsNewer && runtime === 'running' ? runtime : status
+    return runtimeIsNewer ? runtime : status
   }
 
   const consentState = usePluginConsentState()

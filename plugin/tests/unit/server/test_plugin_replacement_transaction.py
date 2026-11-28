@@ -1286,3 +1286,46 @@ async def test_upgrade_to_a_package_with_its_own_vendor_keeps_the_shipped_one(tm
 
     assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "shipped"
     assert not (target / "vendor" / ".neko-uv-lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_carries_the_vendor_over_an_empty_shipped_vendor_dir(tmp_path: Path) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    (target / "vendor" / "dependency.txt").write_text("old", encoding="utf-8")
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+        (target / "vendor").mkdir()  # an explicit empty vendor/ entry in the archive
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "old"
+    assert not any(path.name.startswith(".vendor.") for path in target.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_failed_carry_over_copy_leaves_no_partial_vendor(tmp_path: Path, monkeypatch) -> None:
+    def failing_copytree(source, destination, **kwargs):
+        Path(destination).mkdir()
+        (Path(destination) / "half.txt").write_text("partial", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(replace_transaction.shutil, "copytree", failing_copytree)
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    # No half-copied vendor/: the plugin asks for its dependencies again instead.
+    assert not (target / "vendor").exists()

@@ -1131,6 +1131,7 @@ export default {
       size: 'サイズ'
     },
     total: '{count} 個、約 {size}',
+    totalPartial: '{count} 個、判明分だけで約 {size}（一部のサイズは不明）',
     sizeUnknown: '不明',
     installAndStart: 'インストールして起動',
     failedTitle: '依存関係をインストールできなかったため、プラグインはまだ起動できません。',

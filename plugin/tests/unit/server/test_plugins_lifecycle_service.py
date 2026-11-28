@@ -4526,3 +4526,17 @@ def test_registry_marks_lock_installable_dependencies_as_pending(
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(content, encoding="utf-8")
     assert missing_dependencies_error_type(tmp_path) == expected
+
+
+@pytest.mark.plugin_unit
+def test_start_gate_treats_a_vendor_built_for_another_python_as_pending(tmp_path: Path) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "vendor").mkdir()
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path))
+    assert module._lock_dependencies_pending(tmp_path, False) is False
+    assert module._lock_dependencies_pending(tmp_path, True) is True
+
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path), python="cp27-plan9")
+    assert module._lock_dependencies_pending(tmp_path, False) is True

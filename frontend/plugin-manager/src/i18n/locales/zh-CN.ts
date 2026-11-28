@@ -1131,6 +1131,7 @@ export default {
       size: '大小'
     },
     total: '共 {count} 个，约 {size}',
+    totalPartial: '共 {count} 个，已知部分约 {size}，部分包大小未知',
     sizeUnknown: '未知',
     installAndStart: '安装并启动',
     failedTitle: '依赖没有安装成功，插件暂时无法启动。',

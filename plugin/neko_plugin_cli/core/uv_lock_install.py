@@ -274,19 +274,60 @@ def vendor_installed_from_lock(plugin_dir: Path) -> bool:
     return vendor_dir.is_dir() and read_lock_marker(vendor_dir) is not None
 
 
-def lock_install_applies(plugin_dir: Path) -> bool:
-    """Whether missing dependencies of this plugin are this module's to install.
-
-    Only a plugin with uv.lock whose vendor/ is absent or was installed from a
-    lock by the host. A vendor/ the package shipped (or a user copied in) is
-    never replaced: such plugins keep their previous behavior.
-    """
-    if not has_lock(plugin_dir):
-        return False
+def vendor_absent(plugin_dir: Path) -> bool:
+    """No vendor/, or an empty directory (an archive can carry an explicit empty one)."""
     vendor_dir = plugin_dir / VENDOR_DIR_NAME
     if not vendor_dir.exists():
         return True
-    return vendor_installed_from_lock(plugin_dir)
+    try:
+        return vendor_dir.is_dir() and not any(vendor_dir.iterdir())
+    except OSError:
+        return False
+
+
+def lock_install_applies(plugin_dir: Path) -> bool:
+    """Whether missing dependencies of this plugin are this module's to install.
+
+    Only a plugin with uv.lock whose vendor/ is absent (or empty) or was
+    installed from a lock by the host. A vendor/ the package shipped (or a
+    user copied in) is never replaced: such plugins keep their previous
+    behavior. Neither is a plugin still declaring dependencies in the legacy
+    requirements.txt, which packaging rejects and the lock cannot cover.
+    """
+    if not has_lock(plugin_dir) or (plugin_dir / "requirements.txt").exists():
+        return False
+    return vendor_absent(plugin_dir) or vendor_installed_from_lock(plugin_dir)
+
+
+def lock_vendor_stale(plugin_dir: Path) -> bool:
+    """Whether vendor/ was installed from the lock for another Python or platform.
+
+    Its compiled wheels may not load after the host's Python changed, though
+    the installed versions still satisfy the declared requirements.
+    """
+    marker = _read_marker(plugin_dir / VENDOR_DIR_NAME)
+    return marker is not None and marker.get("python") != runtime_python_tag()
+
+
+def unpinned_requirements(exported: str) -> list[str]:
+    """Requirements of an exported lock that would not come from the package index.
+
+    ``uv export`` writes ``name==version`` for registry packages and a URL or
+    path for direct, git and local sources. Those are rejected before uv runs:
+    uv would fetch such URLs (or follow their redirects) while planning,
+    before the user confirmed anything, and they bypass the chosen index.
+    """
+    offending: list[str] = []
+    for raw in exported.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or re.fullmatch(r"--hash=[a-z0-9]+:[0-9a-f]+(\s*\\)?", line):
+            continue
+        requirement = line.rstrip("\\").strip()
+        name_part = requirement.split(";", 1)[0].strip()
+        # PEP 440 characters only after ==, so no URL can hide in the version.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,\s-]*\])?==[A-Za-z0-9.!+_-]+", name_part):
+            offending.append(name_part)
+    return offending
 
 
 def vendor_matches_lock(old_plugin_dir: Path, new_plugin_dir: Path) -> bool:
@@ -297,7 +338,7 @@ def vendor_matches_lock(old_plugin_dir: Path, new_plugin_dir: Path) -> bool:
     lock with the same digest and for this Python and platform. A shipped or
     hand-copied vendor/ never counts.
     """
-    if (new_plugin_dir / VENDOR_DIR_NAME).exists() or not has_lock(new_plugin_dir):
+    if not vendor_absent(new_plugin_dir) or not lock_install_applies(new_plugin_dir):
         return False
     old_vendor = old_plugin_dir / VENDOR_DIR_NAME
     if not old_vendor.is_dir():

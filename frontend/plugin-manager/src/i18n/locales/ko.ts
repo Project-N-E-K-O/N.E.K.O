@@ -1131,6 +1131,7 @@ export default {
       size: '크기'
     },
     total: '총 {count}개, 약 {size}',
+    totalPartial: '총 {count}개, 확인된 크기만 약 {size} (일부 크기는 알 수 없음)',
     sizeUnknown: '알 수 없음',
     installAndStart: '설치 후 시작',
     failedTitle: '의존성을 설치하지 못해 플러그인을 아직 시작할 수 없습니다.',

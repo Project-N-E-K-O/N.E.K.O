@@ -17,7 +17,11 @@
         </el-table-column>
       </el-table>
       <p class="dependency-total">
-        {{ t('pythonDependencies.total', { count: packages.length, size: formatSize(status.total_size ?? 0) }) }}
+        {{
+          status.size_complete === false
+            ? t('pythonDependencies.totalPartial', { count: packages.length, size: formatSize(status.total_size ?? 0) })
+            : t('pythonDependencies.total', { count: packages.length, size: formatSize(status.total_size ?? 0) })
+        }}
       </p>
     </template>
     <template v-else-if="status?.state === 'failed'">
@@ -110,8 +114,18 @@ function schedule() {
   timer = setTimeout(poll, POLL_MS)
 }
 
+/** A state the dialog can always leave: Retry plans again, Close gives up. */
+function retryable(errorCode = 'install_failed'): PythonDependencyStatus {
+  return { plugin_id: request.value.pluginId, state: 'failed', pending: true, error_code: errorCode }
+}
+
 function apply(next: PythonDependencyStatus) {
   if (closed) return
+  if (next.state === null && next.pending) {
+    // The task is gone (the server restarted mid-install): offer to start over.
+    status.value = retryable()
+    return
+  }
   status.value = next
   if (next.state === 'completed' || (next.state === null && !next.pending)) {
     // Installed (here, or by an earlier task): the caller starts the plugin.
@@ -135,7 +149,13 @@ async function submit(confirmLockSha256: string | null) {
   try {
     apply(await requestPythonDependencyInstall(request.value.pluginId, confirmLockSha256))
   } catch {
-    // Shown by the request layer; the user may retry or close.
+    // Shown by the request layer. The server may still have accepted it (a
+    // lost response): ask what it is doing, else let the user retry.
+    try {
+      apply(await getPythonDependencies(request.value.pluginId, { suppressErrorMessage: true }))
+    } catch {
+      if (!closed) status.value = retryable()
+    }
   } finally {
     submitting.value = false
   }

@@ -370,15 +370,25 @@ def _carry_over_locked_vendor(backup_dir: Path, target_dir: Path) -> None:
     A failed copy leaves the new install without vendor/: the plugin then
     asks for its dependencies again, as after a lock change.
     """
+    import secrets
+
     from plugin.neko_plugin_cli.core.uv_lock_install import VENDOR_DIR_NAME, vendor_matches_lock
+    from plugin.utils.source_paths import VENDOR_SYNC_STAGING_PREFIX
 
     if not vendor_matches_lock(backup_dir, target_dir):
         return
     destination = target_dir / VENDOR_DIR_NAME
+    # Copied beside vendor/ and renamed into place: a copy that fails halfway
+    # (and a cleanup that fails too) never sits at vendor/, where it would
+    # read as a shipped vendor/ and block installing from the lock.
+    staging = target_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{secrets.token_hex(4)}"
     try:
-        shutil.copytree(backup_dir / VENDOR_DIR_NAME, destination, symlinks=True)
+        shutil.copytree(backup_dir / VENDOR_DIR_NAME, staging, symlinks=True)
+        if destination.is_dir():
+            destination.rmdir()  # vendor_matches_lock() allows only an empty one here
+        staging.rename(destination)
     except OSError as exc:
-        shutil.rmtree(destination, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
         logger.warning(
             "carrying over the lock-installed vendor/ failed plugin_dir={} err_type={}",
             target_dir.name,

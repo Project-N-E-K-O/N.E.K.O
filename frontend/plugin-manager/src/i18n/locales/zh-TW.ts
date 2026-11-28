@@ -1131,6 +1131,7 @@ export default {
       size: '大小'
     },
     total: '共 {count} 個，約 {size}',
+    totalPartial: '共 {count} 個，已知部分約 {size}，部分套件大小未知',
     sizeUnknown: '未知',
     installAndStart: '安裝並啟動',
     failedTitle: '依賴沒有安裝成功，外掛暫時無法啟動。',

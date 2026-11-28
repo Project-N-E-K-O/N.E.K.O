@@ -208,3 +208,48 @@ def test_vendor_installed_for_another_python_is_not_carried_over(tmp_path):
 
     assert lock_install.read_lock_marker(old / "vendor") is not None
     assert lock_install.vendor_matches_lock(old, new) is (lock_install.runtime_python_tag() == "cp310-win-amd64")
+
+
+def test_empty_vendor_counts_as_absent_and_requirements_txt_opts_out(tmp_path):
+    plugin = _plugin(tmp_path / "a")
+    (plugin / "vendor").mkdir()
+    assert lock_install.lock_install_applies(plugin) is True
+    (plugin / "requirements.txt").write_text("x\n", encoding="utf-8")
+    assert lock_install.lock_install_applies(plugin) is False
+
+
+def test_unchanged_lock_carries_over_into_an_empty_shipped_vendor_dir(tmp_path):
+    old = _plugin(tmp_path / "old", vendor="locked")
+    new = _plugin(tmp_path / "new")
+    (new / "vendor").mkdir()
+    assert lock_install.vendor_matches_lock(old, new) is True
+
+
+def test_lock_vendor_stale_compares_the_recorded_python(tmp_path):
+    plugin = _plugin(tmp_path, vendor="locked")
+    assert lock_install.lock_vendor_stale(plugin) is False
+    lock_install.write_lock_marker(plugin / "vendor", "a" * 64, python="cp27-plan9")
+    assert lock_install.lock_vendor_stale(plugin) is True
+    assert lock_install.lock_vendor_stale(_plugin(tmp_path / "shipped", vendor="shipped")) is False
+
+
+def test_unpinned_requirements_flags_everything_not_from_the_index():
+    exported = (
+        "anyio==4.16.0 \\\n    --hash=sha256:aa\n"
+        "colorama==0.4.6 ; sys_platform == 'win32' \\\n    --hash=sha256:bb\n"
+        "uvicorn[standard]==0.30.0 \\\n    --hash=sha256:cc\n"
+        "evil @ https://10.0.0.1/x.whl \\\n    --hash=sha256:dd\n"
+        "libx @ file:///tmp/libx\n"
+        "-e ./local\n"
+        "./other\n"
+    )
+    assert lock_install.unpinned_requirements(exported) == [
+        "evil @ https://10.0.0.1/x.whl", "libx @ file:///tmp/libx", "-e ./local", "./other",
+    ]
+
+
+def test_unpinned_requirements_does_not_trust_hash_lines_or_url_versions():
+    assert lock_install.unpinned_requirements(
+        "a==1.0+cpu \\\n    --hash=sha256:aa \\\n    --hash=sha256:bb\nb==1!2.0\n"
+        "--hash=sha256:aa --index-url http://e\nc==http://evil/x\n"
+    ) == ["--hash=sha256:aa --index-url http://e", "c==http://evil/x"]

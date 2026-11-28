@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 import re
 import secrets
@@ -47,11 +48,13 @@ from plugin.neko_plugin_cli.core.uv_lock_install import (
     lock_install_applies,
     lock_install_env,
     lock_sha256,
+    lock_vendor_stale,
     locked_wheel_sizes,
     parse_install_plan,
     read_lock,
     runtime_python_tag,
     uv_export_command,
+    unpinned_requirements,
     uv_install_command,
     write_lock_marker,
 )
@@ -163,18 +166,29 @@ def _plugin_dir(plugin_id: str) -> Path | None:
     return None if builtin else plugin_dir
 
 
-def missing_requirements(plugin_dir: Path) -> list[str]:
-    """Declared third-party requirements that vendor/ does not satisfy (the start gate's view)."""
+def missing_requirements(plugin_dir: Path, vendor_dir: Path | None = None) -> list[str]:
+    """Declared third-party requirements that vendor/ (or ``vendor_dir``) does not satisfy.
+
+    The start gate's view; lock_install_applies() already excludes plugins
+    declaring dependencies in the legacy requirements.txt, so pyproject.toml
+    is the whole declaration here.
+    """
     requirements = collect_project_python_requirements(load_pyproject_toml(plugin_dir))
     external, _host = split_host_provided_requirements(requirements)
-    vendor_dir = plugin_dir / VENDOR_DIR_NAME
+    vendor_dir = plugin_dir / VENDOR_DIR_NAME if vendor_dir is None else vendor_dir
     return find_missing_python_requirements(external, search_paths=[vendor_dir] if vendor_dir.is_dir() else [])
 
 
 def dependencies_pending(plugin_dir: Path) -> bool:
-    """Whether this plugin's missing dependencies can be installed from its uv.lock."""
+    """Whether this plugin's dependencies need installing from its uv.lock.
+
+    Missing ones, or a lock-installed vendor/ made for another Python or
+    platform (the host was updated): its compiled wheels may not load.
+    """
     try:
-        return lock_install_applies(plugin_dir) and bool(missing_requirements(plugin_dir))
+        return lock_install_applies(plugin_dir) and (
+            lock_vendor_stale(plugin_dir) or bool(missing_requirements(plugin_dir))
+        )
     except (OSError, ValueError):
         return False
 
@@ -238,11 +252,32 @@ def _prepare_runtime(task: _Task, deadline: float) -> ToolRuntime:
         raise _Failure("canceled" if exc.code == "canceled" else "tools_failed", _redact(exc.detail)) from exc
 
 
-def _export(task: _Task, runtime: ToolRuntime, work_dir: Path, deadline: float) -> Path:
+def _snapshot(plugin_dir: Path, work_dir: Path) -> tuple[Path, str]:
+    """Copy pyproject.toml and uv.lock into ``work_dir``; (project copy, digest of the copied lock).
+
+    uv exports from the copy, so what is installed and what the marker says
+    come from the same lock bytes even if the plugin's file changes meanwhile.
+    """
+    project = work_dir / "project"
+    project.mkdir()
+    try:
+        lock_bytes = (plugin_dir / LOCK_FILE_NAME).read_bytes()
+        (project / "pyproject.toml").write_bytes((plugin_dir / "pyproject.toml").read_bytes())
+    except OSError as exc:
+        raise _Failure("lock_invalid", f"{LOCK_FILE_NAME} or pyproject.toml cannot be read: {exc}") from exc
+    (project / LOCK_FILE_NAME).write_bytes(lock_bytes)
+    return project, hashlib.sha256(lock_bytes).hexdigest()
+
+
+def _export(task: _Task, runtime: ToolRuntime, project: Path, work_dir: Path, deadline: float) -> Path:
     task.phase = "resolving"
-    result = _run(task, runtime, uv_export_command(runtime.uv, task.plugin_dir), "uv export", deadline)
+    result = _run(task, runtime, uv_export_command(runtime.uv, project), "uv export", deadline)
     if result.returncode:
         raise _Failure("lock_invalid", _detail(result))
+    offending = unpinned_requirements(result.stdout)
+    if offending:
+        # Rejected before uv sees them: planning would fetch these URLs before the user confirmed.
+        raise _Failure("unpinned_source", _redact("Not from the package index: " + ", ".join(offending))[:_DETAIL_LIMIT])
     requirements = work_dir / "requirements.txt"
     requirements.write_text(result.stdout, encoding="utf-8")
     return requirements
@@ -251,15 +286,15 @@ def _export(task: _Task, runtime: ToolRuntime, work_dir: Path, deadline: float) 
 def _plan_sync(task: _Task, deadline: float) -> None:
     if not lock_install_applies(task.plugin_dir):
         raise _Failure("not_applicable", "The plugin has no uv.lock, or ships its own vendor/")
-    try:
-        digest = lock_sha256(task.plugin_dir)
-        lock_data = read_lock(task.plugin_dir)
-    except (OSError, ValueError) as exc:
-        raise _Failure("lock_invalid", f"{LOCK_FILE_NAME} cannot be read: {exc}") from exc
     runtime = _prepare_runtime(task, deadline)
     with tempfile.TemporaryDirectory(prefix="neko-lock-plan-") as temporary:
         work_dir = Path(temporary)
-        requirements = _export(task, runtime, work_dir, deadline)
+        project, digest = _snapshot(task.plugin_dir, work_dir)
+        try:
+            lock_data = read_lock(project)
+        except (OSError, ValueError) as exc:
+            raise _Failure("lock_invalid", f"{LOCK_FILE_NAME} cannot be read: {exc}") from exc
+        requirements = _export(task, runtime, project, work_dir, deadline)
         result = _run(
             task, runtime,
             uv_install_command(runtime.uv, runtime.python, requirements, work_dir / "target", dry_run=True),
@@ -295,17 +330,28 @@ def _install_sync(task: _Task, deadline: float) -> Path:
     staging = task.plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{secrets.token_hex(4)}"
     try:
         with tempfile.TemporaryDirectory(prefix="neko-lock-install-") as temporary:
-            requirements = _export(task, runtime, Path(temporary), deadline)
+            work_dir = Path(temporary)
+            project, digest = _snapshot(task.plugin_dir, work_dir)
+            if digest != task.lock_sha256:
+                raise _Failure("lock_changed", "uv.lock changed after the user confirmed it")
+            requirements = _export(task, runtime, project, work_dir, deadline)
             task.phase = "installing"
             result = _run(
                 task, runtime, uv_install_command(runtime.uv, runtime.python, requirements, staging),
                 "uv pip install", deadline,
             )
-        if result.returncode:
-            raise _Failure(_classify((result.stderr or "") + "\n" + (result.stdout or "")), _detail(result))
-        staging.mkdir(exist_ok=True)
-        assert task.lock_sha256 is not None
-        write_lock_marker(staging, task.lock_sha256, python=runtime_python_tag())
+            if result.returncode:
+                raise _Failure(_classify((result.stderr or "") + "\n" + (result.stdout or "")), _detail(result))
+            staging.mkdir(exist_ok=True)
+            # Checked before the swap, against the snapshot uv installed from,
+            # so a lock that does not cover pyproject.toml never replaces a working vendor/.
+            still_missing = missing_requirements(project, staging)
+        if still_missing:
+            raise _Failure(
+                "lock_mismatch",
+                f"uv.lock does not provide what pyproject.toml declares: {', '.join(still_missing)}",
+            )
+        write_lock_marker(staging, digest, python=runtime_python_tag())
         return staging
     except BaseException:
         _discard_staging(task.plugin_dir, staging)
@@ -383,13 +429,7 @@ async def _execute(task: _Task, *, install: bool) -> None:
         task.phase = "committing"
         await _commit(task, staging)
         task.phase = "verifying"
-        still_missing = await asyncio.to_thread(missing_requirements, task.plugin_dir)
         await _refresh_registry(task.plugin_id)
-        if still_missing:
-            raise _Failure(
-                "lock_mismatch",
-                f"uv.lock does not provide what pyproject.toml declares: {', '.join(still_missing)}",
-            )
         task.state, task.phase = "completed", None
     except _Failure as exc:
         task.state, task.phase = "failed", None
@@ -451,6 +491,8 @@ async def request_dependency_install(plugin_id: str, *, confirm_lock_sha256: str
         if reuse:
             assert task is not None
             install = True
+            # Reported before the task runs, so the dialog polls instead of staying on the list.
+            task.state = "installing"
             task.error_code = task.error_detail = None
             task.cancel = threading.Event()
         else:

@@ -103,7 +103,8 @@ describe('PluginDependencyDialog', () => {
       'orjson 3.13.0', 'idna 3.20',
     ])
     expect(root.textContent).toContain('pythonDependencies.introduction {"name":"Demo Plugin"}')
-    expect(root.textContent).toContain('pythonDependencies.total {"count":2,"size":"127 KB"}')
+    // One size is unknown: the total says it covers only the known part.
+    expect(root.textContent).toContain('pythonDependencies.totalPartial {"count":2,"size":"127 KB"}')
     // Two buttons: cancel and install.
     expect(buttons(root).map((button) => button.textContent)).toEqual([
       'common.cancel', 'pythonDependencies.installAndStart',
@@ -167,5 +168,54 @@ describe('PluginDependencyDialog', () => {
     await flush()
 
     expect(root.textContent).toContain('pythonDependencies.errors.install_failed')
+  })
+
+  it('a complete size list shows the plain total', async () => {
+    api.requestPythonDependencyInstall.mockResolvedValue({ ...awaiting, size_complete: true })
+    const { root } = mount()
+    await flush()
+
+    expect(root.textContent).toContain('pythonDependencies.total {"count":2,"size":"127 KB"}')
+  })
+
+  it('a task lost on the server (state null, still pending) becomes retryable', async () => {
+    vi.useFakeTimers()
+    api.requestPythonDependencyInstall.mockResolvedValue({ ...awaiting, state: 'installing' })
+    const { root } = mount()
+    await flush()
+
+    api.getPythonDependencies.mockResolvedValue({ plugin_id: 'demo', state: null, pending: true })
+    await vi.advanceTimersByTimeAsync(1100)
+    await flush()
+
+    expect(buttons(root).map((button) => button.textContent)).toEqual(['common.close', 'common.retry'])
+    api.requestPythonDependencyInstall.mockResolvedValue(awaiting)
+    buttons(root)[1]!.click()
+    await flush()
+    expect(api.requestPythonDependencyInstall).toHaveBeenLastCalledWith('demo', null)
+  })
+
+  it('a failed planning request asks the server again, then offers retry', async () => {
+    api.requestPythonDependencyInstall.mockRejectedValue(new Error('offline'))
+    api.getPythonDependencies
+      .mockResolvedValueOnce({ plugin_id: 'demo', state: null, pending: true })
+      .mockRejectedValueOnce(new Error('offline'))
+    const { root } = mount()
+    await flush()
+
+    expect(api.getPythonDependencies).toHaveBeenCalledTimes(2)
+    expect(root.textContent).toContain('pythonDependencies.errors.install_failed')
+    expect(buttons(root).map((button) => button.textContent)).toEqual(['common.close', 'common.retry'])
+  })
+
+  it('a lost response is recovered from the server state', async () => {
+    api.requestPythonDependencyInstall.mockRejectedValue(new Error('timeout'))
+    api.getPythonDependencies
+      .mockResolvedValueOnce({ plugin_id: 'demo', state: null, pending: true })
+      .mockResolvedValueOnce(awaiting)
+    const { root } = mount()
+    await flush()
+
+    expect([...root.querySelectorAll('[data-testid="row"]')]).toHaveLength(2)
   })
 })

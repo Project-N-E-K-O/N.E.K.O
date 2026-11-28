@@ -1131,6 +1131,7 @@ export default {
       size: 'Tamanho'
     },
     total: '{count} pacotes, cerca de {size}',
+    totalPartial: '{count} pacotes; a parte conhecida tem cerca de {size} e alguns tamanhos são desconhecidos',
     sizeUnknown: 'Desconhecido',
     installAndStart: 'Instalar e iniciar',
     failedTitle: 'As dependências não foram instaladas, então o plugin ainda não pode ser iniciado.',
