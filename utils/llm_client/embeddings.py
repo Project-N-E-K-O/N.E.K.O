@@ -84,8 +84,9 @@ class OpenAIEmbeddings:
             default_headers=_headers,
             max_retries=max_retries,
         )
-        if timeout is not None:
-            client_kw["timeout"] = build_split_http_timeout(timeout)
+        _timeout = build_split_http_timeout(timeout)
+        if _timeout is not None:
+            client_kw["timeout"] = _timeout
 
         sync_http = install_stale_connection_retry(
             DefaultHttpxClient(**http_kw),

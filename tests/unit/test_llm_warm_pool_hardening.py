@@ -27,6 +27,8 @@ pytestmark = pytest.mark.unit
 
 def test_build_split_http_timeout_splits_bare_numbers_and_preserves_caps():
     assert build_split_http_timeout(None) is None
+    assert build_split_http_timeout(0) is None
+    assert build_split_http_timeout(-5.0) is None
 
     explicit = httpx.Timeout(connect=3.0, read=45.0, write=12.0, pool=4.0)
     assert build_split_http_timeout(explicit) is explicit
@@ -57,6 +59,93 @@ def test_build_split_http_timeout_splits_bare_numbers_and_preserves_caps():
         write=30.0,
         pool=10.0,
     )
+
+
+@pytest.mark.parametrize("client_name", ["ChatOpenAI", "ChatAnthropic"])
+def test_chat_clients_treat_non_positive_timeout_as_fallback(client_name):
+    from utils import llm_client
+
+    client_cls = getattr(llm_client, client_name)
+    llm = client_cls(
+        model="m",
+        base_url="https://api.example.test/v1",
+        api_key="k",
+        timeout=0,
+        request_timeout=45.0,
+    )
+    try:
+        assert llm._aclient.timeout == httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
+    finally:
+        llm.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_retry_does_not_retry_mid_processing_disconnect_async(monkeypatch):
+    from tests.fake_clock import patch_module_clock
+    from utils.http import pool_utils
+
+    now = [100.0]
+    patch_module_clock(monkeypatch, pool_utils, monotonic=lambda: now[0])
+
+    class _SlowDisconnectAsyncTransport(httpx.AsyncBaseTransport):
+        def __init__(self, advance_seconds: float):
+            self.advance_seconds = advance_seconds
+            self.calls = 0
+
+        async def handle_async_request(self, request):
+            self.calls += 1
+            await request.aread()
+            now[0] += self.advance_seconds
+            if self.calls == 1:
+                raise httpx.RemoteProtocolError("Server disconnected mid-generation")
+            return httpx.Response(200, text="duplicate")
+
+    # Disconnect after >2s (e.g., upstream gateway cut off a long non-streaming LLM call): must NOT retry.
+    slow_transport = _SlowDisconnectAsyncTransport(pool_utils.STALE_RETRY_MAX_ELAPSED_SECONDS + 0.5)
+    async with install_stale_connection_retry(httpx.AsyncClient(transport=slow_transport)) as client:
+        with pytest.raises(httpx.RemoteProtocolError):
+            await client.post("https://llm.test/v1/chat/completions", json={"hi": 1})
+    assert slow_transport.calls == 1
+
+    # Immediate disconnect (<=2s, dead idle keep-alive socket): retried once.
+    fast_transport = _SlowDisconnectAsyncTransport(0.05)
+    async with install_stale_connection_retry(httpx.AsyncClient(transport=fast_transport)) as client:
+        resp = await client.post("https://llm.test/v1/chat/completions", json={"hi": 1})
+    assert resp.status_code == 200
+    assert fast_transport.calls == 2
+
+
+def test_stale_retry_does_not_retry_mid_processing_disconnect_sync(monkeypatch):
+    from tests.fake_clock import patch_module_clock
+    from utils.http import pool_utils
+
+    now = [200.0]
+    patch_module_clock(monkeypatch, pool_utils, monotonic=lambda: now[0])
+
+    class _SlowDisconnectSyncTransport(httpx.BaseTransport):
+        def __init__(self, advance_seconds: float):
+            self.advance_seconds = advance_seconds
+            self.calls = 0
+
+        def handle_request(self, request):
+            self.calls += 1
+            request.read()
+            now[0] += self.advance_seconds
+            if self.calls == 1:
+                raise httpx.ReadError("connection reset mid-generation")
+            return httpx.Response(200, text="duplicate")
+
+    slow_transport = _SlowDisconnectSyncTransport(pool_utils.STALE_RETRY_MAX_ELAPSED_SECONDS + 0.5)
+    with install_stale_connection_retry(httpx.Client(transport=slow_transport)) as client:
+        with pytest.raises(httpx.ReadError):
+            client.post("https://llm.test/v1/chat/completions", json={"hi": 1})
+    assert slow_transport.calls == 1
+
+    fast_transport = _SlowDisconnectSyncTransport(0.05)
+    with install_stale_connection_retry(httpx.Client(transport=fast_transport)) as client:
+        resp = client.post("https://llm.test/v1/chat/completions", json={"hi": 1})
+    assert resp.status_code == 200
+    assert fast_transport.calls == 2
 
 
 # ──────────────────── stale-connection retry (async + sync) ────────────────────

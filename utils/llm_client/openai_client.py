@@ -167,10 +167,12 @@ class ChatOpenAI:
         )
 
         _api_key = "sk-placeholder" if api_key is None else api_key
-        _raw_timeout = timeout if timeout is not None else request_timeout
+        _timeout = build_split_http_timeout(timeout)
+        if _timeout is None:
+            _timeout = build_split_http_timeout(request_timeout)
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
-        if _raw_timeout is not None:
-            client_kw["timeout"] = build_split_http_timeout(_raw_timeout)
+        if _timeout is not None:
+            client_kw["timeout"] = _timeout
         # Inject neko/<version> User-Agent, overriding SDK UA (AsyncOpenAI/Python x.y.z),
         # avoiding custom endpoints' Cloudflare "Manage AI bots" blocking.
         from utils.http_client import ensure_user_agent
@@ -335,7 +337,11 @@ class ChatOpenAI:
         if "timeout" in p and isinstance(p["timeout"], (int, float)) and not isinstance(p["timeout"], bool):
             from utils.http.pool_utils import build_split_http_timeout
 
-            p["timeout"] = build_split_http_timeout(p["timeout"])
+            resolved_timeout = build_split_http_timeout(p["timeout"])
+            if resolved_timeout is None:
+                p.pop("timeout", None)
+            else:
+                p["timeout"] = resolved_timeout
 
         # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
         # utils/llm_prompt_audit.py once budget tuning is done.

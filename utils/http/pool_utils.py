@@ -31,6 +31,7 @@ preserving the caller's ``read`` ceiling.
 from __future__ import annotations
 
 import asyncio
+import time
 import weakref
 from typing import Any, TypeVar
 
@@ -77,6 +78,11 @@ STALE_CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
     httpx.WriteError,
 )
 
+# Maximum elapsed time after sending a request for a transport disconnect to be
+# treated as a dead idle keep-alive socket rather than an in-flight upstream
+# drop while the server is already processing / billing a long LLM request.
+STALE_RETRY_MAX_ELAPSED_SECONDS: float = 2.0
+
 _ClientT = TypeVar("_ClientT")
 
 
@@ -89,10 +95,12 @@ def build_split_http_timeout(
 ) -> httpx.Timeout | Any | None:
     """Convert a bare numeric timeout into a split ``httpx.Timeout``.
 
-    ``None`` and existing ``httpx.Timeout`` instances pass through unchanged.
-    Non-numeric SDK sentinels also pass through unchanged. Numeric values cap
-    ``connect``, ``write``, and ``pool`` while keeping ``read`` at the caller's
-    configured upper bound (never enlarging any short timeout).
+    ``None``, non-positive numbers, and existing ``httpx.Timeout`` instances
+    are handled safely: ``None`` and numeric values ``<= 0`` return ``None``
+    (allowing fallback to ``request_timeout`` or the SDK default), existing
+    ``httpx.Timeout`` and non-numeric SDK sentinels pass through unchanged, and
+    positive numbers cap ``connect``, ``write``, and ``pool`` while keeping
+    ``read`` at the caller's configured upper bound.
     """
     if timeout is None or isinstance(timeout, httpx.Timeout):
         return timeout
@@ -100,7 +108,7 @@ def build_split_http_timeout(
         return timeout
     read_s = float(timeout)
     if read_s <= 0:
-        return httpx.Timeout(read_s)
+        return None
     return httpx.Timeout(
         connect=min(float(connect), read_s),
         read=read_s,
@@ -109,7 +117,12 @@ def build_split_http_timeout(
     )
 
 
-def _wrap_async_transport(transport: Any, *, label: str) -> None:
+def _wrap_async_transport(
+    transport: Any,
+    *,
+    label: str,
+    max_elapsed_seconds: float = STALE_RETRY_MAX_ELAPSED_SECONDS,
+) -> None:
     original = getattr(transport, "handle_async_request", None)
     if original is None or getattr(original, "_neko_stale_retry", False):
         return
@@ -118,17 +131,20 @@ def _wrap_async_transport(transport: Any, *, label: str) -> None:
         # Decide before sending: reading a streamed body may swap it for a
         # buffered copy, but what went out once cannot be generated again.
         replayable = isinstance(request.stream, httpx.ByteStream)
+        started = time.monotonic()
         # Returns once the response headers are in; the body streams later,
         # so nothing below retries after any response data arrived.
         try:
             return await original(request)
         except STALE_CONNECTION_ERRORS as exc:
-            if not replayable:
+            elapsed = time.monotonic() - started
+            if not replayable or elapsed > max_elapsed_seconds:
                 raise
             logger.info(
-                "%s 请求所用连接已被对端断开（%s），重试一次: host=%s",
+                "%s 请求所用连接已被对端断开（%s，耗时 %.3fs），重试一次: host=%s",
                 label,
                 type(exc).__name__,
+                elapsed,
                 request.url.host,
             )
             return await original(request)
@@ -137,22 +153,30 @@ def _wrap_async_transport(transport: Any, *, label: str) -> None:
     transport.handle_async_request = handle_async_request
 
 
-def _wrap_sync_transport(transport: Any, *, label: str) -> None:
+def _wrap_sync_transport(
+    transport: Any,
+    *,
+    label: str,
+    max_elapsed_seconds: float = STALE_RETRY_MAX_ELAPSED_SECONDS,
+) -> None:
     original = getattr(transport, "handle_request", None)
     if original is None or getattr(original, "_neko_stale_retry", False):
         return
 
     def handle_request(request: httpx.Request) -> httpx.Response:
         replayable = isinstance(request.stream, httpx.ByteStream)
+        started = time.monotonic()
         try:
             return original(request)
         except STALE_CONNECTION_ERRORS as exc:
-            if not replayable:
+            elapsed = time.monotonic() - started
+            if not replayable or elapsed > max_elapsed_seconds:
                 raise
             logger.info(
-                "%s 请求所用连接已被对端断开（%s），重试一次: host=%s",
+                "%s 请求所用连接已被对端断开（%s，耗时 %.3fs），重试一次: host=%s",
                 label,
                 type(exc).__name__,
+                elapsed,
                 request.url.host,
             )
             return original(request)
@@ -161,18 +185,34 @@ def _wrap_sync_transport(transport: Any, *, label: str) -> None:
     transport.handle_request = handle_request
 
 
-def install_stale_connection_retry(client: _ClientT, *, label: str = "HTTP") -> _ClientT:
+def install_stale_connection_retry(
+    client: _ClientT,
+    *,
+    label: str = "HTTP",
+    max_elapsed_seconds: float = STALE_RETRY_MAX_ELAPSED_SECONDS,
+) -> _ClientT:
     """Retry a replayable request once when its pooled connection is dead.
 
     Wraps the client's default transport and any proxy mounts (both async and
     sync handlers when present), below event hooks, auth, and redirects, so a
-    retry resends the exact same request. Safe to call on test fakes lacking
-    ``_transport`` or ``_mounts`` and idempotent across repeated calls.
+    retry resends the exact same request. Only failures occurring within
+    *max_elapsed_seconds* of sending are retried so mid-processing disconnects
+    on long non-streaming LLM requests are never duplicated. Safe to call on
+    test fakes lacking ``_transport`` or ``_mounts`` and idempotent across
+    repeated calls.
     """
     transports = [getattr(client, "_transport", None)]
     transports.extend((getattr(client, "_mounts", None) or {}).values())
     for transport in transports:
         if transport is not None:
-            _wrap_async_transport(transport, label=label)
-            _wrap_sync_transport(transport, label=label)
+            _wrap_async_transport(
+                transport,
+                label=label,
+                max_elapsed_seconds=max_elapsed_seconds,
+            )
+            _wrap_sync_transport(
+                transport,
+                label=label,
+                max_elapsed_seconds=max_elapsed_seconds,
+            )
     return client

@@ -807,12 +807,14 @@ class ChatAnthropic:
         )
 
         _api_key = api_key or "sk-placeholder"
-        _raw_timeout = timeout if timeout is not None else request_timeout
+        _timeout = build_split_http_timeout(timeout)
+        if _timeout is None:
+            _timeout = build_split_http_timeout(request_timeout)
         client_kw: dict[str, Any] = dict(api_key=_api_key, max_retries=max_retries)
         if self.base_url:
             client_kw["base_url"] = self.base_url
-        if _raw_timeout is not None:
-            client_kw["timeout"] = build_split_http_timeout(_raw_timeout)
+        if _timeout is not None:
+            client_kw["timeout"] = _timeout
         # Set the neko/<version> User-Agent to override the SDK's built-in UA (AsyncAnthropic/Python x.y.z),
         # preventing Cloudflare "Manage AI bots" rules from blocking custom API endpoints. Do not override a UA already
         # explicitly set in default_headers by the caller (for example, Kimi Code's claude-code/0.1.0).
@@ -955,6 +957,8 @@ class ChatAnthropic:
                     from utils.http.pool_utils import build_split_http_timeout
 
                     value = build_split_http_timeout(value)
+                    if value is None:
+                        continue
                 payload[key] = value
             elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
                 _apply_anthropic_body_fields(payload, {key: value})

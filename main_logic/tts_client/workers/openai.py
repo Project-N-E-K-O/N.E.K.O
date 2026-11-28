@@ -168,6 +168,10 @@ def openai_tts_worker(
             http_client = http_client_type()
         client_kwargs["http_client"] = install_stale_connection_retry(http_client)
         client_kwargs["timeout"] = OPENAI_TTS_HTTP_TIMEOUT
+        # Align with sibling raw-httpx TTS workers (cogtts / doubao / minimax /
+        # qwen_token_plan): stale-connection drops are retried once below, while
+        # 429/5xx surface promptly to the TTS error/fallback path rather than
+        # stalling live speech playback across multiple SDK backoff retries.
         client_kwargs["max_retries"] = 0
         client = AsyncOpenAI(**client_kwargs)
         # Derive vendor extensions and the log host from the URL the SDK will

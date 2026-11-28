@@ -894,8 +894,6 @@ async def shutdown():
         defer_pool_cleanup = False
 
     if not defer_pool_cleanup:
-        import time
-
         try:
             from utils.llm_client.warm_pool import close_warm_chat_llms
 
