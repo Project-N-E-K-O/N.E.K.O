@@ -58,6 +58,9 @@ class Modules:
     # The task that brings the plugins up after the switch was put on (``set_agent_flags``): what
     # a task agent that asked for the plugins waits for (``nekopower_mount``).
     user_plugin_enable_task: Optional[Any] = None
+    # How many times the plugins switch was put off from on (``_put_switch_off``): a start that came up is
+    # followed to a newer one only if the switch went off in between (``nekopower_mount``).
+    user_plugin_switch_offs: int = 0
     # The master switch. The name is the one the persisted intent file and the
     # status snapshot use; nothing is "analyzed" any more.
     analyzer_enabled: bool = False
@@ -128,6 +131,8 @@ def _put_switch_off(key: str) -> None:
     be on again by then, or the caller cancelled. Every place
     that puts one of them off does it by this.
     """
+    if key == "user_plugin_enabled" and Modules.agent_flags.get(key, False):
+        Modules.user_plugin_switch_offs += 1
     Modules.agent_flags[key] = False
     try:
         # Resolved when called: that module imports this one.

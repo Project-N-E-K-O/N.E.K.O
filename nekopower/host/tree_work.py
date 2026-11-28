@@ -54,7 +54,7 @@ from pathlib import Path
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
-from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
+from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, SeatChanged, Session, Tree
 from nekopower.host.permissions import OPEN_SESSION
 
 logger = logging.getLogger(__name__)
@@ -422,7 +422,7 @@ class TreeWork:
             return True
         return await self.tree_possible(member.project, member.workdir)
 
-    async def seat_of_new_member(self, project: str) -> str:
+    async def seat_of_new_member(self, project: str, *, but: str = "") -> str:
         """Return the seat a new member that changes files gets in a project: ``tree`` beside one that works in its directory.
 
         The first member that changes files works in the project's
@@ -430,10 +430,12 @@ class TreeWork:
         work has a worktree made for each of its commissions, and so
         does not wait for it. One that only reads is nobody to wait
         for. (Of every character: the directory is the project's.)
+        ``but`` is a member that is not counted: the one a seat is
+        chosen for, where it is a member already (``change_duty``).
         """
         rows = await self._ledger.find_sessions(project=project, kind="line", limit=500, commissions_each=0)
         for row in rows:
-            if row.session.seat != "" or not await self._ledger.session_alive(row.session):
+            if row.session.id == but or row.session.seat != "" or not await self._ledger.session_alive(row.session):
                 continue
             try:
                 writes = bool((await self._template_of(row.session)).changes_files)
@@ -849,7 +851,13 @@ class TreeWork:
                     project_dir=home,
                     path=str(path),
                     workdir=str(path / probe.subpath) if probe.subpath else str(path),
+                    # Only while it is still to have one: read a while ago, and it may have been
+                    # given a preset that cannot change files since (``change_duty``), which
+                    # found no worktree of it then and is to find none later.
+                    seat=kept.seat,
                 )
+            except SeatChanged as exc:
+                return None, "seat_changed", str(exc)
             except ValueError as exc:
                 return None, "name_taken", str(exc)
             self._trees_mine.add(row.id)
@@ -2509,7 +2517,7 @@ class TreeWork:
                 return dict(event.payload)
         return {}
 
-    async def _cb_start_team(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_start_team(self, session_id: str, payload: dict[str, Any], *, ahead: bool = False) -> dict[str, Any]:
         """Start several task agents for the commission a leader is at, each with a part of it (the ``start_team`` tool).
 
         The leader keeps the commission. Each part is started as a task
@@ -2520,6 +2528,9 @@ class TreeWork:
         is asked once for a team that changes files (``OPEN_SESSION``,
         with who is to be started); allowed, the rest of this
         commission's team is not asked about again.
+
+        ``ahead`` of the call (``TaskAgentManager._rule_on_host_tool``)
+        the user is asked what the call would ask, and nobody is started.
         """
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -2590,9 +2601,9 @@ class TreeWork:
                     )
                     for part in writers
                 ]
-                decision = await self._permissions.check(
+                decision = await self._may_open(
                     commission_id,
-                    OPEN_SESSION,
+                    ahead=ahead,
                     detail={
                         "tool": "start_team",
                         "title": "; ".join(members),
@@ -2621,6 +2632,8 @@ class TreeWork:
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HANDED_OVER_ALREADY)
                 self._team_allowed.add(commission_id)
+        if ahead:
+            return {}
         inspect = bool(payload.get("inspect"))
         taken: list[dict[str, Any]] = []
         refused: list[tuple[str, str]] = []

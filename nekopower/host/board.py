@@ -22,7 +22,7 @@
      "loose": [card, ...]}           # sessions that belong to no project
 
     card = {"id", "name", "kind", "lanlan_name", "runtime", "workdir",
-            "preset", "avatar", "label", "description",
+            "preset", "preset_was", "avatar", "label", "description",
             "title", "title_by", "duty", "duty_by", "summary", "summary_by",
             "doing", "state", "leader", "parent", "team", "model", "model_fallback",
             "usage", "context_tokens", "last_active_at", "tree",
@@ -272,6 +272,9 @@ def card_of(
         "runtime": session.runtime,
         "workdir": session.workdir,
         "preset": session.preset,
+        # The preset its task agent was last started under, where that is another than the one
+        # it has (``Session.preset_told``): the change holds from its next start.
+        "preset_was": session.preset_told if session.preset_told and session.preset_told != session.preset else None,
         # A copy is drawn as a copy; a preset whose template cannot be used, plainly.
         "avatar": SHADOW if session.preset == SHADOW else (found.avatar if found is not None else "general"),
         "label": found.label if found is not None else "",

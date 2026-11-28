@@ -914,6 +914,99 @@ async def _periodic_signal_extraction_loop():
 
 # ── memory-evidence-rfc §3.4.5: negative-keyword hook helpers ───────
 
+# Decision reading (D16): every observation whose choice probability reaches
+# this is a target, at most NEGATIVE_TARGET_DECISION_MAX_PICKS of them.
+NEGATIVE_TARGET_DECISION_THRESHOLD = 0.7
+# The probabilities of one choice add up to 1, so at this threshold at most one
+# observation passes; the cap is the evaluated reading's (k=3) and only a guard.
+NEGATIVE_TARGET_DECISION_MAX_PICKS = 3
+NEGATIVE_TARGET_DECISION_TIMEOUT_SECONDS = 8.0
+# Tokens of an observation's text shown in its option (the state shows more).
+_NEGATIVE_TARGET_OPTION_MAX_TOKENS = 40
+
+
+def _negative_target_decision_question(user_messages: list[str], observations: list[dict]):
+    """The state, the ``target`` question and the observation behind each option key."""
+    from config import (
+        DECISION_STATE_MAX_TOKENS,
+        EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+        NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS,
+    )
+    from config.prompts.prompts_directives import (
+        NEGATIVE_TARGET_DECISION_HEADERS,
+        NEGATIVE_TARGET_DECISION_INSTRUCTIONS,
+        NEGATIVE_TARGET_DECISION_NONE,
+    )
+    from utils.decision_client import ChoiceQuestion
+    from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
+
+    msgs = "\n".join(user_messages[-NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS:])
+    budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
+    msgs = truncate_head_tail_tokens(msgs, budget // 3, budget - budget // 3)
+    h_user, h_obs = NEGATIVE_TARGET_DECISION_HEADERS
+    header = f"{h_user}\n{msgs}\n\n{h_obs}\n"
+    avail = max(1, DECISION_STATE_MAX_TOKENS - count_tokens(header) - 64)
+    lines: list[str] = []
+    picked: list[tuple[dict, str]] = []
+    used = 0
+    for obs in observations:
+        text = truncate_to_tokens(obs.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)
+        line = f"[{obs['id']}] {text}"
+        cost = count_tokens(line) + 1
+        if used + cost > avail:
+            if not lines:
+                lines.append(truncate_to_tokens(line, avail))
+                picked.append((obs, text))
+            break
+        lines.append(line)
+        picked.append((obs, text))
+        used += cost
+    criteria = {"none": NEGATIVE_TARGET_DECISION_NONE}
+    by_key: dict[str, dict] = {}
+    for i, (obs, text) in enumerate(picked):
+        key = f"o{i + 1}"
+        criteria[key] = f"observation [{obs['id']}]: {truncate_to_tokens(text, _NEGATIVE_TARGET_OPTION_MAX_TOKENS)}"
+        by_key[key] = obs
+    question = ChoiceQuestion(instructions=NEGATIVE_TARGET_DECISION_INSTRUCTIONS, criteria=criteria)
+    return header + "\n".join(lines), {"target": question}, by_key
+
+
+async def _adecide_negative_targets(
+    lanlan_name: str, user_messages: list[str], observations: list[dict],
+) -> list[dict] | None:
+    """The observations the pushback targets, by decision question; ``None`` to use the chat prompt."""
+    try:
+        from utils.decision_client import ask_site_questions
+        from utils.decision_client.routing import SITE_NEGATIVE_KEYWORDS
+
+        state, questions, by_key = _negative_target_decision_question(user_messages, observations)
+        answers = await ask_site_questions(
+            SITE_NEGATIVE_KEYWORDS,
+            state=state,
+            questions=questions,
+            chat_config=None,
+            rehost=False,  # multi-target: the rehost reading did not hold up (D24)
+            timeout=NEGATIVE_TARGET_DECISION_TIMEOUT_SECONDS,
+            call_type="memory_negative_target_check",
+        )
+    except Exception as e:
+        logger.debug(f"[NegKW] {lanlan_name}: 决策判定跳过: {type(e).__name__}")
+        return None
+    if not answers:
+        return None
+    answer = answers.get("target")
+    probs = dict(getattr(answer, "probabilities", None) or {})
+    if not probs:
+        # A choice without probabilities cannot pass a threshold: ask the chat prompt.
+        return None
+    ranked = sorted(
+        ((float(p), key) for key, p in probs.items()
+         if key in by_key and p is not None and float(p) >= NEGATIVE_TARGET_DECISION_THRESHOLD),
+        reverse=True,
+    )
+    return [by_key[key] for _, key in ranked[:NEGATIVE_TARGET_DECISION_MAX_PICKS]]
+
+
 async def _amaybe_trigger_negative_keyword_hook(
     lanlan_name: str, user_messages: list[str], lang: str,
 ) -> None:
@@ -937,6 +1030,28 @@ async def _amaybe_trigger_negative_keyword_hook(
         logger.debug(f"[NegKW] {lanlan_name}: 观察集加载失败: {e}")
         return
     if not observations:
+        return
+
+    # Vendors with a native decision model ask one decision question; every
+    # other vendor, and every miss, asks the chat prompt below (D16, D27).
+    decided = await _adecide_negative_targets(lanlan_name, user_messages, observations)
+    if decided is not None:
+        signals = [
+            {
+                'signal': 'negates',
+                'target_type': obs['target_type'],
+                'target_id': obs['raw_id'],
+                'entity_key': obs.get('entity_key'),
+            }
+            for obs in decided
+        ]
+        if signals:
+            await _adispatch_evidence_signals(
+                lanlan_name, signals, source=EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
+            )
+            logger.info(
+                f"[NegKW] {lanlan_name}: 关键词触发 {len(signals)} 个 disputation 信号（决策）"
+            )
         return
 
     from config import (

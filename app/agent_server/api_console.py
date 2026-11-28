@@ -749,6 +749,29 @@ def build_console_router(
             raise _refuse(404, "no_familiar")
         return {"success": True, "written": list(written)}
 
+    @router.post("/familiars/{session_id}/duty")
+    async def change_duty(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Change what kind of task agent a session is (its preset), as the user asks.
+
+        It holds from the task agent's next start; ``at_work`` in the
+        answer says a run of it is under way, which goes on as it was.
+        """
+        preset = text_of(payload or {}, "preset", required=True)
+        if not preset.strip():
+            raise _refuse(400, "bad_preset")
+        host = await get_host()
+        try:
+            changed = await host.change_duty(session_id, preset.strip())
+        except LookupError:
+            raise _refuse(404, "no_familiar") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code in ("tree_not_landed", "changed_meanwhile", "ended"):
+                # As it stands it cannot be changed; it can once that is seen to, or looked at again.
+                raise _refuse(409, code) from None
+            raise _refuse(400, code if code in ("not_changeable", "bad_preset") else "bad_preset") from None
+        return {"success": True, **changed}
+
     @router.post("/space/projects/description")
     async def describe_project(payload: dict[str, Any]) -> dict[str, Any]:
         """Write what a project is for, as the user's own words."""

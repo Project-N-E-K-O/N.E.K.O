@@ -4299,7 +4299,7 @@
             textLength: clean.length,
           }, {
             promptType: 'rest',
-            userSpeech: clean.slice(0, 240),
+            userSpeech: clean,
           }).then((result) => {
             if (String(result?.recommendedAction || '') === 'cancel_candidate') {
               _clearRestCandidate('user_soothing_cancelled');
@@ -4319,7 +4319,7 @@
             textLength: clean.length,
           }, {
             promptType: 'surrender',
-            userSpeech: clean.slice(0, 240),
+            userSpeech: clean,
           }).then((result) => {
             if (String(result?.recommendedAction || '') === 'cancel_candidate') {
               _clearOrdinaryCandidate('user_recovery_cancelled');

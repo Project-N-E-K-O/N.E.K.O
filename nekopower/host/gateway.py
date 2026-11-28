@@ -205,7 +205,11 @@ class CapabilityEnabler(Protocol):
     ``enable`` is given what the user's answer stands on (``still_valid``)
     and must look at it again at the moment it writes a switch, after
     whatever it waited on (a check of the computer): a switch is not
-    written for an answer that no longer stands.
+    written for an answer that no longer stands. It calls ``on_written``
+    (when given) as it writes the switch itself, and not for one it found
+    on or left to someone else: the answer may stop standing after the
+    write, while ``enable`` still waits (for the plugins to come up), and
+    the gateway then tells the switch this call wrote from one it did not.
     ``may_request`` (optional; the gateway takes a missing one as "yes")
     says whether a capability may be offered to a task agent at all on this
     computer; nothing that takes time is looked at in it.
@@ -216,7 +220,12 @@ class CapabilityEnabler(Protocol):
     def may_request(self, capability: str) -> bool: ...
 
     async def enable(
-        self, capability: str, *, lanlan_name: str | None = None, still_valid: Callable[[], bool] | None = None
+        self,
+        capability: str,
+        *,
+        lanlan_name: str | None = None,
+        still_valid: Callable[[], bool] | None = None,
+        on_written: Callable[[], None] | None = None,
     ) -> tuple[bool, str]: ...
 
 
@@ -253,6 +262,17 @@ _APPROVAL_STALE = (
     "The earlier approval no longer stands because the run or the settings changed. "
     "Ask again if the task still needs it."
 )
+
+
+def _approval_stale_switched_on(display: str) -> str:
+    """What a task agent is told when this call wrote the switch and the answer stopped standing after the write."""
+    return (
+        f"The {display} was turned on by this request and stays on, but the earlier approval no longer stands "
+        "because the run or the settings changed, so it covers no call. Ask again with "
+        f"{ENABLE_TOOL} if the task still needs it: it is not turned on again, and its use is asked about as usual."
+    )
+
+
 # What a failed start of the plugins says when it may still come up by itself.
 _PLUGINS_PENDING_HINTS = ("still starting", "did not respond in time")
 # What a search query says when it is about one of the things that may be asked for: whole words,
@@ -1577,6 +1597,11 @@ class CapabilityGateway:
                     item.group == target.builtin_group for item in await self._registry.callable_by_task_agents()
                 )
                 if await self._permissions.forbidden(target.permission):
+                    await self._ledger.append_event(
+                        commission.id,
+                        "capability_denied",
+                        {"capability": f"host:enable:{target.canonical}", "reason": DENIED_BY_SETTINGS},
+                    )
                     record.status, record.reason = "denied", "settings"
                     return _text(DENIED_BY_SETTINGS, error=True)
                 if cleared.still_valid is not None and not cleared.still_valid():
@@ -1590,32 +1615,49 @@ class CapabilityGateway:
                     )
                     record.status, record.reason = "denied", "stale_approval"
                     return _text(_APPROVAL_STALE, error=True)
+                # Whether this call wrote the switch itself (``CapabilityEnabler``).
+                written: list[bool] = []
                 if turned_on_meanwhile:
                     # Turned on meanwhile by someone else (the user at the panel): not turned on again.
                     done, why = True, ""
                 else:
                     try:
                         done, why = await self._enabler.enable(
-                            target.canonical, lanlan_name=commission.lanlan_name, still_valid=cleared.still_valid
+                            target.canonical,
+                            lanlan_name=commission.lanlan_name,
+                            still_valid=cleared.still_valid,
+                            on_written=lambda: written.append(True),
                         )
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
                         logger.exception("turning on %s failed", target.canonical)
                         done, why = False, type(exc).__name__
+                if cleared.still_valid is not None and not cleared.still_valid():
+                    # The answer stopped standing while ``enable`` ran. Either the switch was not written
+                    # for it, or it was turned on meanwhile by someone else, or this call wrote it and the
+                    # answer fell after the write (while the plugins were waited for). In every case it is
+                    # left as it is (not turned off), nothing is recorded as turned on for the task agent
+                    # and no free call is lent; the last is told and recorded as what it is. Whether this
+                    # call wrote it is not whether it came up (``done``: the plugins may still be starting,
+                    # with the switch on), and it is said to stay on only while it is on.
+                    switched_on = bool(written) and await self._switch_on_now(target)
+                    forbidden_now = await self._permissions.forbidden(target.permission)
+                    if forbidden_now:
+                        reason = DENIED_BY_SETTINGS
+                    else:
+                        reason = "approval_stale_switched_on" if switched_on else "approval_stale"
+                    payload: dict[str, Any] = {"capability": f"host:enable:{target.canonical}", "reason": reason}
+                    if switched_on:
+                        payload["switched_on"] = True
+                    await self._ledger.append_event(commission.id, "capability_denied", payload)
+                    record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
+                    if forbidden_now:
+                        return _text(DENIED_BY_SETTINGS, error=True)
+                    if switched_on:
+                        return _text(_approval_stale_switched_on(target.display), error=True)
+                    return _text(_APPROVAL_STALE, error=True)
                 if not done:
-                    if cleared.still_valid is not None and not cleared.still_valid():
-                        # The switch was not written because the answer stopped standing while it waited
-                        # on the checks of this computer (``CapabilityEnabler.enable``): not a failure of the computer.
-                        forbidden_now = await self._permissions.forbidden(target.permission)
-                        reason = DENIED_BY_SETTINGS if forbidden_now else "approval_stale"
-                        await self._ledger.append_event(
-                            commission.id,
-                            "capability_denied",
-                            {"capability": f"host:enable:{target.canonical}", "reason": reason},
-                        )
-                        record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
-                        return _text(DENIED_BY_SETTINGS if forbidden_now else _APPROVAL_STALE, error=True)
                     record.status = "failed"
                     if (
                         target.builtin_group is None
@@ -1637,6 +1679,17 @@ class CapabilityGateway:
                 return await self._handed_after_enable(grant, commission, target, reply, still_valid=cleared.still_valid)
         except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
             return _text(str(exc), error=True)
+
+    async def _switch_on_now(self, target: _EnableTarget) -> bool:
+        """Whether the switch of ``target`` is on as of now (the plugins' switch, or the group's tools offered)."""
+        if target.builtin_group is None:
+            return self._registry.plugins_enabled()
+        try:
+            return any(item.group == target.builtin_group for item in await self._registry.callable_by_task_agents())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - what cannot be looked at is not said to be on
+            return False
 
     async def _handed_after_enable(
         self,

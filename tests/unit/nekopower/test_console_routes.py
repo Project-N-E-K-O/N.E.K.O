@@ -859,6 +859,44 @@ async def test_the_form_of_a_new_task_agent_is_filled_in_and_a_failure_says_whic
         assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_text"
 
 
+async def test_the_user_changes_what_kind_of_task_agent_a_session_is(familiars, tmp_path):
+    client, host = familiars
+    session_id = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool"})).json()["session_id"]
+
+    async def change(target: str, payload: Any) -> Any:
+        return await client.post(f"/console/familiars/{target}/duty", headers=HEADERS, json=payload)
+
+    changed = await change(session_id, {"preset": " scout "})
+    assert changed.status_code == 200 and changed.json() == {
+        "success": True, "session_id": session_id, "preset": "scout", "was": "general", "seat": "",
+        "changed": True, "widened": False, "at_work": False,
+    }
+    assert (await host.ledger.get_session(session_id)).preset == "scout"
+    # Back to one that changes files: the user says so here, and nobody is asked.
+    back = (await change(session_id, {"preset": "general"})).json()
+    assert (back["preset"], back["widened"], back["changed"]) == ("general", True, True)
+
+    for payload, code in (({}, "bad_text"), ({"preset": 3}, "bad_text"), ({"preset": " "}, "bad_preset"),
+                          ({"preset": "boss"}, "bad_preset"), ({"preset": "no-such-preset"}, "bad_preset")):
+        refused = await change(session_id, payload)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (400, code)
+    missing = await change("no-such-session", {"preset": "scout"})
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "no_familiar")
+    # A project's leader is not made a member by its preset.
+    leader = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Shop site", "preset": "boss"})).json()
+    led = await change(leader["session_id"], {"preset": "scout"})
+    assert (led.status_code, led.json()["detail"]["code"]) == (400, "not_changeable")
+    # Work of it waits in a git worktree: it is not made one that cannot land it.
+    left = tmp_path / "left"
+    await host.ledger.add_tree(
+        id="left", session_id=session_id, project="Ledger tool", project_dir=str(tmp_path), path=str(left),
+        workdir=str(left), state="unlanded",
+    )
+    waits = await change(session_id, {"preset": "scout"})
+    assert (waits.status_code, waits.json()["detail"]["code"]) == (409, "tree_not_landed")
+    assert (await host.ledger.get_session(session_id)).preset == "general"
+
+
 async def test_the_user_writes_a_card_and_a_project_description_which_stay_the_users(familiars):
     client, host = familiars
     made = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool"})).json()

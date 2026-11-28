@@ -261,8 +261,27 @@ describe('message-schema', () => {
       .messages?.[0]?.reaction).toEqual({ emoji: '❤️', author: 'Neko' });
   });
 
+  it('accepts any single emoji as a reaction (owner decision D20)', () => {
+    const base = {
+      id: 'reaction-any', role: 'user', author: 'You', time: '10:00',
+      blocks: [{ type: 'text', text: 'Hello' }],
+    };
+    for (const emoji of ['🫠', '😀', '👍🏽', '👩‍💻', '🇯🇵', '1️⃣']) {
+      expect(parseChatMessage({ ...base, reaction: { emoji, author: 'Neko' } }).reaction)
+        .toEqual({ emoji, author: 'Neko' });
+    }
+  });
+
   it.each([
     { emoji: 'invalid', author: 'Neko' },
+    { emoji: 'A', author: 'Neko' },
+    { emoji: 'A\uFE0F', author: 'Neko' },
+    { emoji: '\u{1F600}\u0301', author: 'Neko' },
+    { emoji: '\u00a9', author: 'Neko' },
+    { emoji: '1', author: 'Neko' },
+    { emoji: '😊😄', author: 'Neko' },
+    { emoji: ' 😊', author: 'Neko' },
+    { emoji: '', author: 'Neko' },
     { emoji: '❤️', author: '' },
     { emoji: '❤️', author: '   ' },
     { emoji: '❤️' },

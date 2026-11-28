@@ -970,7 +970,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 9
+    assert columns.count("session_dir") == 1 and version == 10
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekopower.host.ledger import _COMMISSION_COLUMNS
@@ -1395,7 +1395,7 @@ async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(t
         before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert version == 9
+    assert version == 10
     again = Ledger(path)
     try:
         await again.open()
@@ -1618,6 +1618,6 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     finally:
         conn.close()

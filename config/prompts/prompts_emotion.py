@@ -41,7 +41,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 6. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
 7. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
 8. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
-9. 完成情绪判断后，从以下完整候选中选一个最贴合输入的角色回复所流露反应的 emoji：{reaction_emojis}。emoji 不限于所选情感的分类候选；neutral 或拿不准时返回 null，表示没有建议，不改变 emotion 或 confidence。
+9. 完成情绪判断后，选一个最贴合输入的角色回复所流露反应的 emoji。下面这些只是参考，也可以给列表外的任意单个 emoji：{reaction_emojis}。emoji 不限于所选情感的分类；neutral 或拿不准时返回 null，表示没有建议，不改变 emotion 或 confidence。
 
 只返回 JSON，不要附加任何解释文本。""",
 
@@ -66,7 +66,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 6. surprised 只用於明顯的突發驚訝、意外、震驚、誇張反應；不要只因為有驚嘆號、語氣詞就判為 surprised。
 7. 語氣助詞、口癖、擬聲詞、寵物叫聲這類風格詞本身不代表情緒，不能單獨作為判斷依據。
 8. confidence 取 0 到 1 之間的小數；情緒很明確時應給出較高信賴度。
-9. 完成情緒判斷後，從以下完整候選中選一個最貼合輸入的角色回覆所流露反應的 emoji：{reaction_emojis}。emoji 不限於所選情感的分類候選；neutral 或拿不準時回傳 null，表示沒有建議，不改變 emotion 或 confidence。
+9. 完成情緒判斷後，選一個最貼合輸入的角色回覆所流露反應的 emoji。下面這些只是參考，也可以給清單外的任意單個 emoji：{reaction_emojis}。emoji 不限於所選情感的分類；neutral 或拿不準時回傳 null，表示沒有建議，不改變 emotion 或 confidence。
 
 只回傳 JSON，不要附加任何解釋文字。""",
 
@@ -89,7 +89,7 @@ Rules:
 6. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
 7. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
 8. confidence must be a number between 0 and 1.
-9. After judging the emotion, choose one emoji that best reflects the companion reply's reaction from this full list: {reaction_emojis}. The emoji is not restricted to the chosen emotion's category; return null for neutral or when unsure, meaning no suggestion, without changing emotion or confidence.
+9. After judging the emotion, choose one emoji that best reflects the companion reply's reaction. These are only suggestions; any single emoji outside the list is fine too: {reaction_emojis}. The emoji is not restricted to the chosen emotion's category; return null for neutral or when unsure, meaning no suggestion, without changing emotion or confidence.
 
 Return JSON only, with no explanation.""",
 
@@ -112,7 +112,7 @@ Return JSON only, with no explanation.""",
 6. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
 7. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
 8. confidence は 0〜1 の数値にする。
-9. 感情を判断した後、入力されたキャラクターの返答に表れた反応に最も合う emoji を次の全候補から1つ選ぶ：{reaction_emojis}。選んだ感情のカテゴリに限定しない。neutral または迷う場合は提案なしを表す null を返し、emotion や confidence は変更しない。
+9. 感情を判断した後、入力されたキャラクターの返答に表れた反応に最も合う emoji を1つ選ぶ。次の候補は参考にすぎず、リストにない任意の emoji 1つでもよい：{reaction_emojis}。選んだ感情のカテゴリに限定しない。neutral または迷う場合は提案なしを表す null を返し、emotion や confidence は変更しない。
 
 JSONのみを返し、説明文は付けないでください。""",
 
@@ -135,7 +135,7 @@ JSONのみを返し、説明文は付けないでください。""",
 6. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
 7. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
 8. confidence 는 0~1 사이 숫자여야 합니다.
-9. 감정을 판단한 뒤, 입력된 캐릭터 답변의 반응에 가장 잘 맞는 emoji 하나를 다음 전체 후보에서 고르세요: {reaction_emojis}. 선택한 감정의 범주로 제한하지 마세요. neutral 이거나 확신이 없으면 제안이 없다는 뜻의 null 을 반환하고 emotion 이나 confidence 는 바꾸지 마세요.
+9. 감정을 판단한 뒤, 입력된 캐릭터 답변의 반응에 가장 잘 맞는 emoji 하나를 고르세요. 다음 후보는 참고일 뿐이며 목록에 없는 emoji 하나를 골라도 됩니다: {reaction_emojis}. 선택한 감정의 범주로 제한하지 마세요. neutral 이거나 확신이 없으면 제안이 없다는 뜻의 null 을 반환하고 emotion 이나 confidence 는 바꾸지 마세요.
 
 설명 없이 JSON만 반환하세요.""",
 
@@ -158,7 +158,7 @@ JSONのみを返し、説明文は付けないでください。""",
 6. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
 7. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
 8. confidence должно быть числом от 0 до 1.
-9. После определения эмоции выберите один emoji, лучше всего передающий реакцию в ответе персонажа, из полного списка: {reaction_emojis}. Не ограничивайте выбор категорией выбранной эмоции; для neutral или при неуверенности верните null (нет предложения), не меняя emotion или confidence.
+9. После определения эмоции выберите один emoji, лучше всего передающий реакцию в ответе персонажа. Список ниже — только подсказка, подойдёт и любой один emoji не из списка: {reaction_emojis}. Не ограничивайте выбор категорией выбранной эмоции; для neutral или при неуверенности верните null (нет предложения), не меняя emotion или confidence.
 
 Верните только JSON без пояснений.""",
 
@@ -181,7 +181,7 @@ Reglas:
 6. Usa surprised solo para shock claro, sorpresa repentina o asombro exagerado; no etiquetes como surprised solo por signos de exclamación o partículas.
 7. Muletillas, efectos de sonido, habla tipo mascota y palabras de relleno son marcadores de estilo, no emociones por sí mismas.
 8. confidence debe ser un número entre 0 y 1.
-9. Tras determinar la emoción, elige un emoji que refleje mejor la reacción de la respuesta del personaje entre todos estos candidatos: {reaction_emojis}. No limites la elección a la categoría de la emoción; devuelve null para neutral o si tienes dudas, indicando que no hay sugerencia, sin cambiar emotion ni confidence.
+9. Tras determinar la emoción, elige un emoji que refleje mejor la reacción de la respuesta del personaje. Estos candidatos son solo una referencia; también vale cualquier emoji único fuera de la lista: {reaction_emojis}. No limites la elección a la categoría de la emoción; devuelve null para neutral o si tienes dudas, indicando que no hay sugerencia, sin cambiar emotion ni confidence.
 
 Devuelve solo JSON, sin explicación.""",
 
@@ -204,7 +204,7 @@ Regras:
 6. Use surprised apenas para choque claro, surpresa repentina ou espanto exagerado; não rotule como surprised só por pontos de exclamação ou partículas.
 7. Bordões, efeitos sonoros, fala de bichinho e palavras de preenchimento são marcadores de estilo, não emoções por si só.
 8. confidence deve ser um número entre 0 e 1.
-9. Após determinar a emoção, escolha um emoji que melhor represente a reação na resposta do personagem entre todos estes candidatos: {reaction_emojis}. Não limite a escolha à categoria da emoção; retorne null para neutral ou em caso de dúvida, indicando nenhuma sugestão, sem mudar emotion ou confidence.
+9. Após determinar a emoção, escolha um emoji que melhor represente a reação na resposta do personagem. Estes candidatos são só uma referência; qualquer emoji único fora da lista também serve: {reaction_emojis}. Não limite a escolha à categoria da emoção; retorne null para neutral ou em caso de dúvida, indicando nenhuma sugestão, sem mudar emotion ou confidence.
 
 Retorne apenas JSON, sem explicação.""",
 }
@@ -222,6 +222,47 @@ def get_outward_emotion_analysis_prompt(lang: str = 'zh') -> str:
 
 
 outward_emotion_analysis_prompt = get_outward_emotion_analysis_prompt('zh')
+
+
+# The avatar emotion as one decision question for vendors with a native decision
+# model (owner decision D21): the emotion only, read with neutral as the baseline.
+# English for every language (D9).
+OUTWARD_EMOTION_DECISION_INSTRUCTIONS = (
+    "The input is one reply written by a virtual companion character; the character is the speaker. Pick "
+    "the single most dominant emotion that the speaker themselves outwardly expresses in this reply (it "
+    "sets the character's avatar expression). Rules: (0) Judge only the speaker's own emotion. Other "
+    "people's feelings, story lines, quoted or reported speech, examples, translations and definitions of"
+    " emotion words are not evidence of it; if only such content is present, choose neutral. If the "
+    "speaker also clearly states their own reaction, or explicitly adopts a quotation as their own "
+    "feeling, judge that emotion; quotation marks alone do not mean neutral. (1) Choose the strongest own"
+    " emotion, not the safest option. (2) Choose neutral when the speaker's own emotion is weak or calm, "
+    "or they only report someone else's emotion. (3) happy only for clear enjoyment, affection, delight, "
+    "playful pleasure or genuine amusement; cute phrasing or verbal tics alone are not happy. (4) If the "
+    "core is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading or seeking comfort, "
+    "choose sad even if the wording sounds cute or clingy. (5) angry when the core is blame, hostility, "
+    "complaint, irritation, warning, rejection, a meltdown or impatience; occasional griping in an "
+    "overall light, joking or cute tone may not be angry. (6) surprised only for clear shock, sudden "
+    "surprise or exaggerated astonishment; exclamation marks or filler particles alone are not surprised."
+    " (7) Catchphrases, sound effects, pet-like speech (meow, nya) and filler words are style markers, "
+    "not emotions."
+)
+OUTWARD_EMOTION_DECISION_CRITERIA = {
+    "happy": "joyful, excited, affectionate, playful, delighted, warm",
+    "sad": "upset, hurt, disappointed, low, lonely, regretful, vulnerable, scared and seeking comfort",
+    "angry": "angry, annoyed, irritated, hostile, complaining, explosive",
+    "surprised": "surprised, shocked, startled, unexpected, exaggerated astonishment",
+    "neutral": "calm, factual, weak emotion, only other people's feelings, hard to judge",
+}
+
+# Then, only when the reply gets a reaction, one short chat call picks its emoji
+# (D20, D21). It runs after the avatar has changed, so its latency is not seen.
+# English as evaluated; it asks for one emoji and nothing else.
+OUTWARD_EMOTION_EMOJI_CHAT_PROMPT = (
+    "You pick one emoji for a companion character's reaction. Read the companion's reply in the user "
+    "message and answer with exactly one emoji that best fits the reaction it shows; it will be attached "
+    "to the user's previous message. These are only suggestions, any single emoji is fine: {pool}. If the"
+    " reply shows no clear emotion, answer none. Answer with the emoji or none only."
+)
 
 
 # ============================================================================
@@ -371,6 +412,44 @@ Retorne apenas JSON, sem explicação.""",
 
 def get_master_emotion_va_prompt(lang: str = 'zh') -> str:
     return _loc(MASTER_EMOTION_VA_PROMPT, lang)
+
+
+# Decision questions for the same reading, asked on a decision model (or rehosted
+# on a chat model that returns token probabilities) instead of the prompt above.
+# English for every language: the decision models judged worse with translated
+# questions (owner decision D9). The message-type options keep only the
+# definitions and examples of MASTER_EMOTION_VA_PROMPT (D13).
+MASTER_EMOTION_DECISION_STATE_HEADER = "Message the speaker just sent to their AI companion:\n"
+MASTER_EMOTION_TURN_TYPE_INSTRUCTIONS = (
+    "Message type. If it has both emotion and a request, pick the request. A hard problem "
+    "solvable by pure reasoning is reasoning, not info_request."
+)
+MASTER_EMOTION_TURN_TYPES = {
+    "chat": "chatting or expressing an opinion",
+    "vent": "venting feelings",
+    "simple_question": "a simple question answerable from the conversation and common sense",
+    "reasoning": "a complex objective question: math, logic, reasoning, multi-step derivation",
+    "info_request": "needs outside, real-time or beyond-your-knowledge information to answer "
+                    "(weather, prices, news, live status), including questions asking for it",
+    "action_request": "explicitly asks for an outside action: open, search, control or run something, "
+                      "operate an app or device, change outside state",
+}
+MASTER_EMOTION_STATE_INSTRUCTIONS = (
+    "Speaker's emotional state in this message only. Verbal tics, cute endings and sound "
+    "effects are not emotions; flat text is neutral."
+)
+MASTER_EMOTION_STATES = {
+    "neutral": "no clear emotion",
+    "calm_positive": "calm, friendly, mildly pleased",
+    "happy": "happy, thankful, fond, looking forward",
+    "thrilled": "ecstatic, thrilled, laughing hard",
+    "low": "tired, bored, a bit down",
+    "annoyed": "annoyed, impatient, irritated",
+    "sad": "sad, hurt, lonely, disappointed",
+    "upset": "angry, anxious, nervous, upset",
+    "despair": "despair, grief, hopeless, breaking down",
+    "furious": "rage, panic, screaming, furious",
+}
 
 
 # ============================================================================

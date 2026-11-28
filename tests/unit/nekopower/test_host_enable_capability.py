@@ -26,7 +26,13 @@ from typing import Any
 import pytest
 
 from nekopower.host.capabilities import KIND_BUILTIN
-from nekopower.host.gateway import _APPROVAL_STALE, CALL_TOOL, ENABLE_TOOL, SEARCH_TOOL
+from nekopower.host.gateway import (
+    _APPROVAL_STALE,
+    CALL_TOOL,
+    ENABLE_TOOL,
+    SEARCH_TOOL,
+    _approval_stale_switched_on,
+)
 from nekopower.host.permissions import DENIED_BY_SETTINGS, GrantScope
 from tests.unit.nekopower.host_fakes import FakeDecisionLLM, make_host
 from tests.unit.nekopower.plugin_server_fake import FakePluginServer
@@ -58,10 +64,15 @@ class Enabler:
         self.result: dict[str, tuple[bool, str]] = {}
         self.can_calls: list[str] = []
         self.enable_calls: list[tuple[str, str | None]] = []
-        # Run while ``enable`` is at work (the user's answer is in, the switch is not yet on): a hook.
+        # Run after the switch was written, while ``enable`` still waits (for the plugins to come up), as the
+        # real route and enabler do: what changes here changes after the write.
         self.during_enable: Any = None
         # Run first thing in ``enable``, as a check of this computer would be: the switch is not yet written.
         self.before_commit: Any = None
+        # How many times ``on_written`` was called: the switches this enabler wrote itself.
+        self.written = 0
+        # What is written and yet not up (the plugins' switch on, the plugins still starting).
+        self.written_not_up: set[str] = set()
         # What the process says may not be asked for here (a screen the user must share first).
         self.blocked: set[str] = set()
 
@@ -73,24 +84,27 @@ class Enabler:
         return self.can.get(capability, (True, ""))
 
     async def enable(
-        self, capability: str, *, lanlan_name: str | None = None, still_valid: Any = None
+        self, capability: str, *, lanlan_name: str | None = None, still_valid: Any = None, on_written: Any = None
     ) -> tuple[bool, str]:
         self.enable_calls.append((capability, lanlan_name))
         if self.before_commit is not None:
             await self.before_commit()
         if callable(still_valid) and not still_valid():
-            # What the real enabler does at the moment it writes a switch.
+            # What the real route does at the moment it writes a switch: nothing is written.
             return False, "switched off"
-        if self.during_enable is not None:
-            await self.during_enable()
         done, why = self.result.get(capability, (True, ""))
-        if done:
+        if done or capability in self.written_not_up:
             if capability == "browser":
                 self.provider.switched_off.difference_update(BROWSER_TOOLS)
             elif capability == "keyboard_mouse":
                 self.provider.switched_off.discard("computer")
             else:
                 self.state["plugins"] = True
+            self.written += 1
+            if callable(on_written):
+                on_written()
+        if self.during_enable is not None:
+            await self.during_enable()
         return done, why
 
 
@@ -590,9 +604,13 @@ async def test_text_another_session_adds_while_the_switch_is_turned_on_ends_what
     covered_after_enabling = world.permissions.run_grants(grant.commission_id)
     used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
 
-    # The switch is on (the user said yes to that); the old yes covers nothing after the new text.
-    assert enabled["isError"] is False and world.enabler.enable_calls == [("browser", "Lan")]
+    # The switch is on (written by this call, and left as it is), but the old yes is no ground for telling the
+    # task agent it was turned on for it: no event of that, no free call, and the call that follows asks again.
+    assert enabled["isError"] is True and _text(enabled) == _approval_stale_switched_on("browser")
+    assert world.enabler.enable_calls == [("browser", "Lan")] and world.enabler.written == 1
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
     assert not covered_after_enabling and used["isError"] is False
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
     assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
 
 
@@ -633,6 +651,52 @@ async def test_a_setting_tightened_and_put_back_while_the_switch_is_turned_on_co
         await world.permission_store.set_mode("browser", "first_ask")
 
     world.enabler.during_enable = tightened_then_restored
+
+    enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
+    covered_after_enabling = world.permissions.run_grants(grant.commission_id)
+    used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
+
+    assert enabled["isError"] is True and _text(enabled) == _approval_stale_switched_on("browser")
+    assert used["isError"] is False
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
+    assert not covered_after_enabling
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
+    assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
+
+
+async def test_a_setting_turned_to_deny_while_the_switch_is_turned_on_is_told_as_the_settings_forbidding_it(world):
+    world.permissions.set_asker(Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def forbidden_meanwhile() -> None:
+        await world.permission_store.set_mode("browser", "deny")
+
+    world.enabler.during_enable = forbidden_meanwhile
+
+    enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert enabled["isError"] is True and _text(enabled) == DENIED_BY_SETTINGS
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
+    assert not world.permissions.run_grants(grant.commission_id)
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:browser")
+    assert denied.payload["reason"] == DENIED_BY_SETTINGS and denied.payload["switched_on"] is True
+
+
+async def test_an_answer_that_falls_after_the_switch_was_turned_on_still_lends_no_free_call(world):
+    world.permissions.set_asker(asker := Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+    append = world.ledger.append_event
+
+    async def text_arrives_as_it_is_told(commission_id: str, kind: str, payload: Any) -> Any:
+        result = await append(commission_id, kind, payload)
+        if kind == "capability_enabled":
+            world.permissions.received_external_input(grant.commission_id)
+        return result
+
+    world.ledger.append_event = text_arrives_as_it_is_told
 
     enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
     used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
@@ -927,3 +991,146 @@ async def test_a_refusal_by_the_user_does_not_keep_a_later_refusal_by_the_settin
         if event.type == "capability_denied" and event.payload.get("capability") == "host:enable:browser"
     ]
     assert DENIED_BY_SETTINGS in reasons and len(reasons) == 2
+
+
+# ---------------------------------------------------------------------------
+# The answer falling after the switch was written, and the settings looked at last (#4198 review)
+# ---------------------------------------------------------------------------
+
+
+async def test_plugins_turned_on_by_the_request_before_the_answer_fell_are_told_and_recorded_as_on(world):
+    # The real order on the plugins: the route writes the switch, and the answer falls while the plugins are
+    # waited for (up to 40 seconds). The switch stays on; the task agent is told so, not "nothing was changed".
+    world.permissions.set_asker(asker := Asker("once"))
+    grant = await _grant_for(world)
+
+    async def text_arrives_while_they_start() -> None:
+        assert world.state["plugins"] is True
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.during_enable = text_arrives_while_they_start
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _approval_stale_switched_on("plugins")
+    assert world.state["plugins"] is True and world.enabler.written == 1
+    events = await world.ledger.events(grant.commission_id)
+    assert "capability_enabled" not in [event.type for event in events]
+    [denied] = _denied_events(events, "host:enable:plugins")
+    assert denied.payload == {
+        "capability": "host:enable:plugins",
+        "reason": "approval_stale_switched_on",
+        "switched_on": True,
+    }
+
+    world.enabler.during_enable = None
+    again = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    # Asked again, it is on already: not asked about, not turned on again.
+    assert again["isError"] is False and "on already" in _text(again)
+    assert len(asker.asked) == 1 and world.enabler.enable_calls == [("plugins", "Lan")]
+
+
+async def test_plugins_whose_answer_fell_before_the_write_are_told_as_nothing_turned_on(world):
+    world.permissions.set_asker(Asker("once"))
+    grant = await _grant_for(world)
+
+    async def text_arrives() -> None:
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.before_commit = text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
+    assert world.state["plugins"] is False and world.enabler.written == 0
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:plugins")
+    assert denied.payload["reason"] == "approval_stale" and "switched_on" not in denied.payload
+
+
+async def test_a_switch_someone_else_turned_on_as_the_answer_fell_is_not_told_as_turned_on_by_the_request(world):
+    # The user turns the browser on at the panel while the computer is checked, and text arrives: the route
+    # writes nothing for the request (the answer fell), so the switch is on, but not by this call.
+    world.permissions.set_asker(Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def on_at_the_panel_and_text_arrives() -> None:
+        world.provider.switched_off.difference_update(BROWSER_TOOLS)
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.before_commit = on_at_the_panel_and_text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS) and world.enabler.written == 0
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:browser")
+    assert denied.payload["reason"] == "approval_stale"
+
+
+async def test_a_setting_turned_to_deny_while_the_registry_is_read_is_on_record(world):
+    # The settings are looked at last, just before turning on: a deny found there is recorded like every
+    # other refusal, not left out of the ledger.
+    armed: list[bool] = []
+
+    async def asked(commission_id: str, ask: Any) -> str:
+        armed.append(True)
+        return "once"
+
+    world.permissions.set_asker(asked)
+    grant = await _grant_for(world)
+    read = world.registry.callable_by_task_agents
+
+    async def read_then_forbidden() -> Any:
+        found = await read()
+        if armed:
+            await world.permission_store.set_mode("browser", "deny")
+        return found
+
+    world.registry.callable_by_task_agents = read_then_forbidden
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert world.enabler.enable_calls == []
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:browser")
+    assert denied.payload["reason"] == DENIED_BY_SETTINGS
+
+
+async def test_plugins_written_but_still_starting_as_the_answer_fell_are_told_as_switched_on(world):
+    # Written, and not up within the wait (``enable`` says not done): the switch is on all the same.
+    world.permissions.set_asker(Asker("once"))
+    world.enabler.result["plugins"] = (False, "the plugins are still starting; try again in a moment")
+    world.enabler.written_not_up.add("plugins")
+    grant = await _grant_for(world)
+
+    async def text_arrives_while_they_start() -> None:
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.during_enable = text_arrives_while_they_start
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _approval_stale_switched_on("plugins")
+    assert world.state["plugins"] is True and world.enabler.written == 1
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:plugins")
+    assert denied.payload["reason"] == "approval_stale_switched_on" and denied.payload["switched_on"] is True
+
+
+async def test_a_switch_written_and_then_put_off_is_not_said_to_stay_on(world):
+    world.permissions.set_asker(Asker("once"))
+    grant = await _grant_for(world)
+
+    async def off_at_the_panel_and_text_arrives() -> None:
+        world.state["plugins"] = False
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.during_enable = off_at_the_panel_and_text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("plugins"))
+
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
+    assert world.enabler.written == 1
+    [denied] = _denied_events(await world.ledger.events(grant.commission_id), "host:enable:plugins")
+    assert denied.payload["reason"] == "approval_stale" and "switched_on" not in denied.payload

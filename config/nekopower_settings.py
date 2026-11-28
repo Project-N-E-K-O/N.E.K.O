@@ -886,6 +886,13 @@ BESIDE_JUDGE_AT_HAND_MAX_TOKENS = 400
 (``LexicalDecisionModel.goes_on_with``): more than that, and it is not asked,
 the commission waiting for the member as it would have."""
 
+DECISION_QUESTION_TIMEOUT_SECONDS = 5.0
+"""How long a decision question (on a native decision model, or rehosted on a
+chat model that returns token probabilities) may take before the small model's
+chat prompt is asked instead (``ConfiguredDecisionLLM.decide``): the coarse
+screen, the side question, where a commission belongs and the turn check's
+second look. Decision calls answered in 0.1-2 s in the evaluation."""
+
 SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
 """What the small model may write when it is asked whether a commission is a
 side question (``LexicalDecisionModel.side_question``): one line of JSON, with
@@ -894,13 +901,11 @@ room to spare."""
 TASK_AGENT_FORK_CONTINUE_HOT_SECONDS = 300.0
 """A session whose last model request was made this recently has the head of
 its requests in a provider's cache, most likely (Anthropic keeps it five
-minutes, OpenAI five to ten): a copy reads it from there, whatever its length."""
-
-TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS = 60000
-"""Past that time, a session whose conversation is longer than this is not
-copied, and the commission waits for it: every request of the copy would send
-all of it at full price, where waiting sends it from the cache of the
-commission at work before it."""
+minutes, OpenAI five to ten): a copy reads it from there, whatever its length.
+Past that time it is not copied however short it is, and the commission waits
+for it (owner decision D19): every request of the copy would send all of it at
+full price, where waiting sends it from the cache of the commission at work
+before it."""
 
 TASK_AGENT_FORK_HAND_BACK_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call")
 """The tools whose call in a copy hands the commission back to the session
