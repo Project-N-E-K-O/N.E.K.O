@@ -21,7 +21,6 @@ import asyncio
 import hashlib
 import json
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -43,6 +42,7 @@ from plugin.server.infrastructure.plugin_tool_runtime import (
     ProgressEvent,
     ToolRuntime,
     ToolRuntimeError,
+    host_architecture,
     prepare_tool_runtime,
     read_tool_runtime_status,
     tool_envs_dir,
@@ -140,7 +140,7 @@ def tool_resources(backend: Path | None = None) -> ToolResources:
         if (
             manifest["schema"] != 1
             or manifest["platform"] != sys.platform
-            or manifest["architecture"] != platform.machine().lower()
+            or manifest["architecture"] != host_architecture()
             or not re.fullmatch(r"3\.11\.\d+", python)
             or not re.fullmatch(r"[A-Za-z0-9_.-]+\.whl", wheel)
             or set(hashes) != {wheel, "requirements.txt", "pytest.ini"}
@@ -265,8 +265,9 @@ def tool_environment_status() -> ToolEnvironmentStatus:
         return ToolEnvironmentStatus("preparing", tool_progress=tools.get("progress"), tools=tools)
     if error is not None:
         return ToolEnvironmentStatus("failed", error[0], error[1], tools=tools)
-    if tools_state == "unsupported":
-        # Still retryable: a later attempt can find a uv installed since.
+    if tools_state in ("failed", "unsupported"):
+        # The shared uv / Python failed, possibly prepared by another feature.
+        # Still retryable: a later attempt can succeed or find a uv installed since.
         return ToolEnvironmentStatus(
             "failed", tools.get("error_detail"), tools.get("error_code"), tools=tools,
         )
@@ -410,17 +411,18 @@ async def _preparation_runner(cancel: threading.Event) -> None:
         logger.warning("plugin tool environment preparation failed: code={}", error[1])
 
 
-def start_tool_environment_preparation() -> ToolEnvironmentStatus:
+async def start_tool_environment_preparation() -> ToolEnvironmentStatus:
     """Start one background preparation when the packaged environment is missing.
 
     Also while another feature prepares the shared uv / Python: this one
-    then waits for it and builds the virtualenv afterwards.
+    then waits for it and builds the virtualenv afterwards. The status reads
+    touch files, so they run off the event loop; the task starts on it.
     """
     global _preparation_task
-    status = tool_environment_status()
+    status = await asyncio.to_thread(tool_environment_status)
     if status.state in ("missing", "failed", "preparing"):
         with _state_lock:
             idle = _preparation_task is None or _preparation_task.done()
             if idle:
                 _preparation_task = asyncio.create_task(_preparation_runner(threading.Event()))
-    return tool_environment_status()
+    return await asyncio.to_thread(tool_environment_status)

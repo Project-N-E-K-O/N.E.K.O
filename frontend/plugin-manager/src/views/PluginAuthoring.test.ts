@@ -1001,6 +1001,21 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
   })
 
+  it('tells the precheck that a package without tool resources cannot be prepared', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain.mockResolvedValue(
+      readyToolchain({ tool_environment: 'unavailable', tool_environment_error_code: 'resources_unavailable' })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const verify = page('verify')
+    expect(verify.textContent).toContain(en.toolEnvironmentUnavailable)
+    expect(verify.textContent).not.toContain(en.toolEnvironmentNotReady)
+    expect(buttons(en.toolEnvironmentPrepare)).toHaveLength(0)
+  })
+
   it('offers to prepare the plugin tools, then polls until the environment is ready', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])

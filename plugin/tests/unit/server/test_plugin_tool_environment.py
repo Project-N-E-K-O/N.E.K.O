@@ -22,6 +22,7 @@ from plugin.server.application.plugin_tool_environment import (
     ToolEnvironmentError,
     ToolResources,
 )
+from plugin.server.infrastructure import plugin_tool_runtime as runtime_module
 from plugin.server.infrastructure.plugin_tool_runtime import (
     ProgressEvent,
     RuntimeStatus,
@@ -154,7 +155,7 @@ async def test_preparing_joins_a_shared_preparation_started_elsewhere(monkeypatc
     _resources(monkeypatch, tmp_path / "resources")
     layer = _FakeLayer(monkeypatch, tmp_path)
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     assert tools._preparation_task is not None
     await tools._preparation_task
     assert len(layer.runtime_calls) == 1
@@ -231,9 +232,9 @@ async def test_preparation_builds_the_venv_on_the_shared_runtime(monkeypatch, tm
     layer = _FakeLayer(monkeypatch, tmp_path)
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.example/simple")
 
-    assert tools.start_tool_environment_preparation().state == "preparing"
+    assert (await tools.start_tool_environment_preparation()).state == "preparing"
     task = tools._preparation_task
-    assert tools.start_tool_environment_preparation().state == "preparing"
+    assert (await tools.start_tool_environment_preparation()).state == "preparing"
     assert tools._preparation_task is task  # a second call joins, it does not respawn
     await task
 
@@ -262,7 +263,7 @@ async def test_preparation_reports_the_shared_layer_progress(monkeypatch, tmp_pa
     layer = _FakeLayer(monkeypatch, tmp_path)
     layer.before_return = threading.Event()
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     try:
         for _ in range(500):
             status = tools.tool_environment_status()
@@ -285,7 +286,7 @@ async def test_a_shared_layer_failure_is_reported_with_its_code_until_the_next_s
         "download_failed", "GET https://user:secret@mirror.example/uv failed",
     )
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     await tools._preparation_task
     status = tools.tool_environment_status()
     assert status.state == "failed"
@@ -294,7 +295,7 @@ async def test_a_shared_layer_failure_is_reported_with_its_code_until_the_next_s
     assert not layer.commands
 
     layer.runtime_error = None
-    assert tools.start_tool_environment_preparation().state == "preparing"
+    assert (await tools.start_tool_environment_preparation()).state == "preparing"
     await tools._preparation_task
     assert tools.tool_environment_status().state == "ready"
 
@@ -306,7 +307,7 @@ async def test_a_failed_venv_command_is_reported_redacted(monkeypatch, tmp_path)
     layer.command_result = 2
     layer.command_output = "error: https://token@mirror.example/simple returned 403\n"
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     await tools._preparation_task
     status = tools.tool_environment_status()
     assert status.state == "failed"
@@ -322,7 +323,7 @@ async def test_running_out_of_the_budget_is_a_timeout_with_a_reason(monkeypatch,
     layer = _FakeLayer(monkeypatch, tmp_path)
     layer.command_timeout = True
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     await tools._preparation_task
     status = tools.tool_environment_status()
     assert (status.state, status.error_code) == ("failed", "timeout")
@@ -337,23 +338,28 @@ async def test_an_unexpected_preparation_error_is_reported_as_internal(monkeypat
     layer = _FakeLayer(monkeypatch, tmp_path)
     layer.runtime_error = RuntimeError("disk went away")
 
-    tools.start_tool_environment_preparation()
+    await tools.start_tool_environment_preparation()
     await tools._preparation_task
     status = tools.tool_environment_status()
     assert (status.state, status.error, status.error_code) == ("failed", "disk went away", "internal_error")
 
 
-async def test_an_unsupported_shared_runtime_is_failed_and_retryable(monkeypatch, tmp_path):
-    _packaged(
-        monkeypatch, "unsupported",
-        error_code="unsupported_platform", error_detail="No uv for this platform",
-    )
+@pytest.mark.parametrize(
+    ("tools_state", "code", "detail"),
+    [
+        ("unsupported", "unsupported_platform", "No uv for this platform"),
+        # e.g. the dependency page's own uv download failed
+        ("failed", "download_failed", "uv download failed"),
+    ],
+)
+async def test_a_failed_shared_runtime_is_failed_and_retryable(monkeypatch, tmp_path, tools_state, code, detail):
+    _packaged(monkeypatch, tools_state, error_code=code, error_detail=detail)
     _resources(monkeypatch, tmp_path / "resources")
     _FakeLayer(monkeypatch, tmp_path)
 
     status = tools.tool_environment_status()
-    assert (status.state, status.error_code) == ("failed", "unsupported_platform")
-    assert tools.start_tool_environment_preparation().state == "preparing"
+    assert (status.state, status.error, status.error_code) == ("failed", detail, code)
+    assert (await tools.start_tool_environment_preparation()).state == "preparing"
     await tools._preparation_task
     assert tools.tool_environment_status().state == "ready"
 
@@ -372,7 +378,7 @@ def test_tampered_resource_hashes_fail_verification(tmp_path, monkeypatch):
     manifest = {
         "schema": 1,
         "platform": sys.platform,
-        "architecture": __import__("platform").machine().lower(),
+        "architecture": tools.host_architecture(),
         "python": "3.11.9",
         "wheel": wheel.name,
         "sha256": {
@@ -395,3 +401,40 @@ def test_tampered_resource_hashes_fail_verification(tmp_path, monkeypatch):
     requirements.write_bytes(b"pytest==1\n")
     with pytest.raises(ToolEnvironmentError, match="integrity check"):
         tools.verify_tool_resources(resources)
+
+
+def test_resource_architecture_follows_the_interpreter_not_the_machine(tmp_path, monkeypatch):
+    # An x64 package emulated on Windows on ARM: platform.machine() can report the
+    # native CPU while the interpreter, and the shared tool layer, run as x86_64.
+    import hashlib
+    import platform
+
+    root = tmp_path / "resources"
+    root.mkdir()
+    files = {
+        "cli-1.0.0-py3-none-any.whl": b"wheel",
+        "requirements.txt": b"pytest==0\n",
+        "pytest.ini": b"[pytest]\n",
+    }
+    for name, content in files.items():
+        (root / name).write_bytes(content)
+    manifest = {
+        "schema": 1,
+        "platform": sys.platform,
+        "architecture": "x86_64",
+        "python": "3.11.9",
+        "wheel": "cli-1.0.0-py3-none-any.whl",
+        "sha256": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(tools, "plugin_tool_resources_dir", lambda backend=None: root)
+    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(runtime_module.sysconfig, "get_platform", lambda: "win-amd64")
+
+    assert runtime_module.host_architecture() == "x86_64"
+    assert tools.tool_resources().wheel == "cli-1.0.0-py3-none-any.whl"
+
+    monkeypatch.setattr(runtime_module.sysconfig, "get_platform", lambda: "win-arm64")
+    with pytest.raises(ToolEnvironmentError) as raised:
+        tools.tool_resources()
+    assert raised.value.code == "resources_unavailable"

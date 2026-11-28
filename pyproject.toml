@@ -279,6 +279,8 @@ plugin-tools = [
     "pytest",
     "pytest-asyncio",
     "pytest-randomly",
+    # pytest.ini sets timeout = 300 for plugin tests.
+    "pytest-timeout",
     "python-dotenv",
     "pyzmq",
     "tiktoken",

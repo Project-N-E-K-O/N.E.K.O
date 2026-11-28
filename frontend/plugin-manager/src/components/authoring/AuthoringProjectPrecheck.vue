@@ -17,7 +17,9 @@
       </span>
     </div>
     <p v-if="environmentBlocked" class="authoring-muted">
-      {{ t('authoring.toolEnvironmentNotReady') }}
+      {{
+        t(environment === 'unavailable' ? 'authoring.toolEnvironmentUnavailable' : 'authoring.toolEnvironmentNotReady')
+      }}
     </p>
     <section v-if="report" class="authoring-precheck-env">
       <h4>{{ t('authoring.precheckEnv') }}</h4>

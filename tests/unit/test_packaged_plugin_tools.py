@@ -149,3 +149,52 @@ def test_plugin_tools_group_carries_what_the_sdk_imports_in_plugin_tests():
     locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
     (project,) = [package for package in locked["package"] if package.get("source", {}).get("editable") == "."]
     assert "pillow" in {entry["name"] for entry in project["dev-dependencies"]["plugin-tools"]}
+
+
+def test_plugin_tools_group_carries_the_pytest_plugins_pytest_ini_configures():
+    # The packaged precheck runs plugin tests with the repository pytest.ini; an
+    # option whose plugin is missing only warns, so e.g. timeout = 300 would be
+    # silently ignored.
+    import configparser
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(root / "pytest.ini", encoding="utf-8")
+    options = config["pytest"]
+    needed = set()
+    if "timeout" in options:
+        needed.add("pytest-timeout")
+    if any(name.startswith("asyncio_") for name in options):
+        needed.add("pytest-asyncio")
+    if "--randomly-" in options.get("addopts", ""):
+        needed.add("pytest-randomly")
+    assert needed == {"pytest-timeout", "pytest-asyncio", "pytest-randomly"}
+
+    group = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"]["plugin-tools"]
+    names = {entry.split("[")[0].split(">")[0].split("=")[0].strip().lower() for entry in group}
+    assert needed <= names
+    locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    (project,) = [package for package in locked["package"] if package.get("source", {}).get("editable") == "."]
+    assert needed <= {entry["name"] for entry in project["dev-dependencies"]["plugin-tools"]}
+
+
+def test_manifest_records_the_interpreter_architecture_the_runtime_checks(tmp_path, monkeypatch):
+    import json
+
+    from plugin.server.infrastructure import plugin_tool_runtime
+
+    def run(command, **kwargs):
+        if command[:2] == ["uv", "build"]:
+            (tmp_path / "cli-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
+        else:
+            (tmp_path / "requirements.txt").write_text("pytest==0\n", encoding="utf-8")
+
+    monkeypatch.setattr(build_plugin_tools.subprocess, "run", run)
+    monkeypatch.setattr(build_plugin_tools.platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(plugin_tool_runtime.sysconfig, "get_platform", lambda: "win-amd64")
+    build_plugin_tools._build_resources(tmp_path)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["architecture"] == "x86_64"

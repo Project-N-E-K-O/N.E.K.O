@@ -28,6 +28,10 @@ def stage(destination: Path) -> None:
 
 
 def _build_resources(destination: Path) -> None:
+    # The runtime compares the manifest with the same interpreter architecture
+    # the shared tool layer uses, so emulated processes still match.
+    from plugin.server.infrastructure.plugin_tool_runtime import host_architecture
+
     subprocess.run(
         ["uv", "build", "--wheel", "--python", sys.executable, "--out-dir", str(destination)],
         cwd=ROOT,
@@ -51,7 +55,7 @@ def _build_resources(destination: Path) -> None:
     manifest = {
         "schema": 1,
         "platform": sys.platform,
-        "architecture": platform.machine().lower(),
+        "architecture": host_architecture(),
         "python": platform.python_version(),
         "wheel": wheel.name,
         "sha256": hashes,
@@ -65,10 +69,10 @@ if __name__ == "__main__":
     destination.add_argument("directory", nargs="?", type=Path, help="Tool resource directory")
     destination.add_argument("--backend", type=Path, help="Path to the packaged backend executable")
     args = parser.parse_args()
+    sys.path.insert(0, str(ROOT))
     if args.backend:
         if not args.backend.is_file():
             parser.error(f"Backend executable not found: {args.backend}")
-        sys.path.insert(0, str(ROOT))
         from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
 
         stage(plugin_tool_resources_dir(args.backend))
