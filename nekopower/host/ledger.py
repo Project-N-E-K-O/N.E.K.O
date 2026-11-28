@@ -2823,6 +2823,30 @@ class Ledger:
 
         return await self.run(work)
 
+    async def keep_model(self, session_id: str, preset: str, **columns: Any) -> bool:
+        """Write which model a session is sent to, as it was chosen for ``preset``; returns whether it was written.
+
+        ``columns`` are those that say so (``role_models.Choice.columns``).
+        Only while the session has that preset: whoever chose a model
+        read the preset a while before, and one chosen for a preset the
+        session has no longer is not written over what was settled for
+        the one it has (``change_preset``, and the model settled anew
+        with it). Looked at and written in one statement.
+        """
+        allowed = {*_MODEL_TEXT_COLUMNS, "model_free"}
+        unknown = set(columns) - allowed
+        if unknown or not columns:
+            raise ValueError(f"not the columns of a session's model: {sorted(unknown) or 'none given'}")
+        assignments = ", ".join(f"{name} = ?" for name in columns)
+
+        def work(conn: sqlite3.Connection) -> bool:
+            done = conn.execute(
+                f"UPDATE sessions SET {assignments} WHERE id = ? AND preset = ?", [*columns.values(), session_id, preset]
+            )
+            return done.rowcount > 0
+
+        return await self.run(work)
+
     async def preset_was_told(self, session_id: str, preset: str) -> None:
         """Note the preset a session's task agent was started under just now (``Session.preset_told``).
 

@@ -2692,7 +2692,9 @@ class TaskAgentManager(TreeWork):
             return
         if record and not same_as_kept(kept, choice):
             try:
-                await self._ledger.update_session(kept.id, **choice.columns())
+                # As chosen for the preset it was read with: for one it has no longer, it is not
+                # written over what was settled for the one it has (``change_duty``).
+                await self._ledger.keep_model(kept.id, kept.preset, **choice.columns())
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - a session settled before goes on; it is written the next time
@@ -2735,7 +2737,7 @@ class TaskAgentManager(TreeWork):
         try:
             choice = await self._choose_model(kept, record=True, depth=0)
             if choice.ident and not same_as_kept(kept, choice):
-                await self._ledger.update_session(kept.id, **choice.columns())
+                await self._ledger.keep_model(kept.id, kept.preset, **choice.columns())
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it goes on with the model it has

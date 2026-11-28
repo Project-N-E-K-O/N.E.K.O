@@ -875,16 +875,16 @@ async def test_a_session_that_cannot_be_settled_as_it_is_made_is_settled_when_it
     specs: list[Any] = []
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("boss", OWN_SLOT)
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
     failed: list[str] = []
 
-    async def failing_once(session_id: str, **values: Any) -> Any:
+    async def failing_once(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values and not failed:
             failed.append(session_id)
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing_once)
+    monkeypatch.setattr(host.ledger, "keep_model", failing_once)
     made = await host.open_session("Lan", "Garden", preset="boss")
     assert failed == [made["session_id"]]
     assert (await host.ledger.get_session(made["session_id"])).model_ident == ""
@@ -901,14 +901,14 @@ async def test_a_session_whose_model_cannot_be_written_down_is_not_opened(hosts,
     specs: list[Any] = []
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("general", OWN_SLOT)
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
 
-    async def failing(session_id: str, **values: Any) -> Any:
+    async def failing(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values:
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing)
+    monkeypatch.setattr(host.ledger, "keep_model", failing)
     failed = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
 
     # Opened now and on no record, it could be opened by another model the next time, conversation and all.
@@ -1429,14 +1429,14 @@ async def test_a_session_settled_before_goes_on_when_its_model_cannot_be_written
     await host.derive_leader("Budget app", "Lan")
     await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     manager.tiers["agent_small"] = {**small, "model": "small-model-2"}
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
 
-    async def failing(session_id: str, **values: Any) -> Any:
+    async def failing(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values:
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing)
+    monkeypatch.setattr(host.ledger, "keep_model", failing)
     await wait_status(host, (await _dispatch(host, "add a legend to the budget app")).commission_id, "done")
 
     assert [spec.model.model for spec in specs] == ["small-model", "small-model-2"]
@@ -2602,3 +2602,35 @@ async def test_a_session_whose_new_preset_has_no_model_configured_just_now_stays
 
     kept = await host.ledger.get_session(member)
     assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)
+
+
+async def test_a_model_chosen_for_a_preset_the_session_has_no_longer_is_not_written_over_the_new_ones(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    agents = host.task_agents
+    session = await host.ledger.create_session(lanlan_name="Lan", name="it", kind="line", project="Shop site")
+    choose = agents.role_models.choose
+    meanwhile: list[str] = []
+
+    async def choosing(preset: str, *args: Any, **kwargs: Any) -> Any:
+        chosen = await choose(preset, *args, **kwargs)
+        if preset == "general" and not meanwhile:
+            # While its model is being settled for the preset it was made with, it is given another,
+            # and its model is settled anew for that one.
+            meanwhile.append(preset)
+            await host.change_duty(session.id, "scout")
+        return chosen
+
+    monkeypatch.setattr(agents.role_models, "choose", choosing)
+    await agents.settle_model(session)
+
+    kept = await host.ledger.get_session(session.id)
+    assert meanwhile == ["general"]
+    assert (kept.preset, kept.model_slot, kept.model_name) == ("scout", OWN_SLOT, "own-model")
+    # By the ledger itself: only for the preset the session has.
+    assert await host.ledger.keep_model(session.id, "general", model_name="agent-model") is False
+    assert (await host.ledger.get_session(session.id)).model_name == "own-model"
+    assert await host.ledger.keep_model(session.id, "scout", model_name="another") is True
+    with pytest.raises(ValueError, match="not the columns"):
+        await host.ledger.keep_model(session.id, "scout", seat="tree")
