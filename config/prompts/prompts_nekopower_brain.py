@@ -1892,7 +1892,7 @@ HAND_OVER_TOO_MANY_MEMBERS = (
 # project's directory, whose changes the host merges back (``tree_work.py``).
 # ---------------------------------------------------------------------------
 
-# Added to the message that opens a commission worked on in a git worktree.
+# Added to the message that opens a commission worked on in a git worktree when no dependency dirs were linked.
 # Rendered with str.format (tree, project).
 TASK_AGENT_IN_TREE = (
     "You work on this commission in a directory of your own: {tree}. It is a git worktree the "
@@ -1903,6 +1903,36 @@ TASK_AGENT_IN_TREE = (
     "{project}: you can read there and cannot write there; write in your own directory. Commit "
     "nothing and make no branch. When you report this commission done, the host merges what you "
     "changed into the project's directory itself and tells you if something clashes."
+)
+# Added to the message that opens a commission worked on in a git worktree when dependency dirs were linked.
+# Rendered with str.format (tree, project).
+TASK_AGENT_IN_TREE_WITH_DEPS = (
+    "You work on this commission in a directory of your own: {tree}. It is a git worktree the "
+    "host made just now from the project's directory as it stood, changes that were not committed "
+    "included, so that you and other task agents can change files at the same time. Other git-ignored "
+    "files (.env files, build output, unlinked dependencies) are not in it: install any missing "
+    "unlinked packages only in an isolated location outside any shared dependency link, or say in "
+    "your report what you could not run. The project's own directory is {project}: you can read "
+    "there and cannot write there; write in your own directory. Commit nothing and make no branch. "
+    "When you report this commission done, the host merges what you changed into the project's "
+    "directory itself and tells you if something clashes."
+)
+# Added to the message that opens a commission worked on in a non-git working copy.
+# Rendered with str.format (tree, project).
+TASK_AGENT_IN_COPY = (
+    "You work on this commission in a directory of your own: {tree}. It is an isolated working "
+    "copy the host made from the project's directory so that you and other task agents can change "
+    "files at the same time. The project's own directory is {project}: you can read there and "
+    "cannot write there; write in your own directory. When you report this commission done, the "
+    "host merges what you changed back into the project's directory itself and tells you if "
+    "something clashes."
+)
+# Appended to TASK_AGENT_IN_TREE / TASK_AGENT_IN_COPY when dependency directories were linked.
+# Rendered with str.format (deps).
+TASK_AGENT_TREE_LINKED_DEPS = (
+    " Note: these dependency directories are linked from the project's directory for running "
+    "checks — use them directly and do not modify, delete, or reinstall inside them (install "
+    "any missing packages only in an isolated location): {deps}."
 )
 # Added to it when an earlier commission of the same task agent left changes
 # that were not merged. Rendered with str.format (title, path, files: empty
@@ -1943,9 +1973,27 @@ TREE_MARKERS_LEFT = (
     "stay in your directory and the user decides. The host says this: it is not the user's "
     "words, and it approves nothing."
 )
+# What it is sent when binary, symlink, or modify/delete conflicts have not been explicitly settled.
+# Rendered with str.format (files, round, rounds).
+TREE_UNRESOLVED_CONFLICTS = (
+    "The host did not merge what you changed: these non-text conflicted files were left unchanged "
+    "after conflict preparation and still need an explicit resolution: {files}. Compare against "
+    "the project's directory, write the settled version (or remove the file if it should be "
+    "deleted), and report done again. This is try {round} of {rounds}; after the last, the "
+    "changes stay in your directory and the user decides. The host says this: it is not the "
+    "user's words, and it approves nothing."
+)
 # What follows the result of a commission whose changes were merged into the
 # project's directory. Rendered with str.format (project, files).
 TREE_LANDED = "Merged into the project's directory ({project}): {files}."
+# Rendered with str.format (branch, commit, files).
+TREE_LANDED_BRANCH = "Committed to branch {branch} ({commit}): {files}."
+# Rendered with str.format (branch, commit).
+TREE_LANDED_BRANCH_NO_FILES = "Committed to branch {branch} ({commit})."
+# Rendered with str.format (branch, pr_url, files).
+TREE_LANDED_PR = "Pushed branch {branch} (pull request {pr_url}): {files}."
+# Rendered with str.format (branch, pr_url).
+TREE_LANDED_PR_NO_FILES = "Pushed branch {branch} (pull request {pr_url})."
 # Rendered with str.format (files, path).
 TREE_LANDED_SKIPPED = (
     "Not merged, being too large or a repository of their own: {files}. They are kept in {path}, "
@@ -2007,27 +2055,43 @@ TREE_TRY_AGAIN = "The user asked for the changes of this commission to be merged
 # files; files, path).
 TREE_LANDED_TEXTS = {
     'zh': {"landed": "已合回项目目录：{files}", "more": " 等另外 {more} 个",
+           "branch": "已提交到分支 {branch}（{commit}）：{files}",
+           "pr": "已推送到分支 {branch} 并创建 PR（{pr_url}）：{files}",
            "outside": "\n其中在项目目录以外（仓库里别处）：{files}",
            "skipped": "\n有文件没合回（太大，或者本身是一个仓库）：{files}。它们留在：{path}"},
     'zh-TW': {"landed": "已合回專案目錄：{files}", "more": " 等另外 {more} 個",
+              "branch": "已提交到分支 {branch}（{commit}）：{files}",
+              "pr": "已推送到分支 {branch} 並建立 PR（{pr_url}）：{files}",
               "outside": "\n其中在專案目錄以外（倉庫裡別處）：{files}",
               "skipped": "\n有檔案沒合回（太大，或者本身是一個倉庫）：{files}。它們留在：{path}"},
     'en': {"landed": "Merged into the project folder: {files}", "more": " and {more} more",
+           "branch": "Committed to branch {branch} ({commit}): {files}",
+           "pr": "Pushed branch {branch} and opened PR ({pr_url}): {files}",
            "outside": "\nOf these, outside the project folder (elsewhere in its repository): {files}",
            "skipped": "\nNot merged (too large, or a repository of their own): {files}. They are kept in: {path}"},
     'ja': {"landed": "プロジェクトフォルダーに反映しました：{files}", "more": " ほか {more} 件",
+           "branch": "ブランチ {branch}（{commit}）にコミットしました：{files}",
+           "pr": "ブランチ {branch} をプッシュして PR を作成しました（{pr_url}）：{files}",
            "outside": "\nこのうちプロジェクトフォルダーの外（リポジトリ内の別の場所）：{files}",
            "skipped": "\n反映していないファイル（大きすぎるか、それ自体がリポジトリ）：{files}。ここに残してあります：{path}"},
     'ko': {"landed": "프로젝트 폴더에 반영했습니다: {files}", "more": " 외 {more}개",
+           "branch": "브랜치 {branch}({commit})에 커밋했습니다: {files}",
+           "pr": "브랜치 {branch}를 푸시하고 PR을 열었습니다({pr_url}): {files}",
            "outside": "\n이 중 프로젝트 폴더 밖(저장소의 다른 곳): {files}",
            "skipped": "\n반영하지 않은 파일(너무 크거나 그 자체가 저장소): {files}. 여기에 남아 있습니다: {path}"},
     'ru': {"landed": "Внесено в папку проекта: {files}", "more": " и ещё {more}",
+           "branch": "Закоммичено в ветку {branch} ({commit}): {files}",
+           "pr": "Отправлено в ветку {branch} и открыт PR ({pr_url}): {files}",
            "outside": "\nИз них вне папки проекта (в другом месте репозитория): {files}",
            "skipped": "\nНе внесено (слишком большие или сами являются репозиторием): {files}. Они лежат здесь: {path}"},
     'es': {"landed": "Aplicado en la carpeta del proyecto: {files}", "more": " y {more} más",
+           "branch": "Confirmado en la rama {branch} ({commit}): {files}",
+           "pr": "Subido a la rama {branch} y abierto PR ({pr_url}): {files}",
            "outside": "\nDe ellos, fuera de la carpeta del proyecto (en otra parte del repositorio): {files}",
            "skipped": "\nSin aplicar (demasiado grandes, o son un repositorio propio): {files}. Quedan en: {path}"},
     'pt': {"landed": "Aplicado na pasta do projeto: {files}", "more": " e mais {more}",
+           "branch": "Confirmado na branch {branch} ({commit}): {files}",
+           "pr": "Enviado para a branch {branch} e aberto PR ({pr_url}): {files}",
            "outside": "\nDestes, fora da pasta do projeto (em outra parte do repositório): {files}",
            "skipped": "\nNão aplicados (grandes demais, ou são um repositório próprio): {files}. Ficam em: {path}"},
 }
@@ -2121,7 +2185,7 @@ TREE_NOT_LANDED_TEXTS = {
 # An inspector the host starts before a landing (``tree_work.py``).
 # ---------------------------------------------------------------------------
 
-# What the inspector is handed. Rendered with str.format (title, what).
+# What the inspector is handed. Rendered with str.format (title, what, linked).
 TREE_CHECK_TITLE = "Check: {title}"
 TREE_CHECK_BRIEF = (
     "Another task agent says it is done with the work below. Check it before the host merges it "
@@ -2129,7 +2193,7 @@ TREE_CHECK_BRIEF = (
     "The directory you are in is that task agent's own: a git worktree of the project, holding "
     "what it changed and nothing committed. `git status` and `git diff` there show what it "
     "changed; a file it made new is only named there, so read it. What git ignores is not in it (installed dependencies, build output), so some "
-    "checks may not run here.\n"
+    "checks may not run here.{linked}\n"
     "End with one report, and choose its status by this:\n"
     "- ready: you read the changes and ran what could be run, and the work holds.\n"
     "- blocked: something is wrong with the work itself. Say each problem with its file and "
@@ -2138,6 +2202,24 @@ TREE_CHECK_BRIEF = (
     "settle it). Say what is missing. Do not use blocked for this: a check that could not run "
     "is not a fault of the work.\n\n"
     "What was to be done:\n{what}"
+)
+TREE_COPY_CHECK_BRIEF = (
+    "Another task agent says it is done with the work below. Check it before the host merges it "
+    "into the project.\n"
+    "The directory you are in is that task agent's own isolated working copy of the project "
+    "(not a git repository); compare against the project directory ({project}) if needed.{linked}\n"
+    "End with one report, and choose its status by this:\n"
+    "- ready: you read the changes and ran what could be run, and the work holds.\n"
+    "- blocked: something is wrong with the work itself. Say each problem with its file and "
+    "line, and what you read or ran that shows it. It goes back to whoever did the work.\n"
+    "- failed: you could not check it at all (nothing can be run here and reading does not "
+    "settle it). Say what is missing. Do not use blocked for this: a check that could not run "
+    "is not a fault of the work.\n\n"
+    "What was to be done:\n{what}"
+)
+TREE_CHECK_LINKED_DEPS = (
+    " Dependency directories linked from the project directory (shared links; do not modify or "
+    "reinstall inside them): {deps}."
 )
 # What a task agent is sent back with when the inspector reported problems.
 # Rendered with str.format (nonce, round, rounds); the findings follow, framed.

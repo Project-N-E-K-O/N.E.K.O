@@ -3921,3 +3921,98 @@ async def test_a_member_at_work_in_the_directory_is_waited_for_until_that_run_is
     assert (workdir / "a.txt").exists() and (workdir / "b.txt").exists()
     # Over, it is one that works in a worktree: nobody waits for it in the directory any more.
     await wait_until(lambda: first not in manager._direct_now, what="its run in the directory being over")
+
+
+@pytest.mark.parametrize("pending_state", ["pending", "error", "clean"])
+async def test_clean_worktree_after_run_checks_pending_delivery_before_removal(
+    hosts, tmp_path, pending_state
+):
+    go = asyncio.Event()
+
+    async def wait_to_report() -> None:
+        await go.wait()
+
+    host, trees, _workdir, one, two, _members = await _two_members(
+        hosts,
+        tmp_path,
+        second=[[wait_to_report, *_report("which pages?", status="blocked")]],
+    )
+    checked: list[str] = []
+
+    async def fake_has_pending_delivery(worktree: Worktree) -> bool:
+        checked.append(worktree.id)
+        if pending_state == "error":
+            raise OSError("delivery metadata unreadable")
+        return pending_state == "pending"
+
+    trees.has_pending_delivery = fake_has_pending_delivery
+    go.set()
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="its worktree being seen to")
+
+    tree_id = two.commission_id[:12]
+    assert checked == [tree_id]
+    if pending_state in {"pending", "error"}:
+        (tree,) = await host.ledger.trees()
+        assert (tree.id, tree.state, tree.reason) == (tree_id, "unlanded", "stopped")
+        assert trees.removed == [] and Path(tree.path).is_dir()
+    else:
+        assert await host.ledger.trees() == []
+        assert trees.removed == [tree_id] and not host.paths.worktree_dir(tree_id).exists()
+
+
+@pytest.mark.parametrize("pending_state", ["pending", "error"])
+async def test_auto_complete_and_manual_land_preserve_worktree_with_pending_delivery(
+    hosts, tmp_path, pending_state
+):
+    go = asyncio.Event()
+
+    async def wait_to_report() -> None:
+        await go.wait()
+
+    # Clean worktree finishes with status="ready" (auto-complete returns unchanged from WorkingFiles)
+    # while has_pending_delivery() reports an unfinished PR delivery (or fails to read metadata).
+    host, trees, _workdir, one, two, _members = await _two_members(
+        hosts,
+        tmp_path,
+        second=[[wait_to_report, *_report("nothing new to edit")]],
+    )
+    checked: list[str] = []
+
+    async def fake_has_pending_delivery(worktree: Worktree) -> bool:
+        checked.append(worktree.id)
+        if pending_state == "error":
+            raise OSError("delivery metadata unreadable")
+        return True
+
+    trees.has_pending_delivery = fake_has_pending_delivery
+    go.set()
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    stuck = await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="auto-complete landing settling")
+
+    tree_id = two.commission_id[:12]
+    assert tree_id in checked
+    (tree,) = await host.ledger.trees()
+    assert (tree.id, tree.state, tree.reason) == (tree_id, "unlanded", "failed")
+    assert trees.removed == [] and Path(tree.path).is_dir()
+    assert "pending pull request delivery" in stuck.result_summary
+
+    # Manual land_worktree with default WorkingFiles must also keep the worktree while PR delivery is pending.
+    manual = await host.land_worktree(tree.id)
+    assert manual["status"] == "failed" and "pending pull request delivery" in manual["detail"]
+    (still_there,) = await host.ledger.trees()
+    assert still_there.id == tree_id and still_there.state == "unlanded" and trees.removed == [] and Path(tree.path).is_dir()
+
+    # If the worktree was previously kept, a blocked manual land_worktree must restore "kept" (not stay "landing").
+    kept = await host.keep_worktree(tree.id)
+    assert kept["state"] == "kept"
+    manual_kept = await host.land_worktree(tree.id)
+    assert manual_kept["status"] == "failed" and "pending pull request delivery" in manual_kept["detail"]
+    (still_kept,) = await host.ledger.trees()
+    assert still_kept.id == tree_id and still_kept.state == "kept" and trees.removed == []
+    # Not stuck in "landing": explicit discard succeeds without ValueError("at_work").
+    assert await host.discard_worktree(tree.id) == {"removed": True}

@@ -825,6 +825,11 @@ async def test_one_member_that_writes_works_in_a_project_at_a_time_and_one_that_
         "which fonts": ScriptedLLM([_report("two fonts")]),
     }
     host = _host(hosts, tmp_path, _by_role(leader_llm, members))
+    from nekopower.host.worktrees import WorktreeManager
+
+    # Disable non-git copy working copies here so both writers target the project directory
+    # directly and exercise the single-writer serialization queue.
+    host.task_agents.worktrees = WorktreeManager(allow_non_git=False)
     workdir = await _project(host, "Shop site", tmp_path)
     _in_git(host, workdir)
     await _allow_members(host)
