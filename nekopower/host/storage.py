@@ -718,6 +718,10 @@ class StorageManager:
                 if commission.workdir:
                     live_workdirs.add(os.path.normcase(os.path.normpath(commission.workdir)))
             trees = await self._ledger.trees()
+            for row in trees:
+                for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
+                    if backing:
+                        live_workdirs.add(os.path.normcase(os.path.normpath(backing)))
         else:
             trees = []
 
@@ -806,6 +810,10 @@ class StorageManager:
                     active_sessions.add(comm_sid)
                 if comm_workdir:
                     live_workdirs.add(os.path.normcase(os.path.normpath(comm_workdir)))
+            for row in await self._ledger.trees():
+                for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
+                    if backing:
+                        live_workdirs.add(os.path.normcase(os.path.normpath(backing)))
         _projects, active_project_workdirs, _readable = await self._read_projects_checked(include_archived=False)
         return active_sessions, live_workdirs, active_project_workdirs
 
@@ -1560,7 +1568,7 @@ class StorageManager:
                             if sess_proj == project or (
                                 sess_workdir and _path_is_or_inside(sess_workdir, norm_target)
                             ):
-                                if not self._task_agents.hold_files(sid):
+                                if not self._task_agents.hold_files(sid, drop_idle_timer=False):
                                     return "in_use", 0
                                 held_sids.append(sid)
                     if await self._project_busy(project) is not None:
@@ -1593,7 +1601,7 @@ class StorageManager:
         target = self._paths.work_dir(session_id, project)
         norm_target = os.path.normcase(os.path.normpath(str(target)))
         held_sids: list[str] = []
-        if not self._task_agents.hold_files(session_id):
+        if not self._task_agents.hold_files(session_id, drop_idle_timer=False):
             return "in_use", 0
         held_sids.append(session_id)
         try:
@@ -1608,7 +1616,7 @@ class StorageManager:
                     if sid != session_id and sess_workdir and _path_is_or_inside(sess_workdir, norm_target):
                         extra_sids.add(sid)
                 for sid in sorted(extra_sids - {session_id}):
-                    if not self._task_agents.hold_files(sid):
+                    if not self._task_agents.hold_files(sid, drop_idle_timer=False):
                         return "in_use", 0
                     held_sids.append(sid)
 

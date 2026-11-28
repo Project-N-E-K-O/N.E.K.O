@@ -8465,20 +8465,23 @@ class TaskAgentManager(TreeWork):
         """Return where a session is kept (``session`` is a ``ledger.Session``). Blocking; see ``_session_dir_of``."""
         return self._session_dir_of(session)
 
-    def hold_files(self, session_id: str) -> bool:
+    def hold_files(self, session_id: str, *, drop_idle_timer: bool = True) -> bool:
         """Claim a session's files for removal. False when the session is in use.
 
         In use means a commission holds it, or one that is worked on in it
         has a place, waits for one, or is being taken up again. Looking and
         claiming happen with no await in between. Until ``release_files``,
         a commission that is to be started in the session waits instead of
-        opening files that are being removed under it.
+        opening files that are being removed under it. Pass
+        ``drop_idle_timer=False`` for holds that leave the transcript intact
+        (such as working-directory cleanup) so idle compaction stays scheduled.
         """
         if self._in_use(session_id):
             return False
         self._clearing[session_id] = asyncio.Event()
-        # Not summed up later either: there is nothing left to sum up.
-        self._drop_idle_timer(session_id)
+        if drop_idle_timer:
+            # Not summed up later either: there is nothing left to sum up.
+            self._drop_idle_timer(session_id)
         return True
 
     def _in_use(self, session_id: str) -> bool:
@@ -11770,6 +11773,11 @@ class TaskAgentManager(TreeWork):
         from config.nekopower_settings import TASK_AGENT_IDLE_COMPACT_ENABLED, TASK_AGENT_IDLE_COMPACT_SECONDS
         from nekopower.runtime.protocol import GatewaySpec
 
+        clearing = self._clearing.get(session_id)
+        if clearing is not None:
+            # Wait for a concurrent non-transcript file hold (e.g. work_dir check/cleanup)
+            # before deciding whether the session can still be idle-compacted.
+            await clearing.wait()
         if not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
             return False
         if stops is not None and stops != self._idle_stops:

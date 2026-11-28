@@ -502,19 +502,20 @@ class TreeWork:
         except Exception:  # noqa: BLE001 - not known: taken for one that is there
             return False
 
-    async def _remove_what_is_left(self, row: Tree) -> bool | None:
+    async def _remove_what_is_left(self, row: Tree, *, before_delete: Any = None) -> bool | None | str:
         """Remove the directory of a worktree git no longer knows (its repository is gone).
 
         Returns whether it went; None for a directory that is not the
-        worktree's any more, which is left where it is. Only one that
-        still says it is that worktree is removed (the ``.git`` file git
-        put into it names it, and the repository it is of), or one with
-        nothing in it: another directory put in its place since is not
-        what the user discarded.
+        worktree's any more, which is left where it is; ``"aborted"`` when
+        ``before_delete(path)`` returned False immediately before deletion.
+        Only one that still says it is that worktree is removed (the ``.git``
+        file git put into it names it, and the repository it is of), or one with
+        nothing in it: another directory put in its place since is not what the
+        user discarded.
         """
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
-        def remove() -> bool:
+        def remove() -> bool | str:
             if not _same_dir(str(path.parent), str(base)):
                 return False
             if _is_link(path):
@@ -525,10 +526,14 @@ class TreeWork:
                 # All of it went, and the directory itself did not (it was in use, or the host ended
                 # just then): nothing is lost with an empty directory, whoever made it. One that
                 # still cannot be removed stays on record as one to remove.
+                if before_delete is not None and not before_delete(path):
+                    return "aborted"
                 _remove_empty(path)
                 return True
             if not _says_it_is(path, row.id, row.repo_root):
                 return False
+            if before_delete is not None and not before_delete(path):
+                return "aborted"
             # The file that says whose the directory is goes last, with the directory: where
             # something of it is in use and stays, what is left still says so when this is
             # tried again (as the host next starts).
@@ -540,10 +545,14 @@ class TreeWork:
                     _remove_entry(path / ".git")
                     _remove_empty(path)
             except OSError:
+                # Best-effort partial cleanup; caller checks _tree_is_gone below.
                 pass
             return True
 
-        if not await asyncio.to_thread(remove):
+        status = await asyncio.to_thread(remove)
+        if status == "aborted":
+            return "aborted"
+        if not status:
             return None
         return await self._tree_is_gone(row)
 
@@ -2199,11 +2208,20 @@ class TreeWork:
             if handle is None and not await self._tree_is_gone(row):
                 if not await self._repository_gone(row):
                     raise ValueError("not_opened")
-                if check_mtime is not None:
-                    recheck = await asyncio.to_thread(evaluate_mtime, Path(row.path))
-                    if recheck is not None:
-                        return {"expired": False, "reason": recheck}
-                went = await self._remove_what_is_left(row)
+                abort_gone: list[str] = []
+
+                def still_untouched_gone(path: Path) -> bool:
+                    reason = evaluate_mtime(path)
+                    if reason is not None:
+                        abort_gone.append(reason)
+                        return False
+                    return True
+
+                went = await self._remove_what_is_left(
+                    row, before_delete=still_untouched_gone if check_mtime is not None else None
+                )
+                if went == "aborted":
+                    return {"expired": False, "reason": abort_gone[0] if abort_gone else "touched"}
                 self._forget_tree(row)
                 self._tree_handles.pop(row.id, None)
                 self._trees_mine.discard(row.id)

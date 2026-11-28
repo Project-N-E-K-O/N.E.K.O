@@ -1154,3 +1154,101 @@ async def test_worktree_forget_aborts_when_before_delete_detects_new_write(
     )
     assert aborted is False
     assert saved.read_text(encoding="utf-8") == "new save"
+
+
+async def test_work_dir_cleanup_preserves_retained_worktree_repo_and_idle_compaction_timers(tmp_path: Path):
+    """Retained worktree backing repos must not be deleted, and work/ checks must preserve idle compaction timers."""
+    import asyncio
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        # 1. Idle session whose work/ holds the Git repository backing a retained 'kept' worktree.
+        old_ts = clock.now - 10 * DAY
+        repo_sess = await host.ledger.create_session(name="repo-holder", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(repo_sess.id, status="idle")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, repo_sess.id))
+        )
+        repo_work = host.paths.work_dir(repo_sess.id, DEFAULT_PROJECT)
+        nested_repo = repo_work / "myrepo"
+        nested_repo.mkdir(parents=True)
+        (nested_repo / "README.md").write_text("repo data", encoding="utf-8")
+        _set_tree_mtime(repo_work, old_ts)
+
+        wt_dir = host.paths.worktree_dir("kept9001")
+        wt_dir.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="kept9001",
+            session_id=repo_sess.id,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(nested_repo),
+            repo_root=str(nested_repo),
+            path=str(wt_dir),
+            workdir=str(wt_dir),
+            state="kept",
+        )
+
+        # Also check project-level work/ backing a retained worktree.
+        proj_work = host.paths.project_work_dir("repo-proj")
+        proj_work.mkdir(parents=True)
+        (proj_work / "file.txt").write_text("proj repo", encoding="utf-8")
+        wt_proj = host.paths.worktree_dir("kept9002")
+        wt_proj.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="kept9002",
+            session_id=repo_sess.id,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="repo-proj",
+            project_dir=str(proj_work),
+            repo_root=str(proj_work),
+            path=str(wt_proj),
+            workdir=str(wt_proj),
+            state="kept",
+        )
+
+        sess_wid = format_work_dir_id("session", DEFAULT_PROJECT, repo_sess.id)
+        proj_wid = format_work_dir_id("project", "repo-proj")
+        view = await host.storage_overview()
+        by_id = {d["id"]: d for d in view["work_dirs"]}
+        assert by_id[sess_wid]["can_clean"] is False
+        assert by_id[proj_wid]["can_clean"] is False
+
+        res = await host.clean_work_dirs([sess_wid, proj_wid])
+        assert res["cleaned"] == []
+        assert {item["id"]: item["code"] for item in res["failed"]} == {sess_wid: "in_use", proj_wid: "in_use"}
+        assert nested_repo.is_dir()
+        assert proj_work.is_dir()
+
+        # 2. Recent closed session with an active idle-compaction timer: upkeep check must NOT cancel the timer.
+        recent_ts = clock.now - 3600.0
+        recent_sess = await host.ledger.create_session(name="recent-compact", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(recent_sess.id, status="closed")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (recent_ts, recent_sess.id))
+        )
+        recent_work = host.paths.work_dir(recent_sess.id, DEFAULT_PROJECT)
+        recent_work.mkdir(parents=True)
+        (recent_work / "notes.txt").write_text("fresh", encoding="utf-8")
+        _set_tree_mtime(recent_work, recent_ts)
+
+        loop = asyncio.get_running_loop()
+        timer = loop.call_later(3600.0, lambda: None)
+        host.task_agents._idle_timers[recent_sess.id] = timer
+        try:
+            outcome, _freed = await host.storage._clean_one_work_dir(
+                "session", DEFAULT_PROJECT, recent_sess.id, until=clock.now - 7 * DAY, skip_project_referenced=True
+            )
+            assert outcome == "recent"
+            assert host.task_agents._idle_timers.get(recent_sess.id) is timer
+            assert not timer.cancelled()
+        finally:
+            timer.cancel()
+            host.task_agents._idle_timers.pop(recent_sess.id, None)
+    finally:
+        await host.shutdown()
