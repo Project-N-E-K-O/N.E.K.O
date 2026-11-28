@@ -39,7 +39,6 @@ CANCEL_THRESHOLD = 0.5
 DECISION_TIMEOUT_SECONDS = 2.5
 _MAX_STATE_DIALOGUES = 24
 _LATEST_LINES = 4
-_WHOLE_SPEECH_CHARS = 100_000
 
 
 def _stage_number(stage: Any) -> int:
@@ -160,9 +159,9 @@ def _reply_to_speech(data: Dict[str, Any], route_state: Any) -> Optional[str]:
     log = [d for d in raw_log or [] if isinstance(d, dict)]
     # Compared whole (the game sends the whole speech): two speeches that only
     # share their first 240 characters are different speeches.
-    speech = _normalize_short_text(data.get("userSpeech") or "", max_chars=_WHOLE_SPEECH_CHARS)
+    speech = _normalize_short_text(data.get("userSpeech") or "", max_chars=0)
     if len(log) >= 2 and log[-1].get("type") == "assistant" and log[-2].get("type") == "user":
-        prev = _normalize_short_text(log[-2].get("text") or "", max_chars=_WHOLE_SPEECH_CHARS)
+        prev = _normalize_short_text(log[-2].get("text") or "", max_chars=0)
         if speech and prev == speech:
             return str(log[-1].get("line") or "").strip() or None
     return None

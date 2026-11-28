@@ -219,3 +219,14 @@ def test_all_zero_probabilities_mean_the_chat_prompt():
     zero = SimpleNamespace(value="giving_up", probability=0.0, probabilities={"giving_up": 0.0})
     assert pgd.action_from_answer(zero, {"stage": 8}) is None
     assert pgd.action_from_answer(zero, {"stage": "user_recovery"}) is None
+
+
+@pytest.mark.unit
+def test_two_long_speeches_differing_only_at_the_end_are_different():
+    head = "x" * 200_000
+    route = {"game_dialog_log": [
+        {"id": "d1", "type": "user", "text": head + " play for real"},
+        {"id": "d2", "type": "assistant", "line": "Okay!"},
+    ]}
+    assert pgd._reply_to_speech({"userSpeech": head + " play for real"}, route) == "Okay!"
+    assert pgd._reply_to_speech({"userSpeech": head + " just give up"}, route) is None
