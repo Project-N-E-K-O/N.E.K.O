@@ -165,11 +165,13 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
 
 from .hooks import (
     _AsyncStreamWrapper,
+    _CACHE_CREATION_TOKEN_FIELDS,
     _CACHED_TOKEN_FIELDS,
     _NESTED_DETAIL_FIELDS,
     _SyncStreamWrapper,
     _add_to_blocklist,
     _blocklist_lock,
+    _extract_cache_creation_tokens,
     _extract_cached_tokens,
     _get_base_url,
     _handle_async_stream,

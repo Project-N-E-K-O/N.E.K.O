@@ -64,6 +64,7 @@ _DAY_STAT_KEYS = (
     "total_completion_tokens",
     "total_tokens",
     "cached_tokens",
+    "cache_creation_tokens",
     "total_prompt_chars",
     "call_count",
     "error_count",
@@ -73,6 +74,7 @@ _BUCKET_STAT_KEYS = (
     "completion_tokens",
     "total_tokens",
     "cached_tokens",
+    "cache_creation_tokens",
     "prompt_chars",
     "call_count",
 )

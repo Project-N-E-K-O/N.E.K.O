@@ -1304,6 +1304,35 @@ def split_inner_thoughts_and_history(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _build_inner_thoughts_header_patterns() -> list[re.Pattern[str]]:
+    patterns: list[re.Pattern[str]] = []
+    for template in INNER_THOUGHTS_HEADER.values():
+        escaped = re.escape(template.strip()).replace(re.escape("{name}"), r"[^\n]+?")
+        patterns.append(re.compile(r"\n*" + escaped))
+    return patterns
+
+
+_INNER_THOUGHTS_HEADER_PATTERNS = _build_inner_thoughts_header_patterns()
+
+
+def find_static_prefix_end(prompt: str) -> int | None:
+    """Return the character index where dynamic session context begins.
+
+    In a session-opening prompt, everything up to ``INNER_THOUGHTS_HEADER`` is
+    the relatively stable prefix (role prompt, directives, and long-term persona
+    memory), while everything starting at ``INNER_THOUGHTS_HEADER`` contains the
+    per-session timestamp, recent history, and transient turn context. Returns
+    ``None`` when no header marker is found or nothing precedes it.
+    """
+    if not isinstance(prompt, str) or not prompt:
+        return None
+    for pattern in _INNER_THOUGHTS_HEADER_PATTERNS:
+        match = pattern.search(prompt)
+        if match and match.start() > 0:
+            return match.start()
+    return None
+
+
 # =====================================================================
 # ======= Chat gap notices ===========================================
 # =====================================================================

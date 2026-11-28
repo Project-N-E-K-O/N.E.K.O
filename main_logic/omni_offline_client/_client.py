@@ -231,6 +231,8 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
             provider_type=self.provider_type,
+            explicit_cache=True,
+            cache_conversation=True,
         )
 
         # ── Tool calling state ────────────────────────────────────────

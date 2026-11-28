@@ -73,8 +73,12 @@ from .lifecycle import (
 from .cache_control import (
     _CACHE_CONTROL_EPHEMERAL,
     _TEXT_PART_TYPES,
+    CACHE_EPHEMERAL_KEY,
+    CACHE_STATIC_PREFIX_LEN_KEY,
     _attach_cache_control,
+    _extract_cache_hints,
     _inject_cache_control,
+    _split_system_prefix_blocks,
 )
 from .messages import (
     AIMessage,

@@ -32,6 +32,7 @@ from main_logic.proactive_delivery import (
 )
 from main_logic.session_state import session_reply_in_progress
 from utils.llm_client import (
+    CACHE_EPHEMERAL_KEY,
     peek_dialog_slop_lang,
     reset_dialog_slop_lang,
     set_dialog_slop_lang,
@@ -551,8 +552,10 @@ class _LifecycleMixin:
             return
 
         if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
+            old = self._conversation_history[0]
             self._conversation_history[0] = SystemMessage(
-                content=self._conversation_history[0].content + text
+                content=old.content + text,
+                metadata=dict(getattr(old, "metadata", None) or {}),
             )
         else:
             # Defensive: should never happen — connect() always sets [0].
@@ -848,7 +851,10 @@ class _LifecycleMixin:
                 logger.info(
                     f"prompt_ephemeral: attaching {len(_budget_images)} proactive image(s)"
                 )
-                _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+                _ephemeral_msg = HumanMessage(
+                    content=_ephemeral_content,
+                    metadata={CACHE_EPHEMERAL_KEY: True},
+                )
                 # Only **store**, never publish. Store post-ladder bytes, not caller originals:
                 # normalization reencodes almost every turn, and buses must show what models actually saw.
                 # Publish below on first chunk arrival, matching stream_text.
@@ -859,9 +865,15 @@ class _LifecycleMixin:
             else:
                 # The ladder always preserves the final image, so reaching here means callers supplied empty
                 # strings only. Fall back to text, never send multimodal shells containing text blocks alone.
-                _ephemeral_msg = HumanMessage(content=instruction)
+                _ephemeral_msg = HumanMessage(
+                    content=instruction,
+                    metadata={CACHE_EPHEMERAL_KEY: True},
+                )
         else:
-            _ephemeral_msg = HumanMessage(content=instruction)
+            _ephemeral_msg = HumanMessage(
+                content=instruction,
+                metadata={CACHE_EPHEMERAL_KEY: True},
+            )
         # The tool loop runs on history itself, as stream_text's does: this
         # turn's tool rounds are saved where they ran, so the next request
         # still sees which calls really happened. The instruction is not: it

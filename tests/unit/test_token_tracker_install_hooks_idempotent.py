@@ -150,6 +150,7 @@ def test_record_anthropic_usage_maps_messages_usage_fields():
         total_tokens=225,
         cached_tokens=80,
         call_type="conversation",
+        cache_creation_tokens=20,
     )
 
 

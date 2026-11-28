@@ -603,10 +603,15 @@ def usage_from_metadata(metadata: dict[str, Any]) -> Usage:
     else:
         details = metadata.get("prompt_tokens_details")
         cache_read = 0
-        if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int):
-            cache_read = int(details["cached_tokens"])
-        fresh = max(0, number("prompt_tokens") - cache_read)
         cache_write = 0
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens")
+            if isinstance(cached, int) and not isinstance(cached, bool):
+                cache_read = int(cached)
+            created = details.get("cache_creation_input_tokens")
+            if isinstance(created, int) and not isinstance(created, bool):
+                cache_write = int(created)
+        fresh = max(0, number("prompt_tokens") - cache_read - cache_write)
     reasoning: int | None = None
     completion_details = metadata.get("completion_tokens_details")
     if isinstance(completion_details, dict) and isinstance(
@@ -964,6 +969,8 @@ class LLMClientProvider:
             max_retries=config.max_retries,
             provider_type=config.provider_type,
             streaming=True,
+            explicit_cache=True,
+            cache_conversation=True,
             **extra,
         )
 

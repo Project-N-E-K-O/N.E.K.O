@@ -139,7 +139,8 @@ def test_cache_hit_rate_scenarios():
 
 def test_provider_compatibility():
     """enable_cache_control tracks requires_body_flag only, orthogonal to
-    requires_header. Header-only providers (qwen) must now report False."""
+    requires_header. DashScope endpoints enable requires_body_flag while all
+    other registered providers keep it False."""
     print("\n" + "="*70)
     print("测试: 提供商兼容性检查")
     print("="*70)
@@ -157,11 +158,22 @@ def test_provider_compatibility():
         print(f"  {status} {config['name']}: 缓存控制 = {actual}")
         assert actual == expected, f"{config['name']}: expected {expected}, got {actual}"
 
-    # Without a body-flag provider, all should be False; header behavior is unaffected.
-    assert all(
-        not get_cache_kwargs(c["base_url"])["enable_cache_control"]
-        for c in PROVIDER_CACHE_CONFIG.values()
-    ), "当前没有 provider 需要 body 级 flag，enable_cache_control 应全为 False"
+    expected_body_flag_providers = {
+        "qwen",
+        "qwen_intl",
+        "qwen_us",
+        "qwen_coding_intl",
+        "qwen_token_plan",
+        "qwen_token_plan_intl",
+    }
+    actual_body_flag_providers = {
+        pid
+        for pid, cfg in PROVIDER_CACHE_CONFIG.items()
+        if get_cache_kwargs(cfg["base_url"])["enable_cache_control"]
+    }
+    assert actual_body_flag_providers == expected_body_flag_providers, (
+        f"unexpected body-flag providers: {actual_body_flag_providers}"
+    )
 
 
 def test_min_cache_tokens_all_providers():
@@ -181,13 +193,7 @@ def test_min_cache_tokens_all_providers():
 
 
 def test_session_cache_header():
-    """Session Cache Header (qwen only).
-
-    qwen takes the header path: default_headers carries the session-cache
-    header, but enable_cache_control must be False -- it needs no body-level
-    cache_control marker, and stamping an Anthropic-style cache_control onto
-    DashScope (an OpenAI-compatible endpoint) would be wrong.
-    """
+    """DashScope endpoints carry both the session-cache header and body-flag capability."""
     print("\n" + "="*70)
     print("测试: Session Cache Header 配置")
     print("="*70)
@@ -201,11 +207,11 @@ def test_session_cache_header():
     print(f"    default_headers: {qwen_config['default_headers']}")
 
     expected_header = {"x-dashscope-session-cache": "enable"}
-    passed = qwen_config["enable_cache_control"] is False and qwen_config["default_headers"] == expected_header
+    passed = qwen_config["enable_cache_control"] is True and qwen_config["default_headers"] == expected_header
 
     status = "[PASS]" if passed else "[FAIL]"
     print(f"\n  {status} Session Cache Header 正确配置")
-    assert qwen_config["enable_cache_control"] is False, "header-only provider 不应打 body flag"
+    assert qwen_config["enable_cache_control"] is True, "DashScope 应开启 body 级缓存能力"
     assert qwen_config["default_headers"] == expected_header, f"headers mismatch: {qwen_config['default_headers']}"
 
 

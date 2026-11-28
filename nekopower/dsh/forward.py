@@ -176,18 +176,24 @@ def prepare_request(payload: dict[str, Any], model: ModelConfig) -> tuple[str, d
     if extra:
         # As the OpenAI client does with ``extra_body``: merged into the body.
         body.update(extra)
+    cache_kw = get_cache_kwargs(base_url)
     messages = body.get("messages")
     if isinstance(messages, list):
         # Most providers reject the newer "developer" role; N.E.K.O never sends
         # it upstream, so dsh's instructions go out as a system message. Done on
         # the final body, after anything merged in above.
-        body["messages"] = [
+        normalized = [
             {**message, "role": "system"}
             if isinstance(message, dict) and message.get("role") == "developer"
             else message
             for message in messages
         ]
-    headers: dict[str, Any] = dict(get_cache_kwargs(base_url).get("default_headers") or {})
+        if cache_kw.get("enable_cache_control"):
+            from utils.llm_client import _inject_cache_control
+
+            normalized = _inject_cache_control(normalized, cache_conversation=True)
+        body["messages"] = normalized
+    headers: dict[str, Any] = dict(cache_kw.get("default_headers") or {})
     headers = ensure_user_agent(headers)
     key = model.api_key if model.api_key is not None else "sk-placeholder"
     if "api.anthropic.com" in base_url:

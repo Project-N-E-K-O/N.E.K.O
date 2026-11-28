@@ -5350,6 +5350,8 @@ class NumericV2Actor:
                     timeout=NUMERIC_V2_ACTOR_TIMEOUT_SECONDS,
                     max_retries=0,
                     max_completion_tokens=max_output_tokens,
+                    explicit_cache=True,
+                    cache_conversation=True,
                 )
                 client_finished_at = time.monotonic()
                 async with client:
