@@ -4730,7 +4730,6 @@
             "connecting": "Подключение к серверу NekoPower...",
             "ready": "Сервер NekoPower готов",
             "enabled": "NekoPower включён",
-            "noCapability": "Включите хотя бы один пункт ниже, чтобы NekoPower мог действовать",
             "disabled": "NekoPower отключён",
             "disabledError": "NekoPower отключён (частичная очистка не удалась)",
             "enableFailed": "Ошибка включения",
