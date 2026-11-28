@@ -61,7 +61,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import config.nekopower_settings as settings
 from nekopower.host import _copy_trees
@@ -75,6 +75,15 @@ landed, or the project snapshot conflicts were prepared against)."""
 
 _FETCH_REF_PREFIX = "refs/nekopower/fetch/"
 _PROTECTED_BRANCHES = frozenset({"main", "master"})
+_SYNTHETIC_SNAPSHOT_MESSAGES = frozenset(
+    {
+        "nekopower: worktree start",
+        "nekopower: worktree result",
+        "nekopower: project before landing",
+        "nekopower: snapshot",
+        "nekopower: conflicts to resolve",
+    }
+)
 
 IDENTITY = {
     "GIT_AUTHOR_NAME": "NekoPower",
@@ -1757,6 +1766,40 @@ class WorktreeManager:
             }
         return dict(IDENTITY)
 
+    async def _real_base_commit(self, root: Path, commit: str) -> str | None:
+        """Walk past host-created synthetic snapshot commits to the first real repository commit."""
+        current = commit
+        seen: set[str] = set()
+        while current and current not in seen:
+            seen.add(current)
+            info = await self._git(
+                root,
+                "show",
+                "-s",
+                "--format=%ae%x00%ce%x00%s%x00%P",
+                current,
+                check=False,
+                timeout=settings.WORKTREE_GIT_QUERY_SECONDS,
+            )
+            if not info.ok:
+                return None
+            parts = info.decode().rstrip("\r\n").split("\x00")
+            if len(parts) < 4:
+                return current
+            author_email, committer_email, subject, parents_text = parts[0], parts[1], parts[2], parts[3]
+            is_synthetic = (
+                author_email == IDENTITY["GIT_AUTHOR_EMAIL"]
+                and committer_email == IDENTITY["GIT_COMMITTER_EMAIL"]
+                and subject in _SYNTHETIC_SNAPSHOT_MESSAGES
+            )
+            if not is_synthetic:
+                return current
+            parents = parents_text.split()
+            if not parents:
+                return None
+            current = parents[0]
+        return None
+
     async def _land_on_branch(
         self,
         worktree: Worktree,
@@ -1853,8 +1896,12 @@ class WorktreeManager:
                 remote=remote_name,
             )
 
-        base_tree = await self._resolve_commit(root, f"{base}^{{tree}}", kind="tree")
-        if result.tree == base_tree:
+        async def _finish_existing_without_new_commit(
+            *,
+            current_commit: str,
+            merged_tree_oid: str,
+            advance_start_to_result: bool,
+        ) -> MergeResult:
             same_owned = existing_tip is not None and delivery.get("branch") == target_branch
             needs_push = (
                 bool(remote_name)
@@ -1884,12 +1931,14 @@ class WorktreeManager:
                         current=existing_tip,
                         result=result.commit,
                         result_tree=result.tree,
-                        merged_tree=result.tree,
+                        merged_tree=merged_tree_oid,
                         base=base,
                         branch=target_branch,
                         commit=existing_tip,
                         remote=remote_name,
                     )
+                if advance_start_to_result:
+                    await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                 updated_delivery: dict[str, Any] = {
                     "branch": target_branch,
                     "commit": existing_tip,
@@ -1908,34 +1957,66 @@ class WorktreeManager:
                     current=existing_tip,
                     result=result.commit,
                     result_tree=result.tree,
-                    merged_tree=result.tree,
+                    merged_tree=merged_tree_oid,
                     base=base,
                     branch=target_branch,
                     commit=existing_tip,
                     remote=remote_name,
                 )
+            if advance_start_to_result:
+                await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
             return MergeResult(
                 "unchanged",
                 skipped=result.skipped,
-                current=existing_tip or base,
+                current=current_commit,
                 result=result.commit,
                 result_tree=result.tree,
-                merged_tree=result.tree,
+                merged_tree=merged_tree_oid,
                 base=base,
                 branch=target_branch,
                 commit=existing_tip or "",
                 remote=remote_name,
             )
 
-        did_three_way = existing_tip is not None and existing_tip != base
+        base_tree = await self._resolve_commit(root, f"{base}^{{tree}}", kind="tree")
+        if result.tree == base_tree:
+            return await _finish_existing_without_new_commit(
+                current_commit=existing_tip or base,
+                merged_tree_oid=result.tree,
+                advance_start_to_result=False,
+            )
+
+        target_base = existing_tip
+        if target_base is None:
+            # Never build a branch or PR directly on a synthetic CurrentState snapshot commit:
+            # doing so would commit and push the user's uncommitted edits and untracked files.
+            target_base = await self._real_base_commit(root, base)
+            if target_base is None:
+                return MergeResult(
+                    "failed",
+                    detail=(
+                        "cannot deliver to a branch or pull request from a synthetic snapshot with no real base "
+                        "commit; commit first or start from a ref or remote default branch"
+                    ),
+                    skipped=result.skipped,
+                    current=base,
+                    result=result.commit,
+                    result_tree=result.tree,
+                    base=base,
+                    branch=target_branch,
+                    remote=remote_name,
+                )
+
+        did_three_way = target_base != base
         if not did_three_way:
-            parent_commit = existing_tip or base
+            parent_commit = target_base
             old_tree = base_tree
             target_tree = result.tree
         else:
-            # The branch advanced since base: perform a 3-way merge onto existing_tip.
+            # Either the branch advanced since base or base is a synthetic working-tree snapshot:
+            # apply only base..result onto target_base via a 3-way merge.
             changed: set[bytes] = set()
-            for side in (existing_tip, result.commit):
+            for side in (target_base, result.commit):
                 listed = await self._git(
                     root,
                     "diff-tree",
@@ -1951,7 +2032,7 @@ class WorktreeManager:
             if changed:
                 renormalize = await self._git(root, "config", "--type=bool", "--get", "merge.renormalize", check=False)
                 filters = renormalize.lines()[:1] == ["true"]
-                for source in (base, existing_tip, result.commit, None):
+                for source in (base, target_base, result.commit, None):
                     programs = await self._programs(root, sorted(changed), source=source, filters=filters)
                     if programs:
                         raise WorktreeUnavailable(*programs)
@@ -1966,7 +2047,7 @@ class WorktreeManager:
                 "--no-messages",
                 "--merge-base",
                 base,
-                existing_tip,
+                target_base,
                 result.commit,
                 check=False,
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
@@ -1980,7 +2061,7 @@ class WorktreeManager:
                     "conflict",
                     conflicts=tuple(dict.fromkeys(parts[1:])),
                     skipped=result.skipped,
-                    current=existing_tip,
+                    current=target_base,
                     result=result.commit,
                     result_tree=result.tree,
                     merged_tree=merged_tree,
@@ -1988,25 +2069,17 @@ class WorktreeManager:
                     branch=target_branch,
                     remote=remote_name,
                 )
-            existing_tree = await self._resolve_commit(root, f"{existing_tip}^{{tree}}", kind="tree")
-            if merged_tree == existing_tree:
-                # Keep the worktree baseline at result.commit so files added on the branch
-                # outside this worktree are not seen as deleted on a later delivery.
-                await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
-                return MergeResult(
-                    "unchanged",
-                    skipped=result.skipped,
-                    current=existing_tip,
-                    result=result.commit,
-                    result_tree=result.tree,
-                    merged_tree=merged_tree,
-                    base=base,
-                    branch=target_branch,
-                    commit=existing_tip,
-                    remote=remote_name,
+            target_base_tree = await self._resolve_commit(root, f"{target_base}^{{tree}}", kind="tree")
+            if merged_tree == target_base_tree:
+                # If the owned branch already holds these changes locally but has not yet been
+                # pushed to the requested remote, complete remote delivery before advancing start.
+                return await _finish_existing_without_new_commit(
+                    current_commit=target_base,
+                    merged_tree_oid=merged_tree,
+                    advance_start_to_result=True,
                 )
-            parent_commit = existing_tip
-            old_tree = existing_tree
+            parent_commit = target_base
+            old_tree = target_base_tree
             target_tree = merged_tree
 
         files = await self._changes(root, old_tree, target_tree)
@@ -2015,7 +2088,7 @@ class WorktreeManager:
             lines_added=sum(change.added or 0 for change in files),
             lines_deleted=sum(change.deleted or 0 for change in files),
             skipped=result.skipped,
-            current=existing_tip or base,
+            current=target_base,
             result=result.commit,
             result_tree=result.tree,
             merged_tree=target_tree,
@@ -2392,6 +2465,8 @@ class WorktreeManager:
             )
         except _copy_trees.CopyTooLarge as exc:
             raise WorktreeUnavailable(DIRECTORY_TOO_LARGE, str(exc)) from exc
+        except OSError as exc:
+            raise WorktreeError(f"could not read project directory {project_dir}: {exc}") from exc
         # Both the working copy and its baseline blobs live on target's volume.
         disk = await self.check_disk(target, probe_scan.total_bytes * 2)
         if not disk.enough:
@@ -2454,12 +2529,15 @@ class WorktreeManager:
         project_dir = worktree.repo_root
         if not await asyncio.to_thread(project_dir.is_dir):
             return MergeResult("failed", detail=f"project directory {project_dir} no longer exists")
-        computed = await asyncio.to_thread(
+        compute_stop = threading.Event()
+        computed = await self._run_copy_worker(
             _copy_trees.compute_copy_merge,
             project_dir,
             worktree.path,
+            stop=compute_stop,
             dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
             max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
+            cancel_event=compute_stop,
         )
         status = computed["status"]
         if status == "failed":
@@ -2513,6 +2591,7 @@ class WorktreeManager:
                     **counted,
                 )
             stop = threading.Event()
+            landed_ok = False
             try:
                 await self._run_copy_worker(
                     _copy_trees.apply_copy_changes,
@@ -2533,10 +2612,7 @@ class WorktreeManager:
                 if not ok:
                     detail = "the files did not read back as merged"
                 else:
-                    await _to_the_end(
-                        asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"])
-                    )
-                    return MergeResult("landed", **counted)
+                    landed_ok = True
             except BaseException as error:
                 stop.set()
                 if isinstance(error, OSError):
@@ -2553,6 +2629,14 @@ class WorktreeManager:
                     if cancelled and not isinstance(error, asyncio.CancelledError):
                         raise _cancelled_after(error) from error
                     raise
+            if landed_ok:
+                # Commit point: merged files are already verified in project_dir. Run the baseline
+                # update to completion outside the rollback handler so cancellation never reverts
+                # project files while leaving the copy baseline advanced.
+                await _to_the_end(
+                    asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"])
+                )
+                return MergeResult("landed", **counted)
             restoring = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, saved))
             cancelled = await _settle(restoring)
             left = restoring.result()

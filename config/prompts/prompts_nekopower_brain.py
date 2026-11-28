@@ -2157,7 +2157,7 @@ TREE_NOT_LANDED_TEXTS = {
 # An inspector the host starts before a landing (``tree_work.py``).
 # ---------------------------------------------------------------------------
 
-# What the inspector is handed. Rendered with str.format (title, what).
+# What the inspector is handed. Rendered with str.format (title, what, linked).
 TREE_CHECK_TITLE = "Check: {title}"
 TREE_CHECK_BRIEF = (
     "Another task agent says it is done with the work below. Check it before the host merges it "

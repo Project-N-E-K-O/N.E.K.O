@@ -49,7 +49,6 @@ import contextlib
 import dataclasses
 import logging
 import os
-import shutil
 import time
 from pathlib import Path
 from collections.abc import AsyncIterator, Iterator
@@ -479,18 +478,19 @@ class TreeWork:
         Git will not open a git worktree again once its directory or ``.git``
         is gone: what is left of it is a directory of the host's own.
         """
+        from nekopower.host import _copy_trees
         from nekopower.host.worktrees import NOT_A_REPOSITORY
 
         if not await asyncio.to_thread(Path(row.project_dir).is_dir):
             return True
-        try:
-            probed = await self.worktrees.probe(row.project_dir)
-            if probed.reason == NOT_A_REPOSITORY:
-                return True
-            if getattr(probed, "kind", "git") == "copy":
-                # If the tree on disk was a git worktree (holds a .git file), its repository is gone.
-                return await asyncio.to_thread(lambda: (Path(row.path) / ".git").is_file())
+        if await asyncio.to_thread(lambda: _copy_trees.read_copy_meta(Path(row.path)) is not None):
             return False
+        try:
+            try:
+                probed = await self.worktrees.probe(row.project_dir, allow_non_git=False)
+            except TypeError:
+                probed = await self.worktrees.probe(row.project_dir)
+            return probed.reason == NOT_A_REPOSITORY
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - not known: taken for one that is there
@@ -925,6 +925,22 @@ class TreeWork:
         finally:
             self._turn_waiters.pop(kept.id, None)
 
+    async def _tree_kind_and_links(self, row: Tree) -> tuple[str, tuple[str, ...]]:
+        """Return ``(kind, linked_dependencies)`` for ``row``, falling back to on-disk copy metadata after restart."""
+        handle = self._tree_handles.get(row.id)
+        if handle is not None:
+            return getattr(handle, "kind", "git"), tuple(getattr(handle, "linked_dependencies", ()) or ())
+        from nekopower.host import _copy_trees
+
+        def inspect_disk() -> tuple[str, tuple[str, ...]]:
+            path = Path(row.path)
+            meta = _copy_trees.read_copy_meta(path)
+            if meta is not None:
+                return "copy", _copy_trees.active_links(path, meta.get("links") or ())
+            return "git", ()
+
+        return await asyncio.to_thread(inspect_disk)
+
     async def _tree_said(self, commission: Commission) -> str:
         """Return what the message that opens a commission says of the worktree it is worked on in; empty for none.
 
@@ -940,10 +956,9 @@ class TreeWork:
         row = await self._ledger.get_tree(tree_id) if tree_id else None
         if row is None:
             return ""
-        handle = self._tree_handles.get(row.id)
-        template = texts.TASK_AGENT_IN_COPY if getattr(handle, "kind", "git") == "copy" else texts.TASK_AGENT_IN_TREE
+        kind, linked = await self._tree_kind_and_links(row)
+        template = texts.TASK_AGENT_IN_COPY if kind == "copy" else texts.TASK_AGENT_IN_TREE
         opening = template.format(tree=row.workdir, project=row.project_dir)
-        linked = getattr(handle, "linked_dependencies", ()) or ()
         if linked:
             opening += texts.TASK_AGENT_TREE_LINKED_DEPS.format(deps=", ".join(linked))
         parts = [opening]
@@ -2390,10 +2405,9 @@ class TreeWork:
         from utils.tokenize import truncate_to_tokens
 
         what = "\n".join(part for part in (commission.title, commission.dispatch_text) if part)
-        handle = self._tree_handles.get(row.id)
-        linked = getattr(handle, "linked_dependencies", ()) or ()
+        kind, linked = await self._tree_kind_and_links(row)
         linked_note = texts.TREE_CHECK_LINKED_DEPS.format(deps=", ".join(linked)) if linked else ""
-        if getattr(handle, "kind", "git") == "copy":
+        if kind == "copy":
             check_brief = texts.TREE_COPY_CHECK_BRIEF.format(
                 project=row.project_dir,
                 linked=linked_note,

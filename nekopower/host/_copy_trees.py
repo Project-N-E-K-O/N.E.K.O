@@ -510,7 +510,10 @@ def scan_copy_directory(
     found_deps: list[str] = []
     total_bytes = 0
 
-    for current, dirs, filenames in os.walk(top, topdown=True, followlinks=False):
+    def _raise_walk_error(err: OSError) -> None:
+        raise err
+
+    for current, dirs, filenames in os.walk(top, topdown=True, followlinks=False, onerror=_raise_walk_error):
         dirs.sort()
         filenames.sort()
         rel_dir = os.path.relpath(current, top)
@@ -557,7 +560,7 @@ def scan_copy_directory(
                 continue
             try:
                 info = os.lstat(full)
-            except OSError:
+            except FileNotFoundError:
                 continue
             if not stat.S_ISREG(info.st_mode):
                 # Skip special files (named pipes/FIFOs, sockets, device nodes) so opening never stalls.
@@ -799,19 +802,23 @@ def copy_has_changes(
         return True
     links = active_links(copy_path, meta.get("links") or ())
     base_files = base.get("files") or {}
-    now = scan_copy_directory(
-        copy_path,
-        dependency_dirs=dependency_dirs,
-        max_file_bytes=max_file_bytes,
-        active_dep_links=links,
-        include_large=base_files.keys(),
-        hash_files=True,
-        discover_dependencies=False,
-    )
-    # Files skipped in the copy that were not already skipped at creation count as changes.
-    base_skipped = set(base.get("skipped") or ())
-    new_skipped = [name for name in now.skipped if name not in base_skipped]
-    return bool(new_skipped) or now.digest != str(base.get("digest") or "")
+    try:
+        now = scan_copy_directory(
+            copy_path,
+            dependency_dirs=dependency_dirs,
+            max_file_bytes=max_file_bytes,
+            active_dep_links=links,
+            include_large=base_files.keys(),
+            hash_files=True,
+            discover_dependencies=False,
+        )
+    except OSError:
+        # Unreadable entries inside the copy cannot be verified unchanged; treat as changed so
+        # cleanup/reconcile never deletes a copy whose files could not be read.
+        return True
+    # Any skipped item inside the copy (oversized file, nested repo, special file) was created
+    # there and was never carried over to the project, so it always counts as unlanded changes.
+    return bool(now.skipped) or now.digest != str(base.get("digest") or "")
 
 
 def _parents(rel: str) -> list[str]:
@@ -897,8 +904,10 @@ def compute_copy_merge(
     *,
     dependency_dirs: tuple[str, ...],
     max_file_bytes: int,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Compute a 3-way merge of ``(base, current_project, copy_result)`` without touching ``project_dir``."""
+    _check_cancelled(cancel_event)
     meta = read_copy_meta(copy_path)
     base = read_base_manifest(copy_path)
     if meta is None or base is None:
@@ -910,22 +919,27 @@ def compute_copy_merge(
     base_digest = str(base.get("digest") or "")
     links = active_links(copy_path, meta.get("links") or ())
 
-    result_scan = scan_copy_directory(
-        copy_path,
-        dependency_dirs=dependency_dirs,
-        max_file_bytes=max_file_bytes,
-        active_dep_links=links,
-        include_large=base_files.keys(),
-        hash_files=True,
-        discover_dependencies=False,
-    )
-    current_scan = scan_copy_directory(
-        project_dir,
-        dependency_dirs=dependency_dirs,
-        max_file_bytes=max_file_bytes,
-        include_large=base_files.keys(),
-        hash_files=True,
-    )
+    try:
+        result_scan = scan_copy_directory(
+            copy_path,
+            dependency_dirs=dependency_dirs,
+            max_file_bytes=max_file_bytes,
+            active_dep_links=links,
+            include_large=base_files.keys(),
+            hash_files=True,
+            discover_dependencies=False,
+        )
+        _check_cancelled(cancel_event)
+        current_scan = scan_copy_directory(
+            project_dir,
+            dependency_dirs=dependency_dirs,
+            max_file_bytes=max_file_bytes,
+            include_large=base_files.keys(),
+            hash_files=True,
+        )
+    except OSError as exc:
+        return {"status": "failed", "detail": f"reading directory failed: {exc}"}
+    _check_cancelled(cancel_event)
 
     all_paths = sorted(set(base_files) | set(current_scan.files) | set(result_scan.files))
     merged_entries: dict[str, dict[str, Any]] = {}
@@ -1058,55 +1072,87 @@ def compute_copy_merge(
     if type_clashes:
         conflicts.update(type_clashes)
 
-    base_skipped = set(base.get("skipped") or ())
-    new_skipped = tuple(sorted(name for name in result_scan.skipped if name not in base_skipped))
+    new_skipped = tuple(sorted(result_scan.skipped))
 
     if conflicts:
+        _check_cancelled(cancel_event)
+        pending_root = meta_dir / _PENDING_DIR
+        # Prune stale pending snapshots from earlier conflict attempts so repeated landing
+        # retries never accumulate unbounded copies of project blobs on disk.
+        if pending_root.is_dir():
+            for old_entry in list(pending_root.iterdir()):
+                if not old_entry.name.startswith("prep-bak-"):
+                    with contextlib.suppress(OSError):
+                        remove_tree_safe(old_entry)
+
         merge_id = uuid.uuid4().hex
-        pending_dir = meta_dir / _PENDING_DIR / merge_id
+        pending_dir = pending_root / merge_id
         pending_blobs = pending_dir / _BLOBS_DIR
         pending_blobs.mkdir(parents=True, exist_ok=True)
-        # Store current project's blobs so prepare_conflicts can advance baseline cleanly.
-        for rel, entry in current_scan.files.items():
-            if entry.get("kind") == "file":
-                _store_blob_file(project_dir / rel, entry["sha256"], pending_blobs)
-        # Also store worktree blobs for conflicted entries so both sides survive prepare_conflicts.
-        for rel, versions in conflict_versions.items():
-            wt_entry = versions.get("worktree")
-            if isinstance(wt_entry, dict) and wt_entry.get("kind") == "file":
-                src = copy_path / rel
-                if os.path.isfile(fs_path(src)):
-                    _store_blob_file(src, str(wt_entry["sha256"]), pending_blobs)
-        # Store merged file contents (with conflict markers where applicable).
-        merged_manifest_entries: dict[str, dict[str, Any]] = {}
-        for rel, entry in merged_entries.items():
-            if rel in merged_contents:
-                sha = _store_blob_bytes(merged_contents[rel], pending_blobs)
-                merged_manifest_entries[rel] = {**entry, "sha256": sha, "size": len(merged_contents[rel])}
-            elif entry.get("kind") == "file":
-                # Ensure blob exists in pending_blobs (from copy or current).
-                src = copy_path / rel if rel in result_scan.files and result_scan.files[rel].get("sha256") == entry["sha256"] else project_dir / rel
-                if os.path.isfile(fs_path(src)):
-                    _store_blob_file(src, entry["sha256"], pending_blobs)
-                elif os.path.isfile(fs_path(blobs_dir / entry["sha256"])):
-                    _store_blob_file(blobs_dir / entry["sha256"], entry["sha256"], pending_blobs)
-                merged_manifest_entries[rel] = dict(entry)
-            else:
-                merged_manifest_entries[rel] = dict(entry)
-        _atomic_write_json(
-            pending_dir / "pending.json",
-            {
-                "base": base_digest,
-                "current": current_scan.digest,
-                "current_files": current_scan.files,
-                "current_skipped": list(current_scan.skipped),
-                "result": result_scan.digest,
-                "result_files": result_scan.files,
-                "merged_files": merged_manifest_entries,
-                "conflicts": sorted(conflicts),
-                "conflict_versions": conflict_versions,
-            },
-        )
+        try:
+            def _store_if_new(src: Path, sha: str) -> None:
+                _check_cancelled(cancel_event)
+                if os.path.isfile(fs_path(blobs_dir / sha)):
+                    return
+                _store_blob_file(src, sha, pending_blobs)
+
+            def _store_bytes_if_new(data: bytes) -> str:
+                _check_cancelled(cancel_event)
+                sha = hashlib.sha256(data).hexdigest()
+                if os.path.isfile(fs_path(blobs_dir / sha)):
+                    return sha
+                return _store_blob_bytes(data, pending_blobs)
+
+            # Store only current project blobs not already present in the baseline blob store.
+            for rel, entry in current_scan.files.items():
+                if entry.get("kind") == "file":
+                    _store_if_new(project_dir / rel, str(entry["sha256"]))
+            # Also store worktree blobs for conflicted entries so both sides survive prepare_conflicts.
+            for rel, versions in conflict_versions.items():
+                wt_entry = versions.get("worktree")
+                if isinstance(wt_entry, dict) and wt_entry.get("kind") == "file":
+                    src = copy_path / rel
+                    if os.path.isfile(fs_path(src)):
+                        _store_if_new(src, str(wt_entry["sha256"]))
+            # Store merged file contents (with conflict markers where applicable).
+            merged_manifest_entries: dict[str, dict[str, Any]] = {}
+            for rel, entry in merged_entries.items():
+                _check_cancelled(cancel_event)
+                if rel in merged_contents:
+                    sha = _store_bytes_if_new(merged_contents[rel])
+                    merged_manifest_entries[rel] = {**entry, "sha256": sha, "size": len(merged_contents[rel])}
+                elif entry.get("kind") == "file":
+                    sha = str(entry["sha256"])
+                    if not os.path.isfile(fs_path(blobs_dir / sha)):
+                        src = (
+                            copy_path / rel
+                            if rel in result_scan.files and result_scan.files[rel].get("sha256") == sha
+                            else project_dir / rel
+                        )
+                        if os.path.isfile(fs_path(src)):
+                            _store_blob_file(src, sha, pending_blobs)
+                    merged_manifest_entries[rel] = dict(entry)
+                else:
+                    merged_manifest_entries[rel] = dict(entry)
+            _check_cancelled(cancel_event)
+            _atomic_write_json(
+                pending_dir / "pending.json",
+                {
+                    "base": base_digest,
+                    "current": current_scan.digest,
+                    "current_files": current_scan.files,
+                    "current_skipped": list(current_scan.skipped),
+                    "result": result_scan.digest,
+                    "result_files": result_scan.files,
+                    "merged_files": merged_manifest_entries,
+                    "conflicts": sorted(conflicts),
+                    "conflict_versions": conflict_versions,
+                },
+            )
+        except BaseException:
+            with contextlib.suppress(OSError):
+                remove_tree_safe(pending_dir)
+            raise
         return {
             "status": "conflict",
             "conflicts": tuple(sorted(conflicts)),
@@ -1244,9 +1290,11 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
             src = copy_path / rel
             if os.path.isfile(fs_path(src)):
                 _store_blob_file(src, sha, blobs_dir)
+    prev_base = read_base_manifest(copy_path)
+    prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
     _atomic_write_json(
         meta_dir / _BASE_MANIFEST_FILE,
-        {"digest": new_scan.digest, "files": new_scan.files, "skipped": list(new_scan.skipped)},
+        {"digest": new_scan.digest, "files": new_scan.files, "skipped": prev_skipped},
     )
     meta["start"] = new_scan.digest
     _atomic_write_json(meta_dir / _META_FILE, meta)
@@ -1290,21 +1338,35 @@ def prepare_copy_conflicts_sync(
 
     links = active_links(copy_path, meta.get("links") or ())
     base_files = base.get("files") or {}
-    now = scan_copy_directory(
-        copy_path,
-        dependency_dirs=dependency_dirs,
-        max_file_bytes=max_file_bytes,
-        active_dep_links=links,
-        include_large=base_files.keys(),
-        hash_files=True,
-        discover_dependencies=False,
-    )
+    try:
+        now = scan_copy_directory(
+            copy_path,
+            dependency_dirs=dependency_dirs,
+            max_file_bytes=max_file_bytes,
+            active_dep_links=links,
+            include_large=base_files.keys(),
+            hash_files=True,
+            discover_dependencies=False,
+        )
+    except OSError as exc:
+        raise ValueError(f"reading the working copy failed: {exc}") from exc
     if now.digest != expected_result:
         raise ValueError("the worktree changed after the merge was tried; merge again")
 
     pending_blobs = pending_dir / _BLOBS_DIR
     merged_files: dict[str, dict[str, Any]] = pending["merged_files"]
     held = set(now.files)
+    to_delete = sorted(held - set(merged_files))
+    merged_keys = set(merged_files)
+    to_write = [
+        (rel, entry)
+        for rel, entry in sorted(merged_files.items())
+        if not any(other.startswith(rel + "/") for other in merged_keys)
+    ]
+    touched_set = sorted(set(to_delete) | {rel for rel, _e in to_write})
+    for rel in touched_set:
+        if has_link_ancestor(copy_path, rel):
+            raise ValueError(f"preparing conflicts would traverse a directory link in the working copy: {rel}")
     # Check that writing new files will not clobber skipped files or nested repos in the copy.
     skipped_set = {name.rstrip("/") for name in now.skipped}
     for rel in sorted(set(merged_files) - held):
@@ -1313,18 +1375,10 @@ def prepare_copy_conflicts_sync(
 
     # Back up every copy path we are about to delete or overwrite so a mid-preparation failure
     # or cancellation restores the copy untouched instead of losing agent edits.
-    to_delete = sorted(held - set(merged_files))
-    merged_keys = set(merged_files)
-    to_write = [
-        (rel, entry)
-        for rel, entry in sorted(merged_files.items())
-        if not any(other.startswith(rel + "/") for other in merged_keys)
-    ]
     prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
     prep_backup_dir.mkdir(parents=True, exist_ok=True)
     saved_entries: list[tuple[str, str, str | None]] = []
     # (rel, kind: 'absent' | 'file' | 'symlink', payload: backup filename or link target)
-    touched_set = sorted(set(to_delete) | {rel for rel, _e in to_write})
     try:
         for idx, rel in enumerate(touched_set):
             src_path = copy_path / rel
@@ -1341,6 +1395,8 @@ def prepare_copy_conflicts_sync(
         # Remove files deleted by the merge.
         for rel in to_delete:
             _check_cancelled(cancel_event)
+            if has_link_ancestor(copy_path, rel):
+                raise ValueError(f"refusing to delete through directory link in the working copy: {rel}")
             target = fs_path(copy_path / rel)
             if os.path.islink(target) or os.path.isfile(target):
                 os.remove(target)
@@ -1348,6 +1404,8 @@ def prepare_copy_conflicts_sync(
         # Write merged / conflict-marked files into the copy.
         for rel, entry in to_write:
             _check_cancelled(cancel_event)
+            if has_link_ancestor(copy_path, rel):
+                raise ValueError(f"refusing to write through directory link in the working copy: {rel}")
             target_path = copy_path / rel
             target = fs_path(target_path)
             os.makedirs(fs_path(target_path.parent), exist_ok=True)
@@ -1361,7 +1419,10 @@ def prepare_copy_conflicts_sync(
                         os.remove(target)
                 os.symlink(str(entry["target"]), target)
                 continue
-            blob = pending_blobs / str(entry["sha256"])
+            sha = str(entry["sha256"])
+            blob = pending_blobs / sha
+            if not os.path.isfile(fs_path(blob)):
+                blob = meta_dir / _BLOBS_DIR / sha
             if not os.path.isfile(fs_path(blob)):
                 continue
             if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
