@@ -1,7 +1,8 @@
 """Shared uv / Python preparation for packaged plugin tools.
 
-No test here reaches the network: PyPI metadata and the uv wheel are served by
-a fake httpx client, and uv itself is replaced by a fake command runner.
+No test here reaches the network: release assets are served by a fake in
+place of the market transfer (test_package_fetch covers that bridge), and uv
+itself is replaced by a fake command runner.
 """
 
 from __future__ import annotations
@@ -13,22 +14,23 @@ import json
 import os
 from pathlib import Path
 import struct
+import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 import zipfile
 
 from packaging.tags import Tag
-import portalocker
 import pytest
 
+from plugin.server.infrastructure import package_download as module_download
 from plugin.server.infrastructure import plugin_tool_runtime as module
-
-
-class FakeHTTPError(Exception):
-    pass
+from plugin.server.infrastructure.package_fetch import FetchedAsset, NoRoutesLeft, RouteFailed
 
 
 @pytest.fixture
@@ -43,92 +45,131 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(module, "_progress", None)
     monkeypatch.setattr(module, "_background", None)
     monkeypatch.setattr(
-        module, "load_httpx",
-        lambda: pytest.fail("this test must not download anything"),
+        module, "_fetch_release_asset",
+        lambda *_args, **_kwargs: pytest.fail("this test must not download anything"),
     )
+    monkeypatch.setattr(module, "_record_route_failure", lambda *_args: pytest.fail("nothing to penalize"))
     return tools
 
 
-class FakePyPI:
-    """Serves the pinned release metadata and one wheel; counts wheel downloads."""
+_TEST_TARGET = "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu"
+PYTHON_TAG = "20251007"
+PYTHON_FILE = "cpython-test+20251007-install_only_stripped.tar.gz"
+PYTHON_BODY = b"python-build-standalone archive"
+
+
+def _uv_archive(target: str, binary_name: str, data: bytes = b"uv-executable") -> bytes:
+    buffer = io.BytesIO()
+    if target.endswith("-windows-msvc"):
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(binary_name, data)
+            archive.writestr("uvx.exe", b"uvx")
+            # Extraction must never deploy any other member.
+            archive.writestr("../../outside", b"unsafe")
+    else:
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, payload in ((f"uv-{target}/{binary_name}", data), (f"uv-{target}/uvx", b"uvx"),
+                                  ("../../outside", b"unsafe")):
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+class FakeRelease:
+    """Serves GitHub release assets in place of the market transfer; counts downloads.
+
+    ``bodies`` maps an asset URL to the bytes each successive attempt delivers
+    (the last repeats); the uv archive is served by default. Routes are
+    ``github-direct``, then the mirrors ``route-1``, ``route-2``..., in the
+    order they are used.
+    """
 
     def __init__(
-        self, *, digest: str | None = None, origin: str = "https://files.pythonhosted.org/uv.whl",
-        declared_size: int | None = None, fail: bool = False, gate: threading.Event | None = None,
+        self, *, digest: str | None = None, fail: bool = False, gate: threading.Event | None = None,
+        routes: int = 5,
     ) -> None:
         self.binary_name = "uv.exe" if sys.platform == "win32" else "uv"
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w") as wheel:
-            wheel.writestr(f"uv-{module.PINNED_UV_VERSION}.data/scripts/{self.binary_name}", b"uv-executable")
-            wheel.writestr(f"uv-{module.PINNED_UV_VERSION}.dist-info/licenses/LICENSE-MIT", b"license")
-            # Extraction must never deploy arbitrary wheel members.
-            wheel.writestr("../../outside", b"unsafe")
-        self.body = archive.getvalue()
-        self.metadata = {"urls": [{
-            "filename": f"uv-{module.PINNED_UV_VERSION}-py3-none-any.whl",
-            "packagetype": "bdist_wheel",
-            "yanked": False,
-            "url": origin,
-            "size": len(self.body) if declared_size is None else declared_size,
-            "digests": {"sha256": digest or hashlib.sha256(self.body).hexdigest()},
-        }]}
+        self.target = _TEST_TARGET
+        self.body = _uv_archive(self.target, self.binary_name)
+        self.uv_url = f"{module._UV_RELEASE_URL}/{module._uv_archive_name(self.target)}"
+        self.pinned = {self.target: digest or hashlib.sha256(self.body).hexdigest()}
+        self.bodies: dict[str, list[bytes]] = {
+            self.uv_url: [self.body],
+            module._PYTHON_GITHUB_PREFIX + f"{PYTHON_TAG}/{PYTHON_FILE.replace('+', '%2B')}": [PYTHON_BODY],
+        }
         self.fail = fail
         self.gate = gate
+        self.routes = routes
         self.wheel_downloads = 0
-        self.timeouts: list[tuple] = []
+        self.requests: list[tuple[str, tuple[str, ...]]] = []
+        self.penalized: list[str] = []
+        self.single: list[bool] = []
+        # Routes that fail when used one at a time.
+        self.broken_routes: set[str] = set()
+        # Defaults to github-direct, then mirrors route-1, route-2...
+        self.route_names: list[str] | None = None
+        # The race delivers files spliced from the first two routes.
+        self.spliced = False
         self.on_chunk = None
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> FakePyPI:
-        pypi = self
+    def pin_served_archive(self) -> None:
+        """Make the pinned digest match the uv archive served."""
+        self.pinned[self.target] = hashlib.sha256(self.body).hexdigest()
 
-        class Response:
-            def __init__(self, data: bytes) -> None:
-                self.data = data
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> FakeRelease:
+        release = self
+        monkeypatch.setattr(module, "_uv_target", lambda: release.target)
+        monkeypatch.setattr(module, "_UV_ARCHIVE_SHA256", self.pinned)
 
-            def __enter__(self):
-                return self
+        def fetch(url, directory, *, maximum_bytes, deadline, check_stopped, progress, exclude=(),
+                  single_route=False):
+            assert deadline > 0
+            release.requests.append((url, tuple(exclude)))
+            release.single.append(single_route)
+            check_stopped()
+            names = release.route_names or ["github-direct", *(f"route-{index}" for index in range(1, release.routes))]
+            available = [name for name in names[:release.routes] if name not in exclude]
+            if not available:
+                raise NoRoutesLeft(url)
+            if single_route and available[0] in release.broken_routes:
+                raise RouteFailed(available[0], OSError("connection reset"))
+            if release.fail:
+                raise OSError("connection refused")
+            if url == release.uv_url:
+                release.wheel_downloads += 1
+            if release.gate is not None:
+                release.gate.wait(5)
+            bodies = release.bodies[url]
+            attempt = sum(1 for requested, _exclude in release.requests[:-1] if requested == url)
+            data = bodies[min(attempt, len(bodies) - 1)]
+            if len(data) > maximum_bytes:
+                raise module_download.PackageSizeExceeded(len(data), maximum_bytes)
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"download-{len(release.requests)}"
+            received = 0
+            midpoint = len(data) // 2
+            try:
+                with path.open("wb") as output:
+                    for chunk in (data[:midpoint], data[midpoint:]):
+                        if release.on_chunk is not None:
+                            release.on_chunk(url, received)
+                        check_stopped()
+                        output.write(chunk)
+                        received += len(chunk)
+                        progress(received, len(data))
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            spliced = release.spliced and not single_route
+            return FetchedAsset(path, tuple(available[:2]) if spliced else (available[0],), 7)
 
-            def __exit__(self, *_exc):
-                pass
+        def penalize(source_id, generation, cancel, deadline):
+            assert generation == 7 and isinstance(cancel, threading.Event) and deadline > 0
+            release.penalized.append(source_id)
 
-            def raise_for_status(self):
-                pass
-
-            def iter_bytes(self):
-                midpoint = len(self.data) // 2
-                for chunk in (self.data[:midpoint], self.data[midpoint:]):
-                    if pypi.on_chunk is not None:
-                        pypi.on_chunk(chunk)
-                    yield chunk
-
-        class Client:
-            def __init__(self, **_kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                pass
-
-            def stream(self, method, url, **_kwargs):
-                assert method == "GET"
-                if pypi.fail:
-                    raise FakeHTTPError("connection refused")
-                if url.endswith("/json"):
-                    return Response(json.dumps(pypi.metadata).encode())
-                pypi.wheel_downloads += 1
-                if pypi.gate is not None:
-                    pypi.gate.wait(5)
-                return Response(pypi.body)
-
-        def timeout(*args, **kwargs):
-            pypi.timeouts.append((args, kwargs))
-
-        monkeypatch.setattr(
-            module, "load_httpx",
-            lambda: SimpleNamespace(Client=Client, Timeout=timeout, HTTPError=FakeHTTPError),
-        )
+        monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+        monkeypatch.setattr(module, "_record_route_failure", penalize)
         return self
 
 
@@ -142,15 +183,21 @@ def _identity(**overrides) -> str:
     return json.dumps(values)
 
 
+_original_fetch = module._fetch_release_asset
+
+
 class FakeUv:
     """Stands in for uv and the managed interpreter."""
 
     def __init__(self, root: Path, *, identity: str | None = None, install_fails: bool = False,
-                 versions: dict[str, str] | None = None) -> None:
+                 versions: dict[str, str] | None = None, listing: str | None = None) -> None:
         self.python = str(root / "python" / "cpython" / "bin" / "python3")
         self.identity = _identity() if identity is None else identity
         self.install_fails = install_fails
         self.versions = versions or {}
+        # `python list` output; None makes the listing fail, so uv downloads by itself.
+        self.listing = listing
+        self.mirrored: list[bytes] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
     def __call__(self, cmd, *, label, env, cancel, deadline):
@@ -169,6 +216,25 @@ class FakeUv:
             if Path(self.python).exists():
                 return subprocess.CompletedProcess(cmd, 2, "", "error: Failed to query Python interpreter")
             return subprocess.CompletedProcess(cmd, 2, "", "not found")
+        if cmd[1:3] == ["python", "list"]:
+            assert "--offline" in cmd
+            if self.listing is None:
+                return subprocess.CompletedProcess(cmd, 2, "", "error: unexpected argument")
+            return subprocess.CompletedProcess(cmd, 0, self.listing, "")
+        if cmd[1:3] == ["python", "install"] and "--mirror" in cmd:
+            # uv reads the build from the mirror and checks the SHA-256 it carries.
+            uri = urlparse(cmd[cmd.index("--mirror") + 1])
+            # A UNC temporary directory keeps its host in the URI's netloc.
+            mirror = Path(url2pathname(f"//{uri.netloc}{uri.path}" if uri.netloc else uri.path))
+            data = (mirror / PYTHON_TAG / PYTHON_FILE).read_bytes()
+            self.mirrored.append(data)
+            if data == b"<html>":
+                return subprocess.CompletedProcess(
+                    cmd, 1, "", "error: Failed to install\n  cause: Failed to extract archive: x.tar.gz\n"
+                    "  cause: Invalid gzip header",
+                )
+            if data != PYTHON_BODY:
+                return subprocess.CompletedProcess(cmd, 1, "", "error: Failed to install\n  cause: Hash mismatch for `x`")
         if cmd[1:3] == ["python", "install"]:
             if self.install_fails:
                 return subprocess.CompletedProcess(cmd, 1, "", "error: no download for this platform")
@@ -236,7 +302,7 @@ def test_source_without_uv_downloads_the_pinned_uv_and_keeps_its_interpreter(roo
     # pip cannot install from uv.lock, so a source checkout no longer falls back to it.
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: None)
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     assert module.read_tool_runtime_status().uv is None
 
     runner = FakeUv(root)
@@ -263,7 +329,7 @@ def test_source_without_uv_downloads_the_pinned_uv_and_keeps_its_interpreter(roo
 def test_source_downloads_again_when_the_cached_uv_is_damaged(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: None)
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     cached = module.cached_uv_path()
     _write_executable(cached, b"garbage")
     runner = FakeUv(root, versions={str(cached): ""})
@@ -283,7 +349,7 @@ def test_source_downloads_again_when_the_cached_uv_is_damaged(root, monkeypatch)
 def test_source_without_uv_falls_back_to_an_installed_uv_when_the_download_fails(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: None)
-    FakePyPI(fail=True).install(monkeypatch)
+    FakeRelease(fail=True).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/home/dev/.local/bin/uv"])
 
     result = _prepare(FakeUv(root, versions={"/home/dev/.local/bin/uv": "0.14.0"}))
@@ -295,7 +361,7 @@ def test_source_without_uv_falls_back_to_an_installed_uv_when_the_download_fails
 def test_source_without_any_uv_reports_the_download_failure(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: None)
-    FakePyPI(fail=True).install(monkeypatch)
+    FakeRelease(fail=True).install(monkeypatch)
 
     with pytest.raises(module.ToolRuntimeError) as caught:
         _prepare(FakeUv(root))
@@ -307,7 +373,7 @@ def test_source_with_an_old_uv_on_path_uses_the_pinned_one(root, monkeypatch):
     # An old uv would reject flags the lock install passes (--no-default-groups...).
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: "/usr/bin/uv")
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
 
     result = _prepare(FakeUv(root, versions={"/usr/bin/uv": "0.4.0"}))
 
@@ -320,7 +386,7 @@ def test_source_with_an_old_uv_on_path_uses_the_pinned_one(root, monkeypatch):
 
 
 def test_packaged_first_preparation_downloads_verifies_installs_and_records(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     events: list[module.ProgressEvent] = []
 
@@ -328,8 +394,10 @@ def test_packaged_first_preparation_downloads_verifies_installs_and_records(root
 
     cached = module.cached_uv_path()
     assert cached.read_bytes() == b"uv-executable"
-    assert (cached.parent / "LICENSE-MIT.txt").read_bytes() == b"license"
-    assert sorted(path.name for path in cached.parent.iterdir()) == ["LICENSE-MIT.txt", pypi.binary_name]
+    # Only the executable is taken from the archive.
+    assert sorted(path.name for path in cached.parent.iterdir()) == [pypi.binary_name]
+    assert pypi.requests == [(f"https://github.com/astral-sh/uv/releases/download/{module.PINNED_UV_VERSION}/"
+                              f"{module._uv_archive_name(pypi.target)}", ())]
     assert cached.parent.parent.name == module.PINNED_UV_VERSION
     assert result == module.ToolRuntime(uv.python, str(cached), result.env, root, True)
     assert result.env["UV_PYTHON_INSTALL_DIR"] == str(root / "python")
@@ -343,7 +411,7 @@ def test_packaged_first_preparation_downloads_verifies_installs_and_records(root
     assert record["uv"] == str(cached)
     assert record["uv_version"] == module.PINNED_UV_VERSION
     assert record["python_version"] == list(sys.version_info[:3])
-    assert [event.phase for event in events][0] == "waiting"
+    assert [event.phase for event in events][0] == "downloading_uv"
     assert {"downloading_uv", "installing_python", "checking_python"} <= {event.phase for event in events}
     assert events[-1].phase == "checking_python"
     downloaded = [event for event in events if event.phase == "downloading_uv" and event.downloaded_bytes]
@@ -352,7 +420,7 @@ def test_packaged_first_preparation_downloads_verifies_installs_and_records(root
 
 
 def test_ready_status_and_prepare_start_no_child_process(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     _prepare(FakeUv(root))
     monkeypatch.setattr(module, "load_httpx", lambda: pytest.fail("no network"))
     monkeypatch.setattr(subprocess, "Popen", _no_runner)
@@ -372,7 +440,7 @@ def test_status_read_creates_nothing_when_missing(root, monkeypatch):
 
 
 def test_stale_record_is_not_ready(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     _prepare(uv)
     Path(uv.python).unlink()
@@ -393,20 +461,36 @@ def test_unsupported_platform(root, monkeypatch):
     assert not root.exists()
 
 
-def test_no_wheel_for_this_platform_is_unsupported():
-    def wheel(filename):
-        return {"filename": filename, "packagetype": "bdist_wheel", "yanked": False}
+@pytest.mark.parametrize(("platform_name", "architecture", "libc", "target"), [
+    ("win32", "x86_64", None, "x86_64-pc-windows-msvc"),
+    ("win32", "aarch64", None, "aarch64-pc-windows-msvc"),
+    ("win32", "x86", None, "i686-pc-windows-msvc"),
+    ("darwin", "aarch64", None, "aarch64-apple-darwin"),
+    ("darwin", "x86_64", None, "x86_64-apple-darwin"),
+    ("linux", "x86_64", "gnu", "x86_64-unknown-linux-gnu"),
+    ("linux", "aarch64", "musl", "aarch64-unknown-linux-musl"),
+    ("linux", "armv7", "gnu", "armv7-unknown-linux-gnueabihf"),
+    ("linux", "x86", "musl", "i686-unknown-linux-musl"),
+    ("darwin", "x86", None, None),
+    ("linux", "s390x", "musl", None),
+    ("freebsd", "x86_64", None, None),
+])
+def test_uv_archive_for_each_host(platform_name, architecture, libc, target):
+    assert module._uv_target(platform_name, architecture, libc) == target
 
-    target = wheel(f"uv-{module.PINNED_UV_VERSION}-py3-none-win_amd64.whl")
-    metadata = {"urls": [
-        wheel(f"uv-{module.PINNED_UV_VERSION}-py3-none-manylinux_2_17_x86_64.whl"),
-        wheel("uv-0.1.0-py3-none-win_amd64.whl"),
-        target,
-    ]}
-    assert module._select_uv_wheel(metadata, [Tag("py3", "none", "win_amd64")]) is target
-    with pytest.raises(module.ToolRuntimeError) as raised:
-        module._select_uv_wheel(metadata, [Tag("py3", "none", "macosx_11_0_arm64")])
-    assert raised.value.code == "unsupported_platform"
+
+def test_every_pinned_uv_archive_has_a_sha256():
+    assert len(module._UV_ARCHIVE_SHA256) == 17
+    for target, digest in module._UV_ARCHIVE_SHA256.items():
+        assert len(digest) == 64 and set(digest) <= set("0123456789abcdef"), target
+    assert module._uv_archive_name("x86_64-pc-windows-msvc") == "uv-x86_64-pc-windows-msvc.zip"
+    assert module._uv_archive_name("aarch64-apple-darwin") == "uv-aarch64-apple-darwin.tar.gz"
+
+
+def test_linux_libc_follows_the_interpreter_tags():
+    assert module._linux_libc([Tag("cp311", "cp311", "manylinux_2_17_x86_64")]) == "gnu"
+    assert module._linux_libc([Tag("cp311", "cp311", "musllinux_1_2_x86_64")]) == "musl"
+    assert module._linux_libc([Tag("cp311", "cp311", "linux_x86_64")]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +505,7 @@ def _expect_failure(runner, code: str, **kwargs) -> module.ToolRuntimeError:
 
 
 def test_checksum_mismatch_leaves_no_executable_and_is_reported(root, monkeypatch):
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+    FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
     assert not module.cached_uv_path().exists()
     assert list(module.cached_uv_path().parent.glob(".uv-*")) == []
@@ -431,38 +515,27 @@ def test_checksum_mismatch_leaves_no_executable_and_is_reported(root, monkeypatc
 
 
 def test_download_over_the_size_limit_is_rejected(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
-    monkeypatch.setattr(module, "_MAX_WHEEL_BYTES", 100)
+    FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_MAX_ARCHIVE_BYTES", 100)
     _expect_failure(FakeUv(root), "download_failed")
     assert not module.cached_uv_path().exists()
     assert list(module.cached_uv_path().parent.glob(".uv-*")) == []
 
 
-def test_declared_size_over_the_limit_is_rejected_before_downloading(root, monkeypatch):
-    pypi = FakePyPI(declared_size=module._MAX_WHEEL_BYTES + 1).install(monkeypatch)
-    _expect_failure(FakeUv(root), "download_failed")
-    assert pypi.wheel_downloads == 0
+def test_download_gets_the_preparation_deadline(root, monkeypatch):
+    pypi = FakeRelease().install(monkeypatch)
+    seen: list[float] = []
+    fetch = module._fetch_release_asset
 
+    def spy(url, directory, **kwargs):
+        seen.append(kwargs["deadline"])
+        return fetch(url, directory, **kwargs)
 
-def test_unexpected_origin_is_rejected(root, monkeypatch):
-    FakePyPI(origin="https://other.example/uv.whl").install(monkeypatch)
-    _expect_failure(FakeUv(root), "download_failed")
-    assert not module.cached_uv_path().parent.exists()
-
-
-def test_download_io_timeout_is_capped_by_the_remaining_budget(root, monkeypatch):
-    from tests.fake_clock import patch_module_clock
-
-    clock = [100.0]
-    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
-    pypi = FakePyPI().install(monkeypatch)
-
-    def advance(_chunk):
-        clock[0] += 1
-
-    pypi.on_chunk = advance
-    module._download_uv(module.cached_uv_path(), lambda _event: None, threading.Event(), 105.0)
-    assert pypi.timeouts[1:] == [((5.0,), {"connect": 5.0}), ((3.0,), {"connect": 3.0})]
+    monkeypatch.setattr(module, "_fetch_release_asset", spy)
+    deadline = time.monotonic() + 1234.0
+    module._download_uv(module.cached_uv_path(), lambda _event: None, threading.Event(), deadline)
+    assert seen == [deadline]
+    assert pypi.wheel_downloads == 1
 
 
 # ---------------------------------------------------------------------------
@@ -470,13 +543,13 @@ def test_download_io_timeout_is_capped_by_the_remaining_budget(root, monkeypatch
 
 
 def test_python_identity_mismatch_records_nothing(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     _expect_failure(FakeUv(root, identity=_identity(i0=[3, 0, 0])), "python_mismatch")
     assert not (root / "python.json").exists()
 
 
 def test_python_of_another_architecture_is_rejected(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     monkeypatch.setattr(module, "_host_architecture", lambda: "x86_64")
     _expect_failure(FakeUv(root, identity=_identity(i3="linux-aarch64", i4=None)), "python_mismatch")
     assert not (root / "python.json").exists()
@@ -484,13 +557,13 @@ def test_python_of_another_architecture_is_rejected(root, monkeypatch):
 
 @pytest.mark.parametrize("stdout", ["not json", "{}", "[1, 2]"])
 def test_freshly_installed_python_with_unreadable_probe_is_an_install_failure(root, monkeypatch, stdout):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     error = _expect_failure(FakeUv(root, identity=stdout), "python_install_failed")
     assert "does not run" in error.detail and "unreadable output" in error.detail
 
 
 def test_python_install_failure(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     error = _expect_failure(FakeUv(root, install_fails=True), "python_install_failed")
     assert "no download for this platform" in error.detail
 
@@ -522,9 +595,9 @@ def test_cancel_before_start_creates_nothing_and_is_not_a_failure(root):
 
 
 def test_cancel_during_download_is_not_recorded_as_failure(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     canceled = threading.Event()
-    pypi.on_chunk = lambda chunk: canceled.set() if chunk.startswith(b"PK") else None
+    pypi.on_chunk = lambda _url, _received: canceled.set()
     _expect_failure(FakeUv(root), "canceled", cancel=canceled)
     assert not module.cached_uv_path().exists()
     assert module.read_tool_runtime_status().state == "missing"
@@ -534,16 +607,16 @@ def test_deadline_passed(root):
     _expect_failure(_no_runner, "timeout", deadline=time.monotonic() - 1)
 
 
-@pytest.mark.parametrize("phase", ["metadata", "wheel"])
+@pytest.mark.parametrize("phase", [0, 1])
 def test_download_checks_the_deadline_between_chunks(root, monkeypatch, phase):
     from tests.fake_clock import patch_module_clock
 
     clock = [100.0]
     patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
 
-    def on_chunk(data):
-        if (data.startswith(b"{") and phase == "metadata") or (data.startswith(b"PK") and phase == "wheel"):
+    def on_chunk(_url, received):
+        if (received > 0) == bool(phase):
             clock[0] = 200.0
 
     pypi.on_chunk = on_chunk
@@ -579,7 +652,7 @@ def test_default_runner_returns_output():
 
 def test_two_threads_preparing_together_download_once(root, monkeypatch):
     gate = threading.Event()
-    pypi = FakePyPI(gate=gate).install(monkeypatch)
+    pypi = FakeRelease(gate=gate).install(monkeypatch)
     uv = FakeUv(root)
     results: list[module.ToolRuntime] = []
     errors: list[Exception] = []
@@ -606,37 +679,19 @@ def test_two_threads_preparing_together_download_once(root, monkeypatch):
     assert sum(1 for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"]) == 1
 
 
-def test_lock_held_elsewhere_reports_busy_without_waiting(root):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-
-
-def test_busy_is_not_recorded_as_a_failure(root, monkeypatch):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-    assert module.read_tool_runtime_status().state == "missing"
-    FakePyPI(digest="0" * 64).install(monkeypatch)
-    _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-    assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
-
-
 def test_cancel_clears_an_earlier_failure(root, monkeypatch):
-    pypi = FakePyPI(digest="0" * 64).install(monkeypatch)
+    pypi = FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
     assert module.read_tool_runtime_status().state == "failed"
-    pypi.metadata["urls"][0]["digests"]["sha256"] = hashlib.sha256(pypi.body).hexdigest()
+    pypi.pin_served_archive()
     canceled = threading.Event()
-    pypi.on_chunk = lambda chunk: canceled.set() if chunk.startswith(b"PK") else None
+    pypi.on_chunk = lambda _url, _received: canceled.set()
     _expect_failure(FakeUv(root), "canceled", cancel=canceled)
     assert module.read_tool_runtime_status().state == "missing"
 
 
 def test_damaged_cached_uv_is_downloaded_again(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     cached = module.cached_uv_path()
     cached.parent.mkdir(parents=True)
     _write_executable(cached, b"damaged")
@@ -653,7 +708,7 @@ def test_damaged_cached_uv_is_downloaded_again(root, monkeypatch):
 
 
 def test_intact_cached_uv_is_reused(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     cached = module.cached_uv_path()
     cached.parent.mkdir(parents=True)
     _write_executable(cached, b"cached")
@@ -675,46 +730,12 @@ def test_tools_root_does_not_run_config_migrations(tmp_path, monkeypatch):
     assert calls == [{"migrate": False}]
 
 
-def test_in_process_preparation_reports_busy_without_waiting(root):
-    with module._flight:
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-
-
-def test_waiting_on_a_held_lock_honours_the_deadline_and_cancel(root):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
-        canceled = threading.Event()
-        threading.Timer(0.1, canceled.set).start()
-        started = time.monotonic()
-        _expect_failure(_no_runner, "canceled", cancel=canceled)
-        assert time.monotonic() - started < 5
-
-
-def test_waiter_uses_what_the_other_process_prepared(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
-    uv = FakeUv(root)
-    _prepare(uv)
-    record = (root / "python.json").read_text(encoding="utf-8")
-    (root / "python.json").unlink()
-    lock = portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True)
-    lock.acquire()
-
-    def finish():
-        (root / "python.json").write_text(record, encoding="utf-8")
-        lock.release()
-
-    threading.Timer(0.1, finish).start()
-    result = _prepare(_no_runner)
-    assert result.python == uv.python
-
-
 # ---------------------------------------------------------------------------
 # uv on PATH as fallback
 
 
 def test_failed_download_falls_back_to_a_new_enough_system_uv(root, monkeypatch):
-    FakePyPI(fail=True).install(monkeypatch)
+    FakeRelease(fail=True).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/old/uv", "/new/uv"])
     uv = FakeUv(root, versions={"/old/uv": "0.3.0", "/new/uv": "99.0.0"})
     result = _prepare(uv)
@@ -723,7 +744,7 @@ def test_failed_download_falls_back_to_a_new_enough_system_uv(root, monkeypatch)
 
 
 def test_failed_download_without_a_new_enough_system_uv_fails(root, monkeypatch):
-    FakePyPI(fail=True).install(monkeypatch)
+    FakeRelease(fail=True).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/old/uv", "/broken/uv"])
     uv = FakeUv(root, versions={"/old/uv": "0.3.0", "/broken/uv": "not-a-version"})
     _expect_failure(uv, "download_failed")
@@ -731,7 +752,7 @@ def test_failed_download_without_a_new_enough_system_uv_fails(root, monkeypatch)
 
 
 def test_checksum_mismatch_does_not_fall_back(root, monkeypatch):
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+    FakeRelease(digest="0" * 64).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
 
@@ -802,7 +823,7 @@ def test_tools_live_under_the_regenerable_plugin_runtime_entry(tmp_path, monkeyp
 
 def test_background_preparation_starts_once_and_finishes(root, monkeypatch):
     gate = threading.Event()
-    pypi = FakePyPI(gate=gate).install(monkeypatch)
+    pypi = FakeRelease(gate=gate).install(monkeypatch)
     uv = FakeUv(root)
     monkeypatch.setattr(module, "_run_command", uv)
 
@@ -819,7 +840,7 @@ def test_background_preparation_starts_once_and_finishes(root, monkeypatch):
 
 def test_background_preparation_can_be_canceled(root, monkeypatch):
     gate = threading.Event()
-    FakePyPI(gate=gate).install(monkeypatch)
+    FakeRelease(gate=gate).install(monkeypatch)
     monkeypatch.setattr(module, "_run_command", FakeUv(root))
     assert module.cancel_tool_runtime_preparation() is False
     module.start_tool_runtime_preparation()
@@ -830,12 +851,12 @@ def test_background_preparation_can_be_canceled(root, monkeypatch):
 
 
 def test_background_failure_is_reported_then_retried(root, monkeypatch):
-    pypi = FakePyPI(digest="0" * 64).install(monkeypatch)
+    pypi = FakeRelease(digest="0" * 64).install(monkeypatch)
     monkeypatch.setattr(module, "_run_command", FakeUv(root))
     module.start_tool_runtime_preparation()
     module._background[0].join(10)
     assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
-    pypi.metadata["urls"][0]["digests"]["sha256"] = hashlib.sha256(pypi.body).hexdigest()
+    pypi.pin_served_archive()
     module.start_tool_runtime_preparation()
     module._background[0].join(10)
     status = module.read_tool_runtime_status()
@@ -846,7 +867,7 @@ def test_unexpected_error_becomes_internal_error(root, monkeypatch):
     def broken(*_args, **_kwargs):
         raise LookupError("boom")
 
-    monkeypatch.setattr(module, "_prepare_locked", broken)
+    monkeypatch.setattr(module, "_prepare_in_flight", broken)
     _expect_failure(_no_runner, "internal_error")
     assert module.read_tool_runtime_status().error_code == "internal_error"
     assert not module._flight.locked()
@@ -854,7 +875,7 @@ def test_unexpected_error_becomes_internal_error(root, monkeypatch):
 
 async def test_async_wrapper_cancels_the_worker(root, monkeypatch):
     gate = threading.Event()
-    pypi = FakePyPI(gate=gate).install(monkeypatch)
+    pypi = FakeRelease(gate=gate).install(monkeypatch)
     monkeypatch.setattr(module, "_run_command", FakeUv(root))
     task = asyncio.ensure_future(module.ensure_tool_runtime(timeout=60))
     try:
@@ -879,11 +900,81 @@ async def test_async_wrapper_cancels_the_worker(root, monkeypatch):
 
 
 async def test_async_wrapper_returns_the_prepared_runtime(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     monkeypatch.setattr(module, "_run_command", uv)
     result = await module.ensure_tool_runtime(timeout=60)
     assert result.python == uv.python
+
+
+async def test_concurrent_async_calls_do_not_starve_the_loops_default_executor(root, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_run_command", FakeUv(root))
+    loop = asyncio.get_running_loop()
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        # Like the real transfer: its file operations use the loop's default executor.
+        asyncio.run_coroutine_threadsafe(asyncio.to_thread(lambda: None), loop).result(timeout=5)
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    executor = ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(executor)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(module.ensure_tool_runtime(timeout=20) for _ in range(3))), timeout=15,
+        )
+    finally:
+        executor.shutdown(wait=False)
+    assert len({result.uv for result in results}) == 1
+    assert [url for url, _exclude in release.requests].count(release.uv_url) == 1
+
+
+async def test_async_call_keeps_the_callers_context(root, monkeypatch):
+    import contextvars
+
+    FakeRelease().install(monkeypatch)
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+    seen: list[str] = []
+    uv = FakeUv(root)
+
+    def runner(cmd, **kwargs):
+        seen.append(marker.get())
+        return uv(cmd, **kwargs)
+
+    monkeypatch.setattr(module, "_run_command", runner)
+    marker.set("caller")
+    await module.ensure_tool_runtime(timeout=60)
+    assert seen and set(seen) == {"caller"}
+
+
+@pytest.mark.parametrize("asset", ["uv", "python"])
+def test_server_shutting_down_mid_download_is_a_stop_without_fallback(root, monkeypatch, asset):
+    from plugin.server.infrastructure import package_fetch
+
+    release = FakeRelease().install(monkeypatch)
+    fake = module._fetch_release_asset
+    target = release.uv_url if asset == "uv" else _python_url()
+
+    def real_wrapper(url, directory, **kwargs):
+        if url == target:
+            def shutting_down(*_args, **_kwargs):
+                raise package_fetch.PackageLoopUnavailable("the server loop stopped during a package download")
+
+            monkeypatch.setattr(package_fetch, "fetch_release_asset", shutting_down)
+            return _original_fetch(url, directory, **kwargs)
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", real_wrapper)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    uv = FakeUv(root, listing=_listing(), versions={"/new/uv": "99.0.0"})
+    _expect_failure(uv, "canceled")
+    assert _plain_installs(uv) == []
+    # A stop records no failure for the status.
+    assert module.read_tool_runtime_status().error_code is None
 
 
 # ---------------------------------------------------------------------------
@@ -916,7 +1007,7 @@ def test_status_read_never_creates_the_config_manager(tmp_path, monkeypatch):
 def test_damaged_tool_after_preparation_is_not_ready_and_is_repaired(root, monkeypatch, damage, tool):
     if damage == "not_executable" and sys.platform == "win32":
         pytest.skip("Windows has no executable bit")
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     first = _prepare(uv)
     target = Path(first.uv if tool == "uv" else first.python)
@@ -933,7 +1024,7 @@ def test_damaged_tool_after_preparation_is_not_ready_and_is_repaired(root, monke
 
 
 def test_cancel_before_starting_a_retry_clears_the_earlier_failure(root, monkeypatch):
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+    FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
     canceled = threading.Event()
     canceled.set()
@@ -969,12 +1060,12 @@ def test_network_error_at_the_deadline_is_a_timeout_without_fallback(root, monke
 
     clock = [100.0]
     patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
 
-    def stalled(_chunk):
+    def stalled(_url, _received):
         clock[0] = 200.0
-        raise FakeHTTPError("read timed out")
+        raise module.load_httpx().ReadTimeout("read timed out")
 
     pypi.on_chunk = stalled
     uv = FakeUv(root, versions={"/new/uv": "99.0.0"})
@@ -983,11 +1074,11 @@ def test_network_error_at_the_deadline_is_a_timeout_without_fallback(root, monke
 
 
 def test_network_error_within_the_deadline_still_falls_back(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
+    pypi = FakeRelease().install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
 
-    def broken(_chunk):
-        raise FakeHTTPError("connection reset")
+    def broken(_url, _received):
+        raise module.load_httpx().ReadError("connection reset")
 
     pypi.on_chunk = broken
     assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
@@ -1028,7 +1119,7 @@ def test_tools_from_an_earlier_run_read_ready_before_the_config_manager_exists(t
 
 
 def test_python_that_no_longer_starts_is_reinstalled_once(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     first = _prepare(uv)
     (root / "python.json").unlink()
@@ -1041,7 +1132,7 @@ def test_python_that_no_longer_starts_is_reinstalled_once(root, monkeypatch):
 
 
 def test_python_that_never_starts_fails_the_install_after_one_reinstall(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     _prepare(uv)
     (root / "python.json").unlink()
@@ -1065,7 +1156,7 @@ def test_unexpected_error_before_the_flight_is_internal_error(root, monkeypatch)
 
 
 def test_foreground_call_past_its_deadline_keeps_the_previous_state(root, monkeypatch):
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+    FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
     _expect_failure(_no_runner, "timeout", deadline=time.monotonic() - 1)
     assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
@@ -1130,7 +1221,7 @@ def test_default_runner_keeps_only_the_tail_of_huge_output(monkeypatch):
 
 
 def test_python_that_cannot_be_started_is_reinstalled_once(root, monkeypatch):
-    FakePyPI().install(monkeypatch)
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root)
     first = _prepare(uv)
     (root / "python.json").unlink()
@@ -1181,8 +1272,8 @@ def test_source_environment_keeps_python_settings(root, monkeypatch):
 
 
 def test_no_pinned_wheel_for_this_platform_falls_back_to_a_system_uv(root, monkeypatch):
-    pypi = FakePyPI().install(monkeypatch)
-    pypi.metadata["urls"][0]["filename"] = f"uv-{module.PINNED_UV_VERSION}-py3-none-plan9_amd64.whl"
+    FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_uv_target", lambda: None)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: [])
@@ -1196,7 +1287,7 @@ def test_no_pinned_wheel_for_this_platform_falls_back_to_a_system_uv(root, monke
 
 
 def test_falling_back_to_a_system_uv_reports_its_own_phase(root, monkeypatch):
-    FakePyPI(fail=True).install(monkeypatch)
+    FakeRelease(fail=True).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     events: list = []
     _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"}), progress=events.append)
@@ -1204,24 +1295,430 @@ def test_falling_back_to_a_system_uv_reports_its_own_phase(root, monkeypatch):
     assert phases.index("downloading_uv") < phases.index("checking_uv") < phases.index("installing_python")
 
 
-def test_lock_wait_timeout_behind_another_process_keeps_the_previous_state(root, monkeypatch):
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+def test_waiting_behind_another_thread_honours_the_deadline_and_cancel(root):
+    with module._flight:
+        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
+        canceled = threading.Event()
+        threading.Timer(0.1, canceled.set).start()
+        started = time.monotonic()
+        _expect_failure(_no_runner, "canceled", cancel=canceled)
+        assert time.monotonic() - started < 5
+
+
+def test_timeout_behind_another_thread_keeps_the_previous_state(root, monkeypatch):
+    FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+    with module._flight:
         _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
     status = module.read_tool_runtime_status()
     assert (status.state, status.error_code) == ("failed", "checksum_mismatch")
 
 
-def test_background_lock_wait_timeout_behind_another_process_is_reported(root, monkeypatch):
-    # The background preparation has no caller to hand the timeout to.
-    FakePyPI(digest="0" * 64).install(monkeypatch)
+def test_waiter_uses_what_the_other_thread_prepared(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    uv = FakeUv(root)
+    _prepare(uv)
+    record = (root / "python.json").read_text(encoding="utf-8")
+    (root / "python.json").unlink()
+    module._flight.acquire()
+
+    def finish():
+        (root / "python.json").write_text(record, encoding="utf-8")
+        module._flight.release()
+
+    threading.Timer(0.1, finish).start()
+    result = _prepare(_no_runner)
+    assert result.python == uv.python
+
+
+def test_no_cross_process_lock_and_a_leftover_one_is_ignored(root, monkeypatch):
+    # An earlier build left .prepare.lock behind (or another one even holds it).
+    root.mkdir(parents=True)
+    (root / ".prepare.lock").write_bytes(b"")
+    FakeRelease().install(monkeypatch)
+    events: list[module.ProgressEvent] = []
+    _prepare(FakeUv(root), progress=events.append)
+    assert module.read_tool_runtime_status().state == "ready"
+    assert "waiting" not in {event.phase for event in events}
+    assert "busy" not in module.ErrorCode.__args__ and "waiting" not in module.ProgressPhase.__args__
+
+
+# ---------------------------------------------------------------------------
+# Downloads over the market's routes
+
+
+def _listing(url: str | None = None, **overrides) -> str:
+    entry = {
+        "key": "cpython-test", "implementation": "cpython", "variant": "default",
+        "version": ".".join(str(part) for part in sys.version_info[:3]),
+        "url": url or f"https://releases.astral.sh/github/python-build-standalone/releases/download/"
+                      f"{PYTHON_TAG}/{PYTHON_FILE.replace('+', '%2B')}",
+    }
+    entry.update(overrides)
+    return json.dumps([entry])
+
+
+def _python_url() -> str:
+    return (f"https://github.com/astral-sh/python-build-standalone/releases/download/"
+            f"{PYTHON_TAG}/{PYTHON_FILE.replace('+', '%2B')}")
+
+
+def test_python_build_is_fetched_over_github_routes_and_installed_from_the_file(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    uv = FakeUv(root, listing=_listing())
+    events: list[module.ProgressEvent] = []
+    _prepare(uv, progress=events.append)
+    assert [url for url, _exclude in release.requests] == [release.uv_url, _python_url()]
+    install = next(cmd for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"])
+    mirror = install[install.index("--mirror") + 1]
+    assert mirror == (root / ".python-download" / "mirror").as_uri()
+    assert {"--no-config", "--no-bin", "--no-registry"} <= set(install)
+    assert uv.mirrored == [PYTHON_BODY]
+    # Nothing of the download is left once uv has installed it.
+    assert not (root / ".python-download").exists()
+    python_bytes = [event for event in events if event.phase == "installing_python" and event.downloaded_bytes]
+    assert python_bytes[-1].downloaded_bytes == python_bytes[-1].total_bytes == len(PYTHON_BODY)
+    assert release.penalized == []
+
+
+@pytest.mark.parametrize("listing", [
+    None,
+    "not json",
+    _listing("https://example.com/python-build-standalone/releases/download/x/y.tar.gz"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/sub/{PYTHON_FILE}"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/..%2Fescape.tar.gz"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/..%5Cescape.tar.gz"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}..\\x/{PYTHON_FILE}"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}../{PYTHON_FILE}"),
+    _listing(version="3.0.0"),
+])
+def test_unreadable_python_listing_lets_uv_download_by_itself(root, monkeypatch, listing):
+    release = FakeRelease().install(monkeypatch)
+    uv = FakeUv(root, listing=listing)
+    _prepare(uv)
+    install = next(cmd for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"])
+    assert "--mirror" not in install
+    assert [url for url, _exclude in release.requests] == [release.uv_url]
+
+
+def test_python_build_failing_uvs_checksum_penalizes_the_route_and_tries_the_next(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered", PYTHON_BODY]
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [b"tampered", PYTHON_BODY]
+    assert release.penalized == ["github-direct"]
+    assert release.requests[-2:] == [(_python_url(), ()), (_python_url(), ("github-direct",))]
+
+
+def _plain_installs(uv: FakeUv) -> list[list[str]]:
+    return [cmd for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"] and "--mirror" not in cmd]
+
+
+def test_python_build_rejected_on_every_route_falls_back_to_uvs_own_download(root, monkeypatch):
+    release = FakeRelease(routes=2).install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered"]
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert release.penalized == ["github-direct", "route-1"]
+    # As on main: uv downloads from its own host and checks its own digest.
+    assert len(_plain_installs(uv)) == 1
+    assert (root / "python.json").exists()
+    assert not (root / ".python-download").exists()
+
+
+def test_failed_fallback_reports_both_downloads(root, monkeypatch):
+    release = FakeRelease(routes=2).install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered"]
+    uv = FakeUv(root, listing=_listing())
+
+    def runner(cmd, **kwargs):
+        if cmd[1:3] == ["python", "install"] and "--mirror" not in cmd:
+            uv.calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 1, "", "error: releases.astral.sh unreachable")
+        return FakeUv.__call__(uv, cmd, **kwargs)
+
+    error = _expect_failure(runner, "python_install_failed")
+    assert "download routes" in error.detail and "releases.astral.sh unreachable" in error.detail
+    assert not (root / "python.json").exists()
+
+
+@pytest.mark.parametrize("error", ["error: disk full", "error: No such file or directory (os error 2)"])
+def test_other_uv_mirror_install_errors_fall_back_without_trying_another_route(root, monkeypatch, error):
+    release = FakeRelease(routes=2).install(monkeypatch)
+    uv = FakeUv(root, listing=_listing())
+
+    def mirror_fails(cmd, **kwargs):
+        if cmd[1:3] == ["python", "install"] and "--mirror" in cmd:
+            uv.calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 1, "", error)
+        return FakeUv.__call__(uv, cmd, **kwargs)
+
+    _prepare(mirror_fails)
+    # The file is not at fault: no route is penalized or retried, and uv's
+    # own download installs the build, as on main.
+    assert [url for url, _exclude in release.requests].count(_python_url()) == 1
+    assert release.penalized == []
+    assert len(_plain_installs(uv)) == 1
+    assert (root / "python.json").exists()
+    assert not (root / ".python-download").exists()
+
+
+def test_uv_failing_with_and_without_the_mirror_reports_both(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    uv = FakeUv(root, listing=_listing())
+
+    def install_fails(cmd, **kwargs):
+        if cmd[1:3] == ["python", "install"]:
+            uv.calls.append((cmd, kwargs["env"]))
+            reason = "mirror unusable" if "--mirror" in cmd else "disk full"
+            return subprocess.CompletedProcess(cmd, 1, "", f"error: {reason}")
+        return FakeUv.__call__(uv, cmd, **kwargs)
+
+    error = _expect_failure(install_fails, "python_install_failed")
+    assert "mirror unusable" in error.detail and "disk full" in error.detail
+    assert len(_plain_installs(uv)) == 1
+
+
+def test_leftover_python_download_directory_does_not_fail_the_install(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    leftover = root / ".python-download" / "mirror" / PYTHON_TAG
+    leftover.mkdir(parents=True)
+    # A file another program holds open survives the cleanup on Windows.
+    rmtree = shutil.rmtree
+
+    def held_open(path, *args, **kwargs):
+        if Path(path).name != ".python-download":
+            rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.shutil, "rmtree", held_open)
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [PYTHON_BODY]
+    assert _plain_installs(uv) == []
+
+
+def test_python_routes_unreachable_fall_back_to_uvs_own_download(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+
+    def broken(url, _received):
+        if url == _python_url():
+            raise module.load_httpx().ConnectError("connection refused")
+
+    release.on_chunk = broken
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == []
+    assert len(_plain_installs(uv)) == 1
+    assert not (root / ".python-download").exists()
+
+
+def test_local_write_failure_of_the_python_download_does_not_fall_back(root, monkeypatch):
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
+    FakeRelease().install(monkeypatch)
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        if url == _python_url():
+            raise PackageDownloadWriteError(OSError(28, "No space left on device"))
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    uv = FakeUv(root, listing=_listing())
+    _expect_failure(uv, "python_install_failed")
+    assert _plain_installs(uv) == []
+
+
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_stopping_during_the_python_download(root, monkeypatch, stop):
+    from tests.fake_clock import patch_module_clock
+
+    clock = [100.0]
+    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
+    release = FakeRelease().install(monkeypatch)
+    canceled = threading.Event()
+
+    def on_chunk(url, received):
+        if url == _python_url() and received:
+            if stop == "cancel":
+                canceled.set()
+            else:
+                clock[0] = 200.0
+
+    release.on_chunk = on_chunk
+    uv = FakeUv(root, listing=_listing())
+    _expect_failure(uv, "canceled" if stop == "cancel" else "timeout", cancel=canceled, deadline=150.0)
+    assert uv.mirrored == []
+    # Stopping is not a failed download: uv's own download is not tried.
+    assert _plain_installs(uv) == []
+    assert not (root / ".python-download").exists()
+
+
+def test_uv_archive_failing_the_pinned_checksum_penalizes_the_route_and_tries_the_next(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    good = release.body
+    release.bodies[release.uv_url] = [_uv_archive(release.target, release.binary_name, b"evil"), good]
+    _prepare(FakeUv(root))
+    assert module.cached_uv_path().read_bytes() == b"uv-executable"
+    assert release.penalized == ["github-direct"]
+    assert release.requests[:2] == [(release.uv_url, ()), (release.uv_url, ("github-direct",))]
+
+
+def test_uv_archive_failing_on_the_last_route_does_not_fall_back_to_a_system_uv(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    error = _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
+    assert "github-direct, route-1" in error.detail
+    assert release.penalized == ["github-direct", "route-1"]
+    assert not module.cached_uv_path().exists()
+
+
+def test_network_failure_after_a_mismatch_stays_a_checksum_mismatch(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64).install(monkeypatch)
+    calls = []
+
+    def broken(url, _received):
+        calls.append(url)
+        if len(calls) > 2:
+            raise OSError("connection reset")
+
+    release.on_chunk = broken
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
+    assert release.penalized == ["github-direct"]
+
+
+def test_spliced_file_failing_its_checksum_blames_no_route_and_retries_one_route_at_a_time(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.spliced = True
+    release.bodies[release.uv_url] = [b"spliced from two routes", release.body]
+    _prepare(FakeUv(root))
+    assert module.cached_uv_path().read_bytes() == b"uv-executable"
+    assert release.penalized == []
+    # The whole file is fetched again, from the best route alone; none is ruled out.
+    assert release.requests[:2] == [(release.uv_url, ()), (release.uv_url, ())]
+    assert release.single[:2] == [False, True]
+
+
+def test_spliced_then_single_route_mismatches_rule_out_each_route_in_turn(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.spliced = True
     _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        module.start_tool_runtime_preparation(timeout=0.3)
-        module._background[0].join(10)
-    status = module.read_tool_runtime_status()
-    assert (status.state, status.error_code) == ("failed", "timeout")
+    assert release.penalized == ["github-direct", "route-1"]
+    assert [exclude for _url, exclude in release.requests] == [(), (), ("github-direct",), ("github-direct", "route-1")]
+
+
+def test_spliced_file_with_github_bytes_rejected_only_with_mirrors_is_a_download_failure(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.spliced = True
+    release.broken_routes = {"github-direct"}
+    # GitHub delivered part of the spliced file and nothing whole: the bad
+    # bytes may be a mirror's error page, so this is no proof of tampering.
+    _expect_failure(FakeUv(root), "download_failed")
+    assert release.penalized == ["route-1"]
+
+
+def test_route_failing_while_tried_alone_is_skipped(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    good = release.body
+    release.bodies[release.uv_url] = [_uv_archive(release.target, release.binary_name, b"evil"), good]
+    release.broken_routes = {"route-1"}
+    _prepare(FakeUv(root))
+    assert release.penalized == ["github-direct"]
+    assert [exclude for _url, exclude in release.requests[:3]] == [(), ("github-direct",), ("github-direct", "route-1")]
+
+
+def test_python_file_uv_cannot_extract_is_blamed_on_its_route(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.bodies[_python_url()] = [b"<html>", PYTHON_BODY]
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [b"<html>", PYTHON_BODY]
+    assert release.penalized == ["github-direct"]
+
+
+@pytest.mark.parametrize(("stderr", "rejected"), [
+    ("error: Failed to install\n  cause: Hash mismatch for `cpython`", True),
+    ("error: Failed to install\n  cause: Failed to extract archive: x\n  cause: Invalid gzip header", True),
+    ("error: Failed to extract archive: x\n  cause: No space left on device (os error 28)", False),
+    ("error: Permission denied (os error 13)", False),
+])
+def test_uv_rejecting_the_file_is_told_apart_from_a_local_failure(stderr, rejected):
+    result = subprocess.CompletedProcess([], 1, "", stderr)
+    assert module._rejected_python_archive(result) is rejected
+
+
+def test_local_write_failure_after_a_rejection_is_reported_as_such(root, monkeypatch):
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
+    release = FakeRelease(digest="0" * 64).install(monkeypatch)
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        if kwargs["exclude"]:
+            raise PackageDownloadWriteError(OSError(28, "No space left on device"))
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    error = _expect_failure(FakeUv(root), "download_failed")
+    assert "No space left" in error.detail
+    assert release.penalized == ["github-direct"]
+
+
+def test_uv_archive_rejected_only_from_mirrors_is_a_download_failure_and_falls_back(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.route_names = ["gh-proxy-com", "gh-proxy-org"]
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    # Mirrors often answer with an error page: that is not tampering.
+    assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
+    assert release.penalized == ["gh-proxy-com", "gh-proxy-org"]
+
+
+def test_pinned_digests_belong_to_the_pinned_uv():
+    assert module._UV_ARCHIVE_SHA256_VERSION == module.PINNED_UV_VERSION
+
+
+def test_staging_the_python_download_failing_locally_does_not_fall_back(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    replace = os.replace
+
+    def failing(source, destination):
+        if Path(destination).name == PYTHON_FILE:
+            raise PermissionError(13, "Permission denied")
+        return replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", failing)
+    uv = FakeUv(root, listing=_listing())
+    error = _expect_failure(uv, "python_install_failed")
+    assert "stage" in error.detail
+    assert _plain_installs(uv) == []
+
+
+def test_staged_file_that_cannot_be_removed_neither_fails_nor_falls_back(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered", PYTHON_BODY]
+    unlink = Path.unlink
+
+    def held_open(self, missing_ok=False):
+        if self.name == PYTHON_FILE:
+            raise PermissionError(13, "The file is in use")
+        return unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [b"tampered", PYTHON_BODY]
+    assert _plain_installs(uv) == []
+
+
+def test_digests_of_another_uv_release_download_nothing(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_UV_ARCHIVE_SHA256_VERSION", "0.0.1")
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    error = _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "internal_error")
+    assert "0.0.1" in error.detail
+    assert release.requests == []
 
 
 def test_source_preparation_failure_is_a_tool_runtime_error(root, monkeypatch, tmp_path):
@@ -1234,3 +1731,4 @@ def test_source_preparation_failure_is_a_tool_runtime_error(root, monkeypatch, t
     with pytest.raises(module.ToolRuntimeError) as caught:
         _prepare(_no_runner)
     assert caught.value.code == "internal_error"
+

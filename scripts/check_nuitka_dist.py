@@ -318,6 +318,7 @@ def _check_plugin_tool_python() -> list[str]:
     if str(repository_root) not in sys.path:
         sys.path.insert(0, str(repository_root))
     from plugin.server.infrastructure.plugin_tool_runtime import (
+        _PYTHON_RELEASE_PREFIXES,
         packaged_python_request,
         pinned_uv_version,
     )
@@ -334,7 +335,7 @@ def _check_plugin_tool_python() -> list[str]:
         env.pop(name, None)
     command = [
         uv, "tool", "run", "--no-config", "--from", f"uv=={version}", "uv",
-        "python", "list", request, "--only-downloads", "--output-format", "json", "--no-config",
+        "python", "list", request, "--only-downloads", "--show-urls", "--output-format", "json", "--no-config",
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env)
@@ -344,8 +345,9 @@ def _check_plugin_tool_python() -> list[str]:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
         if _pypi_lacks_uv_release(version):
             return [
-                f"pinned uv {version} is not published on PyPI; packaged plugin tool preparation "
-                "would fail. Fix PINNED_UV_VERSION in plugin_tool_runtime.py."
+                f"pinned uv {version} is not published (PyPI has no such release); packaged plugin tool "
+                "preparation, which downloads that release from GitHub, would fail. Fix PINNED_UV_VERSION "
+                "in plugin_tool_runtime.py."
             ]
         return _plugin_tool_check_skipped(
             f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"
@@ -357,16 +359,22 @@ def _check_plugin_tool_python() -> list[str]:
     if not isinstance(downloads, list):
         return _plugin_tool_check_skipped(f"uv {version} printed an unreadable Python download list")
     current = ".".join(str(part) for part in sys.version_info[:3])
-    if not any(
-        isinstance(item, dict)
-        and item.get("implementation") == "cpython"
-        and item.get("version") == current
-        for item in downloads
-    ):
+    listed = [
+        item for item in downloads
+        if isinstance(item, dict) and item.get("implementation") == "cpython" and item.get("version") == current
+    ]
+    if not listed:
         return [
             f"pinned uv {version} cannot download {request}; packaged plugin tool "
             "preparation would fail. Raise PINNED_UV_VERSION in plugin_tool_runtime.py to a uv release "
             "that lists this Python patch (or pin the build's Python patch)."
+        ]
+    if not any(isinstance(item.get("url"), str) and item["url"].startswith(_PYTHON_RELEASE_PREFIXES) for item in listed):
+        # The runtime still installs it then, but uv downloads it from that
+        # host itself, bypassing the plugin market's download routes.
+        return [
+            f"pinned uv {version} lists {request} at a host plugin_tool_runtime.py does not map to GitHub; "
+            "packaged servers would bypass the download routes. Add its prefix to _PYTHON_RELEASE_PREFIXES."
         ]
     return []
 
