@@ -1016,6 +1016,118 @@ async def test_a_search_in_dsh_is_ruled_on_before_it_is_called_and_not_again(hos
     await wait_status(host, commission_id, "done")
 
 
+def _leader_at_work() -> tuple[Any, Any, Any]:
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    leader = ScriptedLLM([[wait, say("that is all"), finish("stop")]])
+    member = ScriptedLLM([_report("ready", "header fixed")])
+    return (lambda spec: leader if "hand_over" not in spec.disabled_tools else member), leader, release
+
+
+@pytest.mark.parametrize(("answer", "refused"), [("once", False), ("deny", True)])
+async def test_a_leader_in_dsh_is_asked_about_a_member_that_changes_files_before_it_hands_over_and_not_again(
+    hosts, tmp_path, answer, refused
+):
+    pick, _leader, release = _leader_at_work()
+    host = _host(hosts, tmp_path, pick, Installation())
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append((commission_id, ask.category, ask.detail.get("tool"), ask.detail.get("preset")))
+        return answer
+
+    host.permissions.set_asker(asker)
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+    commission_id = await _dispatch(host, "fix the header of the shop site")
+    await wait_status(host, commission_id, "working")
+    await wait_until(lambda: commission_id in host.task_agents.running, what="the session")
+    agents = host.task_agents
+    hands = {"description": "fixes the pages", "brief": "Fix the header."}
+
+    # Before the call, where dsh waits as long as the user takes: asked what the call would ask,
+    # and nothing is made or marked by it.
+    reply = await agents._cb_permission(
+        commission_id, {"tool": "hand_over", "category": "host_tool", "arguments": hands, "workdir": "w", "default": "allow"}
+    )
+    assert reply["allow"] is True and asked == [(commission_id, "open_session", "hand_over", "worker")]
+    assert await host.ledger.members("Lan", "Shop site") == [] and agents._sessions[commission_id].handing_over is None
+
+    # The call does not ask a second time: it goes through, or is answered with the refusal.
+    if refused:
+        with pytest.raises(RuntimeError, match="did not allow"):
+            await agents._cb_hand_over(led["session_id"], hands)
+        assert await host.ledger.members("Lan", "Shop site") == []
+    else:
+        await agents._cb_hand_over(led["session_id"], hands)
+        (made,) = await host.ledger.members("Lan", "Shop site")
+        assert agents._sessions[commission_id].handing_over[0] == made.id
+    assert len(asked) == 1
+
+    # That was for the one call: one that asks about another is asked about by itself.
+    assert agents._open_rulings == {}
+    if refused:
+        with pytest.raises(RuntimeError, match="did not allow"):
+            await agents._cb_hand_over(led["session_id"], hands)
+        assert len(asked) == 2
+    release.set()
+    await wait_status(host, commission_id, "done")
+    # Nothing waits for a call once the commission is over.
+    assert agents._open_rulings == {}
+
+
+async def test_what_was_ruled_ahead_of_a_hand_over_is_only_for_what_the_user_was_asked_about(hosts, tmp_path):
+    pick, _leader, release = _leader_at_work()
+    host = _host(hosts, tmp_path, pick, Installation())
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(ask.detail.get("title"))
+        return "deny"
+
+    host.permissions.set_asker(asker)
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+    commission_id = await _dispatch(host, "fix the header of the shop site")
+    await wait_status(host, commission_id, "working")
+    await wait_until(lambda: commission_id in host.task_agents.running, what="the session")
+    agents = host.task_agents
+
+    def ahead(arguments: dict[str, Any]) -> Any:
+        return agents._cb_permission(commission_id, {"tool": "hand_over", "category": "host_tool", "arguments": arguments})
+
+    # One that reads only is not asked about, ahead of the call or in it; nor is a call that is
+    # wrong (no such member), which the call itself answers.
+    assert (await ahead({"preset": "scout", "description": "looks", "brief": "Look."}))["allow"] is True
+    assert (await ahead({"to": "nobody", "brief": "Fix."}))["allow"] is True
+    assert asked == [] and agents._open_rulings == {}
+
+    # Asked about one, and the call is for another: that one is asked about by itself.
+    await ahead({"description": "fixes the pages", "brief": "Fix the header."})
+    with pytest.raises(RuntimeError, match="did not allow"):
+        await agents._cb_hand_over(led["session_id"], {"description": "fixes the styles", "brief": "Fix the styles."})
+    assert [title.split(" <- ")[0] for title in asked] == ["fixes the pages", "fixes the styles"]
+
+    # What was ruled waits for its call as long as a call takes to follow, and no longer.
+    pages = {"description": "fixes the pages", "brief": "Fix the header."}
+    await ahead(pages)
+    detail, decision, _until = agents._open_rulings[commission_id]
+    agents._open_rulings[commission_id] = (detail, decision, 0.0)
+    with pytest.raises(RuntimeError, match="did not allow"):
+        await agents._cb_hand_over(led["session_id"], pages)
+    assert len(asked) == 4
+    # And not past the commission it was for.
+    await ahead(pages)
+    assert commission_id in agents._open_rulings
+    release.set()
+    await wait_status(host, commission_id, "done")
+    await wait_until(lambda: commission_id not in agents.running, what="the session being released")
+    assert agents._open_rulings == {}
+
+
 async def test_a_ruling_on_a_search_is_only_for_what_the_user_was_asked_about(hosts, tmp_path):
     llm, release = _waiting_llm()
     host = _host(hosts, tmp_path, llm, Installation())

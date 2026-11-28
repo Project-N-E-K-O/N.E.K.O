@@ -270,14 +270,13 @@ class Template:
     def needs_builtin(self) -> bool:
         """Whether the host holds its sessions to it in the built-in runtime only.
 
-        dsh has tools of its own that write files and run commands, and
-        makes its model requests by itself: the host can neither keep a
-        tool from a session there nor count its requests. A session of
-        such a preset is opened in dsh like any other all the same,
-        where it is held to its preset by what it is told
-        (``TaskAgentManager._start``); only one whose requests are
-        capped, and the leader of a project, stay with the built-in
-        runtime.
+        Not where they run: dsh has tools of its own that write files and
+        run commands, and makes its model requests by itself, so the host
+        can neither keep a tool from a session there nor count its
+        requests. A session of such a preset is opened in dsh like any
+        other all the same, where it is held to its preset by what it is
+        told (``TaskAgentManager._start``); only one whose requests are
+        capped is not opened there.
         """
         return bool(self.withheld()) or self.max_requests is not None
 
@@ -330,8 +329,9 @@ class Listed:
             # Whether its sessions can change files, with a tool or through the shell
             # (``Template.changes_files``): what a page warns of before a session is made one.
             "changes_files": found.changes_files if found else None,
-            # Whether its sessions run in the built-in runtime only (``Template.needs_builtin``):
-            # one that was begun in the other runtime starts anew there when it is made one.
+            # Whether its sessions are held to it for certain in the built-in runtime only
+            # (``Template.needs_builtin``): one that was begun in dsh stays there when it is
+            # made one, held to it by what it is told, which a page says before it is.
             "needs_builtin": found.needs_builtin if found else None,
             "valid": found is not None,
             "error": self.error,

@@ -2546,6 +2546,43 @@ async def test_a_session_given_another_preset_is_sent_to_that_presets_model_from
     assert [spec.model.model for spec in specs] == ["agent-model", "own-model", "agent-model"]
 
 
+async def test_a_session_given_another_preset_while_it_is_started_is_sent_to_that_presets_model_by_that_start(
+    hosts, tmp_path, monkeypatch
+):
+    manager = _manager(tmp_path, _default_slots())
+    llm = ScriptedLLM([_report(), _report()])
+    specs: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        specs.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    agents = host.task_agents
+    use_project = agents._use_project
+    meanwhile: list[str] = []
+
+    async def using(commission: Any) -> None:
+        if not meanwhile:
+            # After the start read where the session is sent, and before it reads what it opens
+            # the session as.
+            meanwhile.append((await agents.change_duty(member, "scout", by="user"))["preset"])
+        await use_project(commission)
+
+    monkeypatch.setattr(agents, "_use_project", using)
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+
+    # Opened as the preset it has, and sent where that one is sent: not as one and to the other's.
+    assert meanwhile == ["scout"]
+    assert [(spec.head_of, spec.model.model) for spec in specs] == [("general", "agent-model"), ("scout", "own-model")]
+    kept = await host.ledger.get_session(member)
+    assert (kept.preset, kept.preset_told, kept.model_name) == ("scout", "scout", "own-model")
+
+
 async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
     manager = _manager(tmp_path, _default_slots())
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)

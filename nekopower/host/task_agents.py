@@ -1299,6 +1299,9 @@ class TaskAgentManager(TreeWork):
         # made (``_rule_on_host_tool``): the queries it was for, the refusal
         # or None, and until when it waits for the call (event loop time).
         self._search_rulings: dict[str, tuple[tuple[str, ...], PermissionDecision, float]] = {}
+        # The same for what a leader in dsh is about to open (``_may_open``): what the user
+        # was asked, what was decided, and until when it waits for the call.
+        self._open_rulings: dict[str, tuple[dict[str, Any], PermissionDecision, float]] = {}
         # Commissions whose review is being written down right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
@@ -1849,9 +1852,9 @@ class TaskAgentManager(TreeWork):
         Its name, the runtime, and, when the commission was to run in dsh
         and runs in the built-in runtime instead, why. With
         ``builtin_only`` it is the built-in runtime and dsh is not asked:
-        for a session whose preset withholds tools, which only the
-        built-in runtime keeps from it (``Template.needs_builtin``). That
-        is where such a session belongs, so no reason is given for it.
+        for a session whose preset caps its requests, which the host
+        cannot count in dsh. That is where such a session belongs, so no
+        reason is given for it.
         """
         if builtin_only:
             if self._pump is None:
@@ -3804,10 +3807,19 @@ class TaskAgentManager(TreeWork):
             config = choice.config
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
+            chosen_as = kept.preset
             await self._use_project(commission)
             kept = await self._ledger.get_session(session.session_id)
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
+            if kept.preset != chosen_as:
+                # Given another preset since its model was read, and with it the model of that
+                # one (``change_duty``): this start opens it as what is on this row, below, and
+                # sends it where this row says, not where the preset it had was sent.
+                choice = await self.session_model(kept)
+                config = choice.config
+                if not config or not config.get("model"):
+                    raise RuntimeError("no model is configured for task agents")
             session.cleared_before = kept.status == "cleared"
             # What the session may do and is told of its role. One whose
             # preset cannot be used fails here, with the reason.
@@ -4764,6 +4776,7 @@ class TaskAgentManager(TreeWork):
         self._forks_said.pop(commission_id, None)
         self._handed_said.pop(commission_id, None)
         self._drop_search_ruling(commission_id)
+        self._open_rulings.pop(commission_id, None)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
         session_id = session.session_id if session is not None else self._session_of.get(commission_id)
@@ -8087,15 +8100,31 @@ class TaskAgentManager(TreeWork):
     async def _rule_on_host_tool(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Rule on a call of one of the host's own tools that a task agent in dsh is about to make.
 
-        Only the dsh runtime asks this, and only about the web search: with
-        plugin entries set to be asked about, the search asks the user, and
-        dsh gives a call less than a minute. So the user is asked now. The
-        call is let through whatever came of it: the search answers it with
-        what was decided here, in the words it refuses a call with in the
-        built-in runtime, and does not ask again.
+        Only the dsh runtime asks this, about the tools that may wait for
+        the user (``profile.ASKED_HOST_TOOLS``): dsh gives a call less than
+        a minute. So the user is asked now. The call is let through
+        whatever came of it: it is answered with what was decided here, in
+        the words the tool refuses a call with in the built-in runtime, and
+        does not ask again.
+
+        The web search asks with plugin entries set to be asked about.
+        ``hand_over`` and ``start_team`` ask before a task agent that
+        changes files is opened: the tool is gone through up to what it
+        asks and no further (``ahead``), and whatever else is wrong with
+        the call, the call says.
         """
         from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS
 
+        if payload.get("tool") in ("hand_over", "start_team") and session_id in self._sessions:
+            commission = await self._ledger.get(session_id)
+            arguments = payload.get("arguments")
+            if commission is not None and commission.session_id:
+                ask = self._cb_hand_over if payload.get("tool") == "hand_over" else self._cb_start_team
+                try:
+                    await ask(commission.session_id, arguments if isinstance(arguments, dict) else {}, ahead=True)
+                except RuntimeError:
+                    # Not a call that goes through, as the call itself is answered.
+                    pass
         if payload.get("tool") == "web_search":
             commission = await self._ledger.get(session_id)
             if commission is not None and session_id in self._sessions:
@@ -8312,7 +8341,28 @@ class TaskAgentManager(TreeWork):
             return lead
         return next((member for member in members if member.name == name), None)
 
-    async def _cb_hand_over(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _may_open(
+        self, commission_id: str, detail: dict[str, Any], *, ahead: bool = False
+    ) -> PermissionDecision:
+        """Return whether another task agent that changes files may be opened for a commission (``OPEN_SESSION``).
+
+        ``ahead`` of the call that opens it (``_rule_on_host_tool``), what
+        is decided is kept for that call, which is answered by it where it
+        asks about the same and does not ask again; kept as long as what
+        the gateway rules on ahead of a call is, and for one call.
+        """
+        from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        ruled = self._open_rulings.pop(commission_id, None)
+        if not ahead and ruled is not None and ruled[0] == detail and asyncio.get_running_loop().time() < ruled[2]:
+            return ruled[1]
+        decision = await self._permissions.check(commission_id, OPEN_SESSION, detail=detail)
+        if ahead and commission_id in self._sessions:
+            until = asyncio.get_running_loop().time() + GATEWAY_CLEARED_CALL_SECONDS
+            self._open_rulings[commission_id] = (detail, decision, until)
+        return decision
+
+    async def _cb_hand_over(self, session_id: str, payload: dict[str, Any], *, ahead: bool = False) -> dict[str, Any]:
         """Hand the commission a leader is at over to a member of its project (the ``hand_over`` tool).
 
         To a member that is named, or to a new one of the preset named (a
@@ -8322,6 +8372,9 @@ class TaskAgentManager(TreeWork):
         here: the session is marked, and once its run is over it is
         closed and the commission goes on in the other one
         (``_handed_over``), which reports to her as any task agent does.
+
+        ``ahead`` of the call (``_rule_on_host_tool``) the user is asked
+        what the call would ask, and nothing is made or marked.
         """
         from config.prompts import prompts_nekopower_brain as texts
 
@@ -8331,11 +8384,13 @@ class TaskAgentManager(TreeWork):
             raise RuntimeError(texts.HAND_OVER_TWICE)
         self._handing_claims.add(commission_id)
         try:
-            return await self._hand_over(session_id, commission_id, payload)
+            return await self._hand_over(session_id, commission_id, payload, ahead=ahead)
         finally:
             self._handing_claims.discard(commission_id)
 
-    async def _hand_over(self, session_id: str, commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _hand_over(
+        self, session_id: str, commission_id: str, payload: dict[str, Any], *, ahead: bool = False
+    ) -> dict[str, Any]:
         """Do what ``_cb_hand_over`` says, for the one call that is let in for a commission at a time."""
         from config.nekopower_settings import HAND_OVER_BRIEF_MAX_TOKENS
         from config.prompts import prompts_nekopower_brain as texts
@@ -8414,7 +8469,7 @@ class TaskAgentManager(TreeWork):
                 if seat == "tree" and await self.tree_possible(leader.project, leader.workdir):
                     # Said in what is asked: it changes files in a copy of its own, merged back when it is done.
                     detail["tree"] = True
-                decision = await self._permissions.check(commission_id, OPEN_SESSION, detail=detail)
+                decision = await self._may_open(commission_id, detail, ahead=ahead)
                 if not decision.allow:
                     raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
                 # The user may have taken a while: looked at once more.
@@ -8424,6 +8479,8 @@ class TaskAgentManager(TreeWork):
                     raise RuntimeError("the commission is not at work any more; nothing is handed over")
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HAND_OVER_TWICE)
+            if ahead:
+                return {}
             target = await self._ledger.create_session(
                 name=await self._ledger.member_name(
                     leader.lanlan_name, leader.project, f"{leader.project}/{model_name(preset)}"
@@ -8441,6 +8498,9 @@ class TaskAgentManager(TreeWork):
             changes = bool(template.changes_files)
             # The model it is sent to, by its preset: the leader's unless the user set another.
             await self.settle_model(target)
+        if ahead:
+            # To a member that is there: nothing is asked.
+            return {}
         if self._sessions.get(commission_id) is not live or live.closing or live.handing_over is not None:
             # It went while the member was looked for or made (stopped, say): nothing is marked,
             # and nothing awaited between this look and the mark. (A member made for it stays, idle.)

@@ -375,7 +375,7 @@ export interface FamiliarTemplate {
   source: string
   /** Whether a familiar of it can change files, with a tool or through a command. */
   changes_files?: boolean | null
-  /** Whether a familiar of it runs in the built-in runtime only. */
+  /** Whether a familiar of it is held to it for certain in the built-in runtime only: in dsh it runs too, held to it by what it is told. */
   needs_builtin?: boolean | null
   valid: boolean
   error: string

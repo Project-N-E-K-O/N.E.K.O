@@ -2350,7 +2350,7 @@ class TreeWork:
                 return dict(event.payload)
         return {}
 
-    async def _cb_start_team(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_start_team(self, session_id: str, payload: dict[str, Any], *, ahead: bool = False) -> dict[str, Any]:
         """Start several task agents for the commission a leader is at, each with a part of it (the ``start_team`` tool).
 
         The leader keeps the commission. Each part is started as a task
@@ -2361,6 +2361,9 @@ class TreeWork:
         is asked once for a team that changes files (``OPEN_SESSION``,
         with who is to be started); allowed, the rest of this
         commission's team is not asked about again.
+
+        ``ahead`` of the call (``TaskAgentManager._rule_on_host_tool``)
+        the user is asked what the call would ask, and nobody is started.
         """
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -2431,9 +2434,9 @@ class TreeWork:
                     )
                     for part in writers
                 ]
-                decision = await self._permissions.check(
+                decision = await self._may_open(
                     commission_id,
-                    OPEN_SESSION,
+                    ahead=ahead,
                     detail={
                         "tool": "start_team",
                         "title": "; ".join(members),
@@ -2462,6 +2465,8 @@ class TreeWork:
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HANDED_OVER_ALREADY)
                 self._team_allowed.add(commission_id)
+        if ahead:
+            return {}
         inspect = bool(payload.get("inspect"))
         taken: list[dict[str, Any]] = []
         refused: list[tuple[str, str]] = []
