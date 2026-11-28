@@ -1130,13 +1130,24 @@ def compute_copy_merge(
     base_digest = str(base.get("digest") or "")
     meta_start = str(meta.get("start") or "")
     if not meta_start or meta_start != base_digest:
-        return {
-            "status": "failed",
-            "detail": (
-                f"working copy {copy_path} baseline metadata is inconsistent "
-                "(meta.start != base_manifest.digest); recover or discard it before landing"
-            ),
-        }
+        if base_digest and base.get("source") == "landed":
+            # Self-heal a crash between base_manifest.json and meta.json inside advance_copy_baseline.
+            meta["start"] = base_digest
+            try:
+                _atomic_write_json(meta_dir / _META_FILE, meta)
+            except OSError as exc:
+                return {
+                    "status": "failed",
+                    "detail": f"working copy {copy_path} baseline metadata repair failed: {exc}",
+                }
+        else:
+            return {
+                "status": "failed",
+                "detail": (
+                    f"working copy {copy_path} baseline metadata is inconsistent "
+                    "(meta.start != base_manifest.digest); recover or discard it before landing"
+                ),
+            }
     links = active_links(copy_path, meta.get("links") or ())
 
     try:
@@ -1255,6 +1266,22 @@ def compute_copy_merge(
             chosen = w_ent if w_ent is not None else c_ent
             if chosen is not None:
                 merged_entries[rel] = dict(chosen)
+            conflict_versions[rel] = {
+                "project": dict(c_ent) if c_ent is not None else None,
+                "worktree": dict(w_ent) if w_ent is not None else None,
+            }
+            continue
+
+        if c_ent is None or w_ent is None:
+            # Modify/delete clash (including POSIX executable-bit-only edits vs deletion):
+            # handle on full manifest entries before byte-level merge3_bytes.
+            conflicts.add(rel)
+            chosen = w_ent if w_ent is not None else c_ent
+            if chosen is not None:
+                merged_entries[rel] = dict(chosen)
+                chosen_bytes = _read_entry_bytes(copy_path if w_ent is not None else project_dir, chosen, rel)
+                if chosen_bytes is not None:
+                    merged_contents[rel] = chosen_bytes
             conflict_versions[rel] = {
                 "project": dict(c_ent) if c_ent is not None else None,
                 "worktree": dict(w_ent) if w_ent is not None else None,
@@ -1545,14 +1572,22 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
             src = copy_path / rel
             if os.path.isfile(fs_path(src)):
                 _store_blob_file(src, sha, blobs_dir)
+    prev_base_file = meta_dir / _BASE_MANIFEST_FILE
+    old_base_bytes = prev_base_file.read_bytes() if prev_base_file.is_file() else None
     prev_base = read_base_manifest(copy_path)
     prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
     _atomic_write_json(
-        meta_dir / _BASE_MANIFEST_FILE,
-        {"digest": new_scan.digest, "files": new_scan.files, "skipped": prev_skipped},
+        prev_base_file,
+        {"digest": new_scan.digest, "files": new_scan.files, "skipped": prev_skipped, "source": "landed"},
     )
     meta["start"] = new_scan.digest
-    _atomic_write_json(meta_dir / _META_FILE, meta)
+    try:
+        _atomic_write_json(meta_dir / _META_FILE, meta)
+    except BaseException:
+        if old_base_bytes is not None:
+            with contextlib.suppress(OSError):
+                _atomic_write_bytes(prev_base_file, old_base_bytes)
+        raise
     _gc_blobs(blobs_dir, keep)
     pending_root = meta_dir / _PENDING_DIR
     if pending_root.is_dir():
@@ -1617,11 +1652,8 @@ def prepare_copy_conflicts_sync(
     held = set(now.files)
     to_delete = sorted(held - set(merged_files))
     merged_keys = set(merged_files)
-    to_write = [
-        (rel, entry)
-        for rel, entry in sorted(merged_files.items())
-        if not any(other.startswith(rel + "/") for other in merged_keys)
-    ]
+    merged_parents = {up for other in merged_keys for up in _parents(other)}
+    to_write = [(rel, entry) for rel, entry in sorted(merged_files.items()) if rel not in merged_parents]
     touched_set = sorted(set(to_delete) | {rel for rel, _e in to_write})
     for rel in touched_set:
         if has_link_ancestor(copy_path, rel):
@@ -1754,7 +1786,19 @@ def prepare_copy_conflicts_sync(
         _atomic_write_json(meta_dir / _META_FILE, meta)
     except BaseException as exc:
         # Roll back partial copy mutations AND baseline metadata so copy files and baseline stay in sync.
-        for rel, orig_kind, payload in saved_entries if mutated_copy else ():
+        # Two-phase order: first undo newly added paths deepest-first (removing child files and empty
+        # replacement directories), then restore original files/symlinks that may share those paths.
+        rollback_order = (
+            sorted(
+                (item for item in saved_entries if item[1] == "absent"),
+                key=lambda item: item[0].count("/"),
+                reverse=True,
+            )
+            + [item for item in saved_entries if item[1] != "absent"]
+            if mutated_copy
+            else []
+        )
+        for rel, orig_kind, payload in rollback_order:
             dst_path = copy_path / rel
             dst = fs_path(dst_path)
             try:

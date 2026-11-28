@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import errno
 import json
@@ -1584,18 +1585,20 @@ async def test_coderabbit_git_hardening_fixes(tmp_path: Path, monkeypatch: pytes
         )
     )
     wait_started = asyncio.create_task(pr_started.wait())
-    done_tasks, pending_tasks = await asyncio.wait(
-        {pr_task, wait_started}, timeout=30.0, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending_tasks:
-        if task is wait_started:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-    assert pr_started.is_set(), f"create_pr never started; pr_task done={pr_task.done()} result={pr_task.result() if pr_task.done() else None}"
-    pr_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await pr_task
+    try:
+        await asyncio.wait({pr_task, wait_started}, timeout=30.0, return_when=asyncio.FIRST_COMPLETED)
+        assert pr_started.is_set(), (
+            f"create_pr never started; pr_task done={pr_task.done()} result={pr_task.result() if pr_task.done() else None}"
+        )
+        pr_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pr_task
+    finally:
+        for task in (wait_started, pr_task):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
     assert await manager.has_pending_delivery(wt_pr) is True
 
     async def fail_pr(_req: PRRequest) -> PRInfo:
@@ -1619,6 +1622,10 @@ async def test_coderabbit_git_hardening_fixes(tmp_path: Path, monkeypatch: pytes
         mp.setattr(manager, "_git", fail_rev_parse)
         with pytest.raises(GitError):
             await manager.has_pending_delivery(wt_pr)
+
+    # Orphan reconcile must keep a clean worktree that still has pr_pending=True.
+    rec_pending = await manager.reconcile(local, tmp_path / "wt", known=[wt_pu.id])
+    assert wt_pr.path in rec_pending.kept and wt_pr.id not in rec_pending.removed
 
     async def ok_pr(_req: PRRequest) -> PRInfo:
         return PRInfo(url="https://github.com/org/repo/pull/77", number=77)
@@ -1827,6 +1834,56 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
         with pytest.raises(OSError, match="simulated populate failure after swap"):
             await manager.create(proj_rc, swap_target)
     assert (swap_target / "foreign.txt").read_text(encoding="utf-8") == "do not delete\n"
+
+    # 7. Two-phase prepare_conflicts rollback restores file `docs` replaced by `docs/a.txt`.
+    proj_fd = tmp_path / "file_to_dir_rb"
+    _write(proj_fd / "docs", "orig-docs\n")
+    _write(proj_fd / "clash.txt", "base\n")
+    cp_fd = await manager.create(proj_fd, tmp_path / "copies" / "fd_rb1")
+    _write(cp_fd.path / "clash.txt", "wt-clash\n")
+    (proj_fd / "docs").unlink()
+    _write(proj_fd / "docs" / "a.txt", "nested-doc\n")
+    _write(proj_fd / "clash.txt", "proj-clash\n")
+    clash_fd = await manager.merge_back(cp_fd)
+    assert clash_fd.status == "conflict"
+
+    def fail_meta_only(path: Path, data: bytes) -> None:
+        if path.name == "meta.json":
+            raise OSError("simulated meta write failure for file-to-dir rollback")
+        orig_awb(path, data)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_only)
+        with pytest.raises(OSError, match="simulated meta write failure for file-to-dir rollback"):
+            await manager.prepare_conflicts(cp_fd, clash_fd)
+    assert (cp_fd.path / "docs").is_file() and (cp_fd.path / "docs").read_text(encoding="utf-8") == "orig-docs\n"
+    assert (cp_fd.path / "clash.txt").read_text(encoding="utf-8") == "wt-clash\n"
+    await manager.remove(cp_fd)
+
+    # 8. advance_copy_baseline rolls back base_manifest.json when meta.json write fails, and
+    # compute_copy_merge self-heals a landed base_manifest/meta.start desync cleanly.
+    proj_adv = tmp_path / "adv_rb"
+    _write(proj_adv / "a.txt", "v1\n")
+    cp_adv = await manager.create(proj_adv, tmp_path / "copies" / "adv1")
+    _write(cp_adv.path / "a.txt", "v2\n")
+    orig_meta_start = _copy_trees.read_copy_meta(cp_adv.path)["start"]  # type: ignore[index]
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_only)
+        with pytest.raises(OSError, match="simulated meta write failure"):
+            await manager.merge_back(cp_adv)
+    # base_manifest was rolled back to match meta.start; retry lands cleanly and advances baseline.
+    assert _copy_trees.read_base_manifest(cp_adv.path)["digest"] == orig_meta_start  # type: ignore[index]
+    retry_adv = await manager.merge_back(cp_adv)
+    assert retry_adv.status == "unchanged"
+    # Simulate hard crash between base_manifest (source="landed") and meta.json write -> self-heals.
+    meta_adv_file = _copy_trees.copy_meta_dir(cp_adv.path) / "meta.json"
+    meta_adv = json.loads(meta_adv_file.read_text(encoding="utf-8"))
+    meta_adv["start"] = orig_meta_start
+    _copy_trees._atomic_write_json(meta_adv_file, meta_adv)
+    _write(cp_adv.path / "a.txt", "v3\n")
+    healed = await manager.merge_back(cp_adv)
+    assert healed.status == "landed" and (proj_adv / "a.txt").read_text(encoding="utf-8") == "v3\n"
+    await manager.remove(cp_adv)
 
 
 @pytest.mark.skipif(REAL_GIT_TOO_OLD, reason="git missing or below minimum version")

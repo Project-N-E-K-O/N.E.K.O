@@ -1163,8 +1163,12 @@ class WorktreeManager:
                     ):
                         report.kept.append(path)
                         continue
+                    delivery = await asyncio.to_thread(_noted_delivery, common, path, strict=True)
+                    if delivery.get("pr_pending"):
+                        report.kept.append(path)
+                        continue
                     await self._forget(repo_root, path, path.name, remove_directory=False)
-                except (WorktreeError, OSError) as error:
+                except (WorktreeError, OSError, ValueError) as error:
                     report.failed.append((path, str(error)))
                     continue
                 report.removed.append(path.name)
