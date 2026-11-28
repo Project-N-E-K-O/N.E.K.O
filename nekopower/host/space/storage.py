@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from nekopower.host.paths import SpacePaths
 
-from .models import logger, T, _STATE_FILE_VERSION, _WRITE_ATTEMPTS, SpaceError, _NotAsWritten
+from .models import logger, T, _STATE_FILE_VERSION, _WRITE_ATTEMPTS, SpaceError, _NotAsWritten, _WorkdirClearing
 from .markdown import (
     _one_line,
     _plain_lines,
@@ -68,8 +68,15 @@ class StorageMixin:
 
         if self._lock is None:
             self._lock = asyncio.Lock()
-        async with self._lock:
-            return await to_thread_through_cancellation(work, *args)
+        while True:
+            try:
+                async with self._lock:
+                    return await to_thread_through_cancellation(work, *args)
+            except _WorkdirClearing as blocked:
+                wait = getattr(self, "_wait_workdir_clear", None)
+                if wait is None:
+                    raise
+                await wait(blocked.workdir)
 
     async def _write_judged(self, work: Callable[[bool], T]) -> T:
         """Run blocking work that judges notes, told whether files outside the working directories may be looked at.
@@ -83,9 +90,16 @@ class StorageMixin:
 
         if self._lock is None:
             self._lock = asyncio.Lock()
-        async with self._lock:
-            allowed = await self._outside_allowed()
-            return await to_thread_through_cancellation(work, allowed)
+        while True:
+            try:
+                async with self._lock:
+                    allowed = await self._outside_allowed()
+                    return await to_thread_through_cancellation(work, allowed)
+            except _WorkdirClearing as blocked:
+                wait = getattr(self, "_wait_workdir_clear", None)
+                if wait is None:
+                    raise
+                await wait(blocked.workdir)
 
     async def _outside_allowed(self) -> bool:
         """Whether the user lets task agents read outside the working directories without being asked.

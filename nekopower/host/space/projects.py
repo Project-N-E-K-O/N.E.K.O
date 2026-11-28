@@ -21,6 +21,7 @@ Method-only mixin: every instance attribute is initialized in
 from __future__ import annotations
 
 import json
+import stat
 
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -38,6 +39,7 @@ from .models import (
     DESCRIPTION_AUTHORS,
     Project,
     _LeftAside,
+    _WorkdirClearing,
 )
 from .markdown import _one_line, _plain_lines, _date, normalize_name, name_occurs, _index_line
 from .fs import _is_project
@@ -127,7 +129,7 @@ class ProjectsMixin:
             data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return None, True
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return None, False
         return (data, True) if isinstance(data, dict) else (None, False)
 
@@ -150,7 +152,7 @@ class ProjectsMixin:
             return []
         return [self._project_from(item) for item in directories]
 
-    def _archived_projects(self) -> list[Project]:
+    def _archived_projects(self, *, skip_corrupt: bool = False) -> list[Project]:
         projects: list[Project] = []
         try:
             years = sorted(item for item in self._paths().archive_dir().iterdir() if item.is_dir())
@@ -161,7 +163,17 @@ class ProjectsMixin:
                 directories = sorted(item for item in year.iterdir() if _is_project(item))
             except OSError:
                 continue
-            projects.extend(self._project_from(item, archive_year=year.name) for item in directories)
+            for item in directories:
+                if skip_corrupt:
+                    data, ok = self._project_data(item)
+                    if not ok:
+                        continue
+                    try:
+                        projects.append(self._project_of(data, item, year.name))
+                    except (OSError, ValueError, TypeError, OverflowError):
+                        continue
+                else:
+                    projects.append(self._project_from(item, archive_year=year.name))
         return projects
 
     def _directory_of(self, project: Project) -> Path:
@@ -210,6 +222,48 @@ class ProjectsMixin:
 
         return await self._read(work)
 
+    async def list_projects_checked(
+        self, *, include_archived: bool = True, under_write_lock: bool = False
+    ) -> tuple[list[Project], bool]:
+        """Return projects and whether active directory enumeration and every active record succeeded."""
+
+        def work() -> tuple[list[Project], bool]:
+            projects_dir = self._paths().projects_dir()
+            try:
+                entries = sorted(projects_dir.iterdir())
+            except FileNotFoundError:
+                entries = []
+            except OSError:
+                return [], False
+            active: list[Project] = []
+            readable = True
+            for item in entries:
+                try:
+                    st = item.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    readable = False
+                    continue
+                if not stat.S_ISDIR(st.st_mode) or item.name.startswith("."):
+                    continue
+                data, ok = self._project_data(item)
+                if not ok:
+                    readable = False
+                try:
+                    active.append(self._project_of(data, item, None))
+                except (ValueError, TypeError, OverflowError):
+                    readable = False
+                    continue
+            projects = list(active)
+            if include_archived:
+                projects.extend(self._archived_projects(skip_corrupt=True))
+            return projects, readable
+
+        if under_write_lock:
+            return await self._write(work)
+        return await self._read(work)
+
     async def get_project(self, name: str) -> Project | None:
         """Return a project that is not archived, or None."""
 
@@ -238,6 +292,8 @@ class ProjectsMixin:
             project, known = self._project_to_change(directory)
             if not known:
                 return None
+            if workdir and self._workdir_clearing is not None and self._workdir_clearing(workdir):
+                raise _WorkdirClearing(workdir)
             changed = replace(project, workdir=workdir)
             self._put_project(directory, changed)
             if name != DEFAULT_PROJECT:
@@ -304,6 +360,9 @@ class ProjectsMixin:
         project, known = self._project_to_change(directory)
         if not known:
             project = Project(name=name, created_at=now)
+        effective_new_wd = None if project.workdir else workdir
+        if effective_new_wd and self._workdir_clearing is not None and self._workdir_clearing(effective_new_wd):
+            raise _WorkdirClearing(effective_new_wd)
         given = "" if project.description else _space_facade._cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
         project = replace(
             project,
@@ -379,16 +438,65 @@ class ProjectsMixin:
             # A project of the name is there already: that one is used, and
             # the archived one stays where it is.
             return self._project_from(target)
+        if self._any_workdir_clearing is not None:
+            clearing_any = self._any_workdir_clearing()
+            if clearing_any is not None:
+                raise _WorkdirClearing(clearing_any)
+        disk_data, _readable = self._project_data(source)
+        disk_workdir = (
+            str(disk_data["workdir"])
+            if isinstance(disk_data, dict) and isinstance(disk_data.get("workdir"), str) and disk_data["workdir"]
+            else None
+        )
+        for candidate in (project.workdir, disk_workdir):
+            if candidate and self._workdir_clearing is not None and self._workdir_clearing(candidate):
+                raise _WorkdirClearing(candidate)
         target.parent.mkdir(parents=True, exist_ok=True)
         _space_facade._move(source, target)
         try:
             # As its file has it now, not as it was listed a while ago.
             current, _known = self._project_to_change(target)
-        except OSError:
-            # Its record cannot be read: it is back, and its file as it was.
-            logger.warning("the file of a project brought back cannot be read; it is left as it is")
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            is_io_err = isinstance(exc, OSError)
+            clearing_any = self._any_workdir_clearing() if self._any_workdir_clearing is not None else None
+            if clearing_any is not None or not is_io_err:
+                try:
+                    _space_facade._move(target, source)
+                except OSError:
+                    if self._veto_workdir_clear is not None:
+                        self._veto_workdir_clear(None)
+                    if not is_io_err:
+                        logger.warning(
+                            "the file of a project brought back is invalid and could not be moved back; vetoing active cleanup",
+                            exc_info=True,
+                        )
+                        raise exc from None
+                    logger.warning(
+                        "the file of a project brought back cannot be read while cleanup is active and could not be moved back; vetoing active cleanup",
+                        exc_info=True,
+                    )
+                else:
+                    if not is_io_err:
+                        raise
+                    raise _WorkdirClearing(clearing_any) from None
+            else:
+                # Its record cannot be read: it is back, and its file as it was.
+                logger.warning("the file of a project brought back cannot be read; it is left as it is")
             restored = replace(project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, directory=target.name)
         else:
+            rollback_failed_workdir: str | None = None
+            if current.workdir and self._workdir_clearing is not None and self._workdir_clearing(current.workdir):
+                try:
+                    _space_facade._move(target, source)
+                except OSError:
+                    logger.warning(
+                        "a restored project pointed at a workdir being cleared and could not be moved back; clearing its workdir reference",
+                        exc_info=True,
+                    )
+                    rollback_failed_workdir = current.workdir
+                    current = replace(current, workdir=None)
+                else:
+                    raise _WorkdirClearing(current.workdir)
             restored = replace(
                 current,
                 name=current.name if _known else project.name,
@@ -399,7 +507,12 @@ class ProjectsMixin:
                 directory=target.name,
                 pending_archive=None,
             )
-            self._put_project(target, restored)
+            try:
+                self._put_project(target, restored)
+            except OSError:
+                if rollback_failed_workdir is not None and self._veto_workdir_clear is not None:
+                    self._veto_workdir_clear(rollback_failed_workdir)
+                raise
         try:
             line, link = self._project_line(restored)
             # Whichever of its files the line of the archived project points
