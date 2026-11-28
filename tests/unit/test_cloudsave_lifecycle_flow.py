@@ -301,6 +301,20 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
         assert remote_meta_v2["manifest_fingerprint"] == manifest_b["fingerprint"]
 
 
+@contextlib.contextmanager
+def _isolate_main_limited_mode(main_server):
+    """Restore main_server's limited-mode globals after a test drives on_startup().
+
+    on_startup() and runtime init rewrite these module globals through
+    ``global`` assignments. Without this, a test that leaves the server in
+    limited mode makes every later request through the real ``main_server.app``
+    in the same pytest worker answer 409.
+    """
+    with patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
+        yield
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
@@ -338,6 +352,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         # This storage test does not own optional sync work on its temporary loop.
         stack.enter_context(patch("services.chat_sync.runtime.schedule_desktop_chat_sync_start"))
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(_isolate_main_limited_mode(main_server))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
@@ -755,6 +770,7 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(_isolate_main_limited_mode(main_server))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
         stack.enter_context(
@@ -812,20 +828,25 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
 
     sentinel_templates = object()
 
-    # The limited mode the startup turns on is put back afterwards: left on, it
-    # blocks every later request through the real app in the same process.
-    with patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
+    with _isolate_main_limited_mode(main_server), \
+         patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
          patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "templates", sentinel_templates), \
          patch.object(main_server, "role_state", {}), \
          patch.object(main_server, "_config_manager", SimpleNamespace()), \
-         patch.object(main_server, "_main_runtime_limited_mode_enabled", main_server._main_runtime_limited_mode_enabled), \
-         patch.object(main_server, "_main_runtime_limited_mode_reason", main_server._main_runtime_limited_mode_reason), \
          patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
          patch.object(main_server, "_start_neko_servers_integration_workers", Mock()) as mock_start_workers, \
          patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await main_server.on_startup()
         assert shared_state.get_templates() is sentinel_templates
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._main_runtime_limited_mode_reason == "selection_required"
+
+    # Leaving limited mode set would 409 later tests that use the real app.
+    assert (
+        main_server._main_runtime_limited_mode_enabled,
+        main_server._main_runtime_limited_mode_reason,
+    ) == (False, "")
 
     mock_ensure_runtime.assert_not_awaited()
     mock_start_workers.assert_not_called()

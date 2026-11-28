@@ -78,6 +78,17 @@ def _reset_shared_state():
     main_server_steamworks = (
         getattr(main_server, "steamworks", None) if had_main_server else None
     )
+    # on_startup() / runtime init flip these through ``global`` assignment; a
+    # test that leaves limited mode on makes every later request through the
+    # real ``main_server.app`` in the same worker answer 409.
+    main_server_limited_mode = (
+        (
+            main_server._main_runtime_limited_mode_enabled,
+            main_server._main_runtime_limited_mode_reason,
+        )
+        if had_main_server
+        else (False, "")
+    )
 
     try:
         yield
@@ -102,6 +113,10 @@ def _reset_shared_state():
             main_server.steamworks = (
                 main_server_steamworks if had_main_server else None
             )
+            (
+                main_server._main_runtime_limited_mode_enabled,
+                main_server._main_runtime_limited_mode_reason,
+            ) = main_server_limited_mode
 
 
 @pytest.fixture(autouse=True)
