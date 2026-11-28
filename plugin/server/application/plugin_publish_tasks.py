@@ -34,6 +34,8 @@ from plugin.server.application.plugin_projects import source_repo_root
 from plugin.server.application.plugin_publish_status import (
     LocalStatus,
     RemoteGithubState,
+    plugin_dir_status,
+    push_command,
     read_local_status,
     read_remote_github,
 )
@@ -121,34 +123,25 @@ class _Gate(NamedTuple):
 
 
 def _push_blockers(state: RepoState) -> list[str]:
-    from plugin.neko_plugin_cli.commands.release_cmd import (
-        _BRANCH_PLACEHOLDER,
-        _push_refspec,
-        _shell_argument,
-    )
-
     branch = state.branch
     if state.head is None:
         return ["the repository has no commits yet"]
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
-    # The messages name the branch; the command quotes it like the CLI's, and
-    # behind a placeholder a branch starting with + is named as its refspec.
-    refspec = _push_refspec(branch or "")
-    argument = _shell_argument(refspec, _BRANCH_PLACEHOLDER)
-    set_upstream = f"git push -u origin {argument}"
-    if argument == _BRANCH_PLACEHOLDER and refspec != branch:
-        set_upstream += f" (branch: {refspec})"
+    if state.head_pushed is True:
+        return []
+    command = push_command(state)
+    # As the publish page shows it: no raw name next to a command.
+    run = (
+        f"run {command}"
+        if command
+        else "push to an origin branch whose name a terminal can take literally"
+    )
     if state.upstream is None:
-        return [f"branch {branch} has no upstream; run {set_upstream}"]
+        return [f"branch {branch} has no upstream; {run}"]
     if not state.upstream.startswith("origin/"):
-        return [
-            f"branch {branch} tracks {state.upstream}, which is not on origin; "
-            f"run {set_upstream}"
-        ]
-    if state.head_pushed is not True:
-        return [f"HEAD is not pushed to {state.upstream}; run git push"]
-    return []
+        return [f"branch {branch} tracks {state.upstream}, which is not on origin; {run}"]
+    return [f"HEAD is not pushed to {state.upstream}; {run}"]
 
 
 def _release_blockers(local: LocalStatus) -> list[str]:
@@ -162,16 +155,19 @@ def _release_blockers(local: LocalStatus) -> list[str]:
             "the git working tree has uncommitted changes: " + ", ".join(state.dirty_paths)
         )
     reasons.extend(_push_blockers(state))
-    from plugin.neko_plugin_cli.commands.release_cmd import _placeholder_note, _plugin_dir_argument
     from plugin.neko_plugin_cli.repo_action_migration import ActionFileStatus
 
     workflow = local.actions.get(_RELEASE_WORKFLOW)
     if workflow != ActionFileStatus.CURRENT:
-        reasons.append(
-            f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            f"run neko-plugin setup-repo {_plugin_dir_argument(local.source_dir, '')} "
-            f"--upgrade-github-actions{_placeholder_note(local.source_dir)}"
+        # As the publish page's guide shows it: no raw path next to a command.
+        directory = plugin_dir_status(local.source_dir)["plugin_dir_argument"]
+        fix = (
+            f"run neko-plugin setup-repo {directory} --upgrade-github-actions"
+            if directory
+            else "the plugin folder path cannot be typed literally into a terminal; "
+            "rename or move the folder, then run neko-plugin setup-repo on it with --upgrade-github-actions"
         )
+        reasons.append(f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; {fix}")
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(
             f"tag {state.tag} already points at another commit; bump the version in plugin.toml"

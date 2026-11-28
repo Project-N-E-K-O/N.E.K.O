@@ -18,6 +18,7 @@
             :key="`c${index}`"
             :label="item.label ? fill(item.label) : undefined"
             :command="fill(item.command)"
+            :note="unsafeNote(item.note)"
           />
           <p v-if="section.links?.length" class="authoring-guide__links">
             <a
@@ -39,7 +40,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Reading } from '@element-plus/icons-vue'
 import AuthoringGuideCommand from '@/components/authoring/AuthoringGuideCommand.vue'
-import { fillGuide, publishGuide, type GuideParams } from '@/components/authoring/publishGuide'
+import { fillGuide, publishGuide, type GuideNoteId, type GuideParams } from '@/components/authoring/publishGuide'
 import type { PublishPageId } from '@/components/authoring/publishFlow'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -48,10 +49,15 @@ import { openExternalUrl } from '@/utils/openExternal'
  * the full explanation in a disclosure that starts open on the page to act on.
  */
 const props = defineProps<{ pageId: PublishPageId; params: GuideParams; open: boolean }>()
-const { locale } = useI18n()
+const { locale, t } = useI18n()
 const guide = computed(() => publishGuide(locale.value))
 const page = computed(() => guide.value.pages[props.pageId])
 const fill = (text: string) => fillGuide(text, props.params)
+const UNSAFE_NOTES = { branch: 'publishGuideBranchUnsafe', dirArg: 'publishGuideDirUnsafe' } as const
+/** Asks to rename a value no quoting keeps literal; the raw value is never offered for pasting. */
+function unsafeNote(id: GuideNoteId | undefined) {
+  return id && props.params.unsafe?.[id] ? t(`authoring.${UNSAFE_NOTES[id]}`) : undefined
+}
 </script>
 
 <style scoped>

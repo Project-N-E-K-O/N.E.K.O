@@ -523,26 +523,16 @@ def _git_command(plugin_dir: Path, arguments: str) -> str:
     return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
-def _branch_argument(branch: str) -> str:
-    # Branch names may hold $ ; ( & and the like; quote them like the directory.
-    return release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)
-
-
-def _push_step(plugin_dir: Path) -> tuple[str, str | None]:
-    """The push command, and what to fill in when it shows the branch placeholder."""
-    refspec = release_cmd._push_refspec(_current_branch(plugin_dir))
-    argument = _branch_argument(refspec)
-    # The refspec, not the raw branch: a leading + typed back in would force.
-    hidden = refspec if argument == release_cmd._BRANCH_PLACEHOLDER else None
-    return _git_command(plugin_dir, f"push -u origin {argument}"), hidden
+def _push_step(plugin_dir: Path) -> tuple[str, release_cmd.PushHint]:
+    """The push command, and the hint it came from for the placeholder note."""
+    hint = release_cmd._push_hint(_current_branch(plugin_dir))
+    return _git_command(plugin_dir, hint.command.removeprefix("git ")), hint
 
 
 def _current_branch(plugin_dir: Path) -> str:
-    branch = (
-        git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
-        if _has_own_repository(plugin_dir)
-        else None
-    )
+    # Not --short: it gives heads/main when a tag is also named main.
+    ref = git_output(plugin_dir, "symbolic-ref", "-q", "HEAD") if _has_own_repository(plugin_dir) else None
+    branch = ref.removeprefix("refs/heads/") if ref and ref.startswith("refs/heads/") else None
     return branch or "main"
 
 
@@ -581,16 +571,16 @@ def _print_push_next_step(plugin_dir: Path) -> None:
             "ブランチを push して上流ブランチを設定します：",
         )
     )
-    push, hidden_branch = _push_step(plugin_dir)
+    push, push_hint = _push_step(plugin_dir)
     _print_git_commands(
         plugin_dir,
         [*_first_commit_steps(plugin_dir), push],
-        hidden_branch=hidden_branch,
+        push_hint=push_hint,
     )
 
 
 def _print_git_commands(
-    plugin_dir: Path, commands: list[str], *, hidden_branch: str | None = None
+    plugin_dir: Path, commands: list[str], *, push_hint: release_cmd.PushHint | None = None
 ) -> None:
     for command in commands:
         print(f"       {command}")
@@ -605,16 +595,10 @@ def _print_git_commands(
                 f"（プラグインディレクトリ：{fill_in}）",
             )
         )
-    if hidden_branch is not None:
+    if push_hint is not None and push_hint.fill_in is not None:
         # Likewise for a branch name no Windows quoting keeps literal.
-        print(
-            "       "
-            + _tri(
-                f"(branch: {hidden_branch})",
-                f"（分支：{hidden_branch}）",
-                f"（ブランチ：{hidden_branch}）",
-            )
-        )
+        english, chinese, japanese = release_cmd._push_hint_notes(push_hint)
+        print("       " + _tri(english, chinese, japanese))
 
 
 def _gh_available() -> bool:
@@ -749,7 +733,7 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             "その URL をコピーして origin に設定し、push します：",
         )
     )
-    push, hidden_branch = _push_step(plugin_dir)
+    push, push_hint = _push_step(plugin_dir)
     _print_git_commands(
         plugin_dir,
         [
@@ -757,7 +741,7 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             _git_command(plugin_dir, f"remote add origin {release_cmd._REMOTE_PLACEHOLDER}"),
             push,
         ],
-        hidden_branch=hidden_branch,
+        push_hint=push_hint,
     )
 
 

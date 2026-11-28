@@ -5,7 +5,8 @@
  *
  * Written in full in Simplified Chinese and English; every other locale shows
  * the English guide. Text may hold `{repo}`, `{tag}`, `{version}`, `{branch}`,
- * `{pluginId}` and `{dir}`, filled from the project's publish status.
+ * `{pluginId}` and `{dirArg}`, filled from the project's publish status;
+ * `{branch}` and `{dirArg}` come quoted for the shell.
  */
 import type { PublishPageId, ToolId } from '@/components/authoring/publishFlow'
 import { enUS } from '@/components/authoring/publishGuide.en'
@@ -15,6 +16,8 @@ export interface GuideCommand {
   /** What the command does, shown above it. */
   label?: string
   command: string
+  /** The value the command holds; when no quoting keeps it literal, a note below asks to rename it. */
+  note?: GuideNoteId
 }
 
 export interface GuideSection {
@@ -61,13 +64,18 @@ export interface PublishGuide {
   tools: Record<ToolId, ToolGuide>
 }
 
-export type GuideParams = Partial<Record<'repo' | 'tag' | 'version' | 'branch' | 'pluginId' | 'dir', string>>
+export type GuideNoteId = 'branch' | 'dirArg'
+
+export type GuideParams = Partial<Record<'repo' | 'tag' | 'version' | 'branch' | 'pluginId' | 'dirArg', string>> & {
+  /** Values no quoting keeps literal: the command shows a stand-in, never the raw value. */
+  unsafe?: Partial<Record<GuideNoteId, boolean>>
+}
 
 /** Fill `{name}` placeholders; an unknown or empty value keeps a readable placeholder. */
 export function fillGuide(text: string, params: GuideParams): string {
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => {
-    const value = params[name as keyof GuideParams]
-    return value ? value : whole.replace(/[{}]/g, '').replace(/^/, '<').replace(/$/, '>')
+    const value = params[name as Exclude<keyof GuideParams, 'unsafe'>]
+    return typeof value === 'string' && value ? value : whole.replace(/[{}]/g, '').replace(/^/, '<').replace(/$/, '>')
   })
 }
 

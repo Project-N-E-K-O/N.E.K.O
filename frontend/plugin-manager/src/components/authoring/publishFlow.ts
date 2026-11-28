@@ -156,11 +156,15 @@ function localRepositoryProblem(status: PublishStatus): FlowMessage | null {
   if (repo.detached) return message('publishRepoDetached')
   if (repo.head_pushed !== true) {
     const branch = repo.branch ?? ''
-    if (!repo.upstream) return message('publishRepoNoUpstream', { branch })
+    // Quoted by the server for the shell; never built here. None for an
+    // origin branch no quoting keeps literal: no command to paste then.
+    const command = repo.push_command
+    if (!command) return message('publishRepoUpstreamUnsafe', { upstream: repo.upstream ?? '' })
+    if (!repo.upstream) return message('publishRepoNoUpstream', { branch, command })
     if (!repo.upstream.startsWith('origin/')) {
-      return message('publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch })
+      return message('publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch, command })
     }
-    return message('publishRepoUnpushed')
+    return message('publishRepoUnpushed', { command })
   }
   if (repo.tag_exists && repo.tag_at_head === false) {
     return message('publishRepoTagElsewhere', { tag: repo.tag })

@@ -1814,7 +1814,7 @@ def test_publish_names_the_upstream_command_when_branch_has_no_upstream(
     with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
 
-    assert "git push -u origin main" in str(exc_info.value)
+    assert "git push -u origin refs/heads/main" in str(exc_info.value)
 
 
 @pytest.mark.skipif(publish_cmd.release_cmd._WINDOWS_SHELL, reason="POSIX shell quoting")
@@ -1829,7 +1829,7 @@ def test_publish_quotes_the_branch_in_its_push_hints(
 
     with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
-    assert "run git push -u origin 'feat;$(x)' " in str(exc_info.value)
+    assert "run git push -u origin 'refs/heads/feat;$(x)' " in str(exc_info.value)
 
     # Tracking origin/main, the push names both sides as one argument.
     _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
@@ -1839,7 +1839,7 @@ def test_publish_quotes_the_branch_in_its_push_hints(
     head = _run_git(plugin_dir, "rev-parse", "HEAD")
     with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
-    assert "run git push origin 'feat;$(x):main' " in str(exc_info.value)
+    assert "run git push origin 'refs/heads/feat;$(x):refs/heads/main' " in str(exc_info.value)
 
 
 def test_publish_push_hints_never_force_a_branch_starting_with_plus(
@@ -1862,7 +1862,7 @@ def test_publish_push_hints_never_force_a_branch_starting_with_plus(
     head = _run_git(plugin_dir, "rev-parse", "HEAD")
     with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
-    assert "run git push origin refs/heads/+feat:main " in str(exc_info.value)
+    assert "run git push origin refs/heads/+feat:refs/heads/main " in str(exc_info.value)
 
 
 def test_publish_names_the_branch_behind_a_windows_placeholder(
@@ -1884,14 +1884,14 @@ def test_publish_names_the_branch_behind_a_windows_placeholder(
     with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
     message = str(exc_info.value)
-    assert 'run git push origin "<branch>" (branch: feat%PATH%) / ' in message
-    assert "（分支：feat%PATH%）" in message
+    assert 'run git push origin "<branch>". In that command, <branch> stands for: refs/heads/feat%PATH% / ' in message
+    assert "。命令中的 <branch> 代表：refs/heads/feat%PATH% / " in message
 
     _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
     with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
     message = str(exc_info.value)
-    assert 'run git push origin "<branch>:<remote-branch>" (branch: feat%PATH%, remote branch: main) / ' in message
+    assert 'run git push origin "<branch>:<remote-branch>". In that command, <branch>:<remote-branch> stands for: refs/heads/feat%PATH%:refs/heads/main / ' in message
 
 
 def test_publish_names_a_plus_branch_behind_a_placeholder_as_its_refspec(
@@ -1906,7 +1906,7 @@ def test_publish_names_a_plus_branch_behind_a_placeholder_as_its_refspec(
 
     with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
-    assert 'run git push -u origin "<branch>" (branch: refs/heads/+a%b) / ' in str(exc_info.value)
+    assert 'run git push -u origin "<branch>". In that command, <branch> stands for: refs/heads/+a%b / ' in str(exc_info.value)
 
     _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
     (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
@@ -1916,9 +1916,26 @@ def test_publish_names_a_plus_branch_behind_a_placeholder_as_its_refspec(
     with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
     assert (
-        'run git push origin "<branch>:<remote-branch>" (branch: refs/heads/+a%b, remote branch: main) / '
+        'run git push origin "<branch>:<remote-branch>". In that command, <branch>:<remote-branch> stands for: refs/heads/+a%b:refs/heads/main / '
         in str(exc_info.value)
     )
+
+
+def test_publish_names_a_same_name_plus_branch_behind_a_placeholder_as_its_refspec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(publish_cmd.release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "-b", "+a%b")
+    # Track origin/+a%b without pushing: origin has no such branch yet.
+    _run_git(plugin_dir, "update-ref", "refs/remotes/origin/+a%b", "HEAD")
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/+a%b")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert 'run git push origin "<branch>". In that command, <branch> stands for: refs/heads/+a%b / ' in str(exc_info.value)
 
 
 def test_publish_reports_a_detached_head(
@@ -1951,7 +1968,7 @@ def test_publish_rejects_an_upstream_on_another_remote(
     with pytest.raises(RuntimeError, match="tracks fork/main") as exc_info:
         publish_cmd._ensure_head_pushed(plugin_dir, head=head)
 
-    assert "git push -u origin main" in str(exc_info.value)
+    assert "git push -u origin refs/heads/main" in str(exc_info.value)
 
 
 def test_publish_lists_untracked_files_that_block_publishing(

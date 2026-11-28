@@ -12,6 +12,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 from packaging.version import InvalidVersion, Version
 
@@ -692,6 +693,7 @@ _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
 # Likewise for the values of printed git commands; quoted so that pasting one
 # unreplaced passes a literal word rather than a < redirection.
 _BRANCH_PLACEHOLDER = '"<branch>"'
+_REFSPEC_PLACEHOLDER = '"<branch>:<remote-branch>"'
 _REMOTE_PLACEHOLDER = '"<repository-url>"'
 
 
@@ -737,15 +739,68 @@ _SHELL_PLAIN = re.compile(r"[\w+:./-][\w@+=:./-]*")
 def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
     """The ``git push`` refspec for exactly these branches.
 
-    A branch name may start with +, which git reads as "force" at the start of
-    a refspec (``git push origin +main`` force-pushes main), and no quoting
-    hides it from git. Such a side is spelled out as refs/heads/<name>.
+    Each side is spelled out as refs/heads/<name>. A short name is refused
+    when a tag of the same name exists (``src refspec main matches more than
+    one``), and a name starting with + would read as "force" at the start of
+    a refspec (``git push origin +main`` force-pushes main); no quoting hides
+    either from git.
     """
+    if remote_branch is None:
+        return f"refs/heads/{branch}"
+    return f"refs/heads/{branch}:refs/heads/{remote_branch}"
 
-    def side(name: str) -> str:
-        return f"refs/heads/{name}" if name.startswith("+") else name
 
-    return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+class PushHint(NamedTuple):
+    """A printed ``git push`` and, when it shows a placeholder, what to type there."""
+
+    command: str
+    placeholder: str
+    # The refspec behind the placeholder, None when the command shows the real one.
+    fill_in: str | None
+
+
+def _push_hint(branch: str, remote_branch: str | None = None) -> PushHint:
+    """``git push -u origin <branch>``, or a push to ``remote_branch`` on origin.
+
+    The refspec is one quoted argument (``<branch>:<remote_branch>`` when the
+    names differ: a bare ``git push`` is refused under push.default=simple).
+    The fill-in is the refspec, not the raw branch, so the user types in the
+    spelled-out refs/heads/ form too.
+    """
+    if remote_branch is None or remote_branch == branch:
+        refspec, placeholder = _push_refspec(branch), _BRANCH_PLACEHOLDER
+    else:
+        refspec, placeholder = _push_refspec(branch, remote_branch), _REFSPEC_PLACEHOLDER
+    argument = _shell_argument(refspec, placeholder)
+    options = "-u " if remote_branch is None else ""
+    return PushHint(
+        f"git push {options}origin {argument}",
+        placeholder,
+        refspec if argument == placeholder else None,
+    )
+
+
+def _push_hint_notes(hint: PushHint) -> tuple[str, str, str]:
+    """English, Chinese and Japanese sentences naming what fills the placeholder, or blanks.
+
+    Each is a sentence of its own, never written onto the command: the value
+    is shown only because no quoting keeps it literal, so a user who copies
+    the command together with it would run it in their shell.
+    """
+    if hint.fill_in is None:
+        return ("", "", "")
+    name = hint.placeholder.strip('"')
+    return (
+        f"In that command, {name} stands for: {hint.fill_in}",
+        f"命令中的 {name} 代表：{hint.fill_in}",
+        f"コマンドの {name} に入る値：{hint.fill_in}",
+    )
+
+
+def _after_command(notes: tuple[str, str, str]) -> tuple[str, str, str]:
+    """``notes`` as the sentences that follow a message ending in a command."""
+    en, zh, ja = notes
+    return (f". {en}" if en else "", f"。{zh}" if zh else "", f"。{ja}" if ja else "")
 
 
 def _shell_argument(value: str, placeholder: str) -> str:

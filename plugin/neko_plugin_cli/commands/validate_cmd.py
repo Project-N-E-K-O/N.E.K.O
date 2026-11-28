@@ -1973,11 +1973,18 @@ def _check_symlink_tree(
                             # Follows the link, as the build's walk does.
                             link_is_dir = path.is_dir()
                         except OSError:
-                            # e.g. a target in a directory we cannot enter:
-                            # count it as a file link, and keep scanning.
-                            link_is_dir = False
-                        # A directory link is judged as a subtree, like the
-                        # pruning above.
+                            # e.g. a target in a directory we cannot enter.
+                            # The build fails at the same call, so count the
+                            # link whatever the rules say, and keep scanning.
+                            ignored_links.append(path)
+                            continue
+                        if link_is_dir and path.is_symlink():
+                            # The build's walk does not follow a directory
+                            # symlink: it makes an empty directory and copies
+                            # nothing from the target.
+                            continue
+                        # The build walks into a junction, so it is judged as
+                        # a subtree like the pruning above.
                         link_rules = tree_rules if link_is_dir else rules
                         if not should_skip_path(path.relative_to(plugin_dir), is_dir=link_is_dir, rules=link_rules):
                             ignored_links.append(path)

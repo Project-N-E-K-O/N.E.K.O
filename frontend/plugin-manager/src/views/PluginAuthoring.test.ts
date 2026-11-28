@@ -151,6 +151,7 @@ function publishStatus(overrides: {
   remote?: Partial<NonNullable<PublishStatus['remote']>> | null
   actions?: PublishStatus['actions']
   workspace?: PublishStatus['workspace']
+  plugin_dir_argument?: string | null
 } = {}): PublishStatus {
   return {
     plugin_id: listed.plugin_id!,
@@ -166,6 +167,8 @@ function publishStatus(overrides: {
       head: 'abc',
       detached: false,
       head_pushed: true,
+      push_command: null,
+      branch_argument: 'main',
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -185,6 +188,7 @@ function publishStatus(overrides: {
             tag: 'missing',
             ...overrides.remote,
           },
+    plugin_dir_argument: overrides.plugin_dir_argument === undefined ? '/work/hello_world' : overrides.plugin_dir_argument,
     workspace: overrides.workspace ?? null,
   }
 }
@@ -1038,14 +1042,60 @@ describe('authoring workbench backed by the server project list', () => {
       expect(guide!.querySelectorAll('.authoring-guide__section').length).toBeGreaterThan(1)
     }
     const repository = page('repository').querySelector('.authoring-guide')!.textContent
-    expect(repository).toContain('git push -u origin main')
+    expect(repository).toContain('git init -b main')
+    expect(repository).toContain('git push -u origin HEAD')
     expect(repository).toContain('n.e.k.o_plugin_hello_world')
     expect(page('release').querySelector('.authoring-guide')!.textContent).toContain('v0.2.0')
     expect(page('verify').querySelector('.authoring-guide')!.textContent).toContain(
       'https://github.com/owner/hello_world/actions'
     )
     // Unfilled placeholders never leak into the text.
-    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|pluginId|dir)\}/)
+    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|firstPush|pluginId|dirArg)\}/)
+  })
+
+  it('fills the guide commands with the branch the server quoted', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ repository: { branch: 'feat;$(x)', branch_argument: "'feat;$(x)'" } })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const commands = [...page('repository').querySelectorAll('.authoring-guide-command code')].map(
+      (node) => node.textContent
+    )
+    expect(commands).toContain("git init -b 'feat;$(x)'")
+    // HEAD stands for the branch: its name is never typed.
+    expect(commands).toContain('git push -u origin HEAD')
+    expect(commands).toContain('uv run neko-plugin setup-repo /work/hello_world --upgrade-github-actions')
+    expect(page('repository').querySelector('.authoring-guide')!.textContent).not.toContain('origin feat;$(x)')
+    expect(page('repository').querySelector('.authoring-guide-command__note')).toBeNull()
+  })
+
+  it.each([
+    ['$(calc)', 'PowerShell would run $(calc)'],
+    ['a%PATH%&calc&', 'cmd would expand %PATH% and split at &'],
+  ])('asks to rename what no quoting keeps literal (%s), without its raw value', async (name) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    // The server sends no argument for a value it cannot quote.
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ repository: { branch: name, branch_argument: null }, plugin_dir_argument: null })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const figures = [...page('repository').querySelectorAll('.authoring-guide-command')]
+    const byCommand = (command: string) => figures.find((node) => node.querySelector('code')!.textContent === command)!
+    expect(byCommand('git init -b main').querySelector('.authoring-guide-command__note')!.textContent).toBe(
+      en.publishGuideBranchUnsafe
+    )
+    expect(
+      byCommand('uv run neko-plugin setup-repo "<plugin directory>" --upgrade-github-actions').querySelector(
+        '.authoring-guide-command__note'
+      )!.textContent
+    ).toBe(en.publishGuideDirUnsafe)
+    expect(byCommand('git push -u origin HEAD').querySelector('.authoring-guide-command__note')).toBeNull()
+    expect(page('repository').querySelector('.authoring-guide')!.textContent).not.toContain('calc')
   })
 
   it('opens the page a blocker dialog points to', async () => {
@@ -1142,13 +1192,26 @@ describe('authoring workbench backed by the server project list', () => {
     ],
     [
       'the branch has no upstream',
-      publishStatus({ repository: { upstream: null, head_pushed: null } }),
-      'Branch main has no upstream; run git push -u origin main.',
+      // The command comes from the server; HEAD stands for the branch.
+      publishStatus({
+        repository: { branch: 'feat;$(x)', upstream: null, head_pushed: null, push_command: 'git push -u origin HEAD' },
+      }),
+      'Branch feat;$(x) has no upstream; run git push -u origin HEAD.',
     ],
     [
       'the upstream is not on origin',
-      publishStatus({ repository: { upstream: 'fork/main', head_pushed: false } }),
-      'Branch main tracks fork/main, not origin; run git push -u origin main.',
+      publishStatus({
+        repository: { upstream: 'fork/main', head_pushed: false, push_command: 'git push -u origin HEAD' },
+      }),
+      'Branch main tracks fork/main, not origin; run git push -u origin HEAD.',
+    ],
+    [
+      'the origin branch name cannot be quoted',
+      // No command and no raw name to paste.
+      publishStatus({
+        repository: { upstream: 'origin/a%PATH%&calc&', head_pushed: false, push_command: null },
+      }),
+      'HEAD is not pushed to origin/a%PATH%&calc&, and that branch name cannot be typed safely into a terminal; push to an origin branch with a plain name instead.',
     ],
     [
       'HEAD is detached',

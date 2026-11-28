@@ -3433,8 +3433,11 @@ def _plugin_with_ignored_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 
         monkeypatch.setattr(os, "readlink", readlink)
     else:
+        # The ignored link is a file link: the build would not follow a
+        # directory symlink, so the scan would not count one.
+        (target / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
         try:
-            ignored.symlink_to(target, target_is_directory=True)
+            ignored.symlink_to(target / "index.js")
             tracked.symlink_to(target, target_is_directory=True)
         except OSError:
             pytest.skip("symlinks are not available here")
@@ -3555,8 +3558,10 @@ def test_link_scan_skips_a_link_that_is_itself_ignored(
         validate_cmd._check_symlink_tree(plugin_dir, issues)
         assert issues == [("error", "plugin source must not contain symbolic links: shared_cache")]
     else:
+        # A file link: the build would not follow a directory symlink.
+        (tmp_path / "cache.txt").write_text("cache\n", encoding="utf-8")
         try:
-            link.symlink_to(tmp_path, target_is_directory=True)
+            link.symlink_to(tmp_path / "cache.txt")
         except OSError:
             pytest.skip("symlinks are not available here")
 
@@ -3766,6 +3771,9 @@ def test_ignored_link_warning_skips_what_the_build_excludes(
         (plugin_dir / "notes.lnk").symlink_to(target)
         (plugin_dir / "local_cache").mkdir()
         (plugin_dir / "local_cache" / "config.txt").symlink_to(target)
+        # The build does not follow a directory symlink (it makes an empty
+        # directory), unlike a junction, so nothing of its target is copied.
+        (plugin_dir / "local_cache" / "shared").symlink_to(tmp_path, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks are not available here")
 
@@ -3816,3 +3824,16 @@ def test_link_scan_keeps_going_when_an_ignored_link_cannot_be_followed(
     assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in captured.err
     assert "could not be scanned" not in captured.out
     assert f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('node_modules/.pnpm/pkg')})" in captured.out
+
+    # The build fails on the same is_dir() call, so file-only rules that
+    # would drop a file link do not hide it from the warning.
+    from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet
+
+    issues = []
+    validate_cmd._check_symlink_tree(
+        plugin_dir,
+        issues,
+        ignored_paths=["node_modules/"],
+        build_rules=BuildRuleSet(exclude=["node_modules/.pnpm/pkg"]),
+    )
+    assert any("1 symbolic link(s) in gitignored paths" in message for _, message in issues)

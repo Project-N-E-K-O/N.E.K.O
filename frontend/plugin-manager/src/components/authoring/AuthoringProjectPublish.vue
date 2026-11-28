@@ -244,8 +244,6 @@ const props = defineProps<{
   /** plugin.toml name and description: the defaults of a new Market draft. */
   pluginName: string
   pluginDescription: string
-  /** The project folder, filled into the guide's commands. */
-  sourceDir?: string
 }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
@@ -316,9 +314,15 @@ const guideParams = computed<GuideParams>(() => ({
   repo: status.value?.repository.github_repository ?? undefined,
   tag: status.value?.repository.tag,
   version: status.value?.version,
-  branch: status.value?.repository.branch ?? 'main',
+  // Quoted by the server for the shell, never built here; main before the
+  // project has a repository, or when no quoting keeps the branch literal.
+  branch: status.value?.repository.branch_argument ?? 'main',
   pluginId: status.value?.plugin_id,
-  dir: props.sourceDir,
+  dirArg: status.value?.plugin_dir_argument ?? '"<plugin directory>"',
+  unsafe: {
+    branch: !!status.value?.repository.branch && !status.value.repository.branch_argument,
+    dirArg: !!status.value && !status.value.plugin_dir_argument,
+  },
 }))
 /** The guide starts open on a page with something to do, folded on a finished one. */
 function guideOpen(id: PublishPageId) {

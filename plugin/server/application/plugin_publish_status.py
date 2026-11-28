@@ -82,6 +82,61 @@ class LocalStatus(NamedTuple):
     actions: dict[str, str]
 
 
+def push_command(state: RepoState) -> str | None:
+    """The git push the publish page shows to get HEAD to its origin branch.
+
+    None when no push is due, or when the only push names an origin branch
+    no quoting keeps literal; the page then asks for a plainer name. HEAD
+    stands for the local branch, so its name is never typed: a value that
+    cannot be quoted would run when pasted, and no placeholder is offered
+    for the user to fill it in by hand.
+    """
+    from plugin.neko_plugin_cli.commands.release_cmd import _shell_argument
+
+    if not state.branch or state.head is None or state.head_pushed is True:
+        return None
+    remote, _, remote_branch = (state.upstream or "").partition("/")
+    if remote != "origin" or not remote_branch:
+        return "git push -u origin HEAD"
+    if remote_branch == state.branch:
+        return "git push origin HEAD"
+    # Named in full: a bare git push is refused for a differently named
+    # upstream under push.default=simple, and refs/heads/ keeps a tag of
+    # the same name from making it ambiguous.
+    refspec = f"HEAD:refs/heads/{remote_branch}"
+    argument = _shell_argument(refspec, "")
+    return f"git push origin {argument}" if argument else None
+
+
+def _literal_argument(value: str) -> str | None:
+    """``value`` as one shell argument, None when no quoting keeps it literal."""
+    from plugin.neko_plugin_cli.commands.release_cmd import _shell_argument
+
+    return _shell_argument(value, "") or None
+
+
+def repository_status(state: RepoState) -> dict[str, object]:
+    """``state`` plus the quoted commands the publish page shows for it.
+
+    A value no quoting keeps literal is None rather than a placeholder with
+    the raw value beside it, which a user would paste in bare.
+    """
+    return {
+        **asdict(state),
+        "push_command": push_command(state),
+        "branch_argument": _literal_argument(state.branch) if state.branch else None,
+    }
+
+
+def plugin_dir_status(source_dir: Path) -> dict[str, object]:
+    """The plugin directory as one quoted argument for the guide's setup-repo command.
+
+    None when no quoting keeps the path literal: the guide then asks to move
+    or rename the folder.
+    """
+    return {"plugin_dir_argument": _literal_argument(str(source_dir))}
+
+
 def read_local_status(project_id: str) -> LocalStatus:
     """Local facts of a registered project; shared with the publish gate."""
     # The template generator pulls in the build rules (pydantic); keep it out
@@ -318,7 +373,8 @@ async def get_publish_status(project_id: str, *, fresh: bool = False) -> dict[st
     return {
         "plugin_id": local.plugin_id,
         "version": local.version,
-        "repository": asdict(state),
+        "repository": repository_status(state),
+        **plugin_dir_status(local.source_dir),
         "actions": local.actions,
         "remote": remote,
         "workspace": asdict(workspace) if workspace else None,

@@ -7,6 +7,7 @@
         {{ copied ? guide.labels.copied : guide.labels.copy }}
       </el-button>
     </div>
+    <p v-if="note" class="authoring-small authoring-muted authoring-guide-command__note">{{ note }}</p>
   </figure>
 </template>
 
@@ -18,7 +19,7 @@ import { Check, CopyDocument } from '@element-plus/icons-vue'
 import { publishGuide } from '@/components/authoring/publishGuide'
 
 /** One command to run in a terminal, with a copy button. */
-const props = defineProps<{ command: string; label?: string }>()
+const props = defineProps<{ command: string; label?: string; note?: string }>()
 const { locale } = useI18n()
 const guide = computed(() => publishGuide(locale.value))
 const copied = ref(false)
@@ -49,6 +50,10 @@ async function copy() {
   border-radius: var(--radius-control);
   background: var(--surface-inset);
   border: 1px solid var(--surface-border);
+}
+.authoring-guide-command__note {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
 }
 .authoring-guide-command__row code {
   flex: 1;

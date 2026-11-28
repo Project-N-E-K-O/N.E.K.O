@@ -101,7 +101,6 @@
             :project-id="current.project_id"
             :plugin-name="current.name ?? ''"
             :plugin-description="current.description ?? ''"
-            :source-dir="current.source_dir"
           />
         </el-tab-pane>
       </el-tabs>
