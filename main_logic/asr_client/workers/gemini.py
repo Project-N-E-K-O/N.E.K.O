@@ -28,6 +28,8 @@ from typing import Any, TypeAlias
 
 import httpx
 
+from config.providers import clamp_reasoning_effort
+
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import (
@@ -166,6 +168,21 @@ def _language_hint(language: str | None) -> str:
     return f"\nThe speech is most likely in the language with BCP-47 code {normalized}."
 
 
+def _thinking_config(model: str) -> dict[str, Any]:
+    """The lowest thinking setting the selected model accepts.
+
+    Gemini 3.x takes ``thinking_level`` and cannot go below its vendor floor
+    (``minimal`` for most, ``low`` for 3.x Pro and 3.7 / 3.8 Flash). Older
+    models do not understand ``thinking_level`` at all, so they keep their
+    default instead of getting a rejected request.
+    """
+
+    upstream = (model or "").rsplit("/", 1)[-1].split(":", 1)[0].strip().lower()
+    if not upstream.startswith("gemini-3"):
+        return {}
+    return {"thinking_config": {"thinking_level": clamp_reasoning_effort(upstream, "minimal")}}
+
+
 async def request_gemini_transcript(
     client: Any,
     wav_audio: bytes,
@@ -206,7 +223,7 @@ async def request_gemini_transcript(
                 config={
                     **({"http_options": {"retry_options": {"attempts": 1}}} if single_attempt else {}),
                     "temperature": 0,
-                    "thinking_config": {"thinking_level": "minimal"},
+                    **_thinking_config(model),
                     "response_mime_type": "application/json",
                     "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
                 },

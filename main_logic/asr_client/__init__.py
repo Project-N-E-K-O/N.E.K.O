@@ -192,11 +192,17 @@ class _AsrSelection:
     )
 
 
-def _load_core_config() -> dict:
+def _read_core_config() -> dict:
+    """The core config snapshot; read errors propagate."""
+
     from utils.config_manager import get_config_manager
 
+    return get_config_manager().get_core_config() or {}
+
+
+def _load_core_config() -> dict:
     try:
-        return get_config_manager().get_core_config() or {}
+        return _read_core_config()
     except Exception:
         return {}
 
@@ -259,13 +265,11 @@ def get_asr_slot_override() -> AsrSlotEndpoint | None:
     """The active speech-recognition slot, if it overrides the Core's ASR.
 
     Reads the core config from disk: call via ``asyncio.to_thread`` from async
-    code. Never raises; an unreadable config means no override.
+    code. A read failure propagates: "could not read the slot" must not look
+    like "no slot", or a configured slot would be bypassed silently.
     """
 
-    try:
-        return _resolve_asr_slot(_load_core_config())
-    except Exception:
-        return None
+    return _resolve_asr_slot(_read_core_config())
 
 
 def _optional_dependency_available(module_name: str | None) -> bool:
@@ -612,6 +616,8 @@ def _create_asr_session_from_selection(
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
     if selection.availability is _AsrProviderAvailability.MISSING_DEPENDENCY:
         raise RuntimeError(f"ASR_DEPENDENCY_MISSING: {provider_key}")
+    if selection.availability is _AsrProviderAvailability.MISCONFIGURED:
+        raise RuntimeError(f"ASR_INVALID_CONFIG: {provider_key}")
     if session_config.endpointing_mode not in provider_meta.supported_endpointing_modes:
         raise RuntimeError(
             "ASR_ENDPOINTING_NOT_SUPPORTED: "

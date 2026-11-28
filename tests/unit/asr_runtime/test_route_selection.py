@@ -510,9 +510,11 @@ async def test_asr_slot_routes_the_free_core_through_independent_asr(
     assert runtime._asr_route_mode != "native"
 
 
-async def test_asr_slot_fails_closed_when_preferences_are_unreadable(
+async def test_asr_slot_starts_with_defaults_when_preferences_are_unreadable(
     monkeypatch,
 ) -> None:
+    # The slot's routing does not depend on user_preferences.json, so a broken
+    # file must not take the microphone away; it must not pick native either.
     runtime = _Runtime()
     runtime.core_api_type = "free"
     runtime.asr_slot_override = object()
@@ -521,13 +523,40 @@ async def test_asr_slot_fails_closed_when_preferences_are_unreadable(
         "aload_global_conversation_settings",
         AsyncMock(side_effect=OSError("preferences unavailable")),
     )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(False)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert runtime._asr_route_mode != "native"
+
+
+async def test_unreadable_asr_slot_fails_closed_instead_of_choosing_native(
+    monkeypatch,
+) -> None:
+    # A slot read failure is "unknown", not "no slot": the free Core must not
+    # quietly send audio to the native route.
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    runtime.asr_slot_override = OSError("core config unreadable")
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
     start_mock = AsyncMock()
     monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
     runtime.set_independent_asr_handshake(False)
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    # Never a silent fall back to the native route (privacy).
     assert runtime._asr_route_mode != "native"
     start_mock.assert_not_awaited()
     assert "ASR_INDEPENDENT_FAILED" in runtime.send_status.await_args.args[0]

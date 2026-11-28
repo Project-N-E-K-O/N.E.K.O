@@ -106,6 +106,7 @@ def core_config(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     config: dict[str, Any] = {}
     monkeypatch.setattr(asr_client, "_load_core_config", lambda: dict(config))
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: dict(config))
     return config
 
 
@@ -180,14 +181,29 @@ def test_model_candidates_exclude_streaming_and_non_asr_models(vendor, model_id,
         {"ENABLE_CUSTOM_API": False, "asrModelProvider": "custom", "asrModelUrl": "http://h"},
         _slot_config(),
         _slot_config(asrModelProvider="follow_core"),
-        _slot_config(asrModelProvider="deepseek"),
-        _slot_config(asrModelProvider="custom", asrModelUrl=""),
-        _slot_config(asrModelProvider="custom", asrModelUrl="not-a-url"),
-        _slot_config(asrModelProvider="glm", asrModelTransport="stream"),
     ],
 )
-def test_slot_is_unset_unless_enabled_and_complete(config) -> None:
+def test_slot_is_unset_only_when_off_or_following_the_core(config) -> None:
     assert resolve_asr_slot(config) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "provider_key"),
+    [
+        (_slot_config(asrModelProvider="deepseek"), "custom"),
+        (_slot_config(asrModelProvider="custom", asrModelUrl=""), "custom"),
+        (_slot_config(asrModelProvider="custom", asrModelUrl="192.168.1.5:8081"), "custom"),
+        (_slot_config(asrModelProvider="glm", asrModelTransport="stream"), "glm_request"),
+    ],
+)
+def test_a_chosen_slot_that_cannot_run_is_misconfigured_not_unset(config, provider_key) -> None:
+    # "Configured but unusable" must never read as "no slot": that would send
+    # the audio to the Core's provider behind the user's back.
+    endpoint = resolve_asr_slot(config)
+    assert endpoint is not None
+    assert endpoint.availability is AsrProviderAvailability.MISCONFIGURED
+    assert endpoint.provider_key == provider_key
+    assert endpoint.provider_key in ASR_PROVIDER_REGISTRY
 
 
 def test_custom_slot_resolves_with_optional_key() -> None:
@@ -208,7 +224,7 @@ def test_custom_slot_resolves_with_optional_key() -> None:
 
 def test_vendor_slot_reads_its_key_book_entry_and_default_model() -> None:
     endpoint = resolve_asr_slot(
-        _slot_config(asrModelProvider="qwen_intl", ASSIST_API_KEY_QWEN_INTL="intl-key")
+        _slot_config(asrModelProvider="qwen_intl", ASR_MODEL_API_KEY="intl-key")
     )
     assert endpoint is not None
     assert endpoint.provider_key == "qwen_request"
@@ -217,13 +233,55 @@ def test_vendor_slot_reads_its_key_book_entry_and_default_model() -> None:
     assert endpoint.api_key == "intl-key"
 
 
-def test_vendor_slot_never_borrows_another_vendors_key() -> None:
+def test_vendor_slot_ignores_the_derived_assist_keys() -> None:
+    # ASSIST_API_KEY_* may hold another vendor's coreApiKey; only the
+    # snapshot's ASR_MODEL_API_KEY counts.
     endpoint = resolve_asr_slot(
-        _slot_config(asrModelProvider="glm", ASSIST_API_KEY_QWEN="qwen-key", ASR_MODEL_API_KEY="slot")
+        _slot_config(asrModelProvider="glm", ASSIST_API_KEY_GLM="borrowed-core-key")
     )
     assert endpoint is not None
     assert endpoint.api_key == ""
     assert endpoint.availability is AsrProviderAvailability.MISSING_CREDENTIALS
+
+
+def _write_core_config(cm, data: dict) -> None:
+    import json
+
+    with open(str(cm.get_config_path("core_config.json")), "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    cm._core_config_cache = None
+
+
+@pytest.fixture
+def config_manager(clean_user_data_dir):
+    from utils.config_manager import get_config_manager
+
+    cm = get_config_manager("N.E.K.O")
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    return cm
+
+
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [
+        # Assist provider is qwen but its Key Book entry is empty: the chat
+        # layer borrows the OpenAI coreApiKey, the ASR slot must not.
+        ({"coreApi": "openai", "assistApi": "qwen", "coreApiKey": "sk-openai"}, ""),
+        ({"coreApi": "openai", "coreApiKey": "sk-openai", "assistApiKeyQwen": "sk-qwen"}, "sk-qwen"),
+        # The Core itself is the selected vendor: its key is that vendor's key.
+        ({"coreApi": "qwen", "coreApiKey": "sk-core-qwen"}, "sk-core-qwen"),
+    ],
+)
+def test_snapshot_vendor_slot_key_is_scoped_to_the_vendor(config_manager, saved, expected) -> None:
+    _write_core_config(
+        config_manager,
+        {"enableCustomApi": True, "asrModelProvider": "qwen", **saved},
+    )
+    snapshot = config_manager.get_core_config()
+    assert snapshot["ASR_MODEL_API_KEY"] == expected
+    endpoint = resolve_asr_slot(snapshot)
+    assert endpoint is not None
+    assert endpoint.api_key == expected
 
 
 def test_every_slot_route_is_a_non_streaming_registry_key() -> None:
@@ -259,7 +317,7 @@ def test_slot_overrides_the_free_core(core_config) -> None:
 
 def test_slot_wins_over_local_preference_and_core_route(core_config) -> None:
     core_config.update(
-        _slot_config(asrModelProvider="glm", ASSIST_API_KEY_GLM="glm-key", ASSIST_API_KEY_QWEN="q")
+        _slot_config(asrModelProvider="glm", ASR_MODEL_API_KEY="glm-key", ASSIST_API_KEY_QWEN="q")
     )
     selection = asr_client._resolve_asr_selection("qwen", provider_preference="faster_whisper")
     assert selection.provider_key == "glm_request"
@@ -278,12 +336,33 @@ def test_unset_slot_keeps_the_core_route(core_config) -> None:
     assert asr_client._resolve_asr_selection("qwen").provider_key == "qwen"
 
 
-def test_get_asr_slot_override_never_raises(monkeypatch) -> None:
+async def _noop_async(*_args: Any) -> None:
+    return None
+
+
+def test_misconfigured_slot_fails_closed_on_the_free_core(core_config) -> None:
+    core_config.update(_slot_config(asrModelProvider="custom", asrModelUrl="192.168.1.5:8081"))
+    selection = asr_client._resolve_asr_selection("free")
+    assert selection.provider_key == "custom"
+    assert selection.availability is AsrProviderAvailability.MISCONFIGURED
+    assert selection._worker_fn is None
+    with pytest.raises(RuntimeError, match="ASR_INVALID_CONFIG"):
+        asr_client._create_asr_session_from_selection(
+            "free",
+            selection=selection,
+            on_input_transcript=_noop_async,
+            on_connection_error=_noop_async,
+        )
+
+
+def test_get_asr_slot_override_propagates_read_failures(monkeypatch) -> None:
+    # "Could not read" must stay distinguishable from "no slot".
     def broken() -> dict:
         raise RuntimeError("config unreadable")
 
-    monkeypatch.setattr(asr_client, "_load_core_config", broken)
-    assert asr_client.get_asr_slot_override() is None
+    monkeypatch.setattr(asr_client, "_read_core_config", broken)
+    with pytest.raises(RuntimeError, match="config unreadable"):
+        asr_client.get_asr_slot_override()
 
 
 # --------------------------------------------------------------------------
@@ -307,6 +386,13 @@ def test_offline_uses_the_slot_on_the_free_core(core_config, monkeypatch) -> Non
     # No key configured: no Authorization header at all.
     assert call["headers"] == {}
     assert call["data"] == {"language": "ru"}
+
+
+def test_offline_misconfigured_slot_reports_invalid_config(core_config) -> None:
+    core_config.update(_slot_config(asrModelProvider="custom", asrModelUrl="lan-box:8081"))
+    with pytest.raises(offline.AsrOfflineError) as caught:
+        offline.resolve_offline_transcriber("free")
+    assert caught.value.code == "ASR_INVALID_CONFIG"
 
 
 def test_offline_vendor_slot_without_key_reports_missing_credentials(core_config) -> None:
@@ -526,6 +612,29 @@ def test_model_list_reads_the_custom_base_url(monkeypatch) -> None:
         {},
     )
     assert target["urls"] == ["http://lan-box:8081/v1"]
+
+
+def test_model_list_keeps_the_saved_asr_key_across_url_spellings() -> None:
+    saved = {
+        "asrModelUrl": "https://asr.example/v1/audio/transcriptions",
+        "asrModelApiKey": "saved-key",
+    }
+    target = model_catalog._resolve_custom_target(
+        model_catalog.ModelListRequest(
+            url="https://asr.example/v1", api_key="__NEKO_SECRET_MASKED__", model_type="asr"
+        ),
+        saved,
+    )
+    assert target["api_key"] == "saved-key"
+    assert target["urls"] == ["https://asr.example/v1"]
+
+    moved = model_catalog._resolve_custom_target(
+        model_catalog.ModelListRequest(
+            url="https://other.example/v1", api_key="__NEKO_SECRET_MASKED__", model_type="asr"
+        ),
+        saved,
+    )
+    assert moved["error_code"] == "key_required"
 
 
 def test_asr_test_endpoint_keeps_a_saved_key_on_its_own_url() -> None:

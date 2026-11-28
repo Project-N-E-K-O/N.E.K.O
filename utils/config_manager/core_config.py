@@ -1480,12 +1480,23 @@ class CoreConfigMixin:
         # Speech-recognition slot, resolved by main_logic/asr_client/slot.py.
         # It deliberately stays out of the per-slot LLM derivation loop below:
         # that loop applies chat-endpoint follow/region rules that mean
-        # nothing for a transcription endpoint. Named vendors read their Key
-        # Book entry (ASSIST_API_KEY_*); only the custom endpoint's own key is
-        # carried here.
+        # nothing for a transcription endpoint. ASR_MODEL_API_KEY is the key
+        # the slot sends: the custom endpoint's own key, or a named vendor's
+        # raw Key Book entry. The derived ASSIST_API_KEY_* fields are not used
+        # because they fall back to coreApiKey for the assist provider too,
+        # which would send one vendor's key to another. coreApiKey is only
+        # accepted when the Core itself is that vendor.
         for _asr_field in ('asrModelProvider', 'asrModelTransport', 'asrModelUrl', 'asrModelId'):
             config[_asr_field] = str(core_cfg.get(_asr_field, '') or '').strip()
-        config['ASR_MODEL_API_KEY'] = str(core_cfg.get('asrModelApiKey', '') or '').strip()
+        _asr_vendor = config['asrModelProvider'].lower()
+        if _asr_vendor == 'custom':
+            _asr_key = core_cfg.get('asrModelApiKey', '')
+        else:
+            _asr_raw_field = assist_api_key_raw_fields.get(_asr_vendor, '')
+            _asr_key = core_cfg.get(_asr_raw_field, '') if _asr_raw_field else ''
+            if not str(_asr_key or '').strip() and _asr_vendor == _core_api_provider:
+                _asr_key = _core_key_fallback
+        config['ASR_MODEL_API_KEY'] = str(_asr_key or '').strip()
 
         # Disable TTS.
         _raw_disable_tts = core_cfg.get('disableTts', False)

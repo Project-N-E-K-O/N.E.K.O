@@ -314,6 +314,9 @@ async def get_core_config_api():
             # shows it instead of the Core route and the local-ASR choice.
             "asrSlotActive": _asr_slot is not None,
             "asrSlotProvider": _asr_slot.vendor if _asr_slot is not None else None,
+            # "implemented", or why the active slot cannot run yet
+            # ("missing_credentials", "misconfigured"); sessions fail closed.
+            "asrSlotAvailability": _asr_slot.availability.value if _asr_slot is not None else None,
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
@@ -740,12 +743,6 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
-        if 'asrModelTransport' in data:
-            from main_logic.asr_client.slot import ASR_SLOT_TRANSPORTS
-            transport = data['asrModelTransport']
-            if transport not in ('', *ASR_SLOT_TRANSPORTS):
-                return {"success": False, "error": "Unsupported speech-recognition transport"}
-            core_cfg['asrModelTransport'] = transport
         if 'useMimoTokenPlan' in data:
             if not isinstance(data['useMimoTokenPlan'], bool):
                 return {"success": False, "error": "useMimoTokenPlan must be a boolean"}
@@ -828,6 +825,50 @@ async def update_core_config(request: Request):
                     resolve_image_config(candidate)
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
+
+        # Speech-recognition slot: reject a selection that could not run (it
+        # would only fail closed at session start), and like the image slot,
+        # never let a retained key follow an endpoint change.
+        _asr_fields = (
+            "asrModelProvider", "asrModelTransport", "asrModelUrl", "asrModelId", "asrModelApiKey"
+        )
+        if any(field in data for field in _asr_fields):
+            from main_logic.asr_client.slot import (
+                normalize_custom_asr_url,
+                validate_asr_slot_fields,
+            )
+            from utils.http.url import same_endpoint
+            if any(not isinstance(data[field], str) for field in _asr_fields if field in data):
+                return {"success": False, "error": "Speech-recognition settings must be strings"}
+            asr_candidate = {**core_cfg, **{
+                field: data[field] for field in _asr_fields[:-1] if field in data
+            }}
+            asr_error = validate_asr_slot_fields(
+                asr_candidate.get("asrModelProvider"),
+                asr_candidate.get("asrModelTransport"),
+                asr_candidate.get("asrModelUrl"),
+            )
+            if asr_error:
+                return {"success": False, "error": asr_error}
+            if core_cfg.get("asrModelApiKey"):
+                def _asr_endpoint(raw_url: object) -> str:
+                    raw = str(raw_url or "").strip()
+                    return normalize_custom_asr_url(raw) or raw
+                old_asr_url = _asr_endpoint(core_cfg.get("asrModelUrl"))
+                new_asr_url = _asr_endpoint(asr_candidate.get("asrModelUrl"))
+                asr_key_retained = (
+                    "asrModelApiKey" not in data
+                    or is_core_config_secret_placeholder(data["asrModelApiKey"])
+                )
+                if asr_key_retained and not (
+                    old_asr_url and new_asr_url and same_endpoint(old_asr_url, new_asr_url)
+                ):
+                    return {
+                        "success": False,
+                        "error": "Changing speech-recognition endpoint requires replacing or clearing its API key",
+                    }
+            if "asrModelTransport" in data:
+                core_cfg["asrModelTransport"] = data["asrModelTransport"].strip().lower()
 
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:

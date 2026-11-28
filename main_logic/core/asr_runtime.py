@@ -2831,9 +2831,28 @@ class AsrRuntimeMixin:
         # on every Core, the free Core included, and does not depend on the
         # microphone panel's independent-ASR toggle: configuring it is the
         # user's choice to route the microphone through it.
-        asr_slot_active = (
-            await asyncio.to_thread(self._read_asr_slot_override)
-        ) is not None
+        try:
+            asr_slot_active = (
+                await asyncio.to_thread(self._read_asr_slot_override)
+            ) is not None
+        except Exception:
+            # Unknown is not "unset": a configured slot may exist, so do not
+            # pick a route that could send audio to the Core's provider.
+            if not core_start_is_current():
+                return
+            self._visual_route_mode = "independent"
+            self._sync_realtime_visual_delivery_mode("independent")
+            await self._fail_closed_voice_route(
+                "asr_slot_unreadable",
+                operation_generation=operation_generation,
+                still_current=core_start_is_current,
+                status=AsrStatusEvent(
+                    code="ASR_INDEPENDENT_FAILED",
+                    provider=core_type or "unknown",
+                    session_epoch=session_epoch,
+                ),
+            )
+            return
         if not core_start_is_current():
             return
         try:
@@ -2848,54 +2867,58 @@ class AsrRuntimeMixin:
             # defaulting normally.
             settings = await _core_facade.aload_global_conversation_settings(strict=True)
         except Exception:
-            # Fail-closed is only the safe answer for a user who WANTS
-            # independent ASR: for them the persisted read is the authority and
-            # falling back to native would override their choice. A user whose
-            # frontend handshake says the feature is OFF has no such choice to
-            # protect, and this path runs for EVERY audio session -- so
-            # revoking here would kill the microphone of someone who never
-            # enabled the feature, over a settings file they may not even know
-            # exists. Before this PR that case simply used the native route;
-            # keep it that way. The handshake is read early because the
-            # unreadable settings cannot answer the question at all.
-            unreadable_handshake = (
-                self._independent_asr_handshake_override
-                if handshake_override is ...
-                else handshake_override
-            )
-            if not asr_slot_active and (
-                not supports_independent_asr or unreadable_handshake is False
-            ):
+            if asr_slot_active:
+                # Routing an active slot does not depend on these preferences
+                # (it ignores the panel toggle and the local-ASR choice), so
+                # start it with defaults rather than taking the microphone away.
+                settings = {}
+            else:
+                # Fail-closed is only the safe answer for a user who WANTS
+                # independent ASR: for them the persisted read is the authority and
+                # falling back to native would override their choice. A user whose
+                # frontend handshake says the feature is OFF has no such choice to
+                # protect, and this path runs for EVERY audio session -- so
+                # revoking here would kill the microphone of someone who never
+                # enabled the feature, over a settings file they may not even know
+                # exists. Before this PR that case simply used the native route;
+                # keep it that way. The handshake is read early because the
+                # unreadable settings cannot answer the question at all.
+                unreadable_handshake = (
+                    self._independent_asr_handshake_override
+                    if handshake_override is ...
+                    else handshake_override
+                )
+                if not supports_independent_asr or unreadable_handshake is False:
+                    if not core_start_is_current():
+                        return
+                    # Same landing as the ordinary `not enabled` path below.
+                    self._set_microphone_route("native")
+                    await self._send_core_asr_status(
+                        AsrStatusEvent(
+                            code="ASR_INDEPENDENT_DISABLED",
+                            provider=core_type or "unknown",
+                            session_epoch=session_epoch,
+                        )
+                    )
+                    return
+                # The persisted choice cannot be read, but the handshake still
+                # requires independent ASR. Fail closed for raw visual delivery
+                # before any later failure handling or callback can run.
                 if not core_start_is_current():
                     return
-                # Same landing as the ordinary `not enabled` path below.
-                self._set_microphone_route("native")
-                await self._send_core_asr_status(
-                    AsrStatusEvent(
-                        code="ASR_INDEPENDENT_DISABLED",
+                self._visual_route_mode = "independent"
+                self._sync_realtime_visual_delivery_mode("independent")
+                await self._fail_closed_voice_route(
+                    "asr_settings_unreadable",
+                    operation_generation=operation_generation,
+                    still_current=core_start_is_current,
+                    status=AsrStatusEvent(
+                        code="ASR_INDEPENDENT_FAILED",
                         provider=core_type or "unknown",
                         session_epoch=session_epoch,
-                    )
+                    ),
                 )
                 return
-            # The persisted choice cannot be read, but the handshake still
-            # requires independent ASR. Fail closed for raw visual delivery
-            # before any later failure handling or callback can run.
-            if not core_start_is_current():
-                return
-            self._visual_route_mode = "independent"
-            self._sync_realtime_visual_delivery_mode("independent")
-            await self._fail_closed_voice_route(
-                "asr_settings_unreadable",
-                operation_generation=operation_generation,
-                still_current=core_start_is_current,
-                status=AsrStatusEvent(
-                    code="ASR_INDEPENDENT_FAILED",
-                    provider=core_type or "unknown",
-                    session_epoch=session_epoch,
-                ),
-            )
-            return
         if not core_start_is_current():
             return
         nr_enabled = settings.get("noiseReductionEnabled", True) is not False

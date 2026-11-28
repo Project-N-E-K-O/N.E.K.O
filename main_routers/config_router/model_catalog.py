@@ -150,6 +150,20 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
     if not _is_http_url(url):
         return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
 
+    is_asr = (req.model_type or "").strip() == "asr"
+    if is_asr:
+        from main_logic.asr_client.slot import (
+            custom_asr_models_base_url,
+            normalize_custom_asr_url,
+        )
+
+        # The slot accepts a base URL or the full transcription URL; compare
+        # credentials on the normalized request URL so equivalent spellings
+        # share the saved key and different endpoints still never do.
+        url = normalize_custom_asr_url(url)
+        if not url:
+            return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
+
     submitted_key = req.api_key if isinstance(req.api_key, str) else ""
     if is_core_config_secret_placeholder(submitted_key):
         from utils.config_manager.tier_renames import canonical_model_type, migrate_renamed_tier_fields
@@ -162,6 +176,8 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
         if model_type in CORE_CONFIG_MODEL_TYPES:
             stored_url = str(saved.get(f"{model_type}ModelUrl") or "").strip()
             stored_key = str(saved.get(f"{model_type}ModelApiKey") or "").strip()
+        if is_asr:
+            stored_url = normalize_custom_asr_url(stored_url)
         # Saved keys belong only to their saved endpoints: reusing one after editing the URL would send credentials elsewhere.
         if not (stored_url and stored_key and same_endpoint(url, stored_url)):
             return _failure("key_required", "已保存的 Key 只能用于保存时的地址，请重新填写 API Key")
@@ -169,11 +185,8 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
     else:
         api_key = submitted_key.strip()
 
-    if (req.model_type or "").strip() == "asr":
-        # The slot may hold the full transcription URL; /models hangs off the
-        # OpenAI-compatible base (.../v1).
-        from main_logic.asr_client.slot import custom_asr_models_base_url
-
+    if is_asr:
+        # /models hangs off the OpenAI-compatible base (.../v1).
         url = custom_asr_models_base_url(url)
         if not url:
             return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")

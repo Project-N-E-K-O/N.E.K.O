@@ -110,6 +110,9 @@ class _Runtime(AsrRuntimeMixin):
     asr_slot_override = None
 
     def _read_asr_slot_override(self):
+        # An exception instance simulates an unreadable core config.
+        if isinstance(self.asr_slot_override, BaseException):
+            raise self.asr_slot_override
         return self.asr_slot_override
 
     def __init__(self) -> None:

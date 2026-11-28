@@ -151,6 +151,7 @@ _AVAILABILITY_CODES: dict[_AsrProviderAvailability, str] = {
     _AsrProviderAvailability.BLOCKED_BACKEND: ASR_BACKEND_BLOCKED,
     _AsrProviderAvailability.MISSING_CREDENTIALS: ASR_CREDENTIALS_MISSING,
     _AsrProviderAvailability.MISSING_DEPENDENCY: ASR_DEPENDENCY_MISSING,
+    _AsrProviderAvailability.MISCONFIGURED: ASR_INVALID_CONFIG,
 }
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"

@@ -896,3 +896,105 @@ def test_chatgpt_save_rejects_missing_model_and_unsupported_slots(config_manager
     })))
     assert result['success'] is False
     assert config_manager.load_json_config('core_config.json', {}) == original
+
+
+_ASR_SAVED = {
+    "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    "enableCustomApi": True,
+    "asrModelProvider": "custom", "asrModelUrl": "http://lan-box:8081/v1",
+    "asrModelId": "gigaam-v3", "asrModelApiKey": "private-asr-key",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key_fields", [
+    {},  # key omitted
+    {"asrModelApiKey": "__NEKO_SECRET_MASKED__"},
+])
+def test_asr_endpoint_change_requires_new_key(config_manager, core_config_router, key_fields):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelUrl": "http://elsewhere:9000/v1", **key_fields,
+    })))
+    assert result["success"] is False
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["asrModelUrl"] == "http://lan-box:8081/v1"
+    assert saved["asrModelApiKey"] == "private-asr-key"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", [
+    "http://lan-box:8081/v1",
+    "http://lan-box:8081/v1/",
+    "http://lan-box:8081/v1/audio/transcriptions",
+])
+def test_asr_same_endpoint_round_trip_keeps_the_key(config_manager, core_config_router, url):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelProvider": "custom", "asrModelUrl": url,
+        "asrModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["asrModelApiKey"] == "private-asr-key"
+
+
+@pytest.mark.unit
+def test_asr_endpoint_change_with_a_new_key_is_saved(config_manager, core_config_router):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelUrl": "http://elsewhere:9000/v1", "asrModelApiKey": "",
+    })))
+    assert result["success"] is True
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["asrModelUrl"] == "http://elsewhere:9000/v1"
+    assert saved["asrModelApiKey"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fields", [
+    {"asrModelProvider": "deepseek"},
+    {"asrModelProvider": "custom", "asrModelUrl": "192.168.1.5:8081"},
+    {"asrModelProvider": "custom", "asrModelUrl": ""},
+    {"asrModelProvider": "qwen", "asrModelTransport": "stream"},
+    {"asrModelProvider": 1},
+])
+def test_asr_slot_that_could_not_run_is_rejected(config_manager, core_config_router, fields):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(fields)))
+    assert result["success"] is False
+    assert "asrModelProvider" not in config_manager.load_json_config("core_config.json", {})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fields", [
+    {"asrModelProvider": "follow_core"},
+    {"asrModelProvider": "qwen", "asrModelTransport": "request"},
+    {"asrModelProvider": "custom", "asrModelUrl": "http://lan-box:8081"},
+])
+def test_valid_asr_slot_is_saved(config_manager, core_config_router, fields):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(fields)))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["asrModelProvider"] == fields["asrModelProvider"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url,availability", [
+    ("http://lan-box:8081", "implemented"),
+    ("lan-box:8081", "misconfigured"),  # saved by an older build
+])
+def test_get_reports_the_asr_slot_and_its_availability(
+    config_manager, core_config_router, url, availability
+):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "enableCustomApi": True, "asrModelProvider": "custom", "asrModelUrl": url,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response["asrSlotActive"] is True
+    assert response["asrSlotProvider"] == "custom"
+    assert response["asrSlotAvailability"] == availability

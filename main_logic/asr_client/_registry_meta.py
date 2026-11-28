@@ -41,6 +41,9 @@ class AsrProviderAvailability(str, Enum):
     BLOCKED_BACKEND = "blocked_backend"
     MISSING_CREDENTIALS = "missing_credentials"
     MISSING_DEPENDENCY = "missing_dependency"
+    # The user selected a route that cannot be built from what is saved (for
+    # example a custom ASR slot whose URL is not an http(s) URL).
+    MISCONFIGURED = "misconfigured"
 
 
 @dataclass(frozen=True, slots=True)
