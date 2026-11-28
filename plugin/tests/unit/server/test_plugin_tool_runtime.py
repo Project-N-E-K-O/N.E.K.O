@@ -1498,3 +1498,20 @@ def test_staging_the_python_download_failing_locally_does_not_fall_back(root, mo
     error = _expect_failure(uv, "python_install_failed")
     assert "stage" in error.detail
     assert _plain_installs(uv) == []
+
+
+def test_staged_file_that_cannot_be_removed_neither_fails_nor_falls_back(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered", PYTHON_BODY]
+    unlink = Path.unlink
+
+    def held_open(self, missing_ok=False):
+        if self.name == PYTHON_FILE:
+            raise PermissionError(13, "The file is in use")
+        return unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [b"tampered", PYTHON_BODY]
+    assert _plain_installs(uv) == []

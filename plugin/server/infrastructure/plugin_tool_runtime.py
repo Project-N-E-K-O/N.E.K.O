@@ -592,6 +592,20 @@ def _file_sha256(path: Path, cancel: threading.Event, deadline: float) -> str:
     return digest.hexdigest()
 
 
+def _discard_staged(path: Path) -> None:
+    """Remove a downloaded file that was used or rejected; best effort.
+
+    Its directory is removed as a whole afterwards, and a next download
+    replaces it under the same name, so a failure here (a file still held
+    open on Windows, say) neither fails preparation nor counts as a failed
+    download that would start uv's own one.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass  # See above: the directory cleanup removes it.
+
+
 def _fetch_accepted(
     url: str, directory: Path, *, maximum_bytes: int, phase: ProgressPhase,
     accept: Callable[[Path], bool], report: Callable[[ProgressEvent], None],
@@ -651,7 +665,7 @@ def _fetch_accepted(
             if accept(fetched.path):
                 return
         finally:
-            fetched.path.unlink(missing_ok=True)
+            _discard_staged(fetched.path)
         source = fetched.single_source
         rejected.append(source or "+".join(fetched.sources))
         rejected_sources.append(fetched.sources)
@@ -933,7 +947,7 @@ def _install_downloaded_python(
                 )
             return False
         finally:
-            target.unlink(missing_ok=True)
+            _discard_staged(target)
 
     from plugin.server.infrastructure.package_download import PackageDownloadWriteError
 
