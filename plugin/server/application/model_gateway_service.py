@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import weakref
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -129,28 +132,420 @@ def _prepare(
     return body["model"], encoded, headers, include_usage
 
 
+class _PooledClientEntry:
+    """Reference-counted pooled client so evicted clients drain and close cleanly."""
+
+    __slots__ = ("client", "in_flight", "evicted", "closing")
+
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self.client = client
+        self.in_flight = 0
+        self.evicted = False
+        self.closing = False
+
+
 class ModelGatewayService:
+    POOL_MAX_CLIENTS = 16
+
     def __init__(self, client_factory: Callable[[ModelSlot], httpx.AsyncClient] | None = None):
+        self._custom_client_factory = client_factory
         self._client_factory = client_factory or self._make_client
+        # Loop-scoped warm HTTP clients used when no custom factory is injected.
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, _PooledClientEntry]]" = (
+            weakref.WeakKeyDictionary()
+        )
+        # Evicted entries waiting for active requests or shutdown to finish closing.
+        self._draining: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[_PooledClientEntry]]" = (
+            weakref.WeakKeyDictionary()
+        )
+        # Per-loop shutdown generation, in-progress close counter, and tracked close tasks.
+        self._generations: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = (
+            weakref.WeakKeyDictionary()
+        )
+        self._closing_loops: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = (
+            weakref.WeakKeyDictionary()
+        )
+        self._pending_close_tasks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task[None]]]" = (
+            weakref.WeakKeyDictionary()
+        )
         # OpenAI-compatible endpoints that rejected injected stream_options.
         self._stream_options_unsupported: set[str] = set()
 
     @staticmethod
     def _make_client(slot: ModelSlot) -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+            build_split_http_timeout,
+        )
+
         httpx = load_httpx()
         # HTTP-level inactivity guard. A total request deadline is owned by the
         # execution policy, not by httpx's connect/read/write/pool timeouts.
-        return httpx.AsyncClient(timeout=slot.timeout_seconds, follow_redirects=False)
+        timeout = build_split_http_timeout(slot.timeout_seconds)
+        return httpx.AsyncClient(
+            timeout=timeout if timeout is not None else slot.timeout_seconds,
+            follow_redirects=False,
+            limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
+        )
 
-    @asynccontextmanager
-    async def _request(self, slot: ModelSlot, payload: bytes, headers: dict, observation: AttemptObservation | None = None):
-        client = self._client_factory(slot)
-        response = None
+    @staticmethod
+    def _make_pooled_client(proxy_mount_map: dict[str, str | None]) -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+            build_async_proxy_mounts,
+            create_default_ssl_context,
+            make_stateless_cookie_jar,
+        )
+
+        httpx = load_httpx()
+        verify = create_default_ssl_context()
+        limits = httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS)
+        # Do not install blind transport-level POST retry here: _send_pooled_request
+        # coordinates stale-socket recovery with observation.restart and before_send.
+        return httpx.AsyncClient(
+            follow_redirects=False,
+            verify=verify,
+            limits=limits,
+            cookies=make_stateless_cookie_jar(),
+            mounts=build_async_proxy_mounts(proxy_mount_map, verify=verify, limits=limits),
+            trust_env=False,
+        )
+
+    @staticmethod
+    async def _close_client_quietly(client: httpx.AsyncClient) -> None:
         try:
-            request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
+            await client.aclose()
+        except Exception:
+            # Best-effort teardown of evicted or shutting-down pooled clients.
+            pass
+
+    def _start_tracked_close_task(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        client: httpx.AsyncClient,
+    ) -> asyncio.Task[None] | None:
+        if loop.is_closed():
+            return None
+        coro = self._close_client_quietly(client)
+        try:
+            task = loop.create_task(coro)
+        except Exception:
+            coro.close()
+            return None
+        tasks = self._pending_close_tasks.get(loop)
+        if tasks is None:
+            tasks = set()
+            self._pending_close_tasks[loop] = tasks
+        tasks.add(task)
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            loop_tasks = self._pending_close_tasks.get(loop)
+            if loop_tasks is not None:
+                loop_tasks.discard(done)
+
+        task.add_done_callback(_cleanup)
+        return task
+
+    def _start_entry_close_task(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> asyncio.Task[None] | None:
+        draining = self._draining.get(loop)
+        if draining is not None:
+            draining.discard(entry)
+        if entry.closing:
+            return None
+        entry.closing = True
+        return self._start_tracked_close_task(loop, entry.client)
+
+    async def _close_draining_entry(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> None:
+        task = self._start_entry_close_task(loop, entry)
+        if task is not None:
+            await asyncio.shield(task)
+
+    async def _release_pooled_client(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> None:
+        entry.in_flight = max(0, entry.in_flight - 1)
+        if entry.evicted and entry.in_flight == 0:
+            await self._close_draining_entry(loop, entry)
+
+    async def _acquire_pooled_client(
+        self,
+        slot: ModelSlot,
+    ) -> tuple[
+        asyncio.AbstractEventLoop,
+        _PooledClientEntry,
+        list[httpx.AsyncClient],
+        list[_PooledClientEntry],
+    ]:
+        from utils.http.pool_utils import (
+            credential_fingerprint,
+            http_origin_key,
+            snapshot_http_proxy_config,
+        )
+
+        loop = asyncio.get_running_loop()
+        gen = self._generations.get(loop, 0)
+        proxy_fp, proxy_mount_map = await asyncio.to_thread(snapshot_http_proxy_config)
+        key = (
+            http_origin_key(slot.base_url),
+            slot.protocol,
+            credential_fingerprint(slot.api_key),
+            proxy_fp,
+            os.environ.get("SSL_CERT_FILE"),
+            os.environ.get("SSL_CERT_DIR"),
+        )
+        pool = self._pools.get(loop)
+        if pool is not None:
+            existing = pool.get(key)
+            if existing is not None:
+                if not getattr(existing.client, "is_closed", False):
+                    pool.move_to_end(key)
+                    existing.in_flight += 1
+                    return loop, existing, [], []
+                existing.evicted = True
+                pool.pop(key, None)
+
+        build_task = asyncio.create_task(asyncio.to_thread(self._make_pooled_client, proxy_mount_map))
+        try:
+            made = await asyncio.shield(build_task)
+        except asyncio.CancelledError:
+            def _close_cancelled_build(done: asyncio.Task[httpx.AsyncClient]) -> None:
+                if done.cancelled():
+                    return
+                try:
+                    built = done.result()
+                except Exception:
+                    # Failed background client build has nothing to close.
+                    return
+                self._start_tracked_close_task(loop, built)
+
+            build_task.add_done_callback(_close_cancelled_build)
+            raise
+
+        # If shutdown advanced the loop's generation (or is actively closing) while
+        # the worker thread ran, keep the new client out of _pools so it closes on release.
+        if self._generations.get(loop, 0) != gen or self._closing_loops.get(loop, 0) > 0:
+            ephemeral = _PooledClientEntry(made)
+            ephemeral.evicted = True
+            ephemeral.in_flight = 1
+            draining = self._draining.get(loop)
+            if draining is None:
+                draining = set()
+                self._draining[loop] = draining
+            draining.add(ephemeral)
+            return loop, ephemeral, [], []
+
+        pool = self._pools.get(loop)
+        if pool is None:
+            pool = OrderedDict()
+            self._pools[loop] = pool
+        raced = pool.get(key)
+        if raced is not None and not getattr(raced.client, "is_closed", False):
+            pool.move_to_end(key)
+            raced.in_flight += 1
+            return loop, raced, [made], []
+        if raced is not None:
+            raced.evicted = True
+            pool.pop(key, None)
+
+        entry = _PooledClientEntry(made)
+        entry.in_flight = 1
+        pool[key] = entry
+        idle_evicted: list[_PooledClientEntry] = []
+        while len(pool) > self.POOL_MAX_CLIENTS:
+            _, evicted = pool.popitem(last=False)
+            evicted.evicted = True
+            draining = self._draining.get(loop)
+            if draining is None:
+                draining = set()
+                self._draining[loop] = draining
+            draining.add(evicted)
+            if evicted.in_flight == 0:
+                idle_evicted.append(evicted)
+        return loop, entry, [], idle_evicted
+
+    async def aclose(self) -> None:
+        """Concurrently close every active and draining pooled upstream HTTP client.
+
+        Close tasks are tracked on the loop and shielded from waiter cancellation
+        so a cancelled shutdown does not abort transport teardown, and a later
+        ``aclose()`` awaits those same in-flight tasks.
+        """
+        loop = asyncio.get_running_loop()
+        self._generations[loop] = self._generations.get(loop, 0) + 1
+        self._closing_loops[loop] = self._closing_loops.get(loop, 0) + 1
+        try:
+            pool = self._pools.pop(loop, None)
+            draining = self._draining.pop(loop, None)
+            existing_tasks = list(self._pending_close_tasks.get(loop, ()))
+            all_tasks: list[asyncio.Task[None]] = list(existing_tasks)
+            seen_ids: set[int] = set()
+            entries: list[_PooledClientEntry] = []
+            if pool:
+                for entry in pool.values():
+                    entry.evicted = True
+                    entries.append(entry)
+            if draining:
+                for entry in draining:
+                    entry.evicted = True
+                    entries.append(entry)
+            for entry in entries:
+                cid = id(entry.client)
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                task = self._start_entry_close_task(loop, entry)
+                if task is not None:
+                    all_tasks.append(task)
+            if all_tasks:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in all_tasks),
+                    return_exceptions=True,
+                )
+        finally:
+            remaining = self._closing_loops.get(loop, 0) - 1
+            if remaining <= 0:
+                self._closing_loops.pop(loop, None)
+            else:
+                self._closing_loops[loop] = remaining
+
+    async def _send_pooled_request(
+        self,
+        client: httpx.AsyncClient,
+        slot: ModelSlot,
+        payload: bytes,
+        headers: dict,
+        *,
+        observation: AttemptObservation | None,
+        before_send: Callable[[], Awaitable[None]] | None,
+    ) -> httpx.Response:
+        import time
+        from utils.http.pool_utils import (
+            SEND_REQUEST_HEADERS_TRACE_SUFFIX,
+            STALE_CONNECTION_ERRORS,
+            STALE_RETRY_MAX_ELAPSED_SECONDS,
+            build_split_http_timeout,
+            is_fresh_connection_trace,
+        )
+
+        request_timeout = build_split_http_timeout(slot.timeout_seconds)
+        effective_timeout = request_timeout if request_timeout is not None else slot.timeout_seconds
+        endpoint = _endpoint(slot)
+        request = client.build_request(
+            "POST",
+            endpoint,
+            content=payload,
+            headers=headers,
+            timeout=effective_timeout,
+        )
+        opened_fresh_connection = False
+        send_started: float | None = None
+
+        async def _track_trace(event_name: str, _info: dict) -> None:
+            nonlocal opened_fresh_connection, send_started
+            if is_fresh_connection_trace(event_name):
+                opened_fresh_connection = True
+            elif send_started is None and event_name.endswith(SEND_REQUEST_HEADERS_TRACE_SUFFIX):
+                send_started = time.monotonic()
+
+        orig_extensions = dict(request.extensions)
+        request.extensions = {**orig_extensions, "trace": _track_trace}
+        if before_send is not None:
+            # Reserve quota only once the pooled client is ready and immediately
+            # before the real upstream POST, so build/drain cancellation never consumes quota.
+            await before_send()
+        started = time.monotonic()
+        if observation is not None:
+            observation.upstream_started = True
+        try:
+            return await client.send(request, stream=True, follow_redirects=False)
+        except STALE_CONNECTION_ERRORS:
+            elapsed = time.monotonic() - (send_started if send_started is not None else started)
+            if opened_fresh_connection or elapsed > STALE_RETRY_MAX_ELAPSED_SECONDS:
+                raise
+            # A reused keep-alive socket died before response headers arrived.
+            # Account for the failed attempt and reserve quota again before
+            # replaying the POST, matching stream_options retry semantics.
+            if observation is not None:
+                observation.restart("upstream_connection_error")
+            if before_send is not None:
+                await before_send()
+            retry_request = client.build_request(
+                "POST",
+                endpoint,
+                content=payload,
+                headers=headers,
+                timeout=effective_timeout,
+            )
             if observation is not None:
                 observation.upstream_started = True
-            response = await client.send(request, stream=True, follow_redirects=False)
+            return await client.send(retry_request, stream=True, follow_redirects=False)
+
+    @asynccontextmanager
+    async def _request(
+        self,
+        slot: ModelSlot,
+        payload: bytes,
+        headers: dict,
+        observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ):
+        use_pool = (
+            self._custom_client_factory is None
+            and self._client_factory == self._make_client
+        )
+        pooled_loop = None
+        pooled_entry = None
+        raced_to_close: list[httpx.AsyncClient] = []
+        idle_evicted: list[_PooledClientEntry] = []
+        if use_pool:
+            pooled_loop, pooled_entry, raced_to_close, idle_evicted = (
+                await self._acquire_pooled_client(slot)
+            )
+            client = pooled_entry.client
+            owns_client = False
+        else:
+            client = self._client_factory(slot)
+            owns_client = True
+        response = None
+        try:
+            if raced_to_close or idle_evicted:
+                await asyncio.gather(
+                    *(self._close_client_quietly(c) for c in raced_to_close),
+                    *(
+                        self._close_draining_entry(pooled_loop, evicted)
+                        for evicted in idle_evicted
+                        if pooled_loop is not None
+                    ),
+                    return_exceptions=True,
+                )
+                raced_to_close = []
+                idle_evicted = []
+            if use_pool:
+                response = await self._send_pooled_request(
+                    client,
+                    slot,
+                    payload,
+                    headers,
+                    observation=observation,
+                    before_send=before_send,
+                )
+            else:
+                request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
+                if before_send is not None:
+                    await before_send()
+                if observation is not None:
+                    observation.upstream_started = True
+                response = await client.send(request, stream=True, follow_redirects=False)
             if not response.is_success and observation is not None:
                 await _observe_error_usage(response, slot, observation)
             _check_status(response)
@@ -163,7 +558,20 @@ class ModelGatewayService:
                     if response is not None:
                         await response.aclose()
                 finally:
-                    await client.aclose()
+                    if raced_to_close or idle_evicted:
+                        await asyncio.gather(
+                            *(self._close_client_quietly(c) for c in raced_to_close),
+                            *(
+                                self._close_draining_entry(pooled_loop, evicted)
+                                for evicted in idle_evicted
+                                if pooled_loop is not None
+                            ),
+                            return_exceptions=True,
+                        )
+                    if owns_client:
+                        await client.aclose()
+                    elif pooled_entry is not None and pooled_loop is not None:
+                        await self._release_pooled_client(pooled_loop, pooled_entry)
 
     async def complete(
         self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
@@ -172,12 +580,8 @@ class ModelGatewayService:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
-        if before_send is not None:
-            # Only a validated request that is about to be sent reserves quota;
-            # locally rejected requests must not consume the shared allowance.
-            await before_send()
         try:
-            async with self._request(slot, payload, headers, observation) as response:
+            async with self._request(slot, payload, headers, observation, before_send=before_send) as response:
                 result = await read_json_response(response)
                 if observation is not None:
                     observation.observe(result.get("usage"), protocol=slot.protocol, reported=True)
@@ -209,14 +613,11 @@ class ModelGatewayService:
         can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
-        if before_send is not None:
-            # Reserve only after validation succeeded, right before the send.
-            await before_send()
         try:
             for retrying in (False, True):
                 connected = False
                 try:
-                    async with self._request(slot, payload, headers, observation) as response:
+                    async with self._request(slot, payload, headers, observation, before_send=before_send) as response:
                         connected = True
                         if retrying:
                             self._stream_options_unsupported.add(endpoint)
@@ -254,10 +655,6 @@ class ModelGatewayService:
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )
-                if before_send is not None:
-                    # The retry is a second real upstream send with the same
-                    # free credentials; it must reserve quota again or fail.
-                    await before_send()
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

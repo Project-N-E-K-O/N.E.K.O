@@ -152,12 +152,17 @@ def _get_executor(request: Request) -> ModelExecutor:
 
 async def close_model_executor(app) -> None:
     executor = getattr(app.state, "model_executor", None)
-    if executor is not None:
-        try:
-            await executor.aclose()
-        finally:
-            # Executor shutdown owns the bounded accounting drain and close.
-            app.state.model_executor = None
+    try:
+        if executor is not None:
+            try:
+                await executor.aclose()
+            finally:
+                # Executor shutdown owns the bounded accounting drain and close.
+                app.state.model_executor = None
+    finally:
+        close_gateway = getattr(gateway_service, "aclose", None)
+        if callable(close_gateway):
+            await close_gateway()
 
 
 class _RequestGuard:

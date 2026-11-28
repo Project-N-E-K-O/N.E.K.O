@@ -18,6 +18,7 @@ import base64
 import copy
 import hashlib
 import json as _json
+import os
 import threading
 import weakref
 from collections import OrderedDict
@@ -780,6 +781,7 @@ class ChatAnthropic:
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         keepalive_expiry: float | None = None,
+        use_shared_http_pool: bool = True,
         **_kwargs: Any,
     ):
         """``keepalive_expiry`` keeps idle connections open that many seconds
@@ -802,17 +804,31 @@ class ChatAnthropic:
         self.tool_choice = tool_choice
 
         from utils.http.pool_utils import (
+            build_async_proxy_mounts,
             build_split_http_timeout,
             install_stale_connection_retry,
+            make_stateless_cookie_jar,
+        )
+        from .http_pool import (
+            SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+            acquire_shared_async_http_client,
+            get_active_shared_http_pool_context,
         )
 
         _api_key = api_key or "sk-placeholder"
+        effective_base_url = (
+            self.base_url
+            if self.base_url
+            else os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        )
         _timeout = build_split_http_timeout(timeout)
         if _timeout is None:
             _timeout = build_split_http_timeout(request_timeout)
-        client_kw: dict[str, Any] = dict(api_key=_api_key, max_retries=max_retries)
-        if self.base_url:
-            client_kw["base_url"] = self.base_url
+        client_kw: dict[str, Any] = dict(
+            api_key=_api_key,
+            base_url=effective_base_url,
+            max_retries=max_retries,
+        )
         if _timeout is not None:
             client_kw["timeout"] = _timeout
         # Set the neko/<version> User-Agent to override the SDK's built-in UA (AsyncAnthropic/Python x.y.z),
@@ -821,6 +837,13 @@ class ChatAnthropic:
         from utils.http_client import ensure_user_agent
         client_kw["default_headers"] = ensure_user_agent(default_headers)
 
+        self._borrowed_async_http = False
+        self._borrowed_http_release: Any = None
+        self._closed = False
+        borrowed = False
+        release_borrowed: Any = None
+        async_http = None
+        sync_http = None
         sync_kw = dict(client_kw)
         async_kw = dict(client_kw)
         try:
@@ -847,23 +870,115 @@ class ChatAnthropic:
                                 max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                                 keepalive_expiry=keepalive_expiry,
                             )
-                sync_http = DefaultHttpxClient(**http_kw)
-                async_http = DefaultAsyncHttpxClient(**http_kw)
-                # Only opt pooled/warm clients (explicit keepalive_expiry) into
-                # stale-connection retry; one-shot cold clients keep pre-PR semantics.
-                if keepalive_expiry is not None:
-                    sync_http = install_stale_connection_retry(sync_http, label="Anthropic HTTP")
-                    async_http = install_stale_connection_retry(async_http, label="Anthropic HTTP")
+
+                pool_ctx = (
+                    get_active_shared_http_pool_context()
+                    if (keepalive_expiry is None and use_shared_http_pool)
+                    else None
+                )
+                if pool_ctx is not None:
+                    pool_loop, pool_epoch = pool_ctx
+
+                    def _make_shared_async_http(proxy_mount_map: dict[str, str | None]):
+                        shared_http_kw: dict[str, Any] = {
+                            "verify": ssl_context,
+                            "cookies": make_stateless_cookie_jar(),
+                            "trust_env": False,
+                        }
+                        limits = None
+                        try:
+                            from anthropic import DEFAULT_CONNECTION_LIMITS
+                        except ImportError:
+                            pass
+                        else:
+                            if DEFAULT_CONNECTION_LIMITS is not None:
+                                import httpx
+
+                                limits = httpx.Limits(
+                                    max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                                    max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                                    keepalive_expiry=SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+                                )
+                                shared_http_kw["limits"] = limits
+                        shared_http_kw["mounts"] = build_async_proxy_mounts(
+                            proxy_mount_map,
+                            verify=ssl_context,
+                            limits=limits,
+                        )
+                        return DefaultAsyncHttpxClient(**shared_http_kw)
+
+                    async_http, release_borrowed = acquire_shared_async_http_client(
+                        pool_loop,
+                        family="anthropic",
+                        base_url=effective_base_url,
+                        api_key=_api_key,
+                        default_headers=client_kw["default_headers"],
+                        ssl_context=ssl_context,
+                        make_client=_make_shared_async_http,
+                        label="Anthropic HTTP",
+                        expected_epoch=pool_epoch,
+                        extra_credential=os.environ.get("ANTHROPIC_AUTH_TOKEN"),
+                    )
+                    if async_http is not None:
+                        borrowed = True
+
+                if async_http is None:
+                    async_http = DefaultAsyncHttpxClient(**http_kw)
+                    # Only opt pooled/warm clients (explicit keepalive_expiry) into
+                    # stale-connection retry; one-shot cold clients keep pre-PR semantics.
+                    if keepalive_expiry is not None:
+                        async_http = install_stale_connection_retry(async_http, label="Anthropic HTTP")
+
+                try:
+                    sync_http = DefaultHttpxClient(**http_kw)
+                    if keepalive_expiry is not None:
+                        sync_http = install_stale_connection_retry(sync_http, label="Anthropic HTTP")
+                except BaseException:
+                    if release_borrowed is not None:
+                        release_borrowed()
+                    elif not borrowed and async_http is not None:
+                        _close_async_openai_client_from_sync_best_effort(async_http)
+                    raise
+
                 sync_kw["http_client"] = sync_http
                 async_kw["http_client"] = async_http
 
-        self._client = anthropic_cls(**sync_kw)
-        self._aclient = async_anthropic_cls(**async_kw)
+        created_client = None
+        created_aclient = None
+        try:
+            created_client = anthropic_cls(**sync_kw)
+            created_aclient = async_anthropic_cls(**async_kw)
+        except BaseException:
+            if release_borrowed is not None:
+                release_borrowed()
+            elif created_aclient is not None:
+                _close_async_openai_client_from_sync_best_effort(created_aclient)
+            elif not borrowed and async_http is not None:
+                _close_async_openai_client_from_sync_best_effort(async_http)
+            if created_client is not None:
+                try:
+                    created_client.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            elif sync_http is not None:
+                try:
+                    sync_http.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            raise
+
+        self._borrowed_async_http = borrowed
+        self._borrowed_http_release = release_borrowed
+        self._client = created_client
+        self._aclient = created_aclient
         self._client_finalizer = weakref.finalize(
             self,
             _close_chat_clients_best_effort,
             self._client,
-            self._aclient,
+            None if self._borrowed_async_http else self._aclient,
+            self._borrowed_http_release,
         )
 
     @property
@@ -951,15 +1066,19 @@ class ChatAnthropic:
             else:
                 payload.pop("tool_choice", None)
         for key, value in overrides.items():
+            if key == "timeout":
+                if value is None:
+                    payload["timeout"] = None
+                    continue
+                from utils.http.pool_utils import build_split_http_timeout
+
+                split_timeout = build_split_http_timeout(value)
+                if split_timeout is not None:
+                    payload["timeout"] = split_timeout
+                continue
             if value is None:
                 continue
             if key in _ANTHROPIC_REQUEST_OPTION_KEYS:
-                if key == "timeout" and isinstance(value, (int, float)) and not isinstance(value, bool):
-                    from utils.http.pool_utils import build_split_http_timeout
-
-                    value = build_split_http_timeout(value)
-                    if value is None:
-                        continue
                 payload[key] = value
             elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
                 _apply_anthropic_body_fields(payload, {key: value})
@@ -975,7 +1094,12 @@ class ChatAnthropic:
         _apply_tool_turn_replay(payload)
         return payload
 
+    def _ensure_not_closed(self) -> None:
+        if getattr(self, "_closed", False):
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
+        self._ensure_not_closed()
         payload = self._build_payload_for_call(messages, overrides)
         resp = await self._aclient.messages.create(**payload)
         text_parts = []
@@ -1018,6 +1142,7 @@ class ChatAnthropic:
         )
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
+        self._ensure_not_closed()
         payload = self._build_payload_for_call(messages, overrides)
         replay_context_key = _replay_context_key(payload, payload.get("messages"))
         stream = self._aclient.messages.stream(**payload)
@@ -1118,6 +1243,7 @@ class ChatAnthropic:
 
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object."""
+        self._ensure_not_closed()
         payload = self._build_payload_for_call(messages, overrides)
         resp = await self._aclient.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
@@ -1137,6 +1263,7 @@ class ChatAnthropic:
 
         Each entry carries ``id`` and, when the endpoint reports one, ``name``.
         """
+        self._ensure_not_closed()
         models: list[dict[str, str]] = []
         # Anthropic limits each page to 1000; the SDK's async for paginates automatically, and limit only controls page size.
         async for item in self._aclient.models.list(limit=max(1, min(limit, 1000))):
@@ -1151,19 +1278,46 @@ class ChatAnthropic:
     @property
     def is_closed(self) -> bool:
         """Whether the underlying async SDK client has been closed."""
+        if getattr(self, "_closed", False):
+            return True
         checker = getattr(self._aclient, "is_closed", None)
         if callable(checker):
             return bool(checker())
         return bool(checker) if isinstance(checker, bool) else False
 
     async def aclose(self) -> None:
-        await self._aclient.close()
-        self._client.close()
-        self._client_finalizer.detach()
+        import asyncio
+
+        self._closed = True
+        if getattr(self, "_borrowed_async_http", False):
+            release = getattr(self, "_borrowed_http_release", None)
+            self._borrowed_http_release = None
+            close_task = None
+            try:
+                self._client.close()
+            finally:
+                if release is not None:
+                    close_task = release(defer_close=True)
+            self._client_finalizer.detach()
+            if close_task is not None:
+                await asyncio.shield(close_task)
+        else:
+            try:
+                await self._aclient.close()
+            finally:
+                self._client.close()
+            self._client_finalizer.detach()
 
     def close(self) -> None:
+        self._closed = True
         self._client.close()
-        _close_async_openai_client_from_sync_best_effort(self._aclient)
+        release = getattr(self, "_borrowed_http_release", None)
+        self._borrowed_http_release = None
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                release()
+        else:
+            _close_async_openai_client_from_sync_best_effort(self._aclient)
         self._client_finalizer.detach()
 
     async def __aenter__(self):

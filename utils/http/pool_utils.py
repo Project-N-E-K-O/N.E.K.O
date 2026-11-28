@@ -31,13 +31,21 @@ preserving the caller's ``read`` ceiling.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import http.cookiejar
 import inspect
+import ipaddress
+import os
+import ssl
 import time
+import urllib.request
 import weakref
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 
+from utils.http import PROXY_ENV_LOCK
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -91,11 +99,16 @@ _FRESH_CONNECTION_TRACE_SUFFIXES: tuple[str, ...] = (
     ".connect_unix_socket.started",
     ".start_tls.started",
 )
-_SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = ".send_request_headers.started"
+SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = ".send_request_headers.started"
+_SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = SEND_REQUEST_HEADERS_TRACE_SUFFIX
 
 
-def _is_fresh_connection_trace(event_name: str) -> bool:
+def is_fresh_connection_trace(event_name: str) -> bool:
+    """Return True when an httpcore trace event marks a brand-new connection."""
     return event_name.endswith(_FRESH_CONNECTION_TRACE_SUFFIXES)
+
+
+_is_fresh_connection_trace = is_fresh_connection_trace
 
 
 _ClientT = TypeVar("_ClientT")
@@ -290,3 +303,179 @@ def install_stale_connection_retry(
                 max_elapsed_seconds=max_elapsed_seconds,
             )
     return client
+
+
+_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
+def http_origin_key(url: str | None) -> tuple[str, str, int | None]:
+    """Extract a normalized ``(scheme, host, port)`` tuple for HTTP pool keying."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ("", "", None)
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        if scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+    return (scheme, host, port)
+
+
+def proxy_env_fingerprint() -> tuple[str | None, ...]:
+    """Snapshot proxy environment variables, preserving unset (None) vs empty string."""
+    with PROXY_ENV_LOCK:
+        return tuple(os.environ.get(name) for name in _PROXY_ENV_KEYS)
+
+
+class _RejectAllCookiePolicy(http.cookiejar.DefaultCookiePolicy):
+    """Reject storing and sending cookies so pooled HTTP clients stay stateless."""
+
+    def set_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+    def return_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+
+def make_stateless_cookie_jar() -> http.cookiejar.CookieJar:
+    """Return a CookieJar that neither stores Set-Cookie headers nor sends cookies."""
+    return http.cookiejar.CookieJar(policy=_RejectAllCookiePolicy())
+
+
+def create_default_ssl_context() -> ssl.SSLContext:
+    """Create a default TLS context honoring SSL_CERT_FILE / SSL_CERT_DIR / certifi."""
+    import certifi
+
+    if os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    if os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _proxies_from_env_items(
+    env_items: list[tuple[str, str]],
+    *,
+    has_request_method: bool = False,
+) -> dict[str, str]:
+    """Replicate urllib.request.getproxies_environment() on an atomic env snapshot."""
+    proxies: dict[str, str] = {}
+    for name, value in env_items:
+        lowered = name.lower()
+        if value and lowered.endswith("_proxy"):
+            proxies[lowered[:-6]] = value
+    if has_request_method:
+        proxies.pop("http", None)
+    for name, value in env_items:
+        if name.islower() and name.endswith("_proxy"):
+            scheme = name[:-6]
+            if value:
+                proxies[scheme] = value
+            else:
+                proxies.pop(scheme, None)
+    return proxies
+
+
+def _proxy_mount_map_from_proxies(proxy_info: dict[str, str]) -> dict[str, str | None]:
+    """Convert a scheme->proxy dict into httpx-compatible mount pattern -> proxy URL map."""
+    mounts: dict[str, str | None] = {}
+    for scheme in ("http", "https", "all"):
+        raw = proxy_info.get(scheme)
+        if raw:
+            mounts[f"{scheme}://"] = raw if "://" in raw else f"http://{raw}"
+    no_proxy_hosts = [host.strip() for host in proxy_info.get("no", "").split(",")]
+    for hostname in no_proxy_hosts:
+        if hostname == "*":
+            return {}
+        if not hostname:
+            continue
+        if "://" in hostname:
+            mounts[hostname] = None
+        else:
+            try:
+                addr = ipaddress.ip_address(hostname.strip("[]"))
+            except ValueError:
+                if hostname.lower() == "localhost":
+                    mounts[f"all://{hostname}"] = None
+                else:
+                    mounts[f"all://*{hostname}"] = None
+            else:
+                if addr.version == 6:
+                    mounts[f"all://[{addr}]"] = None
+                else:
+                    mounts[f"all://{addr}"] = None
+    return mounts
+
+
+def snapshot_http_proxy_config() -> tuple[tuple[Any, ...], dict[str, str | None]]:
+    """Atomically capture proxy pool-key fingerprint and httpx mount map from one snapshot."""
+    with PROXY_ENV_LOCK:
+        # Preserve raw os.environ iteration order for parsing (matching
+        # urllib.request.getproxies_environment()) and inspect all *_proxy
+        # entries before deciding whether to fall back to OS registry/sysconf.
+        env_items = [
+            (name, value)
+            for name, value in os.environ.items()
+            if name.lower().endswith("_proxy")
+        ]
+        has_request_method = "REQUEST_METHOD" in os.environ
+    proxy_info = _proxies_from_env_items(env_items, has_request_method=has_request_method)
+    if not proxy_info:
+        fallback = (
+            getattr(urllib.request, "getproxies_registry", None)
+            or getattr(urllib.request, "getproxies_macosx_sysconf", None)
+        )
+        if callable(fallback):
+            try:
+                proxy_info = dict(fallback())
+            except Exception:
+                # Best-effort OS proxy lookup; fall back to direct connections.
+                proxy_info = {}
+    mount_map = _proxy_mount_map_from_proxies(proxy_info)
+    fingerprint = (tuple(sorted(env_items)), tuple(sorted(mount_map.items())))
+    return fingerprint, mount_map
+
+
+def build_async_proxy_mounts(
+    mount_map: dict[str, str | None],
+    *,
+    verify: Any = True,
+    limits: httpx.Limits | None = None,
+) -> dict[str, httpx.AsyncHTTPTransport | None]:
+    """Build explicit httpx AsyncHTTPTransport mounts from a snapshotted mount map."""
+    mounts: dict[str, httpx.AsyncHTTPTransport | None] = {}
+    for pattern, proxy_url in mount_map.items():
+        if proxy_url is None:
+            mounts[pattern] = None
+        else:
+            transport_kw: dict[str, Any] = {
+                "verify": verify,
+                "proxy": httpx.Proxy(url=proxy_url),
+                "trust_env": False,
+            }
+            if limits is not None:
+                transport_kw["limits"] = limits
+            mounts[pattern] = httpx.AsyncHTTPTransport(**transport_kw)
+    return mounts
+
+
+def credential_fingerprint(*parts: str | None) -> str:
+    """Hash credential components for pool isolation without retaining raw secrets."""
+    joined = "\x00".join(str(part or "") for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
