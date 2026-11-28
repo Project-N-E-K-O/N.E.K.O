@@ -33,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "ci" / "main_red_reporter.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "main-red-reporter.yml"
 UNIT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unit-tests.yml"
+PLUGIN_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "plugin-tests.yml"
 REPO = "owner/repo"
 
 
@@ -76,6 +77,45 @@ def test_rerun_marker_matches_the_unit_workflow():
     workflow = UNIT_WORKFLOW.read_bytes().decode("utf-8")
     assert f"{mr.RERUN_MARKER}=$verdict" in workflow
     assert "--lf --lfnf none" in workflow
+
+
+def test_every_plugin_job_reruns_its_failures_with_the_marker():
+    # rerun_state() only calls a run flaky when every failed job printed a
+    # verdict, so a plugin job without the step would turn a flaky run "partial".
+    jobs = yaml.safe_load(PLUGIN_WORKFLOW.read_bytes().decode("utf-8"))["jobs"]
+    assert jobs
+    for name, job in jobs.items():
+        steps = job["steps"]
+        full = [i for i, step in enumerate(steps) if step.get("id") == "full-suite"]
+        assert len(full) == 1, name
+        rerun = [step for step in steps[full[0] + 1 :] if "--lf --lfnf none" in step.get("run", "")]
+        assert len(rerun) == 1, name
+        assert rerun[0]["if"] == "failure() && steps.full-suite.outcome == 'failure'", name
+        assert f"{mr.RERUN_MARKER}=$verdict" in rerun[0]["run"], name
+        assert rerun[0]["run"].rstrip().endswith("exit 0"), name
+        # The verdict must be printed before the step limit kills the step:
+        # no new test after 120 s, plus at most one 300 s test, stays below it.
+        assert "--session-timeout 120" in rerun[0]["run"], name
+        assert 120 + 300 < rerun[0]["timeout-minutes"] * 60, name
+
+
+def test_windows_plugin_flaky_check_does_not_pass_a_run_cut_short_by_a_crash():
+    # --max-worker-restart 0 stops the run at the first crashed worker; the
+    # tests still queued never ran, so a passing re-run must not say "passed".
+    job = yaml.safe_load(PLUGIN_WORKFLOW.read_bytes().decode("utf-8"))["jobs"]["plugin-pytest"]
+    full = next(step for step in job["steps"] if step.get("id") == "full-suite")
+    rerun = next(step for step in job["steps"] if "--lf --lfnf none" in step.get("run", ""))
+    assert "--max-worker-restart 0" in full["run"]
+    junit = '"${{ runner.temp }}/plugin-junit/full.xml"'
+    assert f"--junitxml {junit}" in full["run"]
+    assert f"$junit = {junit}" in rerun["run"]
+    assert "'crashed while running'" in rerun["run"]
+    assert "if ($verdict -ne 'none')" in rerun["run"]
+    # Hard stop for what --session-timeout cannot bound (e.g. a hang during
+    # collection), before the step limit, like `timeout 450` in the Linux job.
+    assert "WaitForExit(450000)" in rerun["run"]
+    assert "taskkill /T /F /PID" in rerun["run"]
+    assert 450 < rerun["timeout-minutes"] * 60
 
 
 @pytest.mark.parametrize(
