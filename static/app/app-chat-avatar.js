@@ -1488,9 +1488,11 @@
             if (token !== activeCaptureToken) return;
 
             if (showCard || activeCaptureCardVisible) {
-                // A failed capture must not erase a verified portrait from the current Pet owner.
-                const preview = isCardDropIdentityFollowerWindow() ? modelPreviewForDisplay() : null;
-                const fallback = getExternalAvatarScope(preview) === 'current' ? preview : null;
+                // A local capture may mask a still-valid portrait from the Pet owner.
+                const fallback = isCardDropIdentityFollowerWindow()
+                    ? [modelPreviewForDisplay(), externalAvatarPreview]
+                        .find(preview => getExternalAvatarScope(preview) === 'current')
+                    : null;
                 const failed = translateLabel('chat.avatarPreviewFailed', '生成头像失败');
                 setPreviewImage(fallback?.dataUrl || '');
                 setPreviewStatus(fallback ? failed + ' · ' + normalizeModelLabel(fallback.modelType) : failed,

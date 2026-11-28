@@ -285,3 +285,55 @@ for (const pathname of ['/chat', '/chat_full']) {
         });
     }
 }
+
+for (const pathname of ['/chat', '/chat_full']) {
+    for (const outcome of ['same scope', 'different role', 'new revision', 'new model path', 'unverified', 'new receipt', 'success again']) {
+        test(pathname + ': an earlier successful capture does not shadow a verified retry fallback: ' + outcome, async () => {
+            const h = run(pathname, 'after init', {pngtuber: true, autoload: false, transport: 'ipc'});
+            const w = h.window, avatar = w.appChatAvatar;
+            if (outcome === 'unverified') {
+                w.lanlan_config.lanlan_name = '';
+                avatar.setExternalAvatar(mirrored, 'pngtuber');
+                w.lanlan_config.lanlan_name = 'A';
+            }
+            const refresh = async () => {
+                const result = avatar.showPopup(null, {forceRefresh: true, manualCrop: true});
+                await tick(); // Crop-source broadcast falls back to the IPC thumbnail.
+                return {result};
+            };
+            assert.equal(h.image.src, mirrored);
+            const first = await refresh();
+            assert.equal(h.requestCount(), 1);
+            h.complete(captured, 'mmd');
+            await first.result;
+            assert.deepEqual([h.image.src, avatar.getCurrentAvatarModelType()], [captured, 'mmd']);
+            const retry = await refresh();
+            assert.equal(h.requestCount(), 2);
+            if (outcome === 'different role' || outcome === 'new receipt') w.lanlan_config.lanlan_name = 'B';
+            if (outcome === 'new revision' || outcome === 'new receipt') w.lanlan_config.switch_revision++;
+            if (outcome === 'new model path') w.pngtuberManager.config.idle_image = '/replaced.png';
+            if (outcome === 'new receipt') avatar.setExternalAvatar(owner, 'live2d');
+            h.complete('');
+            await retry.result;
+            const receipt = outcome === 'new receipt' ? [owner, 'Live2D']
+                : (outcome === 'same scope' || outcome === 'success again' ? [mirrored, 'PNGTuber'] : null);
+            assert.equal(h.image.src, receipt?.[0]);
+            assert.equal(h.image.hidden, !receipt);
+            assert.equal(h.status.textContent, receipt ? '生成头像失败 · ' + receipt[1] : '生成头像失败');
+            if (outcome === 'same scope') {
+                assert.deepEqual([avatar.getModelAvatarDataUrl(), avatar.getCurrentAvatarModelType()], [captured, 'mmd']);
+            }
+            if (outcome === 'success again') {
+                const later = await refresh();
+                assert.equal(h.requestCount(), 3);
+                h.complete(owner, 'vrm');
+                await later.result;
+                assert.deepEqual([h.image.src, avatar.getCurrentAvatarModelType(), h.status.textContent],
+                    [owner, 'vrm', '头像已更新 · VRM']);
+            }
+            assert.deepEqual(h.writes, []);
+            assert.equal(JSON.parse(h.stored.get(cacheKey)).dataUrl, owner);
+            assert.deepEqual(h.network, []);
+        });
+    }
+}
