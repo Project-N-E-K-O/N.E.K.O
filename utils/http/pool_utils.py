@@ -30,6 +30,8 @@ preserving the caller's ``read`` ceiling.
 
 from __future__ import annotations
 
+import asyncio
+import weakref
 from typing import Any, TypeVar
 
 import httpx
@@ -37,6 +39,28 @@ import httpx
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
+
+# Event loops owned by a multi-service host (such as run_merged_servers) where
+# per-service shutdown hooks must leave shared pool cleanup to the loop owner.
+_DEFERRED_POOL_CLEANUP_LOOPS: "weakref.WeakSet[asyncio.AbstractEventLoop]" = weakref.WeakSet()
+
+
+def defer_loop_pool_cleanup(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Mark *loop* so per-service shutdown hooks defer shared pool closing to the loop owner."""
+    target = loop if loop is not None else asyncio.get_running_loop()
+    _DEFERRED_POOL_CLEANUP_LOOPS.add(target)
+
+
+def is_loop_pool_cleanup_deferred(loop: asyncio.AbstractEventLoop | None = None) -> bool:
+    """Return True when a shared loop owner is responsible for closing pooled HTTP clients."""
+    target = loop if loop is not None else asyncio.get_running_loop()
+    return target in _DEFERRED_POOL_CLEANUP_LOOPS
+
+
+def release_deferred_loop_pool_cleanup(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Clear the deferred-cleanup marker for *loop* before its owner closes shared pools."""
+    target = loop if loop is not None else asyncio.get_running_loop()
+    _DEFERRED_POOL_CLEANUP_LOOPS.discard(target)
 
 # Below the 60-75s idle timeouts common at upstream API gateways, reverse
 # proxies, and NAT tables, so clients retire idle sockets cleanly before peers.

@@ -518,7 +518,28 @@ def test_server_shutdown_hooks_wire_warm_pool_and_decision_cleanup():
         "app/main_server/__init__.py",
         "app/memory_server/runtime.py",
         "app/agent_server/api_runtime.py",
+        "launcher_core/runtime.py",
     ):
         src = (root / rel).read_text(encoding="utf-8")
         assert "close_warm_chat_llms" in src, f"{rel} missing close_warm_chat_llms"
         assert "aclose_decision_http_clients" in src, f"{rel} missing aclose_decision_http_clients"
+    agent_src = (root / "app/agent_server/api_runtime.py").read_text(encoding="utf-8")
+    assert "deadline_monotonic=time.monotonic() + 2.0" in agent_src
+    assert agent_src.index("submit_save") < agent_src.index("close_warm_chat_llms")
+
+
+@pytest.mark.asyncio
+async def test_merged_loop_deferred_pool_cleanup_markers():
+    from utils.http.pool_utils import (
+        defer_loop_pool_cleanup,
+        is_loop_pool_cleanup_deferred,
+        release_deferred_loop_pool_cleanup,
+    )
+
+    loop = asyncio.get_running_loop()
+    release_deferred_loop_pool_cleanup(loop)
+    assert is_loop_pool_cleanup_deferred(loop) is False
+    defer_loop_pool_cleanup(loop)
+    assert is_loop_pool_cleanup_deferred(loop) is True
+    release_deferred_loop_pool_cleanup(loop)
+    assert is_loop_pool_cleanup_deferred(loop) is False

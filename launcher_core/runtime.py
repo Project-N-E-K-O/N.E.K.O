@@ -1367,6 +1367,11 @@ def run_merged_servers() -> int:
         nonlocal _merged_loop, _shutdown_wakeup
         _shutdown_wakeup = asyncio.Event()
         _merged_loop = asyncio.get_running_loop()
+        from utils.http.pool_utils import (
+            defer_loop_pool_cleanup,
+            release_deferred_loop_pool_cleanup,
+        )
+        defer_loop_pool_cleanup(_merged_loop)
         if _exiting:
             _shutdown_wakeup.set()
         shutdown_waiter = asyncio.create_task(
@@ -1438,6 +1443,21 @@ def run_merged_servers() -> int:
                 if not task.done():
                     task.cancel()
             await asyncio.wait(tasks.values(), timeout=1.0)
+            release_deferred_loop_pool_cleanup(_merged_loop)
+            try:
+                from utils.llm_client.warm_pool import close_warm_chat_llms
+
+                async with asyncio.timeout(2.0):
+                    await close_warm_chat_llms()
+            except Exception as exc:
+                print(f"[Merged] Warning: failed to close llm_warm_pool: {exc}", flush=True)
+            try:
+                from utils.decision_client.adapters import aclose_decision_http_clients
+
+                async with asyncio.timeout(2.0):
+                    await aclose_decision_http_clients()
+            except Exception as exc:
+                print(f"[Merged] Warning: failed to close decision_http_client: {exc}", flush=True)
 
     try:
         asyncio.run(_serve_all())

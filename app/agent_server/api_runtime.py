@@ -749,12 +749,12 @@ async def shutdown():
     # seconds, leaving three seconds of cancellation grace below its 45 s cap.
     cancellation_budget = ShutdownCancellationBudget(3.0)
 
-    async def step(factory, what):
+    async def step(factory, what, *, deadline_monotonic: float | None = None):
         nonlocal cancellation
         cancellation = await run_shutdown_step(
             factory,
             what=what,
-            deadline_monotonic=None,
+            deadline_monotonic=deadline_monotonic,
             pending_cancellation=cancellation,
             cancelled_budget_seconds=3.0,
             cancellation_budget=cancellation_budget,
@@ -874,19 +874,6 @@ async def shutdown():
         await step(retry_held_keys, "Agent held keys release retry")
 
     try:
-        from utils.llm_client.warm_pool import close_warm_chat_llms
-
-        await step(close_warm_chat_llms, "Agent LLM warm pool cleanup")
-    except Exception as exc:
-        logger.debug("[Agent] llm_warm_pool cleanup failed: %s", exc)
-    try:
-        from utils.decision_client.adapters import aclose_decision_http_clients
-
-        await step(aclose_decision_http_clients, "Agent decision HTTP client cleanup")
-    except Exception as exc:
-        logger.debug("[Agent] decision_http_client cleanup failed: %s", exc)
-
-    try:
         from utils.token_tracker import TokenTracker
 
         # Submitting must survive an already exhausted cancellation budget.
@@ -898,6 +885,37 @@ async def shutdown():
         await step(save_stats, "Agent token usage save")
     except Exception as exc:
         logger.warning("[Agent] Token usage save failed during shutdown: %s", exc)
+
+    try:
+        from utils.http.pool_utils import is_loop_pool_cleanup_deferred
+
+        defer_pool_cleanup = is_loop_pool_cleanup_deferred()
+    except Exception:
+        defer_pool_cleanup = False
+
+    if not defer_pool_cleanup:
+        import time
+
+        try:
+            from utils.llm_client.warm_pool import close_warm_chat_llms
+
+            await step(
+                close_warm_chat_llms,
+                "Agent LLM warm pool cleanup",
+                deadline_monotonic=time.monotonic() + 2.0,
+            )
+        except Exception as exc:
+            logger.debug("[Agent] llm_warm_pool cleanup failed: %s", exc)
+        try:
+            from utils.decision_client.adapters import aclose_decision_http_clients
+
+            await step(
+                aclose_decision_http_clients,
+                "Agent decision HTTP client cleanup",
+                deadline_monotonic=time.monotonic() + 2.0,
+            )
+        except Exception as exc:
+            logger.debug("[Agent] decision_http_client cleanup failed: %s", exc)
 
     logger.info("[Agent] Shutdown cleanup complete")
     await step(_emit_agent_status_update, "Agent final status")
