@@ -508,3 +508,20 @@ async def test_cancel_during_winner_body_cleanup_drains_stream(cancel_count):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await response.stream.aclose()
+
+
+async def test_cancel_while_saving_the_history_removes_the_finished_file(tmp_path, network, monkeypatch):
+    network.handlers["a.test"] = serve()
+    saving = asyncio.Event()
+
+    async def slow_commit(observations, generation):
+        saving.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(transfer, "commit_route_observations", slow_commit)
+    task = asyncio.create_task(download(tmp_path, [("a", "https://a.test/pkg")]))
+    await asyncio.wait_for(saving.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert leftovers(tmp_path) == []

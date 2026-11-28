@@ -60,7 +60,6 @@ from urllib.parse import unquote
 import zipfile
 
 from packaging.tags import sys_tags
-from packaging.utils import parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 import portalocker
 
@@ -73,7 +72,9 @@ _UV_RELEASE_URL = f"https://github.com/astral-sh/uv/releases/download/{PINNED_UV
 # SHA-256 of each uv archive of the pinned release, keyed by target triple:
 # the release's sha256.sum, cross-checked against the digests GitHub reports
 # for its assets. Every download is checked against these, whichever route
-# (GitHub or a mirror) delivered it. Update them with PINNED_UV_VERSION.
+# (GitHub or a mirror) delivered it. Update them, and the version they
+# belong to, with PINNED_UV_VERSION (a unit test checks the two agree).
+_UV_ARCHIVE_SHA256_VERSION = "0.13.6"
 _UV_ARCHIVE_SHA256 = {
     "aarch64-apple-darwin": "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472",
     "x86_64-apple-darwin": "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02",
@@ -100,6 +101,8 @@ _PYTHON_RELEASE_PREFIXES = (
     "https://github.com/astral-sh/python-build-standalone/releases/download/",
 )
 _PYTHON_GITHUB_PREFIX = _PYTHON_RELEASE_PREFIXES[1]
+# The market's route id for github.com itself; every other route is a mirror.
+_GITHUB_DIRECT = "github-direct"
 _MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 _MAX_PYTHON_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
@@ -606,12 +609,15 @@ def _fetch_accepted(
     every attempt rules a route out.
 
     The first download's failure propagates for the caller to map. Once a
-    file has been rejected, running out of routes is ``checksum_mismatch``.
+    file has been rejected, running out of routes is ``checksum_mismatch``;
+    ``download_failed`` when every rejected file came only from mirrors,
+    which commonly answer with an error page rather than tampered bytes.
     """
     from plugin.server.infrastructure.package_fetch import NoRoutesLeft, RouteFailed
 
     excluded: list[str] = []
     rejected: list[str] = []
+    rejected_sources: list[tuple[str, ...]] = []
     while True:
         try:
             fetched = _fetch_release_asset(
@@ -632,8 +638,12 @@ def _fetch_accepted(
                 raise
             _check(cancel, deadline)
             last = exc if isinstance(exc, NoRoutesLeft) else f"{type(exc).__name__}: {exc}"
+            code: ErrorCode = (
+                "download_failed" if all(_GITHUB_DIRECT not in sources for sources in rejected_sources)
+                else "checksum_mismatch"
+            )
             raise ToolRuntimeError(
-                "checksum_mismatch",
+                code,
                 f"{url.rsplit('/', 1)[-1]} failed its integrity check ({', '.join(rejected)}) "
                 f"and no other route delivered it ({last})",
             ) from exc
@@ -644,6 +654,7 @@ def _fetch_accepted(
             fetched.path.unlink(missing_ok=True)
         source = fetched.single_source
         rejected.append(source or "+".join(fetched.sources))
+        rejected_sources.append(fetched.sources)
         if source is not None:
             _record_route_failure(source, fetched.generation, cancel, deadline)
             excluded.append(source)
@@ -897,6 +908,8 @@ def _install_downloaded_python(
     checked against the digest pinned here); a mismatch fails the install
     and nothing falls back to the network. A file uv rejects is handled as
     in :func:`_fetch_accepted`: its route is penalized and another tried.
+    When no route delivers an acceptable file, uv downloads the build from
+    its own default host, as it did before these routes were used.
     """
     downloads = tools_root() / ".python-download"
     shutil.rmtree(downloads, ignore_errors=True)
@@ -904,7 +917,11 @@ def _install_downloaded_python(
     target = mirror / download.tag / download.filename
 
     def accept(path: Path) -> bool:
-        os.replace(path, target)
+        try:
+            os.replace(path, target)
+        except OSError as exc:
+            # A local failure, not a download one: no fallback either.
+            raise ToolRuntimeError("python_install_failed", f"Could not stage the Python download: {exc}") from exc
         try:
             report(ProgressEvent("installing_python"))
             installed = run([*install, "--mirror", mirror.as_uri()], "Install managed Python")
@@ -918,6 +935,8 @@ def _install_downloaded_python(
         finally:
             target.unlink(missing_ok=True)
 
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
     try:
         target.parent.mkdir(parents=True)
         try:
@@ -925,17 +944,34 @@ def _install_downloaded_python(
                 download.url, downloads, maximum_bytes=_MAX_PYTHON_ARCHIVE_BYTES, phase="installing_python",
                 accept=accept, report=report, cancel=cancel, deadline=deadline,
             )
-        except ToolRuntimeError:
-            raise
+            return
+        except ToolRuntimeError as exc:
+            if exc.code not in ("checksum_mismatch", "download_failed"):
+                raise
+            market_failure: BaseException = exc
+        except PackageDownloadWriteError as exc:
+            raise ToolRuntimeError(
+                "python_install_failed", f"Could not save the Python download: {exc}",
+            ) from exc
         except _download_failures() as exc:
             _check(cancel, deadline)
-            raise ToolRuntimeError(
-                "python_install_failed", f"Could not download {download.filename}: {type(exc).__name__}: {exc}",
-            ) from exc
+            market_failure = exc
     except OSError as exc:
         raise ToolRuntimeError("python_install_failed", f"Could not stage the Python download: {exc}") from exc
     finally:
         shutil.rmtree(downloads, ignore_errors=True)
+    # No route delivered a file uv accepted: install as before these routes
+    # existed, with uv downloading from its own default host. uv still checks
+    # the build against the SHA-256 it carries.
+    _check(cancel, deadline)
+    report(ProgressEvent("installing_python"))
+    installed = run(install, "Install managed Python")
+    if installed.returncode:
+        raise ToolRuntimeError(
+            "python_install_failed",
+            f"Could not download {download.filename} over the download routes "
+            f"({type(market_failure).__name__}: {market_failure}); uv's own download failed too: {_tail(installed)}",
+        )
 
 
 def _prepare_python(
@@ -1060,8 +1096,10 @@ def _ensure_uv(
     try:
         _download_uv(cached, report, cancel, deadline)
     except ToolRuntimeError as exc:
-        # A failed download, or no pinned wheel for this platform, falls back;
-        # a checksum mismatch is not retried with whatever else is installed.
+        # A failed download (mirrors only serving rejected files included), or
+        # no pinned archive for this platform, falls back; a file from GitHub
+        # itself failing the pinned checksum is not retried with whatever
+        # else is installed.
         if exc.code not in ("download_failed", "unsupported_platform") or prefer_system_uv:
             raise
         report(ProgressEvent("checking_uv"))

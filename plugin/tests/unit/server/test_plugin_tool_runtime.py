@@ -80,8 +80,9 @@ class FakeRelease:
     """Serves GitHub release assets in place of the market transfer; counts downloads.
 
     ``bodies`` maps an asset URL to the bytes each successive attempt delivers
-    (the last repeats); the uv archive is served by default. Routes are named
-    ``route-0``, ``route-1``... in the order they are used.
+    (the last repeats); the uv archive is served by default. Routes are
+    ``github-direct``, then the mirrors ``route-1``, ``route-2``..., in the
+    order they are used.
     """
 
     def __init__(
@@ -106,6 +107,8 @@ class FakeRelease:
         self.single: list[bool] = []
         # Routes that fail when used one at a time.
         self.broken_routes: set[str] = set()
+        # Defaults to github-direct, then mirrors route-1, route-2...
+        self.route_names: list[str] | None = None
         # The race delivers files spliced from the first two routes.
         self.spliced = False
         self.on_chunk = None
@@ -125,7 +128,8 @@ class FakeRelease:
             release.requests.append((url, tuple(exclude)))
             release.single.append(single_route)
             check_stopped()
-            available = [f"route-{index}" for index in range(release.routes) if f"route-{index}" not in exclude]
+            names = release.route_names or ["github-direct", *(f"route-{index}" for index in range(1, release.routes))]
+            available = [name for name in names[:release.routes] if name not in exclude]
             if not available:
                 raise NoRoutesLeft(url)
             if single_route and available[0] in release.broken_routes:
@@ -1258,17 +1262,39 @@ def test_python_build_failing_uvs_checksum_penalizes_the_route_and_tries_the_nex
     uv = FakeUv(root, listing=_listing())
     _prepare(uv)
     assert uv.mirrored == [b"tampered", PYTHON_BODY]
-    assert release.penalized == ["route-0"]
-    assert release.requests[-2:] == [(_python_url(), ()), (_python_url(), ("route-0",))]
+    assert release.penalized == ["github-direct"]
+    assert release.requests[-2:] == [(_python_url(), ()), (_python_url(), ("github-direct",))]
 
 
-def test_python_build_failing_its_checksum_on_every_route_is_a_checksum_mismatch(root, monkeypatch):
+def _plain_installs(uv: FakeUv) -> list[list[str]]:
+    return [cmd for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"] and "--mirror" not in cmd]
+
+
+def test_python_build_rejected_on_every_route_falls_back_to_uvs_own_download(root, monkeypatch):
     release = FakeRelease(routes=2).install(monkeypatch)
     release.bodies[_python_url()] = [b"tampered"]
     uv = FakeUv(root, listing=_listing())
-    _expect_failure(uv, "checksum_mismatch")
-    assert release.penalized == ["route-0", "route-1"]
+    _prepare(uv)
+    assert release.penalized == ["github-direct", "route-1"]
+    # As on main: uv downloads from its own host and checks its own digest.
+    assert len(_plain_installs(uv)) == 1
+    assert (root / "python.json").exists()
     assert not (root / ".python-download").exists()
+
+
+def test_failed_fallback_reports_both_downloads(root, monkeypatch):
+    release = FakeRelease(routes=2).install(monkeypatch)
+    release.bodies[_python_url()] = [b"tampered"]
+    uv = FakeUv(root, listing=_listing())
+
+    def runner(cmd, **kwargs):
+        if cmd[1:3] == ["python", "install"] and "--mirror" not in cmd:
+            uv.calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 1, "", "error: releases.astral.sh unreachable")
+        return FakeUv.__call__(uv, cmd, **kwargs)
+
+    error = _expect_failure(runner, "python_install_failed")
+    assert "download routes" in error.detail and "releases.astral.sh unreachable" in error.detail
     assert not (root / "python.json").exists()
 
 
@@ -1287,7 +1313,7 @@ def test_other_uv_install_errors_are_not_retried_on_another_route(root, monkeypa
     assert release.penalized == []
 
 
-def test_python_download_failure_is_an_install_failure(root, monkeypatch):
+def test_python_routes_unreachable_fall_back_to_uvs_own_download(root, monkeypatch):
     release = FakeRelease().install(monkeypatch)
 
     def broken(url, _received):
@@ -1295,8 +1321,28 @@ def test_python_download_failure_is_an_install_failure(root, monkeypatch):
             raise module.load_httpx().ConnectError("connection refused")
 
     release.on_chunk = broken
-    _expect_failure(FakeUv(root, listing=_listing()), "python_install_failed")
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == []
+    assert len(_plain_installs(uv)) == 1
     assert not (root / ".python-download").exists()
+
+
+def test_local_write_failure_of_the_python_download_does_not_fall_back(root, monkeypatch):
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
+    FakeRelease().install(monkeypatch)
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        if url == _python_url():
+            raise PackageDownloadWriteError(OSError(28, "No space left on device"))
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    uv = FakeUv(root, listing=_listing())
+    _expect_failure(uv, "python_install_failed")
+    assert _plain_installs(uv) == []
 
 
 @pytest.mark.parametrize("stop", ["cancel", "deadline"])
@@ -1319,6 +1365,8 @@ def test_stopping_during_the_python_download(root, monkeypatch, stop):
     uv = FakeUv(root, listing=_listing())
     _expect_failure(uv, "canceled" if stop == "cancel" else "timeout", cancel=canceled, deadline=150.0)
     assert uv.mirrored == []
+    # Stopping is not a failed download: uv's own download is not tried.
+    assert _plain_installs(uv) == []
     assert not (root / ".python-download").exists()
 
 
@@ -1328,16 +1376,16 @@ def test_uv_archive_failing_the_pinned_checksum_penalizes_the_route_and_tries_th
     release.bodies[release.uv_url] = [_uv_archive(release.target, release.binary_name, b"evil"), good]
     _prepare(FakeUv(root))
     assert module.cached_uv_path().read_bytes() == b"uv-executable"
-    assert release.penalized == ["route-0"]
-    assert release.requests[:2] == [(release.uv_url, ()), (release.uv_url, ("route-0",))]
+    assert release.penalized == ["github-direct"]
+    assert release.requests[:2] == [(release.uv_url, ()), (release.uv_url, ("github-direct",))]
 
 
 def test_uv_archive_failing_on_the_last_route_does_not_fall_back_to_a_system_uv(root, monkeypatch):
     release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     error = _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
-    assert "route-0, route-1" in error.detail
-    assert release.penalized == ["route-0", "route-1"]
+    assert "github-direct, route-1" in error.detail
+    assert release.penalized == ["github-direct", "route-1"]
     assert not module.cached_uv_path().exists()
 
 
@@ -1353,7 +1401,7 @@ def test_network_failure_after_a_mismatch_stays_a_checksum_mismatch(root, monkey
     release.on_chunk = broken
     monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
     _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "checksum_mismatch")
-    assert release.penalized == ["route-0"]
+    assert release.penalized == ["github-direct"]
 
 
 def test_spliced_file_failing_its_checksum_blames_no_route_and_retries_one_route_at_a_time(root, monkeypatch):
@@ -1372,8 +1420,8 @@ def test_spliced_then_single_route_mismatches_rule_out_each_route_in_turn(root, 
     release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
     release.spliced = True
     _expect_failure(FakeUv(root), "checksum_mismatch")
-    assert release.penalized == ["route-0", "route-1"]
-    assert [exclude for _url, exclude in release.requests] == [(), (), ("route-0",), ("route-0", "route-1")]
+    assert release.penalized == ["github-direct", "route-1"]
+    assert [exclude for _url, exclude in release.requests] == [(), (), ("github-direct",), ("github-direct", "route-1")]
 
 
 def test_route_failing_while_tried_alone_is_skipped(root, monkeypatch):
@@ -1382,8 +1430,8 @@ def test_route_failing_while_tried_alone_is_skipped(root, monkeypatch):
     release.bodies[release.uv_url] = [_uv_archive(release.target, release.binary_name, b"evil"), good]
     release.broken_routes = {"route-1"}
     _prepare(FakeUv(root))
-    assert release.penalized == ["route-0"]
-    assert [exclude for _url, exclude in release.requests[:3]] == [(), ("route-0",), ("route-0", "route-1")]
+    assert release.penalized == ["github-direct"]
+    assert [exclude for _url, exclude in release.requests[:3]] == [(), ("github-direct",), ("github-direct", "route-1")]
 
 
 def test_python_file_uv_cannot_extract_is_blamed_on_its_route(root, monkeypatch):
@@ -1392,7 +1440,7 @@ def test_python_file_uv_cannot_extract_is_blamed_on_its_route(root, monkeypatch)
     uv = FakeUv(root, listing=_listing())
     _prepare(uv)
     assert uv.mirrored == [b"<html>", PYTHON_BODY]
-    assert release.penalized == ["route-0"]
+    assert release.penalized == ["github-direct"]
 
 
 @pytest.mark.parametrize(("stderr", "rejected"), [
@@ -1420,4 +1468,33 @@ def test_local_write_failure_after_a_rejection_is_reported_as_such(root, monkeyp
     monkeypatch.setattr(module, "_fetch_release_asset", fetch)
     error = _expect_failure(FakeUv(root), "download_failed")
     assert "No space left" in error.detail
-    assert release.penalized == ["route-0"]
+    assert release.penalized == ["github-direct"]
+
+
+def test_uv_archive_rejected_only_from_mirrors_is_a_download_failure_and_falls_back(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.route_names = ["gh-proxy-com", "gh-proxy-org"]
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    # Mirrors often answer with an error page: that is not tampering.
+    assert _prepare(FakeUv(root, versions={"/new/uv": "99.0.0"})).uv == "/new/uv"
+    assert release.penalized == ["gh-proxy-com", "gh-proxy-org"]
+
+
+def test_pinned_digests_belong_to_the_pinned_uv():
+    assert module._UV_ARCHIVE_SHA256_VERSION == module.PINNED_UV_VERSION
+
+
+def test_staging_the_python_download_failing_locally_does_not_fall_back(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    replace = os.replace
+
+    def failing(source, destination):
+        if Path(destination).name == PYTHON_FILE:
+            raise PermissionError(13, "Permission denied")
+        return replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", failing)
+    uv = FakeUv(root, listing=_listing())
+    error = _expect_failure(uv, "python_install_failed")
+    assert "stage" in error.detail
+    assert _plain_installs(uv) == []

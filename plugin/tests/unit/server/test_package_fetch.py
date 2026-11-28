@@ -509,3 +509,32 @@ async def test_closing_the_shared_client_from_another_loop_keeps_it(network):
     assert not client.is_closed
     await download_io.aclose_package_http_client()
     assert download_io._shared_client is None and client.is_closed
+
+
+def test_a_stop_of_a_route_failure_type_during_the_body_does_not_penalize_the_route(tmp_path, network):
+    preferences(tmp_path, "direct")
+    network.handlers["github.com"] = (
+        lambda _request: httpx.Response(200, headers={"content-length": str(len(BIG))}, content=BIG)
+    )
+    calls: list[int] = []
+
+    def stop():
+        calls.append(1)
+        if len(calls) > 2:  # Past the start, while chunks arrive.
+            raise OSStop("stopped")
+
+    with pytest.raises(OSStop):
+        get(tmp_path, check_stopped=stop)
+    stats = sources._routes.get("github-direct")
+    assert stats is None or not stats.failures
+
+
+def test_a_stopped_loop_is_not_waited_for(tmp_path):
+    loop = asyncio.new_event_loop()  # Never run, like a server loop that has stopped.
+    began = time.monotonic()
+    try:
+        with pytest.raises(fetch.PackageLoopUnavailable):
+            fetch._supervise(loop, lambda: asyncio.sleep(0), lambda: None, lambda: None, 10.0)
+        assert time.monotonic() - began < 2
+    finally:
+        loop.close()

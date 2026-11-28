@@ -30,6 +30,7 @@ from typing import Any, BinaryIO, TypeVar
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.package_download import (
     PackageDownloadWriteError,
+    cleanup_download_file,
     PackageSizeExceeded,
     open_download_file,
     owned_download_file,
@@ -357,10 +358,20 @@ async def download_package(
         httpx, routes, maximum_bytes=maximum_bytes, report_progress=report_progress,
         report_route=report_route, check_cancelled=check_cancelled,
     )
+    delivered: Path | None = None
     try:
         async with owned_download_file(directory) as path:
             async with package_download_deadline(total_timeout):
                 await transfer.run(path)
-        return path
+        delivered = path
     finally:
-        await commit_route_observations(transfer.observations, generation)
+        try:
+            await commit_route_observations(transfer.observations, generation)
+        except BaseException:
+            # Cancelled while saving the history: the caller never gets the
+            # finished file, so it is removed here.
+            if delivered is not None:
+                await run_file_operation(cleanup_download_file, delivered)
+            raise
+    assert delivered is not None  # Set unless the block above raised.
+    return delivered

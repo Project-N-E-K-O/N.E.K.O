@@ -66,6 +66,14 @@ class RouteFailed(Exception):
         self.error = error
 
 
+class _Stopped(Exception):
+    """Carries an exception from ``check_stopped`` through the transfer."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 @dataclass(frozen=True)
 class FetchedAsset:
     path: Path
@@ -192,7 +200,10 @@ def _supervise(
             except RuntimeError:
                 pass  # The loop is closed; nothing of the transfer runs any more.
             else:
-                finished.wait(cleanup_seconds)
+                # A stopped loop runs no callback: waiting for it would only
+                # cost the whole cleanup time.
+                if loop.is_running():
+                    finished.wait(cleanup_seconds)
             task = holder.get("task")
             if task is not None and task.done():
                 # It may have completed while on_poll ran, before the cancel.
@@ -293,24 +304,25 @@ def fetch_release_asset(
                     sources.append(source_id)
             latest[0] = (received, total)
 
-        stops: list[BaseException] = []
-
         def check_cancelled() -> None:
+            # A stop crosses the transfer as _Stopped, which it never counts
+            # as a route failure, whatever the original's type.
             try:
                 check_stopped()
-            except BaseException as stop:
-                stops.append(stop)
-                raise
+            except Exception as stop:
+                raise _Stopped(stop) from stop
 
         try:
             path = await download_package(
                 routes, directory, maximum_bytes=maximum_bytes, total_timeout=remaining,
                 report_progress=report_progress, report_route=report_route, check_cancelled=check_cancelled,
             )
+        except _Stopped as stopped:
+            raise stopped.error from None
         except (OSError, ValueError, httpx.HTTPError) as exc:
-            # What the route did: not the deadline, not a stop (whatever its
-            # type), and not a local write failure (not OSError or ValueError).
-            if single_route and not isinstance(exc, PackageDownloadDeadline) and exc not in stops:
+            # What the route did: not the deadline, and not a local write
+            # failure (PackageDownloadWriteError is neither OSError nor ValueError).
+            if single_route and not isinstance(exc, PackageDownloadDeadline):
                 raise RouteFailed(routes[0][0], exc) from exc
             raise
         return FetchedAsset(path, tuple(sources) or (routes[0][0],), generation)
