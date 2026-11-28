@@ -1928,6 +1928,7 @@ async def test_memory_recall_falls_back_to_the_chat_rerank(outcome):
         except asyncio.CancelledError:
             cancelled.set()
             raise
+        raise AssertionError("the slow decision is cancelled before it ends")
 
     fake_llm = _recall_fake_chat()
     with (

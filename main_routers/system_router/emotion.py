@@ -1054,9 +1054,7 @@ def _interpret_model_result(text, result_text):
     reaction_eligible = False
     model_emoji = None
 
-    # Try parsing the JSON response.
-    emotion = "neutral"
-    confidence = 0.5
+    # Try parsing the JSON response; every path below sets emotion and confidence.
     decision_source = "degraded_fallback"
 
     def _apply_degraded_emotion_fallback():
