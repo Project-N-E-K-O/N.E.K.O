@@ -490,7 +490,7 @@ describe('a familiar up close', () => {
     await click(offered().find(item => item.textContent?.trim() === words.home.presets.general))
     // From one that only reads to one that changes files: said before it is saved.
     expect(byTest('card-preset-widens')?.textContent).toBe(words.space.familiars.presetWidens)
-    expect(byTest('card-preset-moves')).toBeNull()
+    expect(byTest('card-preset-in-dsh')).toBeNull()
     api.changeDuty.mockRejectedValueOnce(refusal('tree_not_landed', {}, 409))
     await click(byTest('card-save'))
     expect(api.changeDuty).toHaveBeenCalledWith('s1', 'general')
@@ -509,11 +509,11 @@ describe('a familiar up close', () => {
       words.space.familiars.presetPending.replace('{now}', words.home.presets.scout).replace('{was}', words.home.presets.general))
     cleanup?.()
 
-    // Begun in the other runtime, and to be a kind that runs in the built-in one only: it starts anew there.
+    // Begun in the other runtime, and to be a kind that withholds tools: it stays there, and that is said.
     await show([card({ kind: 'single', preset: 'general', leader: false, runtime: 'dsh' })])
     await click(byTest('card-edit'))
     await click(offered().find(item => item.textContent?.trim() === words.home.presets.scout))
-    expect(byTest('card-preset-moves')?.textContent).toBe(words.space.familiars.presetMoves)
+    expect(byTest('card-preset-in-dsh')?.textContent).toBe(words.space.familiars.presetInDsh)
     expect(byTest('card-preset-widens')).toBeNull()
     cleanup?.()
 

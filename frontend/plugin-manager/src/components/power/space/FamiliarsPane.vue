@@ -68,7 +68,7 @@
         <!-- Made another kind since it last started work: it is that from its next start. -->
         <div v-if="selected.preset_was" data-testid="familiar-kind-pending">
           <dt>{{ t('power.home.preset') }}</dt>
-          <dd>{{ t('power.space.familiars.presetPending', { now: kindName(selected.preset), was: kindName(selected.preset_was) }) }}</dd>
+          <dd>{{ t('power.space.familiars.presetPending', { now: kindName(selected.preset, selected.label), was: kindName(selected.preset_was) }) }}</dd>
         </div>
       </dl>
 
@@ -152,7 +152,7 @@
           </el-select>
           <p class="muted kind-hint">{{ t('power.space.familiars.presetHint') }}</p>
           <p v-if="kindWidens" class="kind-hint" data-testid="card-preset-widens">{{ t('power.space.familiars.presetWidens') }}</p>
-          <p v-if="kindMoves" class="kind-hint" data-testid="card-preset-moves">{{ t('power.space.familiars.presetMoves') }}</p>
+          <p v-if="kindInDsh" class="kind-hint" data-testid="card-preset-in-dsh">{{ t('power.space.familiars.presetInDsh') }}</p>
         </el-form-item>
       </el-form>
       <!-- Said here as well: the page behind the editor is covered by it. -->
@@ -257,8 +257,9 @@ const kindOf = (name: string) => templates.value.find(item => item.name === name
 // template is gone or wrong is opened with nothing, and the host takes it for one that changes none.)
 const kindWidens = computed(() =>
   draft.preset !== opened.preset && kindOf(draft.preset)?.changes_files === true && kindOf(opened.preset)?.changes_files !== true)
-// Begun in the other runtime, and to be a kind that runs in the built-in one only: it starts anew there.
-const kindMoves = computed(() =>
+// Begun in the other runtime, and to be a kind that withholds tools: it stays there, where the host
+// cannot keep that runtime's own tools from it, and is held to its kind by what it is told.
+const kindInDsh = computed(() =>
   draft.preset !== opened.preset && !!opened.runtime && opened.runtime !== 'builtin' && kindOf(draft.preset)?.needs_builtin === true)
 // Asked for as often as the home panel asks: it answers "unchanged" quickly.
 const POLL_MS = 2000

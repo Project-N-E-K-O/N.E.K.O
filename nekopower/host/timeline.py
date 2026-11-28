@@ -338,6 +338,7 @@ def _event_entry(
     reasons: dict[int, str],
 ) -> dict[str, Any]:
     kind, text, peer, detail = row["type"], "", None, {}
+    whose = row["session_id"]
     if kind == "created":
         kind, text, detail = "filed", _text(row["title"]), {"source": row["source"]}
         if row["parent_id"]:
@@ -426,10 +427,11 @@ def _event_entry(
         text, peer = _text(payload.get("project")), _session(made) if made else None
         detail = {"project": text, "reason": _text(payload.get("reason"))}
     elif kind == "duty_changed":
-        # On record with a commission of the session whose preset it is; told by the
-        # session itself, should the commission be another's by now.
-        whose = payload.get("session") if isinstance(payload.get("session"), str) else None
-        peer = _session(whose) if whose and whose != row["session_id"] else None
+        # On record with a commission of the session whose preset it is, and an entry of
+        # that session: also when the commission is another session's by now (handed over,
+        # carried on in a copy).
+        if isinstance(payload.get("session"), str) and payload["session"]:
+            whose = payload["session"]
         detail = {"from": _text(payload.get("from")), "to": _text(payload.get("to")), "by": _text(payload.get("by"))}
     elif kind == "handed_over":
         to = payload.get("to") if isinstance(payload.get("to"), str) else None
@@ -505,7 +507,7 @@ def _event_entry(
         "at": row["ts"],
         "lanlan_name": row["lanlan_name"],
         "project": row["project"],
-        "session_id": row["session_id"],
+        "session_id": whose,
         "commission_id": row["commission_id"],
         "peer": peer,
         "text": text,

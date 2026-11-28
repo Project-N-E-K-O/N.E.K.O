@@ -746,6 +746,38 @@ class _Found(str):
     """
 
 
+def preset_change_note(was: str, now: str, template: Any, *, in_dsh: bool) -> str:
+    """Return what a session is told of a change of its preset, with the first message of the start after it.
+
+    In the built-in runtime its system prompt and its tools are the new
+    preset's by then, and it is told so. In dsh the system prompt is the
+    process's, and what a session is told of its role came with its
+    first message: it is told the new role here, and, where its preset
+    is without tools that write files or run commands, that it does not
+    use the ones dsh still offers it (the host cannot keep those from a
+    session there, and it stays in the runtime it was begun in).
+    """
+    from config.prompts import prompts_nekopower_presets as presets
+    from nekopower.host.templates import model_name
+
+    names = {"was": model_name(was), "now": model_name(now)}
+    if not in_dsh:
+        return presets.PRESET_CHANGED.format(**names)
+    said = presets.PRESET_CHANGED_IN_DSH.format(role=template.body or presets.PRESET_CHANGED_NO_ROLE, **names)
+    withheld = template.withheld()
+    kept_off = [
+        words
+        for tools, words in (
+            (("write", "edit"), presets.PRESET_IN_DSH_FILES),
+            (("bash", "pwsh"), presets.PRESET_IN_DSH_COMMANDS),
+        )
+        if set(tools) <= withheld
+    ]
+    if kept_off:
+        said += presets.PRESET_IN_DSH_KEEPS_OFF.format(what=" or ".join(kept_off), now=names["now"])
+    return said
+
+
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
     """Whether a session event shows the session took everything sent to it.
 
@@ -2379,9 +2411,13 @@ class TaskAgentManager(TreeWork):
         return bool((await self._template_of(kept)).changes_files)
 
     async def change_duty(
-        self, session_id: str, preset: str, *, by: str = "user", commission_id: str | None = None
+        self, session_id: str, preset: str, *, by: str, commission_id: str | None = None
     ) -> dict[str, Any]:
         """Change the preset of a session: what its task agent may do and is told of its role, from its next start.
+
+        ``by`` says who changes it (``ledger.PRESET_CHANGERS``), and is
+        always given: left to a default, a caller that is not the user
+        would pass for the user, who alone is not asked.
 
         For a member of a project and a session of one commission, to
         any preset but the leader's (whether a session leads a project
@@ -3790,16 +3826,19 @@ class TaskAgentManager(TreeWork):
             opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
-            builtin_only = template.needs_builtin
+            # A preset that withholds tools or caps requests is held to in the built-in
+            # runtime, where a new session of it is opened. One that was begun in dsh goes on
+            # there all the same, with what was said in it (a session given such a preset
+            # later, or whose template came to withhold something): held to its preset there
+            # by what it is told, and by the tools of the host's it is opened without; the
+            # tools dsh has of its own the host cannot keep from it.
+            builtin_only = template.needs_builtin and begun_in != RUNTIME_DSH
             if not choice.agent:
                 # A model the user set for the preset is used in the
                 # built-in runtime only, for now: dsh starts its processes
                 # by the task agent model. A session that was begun in dsh
-                # goes on there, with that model, as before; not one that
-                # leaves dsh with this start in any case (its preset is
-                # held to in the built-in runtime only), which is sent
-                # where it was settled.
-                if begun_in == RUNTIME_DSH and not builtin_only:
+                # goes on there, with that model, as before.
+                if begun_in == RUNTIME_DSH:
                     choice = await self.role_models.agent()
                     config = choice.config
                     if not config or not config.get("model"):
@@ -4014,18 +4053,14 @@ class TaskAgentManager(TreeWork):
             back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
 
             def duty_note(runtime_name: str) -> list[str]:
-                # What it is told of a change of its preset. In dsh, where the system prompt is
-                # the process's and its role was said with its first message, with the role.
                 if not told_as:
                     return []
-                from config.prompts import prompts_nekopower_presets as presets
-                from nekopower.host.templates import model_name
-
-                names = {"was": model_name(told_as), "now": model_name(now_as)}
-                if runtime_name == RUNTIME_DSH:
-                    role = template.body or presets.PRESET_CHANGED_NO_ROLE
-                    return [presets.PRESET_CHANGED_IN_DSH.format(role=role, **names)]
-                return [presets.PRESET_CHANGED.format(**names)]
+                if begun_in != runtime_name or session.cleared_before:
+                    # Nothing that was said under the other preset is in the conversation that
+                    # takes this message (removed since, or in the other runtime): it begins as
+                    # what it is, and there is no change to tell it of.
+                    return []
+                return [preset_change_note(told_as, now_as, template, in_dsh=runtime_name == RUNTIME_DSH)]
 
             def first_message(runtime_name: str) -> tuple[list[str], bool]:
                 here = begun_in == runtime_name
@@ -4169,13 +4204,8 @@ class TaskAgentManager(TreeWork):
                         # On record as started under this preset once the session took the
                         # message, which tells it of the change (``_note_opened``).
                         session.started_as, session.started_as_with = now_as, session.sent + 1
-                    try:
-                        await self._send_text(
-                            runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody
-                        )
-                    except BaseException:
-                        session.started_as = None
-                        raise
+                    # (Not sent, the start fails and nothing of it is taken: it is told with the next.)
+                    await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
                 break
             session.ready = True
             # What was passed on while the session was being set up. Like the

@@ -2565,14 +2565,15 @@ async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_w
     assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)
 
 
-async def test_a_session_begun_in_dsh_that_leaves_it_for_its_preset_is_sent_to_that_presets_model(hosts, tmp_path, monkeypatch):
+async def test_a_session_begun_in_dsh_goes_on_there_also_as_a_preset_that_withholds_tools(hosts, tmp_path, monkeypatch):
     from nekopower.host import task_agents as task_agents_module
 
     manager = _manager(tmp_path, _default_slots())
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
     await host.set_role_model("scout", OWN_SLOT)
-    # A preset that withholds tools is held to in the built-in runtime only: the session is
-    # opened there whatever it was begun in, and nothing keeps it on the model dsh was started by.
+    # A session that was begun in dsh stays there whatever preset it has by now (given another
+    # since, say): with what was said in it, and with the model dsh was started by. It is held to
+    # its preset there by what it is told and by the host's own tools it is opened without.
     await host.open_session("Lan", "Shop site", preset="scout")
     seen: list[tuple[Any, bool]] = []
 
@@ -2584,7 +2585,7 @@ async def test_a_session_begun_in_dsh_that_leaves_it_for_its_preset_is_sent_to_t
     host.task_agents._choose_runtime = choosing
     await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "failed")
 
-    assert seen == [("own-model", True)]
+    assert seen == [("agent-model", False)]
 
 
 async def test_a_session_whose_new_preset_has_no_model_configured_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
@@ -2634,3 +2635,23 @@ async def test_a_model_chosen_for_a_preset_the_session_has_no_longer_is_not_writ
     assert await host.ledger.keep_model(session.id, "scout", model_name="another") is True
     with pytest.raises(ValueError, match="not the columns"):
         await host.ledger.keep_model(session.id, "scout", seat="tree")
+
+
+async def test_a_new_session_of_a_preset_that_withholds_tools_is_opened_in_the_built_in_runtime(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    await host.open_session("Lan", "Shop site", preset="scout")
+    chosen: list[bool] = []
+    choose = host.task_agents._choose_runtime
+
+    async def choosing(commission: Any, model: Any, begun_in: Any, *, builtin_only: bool = False) -> Any:
+        chosen.append(builtin_only)
+        return await choose(commission, model, begun_in, builtin_only=builtin_only)
+
+    host.task_agents._choose_runtime = choosing
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+
+    # Where the host can keep its tools from it; and it goes on where it was begun.
+    assert chosen == [True, True]

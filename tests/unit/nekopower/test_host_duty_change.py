@@ -287,6 +287,12 @@ async def test_after_a_change_the_next_start_puts_the_head_of_its_requests_toget
     (entry,) = [item for item in (await host.timeline(project="Shop site"))["entries"] if item["kind"] == "duty_changed"]
     assert (entry["session_id"], entry["commission_id"], entry["peer"]) == (host.member, first.id, None)
     assert entry["detail"] == {"from": "general", "to": "scout", "by": "user"}
+    # An entry of the session that was changed, also once its commission is another session's.
+    elsewhere = await host.ledger.create_session(lanlan_name="Lan", name="elsewhere", kind="single")
+    await host.ledger.update(first.id, session_id=elsewhere.id)
+    (entry,) = [item for item in (await host.timeline(project="Shop site"))["entries"] if item["kind"] == "duty_changed"]
+    assert (entry["session_id"], entry["peer"]) == (host.member, None)
+    await host.ledger.update(first.id, session_id=host.member)
     # No longer one the project's other members wait for.
     assert host.member not in host.task_agents._writes_in
 
@@ -581,6 +587,36 @@ async def test_a_member_made_one_that_changes_files_waits_for_the_run_of_one_tha
     assert (host.workdir / "a.txt").exists() and (host.workdir / "b.txt").exists()
 
 
+async def test_a_session_that_holds_nothing_said_under_the_other_preset_is_told_of_no_change(hosts, tmp_path, monkeypatch):
+    from nekopower.host import task_agents as task_agents_module
+
+    llm = ScriptedLLM([_report("header fixed"), _report("looked"), _report("looked again")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    await _done(host, "fix the header of the shop site")
+    await host.change_duty(host.member, "scout")
+
+    with pytest.MonkeyPatch.context() as patched:
+        # What was said in it is not in the runtime that takes it (removed since, or in the other one).
+        patched.setattr(task_agents_module, "_begun_in", lambda place, session_dir: None)
+        await _done(host, "look at the footer of the shop site")
+
+    # It begins as what it is: "what is above was done as ..." would be about nothing.
+    assert specs[1].head_of == "scout" and "preset was changed" not in _said(llm.requests[1])
+    assert (await host.ledger.get_session(host.member)).preset_told == "scout"
+    await _done(host, "look at the fonts of the shop site")
+    assert "preset was changed" not in _said(llm.requests[2])
+
+
+def test_who_changes_a_preset_is_always_said():
+    import inspect
+
+    from nekopower.host.task_agents import TaskAgentManager
+
+    # No default: one that is not the user would pass for the user, who alone is not asked.
+    assert inspect.signature(TaskAgentManager.change_duty).parameters["by"].default is inspect.Parameter.empty
+
+
 # ---------------------------------------------------------------------------
 # Who may, and where it works afterwards
 # ---------------------------------------------------------------------------
@@ -800,10 +836,28 @@ async def test_no_worktree_is_made_for_a_member_once_it_was_given_a_preset_that_
 def test_what_a_session_is_told_of_a_change_stays_small():
     from utils.tokenize import count_tokens
 
-    # Once for a change, with the first message of the start after it. Measured 54, and in
-    # dsh, with the longest role a session there can have (the worker's), 136.
-    assert count_tokens(presets.PRESET_CHANGED.format(was="inspector", now="planner")) <= 56
-    with_role = presets.PRESET_CHANGED_IN_DSH.format(was="inspector", now="worker", role=presets.PRESET_BODIES["worker"])
-    assert count_tokens(with_role) <= 138
-    without = presets.PRESET_CHANGED_IN_DSH.format(was="worker", now="general", role=presets.PRESET_CHANGED_NO_ROLE)
-    assert count_tokens(without) <= 56
+    from nekopower.host.task_agents import preset_change_note
+    from nekopower.host.templates import builtin_templates
+
+    made = builtin_templates()
+
+    def said(was: str, now: str, *, in_dsh: bool) -> str:
+        return preset_change_note(was, now, made[now], in_dsh=in_dsh)
+
+    # Once for a change, with the first message of the start after it. Measured 54.
+    assert said("inspector", "planner", in_dsh=False) == presets.PRESET_CHANGED.format(was="inspector", now="planner")
+    assert count_tokens(said("inspector", "planner", in_dsh=False)) <= 56
+    # In dsh it brings the role, and for a preset that is without tools dsh has of its own, that
+    # those are not used. Measured: scout 229, planner 243, inspector 287 (the longest), worker
+    # 136, and 54 for one with no role.
+    measured = {now: count_tokens(said("general" if now != "general" else "worker", now, in_dsh=True)) for now in made if now != "boss"}
+    assert max(measured.values()) == measured["inspector"] <= 289, measured
+    assert measured["worker"] <= 138 and measured["general"] <= 56, measured
+    # What it is told not to use is what its preset is without, of what dsh still offers.
+    files, commands = presets.PRESET_IN_DSH_FILES, presets.PRESET_IN_DSH_COMMANDS
+    for now, what in (("scout", f"{files} or {commands}"), ("planner", f"{files} or {commands}"), ("inspector", files)):
+        told = said("general", now, in_dsh=True)
+        assert made[now].body in told and told.endswith(presets.PRESET_IN_DSH_KEEPS_OFF.format(what=what, now=now)), now
+    for now in ("worker", "general"):
+        assert "still offers you tools" not in said("scout", now, in_dsh=True)
+    assert "still offers you tools" not in said("general", "scout", in_dsh=False)
