@@ -245,11 +245,17 @@ try {
   document.getElementById('proto-ws').textContent = 'proto-ws-blocked';
 }
 try {
-  // Attempt prototype tampering after guard installation; captured intrinsics must still block it.
+  // Attempt prototype + Function.prototype.call tampering after guard installation; bound intrinsics must still block it.
   Object.defineProperty(URL.prototype, 'port', { get: function () { return '80'; }, configurable: true });
   Set.prototype.has = function () { return false; };
-  var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper');
-  ws3.onerror = function () { document.getElementById('tamper-ws').textContent = 'tamper-ws-error'; };
+  var origCall = Function.prototype.call;
+  Function.prototype.call = function () { return null; };
+  try {
+    var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper');
+    ws3.onerror = function () { document.getElementById('tamper-ws').textContent = 'tamper-ws-error'; };
+  } finally {
+    Function.prototype.call = origCall;
+  }
 } catch (e) {
   document.getElementById('tamper-ws').textContent = 'tamper-ws-blocked';
 }

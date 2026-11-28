@@ -1831,7 +1831,10 @@ def test_posix_pipe_spawn_uses_posix_spawnp_file_actions_and_cleans_up_on_error(
     monkeypatch.setattr(launcher, "kill_tree", lambda pid: killed_pids.append(pid))
 
     # Case 1: c_read=4 collides with target FD 4; _dup_fd_above moves it >=5 before building file_actions.
+    # Mock fcntl as well as os.dup so Linux/macOS CI never passes fake descriptors to real fcntl().
     dup_counter = iter([20, 21])
+    fake_fcntl = SimpleNamespace(F_DUPFD_CLOEXEC=1030, F_DUPFD=0, fcntl=lambda fd, cmd, arg: next(dup_counter))
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
     monkeypatch.setattr(os, "dup", lambda fd: next(dup_counter))
     pipes = iter([(4, 12), (13, 3)])
     monkeypatch.setattr(os, "pipe", lambda: next(pipes))
