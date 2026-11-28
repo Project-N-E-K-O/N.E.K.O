@@ -1181,7 +1181,9 @@ async def test_a_tool_called_in_place_of_a_summary_is_a_summary_that_failed(tmp_
     try:
         await _seed(session, events, llm)
         # The request offers the tools, as every request of the session does, and the model calls one.
+        # Tier-2 retries once with tools disabled; if that retry also yields no summary, fall back.
         llm.add(say("Let me look at the files first."), call("glob", {"pattern": "*"}), usage(2_400, 40), finish("tool_calls"))
+        llm.add(finish())
 
         # As after a request that was refused as too long: the older part goes either way.
         await session._fit(force=True)

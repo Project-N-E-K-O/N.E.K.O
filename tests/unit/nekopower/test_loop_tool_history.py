@@ -59,7 +59,9 @@ def test_missing_result_gets_synthetic_interruption() -> None:
     assert isinstance(result, ToolResultMessage)
     assert result.tool_call_id == call.id
     assert result.tool_name == call.name
-    assert result.text == "Tool call interrupted by user"
+    from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_UNKNOWN
+
+    assert result.text == INTERRUPTED_TOOL_UNKNOWN
     assert result.is_error is True
     assert repair.synthesized_results == 1
 
@@ -125,9 +127,11 @@ def test_repeated_call_id_reserves_later_adjacent_result() -> None:
 
     repair = repair_tool_history((first_assistant, user, second_assistant, second_result))
 
+    from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_UNKNOWN
+
     first_result = repair.messages[1]
     assert isinstance(first_result, ToolResultMessage)
-    assert first_result.text == "Tool call interrupted by user"
+    assert first_result.text == INTERRUPTED_TOOL_UNKNOWN
     assert repair.messages == (first_assistant, first_result, user, second_assistant, second_result)
     assert repair.synthesized_results == 1
 

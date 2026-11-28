@@ -3509,7 +3509,20 @@ class TreeWork:
         inspect = bool(payload.get("inspect"))
         taken: list[dict[str, Any]] = []
         refused: list[tuple[str, str]] = []
+        # Stagger sibling members of the same preset behind the first member's
+        # initial provider response so they reuse the warmed prompt cache
+        # instead of racing N cold cache writes simultaneously.
+        first_by_preset: dict[str, str] = {}
+        staggered_presets: set[str] = set()
+        stagger_seconds = float(getattr(settings, "TEAM_START_STAGGER_SECONDS", 0.0) or 0.0)
         for part in parts:
+            preset = part["preset"]
+            if stagger_seconds > 0 and preset in first_by_preset and preset not in staggered_presets:
+                staggered_presets.add(preset)
+                first_live = self._sessions.get(first_by_preset[preset])
+                if first_live is not None and not first_live.first_output.is_set():
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(first_live.first_output.wait(), timeout=stagger_seconds)
             chosen: dict[str, Any] = {"team": True}
             if part["writes"]:
                 chosen["seat"] = "tree"
@@ -3518,12 +3531,13 @@ class TreeWork:
             try:
                 name, child = await self._start_child(
                     commission, name=part["name"], description=part["description"], prompt=part["brief"],
-                    preset=part["preset"], workdir=home, chosen=chosen,
+                    preset=preset, workdir=home, chosen=chosen,
                 )
             except RuntimeError as exc:
                 refused.append((str(part["name"] or part["description"]), str(exc)))
                 continue
-            taken.append({"name": name, "preset": part["preset"], "commission_id": child.id, "writes": part["writes"]})
+            first_by_preset.setdefault(preset, child.id)
+            taken.append({"name": name, "preset": preset, "commission_id": child.id, "writes": part["writes"]})
         # Taken is not started: one for which no worktree could be made after all is not one of the team.
         without = await self._got_no_tree(
             [item["commission_id"] for item in taken if item["writes"]], settings.TEAM_START_WAIT_SECONDS

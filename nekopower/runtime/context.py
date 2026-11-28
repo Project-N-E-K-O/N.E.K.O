@@ -33,7 +33,9 @@ estimated.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -85,6 +87,26 @@ class SummaryCutShort(RuntimeError):
     def __init__(self, text: str) -> None:
         super().__init__("the summary was cut short at its length limit")
         self.text = text
+
+
+class SummaryUsedToolError(RuntimeError):
+    """The model called a tool instead of writing the checkpoint summary."""
+
+
+_ANALYSIS_BLOCK_RE = re.compile(r"<analysis>.*?</analysis>", re.IGNORECASE | re.DOTALL)
+_SUMMARY_BLOCK_RE = re.compile(r"<summary>(.*?)</summary>", re.IGNORECASE | re.DOTALL)
+
+
+def extract_compaction_summary(raw_text: str) -> str:
+    """Strip any ``<analysis>`` scratchpad and unwrap ``<summary>`` tags when present.
+
+    Falls back to the trimmed text when a model omits the XML tags.
+    """
+    cleaned = _ANALYSIS_BLOCK_RE.sub("", raw_text).strip()
+    match = _SUMMARY_BLOCK_RE.search(cleaned)
+    if match is not None:
+        return match.group(1).strip()
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -476,20 +498,88 @@ def prune_rows(rows: Sequence[Row], policy: ContextPolicy, *, include_latest: bo
     return out if changed else None
 
 
+def cap_parallel_batch_results(
+    rows: Sequence[Row],
+    *,
+    budget: int,
+    spill: SpillStore,
+    floor_tokens: int = 512,
+) -> list[Row] | None:
+    """Cap combined tokens of a parallel batch of fresh tool results after the last assistant turn.
+
+    Single-tool turns are handled by Layer 1 (``cap_tool_result``). When two or
+    more fresh tool results arrive together and their combined token estimate
+    exceeds ``budget``, spill the largest results down to an equal share so a
+    parallel fan-out cannot burst the context window in one step. Blocking.
+    """
+    if budget <= 0 or not rows:
+        return None
+    last_assistant = max((i for i, row in enumerate(rows) if row.kind == "assistant"), default=-1)
+    batch_indices = [
+        i
+        for i in range(last_assistant + 1, len(rows))
+        if isinstance(rows[i].message, ToolResultMessage)
+    ]
+    if len(batch_indices) < 2:
+        return None
+    sizes = {i: estimate_tokens(rows[i].message, image_tokens=0) for i in batch_indices}
+    if sum(sizes.values()) <= budget:
+        return None
+    share = max(floor_tokens, budget // len(batch_indices))
+    out = list(rows)
+    changed = False
+    for index in batch_indices:
+        if sizes[index] <= share:
+            continue
+        row = out[index]
+        message = row.message
+        assert isinstance(message, ToolResultMessage)
+        images = [block for block in message.content if isinstance(block, ImageContent)]
+        hint = f"{message.tool_name}-{message.tool_call_id}-batch"
+        parts = first_block_and_rest(message.content)
+        if parts is not None:
+            fitted = cap_result_blocks(*parts, share, spill, hint)
+            if fitted is None:
+                continue
+            updated = message.model_copy(
+                update={"content": [*(TextContent(text=part) for part in fitted), *images]}
+            )
+        else:
+            capped = cap_result_text(message.text, share, spill, hint)
+            if capped is None:
+                continue
+            updated = message.model_copy(update={"content": [TextContent(text=capped), *images]})
+        out[index] = Row(row.entry_id, row.kind, updated)
+        changed = True
+    return out if changed else None
+
+
 # ---------------------------------------------------------------------------
 # Image retention
 # ---------------------------------------------------------------------------
 
 
 def retain_recent_images(
-    rows: Sequence[Row], retention: dict[str, int], pools: dict[str, str] | None = None
+    rows: Sequence[Row],
+    retention: dict[str, int],
+    pools: dict[str, str] | None = None,
+    *,
+    evict_at: dict[str, int] | None = None,
+    include_user_images: bool = False,
 ) -> list[Row] | None:
     """Keep only the newest image results of the listed tools.
 
     ``retention`` maps a tool name to how many of its results keep their
     images. Older ones get a text placeholder. ``pools`` maps a tool name to
     a pool; the tools of one pool are counted together, and the pool keeps
-    the largest number given for any of them. Returns ``None`` if unchanged.
+    the largest number given for any of them.
+
+    When ``evict_at`` is given, each named tool/pool uses hysteresis: eviction
+    for that pool is skipped (leaving older messages byte-for-byte intact for
+    prompt cache reuse) until the pool holds at least ``evict_at`` image rows,
+    at which point it batch-evicts down to ``retention``. Images evicted before
+    the model ever saw them (after the last assistant turn) receive
+    ``IMAGE_OMITTED_UNSEEN_PLACEHOLDER``. Returns ``None`` if unchanged.
     """
     if not retention:
         return None
@@ -498,21 +588,63 @@ def retain_recent_images(
     for name, count in retention.items():
         counter = pools.get(name, name)
         remaining[counter] = max(remaining.get(counter, 0), count)
+
+    def _row_counter(message: AgentMessage) -> str | None:
+        if isinstance(message, ToolResultMessage) and message.tool_name in retention:
+            if any(isinstance(block, ImageContent) for block in message.content):
+                return pools.get(message.tool_name, message.tool_name)
+        elif (
+            include_user_images
+            and "__user__" in retention
+            and isinstance(message, UserMessage)
+            and isinstance(message.content, list)
+            and any(isinstance(block, ImageContent) for block in message.content)
+        ):
+            return pools.get("__user__", "__user__")
+        return None
+
+    active_pools: set[str] | None = None
+    if evict_at:
+        pool_thresholds: dict[str, int] = {}
+        for name, threshold in evict_at.items():
+            if name in retention:
+                counter = pools.get(name, name)
+                pool_thresholds[counter] = max(pool_thresholds.get(counter, 0), int(threshold))
+        if pool_thresholds:
+            counts: dict[str, int] = {}
+            for row in rows:
+                counter = _row_counter(row.message)
+                if counter is not None:
+                    counts[counter] = counts.get(counter, 0) + 1
+            active_pools = {
+                counter
+                for counter in remaining
+                if counter not in pool_thresholds or counts.get(counter, 0) >= pool_thresholds[counter]
+            }
+            if not active_pools:
+                return None
+
+    last_assistant = max((i for i, row in enumerate(rows) if row.kind == "assistant"), default=-1)
     changed = False
     out: list[Row] = list(rows)
     for index in range(len(out) - 1, -1, -1):
         message = out[index].message
-        if not isinstance(message, ToolResultMessage) or message.tool_name not in retention:
+        counter = _row_counter(message)
+        if counter is None:
             continue
-        if not any(isinstance(block, ImageContent) for block in message.content):
+        if active_pools is not None and counter not in active_pools:
             continue
-        counter = pools.get(message.tool_name, message.tool_name)
         if remaining[counter] > 0:
             remaining[counter] -= 1
             continue
+        placeholder = (
+            texts.IMAGE_OMITTED_UNSEEN_PLACEHOLDER
+            if last_assistant >= 0 and index > last_assistant
+            else texts.IMAGE_OMITTED_PLACEHOLDER
+        )
         content = [
-            block if isinstance(block, TextContent) else TextContent(text=texts.IMAGE_OMITTED_PLACEHOLDER)
-            for block in message.content
+            block if isinstance(block, TextContent) else TextContent(text=placeholder)
+            for block in message.content  # type: ignore[union-attr]
         ]
         out[index] = Row(
             out[index].entry_id, out[index].kind, message.model_copy(update={"content": content})
@@ -542,12 +674,20 @@ class Compaction:
     complete: bool = True
 
 
-def frame_summary(summary: str) -> str:
+def frame_summary(
+    summary: str,
+    *,
+    head_truncated: bool = False,
+    has_retained_tail: bool = False,
+) -> str:
     """Wrap a model-written summary as the checkpoint the conversation continues from."""
-    return (
-        f"{texts.CHECKPOINT_PREAMBLE}\n\n{texts.SUMMARY_OPEN_TAG}\n{summary.strip()}\n"
-        f"{texts.SUMMARY_CLOSE_TAG}"
-    )
+    header_parts = [texts.CHECKPOINT_PREAMBLE]
+    if has_retained_tail:
+        header_parts.append(texts.CHECKPOINT_RETAINED_TAIL_NOTE)
+    if head_truncated:
+        header_parts.append(texts.CHECKPOINT_HEAD_TRUNCATED_NOTE)
+    header = "\n".join(header_parts)
+    return f"{header}\n\n{texts.SUMMARY_OPEN_TAG}\n{summary.strip()}\n{texts.SUMMARY_CLOSE_TAG}"
 
 
 def summary_message(stored_summary: str) -> UserMessage:
@@ -621,6 +761,10 @@ class ContextManager:
     image_retention: dict[str, int] = field(default_factory=dict)
     # Tool name -> pool; see ``retain_recent_images``.
     image_pools: dict[str, str] = field(default_factory=dict)
+    # Tool name -> hysteresis trigger count; see ``retain_recent_images``.
+    image_evict_at: dict[str, int] = field(default_factory=dict)
+    # Optional callback invoked if a summary request itself hits provider overflow.
+    on_summary_overflow: Callable[[str, int], None] | None = None
     _anchor_tokens: int | None = None
     _anchor_count: int = 0
 
@@ -698,6 +842,7 @@ class ContextManager:
         pinned: Collection[str] = (),
         or_drop: bool = True,
         reserve_tokens: int = 0,
+        summarize: bool = True,
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
@@ -735,7 +880,12 @@ class ContextManager:
         before its first request, like before every request.
         """
         rows = transcript.rows()
-        trimmed = retain_recent_images(rows, self.image_retention, self.image_pools)
+        trimmed = retain_recent_images(
+            rows,
+            self.image_retention,
+            self.image_pools,
+            evict_at=self.image_evict_at or None,
+        )
         if trimmed is not None:
             transcript.rewrite(trimmed)
             self.invalidate()
@@ -754,6 +904,8 @@ class ContextManager:
             self.invalidate()
             if not force and await self.measure(transcript.messages) <= threshold:
                 return []
+        if not summarize:
+            return []
 
         done: list[Compaction] = []
         # Once where the conversation could stay as it is: it is summed up
@@ -812,11 +964,15 @@ class ContextManager:
             # Nothing but earlier summaries or oversized user text: no gain.
             return None
 
-        summary, usage, complete = await self._summarize_region(replaced, or_drop=or_drop)
+        summary, usage, complete, head_truncated = await self._summarize_region(replaced, or_drop=or_drop)
         if summary is None:
             # No summary to be had, and nothing that has to go: left as it is.
             return None
-        stored = frame_summary(summary)
+        stored = frame_summary(
+            summary,
+            head_truncated=head_truncated,
+            has_retained_tail=cut < len(rows),
+        )
         summary_row = Row(self.new_entry_id(), "summary", summary_message(stored))
         replaced_ids = {row.entry_id for row in replaced}
         new_rows: list[Row] = []
@@ -838,20 +994,50 @@ class ContextManager:
             complete=complete,
         )
 
+    def _summarizer_supports_retry_options(self) -> bool:
+        try:
+            params = inspect.signature(self.summarize).parameters
+        except (TypeError, ValueError):
+            return False
+        return "no_tools" in params and "retry_note" in params
+
+    async def _call_summarizer(
+        self,
+        prepared: list[AgentMessage],
+        max_tokens: int,
+        *,
+        no_tools: bool = False,
+        retry_note: str | None = None,
+    ) -> tuple[str, Usage | None]:
+        if (no_tools or retry_note is not None) and self._summarizer_supports_retry_options():
+            return await self.summarize(prepared, max_tokens, no_tools=no_tools, retry_note=retry_note)  # type: ignore[call-arg]
+        return await self.summarize(prepared, max_tokens)
+
     async def _summarize_region(
         self, region: Sequence[Row], *, or_drop: bool = True
-    ) -> tuple[str | None, Usage | None, bool]:
+    ) -> tuple[str | None, Usage | None, bool, bool]:
         """Ask the model for a checkpoint of ``region`` and say whether it is complete.
 
-        Without a whole summary: what stands in for it when ``or_drop``,
-        else None (see ``fit``).
+        Implements a 3-tier retry ladder when ``or_drop=True``:
+        1. Normal summary call (preserving prompt cache prefix with tools).
+        2. On tool-call-instead-of-summary or empty reply, retry once with tools
+           removed and an explicit plain-text-only prompt.
+        3. On provider context overflow / refusal, notify the window learner,
+           drop the oldest slice of ``prepared``, and retry once before falling
+           back to ``SUMMARY_FALLBACK``.
+
+        When ``or_drop=False`` (e.g. idle compaction), makes at most one request
+        and leaves the conversation unchanged if no complete summary comes back.
         """
+        from nekopower.runtime.model import ContextOverflowError, RequestRefusedError
+
         policy = self.policy
         # The request must fit the window itself: shrink tool results first,
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
         prepared, size = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
-        if not or_drop and (len(prepared) < len(region) or size > room or _leaves_results_out(prepared)):
+        head_truncated = len(prepared) < len(region)
+        if not or_drop and (head_truncated or size > room or _leaves_results_out(prepared)):
             # The oldest messages do not fit into the request, so a summary
             # would stand for a part it was never shown; or what is left
             # (one message, which is never left out) is too long for the
@@ -860,28 +1046,123 @@ class ContextManager:
             # no call, or the second of two of one call), and the
             # summary would stand for it all the same.
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
-            return None, None, False
+            return None, None, False, False
+
+        def _finalize_text(raw: str) -> str:
+            extracted = extract_compaction_summary(raw)
+            return extracted if extracted else raw.strip()
+
+        def _handle_cut_short(cut: SummaryCutShort) -> tuple[str | None, Usage | None, bool, bool]:
+            cleaned = _finalize_text(cut.text)
+            if not or_drop or not cleaned:
+                logger.warning("context summary was cut short at its length limit")
+                return (SUMMARY_FALLBACK if or_drop else None), None, False, head_truncated
+            logger.warning("context summary was cut short at its length limit; kept as far as it got")
+            return f"{cleaned}\n\n{SUMMARY_CUT_SHORT_NOTE}", None, False, head_truncated
+
+        supports_retry_opts = self._summarizer_supports_retry_options()
+        retry_no_tools = False
+        retry_overflow: Exception | None = None
+        summary = ""
+        usage: Usage | None = None
+
         try:
-            summary, usage = await self.summarize(prepared, policy.summary_cap)
+            summary, usage = await self._call_summarizer(prepared, policy.summary_cap)
+            cleaned = extract_compaction_summary(summary)
+            if cleaned:
+                return cleaned, usage, True, head_truncated
+            if or_drop and supports_retry_opts:
+                retry_no_tools = True
+            else:
+                return (SUMMARY_FALLBACK if or_drop else None), usage, False, head_truncated
         except asyncio.CancelledError:
             raise
         except SummaryCutShort as cut:
-            # What it holds of limits on what may be done can be the part
-            # that is missing: not taken for a whole summary.
-            if not or_drop or not cut.text.strip():
-                logger.warning("context summary was cut short at its length limit")
-                return (SUMMARY_FALLBACK if or_drop else None), None, False
-            logger.warning("context summary was cut short at its length limit; kept as far as it got")
-            return f"{cut.text.rstrip()}\n\n{SUMMARY_CUT_SHORT_NOTE}", None, False
+            return _handle_cut_short(cut)
+        except SummaryUsedToolError as exc:
+            if or_drop and supports_retry_opts:
+                logger.warning("context summary called a tool; retrying once without tools: %s", exc)
+                retry_no_tools = True
+            elif not or_drop:
+                logger.warning("context summary failed; the conversation is left as it is: %s", exc)
+                return None, None, False, False
+            else:
+                logger.warning("context summary failed, dropping the older span instead: %s", exc)
+                return SUMMARY_FALLBACK, None, False, head_truncated
+        except (ContextOverflowError, RequestRefusedError) as exc:
+            if not or_drop:
+                logger.warning("context summary refused; the conversation is left as it is: %s", exc)
+                return None, None, False, False
+            retry_overflow = exc
         except Exception as exc:  # noqa: BLE001 - a failed summary must not fail the run
             if not or_drop:
                 logger.warning("context summary failed; the conversation is left as it is: %s", exc)
-                return None, None, False
+                return None, None, False, False
             logger.warning("context summary failed, dropping the older span instead: %s", exc)
-            return SUMMARY_FALLBACK, None, False
-        if not summary.strip():
-            return (SUMMARY_FALLBACK if or_drop else None), usage, False
-        return summary, usage, True
+            return SUMMARY_FALLBACK, None, False, head_truncated
+
+        # Tier 2: retry once with tools disabled when model invoked a tool or returned empty text.
+        if retry_no_tools:
+            try:
+                summary, usage = await self._call_summarizer(
+                    prepared,
+                    policy.summary_cap,
+                    no_tools=True,
+                    retry_note=texts.SUMMARY_NO_TOOLS_RETRY_PROMPT,
+                )
+                cleaned = extract_compaction_summary(summary)
+                if cleaned:
+                    return cleaned, usage, True, head_truncated
+                return SUMMARY_FALLBACK, usage, False, head_truncated
+            except asyncio.CancelledError:
+                raise
+            except SummaryCutShort as cut:
+                return _handle_cut_short(cut)
+            except (ContextOverflowError, RequestRefusedError) as exc:
+                retry_overflow = exc
+            except Exception as exc:  # noqa: BLE001 - fall back cleanly
+                logger.warning("no-tools context summary retry failed: %s", exc)
+                return SUMMARY_FALLBACK, None, False, head_truncated
+
+        # Tier 3: summary request itself overflowed; drop oldest slice and retry once.
+        if retry_overflow is not None:
+            if self.on_summary_overflow is not None and isinstance(retry_overflow, ContextOverflowError):
+                try:
+                    self.on_summary_overflow(str(retry_overflow), size + self.fixed_tokens)
+                except Exception:  # noqa: BLE001 - learning the window is best effort
+                    logger.debug("reporting summary overflow window failed", exc_info=True)
+            if len(prepared) > 1:
+                drop = max(1, (len(prepared) * 2) // 5)
+                start = min(drop, len(prepared) - 1)
+                while start < len(prepared) - 1 and isinstance(prepared[start], ToolResultMessage):
+                    start += 1
+                trimmed = prepared[start:]
+                head_truncated = True
+                logger.warning(
+                    "context summary request overflowed (%s); dropping %d oldest messages and retrying once",
+                    retry_overflow,
+                    start,
+                )
+                try:
+                    summary, usage = await self._call_summarizer(
+                        trimmed,
+                        policy.summary_cap,
+                        no_tools=supports_retry_opts,
+                    )
+                    cleaned = extract_compaction_summary(summary)
+                    if cleaned:
+                        return cleaned, usage, True, head_truncated
+                except asyncio.CancelledError:
+                    raise
+                except SummaryCutShort as cut:
+                    return _handle_cut_short(cut)
+                except Exception as exc:  # noqa: BLE001 - fall back cleanly
+                    logger.warning("trimmed context summary retry failed: %s", exc)
+            else:
+                logger.warning("context summary failed, dropping the older span instead: %s", retry_overflow)
+            return SUMMARY_FALLBACK, None, False, head_truncated
+
+        return SUMMARY_FALLBACK, usage, False, head_truncated
 
 
 def _leaves_results_out(messages: Sequence[AgentMessage]) -> bool:

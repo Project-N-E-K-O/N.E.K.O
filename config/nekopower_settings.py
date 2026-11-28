@@ -1235,9 +1235,15 @@ this is then not searched, as it cannot be told that the record is not in it.
 What a version control system keeps of itself (``.git``) is not counted: a
 search does not read it."""
 
-WAKE_MIN_DELAY_SECONDS = 600.0
+WAKE_MIN_DELAY_SECONDS = 120.0
 """Shortest time a task agent may ask to be woken after. A shorter one is
-moved to this, and the task agent is told."""
+moved to this, and the task agent is told. Kept below the common 5-minute
+prompt-cache TTL so short polling checks (e.g. 180-240 s) can stay warm."""
+
+WAKE_LATE_NOTICE_SECONDS = 120.0
+"""When a timer wake fires this many seconds or more past its scheduled
+``due_at`` (e.g. after app sleep or restart), tell the task agent how late it
+arrived so it knows wall-clock time jumped."""
 
 WAKE_MAX_DELAY_SECONDS = 30 * 24 * 3600.0
 """Longest such time."""
@@ -1737,6 +1743,50 @@ whichever tools they came from (the keyboard-and-mouse tool and the browser's
 screenshot tools are counted together); older ones are replaced with a
 placeholder. The old keyboard-and-mouse loop sent the current screenshot and
 the two before it."""
+
+TASK_AGENT_SCREENSHOTS_EVICT_AT = 7
+"""Hysteresis high-water mark for screenshot retention. Once an image pool
+reaches this many retained screenshots, the oldest ones are batch-evicted down
+to ``TASK_AGENT_SCREENSHOTS_KEPT`` in one step instead of mutating history on
+every single turn (which would invalidate prompt KV caches every turn)."""
+
+TEAM_START_STAGGER_SECONDS = 2.5
+"""Maximum wait for the first member of a same-preset ``start_team`` group to
+emit initial output before launching its remaining peers, avoiding N cold
+cache-creation bursts on identical prefixes."""
+
+TASK_AGENT_STREAM_MAX_RETRIES = 3
+"""Maximum transient transport/5xx/429 retry attempts for one streamed model
+request in the built-in runtime."""
+
+TASK_AGENT_STREAM_BACKOFF_BASE_SECONDS = 0.5
+"""Initial exponential backoff delay for transient stream retries."""
+
+TASK_AGENT_STREAM_BACKOFF_MAX_SECONDS = 32.0
+"""Maximum backoff delay for transient stream retries."""
+
+TASK_AGENT_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
+"""Idle watchdog between consecutive stream chunks before treating a stream as
+stalled and entering recovery."""
+
+TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS = 48_000
+"""Aggregate token budget for all fresh tool results returned in a single
+parallel batch (further bounded by one third of the session context window)."""
+
+TASK_AGENT_AUTO_COMPACT_BREAKER_TURNS = 3
+"""Turn span below which repeated automatic compactions count as rapid refill."""
+
+TASK_AGENT_AUTO_COMPACT_BREAKER_COUNT = 3
+"""Consecutive rapid auto-compactions before tripping the circuit breaker."""
+
+TASK_AGENT_TODO_NUDGE_TURNS = 10
+"""Model turns without updating or being nudged about open todo items before a
+gentle reminder is injected."""
+
+TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO = 0.80
+"""When resuming a session on a smaller-window model whose context exceeds this
+fraction of the new window, attempt one pre-compaction with the previous model
+first so the smaller window does not choke on the existing transcript."""
 
 MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS = 7 * 24 * 3600
 """How long "this model takes no pictures", learned from a provider's refusal,

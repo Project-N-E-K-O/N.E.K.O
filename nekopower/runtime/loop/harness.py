@@ -24,6 +24,7 @@ from nekopower.runtime.loop.messages import (
     UserMessage,
 )
 from nekopower.runtime.loop.provider import ModelProvider
+from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_RUNNING, INTERRUPTED_TOOL_UNKNOWN
 from nekopower.runtime.loop.tools import AgentTool
 from nekopower.runtime.loop.turns import FinishTurn
 
@@ -178,7 +179,7 @@ class AgentHarness:
             # so the synthetic results flow through events and reach push
             # subscribers (persistence) as well as the consumer.
             repaired_from = len(self._messages)
-            self._append_interrupted_tool_results()
+            self._append_interrupted_tool_results(text=INTERRUPTED_TOOL_UNKNOWN)
             repairs = self._messages[repaired_from:]
             async for event in run_agent_loop(
                 provider=self._config.provider,
@@ -203,7 +204,7 @@ class AgentHarness:
         finally:
             if signal.is_cancelled():
                 repaired_from = len(self._messages)
-                self._append_interrupted_tool_results()
+                self._append_interrupted_tool_results(text=INTERRUPTED_TOOL_RUNNING)
                 # The consumer is usually gone here; push the repairs to
                 # subscribers. Listener errors are suppressed; cancellation
                 # itself is not.
@@ -242,12 +243,12 @@ class AgentHarness:
             return messages
         return (queue.popleft(),)
 
-    def append_interrupted_tool_results(self) -> int:
+    def append_interrupted_tool_results(self, *, text: str = INTERRUPTED_TOOL_RUNNING) -> int:
         before = len(self._messages)
-        self._append_interrupted_tool_results()
+        self._append_interrupted_tool_results(text=text)
         return len(self._messages) - before
 
-    def _append_interrupted_tool_results(self) -> None:
+    def _append_interrupted_tool_results(self, *, text: str = INTERRUPTED_TOOL_RUNNING) -> None:
         returned_ids = {
             message.tool_call_id
             for message in self._messages
@@ -264,7 +265,7 @@ class AgentHarness:
                     ToolResultMessage(
                         tool_call_id=call.id,
                         tool_name=call.name,
-                        content=[TextContent(text="Tool call interrupted by user")],
+                        content=[TextContent(text=text)],
                         is_error=True,
                     )
                 )

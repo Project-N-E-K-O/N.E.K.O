@@ -724,3 +724,158 @@ class IdleCompactMixin:
             if self._service.get(session_id) is events:
                 del self._service[session_id]
         return summed_up
+
+    # -- pre-compaction before switching to a smaller-window model ----------
+
+    async def _resolve_model_by_ident(self, target_ident: str) -> Any | None:
+        """Resolve a live ``role_models.Choice`` matching ``target_ident`` across configured endpoints."""
+        from nekopower.host.role_models import SlotUnavailable
+
+        if not target_ident:
+            return None
+        candidates: list[Any] = []
+        for loader in (self.role_models.agent, self.role_models.advanced):
+            try:
+                found = await loader()
+            except (SlotUnavailable, Exception):  # noqa: BLE001 - best-effort lookup
+                continue
+            if found is not None and found.ident == target_ident and found.config and found.config.get("model"):
+                return found
+        slots = getattr(self.role_models, "slots", None)
+        if slots is not None:
+            try:
+                listed = await slots.list()
+            except (SlotUnavailable, Exception):  # noqa: BLE001 - best-effort lookup
+                listed = []
+            for item in listed:
+                slot_id = str(getattr(item, "slot_id", "") or "")
+                if not slot_id:
+                    continue
+                try:
+                    found = await self.role_models.slot(slot_id)
+                except (SlotUnavailable, Exception):  # noqa: BLE001 - skip unavailable slot
+                    continue
+                if found.ident == target_ident and found.config and found.config.get("model"):
+                    candidates.append(found)
+                    break
+        return candidates[0] if candidates else None
+
+    async def _maybe_precompact_for_model_switch(
+        self,
+        commission: Any,
+        kept: Session,
+        new_choice: Any,
+        new_model: Any,
+        *,
+        workdir: str,
+        session_path: str,
+        template: Any,
+    ) -> bool:
+        """Pre-compact a resumed session with its previous larger-window model before switching.
+
+        Triggered only when the session switched models, its recorded context
+        tokens exceed ``TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO`` of the new
+        model's context window, and the previous model is still resolvable with
+        a strictly larger context window. Fail-open on any error so switching
+        never blocks opening the session on the new model.
+        """
+        from config.nekopower_settings import (
+            TASK_AGENT_IDLE_COMPACT_SECONDS,
+            TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO,
+        )
+        from nekopower.runtime.protocol import GatewaySpec
+
+        prev_ident = kept.model_was or (
+            kept.model_ident if kept.model_ident and kept.model_ident != new_choice.ident else ""
+        )
+        if not prev_ident or prev_ident == new_choice.ident:
+            return False
+        new_window = int(getattr(new_model, "context_window", 0) or 0)
+        if new_window <= 0 or kept.context_tokens <= int(new_window * TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO):
+            return False
+        if self._closed or not self._is_switched_on():
+            return False
+        prev_choice = await self._resolve_model_by_ident(prev_ident)
+        if prev_choice is None or not prev_choice.config or not prev_choice.config.get("model"):
+            return False
+        prev_model = await self._model_of(prev_choice.config)
+        if int(getattr(prev_model, "context_window", 0) or 0) <= new_window:
+            return False
+
+        session_id = kept.id
+        events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        grant = f"switch:{session_id}"
+        runtime: Any = None
+        opened = compacted = asked = False
+        try:
+            gateway_spec = None
+            if self._gateway is not None:
+                url = await self._gateway.start()
+                gateway_spec = GatewaySpec(
+                    url=url,
+                    token=self._gateway.issue(
+                        grant,
+                        candidate_plugin_ids=(),
+                        supports_images=prev_model.supports_images,
+                        reads_only=kept.kind == "fork" or template.calls_nothing,
+                    ),
+                )
+            spec = await self._spec(
+                commission,
+                kept,
+                prev_model,
+                workdir=workdir,
+                session_dir=session_path,
+                gateway=gateway_spec,
+                idle_compaction=True,
+                template=template,
+            )
+            runtime = self._runtimes.builtin()
+            if self._pump is None:
+                self._pump = asyncio.ensure_future(self._pump_events())
+            self._service[session_id] = events
+            opened = True
+            await runtime.start(spec)
+
+            async def run_compact() -> None:
+                nonlocal asked, compacted
+                while True:
+                    event = await events.get()
+                    kind = event.get("type")
+                    if kind == "started" and not asked:
+                        if not self._is_switched_on():
+                            return
+                        if not await self._charge(bool(prev_choice.free), commission.id):
+                            return
+                        asked = True
+                        await runtime.compact(session_id)
+                    elif kind == "usage":
+                        await self._note_usage(session_id, None, event)
+                    elif kind == "compacted":
+                        compacted = True
+                    elif kind in ("ended", "error"):
+                        return
+
+            await asyncio.wait_for(run_compact(), TASK_AGENT_IDLE_COMPACT_SECONDS)
+            return compacted
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - best-effort pre-compaction must never block opening the new model
+            logger.warning(
+                "pre-compacting session %s with previous model before model switch failed; continuing",
+                session_id,
+                exc_info=True,
+            )
+            return False
+        finally:
+            if await self._end_service(session_id, runtime, events, opened):
+                compacted = True
+            if self._gateway is not None:
+                self._gateway.revoke(grant)
+            if compacted:
+                await self._length_is_stale(session_id)
+                try:
+                    await self._ledger.end_compacting(session_id, compacted=True)
+                except Exception:  # noqa: BLE001 - best effort metadata sync
+                    logger.debug("updating compacted_at after model-switch pre-compaction failed", exc_info=True)
+            self._settle_usage_of(session_id)

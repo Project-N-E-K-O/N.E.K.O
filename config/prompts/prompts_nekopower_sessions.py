@@ -135,6 +135,8 @@ WAKE_TIMER_NOTICE = (
     "end your turn without a report: nobody needs telling that nothing happened. If the commission is "
     "done, report it."
 )
+# Appended to WAKE_TIMER_NOTICE when a timer wake fires noticeably past its due time.
+WAKE_TIMER_LATE_NOTE = " Note: this wake fired about {minutes} minute(s) after its scheduled time."
 
 # The message that opens a commission filed because a session was written to
 # while nothing was under way in it. Rendered with str.format (commission_id,

@@ -26,6 +26,11 @@ Changes from upstream:
 * ``session/storage.py`` carries two ``noqa: ASYNC_BLOCK`` comments for this
   repository's blocking-call guard. Its coroutines do file work without
   suspending; the runtime drives them in a worker thread.
+* Side-effect-aware interrupted tool results (``loop.py``, ``harness.py``,
+  ``tool_history.py``): synthetic results distinguish queued calls skipped
+  before execution (no side effects), calls interrupted mid-execution (possible
+  partial side effects), and calls orphaned by crash/persistence loss (outcome
+  unknown); duplicate-result repair still recognizes legacy interruption text.
 
 Everything else keeps upstream behavior: ``prompt`` / ``steer`` /
 ``follow_up`` / ``cancel``, the tool hooks, ``finish_turn`` and the repair of

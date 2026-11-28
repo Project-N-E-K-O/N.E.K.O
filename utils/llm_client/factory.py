@@ -97,6 +97,10 @@ def create_chat_llm(
         default_headers.update(dict(kw.pop("default_headers", {}) or {}))
         if _is_kimi_code_anthropic_base_url(base_url):
             default_headers.setdefault("User-Agent", "claude-code/0.1.0")
+        elif "enable_cache_control" not in kw:
+            # Native Anthropic and custom Anthropic-protocol gateways default
+            # to explicit cache_control breakpoints (with 400 auto-fallback).
+            cache_kw["enable_cache_control"] = True
         return ChatAnthropic(
             model=model,
             base_url=base_url,

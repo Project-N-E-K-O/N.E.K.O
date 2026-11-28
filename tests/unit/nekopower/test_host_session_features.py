@@ -1800,12 +1800,13 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     assert await manager._idle_compact(project.id) is True
     assert len(export.requests) == 6
 
-    # Before that it is summed up like any: the clock goes back to a day after it ended.
+    # One-off single sessions are skipped by idle compaction (Decision 1), while project sessions
+    # are still idle-compacted until they expire.
     monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 86_400.0)
-    assert await manager._idle_compact(single.id) is True
-    assert len(weather.requests) == 6
+    assert await manager._idle_compact(single.id) is False
+    assert len(weather.requests) == 5
     session = await host.ledger.get_session(single.id)
-    assert (session.kind, session.status) == ("single", "closed") and session.compacted_at is not None
+    assert (session.kind, session.status) == ("single", "closed") and session.compacted_at is None
 
 
 async def test_a_summing_up_that_got_no_whole_summary_is_not_tried_again_by_itself_and_stops_after_three(
@@ -2522,10 +2523,11 @@ async def test_which_sessions_are_summed_up_while_idle_is_told_by_what_the_ledge
 
     assert allowed()
     assert not manager._idle_compact_allowed(None, now, after)
-    # Every session that goes on being handed commissions, the one of a project and the one of a single
-    # commission alike; not what a task agent started for part of its work, nor a copy. And it holds its
-    # conversation in the built-in runtime.
-    assert [allowed(kind=kind) for kind in ("project", "single", "child", "fork")] == [True, True, False, False]
+    # Long-lived project and line sessions are idle-compacted; one-off single sessions,
+    # child helpers, and forks are skipped. And it holds its conversation in the built-in runtime.
+    assert [allowed(kind=kind) for kind in ("project", "line", "single", "child", "fork")] == [
+        True, True, False, False, False
+    ]
     assert not allowed(runtime="dsh")
     # Closed: not at work, not waiting, not being summed up already, and not emptied.
     assert [allowed(status=status) for status in ("running", "waiting", "compacting", "cleared")] == [False] * 4

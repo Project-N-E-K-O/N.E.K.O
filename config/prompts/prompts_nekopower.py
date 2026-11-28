@@ -273,26 +273,31 @@ WEB_FETCH_HTML_OMITTED = "[HTML content omitted: unable to convert safely.]"
 SUMMARY_OPEN_TAG = "<compacted-summary>"
 SUMMARY_CLOSE_TAG = "</compacted-summary>"
 
-# dsh packages/compaction/compaction-basic/src/summarizer.ts, COMPACTION_INSTRUCTION.
-# Delivered as the final user message after the conversation being condensed.
-# Three things are ours: what "Next Step" has to quote, the rule that keeps
-# what was said about safety and permissions as it was said, and "Next Step"
-# coming last. A summary that rewords the next step lets the task drift a
-# little with every summary, and one that shortens a restriction lifts it.
-# The quotes are the long part: at the end, they are what a summary that
-# reaches its length limit loses, and not the constraints.
+# Compaction instruction delivered as the final user message after the span
+# being condensed. Combines the structured checkpoint sections, verbatim
+# safety/permission constraints, and prior-checkpoint merge rules with
+# explicit <analysis> + <summary> separation, top/bottom no-tool warnings,
+# anti-fabricated-authorization, and self-reference isolation.
 COMPACTION_INSTRUCTION = "\n".join(
     [
         (
-            "You are now acting as a compaction engine for this AI coding assistant. Condense the "
+            "CRITICAL: Respond with plain text ONLY. Do NOT call any tools — tool calls during "
+            "compaction will fail and discard your summary."
+        ),
+        "",
+        (
+            "You are now acting as a compaction engine for this AI assistant. Condense the "
             "conversation ABOVE into a structured checkpoint that lets another model resume the "
             "work with no loss of essential context."
         ),
         "",
         (
-            "Output EXACTLY the Markdown structure below: keep every section, in order. Use terse "
-            'bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a '
-            "section."
+            "First, inside <analysis>...</analysis> tags, briefly inspect the conversation to "
+            "verify exact file paths, commands, decisions, user corrections, and what has or has "
+            "not actually succeeded. Then write the final checkpoint inside <summary>...</summary> "
+            "tags using EXACTLY the Markdown structure below: keep every section, in order. Use "
+            'terse bullets, not prose paragraphs. Write "(none)" for an empty section — never '
+            "drop a section. The <analysis> block will be stripped before storing the checkpoint."
         ),
         "",
         "## Primary Request and Intent",
@@ -310,8 +315,17 @@ COMPACTION_INSTRUCTION = "\n".join(
         "## Errors and Fixes",
         "- [error: how it was resolved, plus any related user feedback]",
         "",
+        "## Problem Solving",
+        "- [approaches tried, dead ends ruled out, and root causes confirmed or still open]",
+        "",
+        "## All User Messages",
+        (
+            "- [non-tool user messages in chronological order so intent changes and corrections "
+            "are never lost]"
+        ),
+        "",
         "## Pending Jobs",
-        "- [explicitly requested work not yet completed]",
+        "- [explicitly requested work or background jobs not yet completed]",
         "",
         "## Current Work",
         "- [precisely what was in progress at this checkpoint]",
@@ -340,13 +354,21 @@ COMPACTION_INSTRUCTION = "\n".join(
             "allowed or refused, what must not be touched, read, run or sent, and every other "
             "instruction about safety or permissions. Do not shorten, soften or leave out any of it."
         ),
-        "- Do NOT mention this summarization request or that the context was compacted.",
-        "- Output only the checkpoint text: do not call any tool or take any other action.",
+        (
+            "- Never invent user approval, permission, verification, or task completion that is "
+            "not explicitly present in the conversation above."
+        ),
+        (
+            "- Write purely as factual handoff notes for the continuing session; do NOT mention "
+            "this summarization request or that the context was compacted."
+        ),
         "- If the conversation already contains a "
         + SUMMARY_OPEN_TAG
         + " block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve "
         "still-true facts, drop stale ones, and merge newer information into a single "
         "consolidated summary under the same structure.",
+        "",
+        "Remember: output ONLY plain text (<analysis> followed by <summary>). Do NOT call any tool.",
     ]
 )
 
@@ -358,8 +380,21 @@ CHECKPOINT_PREAMBLE = (
     "follow, without acknowledging this checkpoint."
 )
 
-# dsh packages/compaction/compaction-tool-result-pruner (README, "Pruned tool result").
-PRUNED_MIDDLE_MARKER = "\n\n[... tool result middle pruned ...]\n\n"
+# Ours: honesty notes added inside framed checkpoints when applicable.
+CHECKPOINT_RETAINED_TAIL_NOTE = (
+    "Recent messages after this checkpoint are kept verbatim; rely on them directly for the "
+    "latest state."
+)
+CHECKPOINT_HEAD_TRUNCATED_NOTE = (
+    "Note: the earliest part of the compacted span exceeded the summary window and was omitted; "
+    "inspect current files rather than assuming unrecorded early details."
+)
+
+# dsh packages/compaction/compaction-tool-result-pruner, extended with side-effect guidance.
+PRUNED_MIDDLE_MARKER = (
+    "\n\n[... tool result middle pruned — this tool already ran and any side effects already "
+    "occurred; do not re-run it blindly ...]\n\n"
+)
 
 # dsh packages/spill/spill-policy/src/index.ts (GAP) and src/notice.ts, with the
 # retrieval hint of packages/spill/spill-local/src/index.ts.
@@ -374,10 +409,22 @@ def spill_notice(omitted_bytes: int, path: str) -> str:
     )
 
 
+def user_input_spill_notice(omitted_bytes: int, path: str) -> str:
+    """Return the notice for an oversized user message whose full text was spilled to disk."""
+    return (
+        f"(Omitted {omitted_bytes} bytes from an oversized user message. Full original text "
+        f"stored at: {path}. Do NOT guess or fabricate the omitted middle; use read with "
+        "offset/limit or grep on this file whenever details from the middle matter.)"
+    )
+
+
 def runtime_context_notice(
     time_text: str,
     running_jobs: "list[str]",
     open_todos: "list[tuple[str, str]]",
+    *,
+    active_goal: str | None = None,
+    reply_language: str | None = None,
 ) -> str:
     """Return the notice carrying facts that change while a session runs (ours).
 
@@ -386,6 +433,10 @@ def runtime_context_notice(
     ``open_todos`` holds ``(status, content)`` pairs.
     """
     lines = [f"Current time: {time_text}"]
+    if active_goal:
+        lines.append(f"Active goal: {active_goal}")
+    if reply_language:
+        lines.append(f"User reply language: {reply_language}")
     if running_jobs:
         lines.append("Background jobs still running: " + "; ".join(running_jobs))
     if open_todos:
@@ -397,6 +448,13 @@ def runtime_context_notice(
 
 # Ours: shown in place of an image that the image-retention policy dropped.
 IMAGE_OMITTED_PLACEHOLDER = "[Earlier image omitted to save context.]"
+IMAGE_OMITTED_UNSEEN_PLACEHOLDER = (
+    "[Image omitted before viewing to save context; re-capture or re-read if needed.]"
+)
+REPEATED_IMAGE_REMINDER = (
+    "You have loaded the exact same image multiple times in a row. Reuse what you already "
+    "observed from it, or change the view or action before capturing again."
+)
 
 # Ours: what a call of a tool is answered with when the session was opened with
 # the tool and it is not on offer right now. Rendered with str.replace.
@@ -404,10 +462,46 @@ TOOL_UNAVAILABLE = (
     "<<NAME>> is not available right now. Go on without it, or report that the task needs it."
 )
 
-# Ours: appended as a user message when the model's reply hit the output limit.
+# Ours: appended as a steering notice when the model's reply hit the output limit.
 OUTPUT_CUT_OFF_NUDGE = (
     "Your previous response was cut off by the output limit. Continue from where it stopped. If "
     "you were about to call a tool, call it now with complete arguments."
+)
+OUTPUT_CUT_OFF_THINKING_NUDGE = (
+    "Your previous response reached the output token limit during reasoning before emitting a "
+    "visible reply or tool call. Keep reasoning brief and emit the answer or next tool call "
+    "directly."
+)
+OUTPUT_CUT_OFF_TOOL_NUDGE = (
+    "Your previous response hit the output token limit mid-tool-call (<<TOOLS>>), so that "
+    "incomplete call was discarded. Retry with smaller, complete tool arguments (for large "
+    "files, write in smaller chunks or edit incrementally)."
+)
+OUTPUT_CUT_OFF_SUBAGENT_NUDGE = (
+    "Your previous response hit the output token limit. Finish concisely now: return only the "
+    "key findings, concrete file paths, and status."
+)
+EMPTY_COMPLETION_NUDGE = (
+    "Your previous turn returned no visible text and no tool calls. Continue directly with the "
+    "next concrete step, or report the final outcome if the work is complete."
+)
+INVALID_TOOL_TURN_NUDGE = (
+    "Your previous turn attempted a malformed tool call (missing tool name) that was discarded. "
+    "Call a valid tool using its exact name and complete JSON arguments, or respond in plain text."
+)
+SUMMARY_NO_TOOLS_RETRY_PROMPT = (
+    "CRITICAL: Your previous attempt tried to call a tool or returned empty output. Tools are "
+    "disabled for this retry. Output ONLY the plain-text structured checkpoint summary."
+)
+AUTO_COMPACT_CIRCUIT_BREAKER_NOTICE = (
+    "Automatic context compaction paused because the conversation refilled to the limit "
+    "repeatedly within a few turns. Largest recent items in context:\n"
+    "<<TOP_ITEMS>>\n"
+    "Avoid re-reading huge outputs; read smaller slices, use grep, or wrap up and report."
+)
+TODO_IDLE_NUDGE = (
+    "Reminder: you have open items on your todo list and have not updated it recently. Keep "
+    "the todo list accurate with todo_write as steps finish or change."
 )
 
 # ---------------------------------------------------------------------------

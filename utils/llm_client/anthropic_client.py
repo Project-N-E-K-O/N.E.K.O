@@ -27,6 +27,11 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     pass
 
+from .cache_control import (
+    _apply_anthropic_cache_control,
+    _is_cache_control_rejection,
+    _strip_anthropic_cache_control,
+)
 from .lifecycle import (
     _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_clients_best_effort, _substitute_character_placeholders,
@@ -60,10 +65,26 @@ _REPLAY_BLOCK_FIELDS = {
 
 
 def _replay_context_key(payload: dict[str, Any], prior_messages: Any) -> str:
-    """Digest of everything a thinking block is bound to: system, tools and earlier messages."""
+    """Digest of everything a thinking block is bound to: system, tools and earlier messages.
+
+    Strips ephemeral ``cache_control`` markers before hashing so rolling
+    prompt-cache breakpoints moving across turns never invalidate preserved
+    thinking-block replay keys.
+    """
     # Store only a digest: history may contain base64 screenshots, and keeping them verbatim as cache keys would exhaust memory.
+    cleaned = _strip_anthropic_cache_control(
+        {
+            "system": payload.get("system"),
+            "tools": payload.get("tools"),
+            "messages": prior_messages,
+        }
+    )
     raw = _json.dumps(
-        {"system": payload.get("system"), "tools": payload.get("tools"), "messages": prior_messages},
+        {
+            "system": cleaned.get("system"),
+            "tools": cleaned.get("tools"),
+            "messages": cleaned.get("messages"),
+        },
         sort_keys=True,
         ensure_ascii=False,
         default=str,
@@ -270,10 +291,15 @@ def _anthropic_usage_to_dict(usage: Any) -> dict[str, Any]:
                 "output_tokens",
                 "cache_creation_input_tokens",
                 "cache_read_input_tokens",
+                "cache_creation",
             )
             if hasattr(usage, key)
         }
-    return {str(k): v for k, v in data.items() if v is not None}
+    out = {str(k): v for k, v in data.items() if v is not None}
+    creation = out.get("cache_creation")
+    if creation is not None and not isinstance(creation, dict) and hasattr(creation, "model_dump"):
+        out["cache_creation"] = creation.model_dump()
+    return out
 
 def _merge_anthropic_usage(target: dict[str, Any], usage: Any) -> None:
     target.update(_anthropic_usage_to_dict(usage))
@@ -798,6 +824,7 @@ class ChatAnthropic:
             max_tokens if max_tokens is not None else max_completion_tokens
         )
         self.enable_cache_control = enable_cache_control
+        self._cache_control_rejected = False
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
 
@@ -932,6 +959,7 @@ class ChatAnthropic:
                 max_tokens, default=int(payload.get("max_tokens") or self.max_tokens)
             )
         overrides.pop("stream", None)
+        overrides.pop("skip_cache_write", None)
         extra_body = overrides.pop("extra_body", _SENTINEL)
         if extra_body:
             _apply_anthropic_body_fields(payload, extra_body)
@@ -967,17 +995,33 @@ class ChatAnthropic:
 
     def _build_payload_for_call(self, messages: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         include_default_extra_body = "extra_body" not in overrides
+        skip_cache_write = bool(overrides.get("skip_cache_write", False))
         payload = self._build_payload(
             messages,
             include_default_extra_body=include_default_extra_body,
         )
         payload = self._apply_overrides(payload, overrides)
         _apply_tool_turn_replay(payload)
+        if self.enable_cache_control and not self._cache_control_rejected:
+            payload = _apply_anthropic_cache_control(payload, skip_cache_write=skip_cache_write)
         return payload
+
+    def _can_retry_without_cache_control(self, exc: BaseException) -> bool:
+        return (
+            self.enable_cache_control
+            and not self._cache_control_rejected
+            and _is_cache_control_rejection(exc)
+        )
 
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload_for_call(messages, overrides)
-        resp = await self._aclient.messages.create(**payload)
+        try:
+            resp = await self._aclient.messages.create(**payload)
+        except Exception as exc:
+            if not self._can_retry_without_cache_control(exc):
+                raise
+            self._cache_control_rejected = True
+            resp = await self._aclient.messages.create(**_strip_anthropic_cache_control(payload))
         text_parts = []
         for block in resp.content:
             if getattr(block, "type", None) == "text":
@@ -998,7 +1042,13 @@ class ChatAnthropic:
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload_for_call(messages, overrides)
-        resp = self._client.messages.create(**payload)
+        try:
+            resp = self._client.messages.create(**payload)
+        except Exception as exc:
+            if not self._can_retry_without_cache_control(exc):
+                raise
+            self._cache_control_rejected = True
+            resp = self._client.messages.create(**_strip_anthropic_cache_control(payload))
         text_parts = []
         for block in resp.content:
             if getattr(block, "type", None) == "text":
@@ -1020,91 +1070,109 @@ class ChatAnthropic:
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
         payload = self._build_payload_for_call(messages, overrides)
         replay_context_key = _replay_context_key(payload, payload.get("messages"))
-        stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
         # Accumulate the complete content for this turn by index; when it contains thinking + tool_use, save it at message_delta
         # (after all content blocks have ended) for replay, so consumers that stop at the end signal do not lose it.
         replay_blocks: dict[int, dict] = {}
         replay_json: dict[int, str] = {}
         replay_ok = True
+        yielded_any = False
         try:
-            async with stream as response_stream:
-                async for event in response_stream:
-                    event_type = getattr(event, "type", "")
-                    if event_type == "message_start":
-                        message = getattr(event, "message", None)
-                        _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
-                    elif event_type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block is not None:
-                            replay_block = _replay_block_from_sdk(block)
-                            if replay_block is None:
-                                replay_ok = False
-                            else:
-                                replay_blocks[int(getattr(event, "index", 0) or 0)] = replay_block
-                        if block and getattr(block, "type", "") == "tool_use":
-                            index = int(getattr(event, "index", 0) or 0)
-                            raw_input = getattr(block, "input", None)
-                            arguments = ""
-                            if raw_input:
-                                arguments = _json.dumps(raw_input, ensure_ascii=False)
-                            yield LLMStreamChunk(
-                                content="",
-                                tool_call_deltas=[{
-                                    "index": index,
-                                    "id": getattr(block, "id", "") or "",
-                                    "type": "function",
-                                    "function": {
-                                        "name": getattr(block, "name", "") or "",
-                                        "arguments": arguments,
-                                    },
-                                }],
-                            )
-                    elif event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        delta_type = getattr(delta, "type", "") if delta else ""
-                        replay_block = replay_blocks.get(int(getattr(event, "index", 0) or 0))
-                        if replay_block is not None:
-                            if delta_type == "text_delta":
-                                replay_block["text"] += getattr(delta, "text", "") or ""
-                            elif delta_type == "thinking_delta":
-                                replay_block["thinking"] += getattr(delta, "thinking", "") or ""
-                            elif delta_type == "signature_delta":
-                                replay_block["signature"] = getattr(delta, "signature", "") or ""
-                        if delta and delta_type == "text_delta":
-                            text = getattr(delta, "text", "") or ""
-                            if text:
-                                yield LLMStreamChunk(content=text)
-                        elif delta and delta_type == "input_json_delta":
-                            partial_json = getattr(delta, "partial_json", "") or ""
-                            index = int(getattr(event, "index", 0) or 0)
-                            replay_json[index] = replay_json.get(index, "") + partial_json
-                            if partial_json:
-                                yield LLMStreamChunk(
-                                    content="",
-                                    tool_call_deltas=[{
-                                        "index": int(getattr(event, "index", 0) or 0),
-                                        "id": "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": partial_json},
-                                    }],
-                                )
-                    elif event_type == "message_delta":
-                        finish_reason = None
-                        delta = getattr(event, "delta", None)
-                        if delta:
-                            finish_reason = getattr(delta, "stop_reason", None)
-                        _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
-                        _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
-                        if replay_ok and replay_blocks and finish_reason == "tool_use":
-                            _remember_streamed_tool_turn(replay_blocks, replay_json, replay_context_key)
-                            replay_blocks = {}
-                        if finish_reason:
-                            mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
-                            yield LLMStreamChunk(content="", finish_reason=mapped_reason)
-                    elif event_type == "message_stop":
-                        message = getattr(event, "message", None)
-                        _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+            for attempt in range(2):
+                stream = self._aclient.messages.stream(**payload)
+                try:
+                    async with stream as response_stream:
+                        async for event in response_stream:
+                            event_type = getattr(event, "type", "")
+                            if event_type == "message_start":
+                                message = getattr(event, "message", None)
+                                _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                            elif event_type == "content_block_start":
+                                block = getattr(event, "content_block", None)
+                                if block is not None:
+                                    replay_block = _replay_block_from_sdk(block)
+                                    if replay_block is None:
+                                        replay_ok = False
+                                    else:
+                                        replay_blocks[int(getattr(event, "index", 0) or 0)] = replay_block
+                                if block and getattr(block, "type", "") == "tool_use":
+                                    index = int(getattr(event, "index", 0) or 0)
+                                    raw_input = getattr(block, "input", None)
+                                    arguments = ""
+                                    if raw_input:
+                                        arguments = _json.dumps(raw_input, ensure_ascii=False)
+                                    yielded_any = True
+                                    yield LLMStreamChunk(
+                                        content="",
+                                        tool_call_deltas=[{
+                                            "index": index,
+                                            "id": getattr(block, "id", "") or "",
+                                            "type": "function",
+                                            "function": {
+                                                "name": getattr(block, "name", "") or "",
+                                                "arguments": arguments,
+                                            },
+                                        }],
+                                    )
+                            elif event_type == "content_block_delta":
+                                delta = getattr(event, "delta", None)
+                                delta_type = getattr(delta, "type", "") if delta else ""
+                                replay_block = replay_blocks.get(int(getattr(event, "index", 0) or 0))
+                                if replay_block is not None:
+                                    if delta_type == "text_delta":
+                                        replay_block["text"] += getattr(delta, "text", "") or ""
+                                    elif delta_type == "thinking_delta":
+                                        replay_block["thinking"] += getattr(delta, "thinking", "") or ""
+                                    elif delta_type == "signature_delta":
+                                        replay_block["signature"] = getattr(delta, "signature", "") or ""
+                                if delta and delta_type == "text_delta":
+                                    text = getattr(delta, "text", "") or ""
+                                    if text:
+                                        yielded_any = True
+                                        yield LLMStreamChunk(content=text)
+                                elif delta and delta_type == "input_json_delta":
+                                    partial_json = getattr(delta, "partial_json", "") or ""
+                                    index = int(getattr(event, "index", 0) or 0)
+                                    replay_json[index] = replay_json.get(index, "") + partial_json
+                                    if partial_json:
+                                        yielded_any = True
+                                        yield LLMStreamChunk(
+                                            content="",
+                                            tool_call_deltas=[{
+                                                "index": int(getattr(event, "index", 0) or 0),
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {"name": "", "arguments": partial_json},
+                                            }],
+                                        )
+                            elif event_type == "message_delta":
+                                finish_reason = None
+                                delta = getattr(event, "delta", None)
+                                if delta:
+                                    finish_reason = getattr(delta, "stop_reason", None)
+                                _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
+                                _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
+                                if replay_ok and replay_blocks and finish_reason == "tool_use":
+                                    _remember_streamed_tool_turn(replay_blocks, replay_json, replay_context_key)
+                                    replay_blocks = {}
+                                if finish_reason:
+                                    mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
+                                    yielded_any = True
+                                    yield LLMStreamChunk(content="", finish_reason=mapped_reason)
+                            elif event_type == "message_stop":
+                                message = getattr(event, "message", None)
+                                _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                    break
+                except Exception as exc:
+                    if attempt == 0 and not yielded_any and self._can_retry_without_cache_control(exc):
+                        self._cache_control_rejected = True
+                        payload = _strip_anthropic_cache_control(payload)
+                        usage_dict.clear()
+                        replay_blocks.clear()
+                        replay_json.clear()
+                        replay_ok = True
+                        continue
+                    raise
         finally:
             if usage_dict:
                 _record_anthropic_token_usage(self.model, usage_dict)
@@ -1119,7 +1187,14 @@ class ChatAnthropic:
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object."""
         payload = self._build_payload_for_call(messages, overrides)
-        resp = await self._aclient.messages.create(**payload)
+        try:
+            resp = await self._aclient.messages.create(**payload)
+        except Exception as exc:
+            if not self._can_retry_without_cache_control(exc):
+                raise
+            self._cache_control_rejected = True
+            payload = _strip_anthropic_cache_control(payload)
+            resp = await self._aclient.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
         _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp
@@ -1127,7 +1202,14 @@ class ChatAnthropic:
     def invoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object (sync)."""
         payload = self._build_payload_for_call(messages, overrides)
-        resp = self._client.messages.create(**payload)
+        try:
+            resp = self._client.messages.create(**payload)
+        except Exception as exc:
+            if not self._can_retry_without_cache_control(exc):
+                raise
+            self._cache_control_rejected = True
+            payload = _strip_anthropic_cache_control(payload)
+            resp = self._client.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
         _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp

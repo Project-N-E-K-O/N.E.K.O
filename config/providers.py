@@ -934,6 +934,21 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         header_name="x-opencode-session",
         header_value=f"ses_{uuid.uuid4().hex}",
     ),
+    "anthropic": CacheProviderConfig(
+        provider_id="anthropic",
+        name="Anthropic Claude",
+        base_url="https://api.anthropic.com",
+        base_url_pattern="api.anthropic.com",
+        cache_mode="explicit",
+        requires_header=False,
+        requires_body_flag=True,
+        min_cache_tokens=1024,
+        auto_cache=False,
+        cache_price=0.10,
+        creation_price=1.25,
+        cached_token_field="cache_read_input_tokens",
+        token_limit_field="max_tokens",
+    ),
 }
 
 

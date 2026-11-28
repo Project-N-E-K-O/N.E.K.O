@@ -18,7 +18,30 @@ from nekopower.runtime.loop.messages import (
     ToolResultMessage,
 )
 
-_INTERRUPTED_TOOL_RESULT = "Tool call interrupted by user"
+# Local change: distinguish side-effect states when synthesizing or recording
+# interrupted tool results (not started vs interrupted mid-run vs unknown after
+# crash/persistence loss), while still recognizing the legacy upstream string.
+INTERRUPTED_TOOL_SKIPPED = (
+    "Skipped: run was cancelled before this tool started (not executed; no side effects)."
+)
+INTERRUPTED_TOOL_RUNNING = (
+    "Tool call interrupted by user while running; it may have had partial side effects — "
+    "verify current state before retrying."
+)
+INTERRUPTED_TOOL_UNKNOWN = (
+    "Tool call outcome unknown: the previous run stopped before recording a result. "
+    "Check current state before assuming it did or did not run."
+)
+_LEGACY_INTERRUPTED_TOOL_RESULT = "Tool call interrupted by user"
+_INTERRUPTED_TOOL_RESULT = INTERRUPTED_TOOL_UNKNOWN
+_SYNTHETIC_INTERRUPTION_TEXTS = frozenset(
+    {
+        _LEGACY_INTERRUPTED_TOOL_RESULT,
+        INTERRUPTED_TOOL_SKIPPED,
+        INTERRUPTED_TOOL_RUNNING,
+        INTERRUPTED_TOOL_UNKNOWN,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,4 +194,4 @@ def repair_tool_history(messages: tuple[AgentMessage, ...]) -> ToolHistoryRepair
 
 
 def _is_interruption_result(message: ToolResultMessage) -> bool:
-    return message.is_error and message.text == _INTERRUPTED_TOOL_RESULT
+    return message.is_error and message.text in _SYNTHETIC_INTERRUPTION_TEXTS

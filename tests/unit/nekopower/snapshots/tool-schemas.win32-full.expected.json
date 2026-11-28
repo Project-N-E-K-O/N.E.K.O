@@ -547,13 +547,13 @@
  },
  {
   "name": "schedule_wake",
-  "description": "Ask to be woken later to go on with this commission: end your turn after it, and you are started again then with your note. For what the host cannot tell you of (a deployment, a build elsewhere, a page that will change), not for what wakes you anyway (a background job, a subagent, a note sent with notify_when_done). Every wake costs a full request: choose the delay by how soon the thing can have changed. The commission stays open meanwhile; a report of ready, blocked or failed drops what is pending.",
+  "description": "Ask to be woken later to go on with this commission: end your turn after it, and you are started again then with your note. For what the host cannot tell you of (a deployment, a build elsewhere, a page that will change), not for what wakes you anyway (a background job, a subagent, a note sent with notify_when_done). Every wake costs a full request: choose the delay by how soon the thing can have changed — prefer 180-240 seconds for short checks to stay inside 5-minute prompt caches, avoid 300 seconds, and use 1200+ seconds for long waits. The commission stays open meanwhile; a report of ready, blocked or failed drops what is pending.",
   "parameters": {
    "type": "object",
    "properties": {
     "delay_seconds": {
      "type": "integer",
-     "description": "Seconds from now; 600 at least."
+     "description": "Seconds from now; 120 at least."
     },
     "note": {
      "type": "string",

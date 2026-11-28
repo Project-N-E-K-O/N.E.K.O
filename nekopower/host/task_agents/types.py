@@ -109,12 +109,11 @@ _USAGE_REASON = "it used as many tokens as one commission may, and the user allo
 # What a note or a wake that waits for a session is dropped with when the
 # session has ended (``Ledger.session_alive``); said to nobody, kept on record.
 _SESSION_ENDED_REASON = "its session has ended"
-# The kinds of session the host sums up while they are idle: all that can be
-# handed a commission again (a session of one commission as well as the
-# leader and the members of a project). Those of a task agent another one
-# started, and copies, are never summed up: they are done with when their
-# part is.
-_IDLE_COMPACT_KINDS = frozenset({"project", "line", "single"})
+# The kinds of session the host sums up while they are idle: long-lived project
+# and line sessions that are reused across commissions. One-off ``single``
+# sessions, helper children, and copies are skipped because most are never
+# resumed, so idle compaction would burn full-price tokens with no payoff.
+_IDLE_COMPACT_KINDS = frozenset({"project", "line"})
 # Added to what is left of the idle time when a timer came due a moment
 # before the ledger had the session idle for long enough: more than the
 # steps of a wall clock, so that the next look is not early again.
@@ -466,6 +465,11 @@ class _Session:
     # changes files; None until it is opened. What its preset says by now
     # may differ (a template changed since): this is what the run has.
     changes_files: bool | None = None
+    # Set once this session emits its first model output, tool start, usage,
+    # error, or terminal event (or is discarded). Used by ``start_team`` to
+    # briefly stagger sibling members of the same preset so they hit a warm
+    # prompt cache instead of cold-writing N identical prefixes in parallel.
+    first_output: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 # How many ends of runs a session keeps at the most (``_Session.ends``):

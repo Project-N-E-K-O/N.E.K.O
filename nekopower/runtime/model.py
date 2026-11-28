@@ -30,8 +30,10 @@ request is rejected:
 Anthropic thinking blocks never reach this module: ``ChatAnthropic`` remembers
 and replays them itself.
 
-Retries are those of the model layer (the SDK's ``max_retries``); nothing is
-retried here.
+Initial HTTP transport retries (429 / 5xx / connection errors) live in the
+underlying model clients (``max_retries``); this layer adds 5-state mid-stream
+drop recovery, stream idle watchdog timeouts, HTTP 529 overloaded backoff, and
+one-shot non-streaming fallback when a streaming endpoint returns HTTP 404.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
@@ -110,6 +113,8 @@ _OVERFLOW_PATTERNS = re.compile(
             r"exceed_context_size",
             r"available context size",
             r"context length of only",
+            # Anthropic combined input + max_tokens rejection ("exceed context limit").
+            r"exceeds? context limit",
         ]
     ),
     re.IGNORECASE,
@@ -167,7 +172,7 @@ def is_context_overflow(error: BaseException) -> bool:
 
 def says_context_overflow(said: str) -> bool:
     """Whether what a provider answered a refused request with says that its input was too long."""
-    return bool(_OVERFLOW_PATTERNS.search(said))
+    return bool(_OVERFLOW_PATTERNS.search(said)) or parse_combined_overflow(said) is not None
 
 
 # What a failed model request says when the provider refused its API key: the
@@ -264,6 +269,159 @@ def window_from_overflow(said: str) -> int | None:
         if low <= stated <= high:
             return stated
     return None
+
+
+# Combined "input + max_tokens > limit" overflow messages where lowering
+# max_tokens avoids unnecessary compaction.
+_COMBINED_OVERFLOW_PATTERNS = (
+    # Anthropic: "input length and max_tokens exceed context limit: 195000 + 8192 > 200000"
+    (re.compile(r"(\d[\d,]*)\s*\+\s*(\d[\d,]*)\s*>\s*(\d[\d,]*)", re.IGNORECASE), (1, 3)),
+    # OpenAI / vLLM / OpenRouter:
+    # "maximum context length is 128000 tokens. However, you requested 130000 tokens
+    #  (122000 in the messages, 8000 in the completion)"
+    (
+        re.compile(
+            r"maximum context length (?:is|of) ([\d,]+)[^\n]*?\(\s*([\d,]+)\s+in the messages",
+            re.IGNORECASE,
+        ),
+        (2, 1),
+    ),
+    # Generic: "input tokens (195000) + max_tokens (8192) exceeds 200000"
+    (
+        re.compile(
+            r"input(?: token)?s?[^0-9\n]{0,20}([\d,]+)[^0-9\n]{0,20}\+[^0-9\n]{0,20}"
+            r"(?:max_tokens|max_completion_tokens|output|completion)[^0-9\n]{0,20}([\d,]+)"
+            r"[^0-9\n]{0,30}(?:exceeds?|limit|maximum|>)[^0-9\n]{0,20}([\d,]+)",
+            re.IGNORECASE,
+        ),
+        (1, 3),
+    ),
+)
+
+
+def parse_combined_overflow(said: str) -> tuple[int, int] | None:
+    """Return ``(input_tokens, limit)`` when an overflow comes from ``input + max_tokens > limit``.
+
+    Only returns a pair when ``0 < input_tokens < limit`` so lowering
+    ``max_tokens`` can actually let the request fit without compaction.
+    """
+    low, high = _STATED_WINDOW_RANGE
+    for pattern, (input_group, limit_group) in _COMBINED_OVERFLOW_PATTERNS:
+        found = pattern.search(said)
+        if found is None:
+            continue
+        try:
+            input_tokens = int(found.group(input_group).replace(",", ""))
+            limit = int(found.group(limit_group).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 < input_tokens < limit and low <= limit <= high:
+            return input_tokens, limit
+    return None
+
+
+class _StreamIdleTimeoutError(TimeoutError):
+    """Raised when an open model stream yields no chunk for the idle timeout."""
+
+
+_TRANSIENT_STREAM_ERROR_NAMES = frozenset(
+    {
+        "RemoteProtocolError",
+        "ReadError",
+        "ReadTimeout",
+        "ConnectError",
+        "ConnectTimeout",
+        "WriteError",
+        "WriteTimeout",
+        "CloseError",
+        "ProtocolError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "IncompleteRead",
+    }
+)
+_TRANSIENT_STREAM_DROP_PATTERNS = re.compile(
+    r"incomplete chunked read|peer closed connection|unexpected eof|stream stalled|"
+    r"stream closed unexpectedly|connection reset|broken pipe|server disconnected",
+    re.IGNORECASE,
+)
+_OVERLOADED_529_PATTERNS = re.compile(r"\b529\b|overloaded_error", re.IGNORECASE)
+_RETRY_AFTER_PATTERNS = re.compile(
+    r"retry[- ]after[:=\s]+([\d.]+)|(?:try again|retry) in\s+([\d.]+)\s*s(?:ec(?:ond)?s?)?",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_stream_drop(exc: BaseException) -> bool:
+    """Whether ``exc`` indicates a transport drop or stall mid-stream."""
+    if isinstance(exc, (_StreamIdleTimeoutError, ConnectionError, TimeoutError, asyncio.TimeoutError, EOFError)):
+        return True
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _TRANSIENT_STREAM_ERROR_NAMES:
+            return True
+    return bool(_TRANSIENT_STREAM_DROP_PATTERNS.search(str(exc)))
+
+
+def _is_overloaded_529(exc: BaseException) -> bool:
+    """Whether ``exc`` is an HTTP 529 overloaded refusal."""
+    if getattr(exc, "status_code", None) == 529:
+        return True
+    return bool(_OVERLOADED_529_PATTERNS.search(str(exc)))
+
+
+def _parse_retry_after(exc: BaseException, *, cap: float) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    raw = None
+    if headers is not None and hasattr(headers, "get"):
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is not None:
+        try:
+            seconds = float(str(raw).strip())
+            if seconds >= 0:
+                return min(seconds, cap)
+        except ValueError:
+            pass
+    found = _RETRY_AFTER_PATTERNS.search(str(exc))
+    if found is not None:
+        raw_match = found.group(1) or found.group(2)
+        if raw_match:
+            try:
+                seconds = float(raw_match)
+                if seconds >= 0:
+                    return min(seconds, cap)
+            except ValueError:
+                pass
+    return None
+
+
+def _retry_delay(attempt: int, exc: BaseException) -> float:
+    from config.nekopower_settings import (
+        TASK_AGENT_STREAM_BACKOFF_BASE_SECONDS,
+        TASK_AGENT_STREAM_BACKOFF_MAX_SECONDS,
+    )
+
+    cap = max(0.0, float(TASK_AGENT_STREAM_BACKOFF_MAX_SECONDS))
+    hinted = _parse_retry_after(exc, cap=cap)
+    if hinted is not None:
+        return hinted
+    base = max(0.0, float(TASK_AGENT_STREAM_BACKOFF_BASE_SECONDS))
+    delay = min(cap, base * (2 ** attempt))
+    return delay * random.uniform(0.75, 1.25)
+
+
+async def _sleep_cancellable(seconds: float, signal: CancellationToken | None) -> None:
+    if seconds <= 0:
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while True:
+        if signal is not None and signal.is_cancelled():
+            raise _Aborted
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(_CANCEL_POLL_SECONDS, remaining))
 
 
 # What a provider says when a request carries a picture its model cannot take.
@@ -690,6 +848,8 @@ class _ResponseBuilder:
         self.partial = AssistantMessage(model=model, provider=provider, api="chat-completions")
         self.finish_reason: str | None = None
         self.emitted_output = False
+        self.dropped_truncated_tools: list[str] = []
+        self.dropped_unnamed_tool_calls = False
         self._splitter = _ThinkTagSplitter()
         self._open: str | None = None
         self._tool_slots: dict[int, dict[str, Any]] = {}
@@ -799,6 +959,145 @@ class _ResponseBuilder:
             slot["extra_content"] = _merge(slot["extra_content"], extra)
         return events
 
+    def has_complete_tool_calls(self) -> bool:
+        """Whether every streamed tool call slot has a name and valid JSON object arguments."""
+        if not self._tool_slots:
+            return False
+        found = False
+        for slot in self._tool_slots.values():
+            if not slot["name"]:
+                return False
+            raw = slot["arguments"]
+            try:
+                parsed = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                return False
+            if not isinstance(parsed, dict):
+                return False
+            found = True
+        return found
+
+    def has_salvageable_text(self) -> bool:
+        """Whether visible assistant text was emitted and no tool call is left half-streamed."""
+        if self._tool_slots:
+            return False
+        if self.partial.text.strip():
+            return True
+        return self._splitter._state != "thinking" and bool(self._splitter._buffer.strip())
+
+    def feed_raw_response(self, raw: Any) -> list[AssistantMessageEvent]:
+        """Convert a non-streaming ``ainvoke_raw`` response into builder events."""
+        from utils.llm_client.messages import LLMStreamChunk
+
+        events: list[AssistantMessageEvent] = []
+        choices = getattr(raw, "choices", None)
+        if choices:
+            choice = choices[0]
+            message = getattr(choice, "message", None)
+            reasoning = getattr(message, "reasoning_content", None) if message is not None else None
+            content = getattr(message, "content", None) if message is not None else None
+            if isinstance(content, list):
+                content = "".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            deltas: list[dict[str, Any]] = []
+            for idx, call in enumerate(getattr(message, "tool_calls", None) or []):
+                fn = getattr(call, "function", None)
+                entry: dict[str, Any] = {
+                    "index": idx,
+                    "id": str(getattr(call, "id", "") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(getattr(fn, "name", "") or ""),
+                        "arguments": str(getattr(fn, "arguments", "") or ""),
+                    },
+                }
+                extra = getattr(call, "extra_content", None)
+                if extra is None and hasattr(call, "model_extra") and isinstance(call.model_extra, dict):
+                    extra = call.model_extra.get("extra_content")
+                if isinstance(extra, dict) and extra:
+                    entry["extra_content"] = extra
+                deltas.append(entry)
+            usage_obj = getattr(raw, "usage", None)
+            usage_meta: dict[str, Any] | None = None
+            if usage_obj is not None:
+                if isinstance(usage_obj, dict):
+                    usage_meta = usage_obj
+                elif hasattr(usage_obj, "model_dump"):
+                    usage_meta = usage_obj.model_dump()
+            events.extend(
+                self.feed(
+                    LLMStreamChunk(
+                        content=str(content or ""),
+                        reasoning_content=str(reasoning) if reasoning else None,
+                        tool_call_deltas=deltas,
+                        finish_reason=getattr(choice, "finish_reason", None),
+                        usage_metadata=usage_meta,
+                    )
+                )
+            )
+            return events
+
+        # Anthropic Message shape (content blocks list).
+        blocks = getattr(raw, "content", None)
+        if isinstance(blocks, list):
+            tool_idx = 0
+            for block in blocks:
+                btype = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
+                if btype == "text":
+                    text = getattr(block, "text", None) if not isinstance(block, dict) else block.get("text")
+                    if text:
+                        events.extend(self.feed(LLMStreamChunk(content=str(text))))
+                elif btype == "tool_use":
+                    raw_input = getattr(block, "input", None) if not isinstance(block, dict) else block.get("input")
+                    call_id = getattr(block, "id", "") if not isinstance(block, dict) else block.get("id", "")
+                    name = getattr(block, "name", "") if not isinstance(block, dict) else block.get("name", "")
+                    events.extend(
+                        self.feed(
+                            LLMStreamChunk(
+                                content="",
+                                tool_call_deltas=[
+                                    {
+                                        "index": tool_idx,
+                                        "id": str(call_id or ""),
+                                        "type": "function",
+                                        "function": {
+                                            "name": str(name or ""),
+                                            "arguments": json.dumps(raw_input or {}, ensure_ascii=False),
+                                        },
+                                    }
+                                ],
+                            )
+                        )
+                    )
+                    tool_idx += 1
+            stop_reason = getattr(raw, "stop_reason", None)
+            mapped_stop = {
+                "end_turn": "stop",
+                "stop_sequence": "stop",
+                "max_tokens": "length",
+                "tool_use": "tool_calls",
+            }.get(str(stop_reason or ""), stop_reason)
+            usage_obj = getattr(raw, "usage", None)
+            usage_meta = None
+            if usage_obj is not None:
+                if isinstance(usage_obj, dict):
+                    usage_meta = usage_obj
+                elif hasattr(usage_obj, "model_dump"):
+                    usage_meta = usage_obj.model_dump()
+            events.extend(
+                self.feed(
+                    LLMStreamChunk(
+                        content="",
+                        finish_reason=str(mapped_stop) if mapped_stop else None,
+                        usage_metadata=usage_meta,
+                    )
+                )
+            )
+        return events
+
     # -- completion -----------------------------------------------------------
 
     def finish(self) -> list[AssistantMessageEvent]:
@@ -814,6 +1113,7 @@ class _ResponseBuilder:
             if not slot["name"]:
                 # A fragment without a name is a streaming glitch; sending it back
                 # would make the provider reject the whole history.
+                self.dropped_unnamed_tool_calls = True
                 logger.warning("dropping a streamed tool call without a name (index %d)", index)
                 continue
             raw = slot["arguments"]
@@ -825,6 +1125,7 @@ class _ResponseBuilder:
                 if truncated:
                     # The output limit cut the call short; running it would act on
                     # half an argument list.
+                    self.dropped_truncated_tools.append(slot["name"])
                     continue
                 parsed = {INVALID_ARGUMENTS_KEY: raw}
             extra = slot["extra_content"]
@@ -917,6 +1218,10 @@ class LLMClientProvider:
         # Pictures the provider would not take, by ``_image_key``.
         self._withheld: set[str] = set()
         self._picture_refusals = 0
+        # Per-request diagnostics inspected by ``TaskAgentSession._finish_turn``
+        # for targeted cutoff and malformed-tool-call nudges.
+        self.last_dropped_truncated_tools: tuple[str, ...] = ()
+        self.last_dropped_unnamed_tool_calls = False
 
     @property
     def config(self) -> ModelConfig:
@@ -1002,6 +1307,8 @@ class LLMClientProvider:
         tools: list[AgentTool],
         max_tokens: int,
         signal: CancellationToken | None = None,
+        skip_cache_write: bool = False,
+        strip_images: bool = False,
     ) -> AssistantMessage:
         """Run one request to completion and return the assistant message.
 
@@ -1011,7 +1318,16 @@ class LLMClientProvider:
         # Closed here rather than whenever the generator is collected: leaving
         # on a failed or aborted response must end the HTTP stream right away.
         async with contextlib.aclosing(
-            self._stream(self._config.model, system, messages, tools, signal, max_tokens)
+            self._stream(
+                self._config.model,
+                system,
+                messages,
+                tools,
+                signal,
+                max_tokens,
+                skip_cache_write=skip_cache_write,
+                strip_images=strip_images,
+            )
         ) as events:
             async for event in events:
                 if isinstance(event, AssistantDoneEvent):
@@ -1032,12 +1348,37 @@ class LLMClientProvider:
         tools: Sequence[AgentTool],
         signal: CancellationToken | None,
         max_tokens: int | None,
+        *,
+        skip_cache_write: bool = False,
+        strip_images: bool = False,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        from config.nekopower_settings import (
+            TASK_AGENT_STREAM_IDLE_TIMEOUT_SECONDS,
+            TASK_AGENT_STREAM_MAX_RETRIES,
+        )
+
         config = self._config
+        self.last_dropped_truncated_tools = ()
+        self.last_dropped_unnamed_tool_calls = False
         builder = _ResponseBuilder(model, config.provider_type or "openai-compatible")
         yield AssistantStartEvent(partial=builder.partial)
         iterator: Any = None
         pending: asyncio.Future[Any] | None = None
+
+        async def _close_stream() -> None:
+            nonlocal iterator, pending
+            if pending is not None and not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            pending = None
+            close = getattr(iterator, "aclose", None)
+            iterator = None
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 - best effort; the request is over either way
+                    logger.debug("closing the model stream failed", exc_info=True)
+
         try:
             client = await self._get_client()
             anthropic = (
@@ -1048,11 +1389,19 @@ class LLMClientProvider:
             overrides: dict[str, Any] = {"tools": to_wire_tools(tools) or None}
             if max_tokens is not None:
                 overrides["max_completion_tokens"] = max_tokens
+            if skip_cache_write:
+                overrides["skip_cache_write"] = True
+            stream_retries = 0
+            max_stream_retries = max(0, int(TASK_AGENT_STREAM_MAX_RETRIES))
+            idle_timeout = float(TASK_AGENT_STREAM_IDLE_TIMEOUT_SECONDS)
+            used_nonstream_fallback = False
+            loop = asyncio.get_running_loop()
             while True:
+                effective_supports_images = self._supports_images and not strip_images
                 # The pictures this request carries, as far as they are sent at all.
                 carried = (
                     await asyncio.to_thread(_image_keys, list(messages)) - self._withheld
-                    if self._supports_images
+                    if effective_supports_images
                     else set()
                 )
                 with_images = bool(carried)
@@ -1061,7 +1410,7 @@ class LLMClientProvider:
                     system,
                     list(messages),
                     anthropic=anthropic,
-                    supports_images=self._supports_images,
+                    supports_images=effective_supports_images,
                     part_max_tokens=part_cap,
                     withheld=frozenset(self._withheld),
                 )
@@ -1069,6 +1418,7 @@ class LLMClientProvider:
                     raise _Aborted
                 iterator = client.astream(wire, **overrides).__aiter__()
                 try:
+                    last_activity = loop.time()
                     while True:
                         pending = asyncio.ensure_future(iterator.__anext__())
                         while True:
@@ -1077,42 +1427,117 @@ class LLMClientProvider:
                                 break
                             if signal is not None and signal.is_cancelled():
                                 raise _Aborted
+                            if idle_timeout > 0 and (loop.time() - last_activity) >= idle_timeout:
+                                pending.cancel()
+                                await asyncio.gather(pending, return_exceptions=True)
+                                pending = None
+                                raise _StreamIdleTimeoutError(
+                                    f"model stream stalled for {idle_timeout:.0f}s with no chunks"
+                                )
                         try:
                             chunk = pending.result()
                         except StopAsyncIteration:
                             break
                         finally:
                             pending = None
+                        last_activity = loop.time()
                         for event in builder.feed(chunk):
                             yield event
                         if signal is not None and signal.is_cancelled():
                             raise _Aborted
                     break
-                except Exception as exc:  # noqa: BLE001 - looked at here, raised again unless it is the one case
+                except _Aborted:
+                    raise
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - classified below; re-raised unless handled
                     kind = image_refusal(exc) if with_images and not builder.emitted_output else None
-                    if kind is None:
-                        raise
-                    if kind == REFUSAL_OF_THE_MODEL:
-                        # The model takes no pictures. Sent once more without
-                        # them, and without them from here on.
-                        logger.warning("the model takes no pictures; sending the request without them: %s", exc)
-                        self._images_refused(str(exc), about_model=True)
-                    else:
-                        # It would not take these. Sent once more without
-                        # them; they are not sent again, later ones are.
-                        logger.warning("the provider refused the pictures of a request; sending it without them: %s", exc)
-                        self._withheld |= carried
-                        self._picture_refusals += 1
-                        if self._picture_refusals >= PICTURE_REFUSALS_BEFORE_GOING_WITHOUT:
-                            self._images_refused(str(exc), about_model=False)
-                    close = getattr(iterator, "aclose", None)
-                    iterator = None
-                    if close is not None:
-                        try:
-                            await close()
-                        except Exception:  # noqa: BLE001 - the refused request is over either way
-                            logger.debug("closing the refused model stream failed", exc_info=True)
-            for event in builder.finish():
+                    if kind is not None:
+                        if kind == REFUSAL_OF_THE_MODEL:
+                            # The model takes no pictures. Sent once more without
+                            # them, and without them from here on.
+                            logger.warning("the model takes no pictures; sending the request without them: %s", exc)
+                            self._images_refused(str(exc), about_model=True)
+                        else:
+                            # It would not take these. Sent once more without
+                            # them; they are not sent again, later ones are.
+                            logger.warning("the provider refused the pictures of a request; sending it without them: %s", exc)
+                            self._withheld |= carried
+                            self._picture_refusals += 1
+                            if self._picture_refusals >= PICTURE_REFUSALS_BEFORE_GOING_WITHOUT:
+                                self._images_refused(str(exc), about_model=False)
+                        await _close_stream()
+                        continue
+
+                    # Streaming endpoint returned HTTP 404 before any output: try
+                    # one-shot non-streaming fallback if the client supports it.
+                    if (
+                        not builder.emitted_output
+                        and not used_nonstream_fallback
+                        and getattr(exc, "status_code", None) == 404
+                        and callable(getattr(client, "ainvoke_raw", None))
+                    ):
+                        used_nonstream_fallback = True
+                        logger.warning("streaming endpoint returned 404; falling back once to non-streaming call")
+                        await _close_stream()
+                        if signal is not None and signal.is_cancelled():
+                            raise _Aborted
+                        raw_resp = await client.ainvoke_raw(wire, **overrides)
+                        for event in builder.feed_raw_response(raw_resp):
+                            yield event
+                        break
+
+                    # Pre-output HTTP 529 overloaded or idle stream timeout: retry with backoff.
+                    if (
+                        not builder.emitted_output
+                        and (_is_overloaded_529(exc) or isinstance(exc, _StreamIdleTimeoutError))
+                        and stream_retries < max_stream_retries
+                    ):
+                        delay = _retry_delay(stream_retries, exc)
+                        stream_retries += 1
+                        logger.warning(
+                            "transient pre-output stream failure (%s); retrying %d/%d in %.2fs",
+                            exc,
+                            stream_retries,
+                            max_stream_retries,
+                            delay,
+                        )
+                        await _close_stream()
+                        await _sleep_cancellable(delay, signal)
+                        continue
+
+                    # 5-state mid-stream recovery on transient drop or stall.
+                    if builder.emitted_output and _is_transient_stream_drop(exc):
+                        await _close_stream()
+                        if builder.has_complete_tool_calls():
+                            logger.warning(
+                                "stream dropped after complete tool call(s); salvaging tool turn: %s", exc
+                            )
+                            break
+                        if builder.has_salvageable_text():
+                            logger.warning(
+                                "stream dropped after partial visible text; salvaging as length cutoff: %s", exc
+                            )
+                            builder.finish_reason = "length"
+                            break
+                        if stream_retries < max_stream_retries:
+                            delay = _retry_delay(stream_retries, exc)
+                            stream_retries += 1
+                            logger.warning(
+                                "stream dropped mid-reasoning/incomplete-tool (%s); resetting and retrying %d/%d in %.2fs",
+                                exc,
+                                stream_retries,
+                                max_stream_retries,
+                                delay,
+                            )
+                            builder = _ResponseBuilder(model, config.provider_type or "openai-compatible")
+                            await _sleep_cancellable(delay, signal)
+                            continue
+                    raise
+            finished = builder.finish()
+            self.last_dropped_truncated_tools = tuple(builder.dropped_truncated_tools)
+            self.last_dropped_unnamed_tool_calls = builder.dropped_unnamed_tool_calls
+            for event in finished:
                 yield event
         except _Aborted:
             yield builder.fail("aborted", "Operation aborted")
@@ -1127,13 +1552,4 @@ class LLMClientProvider:
             logger.warning("model request failed: %s", exc)
             yield builder.fail("error", f"{type(exc).__name__}: {exc}")
         finally:
-            if pending is not None and not pending.done():
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
-            close = getattr(iterator, "aclose", None)
-            if close is not None:
-                # Closing the generator closes the HTTP stream underneath it.
-                try:
-                    await close()
-                except Exception:  # noqa: BLE001 - best effort; the request is over either way
-                    logger.debug("closing the model stream failed", exc_info=True)
+            await _close_stream()
