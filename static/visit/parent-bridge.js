@@ -1318,9 +1318,11 @@
     };
 
     win.addEventListener('pngtuber-model-loaded', function () {
-      // Read current authoritative state: a cached notification may already be stale.
-      if (state.side === 'guest' && state.visitId && ACTIVE_PHASES[state.phase] && state.away) {
-        notifyReviewedVisit('restored', state.visitId, 'guest', true);
+      // An abnormal transport close retains ownership until the visit really ends.
+      var side = state.side || state.closedSide;
+      var visitId = state.visitId || state.closedVisitId;
+      if (side === 'guest' && visitId && ACTIVE_PHASES[state.phase] && state.away) {
+        notifyReviewedVisit('restored', visitId, 'guest', true);
       }
     });
     win.addEventListener('message', onFrameMessage);

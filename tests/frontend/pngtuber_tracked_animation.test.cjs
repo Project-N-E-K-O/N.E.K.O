@@ -2648,3 +2648,37 @@ test('loop crossfade retains reviewed state transition for live draws and snapsh
     m.drawTrackedPlayback(context,1850);assert.ok(p.lastSelection.mix>0);assert.deepEqual(calls,[{time:1850,snapshot:false}]);
     m.drawTrackedPlayback(context,99999,true);assert.deepEqual(calls.at(-1),{time:1850,snapshot:true});
 });
+
+for (const scenario of ['abnormal', 'normal', 'abnormal-then-ended']) {
+    test(`model readiness after ${scenario} close restores only an active guest and never replays departure`, async t => {
+        const {bridge,frame,window,listeners,messages}=visitBridgeFixture();
+        const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+        const id='a'.repeat(22);
+        Object.assign(bridge._state,{visitId:id,side:'guest',phase:'active',away:true});
+        window.pngtuberManager=null;
+        bridge._onFrameMessage({source:frame.contentWindow,origin:'http://localhost',data:{t:'closed',code:scenario==='normal'?1000:1006}});
+        assert.equal(bridge._state.visitId,null);
+        if(scenario==='abnormal-then-ended')bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:id,side:'guest'});
+        const actions=[];m.requestReviewedState=index=>{actions.push(index);return true};
+        window.pngtuberManager={handleReviewedVisit:msg=>{messages.push(msg);return m.handleReviewedVisit(msg)}};
+        for(const fn of listeners['pngtuber-model-loaded'])fn();
+        const active=scenario==='abnormal';
+        assert.equal(m._reviewedVisit,active?id:null);assert.deepEqual(actions,[]);
+        assert.equal(messages.length,active?1:0);
+        if(active){
+            assert.equal(messages[0].action,'restored');assert.equal(messages[0].recovery,true);
+            assert.equal(m.reviewedLeisureEligible({owner:true,busy:false,proactiveEnabled:false}),false);
+            bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:id,side:'guest'});
+            assert.deepEqual(actions,[6]);assert.equal(m._reviewedVisit,null);
+            bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:id,side:'guest'});assert.deepEqual(actions,[6]);
+        }
+    });
+}
+
+test('model readiness prefers the current visit over a retained closed identity', () => {
+    const {bridge,window,listeners,messages}=visitBridgeFixture();
+    Object.assign(bridge._state,{visitId:'b'.repeat(22),side:'host',closedVisitId:'a'.repeat(22),closedSide:'guest',phase:'active',away:true});
+    for(const fn of listeners['pngtuber-model-loaded'])fn();assert.deepEqual(messages,[]);
+    bridge._state.side='guest';for(const fn of listeners['pngtuber-model-loaded'])fn();
+    assert.equal(messages.length,1);assert.equal(messages[0].visit_id,'b'.repeat(22));
+});
