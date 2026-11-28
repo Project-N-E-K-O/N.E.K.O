@@ -5888,7 +5888,11 @@ class TaskAgentSpace:
                 directories = sorted(item for item in year.iterdir() if _is_project(item))
             except OSError:
                 continue
-            projects.extend(self._project_from(item, archive_year=year.name) for item in directories)
+            for item in directories:
+                try:
+                    projects.append(self._project_from(item, archive_year=year.name))
+                except (OSError, ValueError, TypeError, OverflowError):
+                    continue
         return projects
 
     def _directory_of(self, project: Project) -> Path:

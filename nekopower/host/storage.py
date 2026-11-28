@@ -312,7 +312,8 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                 continue
             is_link = _is_reparse_link(child, st)
             if is_link:
-                # Never descend into symlinks or Windows junctions: remove only the link itself.
+                # Never descend into symlinks or Windows junctions: remove only the link itself,
+                # and never chmod a link (which follows links and mutates external targets).
                 try:
                     if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
                         os.rmdir(fs_child)
@@ -322,14 +323,7 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                     # Link already disappeared concurrently.
                     pass
                 except OSError:
-                    _clear_readonly(fs_child)
-                    try:
-                        if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
-                            os.rmdir(fs_child)
-                        else:
-                            os.unlink(fs_child)
-                    except OSError:
-                        failed = True
+                    failed = True
                 continue
             if stat.S_ISDIR(st.st_mode):
                 _delete_tree(child)
@@ -781,7 +775,7 @@ class StorageManager:
         self,
     ) -> tuple[
         dict[str, Any],
-        dict[str, tuple[str, float, str, str | None]],
+        dict[str, tuple[str, float, str, str | None, str | None]],
         set[str],
         set[str],
         set[str],
@@ -792,7 +786,7 @@ class StorageManager:
     ]:
         """Read sessions, untruncated session metadata, live workdirs, projects, and trees in one pass."""
         sessions_by_id: dict[str, Any] = {}
-        all_sessions_meta: dict[str, tuple[str, float, str, str | None]] = {}
+        all_sessions_meta: dict[str, tuple[str, float, str, str | None, str | None]] = {}
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
 
@@ -810,14 +804,15 @@ class StorageManager:
                         str(r["kind"] or ""),
                         str(r["forked_from"]) if r["forked_from"] is not None else None,
                         str(r["workdir"]) if r["workdir"] is not None else None,
+                        str(r["session_dir"]) if r["session_dir"] is not None else None,
                     )
                     for r in conn.execute(
-                        "SELECT id, status, last_active_at, kind, forked_from, workdir FROM sessions"
+                        "SELECT id, status, last_active_at, kind, forked_from, workdir, session_dir FROM sessions"
                     ).fetchall()
                 ]
             )
-            for sid, status, last_active_at, kind, forked_from, workdir in meta_rows:
-                all_sessions_meta[sid] = (status, last_active_at, kind, forked_from)
+            for sid, status, last_active_at, kind, forked_from, workdir, session_dir in meta_rows:
+                all_sessions_meta[sid] = (status, last_active_at, kind, forked_from, session_dir)
                 if status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(sid):
                     active_sessions.add(sid)
                     if workdir:
@@ -1070,7 +1065,7 @@ class StorageManager:
         uncleared_fork_sources: set[str] = set()
         fork_latest_active: dict[str, float] = {}
         busy_fork_sources: set[str] = set()
-        for sid, (s_status, s_last_active, s_kind, s_forked_from) in all_sessions_meta.items():
+        for sid, (s_status, s_last_active, s_kind, s_forked_from, _s_session_dir) in all_sessions_meta.items():
             if s_kind != "fork" or not s_forked_from or s_status == "cleared":
                 continue
             seen_ancestors: set[str] = {sid}
@@ -1107,13 +1102,23 @@ class StorageManager:
             for row in trees:
                 seen_wt_ids.add(os.path.normcase(row.id))
                 wt_path = Path(row.path)
-                stats = measure_dir(wt_path, item_deadline())
+                wt_safety = _classify_path_safety(wt_path, wt_root)
+                if wt_safety == "ok":
+                    stats = measure_dir(wt_path, item_deadline())
+                else:
+                    stats = DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None)
                 wt_whole = wt_whole and stats.whole
                 if stats.exists:
                     wt_total_bytes += stats.bytes
                 in_use = row.id in still_at_it or row.state not in (*TREE_STATES_LEFT, "discarding")
-                can_clean = not in_use
-                can_land = row.state in TREE_STATES_LEFT and row.reason != "skipped" and stats.exists and not in_use
+                can_clean = wt_safety != "unsafe" and not in_use
+                can_land = (
+                    wt_safety == "ok"
+                    and row.state in TREE_STATES_LEFT
+                    and row.reason != "skipped"
+                    and stats.exists
+                    and not in_use
+                )
                 effective_time = max(
                     (t for t in (row.updated_at, stats.newest_mtime) if t is not None),
                     default=row.updated_at,
@@ -1121,17 +1126,23 @@ class StorageManager:
                 if row.state == "discarding" and row.reason == "expired":
                     if not stats.exists:
                         stale = can_clean and stats.whole
+                    elif not can_clean or not stats.whole:
+                        stale = False
                     else:
-                        # Check non-.git files and surviving directories (whose mtimes partial cleanup preserves),
-                        # ignoring row.updated_at which expire_tree() bumped when deferring removal.
-                        disk_mtime, disk_whole = newest_mtime_of(
-                            wt_path,
-                            max(0.05, item_deadline() - time.monotonic()),
-                            skip_git=True,
-                        )
-                        stale = can_clean and stats.whole and disk_whole and (
-                            disk_mtime is None or disk_mtime <= worktree_cutoff
-                        )
+                        remaining = item_deadline() - time.monotonic()
+                        if remaining <= 0:
+                            stale = False
+                        else:
+                            # Check non-.git files and surviving directories (whose mtimes partial cleanup preserves),
+                            # ignoring row.updated_at which expire_tree() bumped when deferring removal.
+                            disk_mtime, disk_whole = newest_mtime_of(
+                                wt_path,
+                                remaining,
+                                skip_git=True,
+                            )
+                            stale = disk_whole and (
+                                disk_mtime is None or disk_mtime <= worktree_cutoff
+                            )
                 else:
                     stale = can_clean and (
                         row.state == "discarding"
@@ -1236,6 +1247,7 @@ class StorageManager:
             work_dirs_reclaimable = 0
 
             transcript_bytes = 0
+            ta_transcript_bytes = 0
             transcript_whole = True
             transcript_sessions = 0
             expired_transcript_count = 0
@@ -1245,6 +1257,7 @@ class StorageManager:
             transcript_reclaimable = 0
             ta_other_bytes = 0
             ta_other_whole = True
+            seen_session_paths: set[str] = set()
 
             def _measure_unclassified(directory: Path, skip: frozenset[str]) -> None:
                 nonlocal ta_other_bytes, ta_other_whole
@@ -1517,13 +1530,19 @@ class StorageManager:
                         # Account for other session files (e.g. dsh-session.json) without double-counting.
                         _measure_unclassified(sess_path, frozenset(sess_skip))
 
+                        seen_session_paths.add(os.path.normcase(os.path.normpath(str(sess_path))))
+                        sess_recorded_dir = sess_meta[4] if sess_meta is not None else None
+                        is_session_dir_match = in_ledger and (
+                            not sess_recorded_dir or _same_path(sess_recorded_dir, sess_path)
+                        )
                         combined = sess_record_bytes + sess_outputs_bytes
                         if has_record or has_outputs:
                             transcript_sessions += 1
                             transcript_bytes += combined
+                            ta_transcript_bytes += combined
                             is_expired = (
                                 not session_active
-                                and in_ledger
+                                and is_session_dir_match
                                 and sess_status != "cleared"
                                 and sess_id not in busy_fork_sources
                                 and sess_last_active is not None
@@ -1531,7 +1550,7 @@ class StorageManager:
                             )
                             is_cleanable_outputs = (
                                 has_outputs
-                                and in_ledger
+                                and is_session_dir_match
                                 and not session_active
                                 and sess_id not in uncleared_fork_sources
                             )
@@ -1546,9 +1565,74 @@ class StorageManager:
                             elif is_cleanable_outputs:
                                 transcript_reclaimable += sess_outputs_bytes
 
+            # 2b. Account for migrated sessions whose ledger session_dir points to an older data root.
+            for sid, (s_status, s_last_active, _s_kind, _s_forked, s_session_dir) in all_sessions_meta.items():
+                if not s_session_dir:
+                    continue
+                ext_dir = Path(s_session_dir)
+                norm_ext = os.path.normcase(os.path.normpath(str(ext_dir)))
+                if norm_ext in seen_session_paths:
+                    continue
+                if ext_dir.name != sid or ext_dir.parent.name != "sessions":
+                    continue
+                ext_projects = ext_dir.parent.parent.parent
+                ext_ta_root = ext_projects.parent
+                if ext_projects.name != "projects" or ext_ta_root.name != "task_agents":
+                    continue
+                if _classify_path_safety(ext_dir, ext_ta_root) != "ok":
+                    continue
+                seen_session_paths.add(norm_ext)
+                ext_record_bytes = 0
+                ext_outputs_bytes = 0
+                ext_has_record = False
+                ext_has_outputs = False
+                for fname in (TRANSCRIPT_NAME, SYSTEM_SNAPSHOT_NAME):
+                    fpath = ext_dir / fname
+                    if _classify_path_safety(fpath, ext_ta_root) != "ok":
+                        continue
+                    try:
+                        fst = os.lstat(_fs(fpath))
+                        if stat.S_ISREG(fst.st_mode):
+                            ext_record_bytes += int(fst.st_size)
+                            ext_has_record = True
+                    except OSError:
+                        pass
+                ext_out = ext_dir / _OUTPUTS_NAME
+                if _classify_path_safety(ext_out, ext_ta_root) == "ok" and ext_out.is_dir() and not _is_reparse_link(ext_out):
+                    ostats = measure_dir(ext_out, item_deadline())
+                    transcript_whole = transcript_whole and ostats.whole
+                    ext_outputs_bytes = ostats.bytes
+                    ext_has_outputs = True
+                ext_combined = ext_record_bytes + ext_outputs_bytes
+                if ext_has_record or ext_has_outputs:
+                    ext_active = sid in active_sessions
+                    transcript_sessions += 1
+                    transcript_bytes += ext_combined
+                    is_expired = (
+                        not ext_active
+                        and s_status != "cleared"
+                        and sid not in busy_fork_sources
+                        and s_last_active <= transcript_cutoff
+                    )
+                    is_cleanable_outputs = (
+                        ext_has_outputs
+                        and not ext_active
+                        and sid not in uncleared_fork_sources
+                    )
+                    if is_expired:
+                        expired_transcript_count += 1
+                        expired_transcript_bytes += ext_combined
+                    if is_cleanable_outputs:
+                        outputs_count += 1
+                        outputs_bytes += ext_outputs_bytes
+                    if is_expired:
+                        transcript_reclaimable += ext_combined
+                    elif is_cleanable_outputs:
+                        transcript_reclaimable += ext_outputs_bytes
+
             # 3. Measure remaining places (space, dsh, browser_profile) + root files
             place_measurements: dict[str, tuple[bool, int | None, bool]] = {}
-            ta_total = work_dirs_bytes + transcript_bytes + ta_other_bytes
+            ta_total = work_dirs_bytes + ta_transcript_bytes + ta_other_bytes
             place_measurements["task_agents"] = (
                 ta_exists,
                 ta_total if ta_exists else None,
@@ -1709,6 +1793,12 @@ class StorageManager:
             path = next((Path(place["path"]) for place in self._places() if place["key"] == item_id), None)
             if path is None:
                 raise ValueError("bad_place")
+            if item_id == "worktrees":
+                safety = await asyncio.to_thread(_classify_path_safety, path, self._paths.root())
+                if safety == "missing":
+                    raise FileNotFoundError("place_missing")
+                if safety != "ok":
+                    raise ValueError("bad_place")
             if not await asyncio.to_thread(path.is_dir):
                 raise FileNotFoundError("place_missing")
             return path
@@ -1733,7 +1823,19 @@ class StorageManager:
             if await asyncio.to_thread(self._paths.ledger_db().is_file):
                 row = await self._ledger.get_tree(name)
                 if row is not None:
+                    wt_root_dir = Path(row.path)
+                    wt_safety = await asyncio.to_thread(_classify_path_safety, wt_root_dir, self._paths.worktrees_dir())
+                    if wt_safety == "missing":
+                        raise FileNotFoundError("place_missing")
+                    if wt_safety != "ok":
+                        raise ValueError("no_worktree")
                     target = Path(row.workdir or row.path)
+                    if not _same_path(target, wt_root_dir):
+                        target_safety = await asyncio.to_thread(_classify_path_safety, target, wt_root_dir)
+                        if target_safety == "missing":
+                            raise FileNotFoundError("place_missing")
+                        if target_safety != "ok":
+                            raise ValueError("no_worktree")
                     if not await asyncio.to_thread(target.is_dir):
                         raise FileNotFoundError("place_missing")
                     return target
@@ -1931,13 +2033,16 @@ class StorageManager:
                         return "policy_changed", 0
 
             def _verify_and_remove() -> tuple[str, int]:
+                saved_times: list[tuple[str, tuple[int, int], frozenset[str]]] = []
                 if until is not None:
                     from config.nekopower_settings import STORAGE_AUTO_CLEAN_SCAN_SECONDS
+                    from nekopower.host.worktrees import _snapshot_dir_times
 
                     if expected_kept_days is not None and not self.settings.allows_auto_clean(
                         "work_dirs", expected_kept_days
                     ):
                         return "policy_changed", 0
+                    saved_times = _snapshot_dir_times(target, skip_names=frozenset())
                     recheck_mtime, recheck_whole = newest_mtime_of(target, STORAGE_AUTO_CLEAN_SCAN_SECONDS)
                     if not recheck_whole:
                         return "scan_incomplete", 0
@@ -1948,6 +2053,10 @@ class StorageManager:
                     ):
                         return "policy_changed", 0
                 removed, freed = remove_dir_safely(target, ta_root)
+                if not removed and saved_times and os.path.lexists(_fs(target)):
+                    from nekopower.host.worktrees import _restore_surviving_dir_times
+
+                    _restore_surviving_dir_times(saved_times)
                 return ("cleaned" if removed else "not_removed"), freed
 
             try:
@@ -1979,8 +2088,15 @@ class StorageManager:
         for tree_id in validated:
             row = await self._ledger.get_tree(tree_id) if await asyncio.to_thread(self._paths.ledger_db().is_file) else None
             path_to_measure = Path(row.path) if row is not None else self._paths.worktree_dir(tree_id)
-            pre = await asyncio.to_thread(measure_dir, path_to_measure, time.monotonic() + 0.25)
-            est_bytes = pre.bytes if pre.exists else 0
+            wt_safety = await asyncio.to_thread(_classify_path_safety, path_to_measure, self._paths.worktrees_dir())
+            if wt_safety not in ("ok", "missing"):
+                failed.append({"id": tree_id, "code": "unsafe_path"})
+                continue
+            if wt_safety == "ok":
+                pre = await asyncio.to_thread(measure_dir, path_to_measure, time.monotonic() + 0.25)
+                est_bytes = pre.bytes if pre.exists else 0
+            else:
+                est_bytes = 0
 
             if row is not None:
                 if row.state == "discarding":

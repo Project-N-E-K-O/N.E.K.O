@@ -1656,23 +1656,24 @@ class SpaceKeeper:
         ).fetchall()
 
     @staticmethod
-    def _clean_session(directory: Path, session_id: str) -> str:
-        """Remove what was said in a session; its working directory is not touched. Blocking.
-
-        Only in a directory that is a session's by its place and name, and
-        only what the runtime writes there: the transcript, the tool
-        output it kept, and the system prompt the session was opened with.
-        Returns ``removed``, ``nothing`` (there was nothing to remove) or
-        ``not_removed`` (something is still there: held open by another
-        program, say).
-        """
+    def _clean_session_with_bytes(
+        directory: Path, session_id: str, *, measure_fn: Any = None
+    ) -> tuple[str, int]:
+        """Remove what was said in a session and report ``(outcome, freed_bytes)``. Blocking."""
         if directory.name != session_id or directory.parent.name != "sessions":
-            return _NOTHING
+            return _NOTHING, 0
         removed = failed = False
+        freed = 0
         transcript = directory / TRANSCRIPT_NAME
         try:
             if transcript.is_file() and not transcript.is_symlink():
+                size = 0
+                try:
+                    size = int(transcript.lstat().st_size)
+                except OSError:
+                    size = 0
                 transcript.unlink()
+                freed += size
                 removed = True
         except OSError:
             failed = True
@@ -1685,7 +1686,13 @@ class SpaceKeeper:
             # with nothing said is put together anew.
             gone = not transcript.exists() and not transcript.is_symlink()
             if gone and snapshot.is_file() and not snapshot.is_symlink():
+                size = 0
+                try:
+                    size = int(snapshot.lstat().st_size)
+                except OSError:
+                    size = 0
                 snapshot.unlink()
+                freed += size
                 removed = True
         except OSError:
             failed = True
@@ -1693,14 +1700,61 @@ class SpaceKeeper:
         outputs = directory / _OUTPUTS_NAME
         try:
             if outputs.is_dir() and not outputs.is_symlink():
-                shutil.rmtree(outputs)
-                removed = True
+                out_before = 0
+                if measure_fn is not None:
+                    try:
+                        out_before = int(measure_fn(outputs, time.monotonic() + 0.25).bytes)
+                    except (OSError, ValueError):
+                        out_before = 0
+                try:
+                    shutil.rmtree(outputs)
+                    freed += out_before
+                    removed = True
+                except OSError:
+                    failed = True
+                    logger.warning("old tool output could not be removed", exc_info=True)
+                    if measure_fn is not None and out_before > 0:
+                        try:
+                            out_after = int(measure_fn(outputs, time.monotonic() + 0.25).bytes)
+                        except (OSError, ValueError):
+                            out_after = out_before
+                        freed += max(0, out_before - out_after)
         except OSError:
             failed = True
             logger.warning("old tool output could not be removed", exc_info=True)
         if failed:
-            return _NOT_REMOVED
-        return _REMOVED if removed else _NOTHING
+            return _NOT_REMOVED, freed
+        return (_REMOVED if removed else _NOTHING), freed
+
+    @staticmethod
+    def _clean_session(directory: Path, session_id: str) -> str:
+        """Remove what was said in a session; its working directory is not touched. Blocking.
+
+        Only in a directory that is a session's by its place and name, and
+        only what the runtime writes there: the transcript, the tool
+        output it kept, and the system prompt the session was opened with.
+        Returns ``removed``, ``nothing`` (there was nothing to remove) or
+        ``not_removed`` (something is still there: held open by another
+        program, say).
+        """
+        outcome, _freed = SpaceKeeper._clean_session_with_bytes(directory, session_id)
+        return outcome
+
+    def _clean_with_bytes(
+        self, directory: Path, session_id: str, *, measure_fn: Any = None
+    ) -> tuple[str, int]:
+        """Remove what was said in a session, returning ``(outcome, freed_bytes)``."""
+        outcome, freed = self._clean_session_with_bytes(directory, session_id, measure_fn=measure_fn)
+        forget = self._forget_dsh_session
+        if forget is None or directory.name != session_id or directory.parent.name != "sessions":
+            return outcome, freed
+        try:
+            if forget(directory) and outcome == _NOTHING:
+                return _REMOVED, freed
+        except OSError:
+            logger.warning("what dsh kept of an old session could not be removed", exc_info=True)
+            return _NOT_REMOVED, freed
+        return outcome, freed
 
     def _clean(self, directory: Path, session_id: str) -> str:
         """Remove what was said in a session, wherever it is kept. Blocking; returns what ``_clean_session`` does.
@@ -1764,6 +1818,24 @@ class SpaceKeeper:
             if not copies_ok:
                 return _NOT_REMOVED, copies_freed
             directory = Path(await asyncio.to_thread(self._session_dir_of, current))
+            use_direct_bytes = (
+                measure_fn is not None
+                and self._clean_session is SpaceKeeper._clean_session
+                and self._record_bytes is SpaceKeeper._record_bytes
+                and getattr(self._clean, "__func__", None) is SpaceKeeper._clean
+            )
+            if use_direct_bytes:
+                # A thread cannot be stopped. Cancelled (the host shutting down),
+                # this still waits for the removing to finish before the hold
+                # below is given back and before shutting down goes on: nothing
+                # opens the session while its files are still being removed.
+                outcome, item_freed = await to_thread_through_cancellation(
+                    self._clean_with_bytes, directory, current.id, measure_fn=measure_fn
+                )
+                if outcome == _REMOVED:
+                    # With the session, and with each commission of it.
+                    await asyncio.shield(self._ledger.mark_session_cleared(current.id))
+                return outcome, item_freed + copies_freed
             est = 0
             if measure_fn is not None:
                 try:
@@ -1779,6 +1851,12 @@ class SpaceKeeper:
                 # With the session, and with each commission of it.
                 await asyncio.shield(self._ledger.mark_session_cleared(current.id))
                 return outcome, est + copies_freed
+            if outcome == _NOT_REMOVED and measure_fn is not None and est > 0:
+                try:
+                    remaining = await asyncio.to_thread(self._record_bytes, directory, measure_fn)
+                except (OSError, ValueError):
+                    remaining = est
+                return outcome, max(0, est - remaining) + copies_freed
             return outcome, copies_freed
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
@@ -1948,6 +2026,8 @@ class SpaceKeeper:
             if not found:
                 break
             for session_id, _last_active_at in found:
+                if self._closed:
+                    break
                 outcome, item_freed = await self._clean_one_result(session_id, until, measure_fn=measure_dir)
                 freed += item_freed
                 if outcome == _REMOVED:

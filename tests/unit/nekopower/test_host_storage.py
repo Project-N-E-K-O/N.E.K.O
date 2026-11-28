@@ -1468,10 +1468,12 @@ async def test_round5_project_enum_error_grandchild_fork_and_unclassified_files(
         # 3. Regular file named "sessions" under task_agents/projects/<proj>/ must be counted in "other".
         odd_proj = host.paths.root() / "task_agents" / "projects" / "fileproj"
         odd_proj.mkdir(parents=True)
+        before_view = await host.storage_overview()
+        before_other = next(c for c in before_view["categories"] if c["key"] == "other")["bytes"]
         (odd_proj / "sessions").write_bytes(b"z" * 333)
         view_other = await host.storage_overview()
         other_cat = next(c for c in view_other["categories"] if c["key"] == "other")
-        assert other_cat["bytes"] >= 333
+        assert other_cat["bytes"] - before_other == 333
 
         # 4. Ledger sessions_by_forked_from index prevents full table SCAN on forks_of queries.
         plan = await host.ledger.run(
@@ -2504,7 +2506,7 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
         async def real_dir_remove_if_untouched(handle: Worktree, is_untouched: Any = None) -> str:
             if is_untouched is not None and not is_untouched(handle.path):
                 return "aborted"
-            wt_mod._remove_worktree_dir(handle.path)
+            wt_mod._remove_worktree_dir(handle.path, preserve_dir_times=is_untouched is not None)
             if handle.path.exists():
                 raise WorktreeRemovalIncomplete("locked.txt still open")
             removed_on_retry["done"] = True
@@ -2606,7 +2608,7 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
 
         with monkeypatch.context() as mp:
             mp.setattr(wt_mod.os, "unlink", concurrent_add_on_unlink)
-            wt_mod._remove_worktree_dir(wt_conc)
+            wt_mod._remove_worktree_dir(wt_conc, preserve_dir_times=True)
         assert (wt_conc / "moved_during_cleanup.bin").exists()
         assert wt_conc.stat().st_mtime > old_ts + DAY
 
@@ -2633,7 +2635,7 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
 
         with monkeypatch.context() as mp:
             mp.setattr(wt_mod, "_snapshot_dir_times", spy_snapshot)
-            assert wt_mod._remove_worktree_dir(wt_abort, before_delete=abort_guard) is False
+            assert wt_mod._remove_worktree_dir(wt_abort, before_delete=abort_guard, preserve_dir_times=True) is False
         assert order == ["snapshot", "before_delete"]
         assert (wt_abort / "keep.txt").read_text(encoding="utf-8") == "do not delete"
         assert wt_abort.stat().st_mtime > old_ts + DAY
@@ -2734,3 +2736,418 @@ async def test_round9_subdir_gone_with_existing_worktree_uses_repo_root(
         assert "sublive01" not in await host.task_agents.worktrees._ref_ids(repo)
     finally:
         await host.shutdown()
+
+
+async def test_round12_security_paths_and_storage_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify link-chmod guard, symlinked wt/ & workdir rejection, migrated outputs overview, and corrupt archive resilience."""
+    import asyncio
+    import json
+    import shutil
+    from nekopower.host import storage as storage_mod
+    from nekopower.host.storage import remove_dir_safely
+
+    host = make_host(tmp_path)
+    try:
+        # 1. remove_dir_safely must NOT call _clear_readonly on a link when unlinking the link fails.
+        ta_root = host.paths.root() / "task_agents"
+        work_dir = host.paths.work_dir("lnk-sess", DEFAULT_PROJECT)
+        work_dir.mkdir(parents=True)
+        ext_dir = tmp_path / "external_link_target"
+        ext_dir.mkdir()
+        (ext_dir / "secret.txt").write_text("keep", encoding="utf-8")
+        child_link = work_dir / "linked"
+        assert await asyncio.to_thread(_make_dir_link, child_link, ext_dir)
+
+        chmod_calls: list[str] = []
+
+        def record_chmod(p: str) -> None:
+            chmod_calls.append(p)
+
+        real_rmdir = os.rmdir
+        real_unlink = os.unlink
+
+        def fail_link_rm(p: Any, *args: Any, **kwargs: Any) -> None:
+            if os.path.normcase(os.path.basename(str(p))) == "linked":
+                raise PermissionError("link locked")
+            real_rmdir(p, *args, **kwargs)
+
+        def fail_link_unlink(p: Any, *args: Any, **kwargs: Any) -> None:
+            if os.path.normcase(os.path.basename(str(p))) == "linked":
+                raise PermissionError("link locked")
+            real_unlink(p, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(storage_mod, "_clear_readonly", record_chmod)
+            mp.setattr(os, "rmdir", fail_link_rm)
+            mp.setattr(os, "unlink", fail_link_unlink)
+            removed, _freed = remove_dir_safely(work_dir, ta_root)
+        assert removed is False
+        assert all(os.path.normcase(os.path.basename(p)) != "linked" for p in chmod_calls)
+        assert (ext_dir / "secret.txt").read_text(encoding="utf-8") == "keep"
+
+        # 2. Migrated session_dir outputs/ appear in overview outputs_count & outputs_bytes without double counting.
+        moved_sess = await host.ledger.create_session(name="moved-view", lanlan_name="Lan", project="legacy")
+        await host.ledger.update_session(moved_sess.id, status="idle")
+        old_sess_dir = (
+            tmp_path / "old_root" / "nekopower" / "task_agents" / "projects" / "legacy" / "sessions" / moved_sess.id
+        )
+        old_out = old_sess_dir / "outputs"
+        old_out.mkdir(parents=True)
+        (old_out / "blob.txt").write_bytes(b"b" * 175)
+        await host.ledger.run(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET session_dir = ? WHERE id = ?", (str(old_sess_dir), moved_sess.id)
+            )
+        )
+        view_migrated = await host.storage_overview()
+        assert view_migrated["transcripts"]["outputs_count"] == 1
+        assert view_migrated["transcripts"]["outputs_bytes"] == 175
+
+        # 3. Corrupt archived project.json (huge integer -> OverflowError) must not break storage_overview().
+        bad_arch = host.paths.space().archived_dir("2025", "corrupt_arch")
+        bad_arch.mkdir(parents=True)
+        (bad_arch / "project.json").write_text(
+            json.dumps({"name": "corrupt_arch", "commissions": 10**400}), encoding="utf-8"
+        )
+        view_arch = await host.storage_overview()
+        assert "categories" in view_arch
+
+        # 4. Symlinked worktree project subdir is refused by resolve_storage_open_path("worktree", ...).
+        wt_real = host.paths.worktree_dir("sublnk01")
+        wt_real.mkdir(parents=True)
+        (wt_real / "real_app").mkdir()
+        ext_app = tmp_path / "outside_app"
+        ext_app.mkdir()
+        link_sub = wt_real / "bad_sub"
+        assert await asyncio.to_thread(_make_dir_link, link_sub, ext_app)
+        await host.ledger.add_tree(
+            id="sublnk01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="app",
+            project_dir=str(tmp_path / "repo"),
+            repo_root=str(tmp_path / "repo"),
+            path=str(wt_real),
+            workdir=str(link_sub),
+            state="kept",
+        )
+        with pytest.raises(ValueError, match="no_worktree"):
+            await host.resolve_storage_open_path("worktree", "sublnk01")
+        # Regular subdir inside worktree opens normally.
+        await host.ledger.update_tree("sublnk01", workdir=str(wt_real / "real_app"))
+        assert await host.resolve_storage_open_path("worktree", "sublnk01") == wt_real / "real_app"
+
+        # 5. Symlinked wt/ root: refused by overview measurement/can_clean, clean_worktrees, and place open.
+        shutil.rmtree(host.paths.worktrees_dir())
+        ext_wt_root = tmp_path / "outside_wt_root"
+        (ext_wt_root / "sublnk01").mkdir(parents=True)
+        (ext_wt_root / "sublnk01" / "payload.bin").write_bytes(b"p" * 4096)
+        assert await asyncio.to_thread(_make_dir_link, host.paths.worktrees_dir(), ext_wt_root)
+        view_wt_lnk = await host.storage_overview()
+        wt_entry = next(w for w in view_wt_lnk["worktrees"] if w["id"] == "sublnk01")
+        assert wt_entry["bytes"] == 0
+        assert wt_entry["can_clean"] is False
+        assert wt_entry["stale"] is False
+        clean_wt_lnk = await host.clean_worktrees(["sublnk01"])
+        assert clean_wt_lnk["cleaned"] == []
+        assert clean_wt_lnk["failed"] == [{"id": "sublnk01", "code": "unsafe_path"}]
+        with pytest.raises(ValueError, match="bad_place"):
+            await host.resolve_storage_open_path("place", "worktrees")
+    finally:
+        await host.shutdown()
+
+
+async def test_round12_partial_clean_and_lifecycle_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify partial transcript freed bytes, mid-page close stop, work_dir retry mtime, pending expiry recovery, and idle-compact retry."""
+    import asyncio
+    import shutil
+    from nekopower.host import storage as storage_mod
+    from nekopower.host.worktrees import Worktree, WorktreeError
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        old_ts = clock.now - 60 * DAY
+
+        # 1. Partial session cleanup (transcript deleted, outputs/ rmtree fails) reports freed transcript bytes.
+        ps = await host.ledger.create_session(name="partial-sess", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(ps.id, status="idle")
+        await host.ledger.run(lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, ps.id)))
+        sdir = host.paths.session_dir(ps.id, DEFAULT_PROJECT)
+        (sdir / "outputs").mkdir(parents=True)
+        (sdir / "transcript.jsonl").write_bytes(b"t" * 512)
+        (sdir / "outputs" / "locked.txt").write_bytes(b"o" * 256)
+
+        real_rmtree = shutil.rmtree
+
+        def fail_outputs(p: Any, *args: Any, **kwargs: Any) -> None:
+            if Path(p) == sdir / "outputs":
+                raise PermissionError("output locked")
+            real_rmtree(p, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(shutil, "rmtree", fail_outputs)
+            partial_res = await host.clean_transcripts("expired")
+        assert partial_res["cleaned"] == 0
+        assert partial_res["skipped"] == 1
+        assert partial_res["freed_bytes"] == 512
+        assert not (sdir / "transcript.jsonl").exists()
+        assert (await host.ledger.get_session(ps.id)).status != "cleared"
+
+        # 2. Partial auto-cleanup of work/ preserves directory mtime so next upkeep retries without 30-day reset.
+        ws = await host.ledger.create_session(name="partial-work", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(ws.id, status="idle")
+        await host.ledger.run(lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, ws.id)))
+        wdir = host.paths.work_dir(ws.id, DEFAULT_PROJECT)
+        wdir.mkdir(parents=True)
+        (wdir / "a_gone.txt").write_text("gone", encoding="utf-8")
+        (wdir / "b_locked.txt").write_text("locked", encoding="utf-8")
+        _set_tree_mtime(wdir, old_ts)
+
+        real_unlink = os.unlink
+
+        def fail_b_locked(p: Any, *args: Any, **kwargs: Any) -> None:
+            if os.path.basename(str(p)) == "b_locked.txt":
+                raise PermissionError("locked")
+            real_unlink(p, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "unlink", fail_b_locked)
+            out1, _ = await host.storage._clean_one_work_dir(
+                "session", DEFAULT_PROJECT, ws.id, until=clock.now - 14 * DAY, skip_project_referenced=True
+            )
+        assert out1 == "not_removed"
+        assert not (wdir / "a_gone.txt").exists()
+        assert (wdir / "b_locked.txt").exists()
+        # Next upkeep retries immediately (not misclassified as "recent").
+        out2, _ = await host.storage._clean_one_work_dir(
+            "session", DEFAULT_PROJECT, ws.id, until=clock.now - 14 * DAY, skip_project_referenced=True
+        )
+        assert out2 == "cleaned"
+        assert not wdir.exists()
+
+        # 3. _handle_for_cleanup does NOT cache repo_root fallback handle in _tree_handles.
+        repo_root = tmp_path / "cache_repo"
+        sub_dir = repo_root / "sub"
+        repo_root.mkdir()
+        wt_fb = host.paths.worktree_dir("nocache01")
+        wt_fb.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="nocache01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="sub",
+            project_dir=str(sub_dir),
+            repo_root=str(repo_root),
+            path=str(wt_fb),
+            workdir=str(wt_fb / "sub"),
+            state="kept",
+        )
+        row_fb = await host.ledger.get_tree("nocache01")
+        assert row_fb is not None
+        fake_handle = Worktree(id="nocache01", repo_root=repo_root, path=wt_fb, subpath="", start="abc")
+
+        async def open_only_root(pdir: Any, _wt: Any) -> Worktree:
+            if Path(pdir) == repo_root:
+                return fake_handle
+            raise WorktreeError("subdir missing")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", open_only_root)
+            got = await host.task_agents._handle_for_cleanup(row_fb)
+        assert got is fake_handle
+        assert "nocache01" not in host.task_agents._tree_handles
+
+        # 4. Pending expiry persisted in space state settles blocked commission across simulated restart.
+        comm_sess = await host.ledger.create_session(name="exp-sess", lanlan_name="Lan", project="expproj")
+        comm, _created = await host.ledger.create(
+            lanlan_name="Lan",
+            title="Blocked on expired tree",
+            dispatch_text="do work",
+            source="dispatch",
+            project="expproj",
+            session_id=comm_sess.id,
+        )
+        wt_rec = host.paths.worktree_dir("pendexp01")
+        wt_rec.mkdir(parents=True)
+        await host.ledger.update(comm.id, workdir=str(wt_rec))
+        await host.ledger.transition(comm.id, "working")
+        await host.ledger.transition(comm.id, "blocked", reason="waiting for landing")
+        await host.ledger.add_tree(
+            id="pendexp01",
+            session_id=comm_sess.id,
+            commission_id=comm.id,
+            lanlan_name="Lan",
+            project="expproj",
+            project_dir=str(tmp_path / "gone_repo"),
+            repo_root=str(tmp_path / "gone_repo"),
+            path=str(wt_rec),
+            workdir=str(wt_rec),
+            state="held",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "pendexp01"))
+        )
+        # Directory deleted by expire_tree, then ledger transition fails before settling.
+        real_transition = host.ledger.transition
+
+        async def fail_transition(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("transient ledger failure")
+
+        async def ok_remove_if_untouched(handle: Any, _cb: Any = None) -> str:
+            shutil.rmtree(handle.path, ignore_errors=True)
+            return "removed"
+
+        async def open_pend(_pdir: Any, _wt: Any) -> Worktree:
+            return Worktree(id="pendexp01", repo_root=tmp_path / "gone_repo", path=wt_rec, subpath="", start="abc")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", open_pend)
+            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", ok_remove_if_untouched)
+            mp.setattr(host.ledger, "transition", fail_transition)
+            with pytest.raises(RuntimeError, match="transient ledger failure"):
+                await host.task_agents.expire_tree("pendexp01", until=clock.now - 14 * DAY)
+        assert not wt_rec.exists()
+        assert (await host.ledger.get(comm.id)).status == "blocked"
+        assert (await host.ledger.get_tree("pendexp01")) is not None
+
+        # Simulated host restart: reconcile_trees recovers pending expiry and cancels the blocked commission.
+        host.task_agents._tree_handles.clear()
+        host.task_agents._trees_mine.clear()
+        host.ledger.transition = real_transition  # type: ignore[method-assign]
+        rec = await host.task_agents.reconcile_trees()
+        assert "pendexp01" in rec["removed"]
+        assert (await host.ledger.get_tree("pendexp01")) is None
+        assert (await host.ledger.get(comm.id)).status == "cancelled"
+
+        # 5. Startup reconcile_trees leaves discarding/expired rows to upkeep even when directory is gone.
+        await host.ledger.add_tree(
+            id="discexp01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="expproj",
+            project_dir=str(tmp_path / "gone_repo"),
+            repo_root=str(tmp_path / "gone_repo"),
+            path=str(host.paths.worktree_dir("discexp01")),
+            workdir=str(host.paths.worktree_dir("discexp01")),
+            state="discarding",
+            reason="expired",
+        )
+        rec_disc = await host.task_agents.reconcile_trees()
+        assert "discexp01" in rec_disc["kept"]
+        assert (await host.ledger.get_tree("discexp01")) is not None
+
+        # 6. _idle_compact waits and retries when a non-transcript file hold starts during _idle_compact_wanted().
+        ic_sess = await host.ledger.create_session(name="ic-wait", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(ic_sess.id, status="idle")
+        ic_calls = {"wanted": 0, "claimed": False}
+
+        async def wanted_with_concurrent_hold(sid: str) -> bool:
+            ic_calls["wanted"] += 1
+            if ic_calls["wanted"] == 1:
+                assert host.task_agents.hold_files(sid, drop_idle_timer=False) is True
+
+                async def release_soon() -> None:
+                    await asyncio.sleep(0.01)
+                    host.task_agents.release_files(sid)
+
+                asyncio.ensure_future(release_soon())
+            return True
+
+        async def note_claimed(_sid: str) -> float:
+            ic_calls["claimed"] = True
+            return 10**9
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_idle_compact_wanted", wanted_with_concurrent_hold)
+            mp.setattr(host.task_agents, "_idle_after", note_claimed)
+            await host.task_agents._idle_compact(ic_sess.id)
+        assert ic_calls["wanted"] == 2
+        assert ic_calls["claimed"] is True
+
+        # 7. clean_expired_sessions_now stops mid-page when _closed becomes True.
+        c1 = await host.ledger.create_session(name="close-1", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        c2 = await host.ledger.create_session(name="close-2", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        for s in (c1, c2):
+            await host.ledger.update_session(s.id, status="idle")
+            await host.ledger.run(lambda conn, sid=s.id: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, sid)))
+        seen_clean: list[str] = []
+
+        async def stop_after_first(sid: str, *_args: Any, **_kwargs: Any) -> tuple[str, int]:
+            seen_clean.append(sid)
+            host.space_keeper._closed = True
+            return "removed", 10
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.space_keeper, "_clean_one_result", stop_after_first)
+            res_closed = await host.space_keeper.clean_expired_sessions_now()
+        host.space_keeper._closed = False
+        assert len(seen_clean) == 1
+        assert res_closed["cleaned"] == 1
+        assert storage_mod._classify_path_safety is not None
+    finally:
+        await host.shutdown()
+
+
+async def test_round12_forget_gone_aborts_if_different_dir_reappears(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """forget_gone must abort without dropping registration or refs if a different directory reappears at path."""
+    import asyncio
+    import shutil
+    import subprocess
+    from nekopower.host import worktrees as wt_mod
+    from nekopower.host.worktrees import WorktreeError
+
+    empty_cfg = tmp_path / "empty_gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmp_path / "git-template"))
+    for env_name in wt_mod._REDIRECTING_ENV:
+        monkeypatch.delenv(env_name, raising=False)
+
+    repo = tmp_path / "fg_repo"
+    repo.mkdir()
+
+    def _init_repo() -> None:
+        for args in (
+            ("git", "init"),
+            ("git", "config", "user.name", "Test"),
+            ("git", "config", "user.email", "test@example.com"),
+        ):
+            subprocess.run(args, cwd=repo, check=True, capture_output=True)
+        (repo / "a.txt").write_text("hi\n", encoding="utf-8")
+        subprocess.run(("git", "add", "."), cwd=repo, check=True, capture_output=True)
+        subprocess.run(("git", "commit", "-m", "init"), cwd=repo, check=True, capture_output=True)
+
+    await asyncio.to_thread(_init_repo)
+    mgr = wt_mod.WorktreeManager()
+    wt_path = tmp_path / "wt" / "fgtheirs1"
+    handle = await mgr.create(repo, wt_path)
+    shutil.rmtree(wt_path)
+    assert not wt_path.exists()
+
+    real_whose = wt_mod._whose
+
+    def recreate_theirs_dir(path: Path, common_dir: Path) -> str:
+        # Simulate another directory appearing at path right before _whose() checks it.
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "other.txt").write_text("not yours", encoding="utf-8")
+        return real_whose(path, common_dir)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(wt_mod, "_whose", recreate_theirs_dir)
+        with pytest.raises(WorktreeError, match="reappeared"):
+            await mgr.forget_gone(repo, wt_path, handle.id)
+
+    # Directory, git registration, and refs must all remain intact.
+    assert (wt_path / "other.txt").read_text(encoding="utf-8") == "not yours"
+    registered = await mgr._registered(repo)
+    assert any(p.name == "fgtheirs1" for p in registered)
+    assert "fgtheirs1" in await mgr._ref_ids(repo)

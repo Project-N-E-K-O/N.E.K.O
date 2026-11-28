@@ -1575,7 +1575,9 @@ class TaskAgentManager(
                     workdir_path.mkdir(parents=True, exist_ok=True)
                     return str(session_dir_path), str(workdir_path), _task_agents_facade._begun_in(target_place, session_dir_path)
 
-                return await asyncio.to_thread(_mkdir_and_probe)
+                from utils.asyncio_executor import to_thread_through_cancellation
+
+                return await to_thread_through_cancellation(_mkdir_and_probe)
 
             prepared = await prepare_place(place)
             if prepared is None:

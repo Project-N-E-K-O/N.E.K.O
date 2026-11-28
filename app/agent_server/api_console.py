@@ -403,6 +403,23 @@ def build_console_router(
         path = next((Path(place["path"]) for place in host.places() if place["key"] == key), None)
         if path is None:
             raise _refuse(400, "bad_place")
+        if key == "worktrees":
+            resolve_open = getattr(host, "resolve_storage_open_path", None)
+            if callable(resolve_open):
+                try:
+                    path = await resolve_open("place", key)
+                except FileNotFoundError:
+                    raise _refuse(404, "place_missing") from None
+                except ValueError:
+                    raise _refuse(400, "bad_place") from None
+            else:
+                from nekopower.host.storage import _classify_path_safety
+
+                safety = await asyncio.to_thread(_classify_path_safety, path, path.parent)
+                if safety == "missing":
+                    raise _refuse(404, "place_missing")
+                if safety != "ok":
+                    raise _refuse(400, "bad_place")
         if not await asyncio.to_thread(path.is_dir):
             raise _refuse(404, "place_missing")
         opener = open_directory

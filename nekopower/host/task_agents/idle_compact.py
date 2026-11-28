@@ -343,29 +343,32 @@ class IdleCompactMixin:
         from config.nekopower_settings import TASK_AGENT_IDLE_COMPACT_ENABLED, TASK_AGENT_IDLE_COMPACT_SECONDS
         from nekopower.runtime.protocol import GatewaySpec
 
-        while not self._closed:
+        while True:
+            if self._closed or not TASK_AGENT_IDLE_COMPACT_ENABLED:
+                return False
             if stops is not None and stops != self._idle_stops:
                 # Everything was stopped between the timer and this.
                 return False
             clearing = self._clearing.get(session_id)
-            if clearing is None:
-                break
-            # Wait for a concurrent non-transcript file hold (e.g. work_dir check/cleanup)
-            # before deciding whether the session can still be idle-compacted.
-            await clearing.wait()
-        if self._closed or not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
-            return False
-        if stops is not None and stops != self._idle_stops:
-            # Everything was stopped between the timer and this.
-            return False
-        if not self._is_switched_on():
-            return False
-        if not await self._idle_compact_wanted(session_id):
-            # Switched off since the timer was set: it comes due and does nothing.
-            return False
-        if not self._idle_now(session_id) or (stops is not None and stops != self._idle_stops):
-            # Taken by a commission, or everything stopped, while that was looked up.
-            return False
+            if clearing is not None:
+                # Wait for a concurrent non-transcript file hold (e.g. outputs or work_dir cleanup)
+                # before deciding whether the session can still be idle-compacted.
+                await clearing.wait()
+                continue
+            if not self._idle_now(session_id) or not self._is_switched_on():
+                return False
+            if not await self._idle_compact_wanted(session_id):
+                # Switched off since the timer was set: it comes due and does nothing.
+                return False
+            if self._closed or (stops is not None and stops != self._idle_stops):
+                return False
+            if session_id in self._clearing:
+                # A file hold started while settings were queried; wait for it and re-verify.
+                continue
+            if not self._idle_now(session_id) or not self._is_switched_on():
+                # Taken by a commission, or switched off, while that was looked up.
+                return False
+            break
         task = asyncio.current_task()
         assert task is not None
         # Claimed before anything is awaited: a commission that takes the
