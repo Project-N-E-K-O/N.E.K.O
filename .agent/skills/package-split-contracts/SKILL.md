@@ -5,7 +5,7 @@ description: 后端大文件拆成包之后的门面契约：测试打补丁为�
 
 # 大文件拆成包之后的契约
 
-这些原本是单文件的模块已经拆成了包，导入路径不变：`main_logic/core/`、`app/agent_server/`、`app/memory_server/`、`utils/config_manager/`、`main_routers/game_router/`、`utils/cloudsave_runtime/`、`nekopower/host/task_agents/`。共同的做法是「子模块 + `_shared` + `__init__.py` 门面把原来的顶层名字重新导出」。
+这些原本是单文件的模块已经拆成了包或同级领域模块，导入路径不变：`main_logic/core/`、`app/agent_server/`、`app/memory_server/`（含 `routes.py` 及 9 个领域路由模块）、`utils/config_manager/`、`main_routers/game_router/`、`main_routers/memory_router/`、`memory/facts/`、`services/knowledge/service.py`（+ `_service_{packs,jobs,vectors}.py`）、`utils/cloudsave_runtime/`、`nekopower/host/task_agents/`。共同的做法是「子模块 + `_shared` + `__init__.py`（或主门面模块）把原来的顶层名字重新导出」。
 
 每个包的 `__init__.py` 开头都有一段说明自己的 patch 规则，动哪个包先读哪个包的那一段。`main_logic/core/` 的结构契约由 `scripts/check_core_contracts.py` 在 CI 里强制（脚本头部逐条列了规则）；`nekopower/host/task_agents/` 的由 `tests/unit/nekopower/test_task_agents_package_contracts.py` 守着（mixin 形状、方法不重名、门面补丁的读取点都经 `_task_agents_facade` 晚绑定，`types.py` 里 helper 之间的互相调用也在检查范围内）。这里写的是几个包共同的、容易踩的部分。
 

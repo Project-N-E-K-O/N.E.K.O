@@ -22,7 +22,9 @@ in-repo feature (the visit runtime first) can import.
 
 Wire contract
 -------------
-The request models in ``app/memory_server/routes.py`` are the source of truth
+The request models in ``app/memory_server/scoped_trust_helpers.py`` and
+``app/memory_server/scoped_forget_routes.py`` (re-exported by
+``app/memory_server/routes.py``) are the source of truth
 (``ScopedContextRequest``, ``ScopedMentionsRequest``, ``ScopedForgetRequest``,
 ``ScopedHistoryRequest`` / ``ScopedHistorySegment``). The ``b0b283e34``
 version of the QQ ``memory_bridge`` is the reference implementation, and its

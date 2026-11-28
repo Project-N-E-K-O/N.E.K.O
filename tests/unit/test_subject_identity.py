@@ -696,13 +696,18 @@ async def test_the_entity_stamp_comes_from_the_request_snapshot():
     """
     import ast
     import inspect
+    import pathlib
+    import textwrap
 
     from memory import facts as facts_module
 
     # FactStore must not reach into the pool for this field at all.
-    source = inspect.getsource(facts_module)
-    assert "_speaker_entity_id_for" not in source
-    tree = ast.parse(source)
+    facts_pkg_dir = pathlib.Path(facts_module.__file__).resolve().parent
+    for py_file in sorted(facts_pkg_dir.glob("*.py")):
+        assert "_speaker_entity_id_for" not in py_file.read_text(encoding="utf-8")
+    tree = ast.parse(textwrap.dedent(inspect.getsource(
+        facts_module.FactStore._speaker_provenance_of
+    )))
     provenance_fn = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)

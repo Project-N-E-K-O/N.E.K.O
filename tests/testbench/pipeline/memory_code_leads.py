@@ -42,7 +42,7 @@ MECHANICAL_LEAD_CODES: dict[str, dict[str, Any]] = {
            "suspect_modules": ["memory/reflection/promotion.py",
                                "memory/reflection/promotion_merge.py"]},
     "D4": {"strength": "high",
-           "suspect_modules": ["memory/facts.py (删除路径)",
+           "suspect_modules": ["memory/facts/forget_archive.py (删除路径)",
                                "memory/reflection/persistence.py"]},
     "E2": {"strength": "medium",
            "suspect_modules": ["memory/embeddings.py",
@@ -129,7 +129,7 @@ def _id_dup_leads(character: str, warnings: list[str]) -> list[dict[str, Any]]:
             else:
                 seen.add(rid)
 
-    _scan_flat("facts.json", "memory/facts.py")
+    _scan_flat("facts.json", "memory/facts/persistence.py")
     _scan_flat("reflections.json", "memory/reflection/persistence.py")
 
     # persona.json = {entity: {"facts": [{"id": ...}]}}; ids live nested.

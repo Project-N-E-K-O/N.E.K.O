@@ -958,7 +958,7 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 async def _reset_confirmed_at_for_all_characters() -> int:
     """On→off migration: reset the confirmed_at anchor of every character's confirmed reflections.
 
-    Called by update_powerful_memory_config in main_routers/memory_router.py — only
+    Called by update_powerful_memory_config in main_routers/memory_router/settings.py — only
     runs on the prev=True, new=False transition. Lets the time-driven fallback run
     the full 14-day clock, avoiding the jarring "old confirmed entries get bulk
     promoted immediately after switching off" experience.
@@ -1540,7 +1540,7 @@ async def internal_reset_confirmed_at():
     """Powerful-memory ON→OFF migration: reset the confirmed_at anchor of every
     character's confirmed reflections to now.
 
-    main_routers/memory_router.py triggers this endpoint over HTTP — the helper
+    main_routers/memory_router/settings.py triggers this endpoint over HTTP — the helper
     ``_reset_confirmed_at_for_all_characters`` depends on this process's
     ``reflection_engine`` global, and must run inside the memory_server process to
     get the correct instance (the main_server process can import the

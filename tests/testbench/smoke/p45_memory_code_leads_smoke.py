@@ -249,7 +249,7 @@ def check_y1_y2_y9_rich(client) -> list[str]:
             _check(isinstance(lead.get("missing_evidence"), list),
                    "Y1.missing_ev", f"{code}")
         # D4 suspect modules must point at a real main-program path.
-        _check(any("memory/facts.py" in m for m in leads["D4"]["suspect_modules"]),
+        _check(any("memory/facts/forget_archive.py" in m for m in leads["D4"]["suspect_modules"]),
                "Y1.D4_suspect", f"{leads['D4']['suspect_modules']}")
 
         # Y2 — content-quality findings are excluded, never leads.

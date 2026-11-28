@@ -69,7 +69,7 @@ def _reads_full_cold_rows(text: str) -> bool:
 DIRECTORY_ALLOWED = {
     "memory/cold_store.py": "the only reader of cold text",
     "memory/archive_shards.py": "the shard layout every cold kind shares",
-    "memory/facts.py": "fact demotion writers and the cold restore entry (through cold_store)",
+    "memory/facts/forget_archive.py": "fact demotion writers and the cold restore entry (through cold_store)",
     "memory/reflection/persistence.py": "writes reflection archive shards; erasure reads their ids",
     "memory/reflection/evidence_flow.py": "event-sourced reflection archiving and the flat-file migration",
     "memory/persona/persistence.py": "resolves the persona archive directory",
@@ -80,7 +80,7 @@ DIRECTORY_ALLOWED = {
 # Who may read full cold rows.
 FULL_READ_ALLOWED = {
     "memory/cold_store.py": "defines them",
-    "memory/facts.py": "privacy erasure and the restore entry",
+    "memory/facts/forget_archive.py": "privacy erasure and the restore entry",
 }
 
 
@@ -112,7 +112,7 @@ def test_the_guards_see_what_they_guard():
     """The patterns still match the real code, so the two checks above cannot pass vacuously."""
     sources = dict(_python_sources())
     assert _DIRECTORY_NAMES.search(sources["memory/cold_store.py"])
-    assert _reads_full_cold_rows(sources["memory/facts.py"])
+    assert _reads_full_cold_rows(sources["memory/facts/forget_archive.py"])
     assert not _DIRECTORY_NAMES.search("make_reflection_archive_handler(engine)")
     assert _DIRECTORY_NAMES.search("os.path.join(base, 'fact_cold')")
 

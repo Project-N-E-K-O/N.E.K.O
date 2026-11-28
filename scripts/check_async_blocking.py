@@ -233,32 +233,156 @@ _ATOMIC_WRITE_LABELS = {
 }
 
 
+def _module_name_for_path(path: Path) -> tuple[str | None, bool]:
+    """Return ``(dotted_module_name, is_package_init)`` for ``path``."""
+    rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+    if rel.suffix != ".py":
+        return None, False
+    if rel.name == "__init__.py":
+        parts = rel.parent.parts
+        return (".".join(parts) if parts else None), True
+    return ".".join((*rel.parent.parts, rel.stem)), False
+
+
+def _resolve_import_from(
+    current_module: str | None,
+    is_pkg_init: bool,
+    level: int,
+    module: str | None,
+) -> str | None:
+    """Resolve an ``ast.ImportFrom`` target module (absolute or relative)."""
+    if level == 0:
+        return module
+    if not current_module:
+        return None
+    pkg_parts = current_module.split(".") if is_pkg_init else current_module.split(".")[:-1]
+    up = level - 1
+    if up > len(pkg_parts):
+        return None
+    base = pkg_parts[: len(pkg_parts) - up]
+    if module:
+        base.extend(module.split("."))
+    return ".".join(base) if base else None
+
+
+def _module_reexports_atomic_write(module_name: str, cache: dict[str, bool]) -> bool:
+    """Check on disk whether ``module_name`` under ``REPO_ROOT`` imports any ``atomic_write_*``."""
+    if module_name == "utils.file_utils":
+        return True
+    cached = cache.get(module_name)
+    if cached is not None:
+        return cached
+    cache[module_name] = False
+    rel_parts = Path(*module_name.split("."))
+    candidates = (
+        (REPO_ROOT / rel_parts / "__init__.py", True),
+        (REPO_ROOT / rel_parts.with_suffix(".py"), False),
+    )
+    for candidate, is_pkg_init in candidates:
+        if not candidate.is_file():
+            continue
+        parsed_file = _parse_file(candidate)
+        if parsed_file is None:
+            continue
+        _src, tree = parsed_file
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            src_mod = _resolve_import_from(module_name, is_pkg_init, node.level, node.module)
+            if not src_mod:
+                continue
+            if any(
+                alias.name in _ATOMIC_WRITE_LABELS or alias.name == "*"
+                for alias in node.names
+            ) and _module_reexports_atomic_write(src_mod, cache):
+                cache[module_name] = True
+                return True
+        break
+    return False
+
+
+def _collect_atomic_exporting_modules(
+    parsed: list[tuple[Path, str, ast.Module]],
+) -> set[str]:
+    """Return dotted names of modules that directly or transitively export ``atomic_write_*``.
+
+    Package splits route submodule calls through a facade module (e.g.
+    ``_facts_facade.atomic_write_json(...)`` or ``_svc.atomic_write_bytes(...)``)
+    so monkeypatches on the facade take effect. Resolving which modules re-export
+    ``utils.file_utils.atomic_write_*`` keeps those calls inside the guard without
+    matching unrelated receivers like ``my_own_writer.atomic_write_json(...)``.
+    """
+    exporting: set[str] = {"utils.file_utils"}
+    entries: list[tuple[str, bool, ast.Module]] = []
+    for path, _source, tree in parsed:
+        mod_name, is_pkg_init = _module_name_for_path(path)
+        if mod_name:
+            entries.append((mod_name, is_pkg_init, tree))
+    changed = True
+    while changed:
+        changed = False
+        for mod_name, is_pkg_init, tree in entries:
+            if mod_name in exporting:
+                continue
+            for node in tree.body:
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                src_mod = _resolve_import_from(mod_name, is_pkg_init, node.level, node.module)
+                if src_mod in exporting and any(
+                    alias.name in _ATOMIC_WRITE_LABELS or alias.name == "*"
+                    for alias in node.names
+                ):
+                    exporting.add(mod_name)
+                    changed = True
+                    break
+    return exporting
+
+
 def _collect_atomic_write_aliases(
     tree: ast.Module,
+    *,
+    path: Path | None = None,
+    atomic_modules: set[str] | None = None,
+    disk_cache: dict[str, bool] | None = None,
 ) -> tuple[dict[str, str], set[str]]:
-    """Return direct-name aliases and module aliases for ``utils.file_utils``.
+    """Return direct-name aliases and module aliases for ``utils.file_utils``
+    and any facade module that re-exports ``atomic_write_*``.
 
-    This intentionally resolves only the atomic-write family. General import
-    resolution would turn the checker's name-based depth-1 pass into a much
-    larger cross-module analysis problem; these names are high-signal and
-    are the guard this PR is specifically adding.
+    Walks both top-level and function-body imports so lazy facade imports
+    (``from . import service as _svc`` inside a method) are resolved too.
     """
     direct: dict[str, str] = {}
     modules: set[str] = set()
-    for node in tree.body:
+    mod_name, is_pkg_init = _module_name_for_path(path) if path is not None else (None, False)
+    exporting = atomic_modules if atomic_modules is not None else {"utils.file_utils"}
+    use_disk_fallback = disk_cache is not None
+
+    def _is_atomic_module(target: str | None) -> bool:
+        if not target:
+            return False
+        if target in exporting:
+            return True
+        if use_disk_fallback:
+            return _module_reexports_atomic_write(target, disk_cache)
+        return False
+
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module == "utils.file_utils":
+            src_mod = _resolve_import_from(mod_name, is_pkg_init, node.level, node.module)
+            if _is_atomic_module(src_mod):
                 for alias in node.names:
                     label = _ATOMIC_WRITE_LABELS.get(alias.name)
                     if label is not None:
                         direct[alias.asname or alias.name] = label
-            elif node.module == "utils":
-                for alias in node.names:
-                    if alias.name == "file_utils":
-                        modules.add(alias.asname or alias.name)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                imported_mod = f"{src_mod}.{alias.name}" if src_mod else alias.name
+                if _is_atomic_module(imported_mod):
+                    modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "utils.file_utils" and alias.asname:
+                if _is_atomic_module(alias.name) and alias.asname:
                     modules.add(alias.asname)
     return direct, modules
 
@@ -1191,7 +1315,7 @@ def check_file(
     atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
 ) -> list[tuple[int, int, str]]:
     if atomic_aliases is None:
-        atomic_aliases = _collect_atomic_write_aliases(tree)
+        atomic_aliases = _collect_atomic_write_aliases(tree, path=path)
     checker = AsyncBlockingChecker(
         path,
         source,
@@ -1215,24 +1339,38 @@ def main(argv: list[str] | None = None) -> int:
     raw_paths = args.paths or DEFAULT_PATHS
     targets = [Path(p) if Path(p).is_absolute() else REPO_ROOT / p for p in raw_paths]
 
-    # Pass 1: parse every file once, build the risky-sync-def index.
+    # Pass 0: parse every file once and collect all modules exporting atomic_write_*.
     parsed: list[tuple[Path, str, ast.Module]] = []
-    indexer = RiskySyncDefIndexer()
-    async_names: set[str] = set()
     for file in _iter_python_files(targets):
         parsed_file = _parse_file(file)
         if parsed_file is None:
             continue
         source, tree = parsed_file
         parsed.append((file, source, tree))
+
+    atomic_modules = _collect_atomic_exporting_modules(parsed)
+    disk_cache: dict[str, bool] = {}
+
+    # Pass 1: build the risky-sync-def index with facade-aware atomic-write aliases.
+    indexer = RiskySyncDefIndexer()
+    async_names: set[str] = set()
+    aliases_by_file: dict[Path, tuple[dict[str, str], set[str]]] = {}
+    for file, source, tree in parsed:
         rel = file.relative_to(REPO_ROOT) if file.is_relative_to(REPO_ROOT) else file
+        file_aliases = _collect_atomic_write_aliases(
+            tree,
+            path=rel,
+            atomic_modules=atomic_modules,
+            disk_cache=disk_cache,
+        )
+        aliases_by_file[file] = file_aliases
         # Re-seed indexer.risky entries with the relative path for nicer
         # error messages, but preserve first-wins.
         local_indexer = RiskySyncDefIndexer()
         local_indexer.index_module(
             tree,
             rel,
-            atomic_aliases=_collect_atomic_write_aliases(tree),
+            atomic_aliases=file_aliases,
         )
         for name, info in local_indexer.risky.items():
             indexer.risky.setdefault(name, info)
@@ -1260,6 +1398,7 @@ def main(argv: list[str] | None = None) -> int:
             tree,
             risky_helpers=indexer.risky,
             ambiguous_async_names=ambiguous_async_names,
+            atomic_aliases=aliases_by_file[file],
         ):
             rel = file.relative_to(REPO_ROOT) if file.is_relative_to(REPO_ROOT) else file
             print(f"{rel}:{lineno}:{col}  {CODE}  {msg}")

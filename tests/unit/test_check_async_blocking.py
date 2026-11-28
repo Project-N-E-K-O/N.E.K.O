@@ -186,6 +186,72 @@ def test_an_unrelated_receiver_with_the_same_attr_is_not_flagged():
     assert out == []
 
 
+def test_facade_qualified_atomic_write_is_flagged_directly_and_transitively():
+    """Package splits call ``_facts_facade.atomic_write_json`` / ``_svc.atomic_write_bytes``
+    so facade monkeypatches work; the checker must still catch them without matching
+    unrelated receivers."""
+    files = {
+        Path("memory/facts/__init__.py"): textwrap.dedent("""
+            from utils.file_utils import atomic_write_json
+        """),
+        Path("memory/facts/forget_archive.py"): textwrap.dedent("""
+            from memory import facts as _facts_facade
+
+            async def bad_direct(path, payload):
+                _facts_facade.atomic_write_json(path, payload)
+        """),
+        Path("services/knowledge/service.py"): textwrap.dedent("""
+            from utils.file_utils import atomic_write_bytes
+        """),
+        Path("services/knowledge/_service_jobs.py"): textwrap.dedent("""
+            def persist_staged_pack(path, raw):
+                from . import service as _svc
+                _svc.atomic_write_bytes(path, raw)
+
+            async def bad_transitive(path, raw):
+                persist_staged_pack(path, raw)
+        """),
+    }
+    parsed = [(p, src, ast.parse(src)) for p, src in files.items()]
+    atomic_modules = MOD._collect_atomic_exporting_modules(parsed)
+    assert "memory.facts" in atomic_modules
+    assert "services.knowledge.service" in atomic_modules
+
+    indexer = MOD.RiskySyncDefIndexer()
+    async_names: set[str] = set()
+    aliases_by_path = {}
+    for p, _src, tree in parsed:
+        aliases = MOD._collect_atomic_write_aliases(
+            tree, path=p, atomic_modules=atomic_modules,
+        )
+        aliases_by_path[p] = aliases
+        indexer.index_module(tree, p, atomic_aliases=aliases)
+        async_names |= MOD._collect_async_def_names(tree)
+
+    ambiguous = async_names & set(indexer.risky)
+    direct_hits = MOD.check_file(
+        Path("memory/facts/forget_archive.py"),
+        files[Path("memory/facts/forget_archive.py")],
+        parsed[1][2],
+        risky_helpers=indexer.risky,
+        ambiguous_async_names=ambiguous,
+        atomic_aliases=aliases_by_path[Path("memory/facts/forget_archive.py")],
+    )
+    assert len(direct_hits) == 1
+    assert "atomic_write_json" in direct_hits[0][2]
+
+    transitive_hits = MOD.check_file(
+        Path("services/knowledge/_service_jobs.py"),
+        files[Path("services/knowledge/_service_jobs.py")],
+        parsed[3][2],
+        risky_helpers=indexer.risky,
+        ambiguous_async_names=ambiguous,
+        atomic_aliases=aliases_by_path[Path("services/knowledge/_service_jobs.py")],
+    )
+    assert len(transitive_hits) == 1
+    assert "persist_staged_pack" in transitive_hits[0][2]
+
+
 def test_the_offloaded_form_is_not_flagged():
     out = _violations('''
     def save_storage_policy(policy):
