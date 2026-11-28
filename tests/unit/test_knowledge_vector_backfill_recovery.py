@@ -7,6 +7,7 @@ importing that collected suite or duplicating its synthetic model identity.
 # Index scheduling hooks follow VectorIndexer; shared runtime state stays on the service.
 from services.knowledge import indexing as index_module
 import asyncio
+import hashlib
 import struct
 
 import pytest
@@ -44,6 +45,87 @@ class TokenProvider(FakeEmbedder):
         return [[1.0] + [0.0] * 63 for _ in texts]
 
     embed_documents = embed_batch
+
+
+@pytest.mark.parametrize("artifact,budget", [
+    ("retained", "ample"), ("retained", "pack"), ("retained", "total"),
+    ("missing", "ample"), ("corrupt", "ample"),
+])
+async def test_replan_reuses_fitting_archive_rows_within_live_budgets(tmp_path, monkeypatch, artifact, budget):
+    """Late assets keep good archive cuts; capacity can require a local fallback."""
+    payload = _pack("imp.mixed", entries=[
+        {"title": "Preserved", "content": ("A violet lighthouse " * 4).strip()},
+        {"title": "Oversized", "content": "x" * 500},
+    ])
+    rows = []
+    for entry in payload["entries"]:
+        content = entry["content"]
+        for index, body in enumerate((content[:len(content) // 2], content[len(content) // 2:])):
+            text = entry["title"] + "\n" + body
+            rows.append({"entry_title": entry["title"], "chunk_index": index,
+                         "embedding_text": text, "text_hash": hashlib.sha256(text.encode()).hexdigest(),
+                         "vector": struct.pack("<64f", *[float(i == len(rows)) for i in range(64)])})
+    exported = export_archive(tmp_path / "exports", payload, specification=specification(), vectors=rows)
+    archive_path = tmp_path / "exports" / (exported["sha256"] + ".neko-knowledge.zip")
+
+    class LateTokenizer(TokenProvider):
+        ready = False
+
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def spec(self):
+            return specification() if self.ready else None
+
+        def count_tokens(self, texts):
+            return [len(text) * 10 for text in texts] if self.ready else None
+
+        async def embed_batch(self, texts):
+            assert all(size <= 1024 for size in self.count_tokens(texts))
+            self.calls.extend(texts)
+            return await super().embed_batch(texts)
+
+        embed_documents = embed_batch
+
+    provider = LateTokenizer()
+    service = KnowledgeService(tmp_path / "library", embedder=provider)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _finished(service, await service.import_pack(archive_path)))["state"] == "active"
+        record = service._registry.packs["imp.mixed"]
+        original = (service.root / "packs" / record.file_name).read_bytes()
+        assert record.chunks == 2 and not provider.calls
+        retained = service.artifact_path(record.archive_sha256)
+        if artifact == "missing":
+            retained.unlink()
+        elif artifact == "corrupt":
+            retained.write_bytes(b"damaged optional archive")
+        provider.ready = True
+        local_count = count_pack_chunks(decode_pack_bytes(original), fit=service._chunk_fit())
+        if budget == "pack":
+            monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", local_count)
+        elif budget == "total":
+            monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", local_count)
+        monkeypatch.setattr(index_module, "_batch_pause", lambda _: 0)
+        await service._indexer._index_round()
+        stored = service._store.vectors_for_pack("imp.mixed", provider.model_id())
+        stats = service._store.chunk_stats(provider.model_id(), specification=specification())["imp.mixed"]
+        assert stats["total"] == stats["ready"] == len(stored) == service._registry.packs["imp.mixed"].chunks
+        assert stats["failed"] == 0 and provider.calls
+        if artifact == "retained" and budget == "ample":
+            kept = [row for row in stored if row["entry_title"] == "Preserved"]
+            assert [(row["text_hash"], row["vector"]) for row in kept] == [
+                (row["text_hash"], row["vector"]) for row in rows if row["entry_title"] == "Preserved"]
+            assert not any(text.startswith("Preserved\n") for text in provider.calls)
+        else:
+            assert stats["total"] == local_count
+            assert any(text.startswith("Preserved\n") for text in provider.calls)
+        assert any(text.startswith("Oversized\n") for text in provider.calls)
+        assert (service.root / "packs" / record.file_name).read_bytes() == original
+    finally:
+        await service.stop()
 
 
 async def test_missing_retained_zip_does_not_block_other_pack_backfill(tmp_path, monkeypatch):

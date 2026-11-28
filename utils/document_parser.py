@@ -756,19 +756,14 @@ def _extract_word_text(xml_bytes: bytes) -> str:
 
 
 def _extract_word_text_from_root(root: ET.Element) -> str:
+    """Share visible paragraph selection with knowledge document imports."""
     lines: list[str] = []
-
-    def walk(node: ET.Element) -> None:
-        if node.tag == _MC_NS + "Fallback":
-            return
-        if node.tag == _WORD_NS + "p":
-            line = _extract_word_paragraph_text(node).strip()
-            if line:
-                lines.append(line)
-        for child in node:
-            walk(child)
-
-    walk(root)
+    # The iterator skips the entire hidden run, including nested text boxes;
+    # checking only the nested paragraph would lose its enclosing visibility.
+    for paragraph in _iter_word_paragraphs(root):
+        line = _extract_word_paragraph_text(paragraph).strip()
+        if line:
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -825,25 +820,26 @@ def _iter_word_paragraphs(root: ET.Element):
 
 
 def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
+    """Read one paragraph in document order without recursive XML descent."""
     chunks: list[str] = []
-
-    def walk(node: ET.Element) -> None:
-        for child in node:
-            if child.tag == _MC_NS + "Fallback":
-                continue
-            if child.tag == _WORD_NS + "r" and _word_run_is_hidden(child):
-                continue
-            if child.tag == _WORD_NS + "p":
-                continue
-            if child.tag == _WORD_NS + "t" and child.text:
-                chunks.append(child.text)
-            elif child.tag == _WORD_NS + "tab":
-                chunks.append("\t")
-            elif child.tag == _WORD_NS + "br":
-                chunks.append("\n")
-            walk(child)
-
-    walk(paragraph)
+    stack = list(reversed(paragraph))
+    while stack:
+        child = stack.pop()
+        if child.tag == _MC_NS + "Fallback":
+            continue
+        if child.tag == _WORD_NS + "r" and _word_run_is_hidden(child):
+            continue
+        # Nested text boxes own separate paragraphs, emitted by the outer
+        # iterator; do not duplicate their text in the enclosing paragraph.
+        if child.tag == _WORD_NS + "p":
+            continue
+        if child.tag == _WORD_NS + "t" and child.text:
+            chunks.append(child.text)
+        elif child.tag == _WORD_NS + "tab":
+            chunks.append("\t")
+        elif child.tag == _WORD_NS + "br":
+            chunks.append("\n")
+        stack.extend(reversed(child))
     return "".join(chunks)
 
 

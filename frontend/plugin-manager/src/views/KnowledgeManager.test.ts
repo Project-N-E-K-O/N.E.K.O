@@ -209,6 +209,74 @@ describe('KnowledgeManager diagnostics', () => {
 })
 
 describe('KnowledgeManager overview', () => {
+  it.each([true, false])('warns about retained content before removing an unavailable pack (confirm=%s)', async confirmed => {
+    api.packs.mockResolvedValue({ packs: [{ ...pack(), broken: true, entries: 0, vector_state: 'unavailable' }] })
+    let accept!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
+    let cancel!: (reason: string) => void
+    const confirmation = vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise((resolve, reject) => {
+      accept = resolve
+      cancel = reject
+    }))
+    api.removePack.mockResolvedValue({ ok: true })
+    const container = await mount()
+    await openTab('packs')
+    const remove = [...container.querySelectorAll<HTMLButtonElement>('.packs-table button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.remove)!
+    remove.click()
+    await flush()
+    // Zero is a usability projection, not a count of retained content at risk.
+    const message = confirmation.mock.calls[0]![0]
+    expect(message).toContain('My notes')
+    expect(message).toContain('retained entries will be removed from the knowledge base')
+    expect(message).toContain('Original documents and version history are kept')
+    expect(message).not.toContain('0 entries')
+    expect(api.removePack).not.toHaveBeenCalled()
+    if (confirmed) accept('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    else cancel('cancel')
+    await flush()
+    if (confirmed) expect(api.removePack).toHaveBeenCalledWith({ pack_id: 'imp.test' })
+    else expect(api.removePack).not.toHaveBeenCalled()
+  })
+
+  it('opens retained exports after removing their pack', async () => {
+    // Removing a pack does not remove its completed task or artifact identity.
+    let installed = true
+    api.packs.mockImplementation(async () => ({ packs: installed ? [pack()] : [] }))
+    api.removePack.mockImplementation(async () => { installed = false; return { ok: true } })
+    api.packJobs.mockResolvedValue({ jobs: [{ job_id: 'retained', pack_id: 'imp.test', kind: 'pack_export',
+      state: 'active', created_at: '2026-11-19T07:00:00Z', result: { artifact_id: 'f'.repeat(64),
+        name: 'Retained after removal', format_version: 2, bytes: 1024 } } as KnowledgePackJob] })
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const container = await mount()
+    await openTab('packs')
+    const remove = [...container.querySelectorAll<HTMLButtonElement>('.packs-table button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.remove)!
+    remove.click()
+    await flush()
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      'Remove data pack My notes? Its 1 entries will be deleted.', enUS.common.warning,
+      expect.objectContaining({ confirmButtonText: enUS.knowledge.remove }),
+    )
+    expect(api.removePack).toHaveBeenCalledWith({ pack_id: 'imp.test' })
+    const exports = container.querySelector<HTMLButtonElement>('[data-testid="knowledge-completed-exports"]')
+    expect(exports).toBeTruthy()
+    exports!.click()
+    await flush()
+    expect(document.querySelector('.artifact-name')?.textContent).toBe('Retained after removal')
+    expect(document.querySelectorAll('.artifact-actions button')).toHaveLength(3)
+    expect(api.sources).not.toHaveBeenCalled()
+  })
+
+  it('shows broken vector data as unavailable instead of unfinished work', async () => {
+    api.packs.mockResolvedValue({ packs: [{ ...pack(), broken: true, vector_state: 'unavailable',
+      entries: 0, chunks_total: 0, chunks_ready: 0 }] })
+    const container = await mount()
+    await openTab('packs')
+    const tag = container.querySelector('.pack-count--left .el-tag')!
+    expect(tag.textContent).toBe(enUS.knowledge.brokenTag)
+    expect(tag.classList.contains('el-tag--danger')).toBe(true)
+  })
+
   it.each([
     { operation: 'new', outcome: 'active', staleFirst: false },
     { operation: 'append', outcome: 'active', staleFirst: false },
