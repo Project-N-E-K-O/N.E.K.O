@@ -702,7 +702,8 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
             # Only the note that the grants were reset is left.
             assert record["grants_reset"]["reason"] == "source_changed"
         elif scenario == "cleanup_fails_after_denial":
-            # Dropped as a source change would: approvals go, the denial stays.
+            # Dropped as a source change would: approvals go, the denial stays,
+            # still superseded by the per-permission decision made after it.
             with pytest.raises(SourceSwitchError) as exc_info:
                 await switch_builtin_source(request, **callbacks)
             assert target.exists()
@@ -710,7 +711,8 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
             record = store.read("study_companion")
             assert record["permissions"] == {}
             assert record.get("legacy_denied") is True
-            assert permission_service.consent_record("study_companion")["decision"] == "denied"
+            assert record.get("legacy_denial_superseded") is True
+            assert permission_service.consent_record("study_companion") == {}
         else:
             await switch_builtin_source(request, **callbacks)
             # The install owner's post-commit reconciliation.
