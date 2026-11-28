@@ -3,7 +3,7 @@
  */
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { ensurePluginConsentPageMessages, i18n } from '@/i18n'
+import { ensurePluginConsentPageMessages, i18n, setPluginConsentPageShown } from '@/i18n'
 import { watch } from 'vue'
 
 // The permission tab and privacy page words are not part of the language pack.
@@ -12,8 +12,13 @@ import { watch } from 'vue'
 // page needs them); the guard below retries on the next navigation.
 const CONSENT_PAGE_ROUTES = new Set(['PluginDetail', 'PrivacyOverview'])
 const loadConsentPageMessages = () => ensurePluginConsentPageMessages().catch(() => undefined)
+// The attempt started by a route component loader, reused (even when it
+// failed) by the guard of the same navigation instead of waiting again.
+let componentAttempt: Promise<void> | null = null
 function withConsentPageMessages<T>(view: Promise<T>): Promise<T> {
-  return Promise.all([view, loadConsentPageMessages()]).then(([loaded]) => loaded)
+  const attempt = loadConsentPageMessages()
+  componentAttempt = attempt
+  return Promise.all([view, attempt]).then(([loaded]) => loaded)
 }
 
 const routes: RouteRecordRaw[] = [
@@ -197,9 +202,16 @@ router.beforeEach((to, from, next) => {
   next()
 })
 
-// Already loaded: resolves at once. After a failed load: retries.
+// Already loaded: resolves at once. After a failed load: retries, except in
+// the navigation whose component loader just tried.
 router.beforeResolve(async (to) => {
-  if (CONSENT_PAGE_ROUTES.has(to.name as string)) await loadConsentPageMessages()
+  const attempt = componentAttempt
+  componentAttempt = null
+  if (CONSENT_PAGE_ROUTES.has(to.name as string)) await (attempt ?? loadConsentPageMessages())
+})
+router.afterEach((to) => {
+  componentAttempt = null
+  setPluginConsentPageShown(CONSENT_PAGE_ROUTES.has(to.name as string))
 })
 
 watch(i18n.global.locale, () => {

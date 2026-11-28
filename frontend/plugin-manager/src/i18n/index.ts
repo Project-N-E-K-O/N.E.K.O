@@ -84,11 +84,14 @@ let failedPersist = true
 // Unlike the rest of the pack, they are merged into the applied language only,
 // so the zh-CN fallback lacks them while another language is applied; the
 // per-language key parity test in localeSplit.test.ts keeps every language
-// complete instead. A failed load never fails a language switch: the pack is
-// committed without them and the next ensurePluginConsentPageMessages() call
-// (the router retries on navigation) merges them in.
+// complete instead. A failed load fails a language switch only while one of
+// those pages is shown (the switch keeps the current language and reports a
+// recoverable error); elsewhere the pack is committed without them and the
+// next ensurePluginConsentPageMessages() call (the router retries on
+// navigation) merges them in.
 type ConsentPageMessages = Awaited<ReturnType<typeof loadPluginConsentPageMessages>>
 let consentPagesWanted = false
+let consentPageShown = false
 const consentPages = new Map<AppLocale, ConsentPageMessages>()
 const CONSENT_PAGE_PROBE = 'pluginConsent.tab.loading'
 
@@ -107,6 +110,11 @@ function withConsentPages(messages: Dictionary, pages: ConsentPageMessages | und
   const base = (messages.pluginConsent ?? {}) as Dictionary
   const privacy = { ...(base.privacy as Dictionary | undefined), ...pages.privacy }
   return { ...messages, pluginConsent: { ...base, ...pages, privacy } }
+}
+
+/** Set by the router after each navigation: whether a page using these words is shown. */
+export function setPluginConsentPageShown(shown: boolean) {
+  consentPageShown = shown
 }
 
 /** Loads the permission tab and privacy page words for the applied language
@@ -138,7 +146,11 @@ async function applySetting(setting: LocaleSetting, persist: boolean): Promise<b
         : await loadLocaleBundle(target as Exclude<AppLocale, 'zh-CN'>)
     if (seq !== generation) return false
     if (consentPagesWanted) {
-      await consentPagesFor(target).catch(() => undefined)
+      try {
+        await consentPagesFor(target)
+      } catch (error) {
+        if (consentPageShown) throw error
+      }
       if (seq !== generation) return false
     }
     // One synchronous commit. No visible locale changes before BOTH app and

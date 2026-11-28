@@ -181,7 +181,25 @@ describe('permission tab and privacy page words', () => {
     expect(t('pluginConsent.privacy.title')).toBe(title(locale))
   })
 
-  it('a failed load does not fail a language switch and is merged on the next ask', async () => {
+  it('a failed load on a shown page keeps the language and reports a recoverable error', async () => {
+    const fresh = await freshI18n(true)
+    fresh.failing!.fail = false
+    await expect(fresh.setLocale('en-US')).resolves.toBe(true)
+    await fresh.ensurePluginConsentPageMessages()
+    fresh.setPluginConsentPageShown(true)
+    fresh.failing!.fail = true
+    await expect(fresh.setLocale('ko')).resolves.toBe(false)
+    expect(fresh.i18n.global.locale.value).toBe('en-US')
+    expect(fresh.localeLoadState.failedSetting).toBe('ko')
+    expect(fresh.localeLoadState.error).toBe('chunk failed')
+    const t = fresh.i18n.global.t as (key: string) => string
+    expect(t('pluginConsent.tab.loading')).toBe(pages('en-US').tab.loading)
+    fresh.failing!.fail = false
+    await expect(fresh.retryLocale()).resolves.toBe(true)
+    expect(t('pluginConsent.tab.loading')).toBe(pages('ko').tab.loading)
+  })
+
+  it('a failed load off those pages does not fail a language switch and is merged on the next ask', async () => {
     const fresh = await freshI18n(true)
     const t = fresh.i18n.global.t as (key: string) => string
     await expect(fresh.ensurePluginConsentPageMessages()).rejects.toThrow('chunk failed')
