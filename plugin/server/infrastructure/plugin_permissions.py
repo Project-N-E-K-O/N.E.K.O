@@ -16,6 +16,7 @@ Document shape (``schema_version`` 1)::
           "source": {"channel": "market", "fingerprint": "..."} | null,
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "legacy_approved": true,     # optional, see LEGACY_APPROVED
+          "legacy_denial_superseded": true,  # optional, see LEGACY_DENIAL_SUPERSEDED
           "grants_reset": {"at": "<iso>", "reason": "source_changed"},  # optional, see GRANTS_RESET
           "legacy_decided_at": "<iso>",  # optional, see LEGACY_DECIDED_AT
           "permissions": {
@@ -39,7 +40,7 @@ stored for it instead.
 
 When a plugin's source changes, its grants are discarded; only the
 plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
-approval does not).
+approval does not; a superseded denial stays superseded).
 
 On the first load the decisions recorded in the legacy ``plugin_consents.json``
 are imported once. Once that import is saved, a marker file next to it
@@ -151,12 +152,18 @@ LEGACY_DENIED = "legacy_denied"
 # approved, possibly with no permission at all (e.g. an incomplete analysis);
 # it grants nothing by itself. Never set together with LEGACY_DENIED.
 LEGACY_APPROVED = "legacy_approved"
-_PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED)
+# Set next to LEGACY_DENIED while the user has granted a permission of the
+# plugin here (decide; dropped again when decide / clear leave none
+# granted): the whole-plugin decision no longer reads denied,
+# while the permissions LEGACY_DENIED covers still do. Cleared with the other
+# markers by the next consent flow decision.
+LEGACY_DENIAL_SUPERSEDED = "legacy_denial_superseded"
+_PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED, LEGACY_DENIAL_SUPERSEDED)
 
 # What a source change keeps of a plugin record (besides its source): the
 # one place that decides it. Every grant and every other marker is dropped;
 # an empty set would make a source change ask again about everything.
-KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
+KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED, LEGACY_DENIAL_SUPERSEDED})
 
 # Set when a source change dropped decisions the user had made, so the
 # permission panel can tell the user why they are asked again. Cleared by the
@@ -372,6 +379,30 @@ def _had_decisions(record: dict) -> bool:
 
 def _mark_reset(record: dict, now: str) -> None:
     record[GRANTS_RESET] = {"at": now, "reason": RESET_SOURCE_CHANGED}
+
+
+def _supersede_legacy_denial(record: dict) -> None:
+    """Mark a whole-plugin denial as replaced by a per-permission grant."""
+    if record.get(LEGACY_DENIED):
+        record[LEGACY_DENIAL_SUPERSEDED] = True
+
+
+def _is_granted(record: dict, permission_id: str) -> bool:
+    entry = (record.get("permissions") or {}).get(permission_id)
+    return isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
+
+
+def _restore_legacy_denial(record: dict, took_back_grant: bool) -> None:
+    """Undo :func:`_supersede_legacy_denial` when the user just took back
+    the last granted permission (``took_back_grant``: the changed permission
+    was granted before). Grants dropped by a source change keep the mark."""
+    if not took_back_grant:
+        return
+    if record.get(LEGACY_DENIAL_SUPERSEDED) and not any(
+        isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
+        for entry in (record.get("permissions") or {}).values()
+    ):
+        record.pop(LEGACY_DENIAL_SUPERSEDED, None)
 
 
 def _drop_for_source_change(record: dict) -> None:
@@ -798,7 +829,9 @@ class PluginPermissionStore:
         """Record a user decision for one permission.
 
         The decision replaces any previous one, including an imported
-        ``legacy_any`` grant.
+        ``legacy_any`` grant. A grant marks a ``legacy_denied`` record
+        ``LEGACY_DENIAL_SUPERSEDED``; a refusal that leaves no permission
+        granted removes that mark again.
         """
         if not plugin_id:
             raise ValueError("plugin_id is required")
@@ -823,12 +856,17 @@ class PluginPermissionStore:
                 self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
+            was_granted = _is_granted(record, permission_id)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
                 "scope": SCOPE_ALL,
                 "decided_at": now,
             }
+            if state == STATE_GRANTED:
+                _supersede_legacy_denial(record)
+            else:
+                _restore_legacy_denial(record, was_granted)
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
@@ -858,7 +896,9 @@ class PluginPermissionStore:
         write. A changed ``source`` is applied and saved first, like in
         :meth:`decide`. An id outside the vocabulary is accepted only when the
         record already holds it (e.g. an id the vocabulary has since
-        dropped), and its entry is removed.
+        dropped), and its entry is removed. Like a refusal in :meth:`decide`,
+        a clear that leaves no permission granted removes
+        ``LEGACY_DENIAL_SUPERSEDED``.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
@@ -895,6 +935,7 @@ class PluginPermissionStore:
             self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
+            was_granted = _is_granted(record, known_id or permission_id)
             permissions = record.setdefault("permissions", {})
             if known_id is None:
                 # A source change above may have dropped it already.
@@ -905,6 +946,7 @@ class PluginPermissionStore:
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
+            _restore_legacy_denial(record, was_granted)
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)

@@ -835,6 +835,29 @@ def test_explicit_undecided_entries_are_no_reset(store):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "body"),
+    [("PUT", {"state": "granted"}), ("PUT", {"state": "denied"}), ("DELETE", None)],
+)
+async def test_only_a_grant_route_lifts_a_whole_plugin_denial(env, method, body):
+    from plugin.server.application.plugins import consent_service
+
+    _weather(env)
+    env.store.apply_legacy_decision("weather", "denied")
+    assert consent_service.denied_plugin_ids(["weather"]) == {"weather"}
+
+    response = await _call(method, f"/plugin-permissions/plugins/weather/permissions/{MEMORY}", body)
+
+    assert response.status_code == 200, response.text
+    lifted = body == {"state": "granted"}
+    assert consent_service.denied_plugin_ids(["weather"]) == (set() if lifted else {"weather"})
+    rows = {row["permission"]: row for row in response.json()["rows"]}
+    # Only the decided permission changed; the rest of the denial stands.
+    assert rows[CONVERSATIONS]["state"] == "denied"
+    assert rows[MEMORY]["state"] == (body or {}).get("state", "undecided")
+
+
+@pytest.mark.asyncio
 async def test_refusing_with_anytime_is_not_checked(env):
     _weather(env)
     response = await _call(
