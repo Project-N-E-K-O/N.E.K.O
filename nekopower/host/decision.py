@@ -1188,8 +1188,12 @@ class LexicalDecisionModel:
         verdict = decision.get("goes_on") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
 
-    async def _belongs_decided(self, messages: list[dict[str, Any]], candidates: int | None = None) -> str | None:
-        """Where a commission belongs, as one single choice on a native decision model; None to ask the chat prompt.
+    async def _belongs_decided(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, bool]:
+        """Where a commission belongs, as one single choice on a native decision model, and whether it was sent.
+
+        The answer is None to ask the chat prompt.
 
         The options are none, and each candidate either followed up or done
         again as the next round of a recurring job. Vendors without a native
@@ -1206,12 +1210,12 @@ class LexicalDecisionModel:
         from utils.decision_client.routing import SITE_BELONGS
 
         if len(messages) < 2:
-            return None
+            return None, False
         request = str(messages[1].get("content") or "")
         if candidates is None:
             candidates = _candidate_count(request)
         if candidates < 1:
-            return None
+            return None, False
         criteria = {"none": ORCHESTRATOR_DECISION_NONE}
         for k in range(1, candidates + 1):
             criteria[f"c{k}_follow_up"] = ORCHESTRATOR_DECISION_FOLLOW_UP.format(k=k)
@@ -1226,7 +1230,16 @@ class LexicalDecisionModel:
             {"goes": ChoiceQuestion(instructions=instructions, criteria=criteria)},
             rehost=False,
         )
-        return belongs_answer_from((answers or {}).get("goes"), candidates)
+        return belongs_answer_from((answers or {}).get("goes"), candidates), answers is not None
+
+    async def belongs_counted(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, int]:
+        """``belongs``, with the requests it made: two when a decision question was sent and missed."""
+        decided, sent = await self._belongs_decided(messages, candidates)
+        if decided is not None:
+            return decided, 1
+        return await self._belongs_chat(messages), 2 if sent else 1
 
     async def belongs(self, messages: list[dict[str, Any]], candidates: int | None = None) -> str | None:
         """Ask which of a few projects and task agents a new commission belongs with; returns the answer as it came, or None.
@@ -1241,9 +1254,10 @@ class LexicalDecisionModel:
         On a native decision model it is one single choice instead (D19),
         whose reading is answered in the same JSON the chat prompt asks for.
         """
-        decided = await self._belongs_decided(messages, candidates)
-        if decided is not None:
-            return decided
+        answer, _calls = await self.belongs_counted(messages, candidates)
+        return answer
+
+    async def _belongs_chat(self, messages: list[dict[str, Any]]) -> str | None:
         try:
             return await self._llm.complete(TIER_ORCHESTRATE, messages)
         except asyncio.CancelledError:
@@ -1610,15 +1624,19 @@ class LexicalDecisionModel:
             return Triage(kind="unsure")
         # Nothing matched by its words and there is no task agent to fall back
         # on. Before saying it cannot be done, let the small model look once.
-        coarse = await self._coarse_screen(match_text, plugins, request.lang)
+        coarse, coarse_calls = await self._coarse_screen(match_text, plugins, request.lang)
         known = {str(plugin.get("id")) for plugin in plugins}
         picked = [plugin_id for plugin_id in coarse if plugin_id in known]
         if picked:
-            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=1)
-        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=1)
+            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=coarse_calls)
+        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=coarse_calls)
 
-    async def _coarse_screen_decided(self, user_text: str, shorts: list[tuple[str, str]]) -> list[str] | None:
-        """The coarse screen as one single choice on a native decision model (D16); None to ask the chat prompt.
+    async def _coarse_screen_decided(
+        self, user_text: str, shorts: list[tuple[str, str]],
+    ) -> tuple[list[str] | None, bool]:
+        """The coarse screen as one single choice on a native decision model (D16), and whether it was sent.
+
+        The ids are None to ask the chat prompt.
 
         Each plugin whose choice probability reaches
         ``COARSE_SCREEN_DECISION_THRESHOLD`` is kept, in catalog order.
@@ -1636,7 +1654,7 @@ class LexicalDecisionModel:
         from utils.tokenize import truncate_to_tokens
 
         if not shorts:
-            return None
+            return None, False
         criteria = {f"p{i}": f"[{pid}] {truncate_to_tokens(short, 24)}" for i, (pid, short) in enumerate(shorts)}
         criteria["none"] = COARSE_SCREEN_DECISION_NONE
         state = COARSE_SCREEN_DECISION_STATE.format(user_text=truncate_to_tokens(user_text, DECISION_STATE_MAX_TOKENS // 4))
@@ -1647,16 +1665,20 @@ class LexicalDecisionModel:
             {"pick": ChoiceQuestion(instructions=COARSE_SCREEN_DECISION_INSTRUCTIONS, criteria=criteria)},
             rehost=False,
         )
+        sent = answers is not None
         probs = _option_probabilities((answers or {}).get("pick"))
         if not probs:
-            return None
+            return None, sent
         return [
             pid for i, (pid, _short) in enumerate(shorts)
             if probs.get(f"p{i}", 0.0) > 0 and probs.get(f"p{i}", 0.0) >= COARSE_SCREEN_DECISION_THRESHOLD
-        ]
+        ], sent
 
-    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> list[str]:
-        """Ask the small model which plugins might be relevant; ids only."""
+    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> tuple[list[str], int]:
+        """Ask the small model which plugins might be relevant: the ids, and the requests made for them.
+
+        Two requests when a decision question was sent and missed, then the chat prompt.
+        """
         from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_COARSE_SCREEN_PROMPT
         from config.prompts.prompts_sys import _loc
@@ -1671,9 +1693,10 @@ class LexicalDecisionModel:
                 short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {plugin_id}: {short}")
             shorts.append((str(plugin_id), short))
-        decided = await self._coarse_screen_decided(user_text, shorts)
+        decided, sent = await self._coarse_screen_decided(user_text, shorts)
         if decided is not None:
-            return decided
+            return decided, 1
+        calls = 2 if sent else 1
         system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
             user_text=user_text,
@@ -1685,12 +1708,12 @@ class LexicalDecisionModel:
             raw = await self._llm.complete(TIER_COARSE, messages)
             ids = robust_json_loads(_strip_fences(raw))
             if isinstance(ids, list):
-                return [str(item) for item in ids if isinstance(item, (str, int))]
+                return [str(item) for item in ids if isinstance(item, (str, int))], calls
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - keyword and BM25 matches still stand
             logger.warning("coarse screen failed: %s", type(exc).__name__)
-        return []
+        return [], calls
 
     # -- turn check -------------------------------------------------------
 
@@ -1811,11 +1834,11 @@ class LexicalDecisionModel:
                     coarse_ids = list(triage.coarse_ids)
                     kept, _ = await asyncio.to_thread(stage1_filter, match_text, all_plugins)
                 else:
-                    (kept, _), coarse_ids = await asyncio.gather(
+                    (kept, _), (coarse_ids, coarse_calls) = await asyncio.gather(
                         asyncio.to_thread(stage1_filter, match_text, all_plugins),
                         self._coarse_screen(match_text, all_plugins, request.lang),
                     )
-                    calls += 1
+                    calls += coarse_calls
                 selected = {plugin.get("id") for plugin in kept} | set(coarse_ids) | set(hits)
                 shown = [plugin for plugin in all_plugins if plugin.get("id") in selected]
                 lines = build_desc_lines(shown)

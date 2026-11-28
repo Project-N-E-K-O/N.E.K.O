@@ -95,7 +95,7 @@ PLUGINS = [
 async def test_coarse_screen_keeps_plugins_at_or_above_the_threshold_in_catalog_order():
     llm = _LLM(chat='["notes"]', decided={"pick": _answer({"p1": 0.6, "p0": 0.05, "p2": 0.04, "none": 0.31})})
     got = await LexicalDecisionModel(llm)._coarse_screen("play some jazz", PLUGINS, "en")
-    assert got == ["weather", "music"]
+    assert got == (["weather", "music"], 1)
     assert llm.completes == []
     asked = llm.decides[0]
     assert asked["site"] == "coarse_screen" and asked["rehost"] is False
@@ -107,9 +107,13 @@ async def test_coarse_screen_keeps_plugins_at_or_above_the_threshold_in_catalog_
 @pytest.mark.asyncio
 async def test_coarse_screen_none_only_keeps_nothing_and_a_miss_asks_the_chat():
     llm = _LLM(chat='["notes"]', decided={"pick": _answer({"none": 1.0})})
-    assert await LexicalDecisionModel(llm)._coarse_screen("hello", PLUGINS, "en") == []
+    assert await LexicalDecisionModel(llm)._coarse_screen("hello", PLUGINS, "en") == ([], 1)
+    # Not sent (the vendor keeps its chat): only the chat request.
     llm = _LLM(chat='["notes"]', decided=None)
-    assert await LexicalDecisionModel(llm)._coarse_screen("hello", PLUGINS, "en") == ["notes"]
+    assert await LexicalDecisionModel(llm)._coarse_screen("hello", PLUGINS, "en") == (["notes"], 1)
+    # Sent and missed, then the chat: both requests are counted.
+    llm = _LLM(chat='["notes"]', decided={})
+    assert await LexicalDecisionModel(llm)._coarse_screen("hello", PLUGINS, "en") == (["notes"], 2)
 
 
 # ── where a commission belongs (q1, D19) ─────────────────────────────
@@ -156,6 +160,19 @@ async def test_belongs_miss_asks_the_chat_prompt():
     llm = _LLM(chat='{"goes_to": 1, "relation": "follow_up"}', decided={"goes": _answer({})})
     assert await LexicalDecisionModel(llm).belongs(_belongs_messages(2)) == '{"goes_to": 1, "relation": "follow_up"}'
     assert len(llm.completes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("decided", "calls", "chat_asked"), [
+    ({"goes": _answer({"c1_follow_up": 0.9, "none": 0.1})}, 1, False),  # the decision answered
+    ({"goes": _answer({})}, 2, True),  # sent, unread, then the chat
+    (None, 1, True),  # not sent: the chat only
+])
+async def test_belongs_counted_reports_the_requests_made(decided, calls, chat_asked):
+    llm = _LLM(chat='{"goes_to": 1, "relation": "follow_up"}', decided=decided)
+    raw, got_calls = await LexicalDecisionModel(llm).belongs_counted(_belongs_messages(2), candidates=2)
+    assert json.loads(raw)["goes_to"] == 1
+    assert got_calls == calls and bool(llm.completes) is chat_asked
 
 
 def test_candidates_are_counted_from_the_numbered_block_only():

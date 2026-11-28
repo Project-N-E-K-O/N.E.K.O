@@ -56,8 +56,9 @@ logger = logging.getLogger(__name__)
 
 # Asked with the request that says which candidate a sentence belongs with;
 # returns what the small model answered, None when it could not be asked.
-# Asked with the request and how many candidates it shows (``candidates=``).
-Judge = Callable[..., Awaitable["str | None"]]
+# Asked with the request and how many candidates it shows (``candidates=``);
+# answers the raw answer, or the answer and how many requests it made.
+Judge = Callable[..., Awaitable["str | tuple[str | None, int] | None"]]
 
 # Why a project got its leader.
 # The presets of a member that works: the one a member has that nobody
@@ -383,8 +384,12 @@ class Families:
             standing,
             line_max_tokens=settings.ORCHESTRATOR_CANDIDATE_MAX_TOKENS,
         )
+        calls = 1
         try:
             raw = await self._judge(messages, candidates=len(keys))
+            if isinstance(raw, tuple):
+                # A judge that counts its requests (``LexicalDecisionModel.belongs_counted``).
+                raw, calls = raw
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - not told: a new loose commission
@@ -392,8 +397,8 @@ class Families:
             raw = None
         answer = orch.read_answer(raw or "", keys)
         if answer is None:
-            return settled(None, orch.NEW, "unreadable", 1)
-        return settled(answer[0], answer[1], "model", 1)
+            return settled(None, orch.NEW, "unreadable", calls)
+        return settled(answer[0], answer[1], "model", calls)
 
     # -- setting it up ----------------------------------------------------
 
