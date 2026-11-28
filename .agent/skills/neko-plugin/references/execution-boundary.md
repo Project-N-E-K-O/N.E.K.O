@@ -169,7 +169,7 @@ Shared vocabulary for plugin work.
 
 ### Plugin Boundary
 
-The write boundary for creating or changing a plugin: the plugin directory (the folder holding `plugin.toml`) is the only default editable workspace; in a source checkout that is normally `plugin/plugins/<plugin_id>/`. Reading docs, tests, indexes, and skills outside this directory is encouraged when it helps the agent follow the plugin contract.
+The write boundary for creating or changing a plugin: `<plugin_dir>` (the plugin directory holding `plugin.toml`, which in a source checkout is a folder under the checkout's built-in plugin root) is the only default editable workspace. Reading docs, tests, indexes, and skills outside this directory is encouraged when it helps the agent follow the plugin contract.
 
 ### Read Context
 
@@ -177,7 +177,7 @@ The project materials an agent may inspect to understand plugin contracts and ex
 
 ### Write Workspace
 
-The files an agent may edit by default for a plugin task. For normal plugin authoring, this is only the plugin directory (normally `plugin/plugins/<plugin_id>/` in a source checkout).
+The files an agent may edit by default for a plugin task. For normal plugin authoring, this is only `<plugin_dir>` (the folder holding `plugin.toml`, under the built-in plugin root in a source checkout).
 
 ### Platform Layer
 
@@ -193,11 +193,11 @@ The hard, concise agent reference for plugin fundamentals: valid `plugin.toml` f
 
 ### Plugin System Surface Map
 
-The broad agent reference that lists what the plugin system can already do across SDK APIs, runtime features, CLI tools, UI surfaces, config, state, messaging, lifecycle, adapters, and extensions. It should orient the agent to existing capabilities without re-documenting every implementation detail; the agent should inspect source for specifics.
+The broad agent reference that lists what the plugin system can already do across SDK APIs, runtime features, CLI tools, UI surfaces, config, state, messaging, lifecycle, and adapters. It should orient the agent to existing capabilities without re-documenting every implementation detail; the agent should inspect source for specifics.
 
 ### Plugin Shape
 
-The high-level architecture of a plugin as understood by both user need and the plugin system: whether it is user-invoked, background/listening, scheduled, UI-first, adapter-like, extension-like, stateful, or externally integrated.
+The high-level architecture of a plugin as understood by both user need and the plugin system: whether it is user-invoked, background/listening, scheduled, UI-first, adapter-like, stateful, or externally integrated.
 
 ### Plugin Identity
 
@@ -217,7 +217,7 @@ An optional clarifying question used when the user's intent is underspecified an
 
 ### Risk Follow-up
 
-A required follow-up question triggered by architectural or operational risk, such as external protocols, background work, persistence, UI permissions, host extensions, or out-of-bound platform needs.
+A required follow-up question triggered by architectural or operational risk, such as external protocols, background work, persistence, UI permissions, host capability gaps, or out-of-bound platform needs.
 
 ### Plugin Design Brief
 
